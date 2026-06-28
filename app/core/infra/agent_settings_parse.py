@@ -1349,6 +1349,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             room_evolution_enabled=bool(
                 agent_raw.get("room_evolution_enabled", True),
             ),
+            garden_visits_enabled=bool(
+                agent_raw.get("garden_visits_enabled", True),
+            ),
+            outings_enabled=bool(
+                agent_raw.get("outings_enabled", True),
+            ),
             diary_worker_enabled=bool(
                 agent_raw.get("diary_worker_enabled", True),
             ),

@@ -146,6 +146,10 @@ def _make_worker(
     seed: int = 0,
     notify: Any = None,
     intentional_hold_seconds: float = 0.0,
+    outings_enabled: bool = True,
+    outing_cooldown_seconds: float = 6.0 * 3600,
+    outing_daily_cap: int = 2,
+    period: str | None = None,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -161,6 +165,12 @@ def _make_worker(
         daily_cap=daily_cap,
         journal_max=8,
         intentional_hold_seconds=intentional_hold_seconds,
+        outings_enabled_provider=lambda: outings_enabled,
+        outing_cooldown_seconds=outing_cooldown_seconds,
+        outing_daily_cap=outing_daily_cap,
+        circadian_period_provider=(
+            (lambda: period) if period is not None else None
+        ),
         rng=random.Random(seed),
     )
 
@@ -329,6 +339,79 @@ class GateTests(unittest.TestCase):
         )
         result = worker.run()
         self.assertEqual(result["fired"], 1)
+
+
+class OutingTests(unittest.TestCase):
+    """H22 — the rare 'I stepped out for a bit' away-beat."""
+
+    def test_forced_outing_journals_and_stamps(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0, period="afternoon")
+        worker.force_activity("outing")
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertEqual(result["key"], "outing")
+        journal = load_journal(kv.get)
+        self.assertEqual(journal[-1]["key"], "outing")
+        # Outing watermarks were stamped so the next one is gated.
+        self.assertIsNotNone(kv.get("outing.last_fired_at"))
+        self.assertEqual(kv.get("outing.day_count"), "1")
+
+    def test_outing_not_offered_when_disabled(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, outings_enabled=False,
+            period="afternoon",
+        )
+        # Even forced, a disabled outing is not added to candidates, so the
+        # pick falls back to another beat (never key == "outing").
+        worker.force_activity("outing")
+        result = worker.run()
+        self.assertNotEqual(result.get("key"), "outing")
+
+    def test_outing_cooldown_blocks_repeat(self) -> None:
+        kv = _FakeKV()
+        recent = datetime.now(timezone.utc) - timedelta(minutes=30)
+        kv.set("outing.last_fired_at", recent.isoformat())
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0,
+            outing_cooldown_seconds=6.0 * 3600, period="afternoon",
+        )
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker._outing_eligible(now))
+
+    def test_outing_daily_cap_blocks(self) -> None:
+        kv = _FakeKV()
+        today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+        kv.set("outing.day", today)
+        kv.set("outing.day_count", "2")
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, outing_daily_cap=2,
+            outing_cooldown_seconds=0.0, period="afternoon",
+        )
+        self.assertFalse(worker._outing_eligible(datetime.now(timezone.utc)))
+
+    def test_outing_blocked_at_night(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, outing_cooldown_seconds=0.0,
+            period="late_night",
+        )
+        self.assertFalse(worker._outing_eligible(datetime.now(timezone.utc)))
+
+    def test_outing_eligible_in_daylight(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, outing_cooldown_seconds=0.0,
+            period="morning",
+        )
+        self.assertTrue(worker._outing_eligible(datetime.now(timezone.utc)))
 
 
 if __name__ == "__main__":

@@ -1220,6 +1220,23 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             "dropped": dropped + overflow,
         })
 
+    @app.post("/api/logs/ui-crash")
+    async def post_ui_crash(payload: dict[str, Any]) -> JSONResponse:
+        """Record a React error-boundary crash. Always on (ungated).
+
+        Unlike ``/api/logs/ui`` (the opt-in debug bridge, which 403s when
+        ``ui_log_enabled`` is off), a UI crash is *always* logged at
+        ERROR so the cause is captured the next time the white-screen
+        happens — the user shouldn't have to have turned on debug logging
+        beforehand. Body shape: ``{"message", "stack", "componentStack",
+        "source", "url", "userAgent", "ts"}``. Field sizes are capped
+        server-side by :func:`crash_logging.log_ui_crash`.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        logged = crash_logging.log_ui_crash(payload)
+        return JSONResponse({"logged": bool(logged)})
+
     @app.get("/api/metrics")
     def metrics() -> JSONResponse:
         s = session._settings

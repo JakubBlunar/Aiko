@@ -279,5 +279,72 @@ class PostUiLogsTests(unittest.TestCase):
         self.assertEqual(body["dropped"], 2)
 
 
+class PostUiCrashTests(unittest.TestCase):
+    """``POST /api/logs/ui-crash`` (I8 React error boundary).
+
+    Unlike the debug bridge above, this endpoint is *always on* — a
+    white-screen crash must be captured even when ``ui_log_enabled`` is
+    off — and it logs at ERROR on the ``app.ui`` logger.
+    """
+
+    def setUp(self) -> None:
+        self.capture = UiLogCapture()
+        self.ui_logger = logging.getLogger("app.ui")
+        self._prev_level = self.ui_logger.level
+        self._prev_propagate = self.ui_logger.propagate
+        self.ui_logger.setLevel(logging.DEBUG)
+        self.ui_logger.propagate = False
+        self.ui_logger.addHandler(self.capture)
+
+    def tearDown(self) -> None:
+        self.ui_logger.removeHandler(self.capture)
+        self.ui_logger.setLevel(self._prev_level)
+        self.ui_logger.propagate = self._prev_propagate
+
+    def test_logs_even_when_ui_logging_disabled(self) -> None:
+        client, _session, _settings = _build_client(ui_log_enabled=False)
+        response = client.post(
+            "/api/logs/ui-crash",
+            json={
+                "message": "Cannot read properties of undefined (reading 'foo')",
+                "stack": "TypeError: ...\n  at Live2DAvatar (...)",
+                "componentStack": "\n    in Live2DAvatar\n    in App",
+                "source": "render",
+                "url": "http://localhost:5173/",
+                "userAgent": "vitest",
+                "ts": "2026-06-28T18:00:00.000Z",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["logged"])
+        self.assertEqual(len(self.capture.records), 1)
+        record = self.capture.records[0]
+        self.assertEqual(record.levelno, logging.ERROR)
+        message = record.getMessage()
+        self.assertIn("[ui] crash", message)
+        self.assertIn("source=render", message)
+        self.assertIn("Cannot read properties of undefined", message)
+
+    def test_caps_oversized_fields(self) -> None:
+        client, _session, _settings = _build_client(ui_log_enabled=False)
+        huge = "x" * 50_000
+        response = client.post(
+            "/api/logs/ui-crash",
+            json={"message": "boom", "stack": huge, "source": "render"},
+        )
+        self.assertEqual(response.status_code, 200)
+        message = self.capture.records[0].getMessage()
+        # The raw 50k blob must not survive verbatim; the clip marker does.
+        self.assertNotIn(huge, message)
+        self.assertIn("more)", message)
+
+    def test_blank_report_still_logs_a_line(self) -> None:
+        client, _session, _settings = _build_client(ui_log_enabled=False)
+        response = client.post("/api/logs/ui-crash", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["logged"])
+        self.assertIn("(no message)", self.capture.records[0].getMessage())
+
+
 if __name__ == "__main__":
     unittest.main()

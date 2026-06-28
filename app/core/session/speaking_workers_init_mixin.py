@@ -1673,18 +1673,52 @@ class SpeakingWorkersInitMixin:
                                 notify=self._notify_world,
                             )
                         )
-                        self._idle_scheduler.register(
-                            GardenVisitWorker(
-                                self._world_store,
-                                notify=self._notify_world,
-                                kv_get=self._chat_db.kv_get,
-                                kv_set=self._chat_db.kv_set,
-                                intentional_hold_seconds=getattr(
+                        _gmem = self._memory_settings
+                        self._garden_visit_worker = GardenVisitWorker(
+                            self._world_store,
+                            notify=self._notify_world,
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            intentional_hold_seconds=getattr(
+                                self._settings.agent,
+                                "world_intentional_hold_seconds",
+                                7200.0,
+                            ),
+                            circadian_period_provider=(
+                                lambda: self.current_circadian_period()
+                            ),
+                            enabled_provider=lambda: bool(
+                                getattr(
                                     self._settings.agent,
-                                    "world_intentional_hold_seconds",
-                                    7200.0,
-                                ),
-                            )
+                                    "garden_visits_enabled",
+                                    True,
+                                )
+                            ),
+                            # H15 — needs-driven + varied + journalled.
+                            need_dry_days=getattr(
+                                _gmem, "garden_need_dry_days", 2.0,
+                            ),
+                            need_visit_floor_seconds=(
+                                getattr(
+                                    _gmem, "garden_need_visit_floor_hours", 0.75,
+                                )
+                                * 3600.0
+                            ),
+                            relax_ratio=getattr(
+                                _gmem, "garden_relax_ratio", 0.3,
+                            ),
+                            visit_min_minutes=getattr(
+                                _gmem, "garden_visit_min_minutes", 4.0,
+                            ),
+                            visit_max_minutes=getattr(
+                                _gmem, "garden_visit_max_minutes", 10.0,
+                            ),
+                            journal_max=getattr(
+                                _gmem, "garden_journal_max", 8,
+                            ),
+                        )
+                        self._idle_scheduler.register(
+                            self._garden_visit_worker
                         )
                         # H16 — circadian "where you find her" default.
                         self._idle_scheduler.register(

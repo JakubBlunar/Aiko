@@ -1,8 +1,16 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { installGlobalCrashReporters } from "./crashReport";
 import { isTauri } from "./desktop/runtime";
 import "./index.css";
+
+// Catch event-handler throws + unhandled promise rejections (the
+// crashes a React error boundary can't see) and report them to the
+// backend for diagnostics. No-op outside the browser; safe to call
+// before render.
+installGlobalCrashReporters();
 
 const root = document.getElementById("root");
 if (!root) {
@@ -11,7 +19,9 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
 

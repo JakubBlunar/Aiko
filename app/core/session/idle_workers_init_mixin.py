@@ -158,6 +158,17 @@ class IdleWorkersInitMixin:
                     idle_seed_max_ring=getattr(
                         mem, "idle_seed_max_ring", 6,
                     ),
+                    # H22 — rare daylight "I stepped out for a bit" beat,
+                    # paced by its own cooldown + daily cap.
+                    outings_enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent, "outings_enabled", True,
+                        )
+                    ),
+                    outing_cooldown_seconds=(
+                        getattr(mem, "outing_cooldown_hours", 6.0) * 3600.0
+                    ),
+                    outing_daily_cap=getattr(mem, "outing_daily_cap", 2),
                     # H18 — tilt the weighted activity draw by time of day,
                     # current mood, and the daily personality colour.
                     circadian_period_provider=(

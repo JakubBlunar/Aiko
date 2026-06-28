@@ -36,13 +36,22 @@ def _make_worker(
     period: str = "morning",
     notify=None,
     intentional_hold_seconds: float = 0.0,
+    enabled: bool = True,
+    relax_ratio: float = 0.0,
+    need_dry_days: float = 2.0,
+    need_visit_floor_seconds: float = 0.75 * 3600,
+    seed: int = 0,
 ):
     return GardenVisitWorker(
         store,
         notify=notify,
-        rng=random.Random(0),
+        rng=random.Random(seed),
         circadian_period_provider=lambda: period,
         intentional_hold_seconds=intentional_hold_seconds,
+        enabled_provider=lambda: enabled,
+        relax_ratio=relax_ratio,
+        need_dry_days=need_dry_days,
+        need_visit_floor_seconds=need_visit_floor_seconds,
     )
 
 
@@ -160,6 +169,89 @@ class GardenVisitWorkerReturnTests(unittest.TestCase):
                 inbound["returned_to_slug"],
                 {"desk", "beanbag", "window_seat", "bookshelf", "bed"},
             )
+
+
+class GardenVisitWorkerH15Tests(unittest.TestCase):
+    """H15 — need-driven trigger, relax flavour, journal trace, switch."""
+
+    def test_disabled_switch_blocks_visit(self) -> None:
+        with _TempWorld() as store:
+            worker = _make_worker(store, enabled=False)
+            self.assertFalse(
+                worker.is_ready(
+                    now=datetime.now(timezone.utc), last_run_at=None,
+                )
+            )
+
+    def test_need_driven_visit_bypasses_long_cooldown(self) -> None:
+        with _TempWorld() as store:
+            # Force a mature plant so the garden "needs attention".
+            plant = next(iter(store.list_items(kind="plant")))
+            store.update_item(
+                plant.id, state={**(plant.state or {}), "stage": "mature"},
+            )
+            worker = _make_worker(store)
+            now = datetime.now(timezone.utc)
+            # Pretend the long cooldown is still in effect, but the last
+            # need-driven visit was longer ago than the short need floor.
+            worker._mem_kv[worker._NEXT_KEY] = (
+                now + timedelta(hours=2)
+            ).isoformat()
+            worker._mem_kv[worker._LAST_VISIT_KEY] = (
+                now - timedelta(hours=1)
+            ).isoformat()
+            self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+
+    def test_need_floor_blocks_back_to_back_need_visits(self) -> None:
+        with _TempWorld() as store:
+            plant = next(iter(store.list_items(kind="plant")))
+            store.update_item(
+                plant.id, state={**(plant.state or {}), "stage": "mature"},
+            )
+            worker = _make_worker(store)
+            now = datetime.now(timezone.utc)
+            worker._mem_kv[worker._NEXT_KEY] = (
+                now + timedelta(hours=2)
+            ).isoformat()
+            # Last visit just a few minutes ago — inside the need floor.
+            worker._mem_kv[worker._LAST_VISIT_KEY] = (
+                now - timedelta(minutes=5)
+            ).isoformat()
+            self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+
+    def test_tend_visit_writes_away_journal(self) -> None:
+        from app.core.world.idle_activity_worker import load_journal
+
+        with _TempWorld() as store:
+            worker = _make_worker(store, relax_ratio=0.0)
+            result = worker.run()
+            self.assertEqual(result["flavour"], "tend")
+            journal = load_journal(lambda k: worker._kv_read(k))
+            self.assertTrue(journal)
+            self.assertEqual(journal[-1]["key"], "garden")
+            self.assertTrue(journal[-1]["summary"])
+
+    def test_relax_flavour_skips_watering(self) -> None:
+        from app.core.world.idle_activity_worker import load_journal
+
+        with _TempWorld() as store:
+            # relax_ratio=1.0 forces the non-gardening beat; no mature/dry
+            # plant so the garden doesn't "need" tending.
+            worker = _make_worker(store, relax_ratio=1.0)
+            result = worker.run()
+            self.assertEqual(result["flavour"], "relax")
+            self.assertEqual(result["watered"], [])
+            self.assertEqual(result["harvested"], [])
+            journal = load_journal(lambda k: worker._kv_read(k))
+            self.assertEqual(journal[-1]["key"], "garden")
+
+    def test_force_visit_bypasses_daylight(self) -> None:
+        with _TempWorld() as store:
+            worker = _make_worker(store, period="late_night")
+            now = datetime.now(timezone.utc)
+            self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+            worker.force_visit()
+            self.assertTrue(worker.is_ready(now=now, last_run_at=None))
 
 
 if __name__ == "__main__":
