@@ -41,10 +41,21 @@ from app.core.relationship.user_reactions import (
 
 
 class TaxonomyTests(unittest.TestCase):
-    def test_six_kinds_in_canonical_order(self) -> None:
+    def test_kinds_in_canonical_order(self) -> None:
         self.assertEqual(
             REACTION_KINDS,
-            ("heart", "hug", "laugh", "thumbs", "rose", "surprise"),
+            (
+                "heart",
+                "hug",
+                "laugh",
+                "thumbs",
+                "rose",
+                "grateful",
+                "blush",
+                "eyeroll",
+                "moved",
+                "surprise",
+            ),
         )
 
     def test_each_kind_has_emoji_and_label(self) -> None:

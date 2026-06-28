@@ -76,6 +76,10 @@ export const USER_REACTION_KINDS: ReadonlyArray<UserReactionKind> = [
   { kind: "laugh", emoji: "😂", label: "laugh" },
   { kind: "thumbs", emoji: "👍", label: "thumbs up" },
   { kind: "rose", emoji: "🌹", label: "rose" },
+  { kind: "grateful", emoji: "🙏", label: "grateful" },
+  { kind: "blush", emoji: "🥰", label: "melted" },
+  { kind: "eyeroll", emoji: "🙄", label: "eye-roll" },
+  { kind: "moved", emoji: "🥺", label: "moved" },
   { kind: "surprise", emoji: "🫢", label: "surprise" },
 ];
 
