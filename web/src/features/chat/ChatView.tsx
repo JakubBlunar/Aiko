@@ -66,7 +66,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   const turnInProgress = useAssistantStore((s) => s.turnInProgress);
   const ttsState = useAssistantStore((s) => s.ttsState);
   const reaction = useAssistantStore((s) => s.reaction);
-  const connection = useAssistantStore((s) => s.connection);
+  const connectionStatus = useAssistantStore((s) => s.connection.status);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const audioLevel = useAssistantStore((s) => s.audioLevel);
   const lastTranscript = useAssistantStore((s) => s.lastTranscript);
@@ -319,7 +319,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
 
   const handleSend = () => {
     const text = draft.trim();
-    if (!text || turnInProgress || connection.status !== "connected") {
+    if (!text || turnInProgress || connectionStatus !== "connected") {
       return;
     }
     send(
@@ -397,7 +397,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   };
 
   const handleMicToggle = () => {
-    if (connection.status !== "connected") return;
+    if (connectionStatus !== "connected") return;
     if (voiceMode === "off") {
       send({ type: "voice_start" });
     } else {
@@ -441,7 +441,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
       <div className="flex min-h-0 flex-1 flex-col">
         {messages.length === 0 ? (
           <div className="flex-1 overflow-y-auto px-6 py-8">
-            <ChatEmptyState booting={connection.status !== "connected"} />
+            <ChatEmptyState booting={connectionStatus !== "connected"} />
             {toolActivity.length > 0 ? (
               <ToolActivityStrip activity={toolActivity} />
             ) : null}
@@ -542,7 +542,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             <MicButton
               voiceMode={voiceMode}
               audioLevel={audioLevel}
-              connected={connection.status === "connected"}
+              connected={connectionStatus === "connected"}
               onClick={handleMicToggle}
               remotelyOwned={remotelyOwned}
               size={isMobile ? "compact" : "default"}
@@ -551,7 +551,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={
-                connection.status !== "connected" ||
+                connectionStatus !== "connected" ||
                 pendingAttachments.length >= MAX_ATTACHMENTS
               }
               className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg border border-white/10 bg-black/30 text-ink-100/70 transition hover:bg-white/10 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40 md:h-12 md:w-12 md:rounded-xl"
@@ -579,13 +579,13 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={
-                connection.status !== "connected"
+                connectionStatus !== "connected"
                   ? "Connecting..."
                   : voiceMode !== "off"
                     ? "Voice mode is on. Type to send a written message, or click the mic to stop."
                     : "Talk to Aiko... (Enter to send, Shift+Enter for newline)"
               }
-              disabled={connection.status !== "connected"}
+              disabled={connectionStatus !== "connected"}
               rows={1}
               className="h-10 min-h-[2.5rem] max-h-28 flex-1 resize-none self-center rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 text-ink-100 placeholder:text-ink-100/40 focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-500/40 disabled:opacity-60 md:h-12 md:min-h-[3rem] md:max-h-40 md:rounded-xl md:px-4 md:py-3"
             />
@@ -603,7 +603,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!draft.trim() || connection.status !== "connected"}
+                disabled={!draft.trim() || connectionStatus !== "connected"}
                 className="flex h-10 shrink-0 items-center justify-center rounded-lg bg-ink-500 px-3 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40 md:h-12 md:min-w-[3rem] md:rounded-xl md:px-5"
                 title="Send message (Enter)"
                 aria-label="Send message"
