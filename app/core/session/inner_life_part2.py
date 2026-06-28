@@ -882,6 +882,122 @@ class InnerLifePart2Mixin:
             "you can ask — drop it if it doesn't fit."
         )
 
+    def _render_idle_seed_block(self) -> str:
+        """H17: surface one "while I was <doing X> I started wondering ..." cue.
+
+        Consumer side of the :class:`IdleAwayActivityWorker` seed producer
+        (``_maybe_emit_seed`` → the ``aiko.idle_seeds`` kv ring). Folds the
+        newest unseen seed into the prompt as one optional, private hint so
+        Aiko phrases the line herself — the seed is NEVER spoken verbatim.
+
+        Unlike the gap-return cue family (turning_over / away_activities /
+        forward_curiosity), this is NOT gap-gated and does NOT touch
+        ``_gap_cue_surfaced``: a thought from her own idle life can come up
+        mid-conversation. Bounded instead by the producer (rare + daily-
+        capped) and a wall-clock surfacing cooldown so it never spams.
+
+        One-shot per seed via the ``idle_seed.surfaced_at`` watermark; the
+        ``idle_seed.surfaced_clock`` stamp enforces the cooldown. MCP debug:
+        ``force_idle_seed_surface`` arms ``_idle_seed_force_next`` to bypass
+        both gates (the ring still has to be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "idle_seed_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(getattr(self, "_idle_seed_force_next", False))
+        if force_next:
+            self._idle_seed_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.world.idle_activity_worker import load_idle_seeds
+        except Exception:
+            log.debug("idle_seed import failed", exc_info=True)
+            return ""
+
+        ring = load_idle_seeds(chat_db.kv_get)
+        if not ring:
+            log.debug("idle_seed silent: empty ring")
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        seed = str(newest.get("seed") or "").strip()
+        if not seed:
+            return ""
+
+        watermark_key = "idle_seed.surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                log.debug("idle_seed silent: already surfaced %s", at)
+                return ""
+
+            # Wall-clock surfacing cooldown — don't fold a seed into the
+            # prompt more often than ``idle_seed_surface_cooldown_seconds``.
+            from datetime import datetime, timezone
+
+            cooldown_s = float(
+                getattr(
+                    self._memory_settings,
+                    "idle_seed_surface_cooldown_seconds",
+                    1800,
+                )
+            )
+            if cooldown_s > 0:
+                try:
+                    raw_clock = chat_db.kv_get("idle_seed.surfaced_clock")
+                except Exception:
+                    raw_clock = None
+                if raw_clock:
+                    try:
+                        last = datetime.fromisoformat(str(raw_clock))
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=timezone.utc)
+                        elapsed = (
+                            datetime.now(timezone.utc) - last
+                        ).total_seconds()
+                        if elapsed < cooldown_s:
+                            log.debug(
+                                "idle_seed silent: cooldown %.0fs < %.0fs",
+                                elapsed,
+                                cooldown_s,
+                            )
+                            return ""
+                    except Exception:
+                        pass
+
+        # Advance the per-seed watermark + the surfacing clock.
+        try:
+            from datetime import datetime, timezone
+
+            chat_db.kv_set(watermark_key, at)
+            chat_db.kv_set(
+                "idle_seed.surfaced_clock",
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except Exception:
+            log.debug("idle_seed watermark write failed", exc_info=True)
+
+        activity = str(newest.get("activity") or "").replace("_", " ").strip()
+        log.info("idle-seed fire: at=%s activity=%s", at, activity)
+        if activity:
+            lead = f"Earlier, while you were {activity}, "
+        else:
+            lead = "Earlier, during some quiet time, "
+        return (
+            f"{lead}a thought crossed your mind: {seed} "
+            "If it fits naturally you can bring it up — no need to force it."
+        )
+
     def _render_follow_up_block(self) -> str:
         """Surface one "you could ask how their plan went" cue.
 

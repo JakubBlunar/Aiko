@@ -143,6 +143,21 @@ class IdleWorkersInitMixin:
                     llm_activity_ratio=getattr(
                         mem, "away_activities_llm_ratio", 0.5,
                     ),
+                    # H17 — fraction of beats that also spawn a conversational
+                    # seed (LLM-composed), plus the daily/ring bounds.
+                    idle_seed_ratio=(
+                        getattr(mem, "idle_seed_ratio", 0.25)
+                        if getattr(
+                            self._settings.agent, "idle_seed_enabled", True,
+                        )
+                        else 0.0
+                    ),
+                    idle_seed_daily_cap=getattr(
+                        mem, "idle_seed_daily_cap", 3,
+                    ),
+                    idle_seed_max_ring=getattr(
+                        mem, "idle_seed_max_ring", 6,
+                    ),
                     # H18 — tilt the weighted activity draw by time of day,
                     # current mood, and the daily personality colour.
                     circadian_period_provider=(

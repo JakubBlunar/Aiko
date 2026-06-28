@@ -160,6 +160,7 @@ class PromptAssemblerHelpersMixin:
         self_noticing: Callable[[], str] | None = None,
         vulnerability_budget: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
+        idle_seeds: Callable[[], str] | None = None,
         wants: Callable[[], str] | None = None,
         initiative: Callable[[str], str] | None = None,
         thread_ownership: Callable[[str], str] | None = None,
@@ -301,6 +302,8 @@ class PromptAssemblerHelpersMixin:
             self._vulnerability_budget_provider = vulnerability_budget
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
+        if idle_seeds is not None:
+            self._idle_seeds_provider = idle_seeds
         if wants is not None:
             self._wants_provider = wants
         if initiative is not None:

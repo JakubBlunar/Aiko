@@ -392,6 +392,100 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_away_activities_surface raised: {exc}"
 
     @mcp.tool()
+    def get_idle_seed_state() -> str:
+        """H17 — dump the idle-seed ring + surfacing watermarks.
+
+        Idle beats occasionally turn into a forward-looking conversational
+        seed (LLM-composed, daily-capped) that surfaces ONCE as a private
+        inner-life cue ("while I was reading earlier I started wondering
+        ...") so Aiko phrases it herself. This shows the ring, the master
+        switch, and both surfacing watermarks (per-seed + cooldown clock).
+        """
+        try:
+            from app.core.world.idle_activity_worker import (
+                _KV_SEED_DAY,
+                _KV_SEED_DAY_COUNT,
+                load_idle_seeds,
+            )
+
+            chat_db = getattr(session, "_chat_db", None)
+
+            def kv(k: str):
+                try:
+                    return chat_db.kv_get(k) if chat_db else None
+                except Exception:
+                    return None
+
+            ring = load_idle_seeds(chat_db.kv_get) if chat_db else []
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent, "idle_seed_enabled", True
+                        )
+                    ),
+                    "ratio": float(
+                        getattr(
+                            session._memory_settings, "idle_seed_ratio", 0.25
+                        )
+                    ),
+                    "daily_cap": int(
+                        getattr(
+                            session._memory_settings, "idle_seed_daily_cap", 3
+                        )
+                    ),
+                    "surface_cooldown_seconds": int(
+                        getattr(
+                            session._memory_settings,
+                            "idle_seed_surface_cooldown_seconds",
+                            1800,
+                        )
+                    ),
+                    "force_next": bool(
+                        getattr(session, "_idle_seed_force_next", False)
+                    ),
+                    "ring": ring,
+                    "surfaced_at": kv("idle_seed.surfaced_at"),
+                    "surfaced_clock": kv("idle_seed.surfaced_clock"),
+                    "seed_day": kv(_KV_SEED_DAY),
+                    "seed_day_count": kv(_KV_SEED_DAY_COUNT),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_idle_seed_state raised: {exc}"
+
+    @mcp.tool()
+    def force_idle_seed_surface() -> str:
+        """H17 — arm a one-shot bypass on the idle-seed surfacing gates.
+
+        Sets ``_idle_seed_force_next`` so the next provider call ignores
+        both the per-seed watermark and the wall-clock surfacing cooldown.
+        The ring still has to be non-empty (run ``force_away_activity``
+        with a worker model configured to produce one, or insert a row
+        directly). Bypass is consumed on the next assembly.
+
+        Repro: produce a seed -> ``force_idle_seed_surface()`` ->
+        ``send_message(skip_tts=true)`` -> confirm the "Earlier, while you
+        were ... a thought crossed your mind: ..." line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._idle_seed_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the per-seed watermark "
+                        "and the surfacing cooldown; ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_idle_seed_surface raised: {exc}"
+
+    @mcp.tool()
     def get_diary_worker_state() -> str:
         """H9 — dump the away-diary worker state.
 

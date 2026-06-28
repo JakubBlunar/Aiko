@@ -608,6 +608,15 @@ class MemorySettings:
     # (open-vocab activity grounded in the live room) instead of the
     # curated weighted templates. 0.0 disables; 1.0 always LLM-composes.
     away_activities_llm_ratio: float = 0.5
+    # H17 — idle beats feed the idea machine. ``ratio`` is the fraction of
+    # beats that also produce a conversational seed (LLM-composed; needs a
+    # worker model). ``daily_cap`` bounds seeds/day; ``max_ring`` bounds the
+    # kv ring; ``surface_cooldown`` is the wall-clock floor between surfacing
+    # one seed as an inner-life cue.
+    idle_seed_ratio: float = 0.25
+    idle_seed_daily_cap: int = 3
+    idle_seed_max_ring: int = 6
+    idle_seed_surface_cooldown_seconds: int = 1800
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1632,6 +1641,20 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_llm_ratio=min(
                 1.0,
                 max(0.0, float(memory_raw.get("away_activities_llm_ratio", 0.5))),
+            ),
+            idle_seed_ratio=min(
+                1.0,
+                max(0.0, float(memory_raw.get("idle_seed_ratio", 0.25))),
+            ),
+            idle_seed_daily_cap=max(
+                0, int(memory_raw.get("idle_seed_daily_cap", 3)),
+            ),
+            idle_seed_max_ring=max(
+                1, int(memory_raw.get("idle_seed_max_ring", 6)),
+            ),
+            idle_seed_surface_cooldown_seconds=max(
+                0,
+                int(memory_raw.get("idle_seed_surface_cooldown_seconds", 1800)),
             ),
             circadian_settle_interval_seconds=max(
                 60,
