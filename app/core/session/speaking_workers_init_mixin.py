@@ -182,7 +182,9 @@ class SpeakingWorkersInitMixin:
         try:
             from app.core.goals.agenda import AgendaStore, AgendaWorker
 
-            self._agenda_store = AgendaStore(self._chat_db)
+            self._agenda_store = AgendaStore(
+                self._chat_db, on_change=self._notify_agenda,
+            )
             self._agenda_worker = AgendaWorker(
                 ollama=self._ollama,
                 store=self._agenda_store,

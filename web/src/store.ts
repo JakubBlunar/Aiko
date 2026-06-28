@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { AudioOutputManager } from "./audio/AudioOutputManager";
 import { DEFAULT_LOGGING_SETTINGS } from "./types";
 import type {
+  AgendaItem,
   AttachmentRef,
   AvatarMotionState,
   AvatarOverlayState,
@@ -308,6 +309,22 @@ interface AssistantState {
   applyBeliefUpdated: (belief: Belief) => void;
   /** Reducer for ``belief_deleted``: remove the row by id. */
   applyBeliefDeleted: (id: number) => void;
+
+  // ── Phase 4a agenda (I3) ─────────────────────────────────────────
+  //
+  // The Agenda sub-panel reads this slice. The list stays live as
+  // inline ``[[agenda:...]]`` tags, the LLM grooming worker, and REST
+  // edits all flow through a single ``agenda_updated`` WS event handled
+  // by ``applyAgendaUpdated`` (upsert by id). The panel filters by
+  // status client-side, so the reducer never drops rows on a status
+  // flip — the row just changes status in place.
+  agendaView: {
+    items: AgendaItem[];
+    enabled: boolean;
+  };
+  setAgendaView: (view: { items: AgendaItem[]; enabled: boolean }) => void;
+  /** Reducer for ``agenda_updated``: replace by id, else prepend. */
+  applyAgendaUpdated: (item: AgendaItem) => void;
 
   // ── Background tasks (chunk 14) ──────────────────────────────────
   //
@@ -1264,6 +1281,25 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           items: view.items.filter((b) => b.id !== id),
         },
       };
+    }),
+
+  // ── Phase 4a agenda (I3) ─────────────────────────────────────────
+  agendaView: {
+    items: [],
+    enabled: true,
+  },
+  setAgendaView: (view) =>
+    set(() => ({
+      agendaView: { items: view.items, enabled: view.enabled },
+    })),
+  applyAgendaUpdated: (item) =>
+    set((state) => {
+      const view = state.agendaView;
+      const idx = view.items.findIndex((a) => a.id === item.id);
+      const next = view.items.slice();
+      if (idx >= 0) next[idx] = item;
+      else next.unshift(item);
+      return { agendaView: { ...view, items: next } };
     }),
 
   // ── Background tasks (chunk 14) ──────────────────────────────────

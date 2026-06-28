@@ -314,6 +314,12 @@ class RagStore:
         self._embedding_model = str(embedding_model)
         self._vector_dim = int(vector_dim)
         self._lock = _RWLock()
+        # Set by ``_validate_or_stamp_meta`` when the embedding model /
+        # dimension changed and the existing tables had to be dropped. The
+        # SessionController reads this after construction and surfaces a
+        # user-visible warning toast (I7) -- a destructive rebuild must not
+        # be a silent log line.
+        self.embedding_swap: dict[str, Any] | None = None
         # Lazily opened tables; ``_open_*`` is idempotent.
         self._db = lancedb.connect(str(self._root))
         self._meta_path = self._root / "meta.json"
@@ -368,6 +374,15 @@ class RagStore:
                 self._embedding_model,
                 self._vector_dim,
             )
+            # Record the destructive rebuild so a user-visible warning can
+            # be surfaced once a client connects (I7).
+            self.embedding_swap = {
+                "from_model": existing.get("embedding_model"),
+                "from_dim": existing.get("vector_dim"),
+                "to_model": self._embedding_model,
+                "to_dim": self._vector_dim,
+                "at": _now_iso(),
+            }
             # Drop every table by removing the directory contents and
             # reconnecting. We keep meta.json after writing the new value.
             for path in list(self._root.iterdir()):

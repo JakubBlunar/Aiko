@@ -733,6 +733,20 @@ def create_web_app(session: "SessionController") -> FastAPI:
     except Exception:
         log.debug("belief listener subscription failed", exc_info=True)
 
+    # I3: agenda live-update bridge. A single ``agenda_updated`` event
+    # carries the affected row (upsert by id on the client) for every
+    # write path -- inline tags, the groom worker, and REST edits.
+    def _on_agenda_updated(payload: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "agenda_updated", "item": dict(payload)})
+        except Exception:
+            log.debug("agenda_updated broadcast failed", exc_info=True)
+
+    try:
+        session.add_agenda_listener(_on_agenda_updated)
+    except Exception:
+        log.debug("agenda listener subscription failed", exc_info=True)
+
     def _on_tool_event(event: str, payload: dict[str, Any]) -> None:
         # Tool calls and results stream out as a small event so the UI can
         # show "Aiko is checking the time / searching the web / recalling
@@ -1039,6 +1053,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     ),
                     "needs_onboarding": bool(session.needs_onboarding),
                 },
+                # One-shot boot notices (I7): currently the destructive
+                # LanceDB-rebuild warning. Consumed here so only the first
+                # client to connect after boot gets the toast.
+                "notices": session.consume_startup_notices(),
                 # Persona-overlay banners (K31/K32) read these on connect so
                 # they honour the master switch + duration instead of the
                 # hardcoded defaults they used before (I5).

@@ -474,6 +474,80 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(404, "belief not found")
         return JSONResponse({"deleted": int(belief_id)})
 
+    # ── REST: agenda (Phase 4a, I3) ──────────────────────────────────
+
+    @app.get("/api/agenda")
+    def list_agenda(
+        status: str | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        return JSONResponse(session.list_agenda(status=status, limit=int(limit)))
+
+    @app.get("/api/agenda/stats")
+    def agenda_stats() -> JSONResponse:
+        return JSONResponse(session.agenda_stats())
+
+    @app.post("/api/agenda")
+    async def create_agenda(
+        payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        goal = payload.get("goal")
+        importance = payload.get("importance", 0.5)
+        due_at = payload.get("due_at")
+        if not isinstance(goal, str) or len(goal.strip()) < 3:
+            raise HTTPException(400, "goal must be a string of at least 3 chars")
+        if not isinstance(importance, (int, float)):
+            raise HTTPException(400, "importance must be a number")
+        if due_at is not None and not isinstance(due_at, str):
+            raise HTTPException(400, "due_at must be a string")
+        item = session.add_agenda(
+            goal=goal, importance=float(importance), due_at=due_at,
+        )
+        if item is None:
+            raise HTTPException(503, "agenda unavailable")
+        return JSONResponse({"item": item})
+
+    @app.patch("/api/agenda/{agenda_id}")
+    async def patch_agenda(
+        agenda_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        status = payload.get("status")
+        importance = payload.get("importance")
+        goal = payload.get("goal")
+        due_at = payload.get("due_at")
+        if status is not None and (
+            not isinstance(status, str)
+            or status.strip().lower()
+            not in ("open", "done", "dropped", "snoozed")
+        ):
+            raise HTTPException(
+                400, "status must be one of open/done/dropped/snoozed",
+            )
+        if importance is not None and not isinstance(importance, (int, float)):
+            raise HTTPException(400, "importance must be a number")
+        if goal is not None and not isinstance(goal, str):
+            raise HTTPException(400, "goal must be a string")
+        if due_at is not None and not isinstance(due_at, str):
+            raise HTTPException(400, "due_at must be a string")
+        if status is None and importance is None and goal is None and due_at is None:
+            raise HTTPException(
+                400, "expected at least one of status/importance/goal/due_at",
+            )
+        item = session.update_agenda(
+            int(agenda_id),
+            status=status.strip().lower() if isinstance(status, str) else None,
+            importance=float(importance) if importance is not None else None,
+            goal=goal,
+            due_at=due_at,
+        )
+        if item is None:
+            raise HTTPException(404, "agenda item not found")
+        return JSONResponse({"item": item})
+
     # ── REST: fact-checker status (F1) ───────────────────────────────
 
     @app.get("/api/fact-checker/status")

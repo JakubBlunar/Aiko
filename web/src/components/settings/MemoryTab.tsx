@@ -8,6 +8,7 @@ import { MemoryConflictsPanel } from "./memory/MemoryConflictsPanel";
 import { BeliefsPanel } from "./memory/BeliefsPanel";
 import { CuriositySeedsPanel } from "./memory/CuriositySeedsPanel";
 import { GoalsPanel } from "./memory/GoalsPanel";
+import { AgendaPanel } from "./memory/AgendaPanel";
 import { TopicGraphPanel } from "./memory/TopicGraphPanel";
 import { FactCheckerStatusFooter } from "./memory/FactCheckerStatusFooter";
 
@@ -43,7 +44,8 @@ type MemorySubTab =
   | "beliefs"
   | "curiosity"
   | "topics"
-  | "goals";
+  | "goals"
+  | "agenda";
 
 const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
   { id: "memories", label: "Memories" },
@@ -53,6 +55,7 @@ const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
   { id: "curiosity", label: "Curiosity" },
   { id: "topics", label: "Topics" },
   { id: "goals", label: "Goals" },
+  { id: "agenda", label: "Agenda" },
 ];
 
 function memoryIsConflicted(memory: Memory): boolean {
@@ -638,6 +641,8 @@ export function MemoryTab({
       {subTab === "topics" ? <TopicGraphPanel /> : null}
 
       {subTab === "goals" ? <GoalsPanel /> : null}
+
+      {subTab === "agenda" ? <AgendaPanel /> : null}
 
       <FactCheckerStatusFooter />
     </Section>

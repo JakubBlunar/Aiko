@@ -156,6 +156,21 @@ export function useAssistantSocket(): {
         if (evt.companion) {
           store.setCompanionSettings(evt.companion);
         }
+        // One-shot boot notices (I7): destructive LanceDB rebuild, etc.
+        // Surfaced as toasts; warnings stick around longer.
+        if (Array.isArray(evt.notices)) {
+          for (const notice of evt.notices) {
+            if (!notice || typeof notice.text !== "string") continue;
+            const kind =
+              notice.kind === "warning" ||
+              notice.kind === "error" ||
+              notice.kind === "memory"
+                ? notice.kind
+                : "info";
+            const ttl = kind === "warning" || kind === "error" ? 30000 : 12000;
+            store.pushToast(kind, notice.text, ttl);
+          }
+        }
         break;
 
       case "session_changed":
@@ -394,6 +409,10 @@ export function useAssistantSocket(): {
 
       case "belief_deleted":
         store.applyBeliefDeleted(evt.id);
+        break;
+
+      case "agenda_updated":
+        store.applyAgendaUpdated(evt.item);
         break;
 
       case "world_updated":

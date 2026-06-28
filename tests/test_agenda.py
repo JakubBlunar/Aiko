@@ -139,6 +139,80 @@ class AgendaStoreTests(unittest.TestCase):
             f.close()
 
 
+class AgendaOnChangeTests(unittest.TestCase):
+    """I3: every write path fires the on_change listener (live UI)."""
+
+    def _fixture(self):
+        events: list[AgendaItem] = []
+        f = _Fixture()
+        f.store.set_change_listener(events.append)
+        return f, events
+
+    def test_add_emits(self):
+        f, events = self._fixture()
+        try:
+            item = f.store.add("u1", goal="learn rust", importance=0.7)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].id, item.id)
+            self.assertEqual(events[0].status, "open")
+        finally:
+            f.close()
+
+    def test_mark_done_emits_with_new_status(self):
+        f, events = self._fixture()
+        try:
+            item = f.store.add("u1", goal="write tests", importance=0.5)
+            events.clear()
+            self.assertTrue(f.store.mark_done(item.id))
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].id, item.id)
+            self.assertEqual(events[0].status, "done")
+        finally:
+            f.close()
+
+    def test_mark_dropped_emits(self):
+        f, events = self._fixture()
+        try:
+            item = f.store.add("u1", goal="some goal", importance=0.5)
+            events.clear()
+            self.assertTrue(f.store.mark_dropped(item.id))
+            self.assertEqual(events[-1].status, "dropped")
+        finally:
+            f.close()
+
+    def test_constructor_listener(self):
+        events: list[AgendaItem] = []
+        tmp = TemporaryDirectory()
+        try:
+            db = ChatDatabase(Path(tmp.name) / "chat.db")
+            store = AgendaStore(db, on_change=events.append)
+            store.add("u1", goal="boop the thing", importance=0.5)
+            self.assertEqual(len(events), 1)
+            conn = getattr(db._local, "conn", None)
+            if conn is not None:
+                conn.close()
+                db._local.conn = None
+        finally:
+            try:
+                tmp.cleanup()
+            except PermissionError:
+                pass
+
+    def test_listener_exception_is_swallowed(self):
+        f = _Fixture()
+
+        def boom(_item: AgendaItem) -> None:
+            raise RuntimeError("listener blew up")
+
+        f.store.set_change_listener(boom)
+        try:
+            # Must not raise despite the listener throwing.
+            item = f.store.add("u1", goal="resilient write", importance=0.5)
+            self.assertIsNotNone(item)
+        finally:
+            f.close()
+
+
 class ParseGroomDiffTests(unittest.TestCase):
     def test_full_diff(self):
         raw = (

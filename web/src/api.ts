@@ -3,6 +3,8 @@
 import { backendBase } from "./desktop/runtime";
 import type {
   AccessoryCatalogue,
+  AgendaItem,
+  AgendaResponse,
   AssistantSettings,
   AttachmentRef,
   AvatarProfile,
@@ -501,6 +503,38 @@ export const api = {
   deleteBelief: (id: number) =>
     jsonFetch<{ deleted: number }>(`/api/beliefs/${id}`, {
       method: "DELETE",
+    }),
+  // ── Agenda (Phase 4a, I3) ────────────────────────────────────────
+  listAgenda: (options: { status?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 50),
+    });
+    if (options.status) params.set("status", options.status);
+    return jsonFetch<AgendaResponse>(`/api/agenda?${params.toString()}`);
+  },
+  createAgenda: (payload: {
+    goal: string;
+    importance?: number;
+    due_at?: string | null;
+  }) =>
+    jsonFetch<{ item: AgendaItem }>(`/api/agenda`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateAgenda: (
+    id: number,
+    payload: {
+      status?: "open" | "done" | "dropped" | "snoozed";
+      importance?: number;
+      goal?: string;
+      due_at?: string | null;
+    },
+  ) =>
+    jsonFetch<{ item: AgendaItem }>(`/api/agenda/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
   // ── Fact-checker status (F1) ─────────────────────────────────────
   factCheckerStatus: () =>

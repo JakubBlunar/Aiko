@@ -1196,3 +1196,118 @@ class MemoryFacadeMixin:
             except Exception:
                 log.debug("belief delete notify failed", exc_info=True)
         return ok
+
+    # ── Phase 4a agenda facade (I3) ──────────────────────────────────
+    #
+    # The agenda store fires ``on_change`` on every write (inline
+    # ``[[agenda:...]]`` tags, the LLM grooming worker, and these REST
+    # methods all funnel through it), wired to ``_notify_agenda`` in
+    # ``SpeakingWorkersInitMixin``. The web layer subscribes via
+    # ``add_agenda_listener`` so the Agenda sub-tab stays live with a
+    # single ``agenda_updated`` event (upsert by id).
+
+    def add_agenda_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        listeners = getattr(self, "_agenda_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._agenda_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def _notify_agenda(self, item: Any) -> None:
+        """``AgendaStore.on_change`` sink: fan a row dict to listeners."""
+        try:
+            payload = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        except Exception:
+            return
+        listeners = getattr(self, "_agenda_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("agenda listener raised", exc_info=True)
+
+    def list_agenda(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return agenda items (open-first) for the REST GET.
+
+        ``status`` filters to a single status (``open`` / ``done`` /
+        ``dropped`` / ``snoozed``); ``None`` returns all. Mirrors the MCP
+        ``list_agenda`` shape: ``{"items": [...], "enabled": bool}``.
+        """
+        store = getattr(self, "_agenda_store", None)
+        if store is None:
+            return {"items": [], "enabled": False}
+        clamped = max(1, min(int(limit), 200))
+        status_norm = (status or "").strip().lower() or None
+        if status_norm == "all":
+            status_norm = None
+        if status_norm == "open":
+            rows = store.list_open(self._user_id, limit=clamped)
+        else:
+            rows = store.list_all(self._user_id, limit=clamped if status_norm is None else clamped * 4)
+            if status_norm is not None:
+                rows = [r for r in rows if r.status == status_norm][:clamped]
+        return {"items": [r.to_dict() for r in rows], "enabled": True}
+
+    def add_agenda(
+        self,
+        *,
+        goal: str,
+        importance: float = 0.5,
+        due_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Manual agenda create (REST POST /api/agenda)."""
+        store = getattr(self, "_agenda_store", None)
+        if store is None:
+            return None
+        item = store.add(
+            self._user_id,
+            goal=goal,
+            importance=importance,
+            due_at=due_at,
+            source_session=getattr(self, "session_key", None),
+        )
+        return item.to_dict() if item is not None else None
+
+    def update_agenda(
+        self,
+        agenda_id: int,
+        *,
+        status: str | None = None,
+        importance: float | None = None,
+        goal: str | None = None,
+        due_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Apply a partial agenda edit (REST PATCH /api/agenda/{id})."""
+        store = getattr(self, "_agenda_store", None)
+        if store is None:
+            return None
+        ok = store.update(
+            int(agenda_id),
+            status=status,
+            importance=importance,
+            goal=goal,
+            due_at=due_at,
+        )
+        if not ok:
+            return None
+        item = store.get(int(agenda_id))
+        return item.to_dict() if item is not None else None
+
+    def agenda_stats(self) -> dict[str, Any]:
+        """Mirror the MCP ``get_agenda_stats`` shape for the REST GET."""
+        worker = getattr(self, "_agenda_worker", None)
+        if worker is None:
+            return {"enabled": False}
+        try:
+            stats = dict(worker.stats())
+        except Exception:
+            stats = {}
+        return {"enabled": True, **stats}
