@@ -743,6 +743,10 @@ class InnerLifePart4Mixin:
             frame = "let it be sincere and a little soft"
         else:
             frame = "keep it light and unforced"
+        # J11: record that this turn carries an appreciation beat so the
+        # post-turn affection-style classifier can tag the turn as
+        # ``appreciation``. Consumed + cleared by the post-turn hook.
+        self._appreciation_fired_last_turn = True
         log.info(
             "appreciation fire: moment_id=%s vibe=%s stage=%s",
             anchor.id, anchor.vibe, stage,

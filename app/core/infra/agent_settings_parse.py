@@ -1032,6 +1032,47 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             vulnerability_budget_tier3_cost=max(
                 0, int(agent_raw.get("vulnerability_budget_tier3_cost", 6)),
             ),
+            affection_style_enabled=bool(
+                agent_raw.get("affection_style_enabled", True),
+            ),
+            affection_style_learning_rate=max(
+                0.0,
+                float(agent_raw.get("affection_style_learning_rate", 0.04)),
+            ),
+            affection_style_reaction_weight=max(
+                0.0,
+                float(agent_raw.get("affection_style_reaction_weight", 0.06)),
+            ),
+            affection_style_floor=max(
+                0.0,
+                min(0.2, float(agent_raw.get("affection_style_floor", 0.05))),
+            ),
+            affection_style_decay_half_life_days=max(
+                0.0,
+                float(
+                    agent_raw.get("affection_style_decay_half_life_days", 30.0)
+                ),
+            ),
+            affection_style_bias_strength=max(
+                0.0,
+                float(agent_raw.get("affection_style_bias_strength", 0.5)),
+            ),
+            affection_style_bias_floor=max(
+                0.0,
+                float(agent_raw.get("affection_style_bias_floor", 0.6)),
+            ),
+            affection_style_bias_ceil=max(
+                1.0,
+                float(agent_raw.get("affection_style_bias_ceil", 1.5)),
+            ),
+            affection_style_decay_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "affection_style_decay_interval_seconds", 21600
+                    )
+                ),
+            ),
             touch_enabled=bool(
                 agent_raw.get("touch_enabled", True),
             ),
