@@ -129,6 +129,19 @@ interface AssistantState {
     reaction: string | undefined;
   } | null;
   setMessages: (msgs: ChatMessage[]) => void;
+  /** I6: prepend an older page of history to the front of the
+   * transcript (keyset "load older" pagination). Skips any rows whose
+   * ``backendId`` is already present so a double-fire can't duplicate
+   * bubbles, and leaves ``streamingDraft`` untouched (loading older
+   * history never happens mid-turn-commit in a way that should clear a
+   * live draft). */
+  prependMessages: (msgs: ChatMessage[]) => void;
+  /** I6: whether older history pages may still exist for the active
+   * session. Set by the initial load (full page ⇒ maybe more) and
+   * narrowed to ``false`` when a "load older" fetch returns a short
+   * page. Gates the "Load older messages" affordance in ``ChatView``. */
+  historyHasMore: boolean;
+  setHistoryHasMore: (value: boolean) => void;
   appendUserMessage: (content: string) => void;
   appendAssistantBubble: () => string; // returns id
   appendAssistantToken: (chunk: string) => void;
@@ -830,6 +843,26 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       // outside a turn.
       streamingDraft: null,
     }),
+  prependMessages: (msgs) =>
+    set((state) => {
+      if (msgs.length === 0) return state;
+      const known = new Set(
+        state.messages
+          .map((m) => m.backendId)
+          .filter((id): id is number => id != null),
+      );
+      const fresh = msgs
+        .filter((m) => m.backendId == null || !known.has(m.backendId))
+        .map((m) =>
+          m.role === "assistant"
+            ? { ...m, content: stripMetaMarkers(m.content) }
+            : m,
+        );
+      if (fresh.length === 0) return state;
+      return { messages: [...fresh, ...state.messages] };
+    }),
+  historyHasMore: false,
+  setHistoryHasMore: (value) => set({ historyHasMore: Boolean(value) }),
   appendUserMessage: (content) =>
     set((state) => ({
       messages: [

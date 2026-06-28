@@ -58,8 +58,26 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         return JSONResponse({"cleared": session.session_key})
 
     @app.get("/api/sessions/{session_id}/messages")
-    def session_messages(session_id: str, limit: int = 200) -> JSONResponse:
-        rows = session._chat_db.get_messages(session_id, limit=max(1, min(limit, 1000)))
+    def session_messages(
+        session_id: str,
+        limit: int = 200,
+        before_id: int | None = None,
+    ) -> JSONResponse:
+        """Return a session's messages, oldest-first.
+
+        Default (``before_id`` omitted): the most-recent ``limit`` rows —
+        the existing initial-load contract. When ``before_id`` is given,
+        return up to ``limit`` rows *immediately older* than that id
+        (keyset "load older" pagination for the chat UI). A short page
+        (fewer than ``limit`` rows) signals there's no more history.
+        """
+        capped = max(1, min(limit, 1000))
+        if before_id is not None:
+            rows = session._chat_db.get_messages_before(
+                session_id, before_id=int(before_id), limit=capped,
+            )
+        else:
+            rows = session._chat_db.get_messages(session_id, limit=capped)
 
         def _json_or_none(raw: str | None) -> Any:
             # Reactions / gestures persist as JSON strings; decode so the

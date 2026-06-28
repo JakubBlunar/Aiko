@@ -34,7 +34,7 @@ the agenda store + WS event for live updates.
 
 ---
 
-## I6. Chat history is hard-capped at 200 messages with no "load older"
+## I6. Chat history is hard-capped at 200 messages with no "load older" — SHIPPED
 
 **Motivation.** The UI loads at most ~200 messages and the REST
 `GET /api/sessions/{id}/messages` only accepts `limit` (the DB layer
@@ -49,6 +49,42 @@ data is all there.
 ("load older" affordance at the top of the scroll).
 
 **Effort.** Medium.
+
+> **Shipped** (keyset pagination, not OFFSET). `GET /api/sessions/{id}/messages`
+> ([`sessions_settings_routes.py`](../../app/web/rest/sessions_settings_routes.py))
+> takes a new optional `before_id`: omitted → the newest `limit` rows
+> (the existing initial-load contract); given → up to `limit` rows
+> *immediately older* than that id, via a new
+> [`ChatDatabase.get_messages_before`](../../app/core/infra/chat_database.py)
+> (`id < before_id ORDER BY id DESC LIMIT n`, reversed to oldest-first).
+> Keyset anchoring on a real row id is overlap-free and stable under
+> concurrent inserts — cleaner than the quirky OFFSET semantics of the
+> existing `get_messages`. A short page (`< limit`) is the
+> end-of-history signal, so no separate count round-trip is needed.
+>
+> Frontend: [`api.getMessages`](../../web/src/api.ts) gained a `beforeId`
+> arg; a shared `mapRawMessages` helper now backs both the initial load
+> ([`SessionSidebar`](../../web/src/components/SessionSidebar.tsx)) and
+> the older-page load. New store state `historyHasMore` /
+> `setHistoryHasMore` (set true when the initial page comes back full,
+> narrowed to false on a short older-page) and a `prependMessages`
+> reducer (dedupes by `backendId`, leaves `streamingDraft` untouched).
+> [`ChatView`](../../web/src/components/ChatView.tsx) renders a "Load
+> older messages" button in Virtuoso's `Header` and uses Virtuoso's
+> `firstItemIndex` prepend pattern (a large baseline decremented by the
+> prepended count, derived per-`sessionKey` so a session switch reads
+> the baseline in the same render) to keep the viewport anchored instead
+> of jumping when older rows land at the top. Tests:
+> [`tests/test_chat_database.py`](../../tests/test_chat_database.py)
+> (`get_messages_before`), [`tests/test_web_server_messages.py`](../../tests/test_web_server_messages.py)
+> (routing), [`web/src/store.pagination.test.ts`](../../web/src/store.pagination.test.ts).
+>
+> **Bundled fix — mobile autoscroll.** Virtuoso's default "at bottom"
+> tolerance is 4px, which mobile momentum / rubber-band scrolling and
+> fractional device-pixel ratios routinely exceed, leaving the list a
+> few px off the bottom so `followOutput` stops sticking on new
+> messages. `ChatView` now sets `atBottomThreshold={isMobile ? 120 : 24}`
+> so the chat stays pinned to the tail on phones.
 
 ---
 

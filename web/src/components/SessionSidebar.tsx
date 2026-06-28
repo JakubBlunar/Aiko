@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, mapRawMessages } from "../api";
 import { useAssistantStore } from "../store";
-import type { ChatMessage, SessionRow, WsClientCommand } from "../types";
+import type { SessionRow, WsClientCommand } from "../types";
+
+/** Initial history page size on a session load. A full page means there
+ * may be older messages to page back through (I6 "load older"). */
+const INITIAL_HISTORY_LIMIT = 200;
 
 interface SessionSidebarProps {
   send: (cmd: WsClientCommand) => void;
@@ -165,6 +169,7 @@ export function SessionSidebar({
   const sessionKey = useAssistantStore((s) => s.sessionKey);
   const sessionListSignal = useAssistantStore((s) => s.sessionListSignal);
   const setMessages = useAssistantStore((s) => s.setMessages);
+  const setHistoryHasMore = useAssistantStore((s) => s.setHistoryHasMore);
   const clearMessages = useAssistantStore((s) => s.clearMessages);
   const pushSystemMessage = useAssistantStore((s) => s.pushSystemMessage);
 
@@ -196,37 +201,30 @@ export function SessionSidebar({
     if (!sessionKey) return;
     let cancelled = false;
     api
-      .getMessages(sessionKey, 200)
+      .getMessages(sessionKey, INITIAL_HISTORY_LIMIT)
       .then((rows) => {
         if (cancelled) return;
-        const mapped: ChatMessage[] = rows.map((row, idx) => ({
-          id: `hist_${idx}_${row.created_at}`,
-          backendId: typeof row.id === "number" ? row.id : undefined,
-          role: row.role === "user" ? "user" : row.role === "assistant" ? "assistant" : "system",
-          content: row.content,
-          createdAt: row.created_at,
-          // K31/K32: restore the persisted gesture badges + reaction
-          // counters so they survive a history reload / reconnect.
-          ...(row.reactions ? { reactions: row.reactions } : {}),
-          ...(row.gestures && row.gestures.length > 0
-            ? { gestures: row.gestures }
-            : {}),
-          // D2 Part B: restore attachment chips/thumbnails on reload.
-          ...(row.attachments && row.attachments.length > 0
-            ? { attachments: row.attachments }
-            : {}),
-        }));
-        setMessages(mapped);
+        setMessages(mapRawMessages(rows));
+        // I6: a full initial page means there may be older messages to
+        // page back through; a short page means we already have it all.
+        setHistoryHasMore(rows.length >= INITIAL_HISTORY_LIMIT);
       })
       .catch((err) => {
         console.error("Failed to load messages:", err);
         clearMessages();
+        setHistoryHasMore(false);
         pushSystemMessage(`Failed to load history: ${String(err)}`);
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionKey, setMessages, clearMessages, pushSystemMessage]);
+  }, [
+    sessionKey,
+    setMessages,
+    setHistoryHasMore,
+    clearMessages,
+    pushSystemMessage,
+  ]);
 
   const handleNew = () => {
     send({ type: "new_session" });
