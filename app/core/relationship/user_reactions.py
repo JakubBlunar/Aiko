@@ -97,6 +97,10 @@ REACTION_KINDS: tuple[str, ...] = (
     "laugh",
     "thumbs",
     "rose",
+    "grateful",
+    "blush",
+    "eyeroll",
+    "moved",
     "surprise",
 )
 
@@ -127,6 +131,26 @@ _REACTION_KINDS: dict[str, ReactionKind] = {
         emoji="🌹",
         label="just sent you a rose",
     ),
+    "grateful": ReactionKind(
+        kind="grateful",
+        emoji="🙏",
+        label="just thanked you for that",
+    ),
+    "blush": ReactionKind(
+        kind="blush",
+        emoji="🥰",
+        label="just melted a little at your reply",
+    ),
+    "eyeroll": ReactionKind(
+        kind="eyeroll",
+        emoji="🙄",
+        label="just playfully rolled their eyes at you",
+    ),
+    "moved": ReactionKind(
+        kind="moved",
+        emoji="🥺",
+        label="just got a little emotional at your reply",
+    ),
     "surprise": ReactionKind(
         kind="surprise",
         emoji="🫢",
@@ -147,6 +171,10 @@ _DELTAS_USER_REACTION: dict[str, dict[str, float]] = {
     "laugh": {"humor": 0.04, "closeness": 0.01},
     "thumbs": {"trust": 0.03},
     "rose": {"closeness": 0.04, "comfort": 0.02},
+    "grateful": {"closeness": 0.02, "trust": 0.03},
+    "blush": {"closeness": 0.04, "comfort": 0.02},
+    "eyeroll": {"humor": 0.03, "closeness": 0.01},
+    "moved": {"comfort": 0.03, "trust": 0.02, "closeness": 0.01},
     "surprise": {},
 }
 
