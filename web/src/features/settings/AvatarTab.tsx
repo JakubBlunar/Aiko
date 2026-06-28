@@ -10,6 +10,7 @@ import type {
   CompanionSettings,
 } from "../../types";
 import { Section } from "./SettingsSection";
+import { ReactionLegend } from "./ReactionLegend";
 
 export interface AvatarTabProps {
   avatar: AvatarProfile | null;
@@ -520,6 +521,7 @@ export function AvatarTab({
           >
             Emoji reactions on Aiko's messages
           </Toggle>
+          <ReactionLegend />
           <Toggle
             checked={companion.persona_touch_banner_enabled}
             inputClassName="accent-ink-400"
