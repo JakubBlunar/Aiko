@@ -18,6 +18,22 @@ Built around:
 - Microphone and speakers
 - An Ollama install with a chat model and an embedding model
 
+## Quick start with Docker
+
+The fastest way to run the web version on any machine: install [Ollama](https://ollama.com/download), pull the models, then bring up the container.
+
+```bash
+ollama pull qwen3-coder:30b        # or any chat model
+ollama pull qwen3-embedding:0.6b
+
+docker compose up -d --build       # text + avatar (slim image)
+# open http://localhost:6275
+```
+
+Add voice (server-side STT/TTS) with `AIKO_PROFILE=full docker compose up -d --build`, or run Ollama in a container too with `docker compose --profile with-ollama up -d --build`. Full guide — image sizes, GPU, model management, desktop — in [`docs/docker.md`](docs/docker.md).
+
+For a from-source / development install, follow the steps below.
+
 ## Setup
 
 ### 1. Install Ollama and pull models
@@ -38,10 +54,10 @@ ollama pull qwen3-embedding:0.6b
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[voice]"
 ```
 
-The console script `aiko-web` is installed as a shortcut for `python -m app.web`.
+The `[voice]` extra pulls in RealtimeSTT + Pocket-TTS (the PyTorch/whisper speech stack). Omit it (`pip install -e .`) for a lighter, text-only install — the app boots fine without voice. The console script `aiko-web` is installed as a shortcut for `python -m app.web`.
 
 ### 3. Frontend dependencies
 

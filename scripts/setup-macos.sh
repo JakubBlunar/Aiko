@@ -112,10 +112,11 @@ ensure_venv() {
 
   log "Upgrading pip + installing Python dependencies (this can take a few minutes)..."
   "${PYTHON_BIN}" -m pip install --upgrade pip wheel setuptools >> "${LOG_FILE}" 2>&1
-  # The repo ships dependencies via pyproject.toml. ``pip install .``
-  # picks them up from ``[project.dependencies]`` without having to
-  # maintain a parallel requirements.txt.
-  "${PYTHON_BIN}" -m pip install "${REPO_ROOT}" >> "${LOG_FILE}" 2>&1 \
+  # The repo ships dependencies via pyproject.toml. The ``[voice]`` extra
+  # pulls in RealtimeSTT + Pocket-TTS (the heavy PyTorch/whisper stack) so
+  # the macOS install keeps full speech in/out -- those moved out of the
+  # core deps so a slim text-only Docker image can skip them.
+  "${PYTHON_BIN}" -m pip install "${REPO_ROOT}[voice]" >> "${LOG_FILE}" 2>&1 \
     || die "pip install failed. Tail ${LOG_FILE} for details."
 }
 

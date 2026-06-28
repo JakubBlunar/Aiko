@@ -26,9 +26,45 @@ from app.web.server import create_web_app
 log = logging.getLogger("app.web")
 
 
+def _apply_env_overrides(settings) -> None:
+    """Let a few env vars override config so a container needs no file edits.
+
+    Docker users would otherwise have to mount a ``config/user.json`` just
+    to bind ``0.0.0.0`` and point at the host's Ollama. These three vars
+    cover the only knobs a fresh containerised install actually needs:
+
+      * ``AIKO_WEB_HOST``        -> web_server.host   (use 0.0.0.0 in Docker)
+      * ``AIKO_WEB_PORT``        -> web_server.port
+      * ``AIKO_OLLAMA_BASE_URL`` -> ollama.base_url   (e.g.
+        http://host.docker.internal:11434, or http://ollama:11434 for an
+        in-compose Ollama). The embedder + the synthesised LLM provider
+        catalogue both fall back to ollama.base_url, so this one value
+        retargets chat, embeddings, and workers at once.
+
+    Every override is best-effort: a malformed value is logged and ignored
+    rather than crashing boot.
+    """
+    web = getattr(settings, "web_server", None)
+    if web is not None:
+        host = os.environ.get("AIKO_WEB_HOST")
+        if host:
+            web.host = host.strip()
+        port = os.environ.get("AIKO_WEB_PORT")
+        if port:
+            try:
+                web.port = int(port)
+            except (TypeError, ValueError):
+                log.warning("ignoring invalid AIKO_WEB_PORT=%r", port)
+    ollama = getattr(settings, "ollama", None)
+    base_url = os.environ.get("AIKO_OLLAMA_BASE_URL")
+    if ollama is not None and base_url:
+        ollama.base_url = base_url.strip()
+
+
 def main() -> int:
     install_global_exception_hooks()
     settings = load_settings()
+    _apply_env_overrides(settings)
     logging_settings = getattr(settings, "logging", None)
     log_level = (
         os.environ.get("LOG_LEVEL")

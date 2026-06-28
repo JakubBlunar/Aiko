@@ -1,0 +1,6 @@
+# Shell scripts and container files must stay LF so they work when copied
+# into a Linux image, regardless of the contributor's core.autocrlf setting.
+*.sh text eol=lf
+docker/entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
