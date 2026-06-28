@@ -1377,6 +1377,35 @@ class ChatDatabase:
             ).fetchall()
         return [MessageRow(*r) for r in rows]
 
+    def get_messages_before(
+        self,
+        session_id: str,
+        *,
+        before_id: int,
+        limit: int,
+    ) -> list[MessageRow]:
+        """Return up to *limit* messages immediately older than *before_id*.
+
+        Keyset ("load older") pagination for the chat UI: rows with
+        ``id < before_id`` are taken from the newest end of that range and
+        returned oldest-first, so the caller can prepend them to the
+        transcript. Overlap-free and stable under concurrent inserts
+        (unlike OFFSET), since it anchors on a real row id rather than a
+        positional offset.
+        """
+        if limit <= 0:
+            return []
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, session_id, role, content, token_count, created_at, "
+            "       arc, dialogue_act, gestures, reactions, attachments "
+            "FROM messages WHERE session_id = ? AND id < ? "
+            "ORDER BY id DESC LIMIT ?",
+            (session_id, int(before_id), int(limit)),
+        ).fetchall()
+        rows.reverse()
+        return [MessageRow(*r) for r in rows]
+
     def get_message_count(self, session_id: str) -> int:
         conn = self._get_conn()
         row = conn.execute(

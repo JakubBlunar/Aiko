@@ -112,6 +112,30 @@ class TestMessages(unittest.TestCase):
             self.assertEqual(len(msgs), 3)
             self.assertEqual(msgs[-1].content, "msg 9")
 
+    def test_get_messages_before_keyset_pagination(self):
+        with _TempDB() as db:
+            ids = [db.add_message("s1", "user", f"msg {i}") for i in range(10)]
+            # Newest 4 rows (initial load).
+            page0 = db.get_messages("s1", limit=4)
+            self.assertEqual([m.content for m in page0], [
+                "msg 6", "msg 7", "msg 8", "msg 9",
+            ])
+            # Older page immediately before the oldest of page0 (id of "msg 6").
+            page1 = db.get_messages_before("s1", before_id=ids[6], limit=4)
+            self.assertEqual([m.content for m in page1], [
+                "msg 2", "msg 3", "msg 4", "msg 5",
+            ])
+            # Final (short) page signals start-of-history.
+            page2 = db.get_messages_before("s1", before_id=ids[2], limit=4)
+            self.assertEqual([m.content for m in page2], ["msg 0", "msg 1"])
+            self.assertLess(len(page2), 4)
+
+    def test_get_messages_before_at_start_returns_empty(self):
+        with _TempDB() as db:
+            first = db.add_message("s1", "user", "only")
+            self.assertEqual(db.get_messages_before("s1", before_id=first, limit=5), [])
+            self.assertEqual(db.get_messages_before("s1", before_id=first, limit=0), [])
+
     def test_get_messages_isolates_sessions(self):
         with _TempDB() as db:
             db.add_message("s1", "user", "a")

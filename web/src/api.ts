@@ -77,6 +77,36 @@ interface RawMessage {
   attachments?: AttachmentRef[] | null;
 }
 
+/** Map raw server message rows into store ``ChatMessage`` objects.
+ * Shared by the initial history load (``SessionSidebar``) and the
+ * "load older" pagination (``ChatView``) so both restore reactions /
+ * gestures / attachments identically. The client ``id`` is keyed on the
+ * backend row id when present (stable + collision-free across pages, so
+ * prepended older pages never clash with already-loaded rows); rows
+ * without an id (shouldn't happen for persisted history) fall back to a
+ * timestamp+index key. */
+export function mapRawMessages(rows: RawMessage[]): ChatMessage[] {
+  return rows.map((row, idx) => ({
+    id: row.id != null ? `hist_${row.id}` : `hist_${row.created_at}_${idx}`,
+    backendId: typeof row.id === "number" ? row.id : undefined,
+    role:
+      row.role === "user"
+        ? "user"
+        : row.role === "assistant"
+          ? "assistant"
+          : "system",
+    content: row.content,
+    ...(row.reactions ? { reactions: row.reactions } : {}),
+    ...(row.gestures && row.gestures.length > 0
+      ? { gestures: row.gestures }
+      : {}),
+    ...(row.attachments && row.attachments.length > 0
+      ? { attachments: row.attachments }
+      : {}),
+    createdAt: row.created_at,
+  }));
+}
+
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const url =
     typeof input === "string" && input.startsWith("/")
@@ -117,10 +147,15 @@ export const api = {
     ),
   clearActive: () =>
     jsonFetch<{ cleared: string }>("/api/sessions/clear", { method: "POST" }),
-  getMessages: (session_id: string, limit = 200) =>
-    jsonFetch<RawMessage[]>(
-      `/api/sessions/${encodeURIComponent(session_id)}/messages?limit=${limit}`,
-    ),
+  getMessages: (session_id: string, limit = 200, beforeId?: number) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    // Keyset "load older" pagination: ask for rows immediately older than
+    // ``beforeId`` (the oldest message currently in the transcript).
+    if (beforeId != null) params.set("before_id", String(beforeId));
+    return jsonFetch<RawMessage[]>(
+      `/api/sessions/${encodeURIComponent(session_id)}/messages?${params.toString()}`,
+    );
+  },
   getSettings: () => jsonFetch<AssistantSettings>("/api/settings"),
   patchSettings: (patch: Partial<AssistantSettings> | Record<string, unknown>) =>
     jsonFetch<AssistantSettings>("/api/settings", {

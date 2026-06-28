@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { api } from "../api";
+import { api, mapRawMessages } from "../api";
 import { backendBase } from "../desktop/runtime";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useMicCapture } from "../hooks/useMicCapture";
@@ -66,6 +66,14 @@ function attachmentUrl(relPath: string): string {
 
 const MAX_ATTACHMENTS = 8;
 
+// I6: how many older messages to fetch per "Load older" click.
+const OLDER_PAGE_SIZE = 100;
+// react-virtuoso prepend pattern: ``firstItemIndex`` starts at a large
+// baseline and is *decremented* by the number of prepended rows so the
+// list keeps the viewport anchored on the same message instead of
+// jumping when older history lands at the top.
+const VIRTUOSO_START_INDEX = 1_000_000;
+
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString([], {
@@ -96,6 +104,11 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   const remotelyOwned = Boolean(
     voiceOwnerId && clientId && voiceOwnerId !== clientId,
   );
+  // I6: "load older" pagination state.
+  const historyHasMore = useAssistantStore((s) => s.historyHasMore);
+  const setHistoryHasMore = useAssistantStore((s) => s.setHistoryHasMore);
+  const prependMessages = useAssistantStore((s) => s.prependMessages);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   useMicCapture({ sendBytes });
 
@@ -133,6 +146,20 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   // nudge ``scrollTop = scrollHeight`` on those silent updates.
   const atBottomRef = useRef(true);
   const scrollerElRef = useRef<HTMLElement | null>(null);
+  // I6: ``firstItemIndex`` for Virtuoso's prepend-stability. Tracked
+  // alongside the session key it belongs to and derived inline, so a
+  // session switch reads the baseline in the SAME render the new
+  // ``sessionKey`` lands — no stale decremented value bleeding across
+  // sessions (which would make Virtuoso miscount the prepend on the
+  // first "load older" of the new session).
+  const [firstItemState, setFirstItemState] = useState({
+    key: sessionKey,
+    firstItemIndex: VIRTUOSO_START_INDEX,
+  });
+  const firstItemIndex =
+    firstItemState.key === sessionKey
+      ? firstItemState.firstItemIndex
+      : VIRTUOSO_START_INDEX;
   // Lightweight signatures: re-render ChatView (not the memoized
   // bubbles) when the streaming draft grows, or an active task's
   // status/progress/phase changes, so the re-pin effect below runs.
@@ -158,8 +185,11 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   useEffect(() => {
     if (messages.length === 0) return;
     requestAnimationFrame(() => {
+      // ``"LAST"`` (not a numeric index) so this stays correct under
+      // the I6 ``firstItemIndex`` shift — a numeric index would be read
+      // in the shifted coordinate space after older pages are prepended.
       virtuosoRef.current?.scrollToIndex({
-        index: messages.length - 1,
+        index: "LAST",
         align: "end",
         behavior: "auto",
       });
@@ -184,6 +214,65 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     });
     return () => cancelAnimationFrame(id);
   }, [streamingSignature, toolActivity.length, activeTaskSignature]);
+
+  // I6: fetch the page of history immediately older than the oldest
+  // message currently loaded and prepend it, keeping the viewport
+  // anchored via ``firstItemIndex``. Keyset pagination (anchored on the
+  // oldest backend id) so concurrent inserts can't shift the window.
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || !historyHasMore || !sessionKey) return;
+    // Oldest loaded backend id (prepended pages live at the front, but a
+    // leading system message may have no backendId — so scan for the min).
+    let oldestId: number | undefined;
+    for (const m of messages) {
+      if (m.backendId != null && (oldestId == null || m.backendId < oldestId)) {
+        oldestId = m.backendId;
+      }
+    }
+    if (oldestId == null) {
+      setHistoryHasMore(false);
+      return;
+    }
+    setLoadingOlder(true);
+    try {
+      const rows = await api.getMessages(sessionKey, OLDER_PAGE_SIZE, oldestId);
+      const mapped = mapRawMessages(rows);
+      const known = new Set(
+        messages
+          .map((m) => m.backendId)
+          .filter((id): id is number => id != null),
+      );
+      const fresh = mapped.filter(
+        (m) => m.backendId == null || !known.has(m.backendId),
+      );
+      if (fresh.length > 0) {
+        // Decrement the baseline by exactly the number of rows we're
+        // prepending so Virtuoso holds the scroll position.
+        setFirstItemState((prev) => ({
+          key: sessionKey,
+          firstItemIndex:
+            (prev.key === sessionKey
+              ? prev.firstItemIndex
+              : VIRTUOSO_START_INDEX) - fresh.length,
+        }));
+        prependMessages(fresh);
+      }
+      // A short page (fewer than we asked for) means we've reached the
+      // start of the conversation.
+      setHistoryHasMore(rows.length >= OLDER_PAGE_SIZE);
+    } catch (err) {
+      console.error("Failed to load older messages:", err);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [
+    loadingOlder,
+    historyHasMore,
+    sessionKey,
+    messages,
+    prependMessages,
+    setHistoryHasMore,
+  ]);
 
   // Hide the transcript pill ~3s after we receive a final transcript.
   useEffect(() => {
@@ -392,6 +481,13 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             // ``scrollTop = scrollHeight`` did — switch to ``"smooth"``
             // here only if we ever want to animate it.
             followOutput={(isAtBottom) => (isAtBottom ? "auto" : false)}
+            // Virtuoso's default "at bottom" tolerance is 4px, which mobile
+            // momentum/rubber-band scrolling and fractional device-pixel
+            // ratios routinely exceed — leaving the list a few px off the
+            // bottom so ``isAtBottom`` reads false and ``followOutput`` stops
+            // sticking on new messages. A roomier threshold on phones (and a
+            // small bump on desktop) keeps the chat pinned to the tail.
+            atBottomThreshold={isMobile ? 120 : 24}
             atBottomStateChange={(bottom) => {
               atBottomRef.current = bottom;
             }}
@@ -399,16 +495,24 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               scrollerElRef.current = (el as HTMLElement) ?? null;
             }}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+            firstItemIndex={firstItemIndex}
             computeItemKey={(_index, msg) => msg.id}
             increaseViewportBy={{ top: 400, bottom: 600 }}
             className="flex-1"
             style={{ height: "100%" }}
             itemContent={(_index, msg) => (
-              <div className="mx-auto max-w-3xl px-6 pb-4 first:pt-8">
+              <div className="mx-auto max-w-3xl px-6 pb-4">
                 <MessageBubble {...msg} />
               </div>
             )}
             components={{
+              Header: () => (
+                <LoadOlderHeader
+                  hasMore={historyHasMore}
+                  loading={loadingOlder}
+                  onLoad={loadOlder}
+                />
+              ),
               Footer: () =>
                 toolActivity.length > 0 ? (
                   <div className="px-6 pb-8">
@@ -707,6 +811,36 @@ function ConnectionBadge() {
     >
       {label}
     </span>
+  );
+}
+
+/** I6: "Load older messages" affordance pinned to the top of the chat
+ * scroll. Renders nothing once we've paged back to the start of the
+ * conversation (``hasMore === false``) so it never lingers as a dead
+ * button. */
+function LoadOlderHeader({
+  hasMore,
+  loading,
+  onLoad,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  onLoad: () => void;
+}) {
+  if (!hasMore) {
+    return <div className="pt-8" />;
+  }
+  return (
+    <div className="flex justify-center px-6 pb-2 pt-8">
+      <button
+        type="button"
+        onClick={onLoad}
+        disabled={loading}
+        className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5 text-xs text-ink-100/70 transition hover:bg-white/10 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? "Loading…" : "Load older messages"}
+      </button>
+    </div>
   );
 }
 
