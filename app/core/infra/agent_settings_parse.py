@@ -1340,6 +1340,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             idle_seed_enabled=bool(
                 agent_raw.get("idle_seed_enabled", True),
             ),
+            hobby_worker_enabled=bool(
+                agent_raw.get("hobby_worker_enabled", True),
+            ),
             diary_worker_enabled=bool(
                 agent_raw.get("diary_worker_enabled", True),
             ),

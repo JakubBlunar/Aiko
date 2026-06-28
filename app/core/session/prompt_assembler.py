@@ -126,6 +126,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "ambient_noise_block",
         "world_block",
         "activity_block",
+        # H19: slow multi-day hobby trend — clusters with the "what she's
+        # doing" ambient blocks but survives the grounding-line fusion.
+        "hobby_block",
         "sensory_anchor_block",
     ),
     # T5 — per-turn affect / style. Updates after every reply.
@@ -320,6 +323,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # was captured. Desktop-only opt-in; browser users never set
         # the underlying state. Dropped in aggressive mode.
         self._activity_provider: Callable[[], str] | None = None
+        # H19: standing "what she's been up to lately" hobby line. Slow
+        # multi-day trend; rendered fresh but changes rarely. Dropped in
+        # aggressive mode alongside world / activity.
+        self._hobby_provider: Callable[[], str] | None = None
         # Schema v7: "On your mind today — a year ago today, …" line that
         # surfaces a single shared_moment matching one of the calendar
         # anniversary windows. Always empty when no match for today;
@@ -1000,6 +1007,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         activity_block = "" if aggressive else _safe_provider(
             self._activity_provider,
             timing_sink=provider_ms, timing_name="activity",
+        )
+        # H19: standing hobby line. Slow multi-day trend (changes only on a
+        # hobby advance/rotation); dropped in aggressive mode like world /
+        # activity. NOT suppressed by the grounding-line fusion (it's a
+        # trend, not a situational ambient block).
+        hobby_block = "" if aggressive else _safe_provider(
+            self._hobby_provider,
+            timing_sink=provider_ms, timing_name="hobby",
         )
         # Schema v7: shared-moment anniversary line + relationship-axes
         # summary. Both empty strings most turns; the anniversary
@@ -2115,6 +2130,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # doing) sit next to each other in the system prompt.
         if activity_block:
             system_parts.append(activity_block)
+        if hobby_block:
+            # H19: standing "what she's been up to lately" line — clusters
+            # with the ambient "what she's doing" cues but is a slow
+            # multi-day trend (survives the grounding-line fusion).
+            system_parts.append(hobby_block)
         if sensory_anchor_block:
             # K24: sensory anchor sits right after the ambient
             # awareness cluster (world + activity). The body beat

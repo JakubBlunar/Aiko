@@ -649,7 +649,30 @@ Cheap, no model spend, and it directly answers the literal complaint.
 
 ---
 
-## H19. Hobbies & ongoing personal projects
+## H19. Hobbies & ongoing personal projects — SHIPPED
+
+> **Shipped.** A single multi-day **current hobby** that progresses across days
+> gives Aiko continuity of intent. Pure module
+> [`app/core/world/hobby.py`](../../app/core/world/hobby.py) owns an 8-entry
+> catalogue (`scifi_series` / `guitar` / `astronomy` / `sketchbook` / `baking` /
+> `houseplants` / `language` / `vinyl`) + the deterministic `pick_hobby` /
+> `render_hobby_line` / `should_rotate` / `is_milestone` math. New
+> [`HobbyWorker`](../../app/core/proactive/hobby_worker.py) (`IdleWorker`, kv blob
+> `aiko.current_hobby`) starts a hobby, advances it during quiet windows — paced
+> by a wall-clock `hobby_advance_min_hours` floor so progress doesn't climb every
+> tick — emits a takeaway **seed** every `hobby_milestone_every` advances (LLM-
+> composed, surfaced through the **shared H17 idle-seed cue** via the new
+> `append_idle_seed` helper), and rotates to a fresh hobby after
+> `hobby_max_advances` (wrapping up emits a "finished X, starting Y" seed). The
+> standing "what she's been up to lately" line is rendered by a new
+> `_render_hobby_block` provider (T4 ambient, after `activity_block`, dropped under
+> aggressive mode but **survives the grounding-line fusion** — it's a slow trend,
+> not a situational block). Settings: `agent.hobby_worker_enabled` +
+> `memory.hobby_worker_interval_seconds` / `hobby_advance_min_hours` /
+> `hobby_milestone_every` / `hobby_max_advances`. MCP: `get_hobby_state`,
+> `force_hobby_advance`, `force_hobby_rotate`. Tests: `tests/test_hobby_worker.py`.
+
+---
 
 **Motivation.** Aiko's idle life has no *continuity of intent* — every beat is a
 one-off. Real people have threads they return to: a book series they're partway

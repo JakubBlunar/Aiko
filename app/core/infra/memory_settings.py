@@ -617,6 +617,14 @@ class MemorySettings:
     idle_seed_daily_cap: int = 3
     idle_seed_max_ring: int = 6
     idle_seed_surface_cooldown_seconds: int = 1800
+    # H19 — hobby worker cadence. ``interval`` is the idle-tick cadence;
+    # ``advance_min_hours`` paces actual progress so it doesn't climb every
+    # tick; ``milestone_every`` advances per takeaway seed; ``max_advances``
+    # is when the hobby rotates out (0 disables rotation).
+    hobby_worker_interval_seconds: int = 3600
+    hobby_advance_min_hours: float = 6.0
+    hobby_milestone_every: int = 3
+    hobby_max_advances: int = 12
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1655,6 +1663,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             idle_seed_surface_cooldown_seconds=max(
                 0,
                 int(memory_raw.get("idle_seed_surface_cooldown_seconds", 1800)),
+            ),
+            hobby_worker_interval_seconds=max(
+                60, int(memory_raw.get("hobby_worker_interval_seconds", 3600)),
+            ),
+            hobby_advance_min_hours=max(
+                0.0, float(memory_raw.get("hobby_advance_min_hours", 6.0)),
+            ),
+            hobby_milestone_every=max(
+                0, int(memory_raw.get("hobby_milestone_every", 3)),
+            ),
+            hobby_max_advances=max(
+                0, int(memory_raw.get("hobby_max_advances", 12)),
             ),
             circadian_settle_interval_seconds=max(
                 60,

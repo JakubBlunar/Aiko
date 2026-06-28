@@ -1671,6 +1671,15 @@ class AgentSettings:
     # beats stay purely cosmetic. Cadence on ``MemorySettings.idle_seed_*``.
     idle_seed_enabled: bool = True
 
+    # ── H19: hobbies & ongoing personal projects ──────────────────────
+    # Master switch for the :class:`HobbyWorker` — a single multi-day
+    # "current hobby" (reading a series, learning guitar, …) that
+    # progresses across days, occasionally yields a takeaway seed (via the
+    # H17 cue), and rotates when it's run long enough. The standing "what
+    # she's been up to lately" line is rendered by ``_render_hobby_block``.
+    # Cadence on ``MemorySettings.hobby_*``.
+    hobby_worker_enabled: bool = True
+
     # ── H9: away-diary worker ─────────────────────────────────────────
     # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
     # Off → the worker never registers. On (default) → during quiet
