@@ -139,6 +139,10 @@ class IdleWorkersInitMixin:
                         "world_intentional_hold_seconds",
                         7200.0,
                     ),
+                    # H14 — fraction of beats the worker LLM composes fresh.
+                    llm_activity_ratio=getattr(
+                        mem, "away_activities_llm_ratio", 0.5,
+                    ),
                     # H18 — tilt the weighted activity draw by time of day,
                     # current mood, and the daily personality colour.
                     circadian_period_provider=(

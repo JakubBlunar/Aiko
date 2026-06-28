@@ -161,6 +161,18 @@ class ChangePostureTests(unittest.TestCase):
             tool.run({"posture": "zooming"})
         h.cleanup()
 
+    def test_change_posture_accepts_open_vocab_activity(self) -> None:
+        # H14 — free-text activity is normalised, not rejected.
+        h = _Harness()
+        tool = ChangePostureTool(h)
+        result = json.loads(
+            tool.run({"posture": "sitting", "activity": "repotting the basil"})
+        )
+        self.assertEqual(result["state"]["activity"], "repotting_the_basil")
+        # Canonical bucket is derived for downstream consumers.
+        self.assertEqual(result["state"]["canonical_activity"], "tinkering")
+        h.cleanup()
+
 
 class InspectItemTests(unittest.TestCase):
     def test_inspect_known_item(self) -> None:

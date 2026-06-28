@@ -127,6 +127,9 @@ class ActivityPlan:
     move_to_location_id: int | None = None
     # H13 — where Aiko herself relocates to for this beat (None = stay put).
     aiko_location_id: int | None = None
+    # H14 — set when the worker LLM already composed a final summary, so
+    # run() skips the rephrase pass.
+    precomposed: bool = False
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -188,6 +191,7 @@ class IdleAwayActivityWorker:
         daily_cap: int = 6,
         journal_max: int = 8,
         intentional_hold_seconds: float = 0.0,
+        llm_activity_ratio: float = 0.0,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -206,6 +210,7 @@ class IdleAwayActivityWorker:
         self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._llm_activity_ratio = min(1.0, max(0.0, float(llm_activity_ratio)))
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -262,7 +267,10 @@ class IdleAwayActivityWorker:
             return {"fired": 0, "no_plan": True}
 
         self._apply_world_mutation(plan)
-        summary = self._compose_summary(user_name, plan)
+        summary = (
+            plan.summary if plan.precomposed
+            else self._compose_summary(user_name, plan)
+        )
         append_journal(
             self._kv_get,
             self._kv_set,
@@ -463,6 +471,20 @@ class IdleAwayActivityWorker:
         if forced and forced in candidates:
             return candidates[forced]
 
+        # H14 — sometimes let the worker LLM compose the whole beat
+        # (open-vocab activity grounded in the live room) instead of the
+        # curated templates. Falls back to the weighted deterministic draw
+        # when there's no model, the dice say no, or the JSON is bad.
+        if (
+            self._ollama is not None
+            and self._model
+            and self._llm_activity_ratio > 0.0
+            and self._rng.random() < self._llm_activity_ratio
+        ):
+            llm_plan = self._compose_plan_llm(user_name, locations, items)
+            if llm_plan is not None:
+                return llm_plan
+
         # H18 — weighted, anti-repetition draw over the available keys,
         # tilted by recency (journal), circadian period, mood + day-color.
         recent_keys = [
@@ -589,6 +611,95 @@ class IdleAwayActivityWorker:
         except Exception:
             line = ""
         return line or fallback
+
+    def _compose_plan_llm(
+        self, user_name: str, locations: list[Any], items: list[Any],
+    ) -> ActivityPlan | None:
+        """H14 — ask the worker LLM to compose a whole grounded beat.
+
+        Returns ``None`` on any failure so the caller falls back to the
+        deterministic weighted draw. Grounds the model in the real room:
+        it must pick one of the actual location slugs, a posture from the
+        rig enum, a short free-text activity verb, and a first-person
+        summary clause.
+        """
+        from app.core.world.world_store import (
+            VALID_POSTURES,
+            normalize_activity,
+        )
+
+        if not locations:
+            return None
+        loc_by_slug = {
+            (getattr(l, "slug", "") or "").lower(): l for l in locations
+        }
+        loc_lines = "; ".join(
+            f"{getattr(l, 'slug', '')} ({getattr(l, 'name', '')})"
+            for l in locations
+        )
+        item_names = ", ".join(
+            getattr(i, "name", "") for i in items[:12] if getattr(i, "name", "")
+        ) or "(nothing notable)"
+        recent = [
+            str(e.get("activity") or "")
+            for e in load_journal(self._kv_get)[-5:]
+            if e.get("activity")
+        ]
+        recent_line = ", ".join(recent) or "(none yet)"
+        period = self._read_period() or "unspecified"
+        prompt = (
+            f"You are Aiko, alone in your cozy room while {user_name} is away. "
+            f"It's currently {period}. Your room's spots: {loc_lines}. "
+            f"Things around: {item_names}. "
+            f"Recently you did: {recent_line} — pick something different. "
+            "Choose one small, believable thing to do right now, grounded in "
+            "what's actually in the room. Reply with JSON only:\n"
+            '{"location_slug": "<one of the slugs above>", '
+            '"posture": "<sitting|lying|standing|curled_up|leaning>", '
+            '"activity": "<short verb phrase, e.g. repotting_the_basil>", '
+            '"summary": "<one first-person past-tense clause>"}'
+        )
+        try:
+            content, _usage = self._ollama.chat_json(
+                [
+                    {
+                        "role": "system",
+                        "content": "Reply with a single JSON object, nothing else.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                model=self._model,
+                options={"temperature": 0.9, "num_predict": 160},
+                format_json=True,
+                surface="away_activity_plan",
+            )
+        except Exception:
+            log.debug("away_activity plan compose failed", exc_info=True)
+            return None
+        try:
+            blob = json.loads(content or "{}")
+        except Exception:
+            return None
+        if not isinstance(blob, dict):
+            return None
+
+        activity = normalize_activity(blob.get("activity"))
+        summary = str(blob.get("summary") or "").strip()
+        if not activity or not summary:
+            return None
+        posture = str(blob.get("posture") or "").strip().lower()
+        if posture not in VALID_POSTURES:
+            posture = "sitting"
+        slug = str(blob.get("location_slug") or "").strip().lower()
+        loc = loc_by_slug.get(slug)
+        return ActivityPlan(
+            key="llm",
+            posture=posture,
+            activity=activity,
+            summary=summary,
+            aiko_location_id=(loc.id if loc is not None else None),
+            precomposed=True,
+        )
 
     # ── gates ────────────────────────────────────────────────────────
 

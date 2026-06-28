@@ -604,6 +604,10 @@ class MemorySettings:
     away_activities_daily_cap: int = 6
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
+    # H14 — fraction of idle beats the worker LLM composes from scratch
+    # (open-vocab activity grounded in the live room) instead of the
+    # curated weighted templates. 0.0 disables; 1.0 always LLM-composes.
+    away_activities_llm_ratio: float = 0.5
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1624,6 +1628,10 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_journal_max=max(
                 1,
                 int(memory_raw.get("away_activities_journal_max", 8)),
+            ),
+            away_activities_llm_ratio=min(
+                1.0,
+                max(0.0, float(memory_raw.get("away_activities_llm_ratio", 0.5))),
             ),
             circadian_settle_interval_seconds=max(
                 60,

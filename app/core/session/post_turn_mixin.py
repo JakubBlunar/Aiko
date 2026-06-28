@@ -1013,6 +1013,25 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     "conflict-tag inline extraction failed", exc_info=True,
                 )
 
+        # H14: inline [[activity:verb]] self-tag — Aiko sets what she's
+        # doing right now. Open-vocab; applied via update_world_state,
+        # which stamps the intentional-placement watermark so the idle
+        # workers defer to her stated activity for the hold window.
+        if getattr(self, "_world_store", None) is not None and raw_assistant_text:
+            try:
+                from app.core.services.response_text_service import (
+                    extract_activity_tag,
+                )
+
+                verb = extract_activity_tag(raw_assistant_text)
+                if verb:
+                    self.update_world_state(activity=verb)
+                    log.info("H14 self-tag: aiko set activity=%s", verb[:60])
+            except Exception:
+                log.debug(
+                    "activity self-tag dispatch failed", exc_info=True,
+                )
+
         # K2: inline [[predict:kind:topic:state:confidence]] self-tag.
         # Aiko's theory-of-mind prediction about the user gets parsed
         # here and upserted into the BeliefStore. We optionally embed

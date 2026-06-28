@@ -404,7 +404,23 @@ self-move), [`app/core/world/garden_visit_worker.py`](../../app/core/world/garde
 
 ---
 
-## H14. Model-generated idle activities — open-vocab verbs, grounded in the room
+## H14. Model-generated idle activities — open-vocab verbs, grounded in the room — SHIPPED
+
+> **Shipped.** `WorldStore` gained `normalize_activity` (snake-case + length-cap,
+> swallow-and-default on garbage) and `canonical_activity` (buckets an
+> open-vocab verb back to a `VALID_ACTIVITIES` token via `_ACTIVITY_CANONICAL_HINTS`);
+> `set_state` no longer rejects unknown activities and `RoomState.to_dict`
+> surfaces both `activity` (free text) + `canonical_activity`. **Posture stays
+> a strict enum.** `ChangePostureTool` accepts free-text activity via the same
+> normaliser. The `IdleAwayActivityWorker` now LLM-composes a whole grounded
+> `ActivityPlan` (`_compose_plan_llm`: real location slug + posture + free-text
+> verb + summary) a fraction of the time (`memory.away_activities_llm_ratio`,
+> default 0.5), falling back to the H18 weighted templates. New inline self-tag
+> `[[activity:short_verb]]` (parsed/stripped in `response_text_service`, applied
+> post-turn via `update_world_state` — which stamps the intentional-hold so
+> workers defer). Tests: `tests/test_open_vocab_activity.py`,
+> `tests/test_world_tools.py::test_change_posture_accepts_open_vocab_activity`.
+
 
 **Motivation.** Activities are a closed 10-entry enum
 (`VALID_ACTIVITIES` in [`world_store.py`](../../app/core/world/world_store.py)
