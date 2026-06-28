@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AvatarPanel } from "@/features/avatar/AvatarPanel";
 import { ChatView } from "@/features/chat/ChatView";
 import { FirstRunOnboarding } from "@/features/onboarding/FirstRunOnboarding";
@@ -6,9 +6,7 @@ import { FloatingPersona } from "@/features/avatar/FloatingPersona";
 import { MobileNavDrawer } from "@/features/shell/MobileNavDrawer";
 import { MobileTopBar } from "@/features/shell/MobileTopBar";
 import { PanelResizeHandle } from "@/components/PanelResizeHandle";
-import { PersonaWindow } from "@/features/persona/PersonaWindow";
 import { SessionSidebar } from "@/features/sessions/SessionSidebar";
-import { SettingsDrawer } from "@/features/settings/SettingsDrawer";
 import { Toasts } from "@/features/notifications/Toasts";
 import { NotificationDrawer } from "@/features/notifications/NotificationDrawer";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -22,6 +20,21 @@ import { usePresenceReporter } from "./hooks/usePresenceReporter";
 import { debugLog } from "./log";
 import { useAssistantStore } from "./store";
 import { useWorldStore } from "./stores/useWorldStore";
+
+// Code-split the two heaviest, on-demand surfaces (phase 4b). The settings
+// drawer is a large tree only needed once the user opens it; the persona
+// window is a whole separate hash route / Tauri window the main window never
+// shows. Both leave the initial main-window bundle via their own chunks.
+const SettingsDrawer = lazy(() =>
+  import("@/features/settings/SettingsDrawer").then((m) => ({
+    default: m.SettingsDrawer,
+  })),
+);
+const PersonaWindow = lazy(() =>
+  import("@/features/persona/PersonaWindow").then((m) => ({
+    default: m.PersonaWindow,
+  })),
+);
 
 /** Tiny hash-router. ``location.hash === "#/persona"`` -> the persona
  * HUD. Anything else -> the full chat layout. We avoid pulling in a
@@ -112,6 +125,13 @@ export default function App() {
   const { send, sendBytes } = useAssistantSocket();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Keep the lazy settings chunk out of the initial load: don't mount the
+  // drawer until it's been opened once, then keep it mounted so its internal
+  // state (active tab, drafts) survives close/reopen.
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  useEffect(() => {
+    if (settingsOpen) setSettingsMounted(true);
+  }, [settingsOpen]);
   const route = useRoute();
   const tauri = isTauri();
   const isMobile = useIsMobile();
@@ -212,7 +232,11 @@ export default function App() {
   useActivityReporter({ send, enabled: activityEnabled });
 
   if (route === "persona") {
-    return <PersonaWindow send={send} sendBytes={sendBytes} />;
+    return (
+      <Suspense fallback={null}>
+        <PersonaWindow send={send} sendBytes={sendBytes} />
+      </Suspense>
+    );
   }
 
   const togglePersona = () => {
@@ -245,10 +269,14 @@ export default function App() {
           send={send}
           onOpenSettings={() => setSettingsOpen(true)}
         />
-        <SettingsDrawer
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-        />
+        {settingsMounted ? (
+          <Suspense fallback={null}>
+            <SettingsDrawer
+              open={settingsOpen}
+              onClose={() => setSettingsOpen(false)}
+            />
+          </Suspense>
+        ) : null}
         {/* Phones: no corner popups (they cover the composer). Toasts
             are archived only and read from the top-bar bell drawer. */}
         <NotificationDrawer />
@@ -288,7 +316,14 @@ export default function App() {
           <AvatarPanel />
         </>
       )}
-      <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {settingsMounted ? (
+        <Suspense fallback={null}>
+          <SettingsDrawer
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+          />
+        </Suspense>
+      ) : null}
       {/* Desktop keeps the corner popups AND the archive drawer. */}
       <Toasts />
       <NotificationDrawer />
