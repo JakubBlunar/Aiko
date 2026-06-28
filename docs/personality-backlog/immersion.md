@@ -544,7 +544,27 @@ purely about the resting default the user walks into. Reuses the same
 
 ---
 
-## H17. Idle life feeds the idea machine — beats become conversational seeds
+## H17. Idle life feeds the idea machine — beats become conversational seeds — SHIPPED
+
+> **Shipped.** An idle away-beat now occasionally (`memory.idle_seed_ratio`,
+> default `0.25`, needs a worker model) turns into a forward-looking
+> conversational **seed** — `IdleAwayActivityWorker._maybe_emit_seed` LLM-composes
+> one short thought/question/opinion sparked by what she was doing and appends it
+> to the `aiko.idle_seeds` kv ring (`load_idle_seeds`), daily-capped
+> (`idle_seed_daily_cap`, default 3) and ring-bounded (`idle_seed_max_ring`).
+> Consumer is a new one-shot **cue producer** `_render_idle_seed_block` (T6, next
+> to the K9 curiosity seeds, dropped under aggressive mode) — it surfaces the
+> newest unseen seed as a private "Earlier, while you were &lt;activity&gt;, a
+> thought crossed your mind: …" line so Aiko phrases it herself (never spoken
+> verbatim, per the prepared-nudge rule). Bounded by a per-seed watermark
+> (`idle_seed.surfaced_at`) plus a wall-clock surfacing cooldown
+> (`idle_seed.surfaced_clock`, `idle_seed_surface_cooldown_seconds`, default
+> 30 min). Unlike the gap-return cues it is NOT gap-gated and does NOT touch
+> `_gap_cue_surfaced` — a thought from her own idle life can come up
+> mid-conversation. Master switch `agent.idle_seed_enabled`. MCP:
+> `get_idle_seed_state`, `force_idle_seed_surface`. Tests: `tests/test_idle_seed.py`.
+
+---
 
 **Motivation.** Aiko already has a deep "new ideas" stack — the
 [`CuriositySeedWorker`](../../app/core/proactive/curiosity_seed_worker.py),

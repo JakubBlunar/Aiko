@@ -623,6 +623,7 @@ class SpeakingWorkersInitMixin:
             style_signal=self._render_style_signal_block,
             self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
+            idle_seeds=self._render_idle_seed_block,
             wants=self._render_wants_block,
             initiative=self._render_initiative_block,
             thread_ownership=self._render_thread_ownership_block,

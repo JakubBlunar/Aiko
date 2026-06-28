@@ -123,6 +123,9 @@ class DetectorsInitMixin:
         self._away_activities_force_next: bool = False
         self._gap_cue_surfaced: bool = False
         self._away_activity_worker: Any = None
+        # H17 — idle-seed surfacing MCP debug bypass (consumed by
+        # ``_render_idle_seed_block`` on the next assembly).
+        self._idle_seed_force_next: bool = False
         # H9 — the away-diary worker. ``None`` until registered in
         # ``idle_workers_init_mixin`` (skipped when there's no memory
         # store / embedder). The MCP ``get_diary_worker_state`` /

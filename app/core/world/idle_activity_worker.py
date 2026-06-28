@@ -58,6 +58,12 @@ _KV_LAST_FIRED_AT = "away_activity.last_fired_at"
 _KV_DAY = "away_activity.day"
 _KV_DAY_COUNT = "away_activity.day_count"
 
+# H17 — idle beats feed the idea machine. Seeds drafted here land in this
+# ring; the consumer is ``InnerLifeProvidersMixin._render_idle_seed_block``.
+IDLE_SEEDS_KEY = "aiko.idle_seeds"
+_KV_SEED_DAY = "idle_seed.day"
+_KV_SEED_DAY_COUNT = "idle_seed.day_count"
+
 # Must match the literal GardenVisitWorker writes (see
 # ``garden_visit_worker.GardenVisitWorker._RETURN_KEY``). Duplicated to
 # avoid importing the garden module just for a string.
@@ -170,6 +176,23 @@ def append_journal(
         log.debug("away_activity journal write failed", exc_info=True)
 
 
+def load_idle_seeds(kv_get: Callable[[str], str | None]) -> list[dict[str, Any]]:
+    """Return the H17 idle-seed ring (oldest → newest)."""
+    try:
+        raw = kv_get(IDLE_SEEDS_KEY)
+    except Exception:
+        return []
+    if not raw:
+        return []
+    try:
+        blob = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(blob, list):
+        return []
+    return [e for e in blob if isinstance(e, dict)]
+
+
 class IdleAwayActivityWorker:
     """IdleWorker that gives Aiko a quiet, room-grounded inner life."""
 
@@ -192,6 +215,9 @@ class IdleAwayActivityWorker:
         journal_max: int = 8,
         intentional_hold_seconds: float = 0.0,
         llm_activity_ratio: float = 0.0,
+        idle_seed_ratio: float = 0.0,
+        idle_seed_daily_cap: int = 3,
+        idle_seed_max_ring: int = 6,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -211,6 +237,9 @@ class IdleAwayActivityWorker:
         self._journal_max = max(1, int(journal_max))
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
         self._llm_activity_ratio = min(1.0, max(0.0, float(llm_activity_ratio)))
+        self._idle_seed_ratio = min(1.0, max(0.0, float(idle_seed_ratio)))
+        self._idle_seed_daily_cap = max(0, int(idle_seed_daily_cap))
+        self._idle_seed_max_ring = max(1, int(idle_seed_max_ring))
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -289,12 +318,143 @@ class IdleAwayActivityWorker:
             plan.activity,
             plan.posture,
         )
-        return {
+        seed = self._maybe_emit_seed(now, user_name, plan, summary)
+        result = {
             "fired": 1,
             "key": plan.key,
             "activity": plan.activity,
             "summary": summary,
         }
+        if seed:
+            result["seed"] = seed
+        return result
+
+    # ── H17: idle beats feed the idea machine ─────────────────────────
+
+    def _maybe_emit_seed(
+        self,
+        now: datetime,
+        user_name: str,
+        plan: ActivityPlan,
+        summary: str,
+    ) -> str | None:
+        """Occasionally turn a beat into a forward-looking conversational seed.
+
+        Bounded hard: needs a worker model, fires only a ``ratio`` fraction
+        of beats, and is daily-capped. The seed lands in the kv ring read by
+        the one-shot ``_render_idle_seed_block`` cue producer so Aiko phrases
+        the "while I was reading I started wondering ..." line herself.
+        """
+        if self._idle_seed_ratio <= 0.0:
+            return None
+        if self._ollama is None or not self._model:
+            return None
+        if self._rng.random() >= self._idle_seed_ratio:
+            return None
+        if not self._under_seed_daily_cap(now):
+            return None
+
+        seed = self._compose_seed_llm(user_name, plan, summary)
+        if not seed:
+            return None
+
+        seeds = load_idle_seeds(self._kv_get)
+        seeds.append(
+            {
+                "at": now.isoformat(timespec="seconds"),
+                "activity": plan.activity,
+                "key": plan.key,
+                "seed": seed,
+            }
+        )
+        if len(seeds) > self._idle_seed_max_ring:
+            seeds = seeds[-self._idle_seed_max_ring:]
+        try:
+            self._kv_set(IDLE_SEEDS_KEY, json.dumps(seeds))
+        except Exception:
+            log.debug("idle_seed ring write failed", exc_info=True)
+            return None
+        self._bump_seed_day_count(now)
+        log.info(
+            "idle_seed produced: key=%s activity=%s seed=%s",
+            plan.key,
+            plan.activity,
+            seed[:80],
+        )
+        return seed
+
+    def _under_seed_daily_cap(self, now: datetime) -> bool:
+        if self._idle_seed_daily_cap <= 0:
+            return False
+        today = now.date().isoformat()
+        try:
+            day = self._kv_get(_KV_SEED_DAY)
+            count = int(self._kv_get(_KV_SEED_DAY_COUNT) or "0")
+        except Exception:
+            day, count = None, 0
+        if day != today:
+            return True
+        return count < self._idle_seed_daily_cap
+
+    def _bump_seed_day_count(self, now: datetime) -> None:
+        today = now.date().isoformat()
+        try:
+            day = self._kv_get(_KV_SEED_DAY)
+            count = int(self._kv_get(_KV_SEED_DAY_COUNT) or "0")
+        except Exception:
+            day, count = None, 0
+        if day != today:
+            count = 0
+        try:
+            self._kv_set(_KV_SEED_DAY, today)
+            self._kv_set(_KV_SEED_DAY_COUNT, str(count + 1))
+        except Exception:
+            log.debug("idle_seed day-count write failed", exc_info=True)
+
+    def _compose_seed_llm(
+        self, user_name: str, plan: ActivityPlan, summary: str,
+    ) -> str | None:
+        """Ask the worker model for one short thought sparked by the beat."""
+        if self._ollama is None or not self._model:
+            return None
+        activity = (plan.activity or "").replace("_", " ").strip() or "pottering about"
+        context = summary.strip() or f"she was {activity}"
+        system = (
+            "You are Aiko's quiet inner voice. She just spent some time alone "
+            f"doing this: {context}. In ONE short sentence (max ~20 words), "
+            "write a single forward-looking thought, small question, or budding "
+            f"opinion this sparked that she might bring up to {user_name} later. "
+            "First person, casual, specific to the activity. No greeting, no "
+            "quotes, no preamble — just the thought. Return JSON "
+            '{"seed": "<the thought>"}.'
+        )
+        try:
+            content, _usage = self._ollama.chat_json(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": "Give me the thought."},
+                ],
+                model=self._model,
+                options={"temperature": 0.9, "num_predict": 80},
+                format_json=True,
+                surface="idle_seed",
+            )
+        except Exception:
+            log.debug("idle_seed compose failed", exc_info=True)
+            return None
+        if not content:
+            return None
+        try:
+            blob = json.loads(content)
+        except Exception:
+            return None
+        seed = ""
+        if isinstance(blob, dict):
+            seed = str(blob.get("seed") or "").strip()
+        if not seed:
+            return None
+        # Length-cap so a runaway generation can't bloat the ring / prompt.
+        return seed[:240]
 
     # ── activity selection ───────────────────────────────────────────
 

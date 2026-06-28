@@ -1663,6 +1663,14 @@ class AgentSettings:
     # ``MemorySettings.circadian_settle_*``.
     circadian_settle_enabled: bool = True
 
+    # ── H17: idle beats feed the idea machine ─────────────────────────
+    # When on (default), an idle away-beat occasionally produces a small
+    # forward-looking "seed" (a thought sparked by what she was doing),
+    # surfaced ONCE via a watermark-gated inner-life cue so Aiko phrases
+    # "while I was reading earlier I started wondering ..." herself. Off →
+    # beats stay purely cosmetic. Cadence on ``MemorySettings.idle_seed_*``.
+    idle_seed_enabled: bool = True
+
     # ── H9: away-diary worker ─────────────────────────────────────────
     # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
     # Off → the worker never registers. On (default) → during quiet

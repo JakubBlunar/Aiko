@@ -1337,6 +1337,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             circadian_settle_enabled=bool(
                 agent_raw.get("circadian_settle_enabled", True),
             ),
+            idle_seed_enabled=bool(
+                agent_raw.get("idle_seed_enabled", True),
+            ),
             diary_worker_enabled=bool(
                 agent_raw.get("diary_worker_enabled", True),
             ),

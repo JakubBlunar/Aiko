@@ -200,6 +200,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "topic_appetite_block",
         "tease_ledger_block",
         "curiosity_seeds_block",
+        # H17: "while I was <doing X> earlier I started wondering ..." —
+        # a thought from her own idle life. Clusters with curiosity seeds
+        # (both are "things Aiko's been mulling on her own time").
+        "idle_seeds_block",
         "knowledge_gaps_block",
         # K61 (F8/F9): informational-turn steer toward learned
         # specifics. Query-aware (consumes ``user_text``), so it lands
@@ -637,6 +641,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # stagnation so the budget stays focused on the user's
         # message. Empty when no active seeds exist.
         self._curiosity_seeds_provider: Callable[[], str] | None = None
+        # H17 idle seeds. One-shot "while I was <doing X> earlier I
+        # started wondering ..." cue produced by the away-activity beats.
+        # Cue-producer pattern (watermark + cooldown), dropped in
+        # aggressive mode alongside the curiosity seeds.
+        self._idle_seeds_provider: Callable[[], str] | None = None
         # K52 wants ledger. Pressure-banded "things Aiko wants from
         # the conversation" cue — soft list below the imperative
         # threshold, a single directive paragraph above it. Dropped
@@ -1737,6 +1746,17 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="curiosity_seeds",
             )
 
+        # H17: a thought from Aiko's own idle life ("while I was reading
+        # earlier I started wondering ..."). Same aggressive-mode posture
+        # as the curiosity seeds. Empty until an idle beat produced a seed.
+        idle_seeds_block = ""
+        if not aggressive and self._idle_seeds_provider is not None:
+            idle_seeds_block = _safe_provider(
+                self._idle_seeds_provider,
+                timing_sink=provider_ms,
+                timing_name="idle_seeds",
+            )
+
         # K52: wants ledger. Same aggressive-mode posture as the
         # curiosity seeds — a tight budget should focus on the
         # user's message, not on Aiko's agenda.
@@ -2408,6 +2428,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # "things on Aiko's mind" surfaces cluster together.
             # Empty until the seed worker has written something.
             system_parts.append(curiosity_seeds_block)
+        if idle_seeds_block:
+            # H17: a thought sparked by her own idle life. Clusters right
+            # after the curiosity seeds — both are "things Aiko's been
+            # mulling on her own time" she can bring up if it fits.
+            system_parts.append(idle_seeds_block)
         if knowledge_gaps_block:
             # F2: surface one "wondering about" bullet right after
             # agenda. Keeps the "things on Aiko's mind" cluster
