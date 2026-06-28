@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AudioOutputManager } from "./audio/AudioOutputManager";
+import { isMobileViewport } from "./hooks/useIsMobile";
 import { DEFAULT_LOGGING_SETTINGS } from "./types";
 import type {
   AgendaItem,
@@ -525,6 +526,26 @@ interface AssistantState {
    * "pause" auto-dismiss while the user is hovering the stack to read. */
   extendToasts: (deltaMs: number) => void;
 
+  // Notification archive (history of every toast). On phones the corner
+  // popups are suppressed entirely (they cover the composer and the ×
+  // is hard to hit) -- ``pushToast`` only archives there, and the user
+  // reads them from a drawer behind the top-bar bell. Desktop keeps the
+  // popups AND the archive. See ``NotificationDrawer`` / ``NotificationBell``.
+  notifications: NotificationEntry[];
+  /** Count of notifications added since the drawer was last opened. */
+  notificationsUnread: number;
+  /** Whether the notification drawer is open (store-owned so both the
+   * mobile top-bar bell and the desktop sidebar bell can drive it
+   * without prop threading). */
+  notificationsOpen: boolean;
+  /** Open the drawer and mark everything read (clears the unread badge). */
+  openNotifications: () => void;
+  closeNotifications: () => void;
+  /** Remove a single archived notification by id. */
+  dismissNotification: (id: string) => void;
+  /** Empty the whole archive + reset the unread badge. */
+  clearNotifications: () => void;
+
   // Tool activity strip (show "Aiko is checking the time / web / notebook")
   toolActivity: ToolEvent[];
   pushToolEvent: (event: ToolEvent) => void;
@@ -651,6 +672,19 @@ export interface Toast {
   /** How long until auto-dismiss; 0 means sticky. */
   ttlMs: number;
 }
+
+/** An archived notification. Same payload as a {@link Toast} minus the
+ * transient ``ttlMs`` -- archive entries don't auto-expire, they're kept
+ * (capped) until the user clears them. */
+export interface NotificationEntry {
+  id: string;
+  kind: ToastKind;
+  text: string;
+  createdAt: number;
+}
+
+/** Max archived notifications kept in memory (newest-first). */
+export const NOTIFICATION_ARCHIVE_CAP = 50;
 
 const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/i;
 
@@ -1713,18 +1747,25 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   // (see ``extendToasts`` + ``Toasts.tsx``), so this is just the
   // hands-off lifetime. Callers can still pass a shorter ttlMs.
   pushToast: (kind, text, ttlMs = 12000) =>
-    set((state) => ({
-      toasts: [
-        ...state.toasts,
-        {
-          id: nextId(),
-          kind,
-          text,
-          createdAt: Date.now(),
-          ttlMs,
-        },
-      ],
-    })),
+    set((state) => {
+      const id = nextId();
+      const createdAt = Date.now();
+      const archived = [
+        { id, kind, text, createdAt },
+        ...state.notifications,
+      ].slice(0, NOTIFICATION_ARCHIVE_CAP);
+      // Phones suppress the corner popup entirely (it covers the
+      // composer + the × is too small to hit reliably) -- the entry
+      // still lands in the archive, surfaced via the top-bar bell.
+      const showPopup = !isMobileViewport();
+      return {
+        notifications: archived,
+        notificationsUnread: state.notificationsUnread + 1,
+        toasts: showPopup
+          ? [...state.toasts, { id, kind, text, createdAt, ttlMs }]
+          : state.toasts,
+      };
+    }),
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
   extendToasts: (deltaMs) =>
@@ -1738,6 +1779,19 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         ),
       };
     }),
+
+  notifications: [],
+  notificationsUnread: 0,
+  notificationsOpen: false,
+  openNotifications: () =>
+    set({ notificationsOpen: true, notificationsUnread: 0 }),
+  closeNotifications: () => set({ notificationsOpen: false }),
+  dismissNotification: (id) =>
+    set((state) => ({
+      notifications: state.notifications.filter((n) => n.id !== id),
+    })),
+  clearNotifications: () =>
+    set({ notifications: [], notificationsUnread: 0 }),
 
   toolActivity: [],
   pushToolEvent: (event) =>

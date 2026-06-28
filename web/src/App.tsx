@@ -10,6 +10,7 @@ import { PersonaWindow } from "./components/PersonaWindow";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { Toasts } from "./components/Toasts";
+import { NotificationDrawer } from "./components/NotificationDrawer";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { desktop } from "./desktop/commands";
 import { listenPersonaVisibility } from "./desktop/events";
@@ -247,7 +248,9 @@ export default function App() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
         />
-        <Toasts />
+        {/* Phones: no corner popups (they cover the composer). Toasts
+            are archived only and read from the top-bar bell drawer. */}
+        <NotificationDrawer />
         <FirstRunOnboarding />
       </div>
     );
@@ -285,7 +288,9 @@ export default function App() {
         </>
       )}
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/* Desktop keeps the corner popups AND the archive drawer. */}
       <Toasts />
+      <NotificationDrawer />
       <FirstRunOnboarding />
     </div>
   );
