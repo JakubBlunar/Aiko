@@ -1237,6 +1237,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 # the same typed-gap signal (own 4h threshold). The
                 # provider defers to turning_over so only one fires.
                 self._maybe_arm_away_activities_slot(engagement)
+                # H21: arm the overnight-sleep return cue on the same
+                # typed-gap signal (own 5h threshold). The provider runs
+                # before away_activities/forward_curiosity in the gap-cue
+                # family and defers to turning_over.
+                self._maybe_arm_sleep_return_slot(engagement)
                 self._maybe_arm_forward_curiosity_slot(engagement)
                 # K57: a long-enough gap (closeness-scaled, well above
                 # the K14 band) registers as a lonely episode — the

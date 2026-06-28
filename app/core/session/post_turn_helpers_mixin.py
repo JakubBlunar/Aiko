@@ -120,6 +120,51 @@ class PostTurnHelpersMixin:
         if latency_f >= min_gap_s:
             self._pending_away_activities_seconds = latency_f
 
+    def _maybe_arm_sleep_return_slot(self, engagement: Any) -> None:
+        """H21: stash ``latency_seconds`` on
+        ``_pending_sleep_return_seconds`` when the turn follows a long
+        typed gap that might have spanned an overnight sleep.
+
+        Mirror of :meth:`_maybe_arm_away_activities_slot` with its own
+        master switch (``agent.sleep_return_enabled``) and threshold
+        (``memory.sleep_return_min_gap_hours``, default 5h — longer than
+        the ordinary away cue so a long afternoon out never arms it). The
+        provider (:meth:`InnerLifeProvidersMixin._render_sleep_return_block`)
+        applies the finer overnight gate (return-hour aware) and defers to
+        ``turning_over`` so at most one gap cue surfaces per return. Voice
+        turns never arm H21.
+        """
+        if engagement is None:
+            return
+        if not bool(
+            getattr(self._settings.agent, "sleep_return_enabled", True)
+        ):
+            return
+        mode = getattr(engagement, "mode", None)
+        if mode != "typed":
+            return
+        latency = getattr(engagement, "latency_seconds", None)
+        if latency is None:
+            return
+        try:
+            latency_f = float(latency)
+        except (TypeError, ValueError):
+            return
+        if latency_f <= 0.0:
+            return
+        min_gap_s = (
+            float(
+                getattr(
+                    self._memory_settings,
+                    "sleep_return_min_gap_hours",
+                    5.0,
+                )
+            )
+            * 3600.0
+        )
+        if latency_f >= min_gap_s:
+            self._pending_sleep_return_seconds = latency_f
+
     def _maybe_arm_forward_curiosity_slot(self, engagement: Any) -> None:
         """K34: stash ``latency_seconds`` on
         ``_pending_forward_curiosity_seconds`` when the turn follows a

@@ -160,6 +160,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "session_clock_block",
         "absence_curiosity_block",
         "turning_over_block",
+        "sleep_return_block",
         "away_activities_block",
         "forward_curiosity_block",
         "follow_up_block",
@@ -468,6 +469,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # "and I was thinking about X" content in the system prompt
         # so the two cues read naturally together.
         self._turning_over_provider: Callable[[], str] | None = None
+        # H21 "I dozed off while you were away" one-shot. Runs right after
+        # turning_over and before away_activities/forward_curiosity in the
+        # gap-cue family: an overnight return reads as having slept (with an
+        # optional dream woven in) rather than as ordinary away-activities.
+        # Defers to turning_over via the shared _gap_cue_surfaced flag.
+        self._sleep_return_provider: Callable[[], str] | None = None
         # K36 "things I did while you were away" one-shot. Consumer of the
         # IdleAwayActivityWorker journal; same post-turn-armed slot as K28
         # turning_over but reads the kv journal ring. Defers to
@@ -1403,9 +1410,29 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     turning_over_block = ""
 
+        # H21 "I dozed off while you were away" one-shot. Runs AFTER
+        # turning_over (so it reads the just-reset _gap_cue_surfaced flag)
+        # and BEFORE away_activities/forward_curiosity, so an overnight
+        # return wins the one-of slot with the sleep frame (and an optional
+        # dream) rather than an ordinary away-activity beat.
+        sleep_return_block = ""
+        if (
+            getattr(self, "_sleep_return_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "sleep_return"):
+                try:
+                    sleep_return_block = (
+                        self._sleep_return_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "sleep_return provider raised", exc_info=True,
+                    )
+                    sleep_return_block = ""
+
         # K36 "things I did while you were away" one-shot. Runs AFTER
-        # turning_over so it can read the just-set _gap_cue_surfaced flag
-        # and defer (only one of the two gap cues surfaces per return).
+        # turning_over + sleep_return so it can read the just-set
+        # _gap_cue_surfaced flag and defer (only one gap cue per return).
         away_activities_block = ""
         if (
             getattr(self, "_away_activities_provider", None) is not None
@@ -2285,11 +2312,17 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # combined cue to read naturally on a 90 min - 4h gap
             # (where both K14 and K28 fire). One-shot, same as K14.
             system_parts.append(turning_over_block)
+        if sleep_return_block:
+            # H21: "While you were away you actually dozed off ..." sits
+            # right after turning_over and before the away/forward cues.
+            # The provider's _gap_cue_surfaced guard makes this win the
+            # one-of slot on an overnight return. One-shot.
+            system_parts.append(sleep_return_block)
         if away_activities_block:
-            # K36: "While you were away you ..." sits right after the K28
-            # turning_over block — both are gap-return cues, but the
-            # provider's _gap_cue_surfaced guard ensures only one of the
-            # two actually renders per return. One-shot.
+            # K36: "While you were away you ..." sits right after the H21
+            # sleep_return block — all gap-return cues, but the provider's
+            # _gap_cue_surfaced guard ensures only one actually renders
+            # per return. One-shot.
             system_parts.append(away_activities_block)
         if forward_curiosity_block:
             # K34: "You've been wondering ..." sits right after the K36

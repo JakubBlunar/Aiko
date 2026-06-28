@@ -7,6 +7,30 @@ import logging
 log = logging.getLogger("app.session")
 
 
+def _parse_dt_utc(value):
+    """Parse an ISO timestamp into a tz-aware UTC datetime, or ``None``.
+
+    Naive timestamps are assumed UTC. Used by the H21 dream lookup to age
+    ``[dream]`` reflections against a wall-clock lookback window.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    from datetime import datetime, timezone
+
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class InnerLifePart2Mixin:
     """Inner-life prompt-block providers (part 2 of 4)."""
 
@@ -655,6 +679,181 @@ class InnerLifePart2Mixin:
         except Exception:
             log.debug("turning-over render failed", exc_info=True)
             return ""
+
+    def _render_sleep_return_block(self) -> str:
+        """H21: narrate having dozed off on return from an overnight gap.
+
+        The behavioural anchor for the dream system. Runs first in the
+        gap-cue family (immediately after K28 ``turning_over``, before K36
+        ``away_activities`` / K34 ``forward_curiosity``) so an overnight
+        return reads as "I actually fell asleep …" rather than "I tidied
+        the desk while you were away". When a recent ``[dream]`` reflection
+        exists, it's woven into the line so the dream finally has a cause.
+
+        One-shot contract: reads + clears
+        ``self._pending_sleep_return_seconds`` (armed in
+        ``post_turn_helpers_mixin._maybe_arm_sleep_return_slot`` on a typed
+        gap >= ``memory.sleep_return_min_gap_hours``), then applies the
+        finer return-hour-aware overnight gate
+        (:func:`sleep_return.looks_like_overnight`). A gap that doesn't read
+        as a sleep returns "" WITHOUT touching ``_gap_cue_surfaced`` so the
+        ordinary away / forward cues still get their turn. When it does
+        fire it sets ``_gap_cue_surfaced`` so the rest of the family defers.
+
+        Defers to ``turning_over`` (which runs first and owns the
+        ``_gap_cue_surfaced`` reset). MCP debug:
+        ``force_sleep_return_surface`` arms ``_sleep_return_force_next`` to
+        bypass the slot + overnight gates.
+        """
+        if not bool(
+            getattr(self._settings.agent, "sleep_return_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(getattr(self, "_sleep_return_force_next", False))
+        if force_next:
+            self._sleep_return_force_next = False
+
+        # One-of guard: turning_over already surfaced a gap cue this
+        # assembly. Stand down (unless explicitly forced).
+        if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            return ""
+
+        seconds = getattr(self, "_pending_sleep_return_seconds", None)
+        if not force_next and seconds is None:
+            return ""
+        self._pending_sleep_return_seconds = None
+
+        from datetime import datetime, timezone
+
+        from app.core.world import sleep_return as _sr
+
+        ms = self._memory_settings
+        min_gap_h = float(
+            getattr(ms, "sleep_return_min_gap_hours", _sr.DEFAULT_MIN_GAP_HOURS)
+        )
+        overnight_h = float(
+            getattr(
+                ms, "sleep_return_overnight_hours", _sr.DEFAULT_OVERNIGHT_HOURS
+            )
+        )
+
+        now_local = datetime.now()
+        if force_next:
+            try:
+                gap_hours = float(seconds) / 3600.0 if seconds is not None else overnight_h
+            except (TypeError, ValueError):
+                gap_hours = overnight_h
+        else:
+            try:
+                gap_hours = float(seconds) / 3600.0
+            except (TypeError, ValueError):
+                return ""
+            if not _sr.looks_like_overnight(
+                gap_hours,
+                now_local.hour,
+                min_gap_hours=min_gap_h,
+                overnight_hours=overnight_h,
+            ):
+                log.debug(
+                    "sleep-return silent: gap=%.1fh hour=%d not overnight",
+                    gap_hours, now_local.hour,
+                )
+                return ""
+
+        # Where she dozed off — her current room location if it reads as a
+        # restful spot, else the cozy default. Best-effort; never fatal.
+        spot_slug: str | None = None
+        world_store = getattr(self, "_world_store", None)
+        if world_store is not None:
+            try:
+                state = world_store.get_state()
+                loc_id = getattr(state, "location_id", None)
+                if loc_id is not None:
+                    loc = world_store.get_location_by_id(int(loc_id))
+                    if loc is not None:
+                        spot_slug = getattr(loc, "slug", None)
+            except Exception:
+                log.debug("sleep-return: world state read failed", exc_info=True)
+        spot_phrase = _sr.sleep_spot_phrase(spot_slug)
+
+        # Optional dream linkage — newest ``[dream]`` reflection within the
+        # lookback window gets woven into the cue.
+        dream_gist = self._recent_dream_gist(now_local, ms)
+
+        name = self.user_display_name
+        self._gap_cue_surfaced = True
+        self._last_sleep_return = {
+            "gap_hours": round(gap_hours, 2),
+            "return_hour": now_local.hour,
+            "spot": spot_phrase,
+            "spot_slug": spot_slug,
+            "dream": bool(dream_gist),
+        }
+        log.info(
+            "sleep-return fire: gap=%.1fh hour=%d spot=%s dream=%s",
+            gap_hours, now_local.hour, spot_slug or "-", bool(dream_gist),
+        )
+        return _sr.render_sleep_line(
+            spot_phrase,
+            user_display_name=name,
+            dream_gist=dream_gist,
+        )
+
+    def _recent_dream_gist(self, now_local: Any, memory_settings: Any) -> str | None:
+        """Newest ``[dream]`` reflection content within the lookback window.
+
+        Dreams are stored by the :class:`DreamWorker` as ``kind="reflection"``
+        rows whose content is prefixed ``[dream] ``. Returns the cleaned gist
+        (prefix stripped, truncated) or ``None`` when no recent dream exists.
+        """
+        from datetime import datetime, timezone
+
+        from app.core.world import sleep_return as _sr
+
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is None:
+            return None
+        lookback_h = float(
+            getattr(
+                memory_settings,
+                "sleep_return_dream_lookback_hours",
+                _sr.DEFAULT_DREAM_LOOKBACK_HOURS,
+            )
+        )
+        if lookback_h <= 0:
+            return None
+        try:
+            reflections = list(memory_store.iter_by_kind("reflection"))
+        except Exception:
+            log.debug("sleep-return: reflection snapshot failed", exc_info=True)
+            return None
+
+        prefix = "[dream] "
+        now_utc = datetime.now(timezone.utc)
+        best_dt: datetime | None = None
+        best_content: str | None = None
+        for mem in reflections:
+            content = str(getattr(mem, "content", "") or "")
+            if not content.lower().startswith(prefix):
+                continue
+            created = _parse_dt_utc(getattr(mem, "created_at", None))
+            if created is None:
+                continue
+            age_h = (now_utc - created).total_seconds() / 3600.0
+            if age_h < 0 or age_h > lookback_h:
+                continue
+            if best_dt is None or created > best_dt:
+                best_dt = created
+                best_content = content[len(prefix):].strip()
+
+        if not best_content:
+            return None
+        # Keep the cue short — first sentence / 160 chars.
+        gist = best_content.replace("\n", " ").strip()
+        if len(gist) > 160:
+            gist = gist[:157].rstrip() + "…"
+        return gist or None
 
     def _render_away_activities_block(self) -> str:
         """K36: surface one "while you were away I …" line after a gap.

@@ -486,6 +486,77 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_idle_seed_surface raised: {exc}"
 
     @mcp.tool()
+    def get_sleep_return_state() -> str:
+        """H21 — dump the overnight-sleep return-cue state.
+
+        On return from a long typed gap that plausibly spanned an overnight
+        sleep, Aiko surfaces ONE casual "I actually dozed off ..." line
+        (optionally weaving in a recent ``[dream]`` reflection). This shows
+        the master switch, the gap/overnight/dream-lookback thresholds, the
+        pending-slot value, the force flag, and the last fire's diagnostics.
+        """
+        try:
+            agent = session._settings.agent
+            ms = session._memory_settings
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "sleep_return_enabled", True)
+                    ),
+                    "min_gap_hours": float(
+                        getattr(ms, "sleep_return_min_gap_hours", 5.0)
+                    ),
+                    "overnight_hours": float(
+                        getattr(ms, "sleep_return_overnight_hours", 9.0)
+                    ),
+                    "dream_lookback_hours": float(
+                        getattr(ms, "sleep_return_dream_lookback_hours", 18.0)
+                    ),
+                    "pending_seconds": getattr(
+                        session, "_pending_sleep_return_seconds", None
+                    ),
+                    "force_next": bool(
+                        getattr(session, "_sleep_return_force_next", False)
+                    ),
+                    "last_fire": getattr(session, "_last_sleep_return", None),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_sleep_return_state raised: {exc}"
+
+    @mcp.tool()
+    def force_sleep_return_surface() -> str:
+        """H21 — arm a one-shot bypass on the sleep-return gates.
+
+        Sets ``_sleep_return_force_next`` so the next provider call ignores
+        the pending-slot gate, the gap-threshold check, the return-hour
+        overnight gate, AND the one-of ``turning_over`` guard. A recent
+        ``[dream]`` reflection (within ``sleep_return_dream_lookback_hours``)
+        is still woven in only if one exists. Bypass is consumed on the next
+        assembly regardless.
+
+        Repro: ``force_sleep_return_surface()`` -> ``send_message(
+        skip_tts=true)`` -> confirm the "While ... was away you actually
+        dozed off ..." line in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._sleep_return_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the slot, gap threshold, "
+                        "overnight gate, and turning_over guard; a recent "
+                        "[dream] reflection is woven in if one exists"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_sleep_return_surface raised: {exc}"
+
+    @mcp.tool()
     def get_hobby_state() -> str:
         """H19 — dump Aiko's current hobby / ongoing-project state.
 

@@ -753,7 +753,36 @@ the drift.
 
 ---
 
-## H21. Sleep & overnight rhythm — and dreams that surface
+## H21. Sleep & overnight rhythm — and dreams that surface — SHIPPED
+
+> **Shipped.** The producer side was already in place from earlier batches:
+> H16 [`CircadianSettleWorker`](../../app/core/world/circadian_settle_worker.py)
+> settles her into `bed`/`napping` in the late-night band once the lively beats
+> taper off, and H18's `_CIRCADIAN_BIAS`
+> ([`activity_selection.py`](../../app/core/world/activity_selection.py)) already
+> boosts `nap` heavily overnight — so she no longer idles at the desk at 3am. H21
+> adds the missing **behavioural anchor + dream home**: a one-shot
+> **sleep-return cue**. The pure
+> [`sleep_return.py`](../../app/core/world/sleep_return.py) decides whether a
+> typed gap plausibly spanned an overnight sleep (`looks_like_overnight` —
+> morning-band return after `sleep_return_min_gap_hours`=5h, OR any gap ≥
+> `sleep_return_overnight_hours`=9h) and picks a believable spot
+> (`sleep_spot_phrase` from her current room location). The provider
+> [`_render_sleep_return_block`](../../app/core/session/inner_life_part2.py) is
+> armed post-turn (`_maybe_arm_sleep_return_slot`) and runs **first** in the
+> gap-cue family (after K28 `turning_over`, before K36 `away_activities` / K34
+> `forward_curiosity`) so an overnight return wins the one-of `_gap_cue_surfaced`
+> slot with the sleep frame. When a recent `[dream]` reflection exists (within
+> `sleep_return_dream_lookback_hours`=18h) it's woven in — finally giving the
+> [`DreamWorker`](../../app/core/proactive/dream_worker.py) dreams a cause ("I
+> dozed off on the beanbag and had the strangest dream about …"). A
+> non-overnight gap returns silently **without** consuming the one-of slot, so
+> the ordinary away/forward cues still fire. Settings:
+> `agent.sleep_return_enabled` + `memory.sleep_return_min_gap_hours` /
+> `_overnight_hours` / `_dream_lookback_hours`. Persona: "When I dozed off" block
+> in [`aiko_companion.txt`](../../data/persona/aiko_companion.txt). MCP:
+> `get_sleep_return_state`, `force_sleep_return_surface`. Tests:
+> `tests/test_sleep_return.py`.
 
 **Motivation.** Aiko never sleeps. At 3am she's still "doodling at the desk",
 which quietly breaks immersion, and the existing

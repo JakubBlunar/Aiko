@@ -611,6 +611,7 @@ class SpeakingWorkersInitMixin:
             appreciation=self._render_appreciation_block,
             reciprocal_vulnerability=self._render_reciprocal_vulnerability_block,
             turning_over=self._render_turning_over_block,
+            sleep_return=self._render_sleep_return_block,
             away_activities=self._render_away_activities_block,
             forward_curiosity=self._render_forward_curiosity_block,
             follow_up=self._render_follow_up_block,
