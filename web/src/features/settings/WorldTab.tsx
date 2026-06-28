@@ -15,6 +15,8 @@ import type {
   WorldPosture,
   WorldSnapshot,
 } from "../../types";
+import { CheckboxField } from "@/components/CheckboxField";
+import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
 
 export interface GiveDraft {
@@ -379,19 +381,15 @@ export function WorldTab({
                   className="w-14 rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
                 />
               </label>
-              <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
-                <input
-                  type="checkbox"
-                  checked={giveDraft.consumable}
-                  onChange={(e) =>
-                    setGiveDraft({
-                      ...giveDraft,
-                      consumable: e.target.checked,
-                    })
-                  }
-                />
+              <CheckboxField
+                className="gap-1 text-[11px] text-ink-100/60"
+                checked={giveDraft.consumable}
+                onChange={(checked) =>
+                  setGiveDraft({ ...giveDraft, consumable: checked })
+                }
+              >
                 <span>Consumable</span>
-              </label>
+              </CheckboxField>
               <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
                 <span>Where:</span>
                 <select
@@ -436,16 +434,14 @@ export function WorldTab({
             you've left her something, or after a long quiet stretch.
             Cooldown + daily cap keep it subtle, not chatty.
           </p>
-          <label className="flex items-center gap-2 text-xs text-ink-100/70">
-            <input
-              type="checkbox"
-              checked={companion.world_notice_enabled}
-              onChange={(e) =>
-                onPatchCompanion({ world_notice_enabled: e.target.checked })
-              }
-            />
+          <Toggle
+            checked={companion.world_notice_enabled}
+            onChange={(checked) =>
+              onPatchCompanion({ world_notice_enabled: checked })
+            }
+          >
             Enable proactive room / gift notices
-          </label>
+          </Toggle>
           <div className="grid grid-cols-2 gap-2">
             <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
               <span>Daily cap</span>

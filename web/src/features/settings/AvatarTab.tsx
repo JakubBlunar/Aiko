@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api";
+import { Toggle } from "@/components/Toggle";
 import { desktop as desktopCommands } from "../../desktop/commands";
 import { useAssistantStore } from "../../store";
 import type {
@@ -501,43 +502,33 @@ export function AvatarTab({
             (a wave, a hug) and you can react to her messages with
             emoji. The persona overlay shows gestures as a banner.
           </p>
-          <label className="flex items-center gap-2 text-xs text-ink-100/70">
-            <input
-              type="checkbox"
-              checked={companion.touch_enabled}
-              onChange={(e) =>
-                onPatchCompanion({ touch_enabled: e.target.checked })
-              }
-              className="accent-ink-400"
-            />
+          <Toggle
+            checked={companion.touch_enabled}
+            inputClassName="accent-ink-400"
+            onChange={(checked) =>
+              onPatchCompanion({ touch_enabled: checked })
+            }
+          >
             Aiko can send touch gestures
-          </label>
-          <label className="flex items-center gap-2 text-xs text-ink-100/70">
-            <input
-              type="checkbox"
-              checked={companion.user_reactions_enabled}
-              onChange={(e) =>
-                onPatchCompanion({
-                  user_reactions_enabled: e.target.checked,
-                })
-              }
-              className="accent-ink-400"
-            />
+          </Toggle>
+          <Toggle
+            checked={companion.user_reactions_enabled}
+            inputClassName="accent-ink-400"
+            onChange={(checked) =>
+              onPatchCompanion({ user_reactions_enabled: checked })
+            }
+          >
             Emoji reactions on Aiko's messages
-          </label>
-          <label className="flex items-center gap-2 text-xs text-ink-100/70">
-            <input
-              type="checkbox"
-              checked={companion.persona_touch_banner_enabled}
-              onChange={(e) =>
-                onPatchCompanion({
-                  persona_touch_banner_enabled: e.target.checked,
-                })
-              }
-              className="accent-ink-400"
-            />
+          </Toggle>
+          <Toggle
+            checked={companion.persona_touch_banner_enabled}
+            inputClassName="accent-ink-400"
+            onChange={(checked) =>
+              onPatchCompanion({ persona_touch_banner_enabled: checked })
+            }
+          >
             Show gesture banner in the persona window
-          </label>
+          </Toggle>
           <label className="ml-6 flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
             <span>Banner duration (s)</span>
             <input

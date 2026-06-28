@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AssistantSettings } from "../../types";
+import { Toggle } from "@/components/Toggle";
 import { useAssistantStore } from "../../store";
 import { MobileAudioSection } from "./MobileAudioSection";
 import { Row, Section } from "./SettingsSection";
@@ -100,16 +101,13 @@ export function VoiceTab({
             ),
           )}
         </select>
-        <label className="mt-3 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={settings.tts.enabled}
-            onChange={(e) =>
-              void apply({ tts: { enabled: e.target.checked } })
-            }
-          />
+        <Toggle
+          className="mt-3"
+          checked={settings.tts.enabled}
+          onChange={(checked) => void apply({ tts: { enabled: checked } })}
+        >
           Speak responses out loud
-        </label>
+        </Toggle>
         <Row label="Provider" value={settings.tts.provider} />
       </Section>
 
@@ -190,30 +188,24 @@ export function VoiceTab({
           ))}
         </select>
         <Row label="STT model" value={settings.stt.model} />
-        <label className="mt-3 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={settings.audio.barge_in_enabled}
-            onChange={(e) =>
-              void apply({
-                audio: { barge_in_enabled: e.target.checked },
-              })
-            }
-          />
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.barge_in_enabled}
+          onChange={(checked) =>
+            void apply({ audio: { barge_in_enabled: checked } })
+          }
+        >
           Allow barge-in (interrupt while Aiko is speaking)
-        </label>
-        <label className="mt-3 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={settings.audio.earcons_enabled ?? true}
-            onChange={(e) =>
-              void apply({
-                audio: { earcons_enabled: e.target.checked },
-              })
-            }
-          />
+        </Toggle>
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.earcons_enabled ?? true}
+          onChange={(checked) =>
+            void apply({ audio: { earcons_enabled: checked } })
+          }
+        >
           Earcons (little [[laugh]] / [[sigh]] sound effects)
-        </label>
+        </Toggle>
       </Section>
 
       <Section title="Microphone DSP">
@@ -353,18 +345,15 @@ export function VoiceTab({
           fires while the app window is in focus — backgrounded
           tabs and alt-tabbed windows pause the timer.
         </p>
-        <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={settings.proactive?.typed_enabled ?? true}
-            onChange={(e) =>
-              void apply({
-                proactive: { typed_enabled: e.target.checked },
-              })
-            }
-          />
+        <Toggle
+          className="mt-2"
+          checked={settings.proactive?.typed_enabled ?? true}
+          onChange={(checked) =>
+            void apply({ proactive: { typed_enabled: checked } })
+          }
+        >
           Let Aiko speak first in typed chat
-        </label>
+        </Toggle>
         <Row
           label="Silence threshold (s)"
           value={
@@ -423,21 +412,16 @@ export function VoiceTab({
          * ``SessionController._is_typed_proactive_eligible``
          * for the exact gate.
          */}
-        <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={settings.proactive?.typed_when_away ?? false}
-            onChange={(e) =>
-              void apply({
-                proactive: { typed_when_away: e.target.checked },
-              })
-            }
-            disabled={
-              !(settings.proactive?.typed_enabled ?? true)
-            }
-          />
+        <Toggle
+          className="mt-2"
+          checked={settings.proactive?.typed_when_away ?? false}
+          disabled={!(settings.proactive?.typed_enabled ?? true)}
+          onChange={(checked) =>
+            void apply({ proactive: { typed_when_away: checked } })
+          }
+        >
           Chime in even when I'm not at the window
-        </label>
+        </Toggle>
       </Section>
 
       <Section title="Activity awareness (desktop)">
@@ -447,20 +431,15 @@ export function VoiceTab({
           reference it when natural. Off by default. Browser tabs
           see the toggle but it's a no-op there.
         </p>
-        <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={
-              settings.activity?.awareness_enabled ?? false
-            }
-            onChange={(e) =>
-              void apply({
-                activity: { awareness_enabled: e.target.checked },
-              })
-            }
-          />
+        <Toggle
+          className="mt-2"
+          checked={settings.activity?.awareness_enabled ?? false}
+          onChange={(checked) =>
+            void apply({ activity: { awareness_enabled: checked } })
+          }
+        >
           Share the foreground app name with Aiko
-        </label>
+        </Toggle>
         {settings.activity?.awareness_enabled ? (
           <p className="mt-2 text-[11px] text-ink-100/60">
             {tauri ? (
@@ -553,23 +532,17 @@ export function VoiceTab({
             />
           }
         />
-        <label className="mt-1 flex items-center gap-2 text-xs text-ink-100/70">
-          <input
-            type="checkbox"
-            checked={
-              settings.endpointing?.hesitation_extend_to_turn ?? true
-            }
-            onChange={(e) =>
-              void apply({
-                endpointing: {
-                  hesitation_extend_to_turn: e.target.checked,
-                },
-              })
-            }
-          />
-          Extend capture on hesitation words ("um", "and", "you
-          know"…)
-        </label>
+        <Toggle
+          className="mt-1"
+          checked={settings.endpointing?.hesitation_extend_to_turn ?? true}
+          onChange={(checked) =>
+            void apply({
+              endpointing: { hesitation_extend_to_turn: checked },
+            })
+          }
+        >
+          Extend capture on hesitation words ("um", "and", "you know"…)
+        </Toggle>
       </Section>
     </>
   );
