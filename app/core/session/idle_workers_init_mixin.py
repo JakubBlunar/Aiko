@@ -134,6 +134,20 @@ class IdleWorkersInitMixin:
                     cooldown_seconds=mem.away_activities_cooldown_seconds,
                     daily_cap=mem.away_activities_daily_cap,
                     journal_max=mem.away_activities_journal_max,
+                    intentional_hold_seconds=getattr(
+                        self._settings.agent,
+                        "world_intentional_hold_seconds",
+                        7200.0,
+                    ),
+                    # H18 — tilt the weighted activity draw by time of day,
+                    # current mood, and the daily personality colour.
+                    circadian_period_provider=(
+                        lambda: self.current_circadian_period()
+                    ),
+                    valence_provider=self._away_activity_valence,
+                    day_color_provider=lambda: self._chat_db.kv_get(
+                        "aiko.day_color"
+                    ),
                 )
                 self._idle_scheduler.register(self._away_activity_worker)
             except Exception:
@@ -830,3 +844,23 @@ class IdleWorkersInitMixin:
         # Cached gap list produced by the post-turn detector for the
         # NEXT turn's inner-life provider. Cleared after each render.
         self._pending_belief_gaps: list[Any] = []
+
+    def _away_activity_valence(self) -> float | None:
+        """Current affect valence for the H18 idle-activity weighting.
+
+        Best-effort: returns ``None`` (no mood tilt) if the affect store is
+        missing or raises, so the away-activity worker never crashes on it.
+        """
+        store = getattr(self, "_affect_store", None)
+        if store is None:
+            return None
+        try:
+            state = store.get(self._user_id)
+        except Exception:
+            return None
+        if state is None:
+            return None
+        try:
+            return float(state.valence)
+        except Exception:
+            return None

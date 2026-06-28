@@ -60,6 +60,43 @@ _VISIT_DURATION_MINUTES = 6.0
 # the first available location if ``desk`` was renamed/removed.
 _RETURN_SLUG = "desk"
 
+# Must match ``app.core.session.world_mixin.WORLD_INTENTIONAL_STATE_KEY``.
+# When the brain / user deliberately places Aiko, we (a) don't start a
+# fresh garden visit during the hold window and (b) cancel an outstanding
+# auto-return if she chose to stay put after the worker walked her out.
+_INTENTIONAL_STATE_KEY = "world.intentional_state_at"
+
+# H13 — cozy spots she may settle into after a garden visit, plus the
+# matching pose. Keyed by location slug; unrecognised rooms are ignored.
+_RETURN_SPOTS: dict[str, tuple[str, str]] = {
+    "desk": ("sitting", "idle"),
+    "beanbag": ("curled_up", "idle"),
+    "window_seat": ("leaning", "looking_outside"),
+    "bookshelf": ("curled_up", "reading"),
+    "bed": ("lying", "napping"),
+}
+
+# Periods where curling up for a nap on the bed reads as natural.
+_RESTFUL_PERIODS = frozenset({"late_night", "night", "early_morning"})
+
+
+def _return_weight(slug: str, period: str) -> float:
+    """Time-of-day weight for a return spot (higher = more likely)."""
+    period = (period or "").strip()
+    if slug == "bed":
+        return 2.2 if period in _RESTFUL_PERIODS else 0.25
+    if slug == "window_seat":
+        # Nice light in the morning / afternoon.
+        return 1.4 if period in {"morning", "midday", "afternoon"} else 1.0
+    if slug == "beanbag":
+        return 1.2
+    if slug == "bookshelf":
+        return 1.1 if period in {"afternoon", "evening", "night"} else 0.9
+    if slug == "desk":
+        # Still a common landing spot, just no longer the only one.
+        return 1.0
+    return 0.6
+
 
 class GardenVisitWorker:
     """IdleWorker that wanders Aiko between her room and the garden."""
@@ -76,10 +113,12 @@ class GardenVisitWorker:
         kv_set: Callable[[str, str], None] | None = None,
         rng: random.Random | None = None,
         circadian_period_provider: Callable[[], str] | None = None,
+        intentional_hold_seconds: float = 0.0,
     ) -> None:
         self._store = store
         self._notify = notify
         self._interval_seconds = float(interval_seconds)
+        self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
         # Per-instance bookkeeping — return_at + next_eligible are
         # stored here when no kv_get/kv_set are supplied so tests can
         # exercise the two-phase logic without a real ChatDatabase.
@@ -117,7 +156,10 @@ class GardenVisitWorker:
         if in_garden:
             return_at = self._load_return_at()
             return return_at is not None and now >= return_at
-        # Phase 1 — outside the garden: respect daylight + cooldown.
+        # Phase 1 — outside the garden: don't start a visit right after a
+        # deliberate placement, then respect daylight + cooldown.
+        if self._intentional_hold_active(now):
+            return False
         if not self._is_daylight(now):
             return False
         next_eligible = self._load_next_eligible()
@@ -140,6 +182,13 @@ class GardenVisitWorker:
             return {"skipped": True, "reason": "state_unavailable"}
         in_garden = state.location_id == garden.id
         if in_garden:
+            # If Aiko deliberately re-set her state after we walked her out
+            # (e.g. told the user "I'll stay out here a while"), honour that:
+            # drop the pending auto-return instead of dragging her back.
+            if self._intentional_override_during_visit(now):
+                self._save_return_at(None)
+                log.info("garden_visit: auto-return cancelled (intentional stay)")
+                return {"phase": "inbound", "cancelled_intentional": True}
             return self._return_home(now=now)
         return self._visit_garden(garden=garden, now=now)
 
@@ -233,17 +282,15 @@ class GardenVisitWorker:
     # ── phase 2 — return home ──────────────────────────────────────
 
     def _return_home(self, *, now: datetime) -> dict[str, Any]:
-        target = self._store.get_location(_RETURN_SLUG)
-        if target is None:
-            locations = [
-                l for l in self._store.list_locations() if l.slug != "garden"
-            ]
-            target = locations[0] if locations else None
+        # H13 — vary where she settles after the garden instead of always
+        # snapping back to the desk. Time-of-day weighted over the cozy
+        # spots the room actually has.
+        target, posture, activity = self._pick_return_target(now)
         target_id = target.id if target is not None else None
         new_state = self._store.set_state(
             location_id=target_id,
-            posture="sitting",
-            activity="idle",
+            posture=posture,
+            activity=activity,
         )
         self._broadcast({"state": new_state.to_dict()})
         self._save_return_at(None)
@@ -255,6 +302,39 @@ class GardenVisitWorker:
             "phase": "inbound",
             "returned_to_slug": getattr(target, "slug", None),
         }
+
+    def _pick_return_target(
+        self, now: datetime,
+    ) -> tuple[Any | None, str, str]:
+        """Weighted choice of a cozy non-garden spot + matching pose."""
+        locations = [
+            l for l in self._store.list_locations()
+            if getattr(l, "slug", "") != "garden"
+        ]
+        if not locations:
+            return None, "sitting", "idle"
+        period = self._current_period(now)
+        candidates: list[Any] = []
+        weights: list[float] = []
+        for loc in locations:
+            slug = (getattr(loc, "slug", "") or "").lower()
+            if slug not in _RETURN_SPOTS:
+                continue
+            candidates.append(loc)
+            weights.append(_return_weight(slug, period))
+        if not candidates:
+            # No recognised cozy spot — fall back to the desk or first room.
+            desk = self._store.get_location(_RETURN_SLUG)
+            target = desk if desk is not None else locations[0]
+            return target, "sitting", "idle"
+        chosen = self._rng.choices(candidates, weights=weights, k=1)[0]
+        posture, activity = _RETURN_SPOTS[
+            (getattr(chosen, "slug", "") or "").lower()
+        ]
+        # Daytime nap looks odd; only nap on the bed at low-energy periods.
+        if activity == "napping" and period not in _RESTFUL_PERIODS:
+            posture, activity = "sitting", "idle"
+        return chosen, posture, activity
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -337,6 +417,45 @@ class GardenVisitWorker:
             self._RETURN_KEY,
             when.isoformat() if when is not None else None,
         )
+
+    def _load_intentional_state_at(self) -> datetime | None:
+        raw = self._kv_read(_INTENTIONAL_STATE_KEY)
+        if not raw:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts
+
+    def _intentional_hold_active(self, now: datetime) -> bool:
+        """True while a deliberate placement is still inside the hold window."""
+        if self._intentional_hold_seconds <= 0:
+            return False
+        stamped = self._load_intentional_state_at()
+        if stamped is None:
+            return False
+        return (now - stamped).total_seconds() < self._intentional_hold_seconds
+
+    def _intentional_override_during_visit(self, now: datetime) -> bool:
+        """True if Aiko was deliberately placed *after* we walked her out.
+
+        Means she (via the brain) or the user chose to stay in / move within
+        the garden after the worker started the visit — so the pending
+        auto-return should be dropped rather than yanking her back.
+        """
+        if self._intentional_hold_seconds <= 0:
+            return False
+        stamped = self._load_intentional_state_at()
+        if stamped is None:
+            return False
+        return_at = self._load_return_at()
+        if return_at is None:
+            return False
+        outbound_at = return_at - timedelta(minutes=_VISIT_DURATION_MINUTES)
+        return stamped > outbound_at
 
     def _load_next_eligible(self) -> datetime | None:
         raw = self._kv_read(self._NEXT_KEY)

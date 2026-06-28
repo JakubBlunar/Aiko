@@ -29,6 +29,16 @@ from typing import TYPE_CHECKING, Any
 # ``add_world_item`` whenever ``given_by == "user"``.
 WORLD_LAST_USER_GIFT_KEY = "world.last_user_gift"
 
+# kv_meta key stamped (ISO-8601 UTC) whenever the brain (move_to /
+# change_posture tools) or the user (World tab PATCH) *intentionally* sets
+# Aiko's room state via ``update_world_state``. The autonomous movers
+# (away-activity location beats, garden visit worker, circadian default)
+# read it and defer for ``agent.world_intentional_hold_seconds`` so a spot
+# Aiko deliberately chose ("I'll stay in the garden") isn't yanked away by
+# a background worker. Duplicated as a literal in those worker modules to
+# avoid importing the session package.
+WORLD_INTENTIONAL_STATE_KEY = "world.intentional_state_at"
+
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.world.world_store import WorldStore
 
@@ -717,6 +727,16 @@ class WorldMixin:
         except Exception:
             log.debug("world set_state failed", exc_info=True)
             return None
+        # Stamp the intentional-placement watermark so the autonomous
+        # movers defer to this deliberate choice (brain tool / World tab).
+        # Best-effort: a failed stamp just means the hold doesn't apply.
+        try:
+            self._chat_db.kv_set(
+                WORLD_INTENTIONAL_STATE_KEY,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except Exception:
+            log.debug("intentional-state stamp failed", exc_info=True)
         snap = state.to_dict()
         self._notify_world({"state": snap})
         return snap

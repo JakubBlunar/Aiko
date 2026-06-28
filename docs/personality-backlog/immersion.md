@@ -325,6 +325,406 @@ already lights up the World tab; the persona side can reuse
 
 ---
 
+## H0 (foundation, SHIPPED). Intentional-placement hold — workers defer to deliberate choices
+
+**Motivation.** The autonomous movers (H13 location beats, the garden worker,
+the H16 circadian default) must **never override a spot Aiko deliberately chose
+in conversation**. If she tells the user "I'll stay out in the garden a while",
+a background worker dragging her back to the desk five minutes later reads as
+broken and breaks immersion.
+
+**Shipped mechanism.** Every *intentional* room change goes through
+[`SessionController.update_world_state`](../../app/core/session/world_mixin.py)
+— the `move_to` / `change_posture` tools (brain) and the World-tab
+`PATCH /api/world/state` (user). That seam now stamps a kv watermark
+`world.intentional_state_at` (ISO-8601 UTC). The workers call
+`store.set_state` **directly** and so never self-trigger the watermark. For
+`agent.world_intentional_hold_seconds` (default `7200` / 2h, `0` disables):
+
+- [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py) skips
+  the whole beat while the hold is active (`skipped_intentional_hold`).
+- [`GardenVisitWorker`](../../app/core/world/garden_visit_worker.py) won't
+  *start* a fresh visit during the hold, and **cancels a pending auto-return**
+  if Aiko was deliberately re-placed after the worker walked her out (she chose
+  to stay — `cancelled_intentional`, the `return_at` marker is dropped).
+
+Worker-initiated visits are unaffected (they don't stamp the watermark), so her
+normal autonomous life resumes once the hold expires. Tests:
+`tests/test_idle_activity_worker.py::GateTests` (hold defers / expires /
+disabled) and `tests/test_garden_visit_worker.py::GardenVisitWorkerIntentionalHoldTests`.
+
+---
+
+## H13. Idle worker actually moves Aiko around the room — SHIPPED
+
+> **Shipped.** `ActivityPlan` gained an `aiko_location_id`; each beat now
+> resolves a cozy spot (`snack`→kitchenette, `read_book`→beanbag/bookshelf,
+> `look_outside`→window seat, `tidy_desk`→desk, `doodle`→beanbag, `wander`→
+> window/beanbag, new `nap`→bed) via `_match_location`, and
+> `_apply_world_mutation` passes `location_id` to `set_state`. The
+> `GardenVisitWorker._return_home` now picks a time-of-day-weighted cozy spot
+> (`_RETURN_SPOTS` + `_return_weight`) instead of always snapping to the desk.
+> Tests: `tests/test_idle_activity_worker.py::test_beat_moves_aiko_to_matching_location`,
+> `tests/test_garden_visit_worker.py`.
+
+
+**Motivation.** Aiko is perpetually at her desk because **nothing moves her
+there in data**. The K36
+[`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py)'s
+`_apply_world_mutation` only ever calls `set_state(posture=…, activity=…)` —
+it **never passes `location_id`**. So "curled up reading", "looking out the
+window", and "had some of the tea" all happen *at the desk*: the posture and
+activity verb change, but her location pointer doesn't. The `ActivityPlan`
+dataclass already has a `move_to_location_id`, but it's wired only to move the
+**cat** to another spot, not Aiko. Meanwhile the only thing that relocates her
+at all — the [`GardenVisitWorker`](../../app/core/world/garden_visit_worker.py)
+— always returns her to a hardcoded `_RETURN_SLUG = "desk"`. Net effect: the
+seven cozy locations (bed, bookshelf, kitchenette, window seat, beanbag,
+mirror corner, garden) are almost never where the World tab / persona window
+shows her.
+
+**Proposal.** Give each `ActivityPlan` an Aiko-move target and apply it: read →
+`bookshelf`/`beanbag`, `look_outside` → `window_seat`, `snack` →
+`kitchenette`, `wander`/`thinking` → `window_seat`/`beanbag`, a new `nap` →
+`bed`, `tidy_desk` → `desk`. `_apply_world_mutation` then calls
+`set_state(location_id=target_id, posture=…, activity=…)` so she's actually
+*at* the place the beat describes, and the patch broadcast already lights up
+the World tab. Vary `GardenVisitWorker._return_home` to pick a weighted-random
+cozy spot (time-of-day aware) instead of snapping to the desk every time.
+Cheap, high-impact, no new model spend — it's the single change that makes the
+room feel inhabited. Pairs naturally with **H10** (avatar acting the location
+out) and **H16** (where you *find* her on arrival).
+
+**Key files.**
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(`ActivityPlan` + `_pick_activity` location targets + `_apply_world_mutation`
+self-move), [`app/core/world/garden_visit_worker.py`](../../app/core/world/garden_visit_worker.py)
+(`_return_home` weighted return), [`app/core/world/world_store.py`](../../app/core/world/world_store.py)
+(`set_state` already accepts `location_id`).
+
+---
+
+## H14. Model-generated idle activities — open-vocab verbs, grounded in the room
+
+**Motivation.** Activities are a closed 10-entry enum
+(`VALID_ACTIVITIES` in [`world_store.py`](../../app/core/world/world_store.py)
+— idle / reading / tinkering / napping / watching_screens / thinking /
+snacking / stretching / looking_outside / doodling). Both write paths **clamp
+to it**: `WorldStore.set_state` silently falls back to the current value on an
+unknown activity, and the
+[`ChangePostureTool`](../../app/llm/tools/world.py) raises a `ToolError`
+listing the ten. So when the chat model or a worker reaches for something
+richer ("repotting the basil", "reorganising the bookshelf", "sketching the
+skyline") it's dropped. The idle worker compounds this: it chooses from ~7
+hardcoded `ActivityPlan` templates and only uses the worker LLM to *rephrase
+the summary line*, never to pick the activity itself. The result is a small,
+repetitive loop. This is the same gap the touch system closed — we want a
+curated baseline plus genuine model-driven variety on top.
+
+**Proposal** (mirror the `[[touch:KIND]]` pattern — curated taxonomy + model
+choice):
+1. **Open-vocab activity field.** Keep `VALID_ACTIVITIES` as the *canonical*
+   set the avatar mapping (H10) understands, but let the stored `activity` be
+   normalised free text (snake_case, length-capped, swallow-and-default on
+   garbage) with a derived `canonical_activity` for downstream consumers.
+   `set_state` stops rejecting unknowns; `change_posture` accepts free text via
+   the same normaliser. **Posture stays a strict enum** (it drives the rig).
+2. **Let the worker LLM compose the whole `ActivityPlan`** — pick a real
+   location from the live `world_store.snapshot()`, a posture from the enum, a
+   short free-text activity verb, and the summary — grounded in the actual
+   items/locations present. Keep the deterministic templates as the safe
+   fallback when there's no worker LLM or the JSON is bad.
+3. **Optional `[[activity:short verb]]` self-tag** so the chat model can set
+   "what she's doing right now" inline during a turn (parsed + stripped like
+   `[[touch:…]]`), applied post-turn — richer presence without a tool
+   round-trip.
+
+**Key files.**
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py)
+(`VALID_ACTIVITIES` → canonical set + a `normalize_activity` helper, open-vocab
+`set_state`), [`app/llm/tools/world.py`](../../app/llm/tools/world.py)
+(`ChangePostureTool` validation), [`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(LLM `ActivityPlan` path + fallback),
+[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py)
++ [`turn_runner.py`](../../app/core/session/turn_runner.py) if the
+`[[activity:…]]` tag is added, plus the avatar mapping in **H10** (needs a
+graceful default for non-canonical verbs).
+
+---
+
+## H15. Needs-driven, richer garden + outdoor life
+
+**Motivation.** The garden exists and works, but visits feel rare and
+mechanical. [`GardenVisitWorker`](../../app/core/world/garden_visit_worker.py)
+fires purely on a timer (daylight window + 1.5–3.5h cooldown), lingers a fixed
+6 minutes, only ever **waters + harvests**, then returns to the desk — there's
+no *reason* tied to the garden's actual state, and nothing else happens out
+there. [`PlantGrowthWorker`](../../app/core/world/plant_growth_worker.py) and
+[`promote_stage`](../../app/core/world/world_store.py) already track per-plant
+need (`last_watered_at`, `days_dry`, `stage`), so the signals for motivated
+visits are sitting unused.
+
+**Proposal.**
+- **Trigger by need, not just the clock**: bring a visit forward when a plant
+  is drought-stressed (`days_dry` high) or has just hit `mature` (something to
+  harvest), so the trip feels caused. Keep the timer as the floor.
+- **Vary the visit**: jittered duration, weighted-random return spot (feeds
+  H13), and an occasional **non-gardening outdoor beat** (sit on the pavers
+  with tea, read outside on a warm afternoon) so "garden" isn't only chores.
+- **Leave a trace**: append the visit to the K36 away-activities journal
+  (`AWAY_ACTIVITIES_JOURNAL_KEY`) so the existing surfacing provider can let
+  her mention "I was out repotting the lavender" on your next turn — today the
+  visit only mutates location + logs, so she rarely brings it up.
+
+**Key files.**
+[`app/core/world/garden_visit_worker.py`](../../app/core/world/garden_visit_worker.py)
+(need-driven `is_ready` + varied visit/return + journal append),
+[`app/core/world/plant_growth_worker.py`](../../app/core/world/plant_growth_worker.py)
+(expose the "needs attention" signal),
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py),
+[`idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(shared journal helpers).
+
+---
+
+## H16. Circadian "where you find her" — believable default location on arrival — SHIPPED
+
+> **Shipped.** New [`CircadianSettleWorker`](../../app/core/world/circadian_settle_worker.py)
+> — the gentlest mover. A pure `settle_target(period)` table maps period →
+> resting spot (night→bed, morning→desk, afternoon→beanbag). It fires only
+> when her room state has been static for `circadian_settle_after_seconds`
+> (default 2h), never overrides the intentional-placement hold or a garden
+> visit, and no-ops when she's already there. Switches:
+> `agent.circadian_settle_enabled`, `memory.circadian_settle_interval_seconds`,
+> `memory.circadian_settle_after_seconds`. Tests:
+> `tests/test_circadian_settle_worker.py`.
+
+
+**Motivation.** Even with H13 moving her during away-beats, the *seed* default
+(`_DEFAULT_INITIAL_STATE` → desk / sitting / watching_screens) and the garden
+worker's desk-return mean that when the user opens the app they almost always
+catch Aiko at the desk regardless of the hour. A companion feels far more
+alive if where you *find* her tracks the time of day: the window seat at dusk,
+the beanbag with a book in the evening, curled up in bed late at night, the
+kitchenette mid-morning. The circadian period is already computed
+([`app/core/affect/circadian.py`](../../app/core/affect/circadian.py)) and used
+by the garden daylight gate, so the input is free.
+
+**Proposal.** A very low-frequency "settle" pass (or a bias layer on H13's
+location picker) that, during quiet windows, nudges her current
+location/posture toward a plausible spot for the circadian period — late-night
+→ `bed`/`lying`/`napping`, evening → `beanbag`/`window_seat` reading, morning
+→ `kitchenette`/`desk`. Soft and capped so it never thrashes mid-conversation;
+purely about the resting default the user walks into. Reuses the same
+`set_state` + broadcast path as H13.
+
+**Key files.**
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(circadian-weighted location bias),
+[`app/core/affect/circadian.py`](../../app/core/affect/circadian.py) (period),
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py)
+(`_DEFAULT_INITIAL_STATE`, `set_state`). Overlaps with **H10** (act it out) and
+**H13** (the movement plumbing it rides on).
+
+---
+
+## H17. Idle life feeds the idea machine — beats become conversational seeds
+
+**Motivation.** Aiko already has a deep "new ideas" stack — the
+[`CuriositySeedWorker`](../../app/core/proactive/curiosity_seed_worker.py),
+[`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py),
+[`IdleCuriosityWorker`](../../app/core/proactive/idle_curiosity_worker.py),
+[`IdleKnowledgeWorker`](../../app/core/proactive/idle_knowledge_worker.py),
+`reflection` / `[dream]` / `open_question` memory kinds — but it runs **parallel
+to, and disconnected from, her room life**. When she "reads a book" or "doodles"
+in the K36 away-beat, nothing comes *out* of it: the activity is a cosmetic
+summary line that never becomes a thought she carries back. That's the real
+reason "what were you doing?" lands on the same flat "at my desk, thinking" —
+the beats are inert. The single most generative change is to let an idle beat
+**occasionally produce a seed**: a takeaway from the book ("I read a line that
+made me think of you"), a question sparked by looking out the window, a small
+opinion formed while tinkering. Grounding the idea machine in *what she was
+actually doing* makes both halves richer at once.
+
+**Proposal.** When an away-beat fires (H13/H14), with a low probability hand the
+beat's context to the existing seed path rather than inventing a separate one:
+emit an `open_question` / curiosity seed / `[[remember:self:…]]`-style opinion
+tagged with its origin activity, and surface it through a **cue producer**
+(one-shot, watermark-gated inner-life block — per the prepared-nudge rule, NOT a
+verbatim nudge) so she phrases "while I was reading earlier I started wondering
+…" herself in context. Bounded hard: most beats stay silent, one in N yields a
+seed, daily-capped.
+
+**Key files.**
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(emit a seed from the chosen beat),
+[`app/core/proactive/curiosity_seed_worker.py`](../../app/core/proactive/curiosity_seed_worker.py)
+/ [`forward_curiosity_worker.py`](../../app/core/proactive/forward_curiosity_worker.py)
+(reuse the seed + cue-ring pattern),
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
+(`open_question` / `self` kinds), a new one-shot provider alongside the K36
+`_render_away_activities_block` in
+[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py).
+
+---
+
+## H18. Weighted, anti-repetition activity selection — SHIPPED
+
+> **Shipped.** New pure module
+> [`activity_selection.py`](../../app/core/world/activity_selection.py)
+> (`compute_weights` / `weighted_pick`) replaces the flat `random.choice` in
+> `IdleAwayActivityWorker._pick_activity`. Weights combine an anti-repetition
+> recency penalty (read from the journal ring, harsher for more-recent beats,
+> floored so nothing is impossible), a circadian tilt (`_CIRCADIAN_BIAS`), a
+> day-color tilt (`_DAY_COLOR_BIAS`, K27 palette), and an affect/valence tilt
+> (cozy vs active). The worker reads period / valence / day-color via optional
+> providers wired in `idle_workers_init_mixin`. Tests:
+> `tests/test_activity_selection.py`.
+
+
+**Motivation.** "At my desk, thinking" dominates because
+[`IdleAwayActivityWorker._pick_activity`](../../app/core/world/idle_activity_worker.py)
+ends with `self._rng.choice(list(candidates.values()))` — a **uniform** pick
+over all candidates, and the `wander`/`thinking` fallback is *always* in the
+pool. There's no memory of what she just did, no time-of-day weighting, no mood
+colour. So the loop is both repetitive and emotionally flat — she'll "doodle"
+at 3am and "think about you" five beats running. The inputs to fix this are all
+already computed.
+
+**Proposal.** Replace the uniform pick with a weighted one:
+- **Anti-repeat** — down-weight (or exclude) the last 2–3 activities recorded in
+  the away-journal so consecutive beats vary.
+- **Circadian** — bias toward `napping`/`bed` late at night, `reading`/`tea` in
+  the evening, `tinkering`/`watching_screens` during the day
+  ([`circadian.py`](../../app/core/affect/circadian.py)).
+- **Affect + day colour** — comfort beats (curl up, tea, blanket) when valence
+  is low; restless/active beats (tidy, pace, tinker) on a `restless` /
+  `sharp_witted` [day colour](../../app/core/affect/day_color.py); dreamy beats
+  on `dreamy`. So the activity *expresses* her inner weather.
+
+Cheap, no model spend, and it directly answers the literal complaint.
+
+**Key files.**
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(`_pick_activity` weighting + journal-based recency),
+[`app/core/affect/affect_state.py`](../../app/core/affect/affect_state.py),
+[`app/core/affect/day_color.py`](../../app/core/affect/day_color.py),
+[`app/core/affect/circadian.py`](../../app/core/affect/circadian.py).
+
+---
+
+## H19. Hobbies & ongoing personal projects
+
+**Motivation.** Aiko's idle life has no *continuity of intent* — every beat is a
+one-off. Real people have threads they return to: a book series they're partway
+through, learning the guitar, an astronomy phase, reorganising the shelf by
+colour over a week. A persistent **current hobby / project** that *progresses
+across days* is one of the richest possible idle-life upgrades: it gives her
+genuinely new things to talk about ("I'm three chapters into that series now and
+ugh, the betrayal"), forms real preferences/opinions she can voice (`kind="self"`
+stance memories), and makes the gaps between sessions feel *used*. It also dovetails
+with the K1 goals system, which already models long-running intent.
+
+**Proposal.** A small kv-backed "current hobby/project" with a free-text label,
+a progress counter, and a started-at; a low-cadence idle worker advances it
+(reads the next chapter, practices, learns a fact) and occasionally writes the
+takeaway as a `self`/`open_question` memory + a one-shot cue (H17 surfacing).
+Hobbies rotate occasionally so she isn't on the same one forever. Optionally
+seed the first hobby from her interest-map / goals so it's *about* things she
+and the user actually discuss.
+
+**Key files.** New `app/core/proactive/hobby_worker.py` (idle worker; kv state +
+progress + takeaway), [`app/core/goals/goal_store.py`](../../app/core/goals/goal_store.py)
+(tie to long-running intent), [`memory_store.py`](../../app/core/memory/memory_store.py)
+(`self` / `open_question`), a `_render_hobby_block` provider in
+[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+`agent.hobby_worker_enabled`.
+
+---
+
+## H20. A room that evolves — depleting + accruing micro-state
+
+**Motivation.** The room resets to the same furniture forever. The tea pot is
+"often half full of jasmine tea" as a static description; the cookies decrement
+but nothing refills; the sci-fi paperback is eternally "dog-eared at the climax".
+Nothing **accrues a history**. A room that quietly changes over time — the tea
+pot empties and she brews a fresh pot, she *finishes* the paperback and starts a
+new one, the doodle notebook fills page by page, fairy lights need a new bulb —
+makes the space feel lived-in and gives her concrete, evolving things to mention
+("finally finished that book — want to hear the ending?"). The `world_items`
+rows already carry a free-form `state` JSON
+([`world_store.py`](../../app/core/world/world_store.py)), so most of this is
+small state transitions, not new schema.
+
+**Proposal.** A slow "room evolution" pass (could be folded into the away-beat or
+a dedicated low-cadence worker): consumables she uses get refilled with a fresh
+batch (new flavour of tea/cookies, `given_by="aiko"`); a `book` she's been
+reading gains a `progress` in its `state` and flips to "finished → started a new
+one" at the end (a great H17 seed); the doodle notebook accrues a page count.
+Bounded, idempotent, broadcasts the `world_updated` patch so the World tab shows
+the drift.
+
+**Key files.**
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py)
+(item `state` transitions, refill helper),
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(hook beats to micro-state changes), optional new
+`app/core/world/room_evolution_worker.py`.
+
+---
+
+## H21. Sleep & overnight rhythm — and dreams that surface
+
+**Motivation.** Aiko never sleeps. At 3am she's still "doodling at the desk",
+which quietly breaks immersion, and the existing
+[`DreamWorker`](../../app/core/proactive/dream_worker.py) writes `[dream]`
+memories with **no behavioural anchor** — she dreams without ever having rested.
+A real overnight rhythm (she settles into bed and naps late at night; a long
+overnight gap reads as "I dozed off") both fixes the "awake at 3am at the desk"
+tell and gives the dream system a natural home: "I actually fell asleep on the
+beanbag earlier and had the strangest dream about …".
+
+**Proposal.** Circadian-gated rest state: in the late-night band the activity
+selector (H18) strongly prefers `bed`/`napping`; a long overnight typed gap is
+narrated on return as having slept; and the K28 turning-over / dream surfacing is
+nudged to occasionally pair a `[dream]` memory with the sleep beat so the dream
+has a cause. Soft and capped — she's not narcoleptic, and she still keeps the
+occasional late-night-owl beat.
+
+**Key files.**
+[`app/core/affect/circadian.py`](../../app/core/affect/circadian.py) (period),
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(rest beat),
+[`app/core/proactive/dream_worker.py`](../../app/core/proactive/dream_worker.py)
+(link a dream to the sleep beat), the K28 turning-over surfacing path.
+
+---
+
+## H22. Light outings — "I stepped out for a bit"
+
+**Motivation.** The world is the room plus the garden, both *at home*. An
+occasional brief **outing** ("popped out for a walk and the air was lovely",
+"grabbed a coffee from the place downstairs") adds variety and gives her fresh,
+outside-the-box things to mention without the full machinery of **H5**
+(second-scene / travel semantics). It's the lightweight precursor: no new
+`scene_id`, no item relocation — just a rare away-beat that narrates a short trip
+out and back, optionally returning with a small detail (a flower from the walk, a
+new coffee she liked → a `self` preference) that feeds H17.
+
+**Proposal.** Add an `outing` beat to the away-activity worker, gated to daylight
++ rare cadence + daily cap, that sets a transient "out" framing in the world
+state (or just narrates it in the journal) and returns after a short interval,
+sometimes dropping an item or seed. Treat it explicitly as the v0 of H5 so the
+two don't collide.
+
+**Key files.**
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py)
+(`outing` beat + return),
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py)
+(transient framing / produced item), cross-reference **H5**.
+
+---
+
 ## Minor polish
 
 These were in the bottom "Other ideas considered" of the legacy
