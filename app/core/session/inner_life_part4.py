@@ -624,6 +624,44 @@ class InnerLifePart4Mixin:
         )
         return line
 
+    def _affection_style_bias(self, kind: str) -> float:
+        """Return the J11 willingness multiplier for an affection ``kind``.
+
+        Reads the learned weighting from ``kv_meta`` and translates it
+        into a clamped multiplier (:func:`affection_style.bias_multiplier`).
+        A gate divides a cooldown by this value so a well-liked channel
+        fires a little more often and an ignored one a little less —
+        never off (the multiplier is floored). Best-effort: a disabled
+        master switch, zero strength, or any failure returns ``1.0``
+        (no bias). This is the only place the J11 weighting influences
+        behaviour; it is never rendered into a prompt block.
+        """
+        agent = getattr(self._settings, "agent", None)
+        if agent is None or not bool(
+            getattr(agent, "affection_style_enabled", True)
+        ):
+            return 1.0
+        strength = float(getattr(agent, "affection_style_bias_strength", 0.5))
+        if strength <= 0.0:
+            return 1.0
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return 1.0
+        try:
+            from app.core.relationship import affection_style as _af
+
+            state = _af.deserialize(chat_db.kv_get(_af.KV_AFFECTION_STYLE))
+            return _af.bias_multiplier(
+                state,
+                kind,
+                strength=strength,
+                floor=float(getattr(agent, "affection_style_bias_floor", 0.6)),
+                ceil=float(getattr(agent, "affection_style_bias_ceil", 1.5)),
+            )
+        except Exception:
+            log.debug("affection-style bias read failed", exc_info=True)
+            return 1.0
+
     def _render_appreciation_block(self) -> str:
         """J10: rare, specific unprompted gratitude anchored to a moment.
 
@@ -666,10 +704,16 @@ class InnerLifePart4Mixin:
             if closeness < min_closeness:
                 return ""
 
-        # Long cooldown — this beat is rare by design.
+        # Long cooldown — this beat is rare by design. J11 tilts it:
+        # if appreciation is the way this user warms most, the cooldown
+        # shortens a little (and lengthens if it lands flat) — bounded
+        # by the bias band, never disabling the beat.
         if not force:
             cooldown_h = float(
                 getattr(self._settings.agent, "appreciation_cooldown_hours", 72.0)
+            )
+            cooldown_h = cooldown_h / max(
+                0.1, self._affection_style_bias("appreciation")
             )
             try:
                 last = chat_db.kv_get(_KV_APPRECIATION_AT)

@@ -765,6 +765,30 @@ class SpeakingWorkersInitMixin:
                             "day_color worker registration failed",
                             exc_info=True,
                         )
+                # J11 — affection-style slow decay toward uniform. Cheap
+                # (6h cadence; a no-op read when nothing's been learned
+                # or no time has elapsed). The only path that moves the
+                # weights back toward uniform — per-turn learning only
+                # ever moves them away. Shares the quiet-window gate.
+                if bool(
+                    getattr(settings.agent, "affection_style_enabled", True)
+                ):
+                    try:
+                        from app.core.relationship.affection_style_worker import (
+                            AffectionStyleDecayWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            AffectionStyleDecayWorker(
+                                chat_db=self._chat_db,
+                                settings=settings.agent,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "affection_style worker registration failed",
+                            exc_info=True,
+                        )
                 # F1 — background fact-checker. Registered last because
                 # it depends on the knowledge-gap store (created above)
                 # and the (lazy) web-search helper. Failures here only
