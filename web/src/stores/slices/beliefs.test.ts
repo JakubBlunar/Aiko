@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
-import type { Belief, BeliefKind, BeliefStatus } from "./types";
+import { useAssistantStore } from "../../store";
+import type { Belief, BeliefKind, BeliefStatus } from "../../types";
 
 /**
  * Covers the Zustand reducers backing the live Beliefs panel (I1). The

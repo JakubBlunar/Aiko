@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Controllable viewport so we can exercise both the desktop (popup +
 // archive) and mobile (archive-only) branches of ``pushToast``.
 const h = vi.hoisted(() => ({ mobile: false }));
-vi.mock("./hooks/useIsMobile", () => ({
+vi.mock("@/hooks/useIsMobile", () => ({
   isMobileViewport: () => h.mobile,
   useIsMobile: () => h.mobile,
   MOBILE_MAX_WIDTH: 767,
 }));
 
-import { useAssistantStore, NOTIFICATION_ARCHIVE_CAP } from "./store";
+import { useAssistantStore, NOTIFICATION_ARCHIVE_CAP } from "../../store";
 
 /**
  * Notification archive contract.

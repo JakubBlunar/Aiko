@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useMemoryStore } from "./stores/useMemoryStore";
-import type { Memory, MemoryOrder, MemoryTier } from "./types";
+import { useMemoryStore } from "./useMemoryStore";
+import type { Memory, MemoryOrder, MemoryTier } from "../types";
 
 /**
  * Covers the Zustand reducers backing the new Memory tab. The WS hook

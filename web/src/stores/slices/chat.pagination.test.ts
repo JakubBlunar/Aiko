@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
-import type { ChatMessage } from "./types";
+import { useAssistantStore } from "../../store";
+import type { ChatMessage } from "../../types";
 
 /**
  * I6: "load older" pagination store contract.
