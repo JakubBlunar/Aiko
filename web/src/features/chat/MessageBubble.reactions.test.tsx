@@ -1,5 +1,5 @@
 /**
- * K31 + K32 wiring tests for ``ChatView``.
+ * K31 + K32 wiring tests for ``MessageBubble``.
  *
  * The vitest config runs in a Node environment with no jsdom, so we
  * can't mount the component and walk its rendered tree. Instead we
@@ -32,33 +32,33 @@ import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const chatViewSource = readFileSync(resolve(here, "ChatView.tsx"), "utf-8");
+const bubbleSource = readFileSync(resolve(here, "MessageBubble.tsx"), "utf-8");
 
-describe("ChatView — K31 / B7 gesture badge wiring", () => {
+describe("MessageBubble — K31 / B7 gesture badge wiring", () => {
   it("imports normalizeGesture from the shared types module", () => {
-    expect(chatViewSource).toMatch(
+    expect(bubbleSource).toMatch(
       /import\s*\{[^}]*\bnormalizeGesture\b[^}]*\}\s*from\s*"@\/types"/s,
     );
   });
 
   it("threads the open-vocabulary gestures prop on BubbleProps", () => {
     // B7: each entry is a legacy string OR a {kind,label,emoji} descriptor.
-    expect(chatViewSource).toMatch(
+    expect(bubbleSource).toMatch(
       /gestures\?:\s*\(string\s*\|\s*TouchGestureBadge\)\[\]/,
     );
   });
 
   it("branches the gesture badge strip on gestureKinds.length", () => {
     // Cheap proxy: the strip only renders when the array has entries.
-    expect(chatViewSource).toMatch(/gestureKinds\.length\s*>\s*0/);
+    expect(bubbleSource).toMatch(/gestureKinds\.length\s*>\s*0/);
   });
 
   it("normalizes each gesture descriptor before rendering the badge", () => {
     // The bubble must accept a custom descriptor or a legacy string and
     // still render *something* (normalizeGesture owns the fallback chain).
-    expect(chatViewSource).toMatch(/normalizeGesture\(g\)/);
-    expect(chatViewSource).toMatch(/\{meta\.emoji\}/);
-    expect(chatViewSource).toMatch(/Aiko \{meta\.label\}/);
+    expect(bubbleSource).toMatch(/normalizeGesture\(g\)/);
+    expect(bubbleSource).toMatch(/\{meta\.emoji\}/);
+    expect(bubbleSource).toMatch(/Aiko \{meta\.label\}/);
   });
 });
 
@@ -93,58 +93,58 @@ describe("normalizeGesture — B7 descriptor fallback chain", () => {
   });
 });
 
-describe("ChatView — K32 reaction strip wiring", () => {
+describe("MessageBubble — K32 reaction strip wiring", () => {
   it("imports USER_REACTION_KINDS from the shared types module", () => {
-    expect(chatViewSource).toMatch(
+    expect(bubbleSource).toMatch(
       /import\s*\{[^}]*\bUSER_REACTION_KINDS\b[^}]*\}\s*from\s*"@\/types"/s,
     );
   });
 
   it("threads the reactions prop on BubbleProps", () => {
-    expect(chatViewSource).toMatch(
+    expect(bubbleSource).toMatch(
       /reactions\?:\s*Record<string,\s*number>/,
     );
   });
 
   it("gates the reaction strip on canReact (assistant + persisted + not streaming)", () => {
     // The boolean lands in the JSX as ``{canReact ? ... : null}``.
-    expect(chatViewSource).toMatch(/const\s+canReact\s*=/);
-    expect(chatViewSource).toMatch(/!isUser\s*&&\s*!streaming\s*&&\s*backendId\s*!=\s*null/);
-    expect(chatViewSource).toMatch(/\{canReact\s*\?/);
+    expect(bubbleSource).toMatch(/const\s+canReact\s*=/);
+    expect(bubbleSource).toMatch(/!isUser\s*&&\s*!streaming\s*&&\s*backendId\s*!=\s*null/);
+    expect(bubbleSource).toMatch(/\{canReact\s*\?/);
   });
 
   it("walks USER_REACTION_KINDS for the hover tray buttons", () => {
     // The hover tray maps over the taxonomy and skips kinds already
     // present in the counter strip.
-    expect(chatViewSource).toMatch(
+    expect(bubbleSource).toMatch(
       /USER_REACTION_KINDS\.map\(\(r\)\s*=>/,
     );
-    expect(chatViewSource).toMatch(/\(reactions\?\.\[r\.kind\]\s*\?\?\s*0\)\s*>\s*0/);
+    expect(bubbleSource).toMatch(/\(reactions\?\.\[r\.kind\]\s*\?\?\s*0\)\s*>\s*0/);
   });
 
   it("dispatches onToggleReaction with the kind on click", () => {
     // The click handler is wired through a callback so the parent
     // owns the REST + optimistic store update path.
-    expect(chatViewSource).toMatch(/onToggleReaction\(r\.kind\)/);
-    expect(chatViewSource).toMatch(/onToggleReaction\(kindKey\)/);
+    expect(bubbleSource).toMatch(/onToggleReaction\(r\.kind\)/);
+    expect(bubbleSource).toMatch(/onToggleReaction\(kindKey\)/);
   });
 
   it("renders the per-kind counter strip from reactionEntries", () => {
-    expect(chatViewSource).toMatch(/const\s+reactionEntries\s*=\s*Object\.entries/);
+    expect(bubbleSource).toMatch(/const\s+reactionEntries\s*=\s*Object\.entries/);
     // Empty / zero counts are filtered.
-    expect(chatViewSource).toMatch(/\(count\s*\?\?\s*0\)\s*>\s*0/);
+    expect(bubbleSource).toMatch(/\(count\s*\?\?\s*0\)\s*>\s*0/);
   });
 
   it("shows count > 1 inline next to the emoji", () => {
-    expect(chatViewSource).toMatch(/count\s*>\s*1/);
+    expect(bubbleSource).toMatch(/count\s*>\s*1/);
   });
 });
 
-describe("ChatView — taxonomy contract", () => {
+describe("MessageBubble — taxonomy contract", () => {
   it("exports the same kind set both sides of the wire", async () => {
     // Statically inspect the types module to confirm the taxonomy
     // is the single source of truth -- the assertion catches a future
-    // accidental shadowing in ChatView itself.
+    // accidental shadowing in MessageBubble itself.
     const types = await import("@/types");
     expect(Array.isArray(types.USER_REACTION_KINDS)).toBe(true);
     expect(types.USER_REACTION_KINDS.length).toBeGreaterThanOrEqual(6);
