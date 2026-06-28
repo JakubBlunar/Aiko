@@ -201,6 +201,42 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("HobbyWorker init failed", exc_info=True)
 
+        # H20 RoomEvolutionWorker — a room that accrues a history. Slowly
+        # drifts the seeded items (tea pot, cookie jar, book) during quiet
+        # windows + broadcasts the world patch. Needs the world store; the
+        # worker LLM is optional (book-finish seed falls back to a
+        # template). Failures only drop the room-evolution path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_world_store", None) is not None
+        ):
+            try:
+                from app.core.world.room_evolution_worker import (
+                    RoomEvolutionWorker,
+                )
+
+                mem = self._memory_settings
+                self._room_evolution_worker = RoomEvolutionWorker(
+                    world_store=self._world_store,
+                    chat_db=self._chat_db,
+                    agent_settings=self._settings.agent,
+                    memory_settings=mem,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    notify=self._notify_world,
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    idle_seed_max_ring=getattr(
+                        mem, "idle_seed_max_ring", 6,
+                    ),
+                )
+                self._idle_scheduler.register(self._room_evolution_worker)
+            except Exception:
+                log.warning(
+                    "RoomEvolutionWorker init failed", exc_info=True
+                )
+
         # H9 DiaryWorker — Aiko's away journal. During quiet windows with
         # NO UI client connected, she reflects on the recent conversation
         # and writes one short ``diary`` memory. While a window is open

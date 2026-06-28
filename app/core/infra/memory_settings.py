@@ -625,6 +625,11 @@ class MemorySettings:
     hobby_advance_min_hours: float = 6.0
     hobby_milestone_every: int = 3
     hobby_max_advances: int = 12
+    # H20 — room-evolution cadence. ``interval`` is the idle-tick cadence;
+    # ``min_hours`` is the wall-clock floor between actual drifts so the
+    # room changes gradually rather than every tick.
+    room_evolution_interval_seconds: int = 21600
+    room_evolution_min_hours: float = 8.0
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1675,6 +1680,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             hobby_max_advances=max(
                 0, int(memory_raw.get("hobby_max_advances", 12)),
+            ),
+            room_evolution_interval_seconds=max(
+                60,
+                int(memory_raw.get("room_evolution_interval_seconds", 21600)),
+            ),
+            room_evolution_min_hours=max(
+                0.0, float(memory_raw.get("room_evolution_min_hours", 8.0)),
             ),
             circadian_settle_interval_seconds=max(
                 60,

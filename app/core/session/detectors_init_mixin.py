@@ -130,6 +130,10 @@ class DetectorsInitMixin:
         # registered in ``idle_workers_init_mixin``. MCP ``get_hobby_state``
         # / ``force_hobby_advance`` / ``force_hobby_rotate`` read it.
         self._hobby_worker: Any = None
+        # H20 — the room-evolution worker (depleting + accruing item state).
+        # ``None`` until registered. MCP ``get_room_evolution_state`` /
+        # ``force_room_evolution`` read it.
+        self._room_evolution_worker: Any = None
         # H9 — the away-diary worker. ``None`` until registered in
         # ``idle_workers_init_mixin`` (skipped when there's no memory
         # store / embedder). The MCP ``get_diary_worker_state`` /
