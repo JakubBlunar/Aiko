@@ -604,6 +604,12 @@ class MemorySettings:
     away_activities_daily_cap: int = 6
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
+    # H16 circadian-settle worker cadence. ``interval`` is how often the
+    # scheduler may consider it; ``settle_after`` is how long Aiko's room
+    # state must have been static before it drifts her to the time-of-day
+    # resting default (so it never fights the livelier away-activity beats).
+    circadian_settle_interval_seconds: int = 3600
+    circadian_settle_after_seconds: int = 7200
     # H9 away-diary worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``cooldown`` is the wall-clock floor
     # between actual entries (3h default — a diary written too often
@@ -1618,6 +1624,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_journal_max=max(
                 1,
                 int(memory_raw.get("away_activities_journal_max", 8)),
+            ),
+            circadian_settle_interval_seconds=max(
+                60,
+                int(memory_raw.get("circadian_settle_interval_seconds", 3600)),
+            ),
+            circadian_settle_after_seconds=max(
+                0,
+                int(memory_raw.get("circadian_settle_after_seconds", 7200)),
             ),
             diary_worker_interval_seconds=max(
                 30,

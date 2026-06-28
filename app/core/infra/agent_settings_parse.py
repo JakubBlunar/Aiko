@@ -1330,6 +1330,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             away_activities_enabled=bool(
                 agent_raw.get("away_activities_enabled", True),
             ),
+            world_intentional_hold_seconds=max(
+                0.0,
+                float(agent_raw.get("world_intentional_hold_seconds", 7200.0)),
+            ),
+            circadian_settle_enabled=bool(
+                agent_raw.get("circadian_settle_enabled", True),
+            ),
             diary_worker_enabled=bool(
                 agent_raw.get("diary_worker_enabled", True),
             ),

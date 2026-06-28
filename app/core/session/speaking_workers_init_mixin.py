@@ -1660,6 +1660,9 @@ class SpeakingWorkersInitMixin:
                         from app.core.world.plant_growth_worker import (
                             PlantGrowthWorker,
                         )
+                        from app.core.world.circadian_settle_worker import (
+                            CircadianSettleWorker,
+                        )
 
                         self._idle_scheduler.register(
                             PlantGrowthWorker(
@@ -1673,6 +1676,42 @@ class SpeakingWorkersInitMixin:
                                 notify=self._notify_world,
                                 kv_get=self._chat_db.kv_get,
                                 kv_set=self._chat_db.kv_set,
+                                intentional_hold_seconds=getattr(
+                                    self._settings.agent,
+                                    "world_intentional_hold_seconds",
+                                    7200.0,
+                                ),
+                            )
+                        )
+                        # H16 — circadian "where you find her" default.
+                        self._idle_scheduler.register(
+                            CircadianSettleWorker(
+                                self._world_store,
+                                notify=self._notify_world,
+                                kv_get=self._chat_db.kv_get,
+                                enabled_provider=lambda: bool(
+                                    getattr(
+                                        self._settings.agent,
+                                        "circadian_settle_enabled",
+                                        True,
+                                    )
+                                ),
+                                circadian_period_provider=(
+                                    lambda: self.current_circadian_period()
+                                ),
+                                interval_seconds=(
+                                    self._memory_settings
+                                    .circadian_settle_interval_seconds
+                                ),
+                                settle_after_seconds=(
+                                    self._memory_settings
+                                    .circadian_settle_after_seconds
+                                ),
+                                intentional_hold_seconds=getattr(
+                                    self._settings.agent,
+                                    "world_intentional_hold_seconds",
+                                    7200.0,
+                                ),
                             )
                         )
                     except Exception:

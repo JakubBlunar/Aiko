@@ -63,12 +63,19 @@ class _FakeLoc:
 
 
 class _FakeRoomState:
-    def __init__(self, posture: str, activity: str) -> None:
+    def __init__(
+        self, posture: str, activity: str, location_id: int | None = None,
+    ) -> None:
         self.posture = posture
         self.activity = activity
+        self.location_id = location_id
 
     def to_dict(self) -> dict[str, Any]:
-        return {"posture": self.posture, "activity": self.activity}
+        return {
+            "posture": self.posture,
+            "activity": self.activity,
+            "location_id": self.location_id,
+        }
 
 
 class _FakeWorldStore:
@@ -94,9 +101,21 @@ class _FakeWorldStore:
     def list_locations(self) -> list[_FakeLoc]:
         return list(self._locations)
 
-    def set_state(self, *, posture: str, activity: str) -> _FakeRoomState:
-        self.set_state_calls.append({"posture": posture, "activity": activity})
-        return _FakeRoomState(posture, activity)
+    def set_state(
+        self,
+        *,
+        posture: str,
+        activity: str,
+        location_id: int | None = None,
+    ) -> _FakeRoomState:
+        self.set_state_calls.append(
+            {
+                "posture": posture,
+                "activity": activity,
+                "location_id": location_id,
+            }
+        )
+        return _FakeRoomState(posture, activity, location_id)
 
     def consume_item(self, item_id: int, *, amount: int = 1):
         self.consumed.append(item_id)
@@ -126,6 +145,7 @@ def _make_worker(
     daily_cap: int = 6,
     seed: int = 0,
     notify: Any = None,
+    intentional_hold_seconds: float = 0.0,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -140,6 +160,7 @@ def _make_worker(
         cooldown_seconds=cooldown,
         daily_cap=daily_cap,
         journal_max=8,
+        intentional_hold_seconds=intentional_hold_seconds,
         rng=random.Random(seed),
     )
 
@@ -176,6 +197,22 @@ class ActivitySelectionTests(unittest.TestCase):
         self.assertEqual(result["key"], "move_cat")
         self.assertEqual(len(world.moved), 1)
         self.assertEqual(world.moved[0][0], 3)
+
+    def test_beat_moves_aiko_to_matching_location(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the window seat", "window_seat"),
+            ],
+        )
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("look_outside")
+        worker.run()
+        # set_state was called with the window-seat location id.
+        self.assertTrue(world.set_state_calls)
+        last = world.set_state_calls[-1]
+        self.assertEqual(last["location_id"], 2)
 
     def test_wander_always_available_with_empty_room(self) -> None:
         kv = _FakeKV()
@@ -254,6 +291,44 @@ class GateTests(unittest.TestCase):
         result = worker.run()
         self.assertEqual(result["fired"], 0)
         self.assertTrue(result.get("skipped_garden_visit"))
+
+    def test_intentional_hold_defers(self) -> None:
+        kv = _FakeKV()
+        # Brain/user placed Aiko 1 min ago; hold window is 2h.
+        recent = datetime.now(timezone.utc) - timedelta(seconds=60)
+        kv.set("world.intentional_state_at", recent.isoformat())
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, intentional_hold_seconds=7200.0
+        )
+        result = worker.run()
+        self.assertEqual(result["fired"], 0)
+        self.assertTrue(result.get("skipped_intentional_hold"))
+        self.assertFalse(world.set_state_calls)
+
+    def test_intentional_hold_expired_allows_beat(self) -> None:
+        kv = _FakeKV()
+        # Placed 3h ago; outside the 2h hold window -> worker free again.
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        kv.set("world.intentional_state_at", old.isoformat())
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, intentional_hold_seconds=7200.0
+        )
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertTrue(world.set_state_calls)
+
+    def test_intentional_hold_disabled_ignores_stamp(self) -> None:
+        kv = _FakeKV()
+        recent = datetime.now(timezone.utc) - timedelta(seconds=10)
+        kv.set("world.intentional_state_at", recent.isoformat())
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, intentional_hold_seconds=0.0
+        )
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
 
 
 if __name__ == "__main__":

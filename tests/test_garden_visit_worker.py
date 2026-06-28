@@ -35,12 +35,14 @@ def _make_worker(
     *,
     period: str = "morning",
     notify=None,
+    intentional_hold_seconds: float = 0.0,
 ):
     return GardenVisitWorker(
         store,
         notify=notify,
         rng=random.Random(0),
         circadian_period_provider=lambda: period,
+        intentional_hold_seconds=intentional_hold_seconds,
     )
 
 
@@ -106,6 +108,35 @@ class GardenVisitWorkerOutboundTests(unittest.TestCase):
             self.assertFalse(worker.is_ready(now=soon, last_run_at=now))
 
 
+class GardenVisitWorkerIntentionalHoldTests(unittest.TestCase):
+    def test_outbound_deferred_during_intentional_hold(self) -> None:
+        with _TempWorld() as store:
+            worker = _make_worker(store, intentional_hold_seconds=7200.0)
+            now = datetime.now(timezone.utc)
+            # Brain/user placed Aiko a moment ago.
+            worker._mem_kv["world.intentional_state_at"] = (
+                now - timedelta(seconds=30)
+            ).isoformat()
+            self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+
+    def test_inbound_auto_return_cancelled_if_she_chose_to_stay(self) -> None:
+        with _TempWorld() as store:
+            worker = _make_worker(store, intentional_hold_seconds=7200.0)
+            outbound = worker.run()  # walks her to the garden, stamps return_at
+            return_at = datetime.fromisoformat(outbound["return_at"])
+            garden = store.get_location("garden")
+            # She (brain) deliberately re-sets her state mid-visit.
+            worker._mem_kv["world.intentional_state_at"] = (
+                return_at - timedelta(minutes=2)
+            ).isoformat()
+            past = return_at + timedelta(minutes=1)
+            self.assertTrue(worker.is_ready(now=past, last_run_at=None))
+            result = worker.run()
+            self.assertTrue(result.get("cancelled_intentional"))
+            # She stays in the garden, not yanked back to the desk.
+            self.assertEqual(store.get_state().location_id, garden.id)
+
+
 class GardenVisitWorkerReturnTests(unittest.TestCase):
     def test_inbound_returns_after_visit_duration(self) -> None:
         with _TempWorld() as store:
@@ -121,8 +152,14 @@ class GardenVisitWorkerReturnTests(unittest.TestCase):
             self.assertTrue(worker.is_ready(now=past, last_run_at=None))
             inbound = worker.run()
             self.assertEqual(inbound["phase"], "inbound")
-            desk = store.get_location("desk")
-            self.assertEqual(store.get_state().location_id, desk.id)
+            # H13 — she settles into one of the cozy spots (no longer always
+            # the desk), but never stays in the garden.
+            garden = store.get_location("garden")
+            self.assertNotEqual(store.get_state().location_id, garden.id)
+            self.assertIn(
+                inbound["returned_to_slug"],
+                {"desk", "beanbag", "window_seat", "bookshelf", "bed"},
+            )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.world.activity_selection import weighted_pick
 
 if TYPE_CHECKING:
     from app.core.world.world_store import WorldStore
@@ -62,9 +63,38 @@ _KV_DAY_COUNT = "away_activity.day_count"
 # avoid importing the garden module just for a string.
 _GARDEN_RETURN_KEY = "garden_visit.return_at"
 
+# Must match ``app.core.session.world_mixin.WORLD_INTENTIONAL_STATE_KEY``.
+# Stamped whenever the brain / user deliberately places Aiko; while it's
+# fresh we defer so an autonomous beat never overrides a spot she chose.
+_INTENTIONAL_STATE_KEY = "world.intentional_state_at"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _match_location(locations: list[Any], *keywords: str) -> Any | None:
+    """First location whose slug/name contains any keyword (slug wins).
+
+    Used by H13 to resolve a beat's cozy spot from whatever the room
+    actually has, tolerant of renamed/removed locations.
+    """
+    if not locations:
+        return None
+    kws = [k.lower() for k in keywords if k]
+    # Prefer an exact slug match, then substring on slug, then on name.
+    for loc in locations:
+        if (getattr(loc, "slug", "") or "").lower() in kws:
+            return loc
+    for loc in locations:
+        slug = (getattr(loc, "slug", "") or "").lower()
+        if any(k in slug for k in kws):
+            return loc
+    for loc in locations:
+        name = (getattr(loc, "name", "") or "").lower()
+        if any(k in name for k in kws):
+            return loc
+    return None
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -95,6 +125,8 @@ class ActivityPlan:
     consume_item_id: int | None = None
     move_item_id: int | None = None
     move_to_location_id: int | None = None
+    # H13 — where Aiko herself relocates to for this beat (None = stay put).
+    aiko_location_id: int | None = None
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -155,6 +187,10 @@ class IdleAwayActivityWorker:
         cooldown_seconds: float = 5400.0,
         daily_cap: int = 6,
         journal_max: int = 8,
+        intentional_hold_seconds: float = 0.0,
+        circadian_period_provider: Callable[[], str] | None = None,
+        valence_provider: Callable[[], float | None] | None = None,
+        day_color_provider: Callable[[], str | None] | None = None,
         rng: random.Random | None = None,
     ) -> None:
         self._world_store = world_store
@@ -169,6 +205,10 @@ class IdleAwayActivityWorker:
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
         self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
+        self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._circadian_period_provider = circadian_period_provider
+        self._valence_provider = valence_provider
+        self._day_color_provider = day_color_provider
         self._rng = rng or random.Random()
         # MCP debug: arm a specific activity key for the next run().
         self._forced_activity_key: str | None = None
@@ -203,6 +243,10 @@ class IdleAwayActivityWorker:
             except Exception:
                 pass
         now = _utcnow()
+        # Respect a deliberate placement: if the brain / user just set
+        # Aiko's spot, leave her there — never override a chosen location.
+        if self._intentional_hold_active(now):
+            return {"fired": 0, "skipped_intentional_hold": True}
         # Don't fight the garden worker: if Aiko is mid-visit (return_at
         # in the future) defer entirely.
         if self._garden_visit_outstanding(now):
@@ -258,6 +302,15 @@ class IdleAwayActivityWorker:
 
         candidates: dict[str, ActivityPlan] = {}
 
+        # H13 — resolve the cozy spots once so each beat can actually move
+        # Aiko there (not just change her posture at the desk).
+        loc_kitchen = _match_location(locations, "kitchenette", "kitchen")
+        loc_bookshelf = _match_location(locations, "bookshelf", "shelf")
+        loc_beanbag = _match_location(locations, "beanbag")
+        loc_window = _match_location(locations, "window")
+        loc_desk = _match_location(locations, "desk")
+        loc_bed = _match_location(locations, "bed")
+
         # Tea / snack — consume a food item the user (or seed) left.
         food = next(
             (
@@ -280,6 +333,7 @@ class IdleAwayActivityWorker:
                     "a bit"
                 ),
                 consume_item_id=food.id,
+                aiko_location_id=loc_kitchen.id if loc_kitchen else None,
             )
 
         # Book — curl up with something on the shelf.
@@ -298,6 +352,10 @@ class IdleAwayActivityWorker:
                 posture="curled_up",
                 activity="reading",
                 summary=f"curled up with {book.name} and read for a while",
+                aiko_location_id=(
+                    loc_beanbag.id if loc_beanbag
+                    else (loc_bookshelf.id if loc_bookshelf else None)
+                ),
             )
 
         # Cat / pet — wander it to another location for company.
@@ -340,6 +398,7 @@ class IdleAwayActivityWorker:
                 posture="leaning",
                 activity="looking_outside",
                 summary="sat by the window for a bit, watching the world go by",
+                aiko_location_id=window.id,
             )
 
         # Desk — tidy / tinker (almost always present).
@@ -358,6 +417,17 @@ class IdleAwayActivityWorker:
                 posture="sitting",
                 activity="tinkering",
                 summary="tidied up my desk and tinkered with a little project",
+                aiko_location_id=desk.id,
+            )
+
+        # Nap — only when there's a bed to do it in.
+        if loc_bed is not None:
+            candidates["nap"] = ActivityPlan(
+                key="nap",
+                posture="lying",
+                activity="napping",
+                summary="curled up for a little nap to recharge",
+                aiko_location_id=loc_bed.id,
             )
 
         # Doodle — always available, no inventory needed.
@@ -366,6 +436,10 @@ class IdleAwayActivityWorker:
             posture="sitting",
             activity="doodling",
             summary="doodled in my notebook for a while",
+            aiko_location_id=(
+                loc_beanbag.id if loc_beanbag
+                else (loc_desk.id if loc_desk else None)
+            ),
         )
 
         # Fallback — let her thoughts wander. Always available.
@@ -374,6 +448,10 @@ class IdleAwayActivityWorker:
             posture="curled_up",
             activity="thinking",
             summary=f"mostly let my thoughts wander — kept thinking about {user_name}",
+            aiko_location_id=(
+                loc_window.id if loc_window
+                else (loc_beanbag.id if loc_beanbag else None)
+            ),
         )
 
         if not candidates:
@@ -385,16 +463,64 @@ class IdleAwayActivityWorker:
         if forced and forced in candidates:
             return candidates[forced]
 
-        return self._rng.choice(list(candidates.values()))
+        # H18 — weighted, anti-repetition draw over the available keys,
+        # tilted by recency (journal), circadian period, mood + day-color.
+        recent_keys = [
+            str(e.get("key") or "")
+            for e in load_journal(self._kv_get)
+            if e.get("key")
+        ]
+        chosen = weighted_pick(
+            list(candidates.keys()),
+            rng=self._rng,
+            recent_keys=recent_keys,
+            period=self._read_period(),
+            valence=self._read_valence(),
+            day_color=self._read_day_color(),
+        )
+        if chosen is None or chosen not in candidates:
+            return self._rng.choice(list(candidates.values()))
+        return candidates[chosen]
+
+    def _read_period(self) -> str:
+        if self._circadian_period_provider is None:
+            return ""
+        try:
+            return str(self._circadian_period_provider() or "")
+        except Exception:
+            return ""
+
+    def _read_valence(self) -> float | None:
+        if self._valence_provider is None:
+            return None
+        try:
+            v = self._valence_provider()
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
+    def _read_day_color(self) -> str | None:
+        if self._day_color_provider is None:
+            return None
+        try:
+            c = self._day_color_provider()
+            return str(c) if c else None
+        except Exception:
+            return None
 
     # ── world mutation ───────────────────────────────────────────────
 
     def _apply_world_mutation(self, plan: ActivityPlan) -> None:
         try:
-            new_state = self._world_store.set_state(
-                posture=plan.posture,
-                activity=plan.activity,
-            )
+            # H13 — relocate Aiko herself when the beat has a target spot,
+            # otherwise leave her where she is (omit location_id entirely).
+            state_kwargs: dict[str, Any] = {
+                "posture": plan.posture,
+                "activity": plan.activity,
+            }
+            if plan.aiko_location_id is not None:
+                state_kwargs["location_id"] = plan.aiko_location_id
+            new_state = self._world_store.set_state(**state_kwargs)
             self._broadcast({"state": new_state.to_dict()})
         except Exception:
             log.debug("away_activity set_state failed", exc_info=True)
@@ -469,6 +595,15 @@ class IdleAwayActivityWorker:
     def _garden_visit_outstanding(self, now: datetime) -> bool:
         return_at = _parse_iso(self._kv_get_safe(_GARDEN_RETURN_KEY))
         return return_at is not None and now < return_at
+
+    def _intentional_hold_active(self, now: datetime) -> bool:
+        """True while a deliberate placement is still within the hold window."""
+        if self._intentional_hold_seconds <= 0:
+            return False
+        stamped = _parse_iso(self._kv_get_safe(_INTENTIONAL_STATE_KEY))
+        if stamped is None:
+            return False
+        return (now - stamped).total_seconds() < self._intentional_hold_seconds
 
     def _cooldown_elapsed(self, now: datetime) -> bool:
         if self._cooldown_seconds <= 0:

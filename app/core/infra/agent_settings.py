@@ -1641,6 +1641,28 @@ class AgentSettings:
     # cadence + gap knobs live on ``MemorySettings.away_activities_*``.
     away_activities_enabled: bool = True
 
+    # ── Intentional-placement hold ────────────────────────────────────
+    # When the brain (move_to / change_posture tools) or the user (World
+    # tab) intentionally sets Aiko's location / posture / activity, a
+    # watermark is stamped (``world.intentional_state_at``). For this many
+    # seconds afterwards the autonomous movers — the away-activity worker's
+    # location beats, the garden visit worker, and the circadian
+    # "where you find her" default — DEFER and leave her where she chose
+    # to be. So if she decides mid-conversation to stay in the garden, no
+    # worker drags her back to the desk. Default 2h; 0 disables the hold
+    # (workers always free to move her). Posture/activity-only beats that
+    # don't relocate her are unaffected.
+    world_intentional_hold_seconds: float = 7200.0
+
+    # ── H16: circadian "where you find her" default ───────────────────
+    # Master switch for the :class:`CircadianSettleWorker` — the gentlest
+    # mover, which drifts Aiko to a believable time-of-day resting spot
+    # (bed at night, desk mid-morning, beanbag late afternoon) but ONLY
+    # after her room state has been static for a while and never over a
+    # deliberate placement or a garden visit. Cadence knobs live on
+    # ``MemorySettings.circadian_settle_*``.
+    circadian_settle_enabled: bool = True
+
     # ── H9: away-diary worker ─────────────────────────────────────────
     # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
     # Off → the worker never registers. On (default) → during quiet
