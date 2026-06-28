@@ -1,39 +1,35 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
 
 export function CuriositySeedsPanel() {
-  const [seeds, setSeeds] = useState<Memory[]>([]);
-  const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showConsumed, setShowConsumed] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.listMemories({
-        kind: "curiosity_seed",
-        limit: 50,
-        order: "recent",
-      });
-      setSeeds((data.memories as Memory[]) || []);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const loader = useCallback(
+    async () =>
+      ((
+        await api.listMemories({
+          kind: "curiosity_seed",
+          limit: 50,
+          order: "recent",
+        })
+      ).memories as Memory[]) || [],
+    [],
+  );
+  const {
+    data: seeds,
+    loading,
+    error,
+    setError,
+    refresh,
+  } = useAsyncResource<Memory[]>(loader, []);
 
   const onRun = useCallback(async () => {
     setRunning(true);
@@ -46,7 +42,7 @@ export function CuriositySeedsPanel() {
     } finally {
       setRunning(false);
     }
-  }, [refresh]);
+  }, [refresh, setError]);
 
   const visible = useMemo(() => {
     if (showConsumed) return seeds;

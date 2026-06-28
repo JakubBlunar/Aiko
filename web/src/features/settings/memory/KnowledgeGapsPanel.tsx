@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -18,36 +19,34 @@ export interface KnowledgeGapRow extends Memory {
 }
 
 export function KnowledgeGapsPanel() {
-  const [gaps, setGaps] = useState<KnowledgeGapRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [includeResolved, setIncludeResolved] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.listKnowledgeGaps(includeResolved);
-      setGaps((data.gaps as KnowledgeGapRow[]) || []);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [includeResolved]);
+  const loader = useCallback(
+    async () =>
+      ((await api.listKnowledgeGaps(includeResolved))
+        .gaps as KnowledgeGapRow[]) || [],
+    [includeResolved],
+  );
+  const {
+    data: gaps,
+    setData: setGaps,
+    loading,
+    error,
+    setError,
+    refresh,
+  } = useAsyncResource<KnowledgeGapRow[]>(loader, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const onDismiss = useCallback(async (id: number) => {
-    try {
-      await api.deleteKnowledgeGap(id);
-      setGaps((rows) => rows.filter((r) => r.id !== id));
-    } catch (err) {
-      setError(String(err));
-    }
-  }, []);
+  const onDismiss = useCallback(
+    async (id: number) => {
+      try {
+        await api.deleteKnowledgeGap(id);
+        setGaps((rows) => rows.filter((r) => r.id !== id));
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [setGaps, setError],
+  );
 
   const onResolve = useCallback(
     async (id: number) => {

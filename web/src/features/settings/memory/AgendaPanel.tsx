@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { api } from "../../../api";
 import { useAssistantStore } from "../../../store";
 import type { AgendaItem, AgendaStatus } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -31,29 +32,19 @@ export function AgendaPanel() {
   const setAgendaView = useAssistantStore((s) => s.setAgendaView);
   const applyAgendaUpdated = useAssistantStore((s) => s.applyAgendaUpdated);
   const [statusFilter, setStatusFilter] = useState<AgendaStatus | "all">("open");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [newGoal, setNewGoal] = useState("");
   const [adding, setAdding] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // Fetch the full roster once; status filtering happens client-side
-      // so the live WS upserts never need a refetch on a status flip.
-      const res = await api.listAgenda({ status: "all", limit: 100 });
-      setAgendaView({ items: res.items, enabled: res.enabled });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
+  const loader = useCallback(async () => {
+    // Fetch the full roster once; status filtering happens client-side
+    // so the live WS upserts never need a refetch on a status flip.
+    const res = await api.listAgenda({ status: "all", limit: 100 });
+    setAgendaView({ items: res.items, enabled: res.enabled });
   }, [setAgendaView]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const { loading, error, setError, refresh } = useAsyncResource<void>(
+    loader,
+    undefined,
+  );
 
   const onAdd = useCallback(async () => {
     const goal = newGoal.trim();
@@ -69,7 +60,7 @@ export function AgendaPanel() {
     } finally {
       setAdding(false);
     }
-  }, [newGoal, applyAgendaUpdated]);
+  }, [newGoal, applyAgendaUpdated, setError]);
 
   const mutate = useCallback(
     async (
@@ -83,7 +74,7 @@ export function AgendaPanel() {
         setError(String(err));
       }
     },
-    [applyAgendaUpdated],
+    [applyAgendaUpdated, setError],
   );
 
   const items = agendaView.items;

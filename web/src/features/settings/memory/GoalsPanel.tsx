@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -19,37 +20,33 @@ import { EmptyState } from "@/components/EmptyState";
  * in SQLite for audit but are hidden behind a toggle.
  */
 export function GoalsPanel() {
-  const [goals, setGoals] = useState<Memory[]>([]);
-  const [progress, setProgress] = useState<Memory[]>([]);
-  const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [goalsRes, progressRes] = await Promise.all([
-        api.listMemories({ kind: "goal", limit: 50, order: "recent" }),
-        api.listMemories({
-          kind: "goal_progress",
-          limit: 100,
-          order: "recent",
-        }),
-      ]);
-      setGoals((goalsRes.memories as Memory[]) || []);
-      setProgress((progressRes.memories as Memory[]) || []);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
+  const loader = useCallback(async () => {
+    const [goalsRes, progressRes] = await Promise.all([
+      api.listMemories({ kind: "goal", limit: 50, order: "recent" }),
+      api.listMemories({
+        kind: "goal_progress",
+        limit: 100,
+        order: "recent",
+      }),
+    ]);
+    return {
+      goals: (goalsRes.memories as Memory[]) || [],
+      progress: (progressRes.memories as Memory[]) || [],
+    };
   }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const {
+    data: { goals, progress },
+    loading,
+    error,
+    setError,
+    refresh,
+  } = useAsyncResource(loader, {
+    goals: [] as Memory[],
+    progress: [] as Memory[],
+  });
 
   const onRun = useCallback(async () => {
     setRunning(true);
@@ -62,7 +59,7 @@ export function GoalsPanel() {
     } finally {
       setRunning(false);
     }
-  }, [refresh]);
+  }, [refresh, setError]);
 
   // Index the most-recent progress note per goal so the panel can
   // render a single "(recent: ...)" sub-line without scanning the
