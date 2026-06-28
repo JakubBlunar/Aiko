@@ -43,7 +43,7 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   const avatar = useAssistantStore((s) => s.avatar);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const audioLevel = useAssistantStore((s) => s.audioLevel);
-  const connection = useAssistantStore((s) => s.connection);
+  const connectionStatus = useAssistantStore((s) => s.connection.status);
   const turnInProgress = useAssistantStore((s) => s.turnInProgress);
   const ttsState = useAssistantStore((s) => s.ttsState);
   const clientId = useAssistantStore((s) => s.clientId);
@@ -63,7 +63,7 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   // as *any* window is visible+focused, ``_user_present`` is true.
   usePresenceReporter({ send });
 
-  const connected = connection.status === "connected";
+  const connected = connectionStatus === "connected";
 
   const onMicToggle = () => {
     if (!connected) return;
