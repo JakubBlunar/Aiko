@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, mapRawMessages } from "../api";
 import { useAssistantStore } from "../store";
 import type { SessionRow, WsClientCommand } from "../types";
+import { NotificationBell } from "./NotificationBell";
 
 /** Initial history page size on a session load. A full page means there
  * may be older messages to page back through (I6 "load older"). */
@@ -319,7 +320,8 @@ export function SessionSidebar({
             <PersonaIcon className="h-4 w-4" />
           </button>
         ) : null}
-        <div className="mt-auto">
+        <div className="mt-auto flex flex-col gap-2">
+          <NotificationBell className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100" />
           <button
             type="button"
             onClick={handleOpenSettings}
@@ -361,6 +363,7 @@ export function SessionSidebar({
                 {personaWindowVisible ? "Hide" : "Persona"}
               </button>
             ) : null}
+            <NotificationBell className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100" />
             <button
               type="button"
               onClick={handleOpenSettings}

@@ -1,4 +1,5 @@
 import { useAssistantStore } from "../store";
+import { NotificationBell } from "./NotificationBell";
 
 interface MobileTopBarProps {
   /** Open the left navigation drawer (chat history + new + settings). */
@@ -83,6 +84,8 @@ export function MobileTopBar({
           aria-label={`Connection: ${status}`}
         />
       </div>
+
+      <NotificationBell className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/80 transition hover:border-ink-400 hover:text-ink-100" />
 
       <button
         type="button"
