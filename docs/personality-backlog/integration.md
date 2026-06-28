@@ -68,7 +68,7 @@ Settings embed-model control.
 
 ---
 
-## I8. No React error boundary
+## I8. No React error boundary — SHIPPED
 
 **Motivation.** A single render exception (Live2D, a settings panel,
 a malformed WS payload) white-screens the entire UI with no recovery
@@ -80,6 +80,39 @@ radius.
 a new `ErrorBoundary.tsx`.
 
 **Effort.** Small.
+
+> **Shipped.** A top-level [`ErrorBoundary`](../../web/src/components/ErrorBoundary.tsx)
+> wraps `<App />` in [`main.tsx`](../../web/src/main.tsx) (inside
+> `StrictMode`, so it covers both the main and `#/persona` route trees).
+> On a caught render/lifecycle throw it shows a legible dark fallback
+> card — the error message, a collapsible stack + React component stack,
+> and **Reload app** / **Try again** (reset state) / **Copy details**
+> buttons — instead of a blank page.
+>
+> Because the user's goal was *"find out what is causing it when it
+> happens again"*, the crash is also **reported to the backend
+> unconditionally**. A new [`crashReport.ts`](../../web/src/crashReport.ts)
+> builds a compact report (`{message, stack, componentStack, source,
+> url, userAgent, ts}`) and fire-and-forget POSTs it to the new, always-on
+> `POST /api/logs/ui-crash` ([`sessions_settings_routes.py`](../../app/web/rest/sessions_settings_routes.py)).
+> Unlike the opt-in `/api/logs/ui` debug bridge (gated behind
+> `logging.ui_log_enabled`), this endpoint is **never gated** —
+> [`crash_logging.log_ui_crash`](../../app/core/infra/crash_logging.py)
+> emits one `ERROR [ui] crash …` line on the `app.ui` logger (grep via
+> `tail_logs(module_contains="ui", level="ERROR")`) and appends a
+> structured entry to `crashlog.txt` so the full stack survives a log
+> rotation. Field sizes are clipped server-side (8 KB) and client-side
+> (16 KB).
+>
+> `crashReport.ts` also installs global `window` `error` +
+> `unhandledrejection` listeners (via `installGlobalCrashReporters()` in
+> `main.tsx`) that report the crashes a React boundary *can't* see
+> (event-handler throws, async/promise rejections) — report-only, no UI
+> change. The reporter is deduped (identical signatures within 10 s) and
+> capped (25 reports/page-load) so a crash-loop can't hammer the backend.
+> Tests: [`tests/test_web_server_ui_logs.py`](../../tests/test_web_server_ui_logs.py)
+> (`PostUiCrashTests`), [`web/src/crashReport.test.ts`](../../web/src/crashReport.test.ts),
+> [`web/src/components/ErrorBoundary.test.tsx`](../../web/src/components/ErrorBoundary.test.tsx).
 
 ---
 

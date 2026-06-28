@@ -468,7 +468,25 @@ graceful default for non-canonical verbs).
 
 ---
 
-## H15. Needs-driven, richer garden + outdoor life
+## H15. Needs-driven, richer garden + outdoor life — SHIPPED
+
+> **Shipped.** [`GardenVisitWorker`](../../app/core/world/garden_visit_worker.py)
+> now visits for a *reason*, varies the trip, and leaves a trace.
+> **Need-driven trigger** — `_garden_needs_attention` scans the garden plants
+> and pulls a visit forward past the long jittered cooldown when one is
+> drought-stressed (live `days_dry` recompute off `last_watered_at`, threshold
+> `memory.garden_need_dry_days`) or ripe (`stage == "mature"`), bounded by a
+> short `garden_need_visit_floor_hours` floor so a thirsty plant can't make her
+> pace the garden. The timer stays the default floor. **Varied visit** —
+> jittered linger (`garden_visit_min/max_minutes`) and an occasional
+> non-gardening **relax** beat (`garden_relax_ratio`, default 0.3 — tea on the
+> pavers, read in the sun) that skips the watering chores; the weighted-random
+> return spot already landed in H13. **Trace** — every visit (tend or relax)
+> appends a past-tense line to the shared K36 `AWAY_ACTIVITIES_JOURNAL_KEY`
+> ring (`garden_journal_max`) so the existing `_render_away_activities_block`
+> can surface "I was out repotting the basil" on the next turn. New master
+> switch `agent.garden_visits_enabled`. MCP: `get_garden_visit_state`,
+> `force_garden_visit`. Tests: `tests/test_garden_visit_worker.py::GardenVisitWorkerH15Tests`.
 
 **Motivation.** The garden exists and works, but visits feel rare and
 mechanical. [`GardenVisitWorker`](../../app/core/world/garden_visit_worker.py)
@@ -809,7 +827,25 @@ occasional late-night-owl beat.
 
 ---
 
-## H22. Light outings — "I stepped out for a bit"
+## H22. Light outings — "I stepped out for a bit" — SHIPPED
+
+> **Shipped.** A rare `outing` beat in
+> [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py).
+> `_pick_activity` offers an `outing` candidate only when its own gates pass —
+> daylight (`_OUTING_DAYLIGHT_PERIODS`, tolerant of an unknown period), an
+> independent cooldown (`memory.outing_cooldown_hours`, default 6h, kv
+> `outing.last_fired_at`), and a small daily cap (`memory.outing_daily_cap`,
+> default 2, kv `outing.day` / `outing.day_count`) — so it stays special even
+> when ordinary beats fire often. Chosen via the same H18 weighted pick; when
+> it lands, `run()` stamps the outing's own watermarks. Single-phase + past
+> tense (`_OUTING_BEATS` — "popped out for a walk", "grabbed a coffee from the
+> place downstairs"): no `scene_id`, no item relocation, no location move (she's
+> back by the time it's journalled) — explicitly the **v0 of H5**. The trace
+> rides the same away-journal + `_render_away_activities_block` surfacing, and
+> the existing H17 idle-seed path turns the trip into a small detail she
+> brought home. Master switch `agent.outings_enabled`. MCP: `force_outing`
+> (+ `outing_debug_state`). Tests:
+> `tests/test_idle_activity_worker.py::OutingTests`.
 
 **Motivation.** The world is the room plus the garden, both *at home*. An
 occasional brief **outing** ("popped out for a walk and the air was lovely",

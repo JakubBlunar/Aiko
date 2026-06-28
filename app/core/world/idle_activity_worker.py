@@ -64,6 +64,30 @@ IDLE_SEEDS_KEY = "aiko.idle_seeds"
 _KV_SEED_DAY = "idle_seed.day"
 _KV_SEED_DAY_COUNT = "idle_seed.day_count"
 
+# H22 — light outings ("I stepped out for a bit"). Own cooldown + daily
+# cap kv watermarks, independent of the general away pacing so the outing
+# stays rare even when ordinary beats fire often.
+_KV_OUTING_LAST_FIRED_AT = "outing.last_fired_at"
+_KV_OUTING_DAY = "outing.day"
+_KV_OUTING_DAY_COUNT = "outing.day_count"
+
+# Periods during which stepping out reads as natural (no 3 a.m. strolls).
+_OUTING_DAYLIGHT_PERIODS: frozenset[str] = frozenset(
+    {"early_morning", "morning", "midday", "afternoon", "evening"}
+)
+
+# Varied past-tense outing flavours. She's back by the time the beat is
+# journalled, so each is narrated as a completed short trip. v0 of H5 —
+# no scene_id, no item relocation; the trace lives in the journal + the
+# H17 seed path (a small detail she brought home).
+_OUTING_BEATS: tuple[str, ...] = (
+    "popped out for a short walk — the air was lovely",
+    "stepped out and grabbed a coffee from the place downstairs",
+    "took a quick stroll around the block to stretch my legs",
+    "nipped out for some fresh air and watched the street for a bit",
+    "wandered out to the little shop on the corner and back",
+)
+
 # Must match the literal GardenVisitWorker writes (see
 # ``garden_visit_worker.GardenVisitWorker._RETURN_KEY``). Duplicated to
 # avoid importing the garden module just for a string.
@@ -244,6 +268,9 @@ class IdleAwayActivityWorker:
         idle_seed_ratio: float = 0.0,
         idle_seed_daily_cap: int = 3,
         idle_seed_max_ring: int = 6,
+        outings_enabled_provider: Callable[[], bool] | None = None,
+        outing_cooldown_seconds: float = 6.0 * 3600,
+        outing_daily_cap: int = 2,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -266,6 +293,9 @@ class IdleAwayActivityWorker:
         self._idle_seed_ratio = min(1.0, max(0.0, float(idle_seed_ratio)))
         self._idle_seed_daily_cap = max(0, int(idle_seed_daily_cap))
         self._idle_seed_max_ring = max(1, int(idle_seed_max_ring))
+        self._outings_enabled_provider = outings_enabled_provider
+        self._outing_cooldown_seconds = max(0.0, float(outing_cooldown_seconds))
+        self._outing_daily_cap = max(0, int(outing_daily_cap))
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -317,9 +347,13 @@ class IdleAwayActivityWorker:
             return {"fired": 0, "skipped_daily_cap": True}
 
         user_name = self._resolve(self._user_display_name_provider) or "you"
-        plan = self._pick_activity(user_name)
+        plan = self._pick_activity(user_name, now)
         if plan is None:
             return {"fired": 0, "no_plan": True}
+
+        # H22 — stamp the outing's own cooldown + daily cap when chosen.
+        if plan.key == "outing":
+            self._mark_outing_fired(now)
 
         self._apply_world_mutation(plan)
         summary = (
@@ -481,7 +515,10 @@ class IdleAwayActivityWorker:
 
     # ── activity selection ───────────────────────────────────────────
 
-    def _pick_activity(self, user_name: str) -> ActivityPlan | None:
+    def _pick_activity(
+        self, user_name: str, now: datetime | None = None,
+    ) -> ActivityPlan | None:
+        now = now or _utcnow()
         try:
             items = self._world_store.list_items()
         except Exception:
@@ -632,6 +669,20 @@ class IdleAwayActivityWorker:
                 else (loc_desk.id if loc_desk else None)
             ),
         )
+
+        # H22 — light outing. Only offered when its own daylight + cooldown
+        # + daily-cap gates pass (or it's MCP-forced), so it stays rare. No
+        # location move — she's back home by the time the beat is journalled.
+        outing_forced = (
+            self._forced_activity_key == "outing" and self._outings_enabled()
+        )
+        if outing_forced or self._outing_eligible(now):
+            candidates["outing"] = ActivityPlan(
+                key="outing",
+                posture="sitting",
+                activity="idle",
+                summary=self._rng.choice(_OUTING_BEATS),
+            )
 
         # Fallback — let her thoughts wander. Always available.
         candidates["wander"] = ActivityPlan(
@@ -931,6 +982,76 @@ class IdleAwayActivityWorker:
         except (TypeError, ValueError):
             count = 0
         self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
+
+    # ── H22: light-outing gates ───────────────────────────────────────
+
+    def _outings_enabled(self) -> bool:
+        if self._outings_enabled_provider is None:
+            return True
+        try:
+            return bool(self._outings_enabled_provider())
+        except Exception:
+            return True
+
+    def _outing_eligible(self, now: datetime) -> bool:
+        """True when a rare daylight outing may be offered this tick."""
+        if not self._outings_enabled():
+            return False
+        if self._outing_daily_cap <= 0:
+            return False
+        # Daylight only — but tolerate an unknown period (no provider).
+        period = self._read_period()
+        if period and period not in _OUTING_DAYLIGHT_PERIODS:
+            return False
+        # Own cooldown floor.
+        if self._outing_cooldown_seconds > 0:
+            last = _parse_iso(self._kv_get_safe(_KV_OUTING_LAST_FIRED_AT))
+            if last is not None and (
+                (now - last).total_seconds() < self._outing_cooldown_seconds
+            ):
+                return False
+        return self._under_outing_daily_cap(now)
+
+    def _under_outing_daily_cap(self, now: datetime) -> bool:
+        if self._outing_daily_cap <= 0:
+            return False
+        today = now.astimezone().strftime("%Y-%m-%d")
+        if self._kv_get_safe(_KV_OUTING_DAY) != today:
+            return True
+        try:
+            count = int(self._kv_get_safe(_KV_OUTING_DAY_COUNT) or "0")
+        except (TypeError, ValueError):
+            count = 0
+        return count < self._outing_daily_cap
+
+    def _mark_outing_fired(self, now: datetime) -> None:
+        self._kv_set_safe(
+            _KV_OUTING_LAST_FIRED_AT, now.isoformat(timespec="seconds")
+        )
+        today = now.astimezone().strftime("%Y-%m-%d")
+        if self._kv_get_safe(_KV_OUTING_DAY) != today:
+            self._kv_set_safe(_KV_OUTING_DAY, today)
+            self._kv_set_safe(_KV_OUTING_DAY_COUNT, "1")
+            return
+        try:
+            count = int(self._kv_get_safe(_KV_OUTING_DAY_COUNT) or "0")
+        except (TypeError, ValueError):
+            count = 0
+        self._kv_set_safe(_KV_OUTING_DAY_COUNT, str(count + 1))
+
+    def outing_debug_state(self, now: datetime | None = None) -> dict[str, Any]:
+        """Snapshot of the H22 outing gates for the MCP state tool."""
+        now = now or _utcnow()
+        return {
+            "enabled": self._outings_enabled(),
+            "eligible": self._outing_eligible(now),
+            "cooldown_seconds": self._outing_cooldown_seconds,
+            "daily_cap": self._outing_daily_cap,
+            "last_fired_at": self._kv_get_safe(_KV_OUTING_LAST_FIRED_AT),
+            "day": self._kv_get_safe(_KV_OUTING_DAY),
+            "day_count": self._kv_get_safe(_KV_OUTING_DAY_COUNT),
+            "period": self._read_period(),
+        }
 
     # ── helpers ──────────────────────────────────────────────────────
 

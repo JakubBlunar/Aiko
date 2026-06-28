@@ -328,6 +328,66 @@ def log_ui_event(
     return True
 
 
+def log_ui_crash(report: dict[str, Any], *, max_field_bytes: int = 8192) -> bool:
+    """Record a UI crash caught by the React error boundary.
+
+    Unlike :func:`log_ui_event` (the opt-in debug firehose gated behind
+    ``logging.ui_log_enabled``), a white-screen crash is **always**
+    recorded — the whole point is to capture the cause the next time it
+    happens, even when the user never turned debug logging on. Emits one
+    ``ERROR [ui] crash …`` line on the ``app.ui`` logger (so it shows up
+    in ``tail_logs(module_contains="ui", level="ERROR")`` and the
+    rotating ``app.log``) and appends a structured entry to
+    ``crashlog.txt`` so the full stack survives a log rotation. Each
+    string field is clipped to ``max_field_bytes`` to keep a misbehaving
+    client from dumping an unbounded blob. Returns ``True`` when a line
+    was emitted, ``False`` on a malformed report.
+    """
+    if not isinstance(report, dict):
+        return False
+
+    def _clip(value: Any) -> str:
+        text = str(value if value is not None else "").strip()
+        if max_field_bytes > 0 and len(text) > max_field_bytes:
+            return text[:max_field_bytes] + f"…(+{len(text) - max_field_bytes} more)"
+        return text
+
+    message = _clip(report.get("message")) or "(no message)"
+    source = _clip(report.get("source")) or "unknown"
+    url = _clip(report.get("url"))
+    stack = _clip(report.get("stack"))
+    component_stack = _clip(report.get("componentStack"))
+    user_agent = _clip(report.get("userAgent"))
+    ts = _clip(report.get("ts"))
+
+    ui_logger = logging.getLogger(_UI_LOGGER_NAME)
+    ui_logger.error(
+        "[ui] crash source=%s msg=%s url=%s ts=%s ua=%s\ncomponentStack: %s\nstack: %s",
+        source,
+        message,
+        url or "-",
+        ts or "-",
+        user_agent or "-",
+        component_stack or "-",
+        stack or "-",
+    )
+    try:
+        _write_line(
+            {
+                "type": "ui_crash",
+                "source": source,
+                "message": message,
+                "url": url,
+                "user_agent": user_agent,
+                "component_stack": component_stack,
+                "stack": stack,
+            }
+        )
+    except Exception:
+        pass
+    return True
+
+
 def log_exception(
     exc_type: type[BaseException],
     exc_value: BaseException,

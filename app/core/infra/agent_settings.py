@@ -1696,6 +1696,25 @@ class AgentSettings:
     # ``MemorySettings.room_evolution_*``.
     room_evolution_enabled: bool = True
 
+    # ── H15: needs-driven, richer garden + outdoor life ───────────────
+    # Master switch for the :class:`GardenVisitWorker`. Off → Aiko never
+    # autonomously wanders out to tend the garden (the manual world tools
+    # still work). On (default) → she visits on a need-driven trigger
+    # (drought-stressed or ripe plants pull a visit forward) with a varied
+    # visit (jittered duration, occasional "sit outside" relax beat) and
+    # leaves a trace in the away-activities journal so she can mention it.
+    # Cadence + need knobs on ``MemorySettings.garden_*``.
+    garden_visits_enabled: bool = True
+
+    # ── H22: light outings ("I stepped out for a bit") ────────────────
+    # Master switch for the rare ``outing`` away-beat. Off → she never
+    # narrates a short trip out. On (default) → during daylight quiet
+    # windows, paced by its own long cooldown + small daily cap, an idle
+    # beat may narrate a brief trip out and back (and feed H17 with a small
+    # detail she brought home). The v0 of H5. Cadence on
+    # ``MemorySettings.outing_*``.
+    outings_enabled: bool = True
+
     # ── H9: away-diary worker ─────────────────────────────────────────
     # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
     # Off → the worker never registers. On (default) → during quiet

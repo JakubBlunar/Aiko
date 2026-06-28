@@ -639,6 +639,27 @@ class MemorySettings:
     # room changes gradually rather than every tick.
     room_evolution_interval_seconds: int = 21600
     room_evolution_min_hours: float = 8.0
+    # H15 — needs-driven, richer garden + outdoor life. ``need_dry_days``
+    # is the ``days_dry`` threshold at which a plant counts as
+    # drought-stressed (pulls a visit forward); ``need_visit_floor_hours``
+    # is the minimum gap between two need-driven visits so a thirsty plant
+    # can't make her pace the garden every tick. ``relax_ratio`` is the
+    # chance a non-need visit is a "sit outside" beat (tea on the pavers,
+    # read in the sun) instead of watering chores. ``visit_min/max_minutes``
+    # jitter how long she lingers. ``journal_max`` bounds the away-journal
+    # ring the garden visit shares with the K36 surfacing provider.
+    garden_need_dry_days: float = 2.0
+    garden_need_visit_floor_hours: float = 0.75
+    garden_relax_ratio: float = 0.3
+    garden_visit_min_minutes: float = 4.0
+    garden_visit_max_minutes: float = 10.0
+    garden_journal_max: int = 8
+    # H22 — light outings ("I stepped out for a bit"). A rare away-beat
+    # gated to daylight + its own ``cooldown_hours`` + ``daily_cap`` that
+    # narrates a short trip out and back (and feeds H17 through the shared
+    # idle-seed path). Long cooldown + small cap keep it special.
+    outing_cooldown_hours: float = 6.0
+    outing_daily_cap: int = 2
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1708,6 +1729,32 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             room_evolution_min_hours=max(
                 0.0, float(memory_raw.get("room_evolution_min_hours", 8.0)),
+            ),
+            garden_need_dry_days=max(
+                0.0, float(memory_raw.get("garden_need_dry_days", 2.0)),
+            ),
+            garden_need_visit_floor_hours=max(
+                0.0,
+                float(memory_raw.get("garden_need_visit_floor_hours", 0.75)),
+            ),
+            garden_relax_ratio=min(
+                1.0,
+                max(0.0, float(memory_raw.get("garden_relax_ratio", 0.3))),
+            ),
+            garden_visit_min_minutes=max(
+                0.5, float(memory_raw.get("garden_visit_min_minutes", 4.0)),
+            ),
+            garden_visit_max_minutes=max(
+                0.5, float(memory_raw.get("garden_visit_max_minutes", 10.0)),
+            ),
+            garden_journal_max=max(
+                1, int(memory_raw.get("garden_journal_max", 8)),
+            ),
+            outing_cooldown_hours=max(
+                0.0, float(memory_raw.get("outing_cooldown_hours", 6.0)),
+            ),
+            outing_daily_cap=max(
+                0, int(memory_raw.get("outing_daily_cap", 2)),
             ),
             circadian_settle_interval_seconds=max(
                 60,

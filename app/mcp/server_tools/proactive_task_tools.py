@@ -392,6 +392,84 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_away_activities_surface raised: {exc}"
 
     @mcp.tool()
+    def get_garden_visit_state() -> str:
+        """H15 — dump the GardenVisitWorker gate state.
+
+        Shows the master switch, whether she's currently in the garden,
+        the live need-driven trigger (a drought-stressed or ripe plant),
+        the kv watermarks (return_at / next_eligible / last_visit), and
+        the H15 knobs (relax ratio, dry-days threshold, visit jitter).
+        """
+        try:
+            worker = getattr(session, "_garden_visit_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            return json.dumps(worker.debug_state(), indent=2, default=str)
+        except Exception as exc:
+            return f"get_garden_visit_state raised: {exc}"
+
+    @mcp.tool()
+    def force_garden_visit() -> str:
+        """H15 — run the GardenVisitWorker once, bypassing the gates.
+
+        Arms a one-shot bypass of the daylight + cooldown gates, then calls
+        ``run()`` directly. On the outbound leg she walks to the garden
+        (tending or relaxing) and a fresh entry lands in the shared
+        away-activities journal — pair with ``force_away_activities_
+        surface`` to make the next turn mention "I was out in the garden".
+        Call again after the visit duration to walk her back home.
+        """
+        try:
+            worker = getattr(session, "_garden_visit_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            worker.force_visit()
+            result = worker.run()
+            return json.dumps(
+                {"ran": True, "result": result}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"force_garden_visit raised: {exc}"
+
+    @mcp.tool()
+    def force_outing() -> str:
+        """H22 — force a rare "I stepped out for a bit" away-beat now.
+
+        Arms the outing key on the away-activity worker (so its own
+        daylight + cooldown + daily-cap gates are bypassed when the beat
+        is offered) and calls ``run()`` once. A past-tense outing line
+        lands in the away-activities journal; pair with
+        ``force_away_activities_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_away_activity_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            worker.force_activity("outing")
+            result = worker.run()
+            state = (
+                worker.outing_debug_state()
+                if hasattr(worker, "outing_debug_state")
+                else {}
+            )
+            return json.dumps(
+                {"ran": True, "result": result, "outing_state": state},
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"force_outing raised: {exc}"
+
+    @mcp.tool()
     def get_idle_seed_state() -> str:
         """H17 — dump the idle-seed ring + surfacing watermarks.
 
