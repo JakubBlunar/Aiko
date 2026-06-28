@@ -648,6 +648,30 @@ def extract_touch_commands(text: str) -> list[TouchCommand]:
     ]
 
 
+# H14 — ``[[activity:short verb]]`` lets the chat model set what Aiko is
+# doing right now, inline during a turn (open-vocab, snake_cased downstream).
+# Parsed + stripped here, applied post-turn via ``update_world_state`` so it
+# never leaks into the chat transcript / TTS.
+_ACTIVITY_TAG_PATTERN = re.compile(r"\[\[activity:([^\]\[]+)\]\]", re.IGNORECASE)
+_ACTIVITY_OPEN_TAIL_PATTERN = re.compile(r"\[\[activity:[^\]]*\Z", re.IGNORECASE)
+
+
+def extract_activity_tag(text: str) -> str | None:
+    """Return the LAST ``[[activity:...]]`` verb in ``text``, or None.
+
+    Single-valued per turn by intent: if Aiko emits more than one, the
+    most recent wins (it reflects what she ended the turn doing).
+    """
+    if not text:
+        return None
+    last: str | None = None
+    for m in _ACTIVITY_TAG_PATTERN.finditer(str(text)):
+        value = (m.group(1) or "").strip()
+        if value:
+            last = value
+    return last
+
+
 def parse_arc_tags(text: str) -> list[str]:
     """Return every well-formed ``[[arc:NAME]]`` value from ``text``.
 
@@ -858,6 +882,10 @@ def strip_all_meta_tags(text: str) -> str:
     # extracted them earlier; this is the belt-and-braces strip.
     s = _TOUCH_TAG_PATTERN.sub("", s)
     s = _TOUCH_OPEN_TAIL_PATTERN.sub("", s)
+    # H14: drop ``[[activity:verb]]`` self-tags (applied post-turn via
+    # update_world_state). Never leaks into chat / TTS.
+    s = _ACTIVITY_TAG_PATTERN.sub("", s)
+    s = _ACTIVITY_OPEN_TAIL_PATTERN.sub("", s)
     # Phase 1c: stage-direction earcons are stripped from display text;
     # the audio side-channel pulls them via :func:`extract_stage_directions`
     # before this stripping runs. Stripping here keeps the chat
@@ -947,6 +975,7 @@ _META_OPENERS = (
     "[[prosody:",
     "[[goal:",
     "[[touch:",
+    "[[activity:",
 )
 
 
@@ -988,6 +1017,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[goal:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[touch:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[activity:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

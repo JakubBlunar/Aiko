@@ -233,7 +233,15 @@ class ChangePostureTool:
                     },
                     "activity": {
                         "type": "string",
-                        "description": "Optional activity: idle, reading, tinkering, napping, watching_screens, thinking, snacking, stretching, looking_outside, doodling.",
+                        "description": (
+                            "Optional, free text -- what she's actually doing "
+                            "right now, grounded in the room. Common ones: "
+                            "reading, tinkering, napping, watching_screens, "
+                            "thinking, snacking, looking_outside, doodling, but "
+                            "anything specific is welcome (repotting_the_basil, "
+                            "reorganising_the_shelf, sketching_the_skyline). "
+                            "Kept short; spaces become underscores."
+                        ),
                     },
                 },
                 "required": ["posture"],
@@ -241,7 +249,12 @@ class ChangePostureTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
-        from app.core.world.world_store import VALID_ACTIVITIES, VALID_POSTURES
+        # Posture stays a strict enum (it drives the rig). Activity is
+        # open-vocab (H14): normalised free text, never rejected.
+        from app.core.world.world_store import (
+            VALID_POSTURES,
+            normalize_activity,
+        )
 
         posture = (arguments.get("posture") or "").strip().lower()
         if not posture:
@@ -251,14 +264,7 @@ class ChangePostureTool:
                 f"change_posture: invalid posture '{posture}'. "
                 f"Valid: {', '.join(VALID_POSTURES)}"
             )
-        activity = arguments.get("activity")
-        if activity is not None:
-            activity = str(activity).strip().lower() or None
-            if activity is not None and activity not in VALID_ACTIVITIES:
-                raise ToolError(
-                    f"change_posture: invalid activity '{activity}'. "
-                    f"Valid: {', '.join(VALID_ACTIVITIES)}"
-                )
+        activity = normalize_activity(arguments.get("activity"))
         snap = self._session.update_world_state(posture=posture, activity=activity)
         if snap is None:
             raise ToolError("change_posture: room is unavailable")

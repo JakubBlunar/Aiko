@@ -170,6 +170,68 @@ VALID_ACTIVITIES = (
     "doodling",
 )
 
+# H14 — the activity field is open-vocab. ``VALID_ACTIVITIES`` stays the
+# *canonical* set the avatar / prosody layers understand, but the stored
+# activity may be any normalised free-text verb. ``canonical_activity``
+# buckets an open-vocab verb back down to one of these for downstream
+# consumers (the rig mapping, prosody, etc.).
+_ACTIVITY_MAX_LEN = 40
+
+# Keyword groups -> canonical activity. First match wins; checked only
+# when the verb isn't already a canonical token.
+_ACTIVITY_CANONICAL_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("read", "book", "page", "novel", "poetry"), "reading"),
+    (("nap", "sleep", "doze", "rest", "snooze", "curl"), "napping"),
+    (
+        ("snack", "eat", "tea", "coffee", "cookie", "drink", "sip", "bite", "munch"),
+        "snacking",
+    ),
+    (("doodle", "sketch", "draw", "paint", "colour", "color", "journal"), "doodling"),
+    (
+        ("window", "outside", "sky", "cloud", "rain", "gaze", "stargaz", "people_watch"),
+        "looking_outside",
+    ),
+    (("stretch", "yoga", "limber", "dance"), "stretching"),
+    (
+        (
+            "tinker", "tidy", "organis", "organiz", "clean", "fix", "repot",
+            "build", "craft", "rearrange", "sort", "knit", "sew", "water",
+        ),
+        "tinkering",
+    ),
+    (
+        ("screen", "monitor", "game", "video", "scroll", "browse", "stream", "movie"),
+        "watching_screens",
+    ),
+    (("think", "ponder", "muse", "reflect", "daydream", "wonder", "plan"), "thinking"),
+)
+
+
+def normalize_activity(text: str | None) -> str | None:
+    """Snake-case + length-cap a free-text activity verb; None on garbage."""
+    if not text:
+        return None
+    s = str(text).strip().lower()
+    if not s:
+        return None
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    if not s:
+        return None
+    return s[:_ACTIVITY_MAX_LEN]
+
+
+def canonical_activity(activity: str | None) -> str:
+    """Bucket a (possibly open-vocab) activity verb to a canonical token."""
+    a = (activity or "").strip().lower()
+    if not a:
+        return "idle"
+    if a in VALID_ACTIVITIES:
+        return a
+    for keys, canon in _ACTIVITY_CANONICAL_HINTS:
+        if any(k in a for k in keys):
+            return canon
+    return "idle"
+
 
 # ── Dataclasses ─────────────────────────────────────────────────────────
 
@@ -237,6 +299,9 @@ class RoomState:
             "location_id": int(self.location_id) if self.location_id is not None else None,
             "posture": self.posture,
             "activity": self.activity,
+            # H14 — open-vocab activity, plus the canonical bucket the rig /
+            # prosody layers understand.
+            "canonical_activity": canonical_activity(self.activity),
             "mood_note": self.mood_note,
             "updated_at": self.updated_at,
         }
@@ -1098,8 +1163,11 @@ class WorldStore:
             new_posture = requested if requested in VALID_POSTURES else current.posture
         new_activity = current.activity
         if activity is not None:
-            requested = (activity or "").strip().lower()
-            new_activity = requested if requested in VALID_ACTIVITIES else current.activity
+            # H14 — open-vocab: store any normalised free-text verb, only
+            # falling back to the current value on genuine garbage.
+            normalized = normalize_activity(activity)
+            if normalized:
+                new_activity = normalized
         new_note = current.mood_note if mood_note is None else str(mood_note).strip()
         now = _now_iso()
         conn = self._get_conn()
