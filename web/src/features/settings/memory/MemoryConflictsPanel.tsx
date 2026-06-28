@@ -1,40 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api } from "../../../api";
 import type {
   Memory,
   MemoryConflictPair,
   MemoryConflictsResponse,
 } from "../../../types";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
 
 export function MemoryConflictsPanel() {
-  const [data, setData] = useState<MemoryConflictsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const snapshot = await api.listMemoryConflicts({
-        limit: 50,
-        includeRecent: true,
-      });
-      setData(snapshot);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const loader = useCallback(
+    () => api.listMemoryConflicts({ limit: 50, includeRecent: true }),
+    [],
+  );
+  const { data, loading, error, setError, refresh } =
+    useAsyncResource<MemoryConflictsResponse | null>(loader, null);
 
   const onResolve = useCallback(
     async (pair: MemoryConflictPair, winnerId: number) => {

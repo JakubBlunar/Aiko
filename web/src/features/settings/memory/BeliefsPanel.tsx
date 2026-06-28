@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { api } from "../../../api";
 import { useAssistantStore } from "../../../store";
 import type { Belief, BeliefKind, BeliefStatus } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -29,33 +30,23 @@ export function BeliefsPanel() {
   const setStatusFilter = useAssistantStore((s) => s.setBeliefStatusFilter);
   const applyBeliefUpdated = useAssistantStore((s) => s.applyBeliefUpdated);
   const applyBeliefDeleted = useAssistantStore((s) => s.applyBeliefDeleted);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const snapshot = await api.listBeliefs({
-        limit: 100,
-        kind: kindFilter === "all" ? undefined : kindFilter,
-        status: statusFilter === "all" ? undefined : statusFilter,
-      });
-      setBeliefView({
-        items: snapshot.beliefs,
-        counts: snapshot.counts ?? null,
-        enabled: snapshot.enabled,
-      });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
+  const loader = useCallback(async () => {
+    const snapshot = await api.listBeliefs({
+      limit: 100,
+      kind: kindFilter === "all" ? undefined : kindFilter,
+      status: statusFilter === "all" ? undefined : statusFilter,
+    });
+    setBeliefView({
+      items: snapshot.beliefs,
+      counts: snapshot.counts ?? null,
+      enabled: snapshot.enabled,
+    });
   }, [kindFilter, statusFilter, setBeliefView]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const { loading, error, setError, refresh } = useAsyncResource<void>(
+    loader,
+    undefined,
+  );
 
   const handleContradict = useCallback(
     async (belief: Belief) => {
@@ -68,7 +59,7 @@ export function BeliefsPanel() {
         setError(String(err));
       }
     },
-    [applyBeliefUpdated],
+    [applyBeliefUpdated, setError],
   );
 
   const handleConfirm = useCallback(
@@ -80,7 +71,7 @@ export function BeliefsPanel() {
         setError(String(err));
       }
     },
-    [applyBeliefUpdated],
+    [applyBeliefUpdated, setError],
   );
 
   const handleDelete = useCallback(
@@ -92,7 +83,7 @@ export function BeliefsPanel() {
         setError(String(err));
       }
     },
-    [applyBeliefDeleted],
+    [applyBeliefDeleted, setError],
   );
 
   const beliefs = beliefView.items;
