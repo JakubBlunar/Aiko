@@ -233,7 +233,34 @@ and earned, never a generic compliment generator.
 
 ---
 
-## J11. Affection-style learning — "how he likes to be cared for"
+## J11. Affection-style learning — "how he likes to be cared for" — SHIPPED
+
+> **Shipped.** Implemented as a per-user weighting over five affection
+> kinds (`touch` / `teasing` / `appreciation` / `words` / `space`) in
+> the pure module
+> [`affection_style.py`](../../app/core/relationship/affection_style.py)
+> (kv_meta key `aiko.affection_style`, no schema). Per the design
+> feedback "reactions should be confirmation, not required", the
+> **primary** signal is *passive*: the post-turn hook attributes the
+> just-observed K14 `EngagementResult` (engaged / disengaged /
+> abandoned + length z) back to the affection kind(s) Aiko expressed the
+> previous turn (`classify_turn_affection` → `apply_observation`). K32
+> reactions are an optional confirmation booster
+> (`apply_reaction_confirmation` in `world_mixin.apply_user_reaction`,
+> `REACTION_TO_KIND`). Weights are floored ("bias, never collapse"),
+> slowly decay toward uniform via the idle
+> [`AffectionStyleDecayWorker`](../../app/core/relationship/affection_style_worker.py),
+> and are **never rendered into a prompt** — they only tilt the J10
+> appreciation cooldown and the K59 tease-collection cooldown via
+> `_affection_style_bias(kind)` (touch self-paces post-B7, so it has no
+> gate to bias). The K32 tray also gained four kinds (🙏 grateful, 🥰
+> melted, 🙄 eye-roll, 🥺 moved) and a Settings → Avatar reactions
+> legend. Settings: `agent.affection_style_*` (enabled / learning_rate /
+> reaction_weight / floor / decay_half_life_days / bias_strength /
+> bias_floor / bias_ceil / decay_interval_seconds). MCP:
+> `get_affection_style_state`, `set_affection_style`,
+> `reset_affection_style`, `force_affection_style_decay`. Tests:
+> `tests/test_affection_style.py`, `tests/test_affection_style_worker.py`.
 
 **Motivation.** Aiko expresses care in a roughly fixed mix — teasing
 (K48/K59), appreciation (J10), touch (K31), words, giving space — but she
