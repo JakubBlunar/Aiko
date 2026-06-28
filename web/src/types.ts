@@ -961,6 +961,37 @@ export interface BeliefsResponse {
   enabled: boolean;
 }
 
+// ── Phase 4a agenda (I3) ────────────────────────────────────────────
+
+export type AgendaStatus = "open" | "done" | "dropped" | "snoozed";
+
+/** Mirrors ``AgendaItem.to_dict()`` on the backend. */
+export interface AgendaItem {
+  id: number;
+  goal: string;
+  status: AgendaStatus;
+  importance: number;
+  created_at: string;
+  due_at: string | null;
+  last_groomed_at: string | null;
+}
+
+export interface AgendaResponse {
+  items: AgendaItem[];
+  enabled: boolean;
+}
+
+// ── One-shot boot notices surfaced as toasts (I7) ───────────────────
+
+export interface StartupNotice {
+  /** Mapped to a ToastKind on the client; unknown falls back to info. */
+  kind: "memory" | "info" | "warning" | "error";
+  text: string;
+  /** Stable machine code (e.g. "embedding_rebuild") for dedupe/testing. */
+  code?: string;
+  detail?: unknown;
+}
+
 // ── Live2D avatar (fixed Alexia bundle) ─────────────────────────────
 
 export interface ExpressionRef {
@@ -1458,6 +1489,10 @@ export type WsServerEvent =
       /** Client elected to play TTS / earcon audio. Only this window
        * plays PCM so a hidden persona webview can't echo the stream. */
       audio_owner_id?: string | null;
+      /** One-shot boot notices surfaced as toasts (I7): e.g. a
+       * destructive LanceDB rebuild after an embedding-model swap.
+       * Optional for backwards compatibility with older backends. */
+      notices?: StartupNotice[];
       /** Companion soft-physicality knobs (touch / reactions / persona
        * banner) so the persona overlay honours the master switches on
        * connect (I5). Optional for backwards compatibility. */
@@ -1545,6 +1580,7 @@ export type WsServerEvent =
   | { type: "belief_added"; belief: Belief }
   | { type: "belief_updated"; belief: Belief }
   | { type: "belief_deleted"; id: number }
+  | { type: "agenda_updated"; item: AgendaItem }
   | { type: "world_updated"; patch: WorldPatch }
   | {
       /** K21. Fresh-eyes thread note upserted; sidebar refetches its

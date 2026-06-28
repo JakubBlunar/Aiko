@@ -16,7 +16,7 @@ banner master switches) landed in the reliability pass — see
 
 ---
 
-## I3. Agenda has no REST endpoint or UI
+## I3. Agenda has no REST endpoint or UI — SHIPPED
 
 **Motivation.** Phase 4a agenda (`[[agenda:...]]` tags, the `agenda`
 table, the prompt block, and proactive surfacing) is fully live and
@@ -31,6 +31,44 @@ attach an MCP client.
 the agenda store + WS event for live updates.
 
 **Effort.** Medium.
+
+> **Shipped.** The agenda is now a first-class REST + UI surface that
+> stays live across all three write paths (inline `[[agenda:...]]`
+> tags, the LLM grooming worker, and manual edits).
+>
+> **Live-update seam.** [`AgendaStore`](../../app/core/goals/agenda.py)
+> gained an `on_change` callback fired after every `add` / `update`
+> (and thus `mark_done` / `mark_dropped`), wired in
+> [`SpeakingWorkersInitMixin`](../../app/core/session/speaking_workers_init_mixin.py)
+> to a new `_notify_agenda` sink on
+> [`MemoryFacadeMixin`](../../app/core/session/memory_facade_mixin.py).
+> Because the notification lives in the *store*, the groom worker and the
+> post-turn tag writer surface in the UI for free — no per-call-site
+> plumbing. The web layer subscribes via `add_agenda_listener` and
+> rebroadcasts a single `agenda_updated` WS event
+> ([`server.py`](../../app/web/server.py)); the client upserts by id.
+>
+> **REST.** `GET /api/agenda?status=&limit=`, `GET /api/agenda/stats`,
+> `POST /api/agenda`, `PATCH /api/agenda/{id}` (status / importance /
+> goal / due_at) in
+> [`memory_world_routes.py`](../../app/web/rest/memory_world_routes.py),
+> backed by `list_agenda` / `add_agenda` / `update_agenda` /
+> `agenda_stats` facade methods that mirror the existing MCP
+> `list_agenda` / `get_agenda_stats` JSON shape (`{items, enabled}` /
+> `{enabled, **worker.stats()}`).
+>
+> **Frontend.** New `AgendaItem` / `AgendaResponse` / `StartupNotice`
+> types, `api.listAgenda` / `createAgenda` / `updateAgenda`, an
+> `agendaView` Zustand slice (`setAgendaView` + an upsert-by-id
+> `applyAgendaUpdated` reducer; status filtering is client-side so a
+> status flip never needs a refetch), the `agenda_updated` socket case,
+> and a new **Agenda** sub-tab in the Memory drawer
+> ([`AgendaPanel.tsx`](../../web/src/components/settings/memory/AgendaPanel.tsx))
+> with status filter, inline add, and complete / drop / reopen actions.
+> Tests: [`tests/test_agenda.py`](../../tests/test_agenda.py)
+> (`AgendaOnChangeTests`),
+> [`tests/test_web_server_agenda.py`](../../tests/test_web_server_agenda.py),
+> [`web/src/store.agenda.test.ts`](../../web/src/store.agenda.test.ts).
 
 ---
 
@@ -88,7 +126,7 @@ data is all there.
 
 ---
 
-## I7. Embedding-model swap wipes LanceDB with only a log line
+## I7. Embedding-model swap wipes LanceDB with only a log line — SHIPPED
 
 **Motivation.** When the embedding model or its dimension changes,
 `RagStore` drops and rebuilds the LanceDB tables with only a WARNING
@@ -101,6 +139,37 @@ L301-309, a `warning` toast over WS, or a confirmation step in the
 Settings embed-model control.
 
 **Effort.** Medium.
+
+> **Shipped** (boot-notice → toast, not a confirmation step). The embed
+> model is read once at boot (`RagStore` has a single construction site
+> in `SessionController.__init__`), so a swap only takes effect on the
+> next restart and the rebuild is unavoidable by the time a client could
+> confirm it — a *post-hoc warning* is the right shape, not a gate.
+>
+> [`RagStore._validate_or_stamp_meta`](../../app/core/rag/rag_store.py)
+> now records the destructive rebuild on a new public `embedding_swap`
+> attribute (`{from_model, from_dim, to_model, to_dim, at}`) alongside
+> the existing WARNING log. Because the rebuild happens before any WS
+> client is connected, the notice can't be broadcast live; instead
+> [`SessionController`](../../app/core/session/session_controller.py)
+> calls a new `_capture_embedding_swap_notice` after opening the store,
+> which queues a one-shot `warning` notice via `_queue_startup_notice`
+> on [`LifecycleMixin`](../../app/core/session/lifecycle_mixin.py). The
+> WS `hello` payload carries `notices: session.consume_startup_notices()`
+> — **consumed once**, so only the first client to connect after boot
+> gets the toast and later reconnects don't repeat a stale warning.
+>
+> Frontend: the `hello` handler in
+> [`useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
+> maps each notice to `pushToast` (warnings stick for 30 s), and the
+> hello WS event grew an optional `notices?: StartupNotice[]` field. The
+> copy spells out exactly what was lost (semantic search over old
+> messages + uploaded docs is empty until re-indexed) and what was kept
+> (long-term memories live in SQLite). The plumbing is generic — any
+> future boot-time condition can `_queue_startup_notice(...)`. Tests:
+> [`tests/test_rag_store.py`](../../tests/test_rag_store.py)
+> (`EmbeddingSwapNoticeTests`),
+> [`tests/test_startup_notices.py`](../../tests/test_startup_notices.py).
 
 ---
 

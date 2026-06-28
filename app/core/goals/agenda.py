@@ -87,10 +87,36 @@ _VALID_STATUSES = {"open", "done", "dropped", "snoozed"}
 
 
 class AgendaStore:
-    """SQLite CRUD on ``agenda`` (per-user, status-indexed)."""
+    """SQLite CRUD on ``agenda`` (per-user, status-indexed).
 
-    def __init__(self, db: "ChatDatabase") -> None:
+    ``on_change`` is invoked with the affected :class:`AgendaItem` after
+    every successful write (insert / update / status flip), regardless of
+    which path triggered it — inline ``[[agenda:...]]`` tags, the LLM
+    grooming worker, or the REST facade. The web layer subscribes to this
+    so the Agenda sub-tab stays live without polling (I3).
+    """
+
+    def __init__(
+        self,
+        db: "ChatDatabase",
+        *,
+        on_change: Callable[["AgendaItem"], None] | None = None,
+    ) -> None:
         self._db = db
+        self._on_change = on_change
+
+    def set_change_listener(
+        self, callback: Callable[["AgendaItem"], None] | None,
+    ) -> None:
+        self._on_change = callback
+
+    def _emit(self, item: "AgendaItem | None") -> None:
+        if item is None or self._on_change is None:
+            return
+        try:
+            self._on_change(item)
+        except Exception:
+            log.debug("agenda on_change listener raised", exc_info=True)
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -166,7 +192,7 @@ class AgendaStore:
             "due_at, status, importance) VALUES (?, ?, ?, ?, ?, 'open', ?)",
             (user_id, goal_clean[:240], source_session, now, due_at, importance_clipped),
         )
-        return AgendaItem(
+        item = AgendaItem(
             id=new_id,
             user_id=user_id,
             goal=goal_clean[:240],
@@ -177,6 +203,8 @@ class AgendaStore:
             importance=importance_clipped,
             last_groomed_at=None,
         )
+        self._emit(item)
+        return item
 
     def update(
         self,
@@ -218,6 +246,7 @@ class AgendaStore:
             f"UPDATE agenda SET {', '.join(sets)} WHERE id = ?",
             tuple(params),
         )
+        self._emit(self.get(int(agenda_id)))
         return True
 
     def mark_done(self, agenda_id: int) -> bool:

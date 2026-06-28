@@ -49,6 +49,35 @@ class _TmpRagBase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
+class EmbeddingSwapNoticeTests(_TmpRagBase):
+    """I7: a destructive rebuild records ``embedding_swap`` for the toast."""
+
+    def test_no_swap_on_fresh_store(self) -> None:
+        store = RagStore(self.tmp, embedding_model="m1", vector_dim=4)
+        self.assertIsNone(store.embedding_swap)
+
+    def test_no_swap_on_reopen_same_config(self) -> None:
+        RagStore(self.tmp, embedding_model="m1", vector_dim=4)
+        store2 = RagStore(self.tmp, embedding_model="m1", vector_dim=4)
+        self.assertIsNone(store2.embedding_swap)
+
+    def test_model_change_records_swap(self) -> None:
+        RagStore(self.tmp, embedding_model="m1", vector_dim=4)
+        store2 = RagStore(self.tmp, embedding_model="m2", vector_dim=4)
+        self.assertIsNotNone(store2.embedding_swap)
+        assert store2.embedding_swap is not None
+        self.assertEqual(store2.embedding_swap["from_model"], "m1")
+        self.assertEqual(store2.embedding_swap["to_model"], "m2")
+
+    def test_dim_change_records_swap(self) -> None:
+        RagStore(self.tmp, embedding_model="m1", vector_dim=4)
+        store2 = RagStore(self.tmp, embedding_model="m1", vector_dim=8)
+        self.assertIsNotNone(store2.embedding_swap)
+        assert store2.embedding_swap is not None
+        self.assertEqual(store2.embedding_swap["from_dim"], 4)
+        self.assertEqual(store2.embedding_swap["to_dim"], 8)
+
+
 class RagStoreKnnTests(_TmpRagBase):
     def setUp(self) -> None:
         super().setUp()

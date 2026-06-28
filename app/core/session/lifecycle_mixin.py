@@ -408,6 +408,61 @@ class LifecycleMixin:
     def rag_store(self):
         return getattr(self, "_rag_store", None)
 
+    def _capture_embedding_swap_notice(self, rag_store: Any) -> None:
+        """Turn a destructive LanceDB rebuild into a queued startup notice.
+
+        ``RagStore`` drops and rebuilds its tables when the embedding model
+        or dimension changes (mixing dims silently breaks search). That
+        used to be a WARNING log only; here we capture it as a one-shot
+        ``warning`` notice delivered in the WS ``hello`` so the user gets a
+        visible toast that their document / message vectors were wiped (I7).
+        """
+        swap = getattr(rag_store, "embedding_swap", None)
+        if not swap:
+            return
+        from_model = swap.get("from_model") or "unknown"
+        to_model = swap.get("to_model") or "unknown"
+        text = (
+            "Embedding model changed ("
+            f"{from_model} -> {to_model}). The vector index was rebuilt from "
+            "scratch, so semantic search over older messages and uploaded "
+            "documents is empty until they are re-indexed. Long-term memories "
+            "are preserved (they live in SQLite)."
+        )
+        self._queue_startup_notice(
+            kind="warning", text=text, code="embedding_rebuild", detail=swap,
+        )
+
+    def _queue_startup_notice(
+        self,
+        *,
+        kind: str,
+        text: str,
+        code: str | None = None,
+        detail: Any | None = None,
+    ) -> None:
+        notices = getattr(self, "_startup_notices", None)
+        if notices is None:
+            notices = []
+            self._startup_notices = notices
+        notice: dict[str, Any] = {"kind": kind, "text": text}
+        if code is not None:
+            notice["code"] = code
+        if detail is not None:
+            notice["detail"] = detail
+        notices.append(notice)
+
+    def consume_startup_notices(self) -> list[dict[str, Any]]:
+        """Return and clear queued one-shot boot notices.
+
+        Called when assembling the WS ``hello`` payload so the first client
+        to connect after boot sees them once; later reconnects don't repeat
+        a stale destructive-rebuild toast.
+        """
+        notices = getattr(self, "_startup_notices", None) or []
+        self._startup_notices = []
+        return list(notices)
+
     @property
     def document_ingestor(self):
         return getattr(self, "_document_ingestor", None)

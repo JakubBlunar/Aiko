@@ -560,6 +560,11 @@ class SessionController(
         # Identity-rename listeners (workers cache the display name in
         # pre-built prompt strings and re-render on this event).
         self._identity_listeners: list[Callable[[str], None]] = []
+        # One-shot notices accumulated during boot (before any WS client is
+        # connected) and delivered in the ``hello`` payload to the first
+        # client that connects. Currently carries the destructive
+        # LanceDB-rebuild warning (I7).
+        self._startup_notices: list[dict[str, Any]] = []
         # RAG: LanceDB-backed retrieval substrate. Owned by SessionController
         # so it can be shared with MessageIndexer and DocumentIngestor.
         self._rag_store = None  # type: ignore[var-annotated]
@@ -589,6 +594,11 @@ class SessionController(
                 except Exception:
                     log.warning("RAG bring-up failed", exc_info=True)
                     self._rag_store = None
+                if self._rag_store is not None:
+                    try:
+                        self._capture_embedding_swap_notice(self._rag_store)
+                    except Exception:
+                        log.debug("embedding-swap notice capture failed", exc_info=True)
                 if self._rag_store is not None:
                     try:
                         self._memory_store.attach_rag_store(self._rag_store)
