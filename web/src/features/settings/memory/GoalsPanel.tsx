@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { Panel } from "@/components/Panel";
+import { RefreshButton } from "@/components/RefreshButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { EmptyState } from "@/components/EmptyState";
 
 /**
  * K1 long-term goals panel.
@@ -105,7 +109,7 @@ export function GoalsPanel() {
   );
 
   return (
-    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+    <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
@@ -123,35 +127,21 @@ export function GoalsPanel() {
             />
             <span>show archived</span>
           </label>
-          <button
-            type="button"
+          <RefreshButton
             onClick={onRun}
-            disabled={running || loading}
-            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
+            loading={running || loading}
+            label="reflect now"
             title="Force one GoalWorker.run() now (cold-start bootstrap if the ring is empty; otherwise one reflection note on the oldest-touched goal)."
-          >
-            {running ? "..." : "reflect now"}
-          </button>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
-          >
-            {loading ? "..." : "refresh"}
-          </button>
+          />
+          <RefreshButton onClick={refresh} loading={loading} />
         </div>
       </div>
-      {error ? (
-        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
-          {error}
-        </div>
-      ) : null}
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
       {visible.length === 0 ? (
-        <p className="text-[11px] text-ink-100/40">
+        <EmptyState>
           No active goals. The worker runs once an hour during idle
           windows; click "reflect now" to bootstrap immediately.
-        </p>
+        </EmptyState>
       ) : (
         <ul className="space-y-1">
           {visible.map((goal) => {
@@ -252,6 +242,6 @@ export function GoalsPanel() {
           })}
         </ul>
       )}
-    </div>
+    </Panel>
   );
 }
