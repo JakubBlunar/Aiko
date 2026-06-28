@@ -1,27 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/api";
 import { desktop as desktopCommands } from "@/desktop/commands";
 import { isTauri } from "@/desktop/runtime";
 import type {
   AssistantSettings,
   AvatarSettingsKnobs,
-  Memory,
-  MemoryOrder,
-  MemoryTier,
   MetricsResponse,
-  RagDocument,
-  SharedMoment,
-  TaskStatus,
-  WorldItem,
-  WorldKind,
-  WorldLocation,
 } from "@/types";
 import { TabStrip } from "@/components/TabStrip";
 import { useAssistantStore } from "@/store";
-import { useMemoryStore } from "@/stores/useMemoryStore";
-import { useTasksStore } from "@/stores/useTasksStore";
-import { useTogetherStore } from "@/stores/useTogetherStore";
-import { useWorldStore } from "@/stores/useWorldStore";
 import { IdentitySection } from "./IdentitySection";
 import { ChatProviderSection } from "./ChatProviderSection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
@@ -36,6 +23,11 @@ import { TogetherTab } from "./TogetherTab";
 import { TasksTab } from "./TasksTab";
 import { ToolsTab } from "./ToolsTab";
 import { KnowledgeTab } from "./KnowledgeTab";
+import { useDocumentsController } from "./hooks/useDocumentsController";
+import { useMemoryController } from "./hooks/useMemoryController";
+import { useTasksController } from "./hooks/useTasksController";
+import { useTogetherController } from "./hooks/useTogetherController";
+import { useWorldController } from "./hooks/useWorldController";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -73,8 +65,6 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
   { id: "tasks", label: "Tasks", icon: "🧰" },
 ];
 
-const MEMORY_PAGE_SIZE = 50;
-
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [voices, setVoices] = useState<string[]>([]);
@@ -99,39 +89,46 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
-  const memoryView = useMemoryStore((s) => s.memoryView);
-  const memoriesEnabled = useMemoryStore((s) => s.memoriesEnabled);
-  const setMemoryView = useMemoryStore((s) => s.setMemoryView);
-  const setMemoryPage = useMemoryStore((s) => s.setMemoryPage);
-  const setMemoryKindFilter = useMemoryStore((s) => s.setMemoryKindFilter);
-  const setMemoryTierFilter = useMemoryStore((s) => s.setMemoryTierFilter);
-  const setMemoryOrder = useMemoryStore((s) => s.setMemoryOrder);
-  const setMemoryCounts = useMemoryStore((s) => s.setMemoryCounts);
-  const applyMemoryUpdated = useMemoryStore((s) => s.applyMemoryUpdated);
-  const applyMemoryDeleted = useMemoryStore((s) => s.applyMemoryDeleted);
-  const applyMemoryAdded = useMemoryStore((s) => s.applyMemoryAdded);
-  const [memoryError, setMemoryError] = useState<string | null>(null);
-  const [memoryBusy, setMemoryBusy] = useState(false);
-  const [memoryEditingId, setMemoryEditingId] = useState<number | null>(null);
-  const [memoryDraft, setMemoryDraft] = useState<{
-    content: string;
-    kind: string;
-    salience: number;
-  }>({ content: "", kind: "fact", salience: 0.5 });
-  const [memoryNewOpen, setMemoryNewOpen] = useState(false);
-  const [memoryNewDraft, setMemoryNewDraft] = useState<{
-    content: string;
-    kind: string;
-    salience: number;
-  }>({ content: "", kind: "fact", salience: 0.6 });
 
-  // ── Tasks tab (chunk 14) ───────────────────────────────────────────
-  const tasksView = useTasksStore((s) => s.tasksView);
-  const setTasksPage = useTasksStore((s) => s.setTasksPage);
-  const setTaskStatusFilter = useTasksStore((s) => s.setTaskStatusFilter);
-  const setTasksLoading = useTasksStore((s) => s.setTasksLoading);
-  const dismissTaskFromStrip = useTasksStore((s) => s.dismissTaskFromStrip);
-  const [tasksError, setTasksError] = useState<string | null>(null);
+  // ── Memory tab ────────────────────────────────────────────────────
+  const {
+    memoryView,
+    memoriesEnabled,
+    memoryBusy,
+    memoryError,
+    memoryPageCount,
+    memoryRangeLabel,
+    memoryEditingId,
+    memoryDraft,
+    setMemoryDraft,
+    memoryNewOpen,
+    setMemoryNewOpen,
+    memoryNewDraft,
+    setMemoryNewDraft,
+    setMemoryKindFilter,
+    setMemoryTierFilter,
+    setMemoryOrder,
+    setMemoryPage,
+    refreshMemories,
+    onStartEditMemory,
+    onCancelEditMemory,
+    onSaveEditMemory,
+    onPinMemory,
+    onDeleteMemory,
+    onCreateMemory,
+  } = useMemoryController(open, activeTab);
+
+  // ── Tasks tab ─────────────────────────────────────────────────────
+  const {
+    tasksView,
+    tasksError,
+    setTasksPage,
+    setTaskStatusFilter,
+    dismissTaskFromStrip,
+    refreshTasks,
+    handleTaskCancel,
+    handleTaskAnswer,
+  } = useTasksController(open, activeTab);
 
   const avatar = useAssistantStore((s) => s.avatar);
   const setAvatar = useAssistantStore((s) => s.setAvatar);
@@ -154,198 +151,73 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   );
   const liveActiveApp = useAssistantStore((s) => s.liveActiveApp);
 
-  const [documents, setDocuments] = useState<RagDocument[]>([]);
-  const [documentsBusy, setDocumentsBusy] = useState(false);
-  const [documentsError, setDocumentsError] = useState<string | null>(null);
-  const [documentsLoaded, setDocumentsLoaded] = useState(false);
+  // ── Knowledge tab (RAG documents) ─────────────────────────────────
+  const {
+    documents,
+    documentsBusy,
+    documentsError,
+    documentFileRef,
+    onUploadDocument,
+    onDeleteDocument,
+  } = useDocumentsController(open);
 
-  // ── World tab state ────────────────────────────────────────────────
-  // Keep the world snapshot in the global store so live ``world_updated``
-  // WS patches can land surgically without us refetching here.
-  const world = useWorldStore((s) => s.world);
-  const setWorld = useWorldStore((s) => s.setWorld);
-  const [worldBusy, setWorldBusy] = useState(false);
-  const [worldError, setWorldError] = useState<string | null>(null);
-  const [worldGiveOpen, setWorldGiveOpen] = useState(false);
-  const [worldGiveDraft, setWorldGiveDraft] = useState<{
-    name: string;
-    kind: WorldKind | string;
-    quantity: number;
-    description: string;
-    location_id: number | null;
-    consumable: boolean;
-  }>({
-    name: "",
-    kind: "food",
-    quantity: 1,
-    description: "",
-    location_id: null,
-    consumable: true,
-  });
-  const [worldLocationsOpen, setWorldLocationsOpen] = useState(false);
-  const [worldItemsOpen, setWorldItemsOpen] = useState(true);
-  const [worldNewLocationOpen, setWorldNewLocationOpen] = useState(false);
-  const [worldNewLocationDraft, setWorldNewLocationDraft] = useState<{
-    name: string;
-    description: string;
-  }>({ name: "", description: "" });
-  const [worldEditingItemId, setWorldEditingItemId] = useState<number | null>(
-    null,
-  );
-  const [worldItemDraft, setWorldItemDraft] = useState<{
-    name: string;
-    description: string;
-    kind: string;
-    location_id: number | null;
-    quantity: number;
-  }>({
-    name: "",
-    description: "",
-    kind: "other",
-    location_id: null,
-    quantity: 1,
-  });
-  const [worldEditingLocationId, setWorldEditingLocationId] = useState<
-    number | null
-  >(null);
-  const [worldLocationDraft, setWorldLocationDraft] = useState<{
-    name: string;
-    description: string;
-  }>({ name: "", description: "" });
+  // ── World tab ─────────────────────────────────────────────────────
+  const {
+    world,
+    worldBusy,
+    worldError,
+    refreshWorld,
+    onPatchWorldState,
+    worldGiveOpen,
+    setWorldGiveOpen,
+    worldGiveDraft,
+    setWorldGiveDraft,
+    onGiveItem,
+    worldLocationsOpen,
+    setWorldLocationsOpen,
+    worldItemsOpen,
+    setWorldItemsOpen,
+    worldNewLocationOpen,
+    setWorldNewLocationOpen,
+    worldNewLocationDraft,
+    setWorldNewLocationDraft,
+    onAddLocation,
+    worldEditingItemId,
+    setWorldEditingItemId,
+    worldItemDraft,
+    setWorldItemDraft,
+    onSaveItemEdit,
+    onDeleteItem,
+    onConsumeItem,
+    worldEditingLocationId,
+    setWorldEditingLocationId,
+    worldLocationDraft,
+    setWorldLocationDraft,
+    onSaveLocationEdit,
+    onDeleteLocation,
+    onReseedWorld,
+  } = useWorldController(open, activeTab);
 
-  const refreshWorld = useCallback(async () => {
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      const snapshot = await api.getWorld();
-      setWorld(snapshot);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  }, [setWorld]);
-
-  // ── Together tab state ────────────────────────────────────────────
-  const togetherView = useTogetherStore((s) => s.togetherView);
-  const setTogetherSummary = useTogetherStore((s) => s.setTogetherSummary);
-  const setSharedMoments = useTogetherStore((s) => s.setSharedMoments);
-  const setTogetherLoading = useTogetherStore((s) => s.setTogetherLoading);
-  const setTogetherVibeFilter = useTogetherStore(
-    (s) => s.setTogetherVibeFilter,
-  );
-  const upsertSharedMoment = useTogetherStore((s) => s.upsertSharedMoment);
-  const removeSharedMoment = useTogetherStore((s) => s.removeSharedMoment);
-  const [togetherError, setTogetherError] = useState<string | null>(null);
-  const [editingMomentId, setEditingMomentId] = useState<number | null>(null);
-  const [momentDraft, setMomentDraft] = useState<{
-    summary: string;
-    vibe: string;
-    when: string;
-  }>({ summary: "", vibe: "general", when: "" });
-  const [newMomentOpen, setNewMomentOpen] = useState(false);
-  const [newMomentDraft, setNewMomentDraft] = useState<{
-    summary: string;
-    vibe: string;
-    when: string;
-  }>({ summary: "", vibe: "general", when: "" });
-
-  const refreshTogether = useCallback(async () => {
-    setTogetherLoading(true);
-    setTogetherError(null);
-    try {
-      const [summary, list] = await Promise.all([
-        api.getTogether(),
-        api.listSharedMoments(
-          togetherView.page * togetherView.pageSize,
-          togetherView.pageSize,
-          togetherView.vibeFilter,
-        ),
-      ]);
-      setTogetherSummary(summary);
-      setSharedMoments(
-        list.items,
-        list.total,
-        togetherView.page,
-        togetherView.pageSize,
-        togetherView.vibeFilter,
-      );
-    } catch (err) {
-      setTogetherError(String(err));
-    } finally {
-      setTogetherLoading(false);
-    }
-  }, [
-    setTogetherLoading,
-    setTogetherSummary,
+  // ── Together tab ──────────────────────────────────────────────────
+  const {
+    togetherView,
+    togetherError,
+    setTogetherVibeFilter,
     setSharedMoments,
-    togetherView.page,
-    togetherView.pageSize,
-    togetherView.vibeFilter,
-  ]);
-
-  const onCreateMoment = useCallback(async () => {
-    setTogetherError(null);
-    try {
-      const result = await api.createSharedMoment({
-        summary: newMomentDraft.summary.trim(),
-        vibe: newMomentDraft.vibe,
-        when: newMomentDraft.when || undefined,
-      });
-      if (result.moment) {
-        upsertSharedMoment(result.moment);
-      }
-      setNewMomentOpen(false);
-      setNewMomentDraft({ summary: "", vibe: "general", when: "" });
-    } catch (err) {
-      setTogetherError(String(err));
-    }
-  }, [newMomentDraft, upsertSharedMoment]);
-
-  const onSaveMomentEdit = useCallback(async () => {
-    if (editingMomentId == null) return;
-    setTogetherError(null);
-    try {
-      const result = await api.updateSharedMoment(editingMomentId, {
-        summary: momentDraft.summary.trim(),
-        vibe: momentDraft.vibe,
-        when: momentDraft.when || undefined,
-      });
-      if (result.moment) upsertSharedMoment(result.moment);
-      setEditingMomentId(null);
-    } catch (err) {
-      setTogetherError(String(err));
-    }
-  }, [editingMomentId, momentDraft, upsertSharedMoment]);
-
-  const onDeleteMoment = useCallback(
-    async (moment: SharedMoment) => {
-      setTogetherError(null);
-      try {
-        await api.deleteSharedMoment(moment.id);
-        removeSharedMoment(moment.id);
-      } catch (err) {
-        setTogetherError(String(err));
-      }
-    },
-    [removeSharedMoment],
-  );
-
-  const onTogglePinMoment = useCallback(
-    async (moment: SharedMoment) => {
-      setTogetherError(null);
-      try {
-        const result = await api.updateSharedMoment(moment.id, {
-          pinned: !moment.pinned,
-        });
-        if (result.moment) upsertSharedMoment(result.moment);
-      } catch (err) {
-        setTogetherError(String(err));
-      }
-    },
-    [upsertSharedMoment],
-  );
-  const documentFileRef = useRef<HTMLInputElement | null>(null);
+    refreshTogether,
+    editingMomentId,
+    setEditingMomentId,
+    momentDraft,
+    setMomentDraft,
+    newMomentOpen,
+    setNewMomentOpen,
+    newMomentDraft,
+    setNewMomentDraft,
+    onCreateMoment,
+    onSaveMomentEdit,
+    onDeleteMoment,
+    onTogglePinMoment,
+  } = useTogetherController(open, activeTab);
 
   const [metrics, setMetricsResp] = useState<MetricsResponse | null>(null);
   const liveMetrics = useAssistantStore((s) => s.metrics);
@@ -374,154 +246,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   }, [setActivityAwarenessEnabled]);
 
-  const refreshMemories = useCallback(
-    async (overrides?: {
-      page?: number;
-      kindFilter?: string | null;
-      tierFilter?: MemoryTier | null;
-      order?: MemoryOrder;
-    }) => {
-      const page = overrides?.page ?? memoryView.page;
-      const kindFilter =
-        overrides?.kindFilter !== undefined
-          ? overrides.kindFilter
-          : memoryView.kindFilter;
-      const tierFilter =
-        overrides?.tierFilter !== undefined
-          ? overrides.tierFilter
-          : memoryView.tierFilter;
-      const order = overrides?.order ?? memoryView.order;
-      setMemoryBusy(true);
-      setMemoryError(null);
-      try {
-        const [data, counts] = await Promise.all([
-          api.listMemories({
-            limit: MEMORY_PAGE_SIZE,
-            offset: page * MEMORY_PAGE_SIZE,
-            order,
-            kind: kindFilter,
-            tier: tierFilter,
-          }),
-          // Counts fetch is independent of pagination -- always
-          // shows total population per tier so the header reflects
-          // the truth even while the page-1 list is filtered down.
-          api.getMemoryCounts().catch(() => null),
-        ]);
-        setMemoryView({
-          items: data.memories,
-          total: data.total,
-          cap: data.cap,
-          enabled: data.enabled,
-          page,
-          pageSize: MEMORY_PAGE_SIZE,
-          kindFilter,
-          tierFilter,
-          order,
-        });
-        if (counts) setMemoryCounts(counts);
-      } catch (err) {
-        setMemoryError(String(err));
-      } finally {
-        setMemoryBusy(false);
-      }
-    },
-    [
-      memoryView.page,
-      memoryView.kindFilter,
-      memoryView.tierFilter,
-      memoryView.order,
-      setMemoryView,
-      setMemoryCounts,
-    ],
-  );
-
-  // ── Tasks refresh (chunk 14) ─────────────────────────────────────
-  //
-  // Mirrors ``refreshMemories``: paginated REST fetch with an
-  // optional override for page / status filter so the user actions
-  // (page → / ← / filter pill click) can pass the next desired
-  // value without waiting for the previous setState to flush.
-  const refreshTasks = useCallback(
-    async (overrides?: {
-      page?: number;
-      statusFilter?: TaskStatus | null;
-    }) => {
-      const page = overrides?.page ?? tasksView.page;
-      const statusFilter =
-        overrides?.statusFilter !== undefined
-          ? overrides.statusFilter
-          : tasksView.statusFilter;
-      setTasksLoading(true);
-      setTasksError(null);
-      try {
-        const data = await api.listTasks({
-          limit: tasksView.pageSize,
-          offset: page * tasksView.pageSize,
-          status: statusFilter,
-          rootsOnly: true,
-        });
-        setTasksPage({
-          tasks: data.tasks,
-          total: data.total,
-          page,
-          pageSize: tasksView.pageSize,
-          enabled: data.enabled,
-        });
-      } catch (err) {
-        setTasksError(String(err));
-        setTasksLoading(false);
-      }
-    },
-    [
-      tasksView.page,
-      tasksView.statusFilter,
-      tasksView.pageSize,
-      setTasksPage,
-      setTasksLoading,
-    ],
-  );
-
-  const handleTaskCancel = useCallback(
-    async (taskId: number) => {
-      setTasksError(null);
-      try {
-        await api.cancelTask(taskId);
-        // The orchestrator listener will fire ``task_completed``
-        // through the WS so the store updates without a refetch.
-      } catch (err) {
-        setTasksError(String(err));
-      }
-    },
-    [],
-  );
-
-  const handleTaskAnswer = useCallback(
-    async (taskId: number, answer: string) => {
-      setTasksError(null);
-      try {
-        await api.answerTask(taskId, answer);
-        // Server fires ``task_progress`` / ``task_completed`` once
-        // the handler resumes.
-      } catch (err) {
-        setTasksError(String(err));
-      }
-    },
-    [],
-  );
-
   useEffect(() => {
     if (open) {
       void refreshAll();
     }
   }, [open, refreshAll]);
-
-  // Refresh the tasks page whenever the user opens the Tasks tab or
-  // flips the status filter / page. Same shape as the memory hook.
-  useEffect(() => {
-    if (!open || activeTab !== "tasks") return;
-    void refreshTasks();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeTab, tasksView.page, tasksView.statusFilter]);
 
   // Hydrate the client-side audio device pickers + DSP toggles from
   // localStorage and the browser's device enumeration API. Devices
@@ -554,342 +283,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       cancelled = true;
     };
   }, [open]);
-
-  // Refresh the memory page whenever the user opens the Memory tab or
-  // changes filter / sort / page. The dependencies are explicit so a
-  // stale ``refreshMemories`` closure can't fire a duplicate fetch.
-  useEffect(() => {
-    if (!open || activeTab !== "memory") return;
-    void refreshMemories();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    open,
-    activeTab,
-    memoryView.page,
-    memoryView.kindFilter,
-    memoryView.tierFilter,
-    memoryView.order,
-  ]);
-
-  // Refresh the world snapshot whenever the World tab opens. After that,
-  // ``world_updated`` WS patches keep the store in sync so we don't need
-  // to poll.
-  useEffect(() => {
-    if (!open || activeTab !== "world") return;
-    void refreshWorld();
-  }, [open, activeTab, refreshWorld]);
-
-  // Refresh the Together tab whenever it opens or the user changes the
-  // vibe filter / page. WS patches handle live moments + axes between
-  // refetches so we don't need to poll.
-  useEffect(() => {
-    if (!open || activeTab !== "together") return;
-    void refreshTogether();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    open,
-    activeTab,
-    togetherView.page,
-    togetherView.vibeFilter,
-  ]);
-
-  const onDeleteMemory = async (memory: Memory) => {
-    setMemoryError(null);
-    try {
-      await api.deleteMemory(memory.id);
-      applyMemoryDeleted(memory.id);
-      // If the page just emptied (and we're not on page 0), step back
-      // and re-fetch so the user lands on the now-last page instead of
-      // staring at an empty list.
-      const remaining = memoryView.items.length - 1;
-      if (remaining <= 0 && memoryView.page > 0) {
-        setMemoryPage(memoryView.page - 1);
-      } else {
-        // Re-fetch in place to keep the page topped up to ``pageSize``
-        // when there are still rows beyond the current page.
-        void refreshMemories();
-      }
-    } catch (err) {
-      setMemoryError(String(err));
-    }
-  };
-
-  const onStartEditMemory = (memory: Memory) => {
-    setMemoryEditingId(memory.id);
-    setMemoryDraft({
-      content: memory.content,
-      kind: memory.kind,
-      salience: memory.salience,
-    });
-  };
-
-  const onCancelEditMemory = () => {
-    setMemoryEditingId(null);
-  };
-
-  const onSaveEditMemory = async (memory: Memory) => {
-    setMemoryBusy(true);
-    setMemoryError(null);
-    try {
-      const patch: {
-        content?: string;
-        kind?: string;
-        salience?: number;
-      } = {};
-      const trimmed = memoryDraft.content.trim();
-      if (trimmed && trimmed !== memory.content) patch.content = trimmed;
-      if (memoryDraft.kind && memoryDraft.kind !== memory.kind) {
-        patch.kind = memoryDraft.kind;
-      }
-      if (
-        Number.isFinite(memoryDraft.salience) &&
-        Math.abs(memoryDraft.salience - memory.salience) > 1e-4
-      ) {
-        patch.salience = memoryDraft.salience;
-      }
-      if (Object.keys(patch).length === 0) {
-        setMemoryEditingId(null);
-        return;
-      }
-      const result = await api.updateMemory(memory.id, patch);
-      applyMemoryUpdated(result.memory);
-      setMemoryEditingId(null);
-    } catch (err) {
-      setMemoryError(String(err));
-    } finally {
-      setMemoryBusy(false);
-    }
-  };
-
-  const onPinMemory = async (memory: Memory, pinned: boolean) => {
-    setMemoryError(null);
-    try {
-      const result = await api.pinMemory(memory.id, pinned);
-      applyMemoryUpdated(result.memory);
-    } catch (err) {
-      setMemoryError(String(err));
-    }
-  };
-
-  const onCreateMemory = async () => {
-    const trimmed = memoryNewDraft.content.trim();
-    if (trimmed.length < 4) {
-      setMemoryError("Memory content needs at least 4 characters.");
-      return;
-    }
-    setMemoryBusy(true);
-    setMemoryError(null);
-    try {
-      const result = await api.createMemory({
-        content: trimmed,
-        kind: memoryNewDraft.kind,
-        salience: memoryNewDraft.salience,
-      });
-      if (result.memory) {
-        applyMemoryAdded(result.memory);
-        setMemoryNewDraft({ content: "", kind: "fact", salience: 0.6 });
-        setMemoryNewOpen(false);
-        // Rerun the fetch so ``total`` and the visible page reflect
-        // server-side ordering instead of the client-side prepend.
-        void refreshMemories({ page: 0 });
-      } else if (result.deduped_into) {
-        const head = (result.deduped_into.content || "").slice(0, 80);
-        setMemoryError(
-          `Looks similar to memory #${result.deduped_into.id}` +
-            (head ? ` ("${head}")` : "") +
-            " — bumped its salience instead.",
-        );
-        applyMemoryUpdated(result.deduped_into);
-        setMemoryNewDraft({ content: "", kind: "fact", salience: 0.6 });
-        setMemoryNewOpen(false);
-      }
-    } catch (err) {
-      setMemoryError(String(err));
-    } finally {
-      setMemoryBusy(false);
-    }
-  };
-
-  const onPatchWorldState = async (patch: {
-    location_id?: number | null;
-    posture?: string;
-    activity?: string;
-    mood_note?: string;
-  }) => {
-    setWorldError(null);
-    try {
-      await api.patchWorldState(patch);
-      // The WS broadcast will land via applyWorldPatch; no local mutation.
-    } catch (err) {
-      setWorldError(String(err));
-    }
-  };
-
-  const onGiveItem = async () => {
-    const trimmed = worldGiveDraft.name.trim();
-    if (!trimmed) {
-      setWorldError("Item name can't be empty.");
-      return;
-    }
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      // Default location: first one matching slug "kitchenette" if no
-      // explicit choice was made.
-      let location_id = worldGiveDraft.location_id;
-      if (location_id === null && world?.locations) {
-        const kitchen = world.locations.find((l) => l.slug === "kitchenette");
-        location_id = kitchen?.id ?? null;
-      }
-      await api.giveItem({
-        name: trimmed,
-        kind: worldGiveDraft.kind,
-        description: worldGiveDraft.description.trim() || undefined,
-        quantity: worldGiveDraft.quantity,
-        consumable: worldGiveDraft.consumable,
-        location_id,
-      });
-      setWorldGiveDraft({
-        name: "",
-        kind: "food",
-        quantity: 1,
-        description: "",
-        location_id: null,
-        consumable: true,
-      });
-      setWorldGiveOpen(false);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  };
-
-  const onAddLocation = async () => {
-    const trimmed = worldNewLocationDraft.name.trim();
-    if (!trimmed) {
-      setWorldError("Location name can't be empty.");
-      return;
-    }
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      await api.createWorldLocation({
-        name: trimmed,
-        description: worldNewLocationDraft.description.trim(),
-      });
-      setWorldNewLocationDraft({ name: "", description: "" });
-      setWorldNewLocationOpen(false);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  };
-
-  const onSaveLocationEdit = async (loc: WorldLocation) => {
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      const trimmedName = worldLocationDraft.name.trim();
-      if (!trimmedName) throw new Error("name can't be empty");
-      await api.updateWorldLocation(loc.id, {
-        name: trimmedName,
-        description: worldLocationDraft.description.trim(),
-      });
-      setWorldEditingLocationId(null);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  };
-
-  const onDeleteLocation = async (loc: WorldLocation) => {
-    setWorldError(null);
-    try {
-      await api.deleteWorldLocation(loc.id);
-    } catch (err) {
-      setWorldError(String(err));
-    }
-  };
-
-  const onSaveItemEdit = async (item: WorldItem) => {
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      await api.updateWorldItem(item.id, {
-        name: worldItemDraft.name.trim() || item.name,
-        description: worldItemDraft.description.trim(),
-        kind: worldItemDraft.kind,
-        location_id: worldItemDraft.location_id,
-        quantity: worldItemDraft.quantity,
-      });
-      setWorldEditingItemId(null);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  };
-
-  const onDeleteItem = async (item: WorldItem) => {
-    setWorldError(null);
-    try {
-      await api.deleteWorldItem(item.id);
-    } catch (err) {
-      setWorldError(String(err));
-    }
-  };
-
-  const onConsumeItem = async (item: WorldItem) => {
-    setWorldError(null);
-    try {
-      await api.consumeWorldItem(item.id, 1);
-    } catch (err) {
-      setWorldError(String(err));
-    }
-  };
-
-  const onReseedWorld = async () => {
-    if (
-      !window.confirm(
-        "Reset Aiko's room to the default layout? Everything currently in the room will be removed.",
-      )
-    ) {
-      return;
-    }
-    setWorldBusy(true);
-    setWorldError(null);
-    try {
-      const snapshot = await api.reseedWorld(true);
-      setWorld(snapshot);
-    } catch (err) {
-      setWorldError(String(err));
-    } finally {
-      setWorldBusy(false);
-    }
-  };
-
-  const memoryPageCount = useMemo(() => {
-    if (memoryView.pageSize <= 0) return 1;
-    return Math.max(1, Math.ceil(memoryView.total / memoryView.pageSize));
-  }, [memoryView.total, memoryView.pageSize]);
-
-  const memoryRangeLabel = useMemo(() => {
-    if (memoryView.total === 0) return "0 of 0";
-    const start = memoryView.page * memoryView.pageSize + 1;
-    const end = Math.min(
-      memoryView.total,
-      start + memoryView.items.length - 1,
-    );
-    return `${start}-${end} of ${memoryView.total}`;
-  }, [
-    memoryView.page,
-    memoryView.pageSize,
-    memoryView.items.length,
-    memoryView.total,
-  ]);
 
   const onPatchAvatarSettings = async (
     patch: Partial<AvatarSettingsKnobs>,
@@ -944,26 +337,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   };
 
-  const refreshDocuments = useCallback(async () => {
-    setDocumentsBusy(true);
-    setDocumentsError(null);
-    try {
-      const res = await api.listDocuments();
-      setDocuments(res.documents);
-      setDocumentsLoaded(true);
-    } catch (err) {
-      setDocumentsError(String(err));
-    } finally {
-      setDocumentsBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (open && !documentsLoaded) {
-      void refreshDocuments();
-    }
-  }, [open, documentsLoaded, refreshDocuments]);
-
   const refreshMetrics = useCallback(async () => {
     try {
       const res = await api.getMetrics();
@@ -981,36 +354,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }, 5000);
     return () => window.clearInterval(id);
   }, [open, refreshMetrics]);
-
-  const onUploadDocument = async (file: File) => {
-    setDocumentsBusy(true);
-    setDocumentsError(null);
-    try {
-      const result = await api.uploadDocument(file);
-      setDocuments(result.documents);
-    } catch (err) {
-      setDocumentsError(String(err));
-    } finally {
-      setDocumentsBusy(false);
-      if (documentFileRef.current) {
-        documentFileRef.current.value = "";
-      }
-    }
-  };
-
-  const onDeleteDocument = async (document_id: string) => {
-    setDocumentsBusy(true);
-    setDocumentsError(null);
-    try {
-      const result = await api.deleteDocument(document_id);
-      setDocuments(result.documents);
-    } catch (err) {
-      setDocumentsError(String(err));
-    } finally {
-      setDocumentsBusy(false);
-    }
-  };
-
 
   const apply = async (patch: Record<string, unknown>) => {
     setBusy(true);
