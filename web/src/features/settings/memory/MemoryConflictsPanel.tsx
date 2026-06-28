@@ -5,6 +5,10 @@ import type {
   MemoryConflictPair,
   MemoryConflictsResponse,
 } from "../../../types";
+import { Panel } from "@/components/Panel";
+import { RefreshButton } from "@/components/RefreshButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { EmptyState } from "@/components/EmptyState";
 
 export function MemoryConflictsPanel() {
   const [data, setData] = useState<MemoryConflictsResponse | null>(null);
@@ -69,7 +73,7 @@ export function MemoryConflictsPanel() {
   };
 
   return (
-    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+    <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
@@ -78,25 +82,14 @@ export function MemoryConflictsPanel() {
           Conflicts
           <span className="ml-2 text-ink-100/40">({counts.open})</span>
         </span>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
-        >
-          {loading ? "..." : "refresh"}
-        </button>
+        <RefreshButton onClick={refresh} loading={loading} />
       </div>
-      {error ? (
-        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
-          {error}
-        </div>
-      ) : null}
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
       {open.length === 0 ? (
-        <p className="text-[11px] text-ink-100/40">
+        <EmptyState>
           No open conflicts. Aiko's F5 detector will flag pairs here when
           two memories disagree about the same topic.
-        </p>
+        </EmptyState>
       ) : (
         <ul className="space-y-2">
           {open.map((pair) => (
@@ -150,7 +143,7 @@ export function MemoryConflictsPanel() {
           ) : null}
         </div>
       ) : null}
-    </div>
+    </Panel>
   );
 }
 

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { Panel } from "@/components/Panel";
+import { RefreshButton } from "@/components/RefreshButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { EmptyState } from "@/components/EmptyState";
 
 export function CuriositySeedsPanel() {
   const [seeds, setSeeds] = useState<Memory[]>([]);
@@ -62,7 +66,7 @@ export function CuriositySeedsPanel() {
   );
 
   return (
-    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+    <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
@@ -80,35 +84,21 @@ export function CuriositySeedsPanel() {
             />
             <span>show consumed</span>
           </label>
-          <button
-            type="button"
+          <RefreshButton
             onClick={onRun}
-            disabled={running || loading}
-            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
+            loading={running || loading}
+            label="regenerate now"
             title="Force one CuriositySeedWorker.run() now (instead of waiting for the next idle tick)."
-          >
-            {running ? "..." : "regenerate now"}
-          </button>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
-          >
-            {loading ? "..." : "refresh"}
-          </button>
+          />
+          <RefreshButton onClick={refresh} loading={loading} />
         </div>
       </div>
-      {error ? (
-        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
-          {error}
-        </div>
-      ) : null}
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
       {visible.length === 0 ? (
-        <p className="text-[11px] text-ink-100/40">
+        <EmptyState>
           No active seeds. The worker runs once an hour during idle
           windows; click "regenerate now" to force one immediately.
-        </p>
+        </EmptyState>
       ) : (
         <ul className="space-y-1">
           {visible.map((seed) => {
@@ -170,6 +160,6 @@ export function CuriositySeedsPanel() {
           })}
         </ul>
       )}
-    </div>
+    </Panel>
   );
 }

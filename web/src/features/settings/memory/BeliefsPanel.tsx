@@ -3,6 +3,10 @@ import { api } from "../../../api";
 import { useAssistantStore } from "../../../store";
 import type { Belief, BeliefKind, BeliefStatus } from "../../../types";
 import { formatRelative } from "../SettingsSection";
+import { Panel } from "@/components/Panel";
+import { RefreshButton } from "@/components/RefreshButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { EmptyState } from "@/components/EmptyState";
 
 const BELIEF_STATUS_FILTERS: { id: BeliefStatus | "all"; label: string }[] = [
   { id: "active", label: "Active" },
@@ -106,16 +110,16 @@ export function BeliefsPanel() {
 
   if (!enabled) {
     return (
-      <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3 text-[11px] text-ink-100/40">
+      <Panel className="text-[11px] text-ink-100/40">
         Belief tracking is disabled. Enable
         <code className="mx-1">belief_tracking_enabled</code>
         in agent settings to surface theory-of-mind beliefs here.
-      </div>
+      </Panel>
     );
   }
 
   return (
-    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+    <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
@@ -128,14 +132,7 @@ export function BeliefsPanel() {
             </span>
           ) : null}
         </span>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
-        >
-          {loading ? "..." : "refresh"}
-        </button>
+        <RefreshButton onClick={refresh} loading={loading} />
       </div>
       <div className="flex flex-wrap items-center gap-1 text-[10px] uppercase tracking-wide text-ink-100/40">
         <span>kind:</span>
@@ -171,16 +168,12 @@ export function BeliefsPanel() {
           </button>
         ))}
       </div>
-      {error ? (
-        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
-          {error}
-        </div>
-      ) : null}
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
       {beliefs.length === 0 ? (
-        <p className="text-[11px] text-ink-100/40">
+        <EmptyState>
           No beliefs in this view. Aiko's K2 worker mines fresh predictions
           from recent turns; she can also tag them inline.
-        </p>
+        </EmptyState>
       ) : (
         <div className="space-y-3">
           {grouped.mood.length > 0 ? (
@@ -221,7 +214,7 @@ export function BeliefsPanel() {
           ) : null}
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
 

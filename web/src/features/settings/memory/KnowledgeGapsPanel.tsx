@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
+import { Panel } from "@/components/Panel";
+import { RefreshButton } from "@/components/RefreshButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { EmptyState } from "@/components/EmptyState";
 
 export interface KnowledgeGapRow extends Memory {
   metadata?: {
@@ -63,7 +67,7 @@ export function KnowledgeGapsPanel() {
   );
 
   return (
-    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+    <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
@@ -81,26 +85,15 @@ export function KnowledgeGapsPanel() {
             />
             <span>show resolved</span>
           </label>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
-          >
-            {loading ? "..." : "refresh"}
-          </button>
+          <RefreshButton onClick={refresh} loading={loading} />
         </div>
       </div>
-      {error ? (
-        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
-          {error}
-        </div>
-      ) : null}
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
       {gaps.length === 0 ? (
-        <p className="text-[11px] text-ink-100/40">
+        <EmptyState>
           No open questions. Aiko will jot uncertainties here as
           [[gap:topic:question]] tags from her replies.
-        </p>
+        </EmptyState>
       ) : (
         <ul className="space-y-1">
           {gaps.map((gap) => {
@@ -157,6 +150,6 @@ export function KnowledgeGapsPanel() {
           })}
         </ul>
       )}
-    </div>
+    </Panel>
   );
 }
