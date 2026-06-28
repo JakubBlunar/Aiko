@@ -701,7 +701,28 @@ progress + takeaway), [`app/core/goals/goal_store.py`](../../app/core/goals/goal
 
 ---
 
-## H20. A room that evolves — depleting + accruing micro-state
+## H20. A room that evolves — depleting + accruing micro-state — SHIPPED
+
+> **Shipped.** The seeded room now accrues a history via a low-cadence
+> [`RoomEvolutionWorker`](../../app/core/world/room_evolution_worker.py)
+> (`IdleWorker`) that applies **one** bounded micro-state transition per run,
+> paced by a wall-clock floor (`memory.room_evolution_min_hours`, default 8h, kv
+> gate `aiko.room_evolution_at`) and broadcasts the `world_updated` patch so the
+> World tab shows the drift. Three transitions, deterministic math in the pure
+> [`room_evolution.py`](../../app/core/world/room_evolution.py): the **tea pot**
+> cycles full → half → empty → (brews a fresh flavour from `TEA_FLAVORS`); the
+> **cookie jar** is refilled with a fresh batch (`given_by="aiko"`) once it runs
+> low/empty — re-created if it was consumed to nothing — closing the loop with the
+> away-beat "snack"; the **sci-fi paperback** gains chapter `progress` and, on
+> finishing, flips to a brand-new book (name + blurb from `BOOK_TITLES`) and emits
+> a takeaway **seed** through the shared H17 idle-seed cue ("finally finished X —
+> that ending!", LLM-composed with a deterministic template fallback since a
+> finished book is worth a seed even without a worker model). Settings:
+> `agent.room_evolution_enabled` + `memory.room_evolution_interval_seconds` /
+> `room_evolution_min_hours`. MCP: `get_room_evolution_state`,
+> `force_room_evolution`. Tests: `tests/test_room_evolution.py`.
+
+---
 
 **Motivation.** The room resets to the same furniture forever. The tea pot is
 "often half full of jasmine tea" as a static description; the cookies decrement

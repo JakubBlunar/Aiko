@@ -575,6 +575,98 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_hobby_rotate raised: {exc}"
 
     @mcp.tool()
+    def get_room_evolution_state() -> str:
+        """H20 — dump the room-evolution worker state + tracked item states.
+
+        Shows the master switch, cadence knobs, the wall-clock gate stamp,
+        and the live ``state`` of the three drifting items (tea pot, cookie
+        jar, sci-fi paperback) so you can watch the room accrue history.
+        """
+        try:
+            from app.core.world.room_evolution import (
+                BOOK_SLUG,
+                COOKIE_JAR_SLUG,
+                TEA_POT_SLUG,
+            )
+            from app.core.world.room_evolution_worker import (
+                KV_LAST_EVOLVED_AT,
+            )
+
+            chat_db = getattr(session, "_chat_db", None)
+            world = getattr(session, "_world_store", None)
+            mem = session._memory_settings
+
+            items: dict[str, Any] = {}
+            if world is not None:
+                by_slug = {i.slug: i for i in world.list_items()}
+                for slug in (TEA_POT_SLUG, COOKIE_JAR_SLUG, BOOK_SLUG):
+                    it = by_slug.get(slug)
+                    items[slug] = (
+                        {
+                            "name": it.name,
+                            "quantity": it.quantity,
+                            "state": it.state,
+                        }
+                        if it is not None
+                        else None
+                    )
+
+            def kv(k: str):
+                try:
+                    return chat_db.kv_get(k) if chat_db else None
+                except Exception:
+                    return None
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "room_evolution_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": getattr(
+                        session, "_room_evolution_worker", None
+                    )
+                    is not None,
+                    "interval_seconds": int(
+                        getattr(mem, "room_evolution_interval_seconds", 21600)
+                    ),
+                    "min_hours": float(
+                        getattr(mem, "room_evolution_min_hours", 8.0)
+                    ),
+                    "last_evolved_at": kv(KV_LAST_EVOLVED_AT),
+                    "items": items,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_room_evolution_state raised: {exc}"
+
+    @mcp.tool()
+    def force_room_evolution() -> str:
+        """H20 — apply one room-evolution step right now.
+
+        Bypasses the wall-clock min-gap by arming a one-shot flag, then
+        calls ``run()`` so one applicable item drifts immediately (tea pot
+        level, cookie refill, or a book chapter — finishing a book emits an
+        H17 seed). Broadcasts the ``world_updated`` patch to every window.
+        """
+        try:
+            worker = getattr(session, "_room_evolution_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            worker._force = True
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_room_evolution raised: {exc}"
+
+    @mcp.tool()
     def get_diary_worker_state() -> str:
         """H9 — dump the away-diary worker state.
 

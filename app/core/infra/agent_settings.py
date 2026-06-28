@@ -1680,6 +1680,14 @@ class AgentSettings:
     # Cadence on ``MemorySettings.hobby_*``.
     hobby_worker_enabled: bool = True
 
+    # ── H20: a room that evolves (depleting + accruing micro-state) ────
+    # Master switch for the :class:`RoomEvolutionWorker` — a slow pass that
+    # drifts the seeded room items so the space accrues a history (tea pot
+    # empties + gets a fresh flavour, cookies refill, the book gains
+    # progress and flips to a new one on finishing). Cadence on
+    # ``MemorySettings.room_evolution_*``.
+    room_evolution_enabled: bool = True
+
     # ── H9: away-diary worker ─────────────────────────────────────────
     # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
     # Off → the worker never registers. On (default) → during quiet
