@@ -16,12 +16,12 @@ import type {
   WorldKind,
   WorldLocation,
 } from "@/types";
+import { TabStrip } from "@/components/TabStrip";
 import { useAssistantStore } from "@/store";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useTasksStore } from "@/stores/useTasksStore";
 import { useTogetherStore } from "@/stores/useTogetherStore";
 import { useWorldStore } from "@/stores/useWorldStore";
-import { Section } from "./SettingsSection";
 import { IdentitySection } from "./IdentitySection";
 import { ChatProviderSection } from "./ChatProviderSection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
@@ -34,6 +34,8 @@ import { DiaryTab } from "./DiaryTab";
 import { WorldTab } from "./WorldTab";
 import { TogetherTab } from "./TogetherTab";
 import { TasksTab } from "./TasksTab";
+import { ToolsTab } from "./ToolsTab";
+import { KnowledgeTab } from "./KnowledgeTab";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -344,7 +346,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     [upsertSharedMoment],
   );
   const documentFileRef = useRef<HTMLInputElement | null>(null);
-  const tabsBarRef = useRef<HTMLElement | null>(null);
 
   const [metrics, setMetricsResp] = useState<MetricsResponse | null>(null);
   const liveMetrics = useAssistantStore((s) => s.metrics);
@@ -577,23 +578,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     if (!open || activeTab !== "world") return;
     void refreshWorld();
   }, [open, activeTab, refreshWorld]);
-
-  // Translate vertical mouse-wheel into horizontal scroll on the tab bar
-  // so users don't have to drag the scrollbar when tabs overflow. React's
-  // synthetic onWheel is passive on the root container, so preventDefault
-  // there is a no-op; attach a native non-passive listener instead.
-  useEffect(() => {
-    if (!open) return;
-    const el = tabsBarRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0) return;
-      el.scrollLeft += e.deltaY;
-      e.preventDefault();
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [open]);
 
   // Refresh the Together tab whenever it opens or the user changes the
   // vibe filter / page. WS patches handle live moments + axes between
@@ -1070,31 +1054,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           </button>
         </header>
 
-        <nav
-          ref={tabsBarRef}
-          className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/5 bg-white/[0.015] px-3 py-2"
-          aria-label="Settings sections"
-        >
-          {SETTINGS_TABS.map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                aria-pressed={isActive}
-                className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  isActive
-                    ? "bg-ink-500/30 text-ink-100 ring-1 ring-ink-400/50"
-                    : "text-ink-100/60 hover:bg-white/5 hover:text-ink-100/90"
-                }`}
-              >
-                <span aria-hidden="true">{tab.icon}</span>
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+        <TabStrip
+          tabs={SETTINGS_TABS}
+          activeId={activeTab}
+          onSelect={setActiveTab}
+          ariaLabel="Settings sections"
+        />
 
         <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5 text-sm">
           {error ? (
@@ -1150,67 +1115,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               ) : null}
 
               {activeTab === "tools" ? (
-                <>
-                  <Section title="Tools">
-                <p className="text-[11px] text-ink-100/50">
-                  Tools let Aiko reach for fresh facts before answering: the
-                  current time, your notebook, or the public web. Disable any
-                  she shouldn't use.
-                </p>
-                <label className="mt-1 flex items-center gap-2 text-xs text-ink-100/70">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.enabled ?? true}
-                    onChange={(e) =>
-                      void apply({ tools: { enabled: e.target.checked } })
-                    }
-                  />
-                  Tools enabled
-                </label>
-                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.get_time ?? true}
-                    disabled={!(settings.tools?.enabled ?? true)}
-                    onChange={(e) =>
-                      void apply({ tools: { get_time: e.target.checked } })
-                    }
-                  />
-                  get_time — current date/time
-                </label>
-                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.recall ?? true}
-                    disabled={!(settings.tools?.enabled ?? true)}
-                    onChange={(e) =>
-                      void apply({ tools: { recall: e.target.checked } })
-                    }
-                  />
-                  recall — search Aiko's notebook
-                </label>
-                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.web_search ?? true}
-                    disabled={!(settings.tools?.enabled ?? true)}
-                    onChange={(e) =>
-                      void apply({ tools: { web_search: e.target.checked } })
-                    }
-                  />
-                  web_search — DuckDuckGo
-                </label>
-                {settings.tools?.available && settings.tools.available.length > 0 ? (
-                  <div className="rounded-md bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/60">
-                    Active: {settings.tools.available.join(", ")}
-                  </div>
-                ) : (
-                  <div className="rounded-md bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/50 italic">
-                    No tools currently available.
-                  </div>
-                )}
-              </Section>
-                </>
+                <ToolsTab settings={settings} apply={apply} />
               ) : null}
 
               {activeTab === "avatar" ? (
@@ -1233,78 +1138,15 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               ) : null}
 
               {activeTab === "knowledge" ? (
-                <>
-                  <Section title="Documents (RAG)">
-                <p className="text-[11px] text-ink-100/50">
-                  Drop in notes, docs, or PDFs and Aiko will be able to pull
-                  relevant chunks into the conversation. Indexed into the same
-                  retrieval substrate as chat history and memories.
-                </p>
-                {documentsError ? (
-                  <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-                    {documentsError}
-                  </div>
-                ) : null}
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={documentFileRef}
-                    type="file"
-                    accept=".md,.markdown,.txt,.pdf"
-                    disabled={documentsBusy}
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) void onUploadDocument(f);
-                    }}
-                    className="block w-full text-xs text-ink-100/70 file:mr-3 file:rounded file:border file:border-white/10 file:bg-white/5 file:px-2 file:py-1 file:text-xs file:text-ink-100"
-                  />
-                </div>
-                {documents.length === 0 ? (
-                  <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
-                    No documents uploaded yet.
-                  </p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {documents.map((doc) => (
-                      <li
-                        key={doc.document_id}
-                        className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-xs text-ink-100/80"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-medium">{doc.title}</p>
-                          <div className="mt-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
-                            <span>{doc.chunk_count} chunks</span>
-                            <span className="font-mono">{doc.document_id}</span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={documentsBusy}
-                          onClick={() => void onDeleteDocument(doc.document_id)}
-                          className="shrink-0 rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
-                          aria-label={`Remove document ${doc.title}`}
-                        >
-                          remove
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Section>
-
-              <Section title="Long-term memories">
-                <p className="text-[11px] text-ink-100/50">
-                  Memories live in their own tab. Switch to{" "}
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("memory")}
-                    className="underline decoration-dotted underline-offset-2 hover:text-ink-100"
-                  >
-                    Memory
-                  </button>{" "}
-                  to inspect, edit, pin, or add memories.
-                </p>
-              </Section>
-                </>
+                <KnowledgeTab
+                  documents={documents}
+                  documentsError={documentsError}
+                  documentsBusy={documentsBusy}
+                  documentFileRef={documentFileRef}
+                  onUploadDocument={(f) => void onUploadDocument(f)}
+                  onDeleteDocument={(id) => void onDeleteDocument(id)}
+                  onGoToMemory={() => setActiveTab("memory")}
+                />
               ) : null}
 
               {activeTab === "memory" ? (

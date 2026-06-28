@@ -14,12 +14,14 @@ export function CheckboxField({
   onChange,
   children,
   className = "",
+  inputClassName = "",
   disabled = false,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   children: ReactNode;
   className?: string;
+  inputClassName?: string;
   disabled?: boolean;
 }) {
   return (
@@ -29,6 +31,7 @@ export function CheckboxField({
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
+        className={inputClassName || undefined}
       />
       {children}
     </label>
