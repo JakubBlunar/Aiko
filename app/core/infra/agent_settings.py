@@ -1641,6 +1641,14 @@ class AgentSettings:
     # cadence + gap knobs live on ``MemorySettings.away_activities_*``.
     away_activities_enabled: bool = True
 
+    # H21: sleep & overnight rhythm. Off → the sleep-return cue never
+    # lands. On (default) → the first turn after a long typed gap that
+    # plausibly spanned an overnight sleep may surface one casual line
+    # about having dozed off (optionally weaving in a recent ``[dream]``
+    # reflection so the dream has a behavioural home). The gap + dream
+    # lookback knobs live on ``MemorySettings.sleep_return_*``.
+    sleep_return_enabled: bool = True
+
     # ── Intentional-placement hold ────────────────────────────────────
     # When the brain (move_to / change_posture tools) or the user (World
     # tab) intentionally sets Aiko's location / posture / activity, a

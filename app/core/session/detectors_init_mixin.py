@@ -123,6 +123,18 @@ class DetectorsInitMixin:
         self._away_activities_force_next: bool = False
         self._gap_cue_surfaced: bool = False
         self._away_activity_worker: Any = None
+        # H21 — "I dozed off while you were away". ``_pending_sleep_
+        # return_seconds`` is armed by the post-turn tracker on a typed
+        # gap >= ``memory.sleep_return_min_gap_hours`` (default 5h). The
+        # provider runs before away_activities in the gap-cue family,
+        # applies the return-hour-aware overnight gate, optionally weaves
+        # in a recent ``[dream]`` reflection, and defers to turning_over
+        # via the shared ``_gap_cue_surfaced`` flag. ``_sleep_return_
+        # force_next`` is the MCP debug bypass; ``_last_sleep_return``
+        # holds diagnostics for ``get_sleep_return_state``.
+        self._pending_sleep_return_seconds: float | None = None
+        self._sleep_return_force_next: bool = False
+        self._last_sleep_return: Any = None
         # H17 — idle-seed surfacing MCP debug bypass (consumed by
         # ``_render_idle_seed_block`` on the next assembly).
         self._idle_seed_force_next: bool = False

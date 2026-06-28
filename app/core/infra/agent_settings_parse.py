@@ -1330,6 +1330,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             away_activities_enabled=bool(
                 agent_raw.get("away_activities_enabled", True),
             ),
+            sleep_return_enabled=bool(
+                agent_raw.get("sleep_return_enabled", True),
+            ),
             world_intentional_hold_seconds=max(
                 0.0,
                 float(agent_raw.get("world_intentional_hold_seconds", 7200.0)),

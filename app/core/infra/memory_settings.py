@@ -604,6 +604,15 @@ class MemorySettings:
     away_activities_daily_cap: int = 6
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
+    # H21 — sleep & overnight rhythm. ``min_gap_hours`` is the shortest
+    # absence that can read as a sleep when she returns in the morning band;
+    # ``overnight_hours`` is the gap that reads as a sleep at any hour;
+    # ``dream_lookback_hours`` bounds how recent a ``[dream]`` reflection must
+    # be to get woven into the return cue. Longer gap floor than the ordinary
+    # away cue (4h) so a long afternoon out never reads as "I fell asleep".
+    sleep_return_min_gap_hours: float = 5.0
+    sleep_return_overnight_hours: float = 9.0
+    sleep_return_dream_lookback_hours: float = 18.0
     # H14 — fraction of idle beats the worker LLM composes from scratch
     # (open-vocab activity grounded in the live room) instead of the
     # curated weighted templates. 0.0 disables; 1.0 always LLM-composes.
@@ -1646,6 +1655,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_min_gap_hours=max(
                 0.0,
                 float(memory_raw.get("away_activities_min_gap_hours", 4.0)),
+            ),
+            sleep_return_min_gap_hours=max(
+                0.0,
+                float(memory_raw.get("sleep_return_min_gap_hours", 5.0)),
+            ),
+            sleep_return_overnight_hours=max(
+                0.0,
+                float(memory_raw.get("sleep_return_overnight_hours", 9.0)),
+            ),
+            sleep_return_dream_lookback_hours=max(
+                0.0,
+                float(memory_raw.get("sleep_return_dream_lookback_hours", 18.0)),
             ),
             away_activities_journal_max=max(
                 1,
