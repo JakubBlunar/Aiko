@@ -9,6 +9,8 @@ web/dist/
 web/.vite/
 config/*.user.json
 config/user.json
+app/config/user.json
+app/config/*.user.json
 data/conversation_memory.jsonl
 data/crashlog.txt
 # Generated daily by SelfImageWorker (LLM pulse) — runtime artifact, not
