@@ -1073,6 +1073,35 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     )
                 ),
             ),
+            intimacy_ceiling=max(
+                0.0,
+                min(1.0, float(agent_raw.get("intimacy_ceiling", 0.7))),
+            ),
+            intimacy_pacing_enabled=bool(
+                agent_raw.get("intimacy_pacing_enabled", True),
+            ),
+            intimacy_pacing_learning_rate=max(
+                0.0,
+                min(
+                    1.0,
+                    float(agent_raw.get("intimacy_pacing_learning_rate", 0.15)),
+                ),
+            ),
+            intimacy_pacing_decay_half_life_days=max(
+                0.0,
+                float(
+                    agent_raw.get("intimacy_pacing_decay_half_life_days", 14.0)
+                ),
+            ),
+            intimacy_pacing_follow_strength=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get("intimacy_pacing_follow_strength", 0.5)
+                    ),
+                ),
+            ),
             touch_enabled=bool(
                 agent_raw.get("touch_enabled", True),
             ),

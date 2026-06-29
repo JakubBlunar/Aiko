@@ -295,6 +295,14 @@ export interface CompanionSettings {
   persona_touch_banner_enabled: boolean;
   persona_touch_banner_duration_seconds: number;
   expression_mask: ExpressionMaskMode;
+  /** J12 — consent ceiling on forwardness, 0 (reserved) .. 1
+   * (affectionate). Hard-caps how forward Aiko gets regardless of
+   * relationship stage. */
+  intimacy_ceiling: number;
+  /** J12 — master switch for the learned-pacing half (the user-pace
+   * EMA + the "follow his pace" cue). The ceiling above works
+   * regardless. */
+  intimacy_pacing_enabled: boolean;
 }
 
 export interface AssistantSettings {

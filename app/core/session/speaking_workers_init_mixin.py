@@ -619,6 +619,7 @@ class SpeakingWorkersInitMixin:
             follow_up=self._render_follow_up_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
             mood_shell=self._render_mood_shell_block,
+            intimacy_pacing=self._render_intimacy_pacing_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,

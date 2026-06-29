@@ -1093,6 +1093,19 @@ class InnerLifePart4Mixin:
                 stage_rank,
             )
 
+            # J12: a reserved intimacy ceiling suppresses Aiko's own
+            # unprompted vulnerability — at a contained setting she stays
+            # warm-but-held-back rather than offloading on the user.
+            try:
+                from app.core.relationship import intimacy_pacing as _ip
+
+                if _ip.ceiling_band(
+                    float(getattr(agent, "intimacy_ceiling", 0.7))
+                ) == _ip.BAND_RESERVED:
+                    return ""
+            except Exception:
+                log.debug("J9 intimacy-ceiling gate failed", exc_info=True)
+
             try:
                 stage = self.relationship_stage_now()
             except Exception:
@@ -1164,6 +1177,84 @@ class InnerLifePart4Mixin:
             f"one who's there for you for once. {depth}. Don't perform it or "
             "fish for reassurance; offer it, then let the conversation breathe."
         )
+
+    def _intimacy_ceiling_value(self) -> float:
+        """J12: the live consent-ceiling float (clamped ``[0, 1]``)."""
+        agent = getattr(self._settings, "agent", None)
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+
+            return _ip.clamp01(float(getattr(agent, "intimacy_ceiling", 0.7)))
+        except Exception:
+            return 0.7
+
+    def _intimacy_user_pace(self):
+        """J12: read the stored user-pace estimate (read-only, no decay write).
+
+        Returns an :class:`IntimacyPacingState`. The post-turn hook owns
+        the decay-and-persist write; this is a cheap read so the cue and
+        the MCP debug surface see the same value. Neutral on any failure.
+        """
+        from app.core.relationship import intimacy_pacing as _ip
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return _ip.neutral_state()
+        try:
+            return _ip.deserialize(chat_db.kv_get(_ip.KV_INTIMACY_PACING))
+        except Exception:
+            log.debug("intimacy-pacing read failed", exc_info=True)
+            return _ip.neutral_state()
+
+    def _render_intimacy_pacing_block(self) -> str:
+        """J12: closeness-ceiling consent cue + "follow his pace" nudge.
+
+        Two reasons can fire (ceiling cue wins): the consent dial caps
+        forwardness (always on, even with the learned half disabled), or
+        — when the learned half is enabled — the user's own pace is
+        running notably below neutral and Aiko should follow rather than
+        lead. Behaviour-neutral at the default ``0.7`` ceiling + neutral
+        pace; returns ``""`` for most turns. Trend/phase block: NOT
+        dropped under ``aggressive`` (a contained boundary matters most
+        when the reply is long) and NOT part of the K16 grounding-line
+        suppression matrix (it's a pacing/consent cue, not ambient).
+        """
+        agent = getattr(self._settings, "agent", None)
+        if agent is None:
+            return ""
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+            from app.core.relationship.relationship_axes import stage_rank
+
+            ceiling = self._intimacy_ceiling_value()
+            pacing_enabled = bool(
+                getattr(agent, "intimacy_pacing_enabled", True)
+            )
+            state = self._intimacy_user_pace()
+            try:
+                rank = stage_rank(self.relationship_stage_now())
+            except Exception:
+                rank = 0
+            block = _ip.render_pacing_block(
+                ceiling=ceiling,
+                user_pace=state.user_pace,
+                stage_rank=rank,
+                follow_strength=float(
+                    getattr(agent, "intimacy_pacing_follow_strength", 0.5)
+                ),
+                pacing_enabled=pacing_enabled,
+                user_display_name=self.user_display_name,
+            )
+            if block:
+                log.info(
+                    "intimacy-pacing cue: ceiling=%.2f band=%s pace=%.3f "
+                    "stage_rank=%d",
+                    ceiling, _ip.ceiling_band(ceiling), state.user_pace, rank,
+                )
+            return block
+        except Exception:
+            log.debug("intimacy-pacing block render failed", exc_info=True)
+            return ""
 
     def _relationship_tenure_days(self) -> float:
         """Days since first contact (J4 tenure input); 0.0 when unknown."""

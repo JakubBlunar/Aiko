@@ -537,10 +537,26 @@ class InnerLifePart1Mixin:
                     "K15 axes lookup failed -- using neutral baseline",
                     exc_info=True,
                 )
-        return _vb.compute_capacity(
+        capacity = _vb.compute_capacity(
             closeness, trust,
             min_cap=min_cap, max_cap=max_cap,
         )
+        # J12: the intimacy ceiling scales the disclosure budget down at
+        # a reserved setting (a contained companion shares less). At the
+        # default 0.7 ceiling the factor is 1.0, so this is a no-op; only
+        # a genuinely reserved dial shrinks it. Never below min_cap.
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+
+            ceiling = float(
+                getattr(self._settings.agent, "intimacy_ceiling", 0.7)
+            )
+            factor = _ip.disclosure_factor(ceiling)
+            if factor < 1.0:
+                capacity = max(int(min_cap), int(round(capacity * factor)))
+        except Exception:
+            log.debug("K15 intimacy-ceiling scale failed", exc_info=True)
+        return capacity
 
     # ── K31 + K32: soft physicality providers ─────────────────────────
 

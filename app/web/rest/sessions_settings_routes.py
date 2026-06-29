@@ -300,6 +300,14 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "expression_mask": str(
                     getattr(s.agent, "expression_mask", "off"),
                 ),
+                # J12 intimacy pacing: the consent ceiling + learned-half
+                # master switch.
+                "intimacy_ceiling": float(
+                    getattr(s.agent, "intimacy_ceiling", 0.7),
+                ),
+                "intimacy_pacing_enabled": bool(
+                    getattr(s.agent, "intimacy_pacing_enabled", True),
+                ),
             },
             "endpointing": {
                 "enabled": bool(getattr(s.endpointing, "enabled", True)),
@@ -689,6 +697,17 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 mode = normalize_mode(companion["expression_mask"])
                 agent.expression_mask = mode
                 persist_patch["agent"]["expression_mask"] = mode
+            if "intimacy_ceiling" in companion:
+                try:
+                    v = max(0.0, min(1.0, float(companion["intimacy_ceiling"])))
+                except (TypeError, ValueError):
+                    v = 0.7
+                agent.intimacy_ceiling = v
+                persist_patch["agent"]["intimacy_ceiling"] = v
+            if "intimacy_pacing_enabled" in companion:
+                v = bool(companion["intimacy_pacing_enabled"])
+                agent.intimacy_pacing_enabled = v
+                persist_patch["agent"]["intimacy_pacing_enabled"] = v
             persist_patch = {k: v for k, v in persist_patch.items() if v}
             if persist_patch:
                 try:
@@ -736,6 +755,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         ),
                         "expression_mask": str(
                             getattr(agent, "expression_mask", "off"),
+                        ),
+                        "intimacy_ceiling": float(
+                            getattr(agent, "intimacy_ceiling", 0.7),
+                        ),
+                        "intimacy_pacing_enabled": bool(
+                            getattr(agent, "intimacy_pacing_enabled", True),
                         ),
                     },
                 })

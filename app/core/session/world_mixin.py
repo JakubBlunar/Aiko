@@ -471,6 +471,55 @@ class WorldMixin:
                     "affection-style reaction confirm failed", exc_info=True,
                 )
 
+        # J12 — intimacy pacing. An affectionate reaction is sparse but
+        # high-quality evidence that the user is running warm; blend its
+        # forwardness score into the user-pace EMA (upward only — you
+        # can't react your way to a colder pace). Gated by the learned
+        # half's master switch.
+        if bool(getattr(agent, "intimacy_pacing_enabled", True)):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import intimacy_pacing as _ip
+
+                chat_db = getattr(self, "_chat_db", None)
+                score = _ip.score_user_reaction(normalized_kind)
+                if chat_db is not None and score is not None:
+                    now = datetime.now(timezone.utc)
+                    state = _ip.deserialize(
+                        chat_db.kv_get(_ip.KV_INTIMACY_PACING)
+                    )
+                    state = _ip.decay_pace(
+                        state, now,
+                        half_life_days=float(
+                            getattr(
+                                agent,
+                                "intimacy_pacing_decay_half_life_days",
+                                14.0,
+                            )
+                        ),
+                    )
+                    state = _ip.update_pace(
+                        state, score, now,
+                        learning_rate=float(
+                            getattr(
+                                agent, "intimacy_pacing_learning_rate", 0.15,
+                            )
+                        ),
+                    )
+                    chat_db.kv_set(
+                        _ip.KV_INTIMACY_PACING, _ip.serialize(state),
+                    )
+                    log.info(
+                        "intimacy-pacing reaction: kind=%s score=%.2f "
+                        "pace=%.3f",
+                        normalized_kind, score, state.user_pace,
+                    )
+            except Exception:
+                log.debug(
+                    "intimacy-pacing reaction update failed", exc_info=True,
+                )
+
         # Axes bump (optional master switch). Driven by the
         # RelationshipAxesUpdater so the per-turn clamp, broadcast
         # debounce, and persist path all behave identically to the

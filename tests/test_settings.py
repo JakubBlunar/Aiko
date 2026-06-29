@@ -3890,5 +3890,84 @@ class SearchSettingsTests(unittest.TestCase):
         self.assertGreaterEqual(s.timeout_seconds, 1.0)
 
 
+class IntimacyPacingSettingsTests(unittest.TestCase):
+    """J12: consent ceiling + learned-pacing knobs round-trip + clamps."""
+
+    _IP_AGENT_KEYS = (
+        "intimacy_ceiling",
+        "intimacy_pacing_enabled",
+        "intimacy_pacing_learning_rate",
+        "intimacy_pacing_decay_half_life_days",
+        "intimacy_pacing_follow_strength",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._IP_AGENT_KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertAlmostEqual(a.intimacy_ceiling, 0.7)
+        self.assertTrue(a.intimacy_pacing_enabled)
+        self.assertAlmostEqual(a.intimacy_pacing_learning_rate, 0.15)
+        self.assertAlmostEqual(a.intimacy_pacing_decay_half_life_days, 14.0)
+        self.assertAlmostEqual(a.intimacy_pacing_follow_strength, 0.5)
+
+    def test_overrides_round_trip(self) -> None:
+        a = load_settings(config_path=self._write_config(agent_extra={
+            "intimacy_ceiling": 0.2,
+            "intimacy_pacing_enabled": False,
+            "intimacy_pacing_learning_rate": 0.3,
+            "intimacy_pacing_decay_half_life_days": 30.0,
+            "intimacy_pacing_follow_strength": 0.9,
+        })).agent
+        self.assertAlmostEqual(a.intimacy_ceiling, 0.2)
+        self.assertFalse(a.intimacy_pacing_enabled)
+        self.assertAlmostEqual(a.intimacy_pacing_learning_rate, 0.3)
+        self.assertAlmostEqual(a.intimacy_pacing_decay_half_life_days, 30.0)
+        self.assertAlmostEqual(a.intimacy_pacing_follow_strength, 0.9)
+
+    def test_ceiling_clamped_to_unit_interval(self) -> None:
+        a = load_settings(config_path=self._write_config(agent_extra={
+            "intimacy_ceiling": 5.0,
+        })).agent
+        self.assertAlmostEqual(a.intimacy_ceiling, 1.0)
+        a = load_settings(config_path=self._write_config(agent_extra={
+            "intimacy_ceiling": -2.0,
+        })).agent
+        self.assertAlmostEqual(a.intimacy_ceiling, 0.0)
+
+    def test_rates_clamped(self) -> None:
+        a = load_settings(config_path=self._write_config(agent_extra={
+            "intimacy_pacing_learning_rate": 9.0,
+            "intimacy_pacing_follow_strength": -1.0,
+            "intimacy_pacing_decay_half_life_days": -5.0,
+        })).agent
+        self.assertAlmostEqual(a.intimacy_pacing_learning_rate, 1.0)
+        self.assertAlmostEqual(a.intimacy_pacing_follow_strength, 0.0)
+        self.assertAlmostEqual(a.intimacy_pacing_decay_half_life_days, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
