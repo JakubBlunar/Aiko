@@ -698,6 +698,120 @@ def register(mcp, session: "SessionController") -> None:
             return f"reroll_day_color raised: {exc}"
 
     @mcp.tool()
+    def get_weather_state() -> str:
+        """H11 — dump the live weather-sync state.
+
+        Returns a JSON dict with the master switch
+        (``agent.weather_sync_enabled``), the configured home
+        location (name + lat/lon + units + refresh interval), the
+        last-persisted snapshot from ``kv_meta``
+        (``aiko.weather_snapshot``: condition, temperature, season,
+        is_day, ...) with its ``fetched_at`` timestamp, the current
+        seasonal-decor watermark, and the K27 weather->palette bias
+        the next day-colour roll would apply.
+
+        Pairs with ``force_weather_fetch`` for end-to-end repro:
+
+        1. Set a home location (Settings -> World -> Weather, or
+           ``PATCH /api/settings`` with ``weather.location_name``).
+        2. Call ``force_weather_fetch`` -- forces an immediate fetch
+           and persists the snapshot.
+        3. Call ``get_weather_state`` -- the ``snapshot`` block now
+           carries the live conditions; send a message and the
+           ambient "Real-world sky..." cue lands in the prompt.
+        """
+        try:
+            from app.core.affect import day_color
+            from app.core.world.weather_worker import (
+                KV_WEATHER_FETCHED_AT,
+                load_weather_snapshot,
+            )
+
+            agent = session._settings.agent
+            s = getattr(session._settings, "weather", None)
+            chat_db = getattr(session, "_chat_db", None)
+
+            snapshot = (
+                load_weather_snapshot(chat_db) if chat_db is not None else None
+            )
+            fetched_at = None
+            decor_watermark = None
+            if chat_db is not None:
+                try:
+                    fetched_at = chat_db.kv_get(KV_WEATHER_FETCHED_AT)
+                except Exception:
+                    fetched_at = None
+                try:
+                    decor_watermark = chat_db.kv_get(
+                        "aiko.seasonal_decor_applied"
+                    )
+                except Exception:
+                    decor_watermark = None
+
+            condition = (snapshot or {}).get("condition")
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "weather_sync_enabled", False)
+                    ),
+                    "home": {
+                        "location_name": getattr(s, "location_name", ""),
+                        "latitude": getattr(s, "latitude", None),
+                        "longitude": getattr(s, "longitude", None),
+                        "units": getattr(s, "units", "metric"),
+                        "provider": getattr(s, "provider", "open_meteo"),
+                        "geocoder": getattr(s, "geocoder", "open_meteo"),
+                        "refresh_interval_minutes": int(
+                            getattr(s, "refresh_interval_minutes", 30)
+                        ),
+                    } if s is not None else None,
+                    "snapshot": snapshot,
+                    "fetched_at": fetched_at,
+                    "seasonal_decor_watermark": decor_watermark,
+                    "day_color_bias": day_color.weather_palette_weights(
+                        condition
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_weather_state raised: {exc}"
+
+    @mcp.tool()
+    def force_weather_fetch() -> str:
+        """H11 — force an immediate home-location weather fetch.
+
+        Bypasses the idle-worker cadence: calls
+        ``SessionController.fetch_weather_now`` directly, which fetches
+        live conditions, persists the snapshot to ``kv_meta``, fans a
+        ``weather_updated`` WS frame to the UI, and runs the seasonal
+        decor hook. Returns the fetched snapshot, or an error when no
+        home location is configured / the fetch failed.
+        """
+        try:
+            fetch = getattr(session, "fetch_weather_now", None)
+            if not callable(fetch):
+                return json.dumps(
+                    {"error": "weather not available on this session"},
+                    indent=2,
+                )
+            blob = fetch()
+            if blob is None:
+                return json.dumps(
+                    {
+                        "fetched": False,
+                        "note": (
+                            "no home location configured or the fetch "
+                            "failed -- set weather.location_name first"
+                        ),
+                    },
+                    indent=2,
+                )
+            return json.dumps({"fetched": True, "snapshot": blob}, indent=2)
+        except Exception as exc:
+            return f"force_weather_fetch raised: {exc}"
+
+    @mcp.tool()
     def get_wants_state() -> str:
         """K52 — dump the wants ledger snapshot.
 

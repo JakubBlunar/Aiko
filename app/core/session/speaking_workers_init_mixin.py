@@ -585,6 +585,7 @@ class SpeakingWorkersInitMixin:
             motion_names=self._avatar_motion_names,
             world=self._render_world_block,
             activity=self._render_activity_block,
+            weather=self._render_weather_block,
             hobby=self._render_hobby_block,
             anniversary=self._render_anniversary_block,
             milestone=self._render_milestone_block,

@@ -77,6 +77,21 @@ class ToolsRegistryMixin:
                     log.warning(
                         "calculate tool failed to register", exc_info=True
                     )
+            # H11 weather tools (get_weather / get_forecast). Synchronous
+            # single-GET tools — safe on the brain lane. Independent of the
+            # passive ambient feed (agent.weather_sync_enabled): the tools
+            # answer on-demand "what's the forecast?" even with the overlay
+            # off. They geocode arbitrary place names at call time.
+            if getattr(tools_cfg, "weather", True):
+                try:
+                    from app.llm.tools.weather import build_weather_tools
+
+                    for tool in build_weather_tools(self):
+                        registry.register(tool)
+                except Exception:
+                    log.warning(
+                        "weather tools failed to register", exc_info=True
+                    )
             # web_search is intentionally NOT a brain builtin anymore.
             # A DuckDuckGo round-trip is too slow for the fast
             # conversational lane, so it now lives only as a background

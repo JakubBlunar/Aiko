@@ -595,6 +595,12 @@ class ToolsSettings:
     # result in the same turn so Aiko never has to guess a number. See
     # :mod:`app.llm.tools.calc`.
     calculate: bool = True
+    # H11: synchronous weather tools (``get_weather`` / ``get_forecast``).
+    # Lets Aiko answer "what's the forecast?" for the configured home
+    # location or any named city (geocoded at call time). Independent of
+    # the passive ambient ``agent.weather_sync_enabled`` feed -- the tools
+    # work even with the ambient overlay off. See :mod:`app.llm.tools.weather`.
+    weather: bool = True
 
 
 @dataclass(slots=True)
@@ -634,6 +640,47 @@ class SearchSettings:
 
 
 @dataclass(slots=True)
+class WeatherSettings:
+    """H11 real-world co-location: weather + season sync configuration.
+
+    Drives both the passive ambient feed (the
+    :class:`~app.core.world.weather_worker.WeatherWorker` fetches the
+    home sky on a cadence -> prompt cue + persona overlay + optional K27
+    nudge / seasonal decor) and the on-demand brain tools
+    (:mod:`app.llm.tools.weather`). The master on/off switch is
+    ``agent.weather_sync_enabled`` (ambient feed) / ``tools.weather``
+    (brain tools); this block holds the location + backend knobs.
+
+    Privacy posture: coarse, consent-gated location only -- a manually
+    entered city name (geocoded once to ``latitude`` / ``longitude``) or
+    hand-set coordinates. Never GPS, never an address. Off by default.
+    See :func:`app.llm.weather.build_weather_provider`. The weather and
+    geocoding backends are deliberately independent (``provider`` vs
+    ``geocoder``) so swapping one never breaks the other.
+    """
+
+    provider: str = "open_meteo"  # weather backend (lat/lon only)
+    geocoder: str = "open_meteo"  # place-name -> lat/lon (decoupled)
+    # Human label of the configured home location (city granularity).
+    location_name: str = ""
+    # Cached coordinates resolved from ``location_name`` once at save time.
+    # ``None`` means "not yet resolved" -> the ambient feed stays silent.
+    latitude: float | None = None
+    longitude: float | None = None
+    # ``"metric"`` (Celsius / km-h) or ``"imperial"`` (Fahrenheit / mph).
+    units: str = "metric"
+    # Minutes between ambient fetches. Clamped to >= 15 so the keyless
+    # Open-Meteo endpoint is never hammered; raising it makes the shared
+    # sky update less often (lower API traffic), lowering it refreshes
+    # sooner. The brain tools are on-demand and ignore this.
+    refresh_interval_minutes: int = 30
+    # For a future keyed backend; masked in REST as ``has_api_key``.
+    api_key: str = ""
+    api_key_env: str = "WEATHER_API_KEY"
+    timeout_seconds: float = 10.0
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     ollama: OllamaSettings
@@ -665,6 +712,8 @@ class AppSettings:
     llm: LlmSettings = field(default_factory=LlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
     search: SearchSettings = field(default_factory=SearchSettings)
+    # H11 real-world co-location (weather + season sync).
+    weather: WeatherSettings = field(default_factory=WeatherSettings)
     endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
     avatar: AvatarSettings = field(default_factory=AvatarSettings)
 
@@ -1343,6 +1392,60 @@ def _parse_browser_perception(raw: Any) -> BrowserPerceptionSettings:
     )
 
 
+def _parse_weather_settings(raw: Any) -> WeatherSettings:
+    """Validate the ``weather`` config block (H11).
+
+    Returns defaults when missing/malformed so a hand-edited config never
+    aborts boot. Coordinates are clamped to valid lat/lon ranges (or
+    dropped to ``None``), ``units`` falls back to ``"metric"``, and the
+    refresh interval is floored at 15 minutes.
+    """
+    defaults = WeatherSettings()
+    if not isinstance(raw, dict):
+        return defaults
+
+    def _coord(key: str, lo: float, hi: float) -> float | None:
+        val = raw.get(key)
+        if val is None or val == "":
+            return None
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if num < lo or num > hi:
+            return None
+        return num
+
+    units = str(raw.get("units", defaults.units) or defaults.units).strip().lower()
+    if units not in ("metric", "imperial"):
+        units = defaults.units
+    try:
+        interval = max(15, int(raw.get("refresh_interval_minutes", defaults.refresh_interval_minutes)))
+    except (TypeError, ValueError):
+        interval = defaults.refresh_interval_minutes
+    try:
+        timeout = max(1.0, float(raw.get("timeout_seconds", defaults.timeout_seconds)))
+    except (TypeError, ValueError):
+        timeout = defaults.timeout_seconds
+
+    return WeatherSettings(
+        provider=str(raw.get("provider", defaults.provider) or defaults.provider).strip().lower()
+        or defaults.provider,
+        geocoder=str(raw.get("geocoder", defaults.geocoder) or defaults.geocoder).strip().lower()
+        or defaults.geocoder,
+        location_name=str(raw.get("location_name", "") or "").strip()[:80],
+        latitude=_coord("latitude", -90.0, 90.0),
+        longitude=_coord("longitude", -180.0, 180.0),
+        units=units,
+        refresh_interval_minutes=interval,
+        api_key=str(raw.get("api_key", "") or ""),
+        api_key_env=str(
+            raw.get("api_key_env", defaults.api_key_env) or defaults.api_key_env
+        ).strip(),
+        timeout_seconds=timeout,
+    )
+
+
 def _parse_llm(raw: Any) -> LlmSettings:
     """Validate the ``llm`` config block.
 
@@ -1591,6 +1694,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     llm_raw = raw.get("llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
     search_raw = raw.get("search", {}) or {}
+    weather_raw = raw.get("weather", {}) or {}
     endpointing_raw = raw.get("endpointing", {}) or {}
     avatar_raw = raw.get("avatar", {}) or {}
 
@@ -1698,6 +1802,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             file_tasks=bool(tools_raw.get("file_tasks", True)),
             workflow=bool(tools_raw.get("workflow", True)),
             calculate=bool(tools_raw.get("calculate", True)),
+            weather=bool(tools_raw.get("weather", True)),
         ),
         search=SearchSettings(
             provider=(
@@ -1733,6 +1838,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 search_raw.get("query_reformulation_enabled", True)
             ),
         ),
+        weather=_parse_weather_settings(weather_raw),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),
             use_partial_transcript=bool(

@@ -97,6 +97,44 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("WorldNoticeWorker init failed", exc_info=True)
 
+        # H11 WeatherWorker — passive ambient weather feed. Fetches the
+        # configured home-location conditions on a low cadence during idle
+        # windows, stashes a snapshot in kv_meta for the ambient prompt cue
+        # + persona overlay, and fans a ``weather_updated`` WS frame out via
+        # ``_notify_weather``. Gated on ``agent.weather_sync_enabled`` AND a
+        # resolved home location (``is_ready`` returns False otherwise).
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.world.weather_worker import WeatherWorker
+
+                self._weather_worker = WeatherWorker(
+                    chat_db=self._chat_db,
+                    provider_getter=self._get_weather_provider,
+                    home_provider=self._weather_home,
+                    units_provider=self._weather_units,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "weather_sync_enabled",
+                            False,
+                        )
+                    ),
+                    interval_provider=lambda: float(
+                        getattr(
+                            self._settings.weather,
+                            "refresh_interval_minutes",
+                            30,
+                        )
+                    ) * 60.0,
+                    notify=self._notify_weather,
+                    seasonal_hook=getattr(
+                        self, "_apply_weather_seasonal_decor", None,
+                    ),
+                )
+                self._idle_scheduler.register(self._weather_worker)
+            except Exception:
+                log.warning("WeatherWorker init failed", exc_info=True)
+
         # K36 IdleAwayActivityWorker — Aiko's quiet room life. Mutates the
         # world during idle windows + journals it; the away-activities
         # provider surfaces one line on the first turn back. Shares the

@@ -36,6 +36,7 @@ _ALL_TOOLS = [
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
+    "get_weather", "get_forecast",
 ]
 
 _NO_CONTEXT = GateContext()
@@ -126,8 +127,22 @@ class SignalFamilyTests(unittest.TestCase):
     def test_web_signal(self) -> None:
         self._assert_runs("can you search for the latest python release?", "web")
 
-    def test_web_weather_signal(self) -> None:
-        self._assert_runs("how's the weather tomorrow?", "web")
+    def test_weather_signal(self) -> None:
+        # H11: weather/forecast route to the dedicated weather family,
+        # not web (so the fast weather tool wins over a slow DDG round-trip).
+        self._assert_runs("how's the weather tomorrow?", "weather")
+
+    def test_forecast_signal(self) -> None:
+        self._assert_runs("what's the forecast for the weekend?", "weather")
+
+    def test_weather_phrase_skips_when_weather_tools_disabled(self) -> None:
+        # With the weather tools removed, "weather" patterns aren't
+        # consulted and the phrase no longer matches web either.
+        decision = _decide(
+            "is it going to rain later?", tools=["get_time", "web_search"],
+        )
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, "no_signal")
 
     def test_recall_signal(self) -> None:
         self._assert_runs("do you remember what I told you about mika?", "recall")

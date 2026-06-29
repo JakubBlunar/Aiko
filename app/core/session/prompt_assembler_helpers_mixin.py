@@ -119,6 +119,7 @@ class PromptAssemblerHelpersMixin:
         motion_names: Callable[[], list[str]] | None = None,
         world: Callable[[], str] | None = None,
         activity: Callable[[], str] | None = None,
+        weather: Callable[[], str] | None = None,
         hobby: Callable[[], str] | None = None,
         anniversary: Callable[[], str] | None = None,
         milestone: Callable[[], str] | None = None,
@@ -223,6 +224,8 @@ class PromptAssemblerHelpersMixin:
             self._world_provider = world
         if activity is not None:
             self._activity_provider = activity
+        if weather is not None:
+            self._weather_block_provider = weather
         if hobby is not None:
             self._hobby_provider = hobby
         if anniversary is not None:

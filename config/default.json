@@ -34,6 +34,7 @@
     "proactive_typed_when_away": false,
     "proactive_typed_tts_enabled": false,
     "activity_awareness_enabled": false,
+    "weather_sync_enabled": false,
     "shared_moments_enabled": true,
     "shared_moments_llm_enabled": true,
     "shared_moments_min_turn_gap": 5,
@@ -479,7 +480,8 @@
     "web_search": true,
     "world": true,
     "goals": true,
-    "calculate": true
+    "calculate": true,
+    "weather": true
   },
   "search": {
     "provider": "duckduckgo",
@@ -492,6 +494,18 @@
     "timeout_seconds": 12.0,
     "langsearch_min_interval_seconds": 1.1,
     "query_reformulation_enabled": true
+  },
+  "weather": {
+    "provider": "open_meteo",
+    "geocoder": "open_meteo",
+    "location_name": "",
+    "latitude": null,
+    "longitude": null,
+    "units": "metric",
+    "refresh_interval_minutes": 30,
+    "api_key": "",
+    "api_key_env": "WEATHER_API_KEY",
+    "timeout_seconds": 10.0
   },
   "endpointing": {
     "enabled": true,

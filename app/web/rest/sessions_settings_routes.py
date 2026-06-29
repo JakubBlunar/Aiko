@@ -343,6 +343,9 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             # state. Writes to the key go through PUT
             # ``/api/settings/search-credentials``.
             "search": _search_public_snapshot(getattr(s, "search", None)),
+            # H11 weather sync. Coarse location + units + the latest cached
+            # snapshot; the raw (future) api_key is never echoed.
+            "weather": session._weather_public_snapshot(),
             "logging": {
                 # Mirror of LoggingSettings.ui_log_enabled and friends so
                 # the Settings drawer's Debug-logging toggle has a single
@@ -407,6 +410,25 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 log.warning("reconfigure_search failed: %s", exc, exc_info=True)
                 raise HTTPException(
                     400, f"search reconfigure failed: {exc}",
+                )
+        weather_patch = payload.get("weather") or {}
+        if weather_patch:
+            # H11: setting ``location_name`` geocodes it once (decoupled
+            # geocoder) and caches lat/lon; a top-level ``sync_enabled`` is
+            # mapped onto ``agent.weather_sync_enabled``. An immediate fetch
+            # runs so the UI reflects the new location without waiting for
+            # the next idle window. ``api_key`` is reserved for a future
+            # keyed backend (Open-Meteo is keyless).
+            try:
+                snapshot = session.reconfigure_weather(weather_patch)
+                hub.broadcast({
+                    "type": "weather_settings_changed",
+                    "weather": snapshot,
+                })
+            except Exception as exc:
+                log.warning("reconfigure_weather failed: %s", exc, exc_info=True)
+                raise HTTPException(
+                    400, f"weather reconfigure failed: {exc}",
                 )
         tts = payload.get("tts") or {}
         if "voice" in tts:

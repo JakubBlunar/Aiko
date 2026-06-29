@@ -39,6 +39,7 @@ from app.core.session.persona_regression_mixin import PersonaRegressionMixin
 from app.core.session.post_turn_mixin import PostTurnMixin
 from app.core.session.proactive_presence_mixin import ProactivePresenceMixin
 from app.core.session.search_provider_mixin import SearchProviderMixin
+from app.core.session.weather_mixin import WeatherMixin
 from app.core.session.speaking_window_jobs_mixin import SpeakingWindowJobsMixin
 from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
 from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
@@ -62,6 +63,7 @@ __all__ = [
     "PostTurnMixin",
     "ProactivePresenceMixin",
     "SearchProviderMixin",
+    "WeatherMixin",
     "SpeakingWindowJobsMixin",
     "SpeakingWorkersInitMixin",
     "TaskOrchestrationMixin",
