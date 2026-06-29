@@ -61,6 +61,16 @@ class AgentSettings:
     # for the privacy posture). Off by default; browser shells render
     # the toggle but can never produce a non-null active app.
     activity_awareness_enabled: bool = False
+    # ── Weather + season sync (H11, opt-in) ───────────────────────────
+    # Master switch for the passive ambient weather feed: when on (and a
+    # home location is resolved under ``weather.*``), a low-frequency
+    # worker pulls current conditions, surfaces a terse "shared sky"
+    # prompt cue, tints the persona-window backdrop, and can nudge the
+    # K27 daily colour + seasonal room decor. Coarse city-granularity
+    # location only, never GPS (see ``docs/weather-sync.md``). Off by
+    # default. The on-demand weather *tools* are gated separately by
+    # ``tools.weather``.
+    weather_sync_enabled: bool = False
     # ── Shared moments + relationship depth (schema v7) ───────────────
     # ``shared_moments_enabled`` is the master switch for the entire
     # subsystem (inline tag extraction, LLM detector, Together tab,

@@ -399,6 +399,60 @@ class ActivityBlockProviderTests(unittest.TestCase):
             )
 
 
+class WeatherBlockProviderTests(unittest.TestCase):
+    """H11 ``weather`` slot surfaces the real-world "shared sky" line.
+    Standard provider hooks: populates the prompt when wired, silent when
+    empty, dropped under ``aggressive``, and folded into the K16 grounding
+    line under split/replace."""
+
+    _LINE = "Real-world sky where Jacob is: light rain, around 11°C (autumn, daytime)."
+
+    def test_weather_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="w1", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(weather=lambda: self._LINE)
+            messages, _ = assembler.assemble_with_budget(
+                "w1", "what's up?", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._LINE, messages[0]["content"])
+
+    def test_weather_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="w2", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(weather=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "w2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Real-world sky", messages[0]["content"])
+
+    def test_weather_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="w3", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(weather=lambda: self._LINE)
+            messages, _ = assembler.assemble_with_budget(
+                "w3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Real-world sky", messages[0]["content"])
+
+    def test_weather_block_suppressed_by_grounding_replace(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="w4", role="user", content="hi", token_count=2)
+            assembler.set_grounding_line_mode("replace")
+            assembler.set_inner_life_providers(
+                weather=lambda: self._LINE,
+                grounding_line=lambda: "Right now: it's a grey, rainy morning.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "w4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Real-world sky", messages[0]["content"])
+
+
 class AnniversaryBlockProviderTests(unittest.TestCase):
     """The anniversary inner-life provider lands in the system prompt
     after the relationship block, and is dropped under ``aggressive``."""

@@ -3890,6 +3890,97 @@ class SearchSettingsTests(unittest.TestCase):
         self.assertGreaterEqual(s.timeout_seconds, 1.0)
 
 
+class WeatherSettingsTests(unittest.TestCase):
+    """H11 weather block + agent/tools flags parsing + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        *,
+        weather_extra: dict | None = None,
+        agent_extra: dict | None = None,
+        tools_extra: dict | None = None,
+        drop_weather: bool = False,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        if drop_weather:
+            cfg.pop("weather", None)
+        elif weather_extra is not None:
+            cfg["weather"] = {**cfg.get("weather", {}), **weather_extra}
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if tools_extra is not None:
+            cfg["tools"] = {**cfg.get("tools", {}), **tools_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        w = result.weather
+        self.assertEqual(w.provider, "open_meteo")
+        self.assertEqual(w.geocoder, "open_meteo")
+        self.assertEqual(w.units, "metric")
+        self.assertEqual(w.refresh_interval_minutes, 30)
+        self.assertIsNone(w.latitude)
+        self.assertIsNone(w.longitude)
+        self.assertFalse(result.agent.weather_sync_enabled)
+        self.assertTrue(result.tools.weather)
+
+    def test_defaults_when_block_missing(self) -> None:
+        result = load_settings(config_path=self._write_config(drop_weather=True))
+        self.assertEqual(result.weather.provider, "open_meteo")
+        self.assertEqual(result.weather.units, "metric")
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            weather_extra={
+                "location_name": "Tokyo",
+                "latitude": 35.69,
+                "longitude": 139.69,
+                "units": "Imperial",
+            },
+            agent_extra={"weather_sync_enabled": True},
+            tools_extra={"weather": False},
+        )
+        result = load_settings(config_path=path)
+        w = result.weather
+        self.assertEqual(w.location_name, "Tokyo")
+        self.assertAlmostEqual(w.latitude, 35.69)
+        self.assertEqual(w.units, "imperial")  # normalised lower
+        self.assertTrue(result.agent.weather_sync_enabled)
+        self.assertFalse(result.tools.weather)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(
+            weather_extra={
+                "refresh_interval_minutes": 1,
+                "latitude": 999.0,  # out of range -> None
+                "longitude": "bogus",  # non-numeric -> None
+                "units": "kelvin",  # invalid -> metric
+                "timeout_seconds": 0.1,
+            }
+        )
+        w = load_settings(config_path=path).weather
+        self.assertEqual(w.refresh_interval_minutes, 15)
+        self.assertIsNone(w.latitude)
+        self.assertIsNone(w.longitude)
+        self.assertEqual(w.units, "metric")
+        self.assertGreaterEqual(w.timeout_seconds, 1.0)
+
+
 class IntimacyPacingSettingsTests(unittest.TestCase):
     """J12: consent ceiling + learned-pacing knobs round-trip + clamps."""
 

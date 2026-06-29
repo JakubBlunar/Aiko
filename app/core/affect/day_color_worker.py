@@ -70,6 +70,26 @@ class DayColorWorker:
         self._chat_db = chat_db
         self._settings = settings
 
+    def _weather_weights(self) -> "dict[str, float] | None":
+        """H11: bias the daily roll toward the real-world weather.
+
+        Returns ``None`` (uniform roll) when weather sync is off or no
+        snapshot is cached, so the day-colour is unbiased on installs
+        without the weather feature. Best-effort — any failure falls
+        back to uniform.
+        """
+        if not bool(getattr(self._settings, "weather_sync_enabled", False)):
+            return None
+        try:
+            from app.core.world.weather_worker import load_weather_snapshot
+
+            snap = load_weather_snapshot(self._chat_db)
+            if not snap:
+                return None
+            return day_color.weather_palette_weights(snap.get("condition"))
+        except Exception:
+            return None
+
     @property
     def interval_seconds(self) -> float:
         # Hourly check; the actual roll only fires once per local day.
@@ -123,7 +143,9 @@ class DayColorWorker:
             prev = None
 
         try:
-            chosen = day_color.roll_for_today(now=now)
+            chosen = day_color.roll_for_today(
+                now=now, weights=self._weather_weights(),
+            )
         except Exception:
             log.warning("day_color worker: roll failed", exc_info=True)
             return {"skipped": True, "reason": "roll_failed"}

@@ -586,6 +586,21 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     except Exception:
         log.debug("world listener subscription failed", exc_info=True)
 
+    # H11 weather snapshot fan-out. The WeatherWorker (and an immediate
+    # post-reconfigure fetch) call ``_notify_weather(snapshot)``; we relay
+    # each snapshot to every connected window as a ``weather_updated`` frame
+    # so the persona backdrop overlay stays in sync.
+    def _on_weather(snapshot: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "weather_updated", "snapshot": dict(snapshot)})
+        except Exception:
+            log.debug("weather updated broadcast failed", exc_info=True)
+
+    try:
+        session.add_weather_listener(_on_weather)
+    except Exception:
+        log.debug("weather listener subscription failed", exc_info=True)
+
     def _on_thread_note(payload: dict[str, Any]) -> None:
         # K21: fresh-eyes note upserted. The sidebar refetches its
         # session list on this event to pick up the new title.

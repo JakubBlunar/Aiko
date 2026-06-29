@@ -385,6 +385,9 @@ export interface AssistantSettings {
    * the K31/K32 soft-physicality switches (touch / user reactions /
    * persona banner). */
   companion?: CompanionSettings;
+  /** H11 weather sync snapshot (location / units / sync toggle + the
+   * latest cached conditions). Present once the settings load. */
+  weather?: WeatherSettingsSnapshot;
   endpointing?: {
     enabled: boolean;
     use_partial_transcript: boolean;
@@ -1480,6 +1483,50 @@ export interface WorldItemPayload {
   given_by?: string;
 }
 
+// ── H11 weather sync ──────────────────────────────────────────────────
+
+/** One coarse weather condition bucket driving the persona overlay. */
+export type WeatherCondition =
+  | "clear"
+  | "cloudy"
+  | "fog"
+  | "rain"
+  | "snow"
+  | "storm";
+
+/** Normalized current-conditions snapshot (mirrors the backend
+ * ``WeatherSnapshot.to_dict``). */
+export interface WeatherSnapshot {
+  condition: WeatherCondition | string;
+  description: string;
+  temperature: number;
+  apparent_temperature: number;
+  humidity: number;
+  wind_speed: number;
+  is_day: boolean;
+  weather_code: number;
+  season: string;
+  units: string;
+  temp_unit: string;
+  location_label: string;
+  fetched_at: string;
+}
+
+/** Masked weather settings snapshot from ``GET /api/settings``. */
+export interface WeatherSettingsSnapshot {
+  sync_enabled: boolean;
+  provider?: string;
+  geocoder?: string;
+  location_name: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  units: string;
+  refresh_interval_minutes?: number;
+  has_api_key?: boolean;
+  api_key_env?: string;
+  current?: WeatherSnapshot | null;
+}
+
 export type WsServerEvent =
   | {
       type: "hello";
@@ -1594,6 +1641,17 @@ export type WsServerEvent =
   | { type: "belief_deleted"; id: number }
   | { type: "agenda_updated"; item: AgendaItem }
   | { type: "world_updated"; patch: WorldPatch }
+  | {
+      /** H11. Fresh weather snapshot from the WeatherWorker (or an
+       * immediate post-reconfigure fetch). Drives the persona backdrop. */
+      type: "weather_updated";
+      snapshot: WeatherSnapshot;
+    }
+  | {
+      /** H11. Weather settings changed (location / units / sync toggle). */
+      type: "weather_settings_changed";
+      weather: WeatherSettingsSnapshot;
+    }
   | {
       /** K21. Fresh-eyes thread note upserted; sidebar refetches its
        * session list to pick up the new title. */

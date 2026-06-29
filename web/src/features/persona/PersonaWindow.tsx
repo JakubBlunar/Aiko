@@ -9,6 +9,7 @@ import { MicButton } from "@/features/voice/MicButton";
 import { PersonaActionBanner } from "./PersonaActionBanner";
 import { PersonaInput } from "./PersonaInput";
 import { PersonaTaskBanner } from "./PersonaTaskBanner";
+import { PersonaWeatherOverlay } from "./PersonaWeatherOverlay";
 
 interface PersonaWindowProps {
   send: (cmd: WsClientCommand) => void;
@@ -117,10 +118,16 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
       </div>
 
       <div className="relative flex flex-1 min-h-0 items-center justify-center">
+        {/* H11: real-world weather backdrop, mounted behind the avatar
+            (z-0). Pointer-events-none + absent until a snapshot arrives,
+            so it never interferes with the rig or the HUD. */}
+        <PersonaWeatherOverlay />
         {avatar && avatar.loaded ? (
-          <Live2DAvatar manifest={avatar} />
+          <div className="relative z-10 flex h-full w-full items-center justify-center">
+            <Live2DAvatar manifest={avatar} />
+          </div>
         ) : (
-          <div className="text-center text-[11px] text-ink-100/40">
+          <div className="relative z-10 text-center text-[11px] text-ink-100/40">
             {connected ? "loading avatar..." : "connecting..."}
           </div>
         )}

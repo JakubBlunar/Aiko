@@ -42,6 +42,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),
             ),
+            weather_sync_enabled=bool(
+                agent_raw.get("weather_sync_enabled", False),
+            ),
             fact_checker_enabled=bool(
                 agent_raw.get("fact_checker_enabled", True),
             ),

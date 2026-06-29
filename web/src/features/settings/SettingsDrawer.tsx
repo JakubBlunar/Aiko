@@ -9,6 +9,7 @@ import type {
 } from "@/types";
 import { TabStrip } from "@/components/TabStrip";
 import { useAssistantStore } from "@/store";
+import { useWeatherStore } from "@/stores/useWeatherStore";
 import { IdentitySection } from "./IdentitySection";
 import { ChatProviderSection } from "./ChatProviderSection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
@@ -67,6 +68,9 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
 
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
+  // H11: live weather settings (updated by ``weather_settings_changed``);
+  // falls back to the GET-settings snapshot until a WS frame lands.
+  const weatherSettings = useWeatherStore((s) => s.weatherSettings);
   const [voices, setVoices] = useState<string[]>([]);
   const [deviceLists, setDeviceLists] = useState<{
     inputs: { deviceId: string; label: string; groupId: string }[];
@@ -238,6 +242,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setActivityAwarenessEnabled(
         Boolean(s.activity?.awareness_enabled),
       );
+      // H11: seed the weather store from the GET snapshot so the persona
+      // overlay + Weather section have the cached conditions on first open
+      // (before any ``weather_updated`` WS frame arrives).
+      if (s.weather) {
+        useWeatherStore.getState().setWeatherSettings(s.weather);
+      }
       setVoices(v);
     } catch (err) {
       setError(String(err));
@@ -591,6 +601,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   companion={settings.companion ?? null}
                   onPatchCompanion={(patch) => {
                     void apply({ companion: patch });
+                  }}
+                  weather={weatherSettings ?? settings.weather ?? null}
+                  onPatchWeather={(patch) => {
+                    void apply({ weather: patch });
                   }}
                 />
               ) : null}

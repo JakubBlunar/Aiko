@@ -68,6 +68,7 @@ from app.core.session import (
     ToolsRegistryMixin,
     VoiceCaptureMixin,
     VoiceMixin,
+    WeatherMixin,
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
@@ -289,6 +290,7 @@ class SessionController(
     PostTurnMixin,
     TaskOrchestrationMixin,
     SearchProviderMixin,
+    WeatherMixin,
     ChatTurnMixin,
     VoiceCaptureMixin,
     VoiceMixin,
@@ -813,6 +815,9 @@ class SessionController(
         self._world_store: WorldStore | None = None
         self._world_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._thread_note_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # H11 weather sync — listeners fan out a ``weather_updated`` WS
+        # frame; the latest snapshot is cached for cheap REST / hello reads.
+        self._weather_listeners: list[Callable[[dict[str, Any]], None]] = []
         try:
             self._world_store = WorldStore(storage_path)
             try:

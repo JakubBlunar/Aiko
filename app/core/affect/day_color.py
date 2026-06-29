@@ -147,24 +147,60 @@ def roll_for_today(
     palette: Sequence[DayColor] = PALETTE,
     *,
     rng: random.Random | None = None,
+    weights: "dict[str, float] | None" = None,
 ) -> DayColor:
-    """Pick one colour from the palette, uniform random.
+    """Pick one colour from the palette.
 
-    ``now`` is accepted for symmetry with :func:`is_stale` and so a
-    future affect-trend-weighted variant can read the current day's
-    context, but the v1 uniform roll ignores it. ``rng`` lets tests
-    seed a deterministic :class:`random.Random` so the output is
-    reproducible; default constructs a fresh ``Random()`` with system
-    entropy on each call so two consecutive rolls don't repeat.
+    Uniform random by default. When ``weights`` is supplied (a mapping
+    of palette-entry name -> relative weight, e.g. the H11 weather bias
+    table from :func:`weather_palette_weights`), the roll becomes a
+    weighted draw: entries not present in the mapping take the implicit
+    default weight ``1.0``, so a partial table still nudges rather than
+    excludes. A non-positive total (every weight <= 0) falls back to a
+    uniform draw so a bad table can never raise.
+
+    ``now`` is accepted for symmetry with :func:`is_stale`. ``rng`` lets
+    tests seed a deterministic :class:`random.Random`; default constructs
+    a fresh ``Random()`` with system entropy on each call.
 
     Raises ``ValueError`` on an empty palette -- callers must keep at
-    least one entry, otherwise the whole feature is silent and there's
-    nothing useful to return.
+    least one entry.
     """
     if not palette:
         raise ValueError("day_color.roll_for_today: empty palette")
+    entries = list(palette)
     chooser = rng if rng is not None else random.Random()
-    return chooser.choice(list(palette))
+    if weights:
+        w = [max(0.0, float(weights.get(c.name, 1.0))) for c in entries]
+        if sum(w) > 0:
+            return chooser.choices(entries, weights=w, k=1)[0]
+    return chooser.choice(entries)
+
+
+# H11: weather condition -> a small bias over the K27 palette. Conditions
+# not listed (or a missing snapshot) leave the roll uniform. The bias is
+# deliberately gentle (peaks at ~3x) so the day-colour still surprises --
+# a grey day *leans* cozy/low-key, it doesn't force it.
+_WEATHER_COLOR_WEIGHTS: dict[str, dict[str, float]] = {
+    "rain": {"cozy": 3.0, "low_key": 2.0, "pensive": 2.0, "dreamy": 1.5},
+    "storm": {"restless": 3.0, "sharp_witted": 2.0, "pensive": 1.5},
+    "snow": {"cozy": 3.0, "dreamy": 2.0, "sentimental": 2.0},
+    "fog": {"dreamy": 3.0, "pensive": 2.0, "low_key": 1.5},
+    "cloudy": {"low_key": 2.0, "pensive": 1.5, "focused": 1.5},
+    "clear": {"sharp_witted": 2.5, "focused": 2.0, "mischievous": 1.5},
+}
+
+
+def weather_palette_weights(condition: str | None) -> "dict[str, float] | None":
+    """Return the K27 palette bias for a weather condition, or ``None``.
+
+    ``None`` (no snapshot / unknown condition) means "roll uniform". The
+    returned mapping is suitable to pass as ``roll_for_today(weights=...)``.
+    """
+    if not condition:
+        return None
+    table = _WEATHER_COLOR_WEIGHTS.get(str(condition).strip().lower())
+    return dict(table) if table else None
 
 
 def is_stale(stored_iso: str | None, now: datetime | None = None) -> bool:
@@ -244,4 +280,5 @@ __all__ = [
     "is_stale",
     "render_inner_life_block",
     "roll_for_today",
+    "weather_palette_weights",
 ]

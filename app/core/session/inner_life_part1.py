@@ -236,6 +236,80 @@ class InnerLifePart1Mixin:
             log.debug("circadian block render failed", exc_info=True)
             return ""
 
+    def _render_weather_block(self) -> str:
+        """H11: terse "shared sky" cue from the real-world weather.
+
+        Reads the cached :data:`KV_WEATHER_SNAPSHOT` written by the
+        :class:`~app.core.world.weather_worker.WeatherWorker` (never the
+        network — this runs on the turn thread). Gated on
+        ``agent.weather_sync_enabled``; returns ``""`` whenever the
+        feature is off, no location is configured, or anything fails, so
+        a missing/corrupt snapshot never disturbs prompt assembly.
+
+        The line is deliberately short and ends with a "mention only when
+        it feels natural" nudge so Aiko treats it as ambient awareness,
+        not a weather report. The persona block carries the longer
+        guidance.
+        """
+        agent_settings = self._settings.agent
+        if not bool(getattr(agent_settings, "weather_sync_enabled", False)):
+            return ""
+        try:
+            from app.core.world.weather_worker import load_weather_snapshot
+
+            blob = load_weather_snapshot(self._chat_db)
+            if not blob:
+                return ""
+            condition = str(blob.get("condition") or "").strip()
+            if not condition:
+                return ""
+            desc = str(blob.get("description") or condition).strip()
+            temp = blob.get("temperature")
+            unit = str(blob.get("temp_unit") or "C")
+            season = str(blob.get("season") or "").strip()
+            label = str(blob.get("location_label") or "").strip()
+            is_day = bool(blob.get("is_day", True))
+            name = self.user_display_name
+
+            where = f"where {name} is" if name else "outside"
+            parts = [f"Real-world sky {where}: {desc}"]
+            if isinstance(temp, (int, float)):
+                parts.append(f", around {round(float(temp))}°{unit}")
+            if season:
+                tod = "daytime" if is_day else "night"
+                parts.append(f" ({season}, {tod})")
+            line = "".join(parts) + "."
+            return (
+                line
+                + " Let it colour your mood if it fits; mention it only when"
+                + " it feels natural — never force a weather remark."
+            )
+        except Exception:
+            log.debug("weather block render failed", exc_info=True)
+            return ""
+
+    def _day_color_weather_weights(self) -> "dict[str, float] | None":
+        """H11: weather bias for the K27 lazy-roll (``None`` = uniform).
+
+        Mirrors :meth:`DayColorWorker._weather_weights` so both roll
+        paths apply the same bias. Best-effort; uniform on any failure
+        or when weather sync is off / no snapshot is cached.
+        """
+        try:
+            if not bool(
+                getattr(self._settings.agent, "weather_sync_enabled", False)
+            ):
+                return None
+            from app.core.affect import day_color
+            from app.core.world.weather_worker import load_weather_snapshot
+
+            snap = load_weather_snapshot(self._chat_db)
+            if not snap:
+                return None
+            return day_color.weather_palette_weights(snap.get("condition"))
+        except Exception:
+            return None
+
     def _render_day_color_block(self) -> str:
         """K27: render today's daily personality colour cue.
 
@@ -318,7 +392,9 @@ class InnerLifePart1Mixin:
                 # next provider call hits the stable-read path.
                 self._day_color_force_reroll = False
                 try:
-                    chosen = day_color.roll_for_today(now=now)
+                    chosen = day_color.roll_for_today(
+                        now=now, weights=self._day_color_weather_weights(),
+                    )
                     chat_db.kv_set(KV_DAY_COLOR, chosen.name)
                     chat_db.kv_set(KV_DAY_COLOR_SET_AT, now.isoformat())
                     log.info(

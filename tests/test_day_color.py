@@ -116,6 +116,69 @@ class RollForTodayTests(unittest.TestCase):
         )
 
 
+# ── weighted roll + weather bias (H11) ──────────────────────────────
+
+
+class WeightedRollTests(unittest.TestCase):
+    def test_weights_skew_distribution_toward_high_weight(self) -> None:
+        rng = random.Random(99)
+        weights = {"cozy": 50.0}  # heavily favour one entry
+        counts = Counter(
+            roll_for_today(rng=rng, weights=weights).name
+            for _ in range(2000)
+        )
+        # cozy carries weight 50 against 9 entries at the implicit 1.0,
+        # so it must dominate by a wide margin.
+        self.assertGreater(counts["cozy"], counts.most_common()[-1][1] * 10)
+
+    def test_empty_weights_falls_back_to_uniform(self) -> None:
+        rng_a = random.Random(3)
+        rng_b = random.Random(3)
+        self.assertEqual(
+            roll_for_today(rng=rng_a, weights={}).name,
+            roll_for_today(rng=rng_b).name,
+        )
+
+    def test_nonpositive_total_falls_back_to_uniform(self) -> None:
+        rng_a = random.Random(11)
+        rng_b = random.Random(11)
+        # All weights <= 0 -> uniform draw, identical to no weights.
+        bad = {c.name: 0.0 for c in PALETTE}
+        self.assertEqual(
+            roll_for_today(rng=rng_a, weights=bad).name,
+            roll_for_today(rng=rng_b).name,
+        )
+
+    def test_unknown_names_in_weights_are_ignored(self) -> None:
+        rng = random.Random(5)
+        # A table referencing a name not in the palette must not raise
+        # and the present names still bias.
+        weights = {"nonexistent_colour": 100.0, "cozy": 5.0}
+        chosen = roll_for_today(rng=rng, weights=weights)
+        self.assertIn(chosen.name, {c.name for c in PALETTE})
+
+
+class WeatherPaletteWeightsTests(unittest.TestCase):
+    def test_none_for_missing_or_unknown_condition(self) -> None:
+        self.assertIsNone(day_color.weather_palette_weights(None))
+        self.assertIsNone(day_color.weather_palette_weights(""))
+        self.assertIsNone(day_color.weather_palette_weights("nonsense"))
+
+    def test_known_conditions_return_palette_names(self) -> None:
+        for condition in ("rain", "storm", "snow", "fog", "cloudy", "clear"):
+            weights = day_color.weather_palette_weights(condition)
+            self.assertIsInstance(weights, dict)
+            assert weights is not None
+            for name in weights:
+                self.assertIn(name, {c.name for c in PALETTE})
+
+    def test_case_insensitive(self) -> None:
+        self.assertEqual(
+            day_color.weather_palette_weights("RAIN"),
+            day_color.weather_palette_weights("rain"),
+        )
+
+
 # ── is_stale ─────────────────────────────────────────────────────────
 
 
@@ -242,6 +305,7 @@ class ModuleExportsTests(unittest.TestCase):
             "is_stale",
             "render_inner_life_block",
             "get_color_by_name",
+            "weather_palette_weights",
         ):
             self.assertTrue(hasattr(day_color, symbol))
 

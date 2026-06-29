@@ -126,6 +126,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "ambient_noise_block",
         "world_block",
         "activity_block",
+        # H11: real-world "shared sky" line — situational ambient, folded
+        # into the grounding line like world / activity.
+        "weather_block",
         # H19: slow multi-day hobby trend — clusters with the "what she's
         # doing" ambient blocks but survives the grounding-line fusion.
         "hobby_block",
@@ -325,6 +328,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # was captured. Desktop-only opt-in; browser users never set
         # the underlying state. Dropped in aggressive mode.
         self._activity_provider: Callable[[], str] | None = None
+        # H11: terse "shared sky" line built from the real-world weather at
+        # the user's configured location ("it's grey and rainy where you
+        # are"). Situational ambient; dropped in aggressive mode and folded
+        # into the K16 grounding line alongside circadian / world / activity.
+        self._weather_block_provider: Callable[[], str] | None = None
         # H19: standing "what she's been up to lately" hobby line. Slow
         # multi-day trend; rendered fresh but changes rarely. Dropped in
         # aggressive mode alongside world / activity.
@@ -1023,6 +1031,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         activity_block = "" if aggressive else _safe_provider(
             self._activity_provider,
             timing_sink=provider_ms, timing_name="activity",
+        )
+        # H11: real-world weather "shared sky" line. Read fresh every turn
+        # so a snapshot refreshed by the WeatherWorker between turns shows
+        # up immediately; the provider itself only reads the cached kv_meta
+        # snapshot (no network on the turn thread). Dropped in aggressive
+        # mode and folded into the grounding line like world / activity.
+        weather_block = "" if aggressive else _safe_provider(
+            self._weather_block_provider,
+            timing_sink=provider_ms, timing_name="weather",
         )
         # H19: standing hobby line. Slow multi-day trend (changes only on a
         # hobby advance/rotation); dropped in aggressive mode like world /
@@ -1908,9 +1925,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Suppression matrix (see AgentSettings.grounding_line_mode):
         #   off     -> grounding_block already "" via the provider; no
         #              granular suppression.
-        #   split   -> drop {circadian, ambient_noise, world, activity}.
+        #   split   -> drop {circadian, ambient_noise, world, activity,
+        #              weather}.
         #   replace -> drop {circadian, ambient_noise, affect, mood
-        #              hint, relationship, user_state, world, activity}.
+        #              hint, relationship, user_state, world, activity,
+        #              weather}.
         # Anniversary, profile, pajama, knowledge_gaps, belief_gaps,
         # novelty, stagnation, agenda, axes, petname, vocal_tone,
         # catchphrase, narrative, arc, day_color are NEVER suppressed —
@@ -1923,6 +1942,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             ambient_noise_block = ""
             world_block = ""
             activity_block = ""
+            weather_block = ""
             if grounding_mode == "replace":
                 affect_block = ""
                 mood_hint = ""
@@ -2182,6 +2202,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # doing) sit next to each other in the system prompt.
         if activity_block:
             system_parts.append(activity_block)
+        # H11: real-world "shared sky" line lands right after the
+        # where-Aiko-is / what-the-user-is-doing ambient cluster, so the
+        # situational awareness blocks sit together.
+        if weather_block:
+            system_parts.append(weather_block)
         if hobby_block:
             # H19: standing "what she's been up to lately" line — clusters
             # with the ambient "what she's doing" cues but is a slow

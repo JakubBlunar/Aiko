@@ -110,6 +110,9 @@ _TOOL_FAMILY: dict[str, str] = {
     "start_workflow": "tasks",
     "check_my_work": "tasks",
     "cancel_work": "tasks",
+    # H11 weather (own family so "weather"/"forecast" route here, not web)
+    "get_weather": "weather",
+    "get_forecast": "weather",
 }
 
 
@@ -133,11 +136,19 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     ]),
     "web": _compile([
         r"search", r"look (?:it |that |this )?up", r"google", r"web",
-        r"news", r"headlines?", r"weather", r"forecast", r"latest",
+        r"news", r"headlines?", r"latest",
         r"price", r"prices", r"stock", r"score", r"release date",
         r"who (?:is|was|are)", r"what (?:is|are|was) (?:the|a|an)\b",
         r"how (?:much|many) (?:is|are|does|do)\b", r"happening",
         r"look up",
+    ]),
+    # H11: weather / forecast questions route to the dedicated weather
+    # tools rather than web_search. Moved off the "web" family so a
+    # "what's the weather?" turn picks get_weather, not a slow DDG round-trip.
+    "weather": _compile([
+        r"weather", r"forecast", r"temperature", r"how (?:hot|cold|warm)",
+        r"rain", r"raining", r"snow", r"snowing", r"sunny", r"cloudy",
+        r"humid", r"humidity", r"wind", r"windy", r"degrees",
     ]),
     "recall": _compile([
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",

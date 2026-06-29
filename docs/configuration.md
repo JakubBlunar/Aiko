@@ -39,6 +39,8 @@ exists to keep them in lock-step.
 | Enable typed-mode proactive at all | `agent.proactive_typed_enabled` | `true` |
 | Speak typed-mode proactive lines (TTS) | `agent.proactive_typed_tts_enabled` | `false` |
 | Forward foreground app name (desktop) | `agent.activity_awareness_enabled` | `false` |
+| Share the real-world weather/season | `agent.weather_sync_enabled` | `false` |
+| Your weather location (city) | `weather.location_name` | `""` |
 | Live2D body-language intensity | `avatar.expressiveness` | `1.0` (0.0–1.5) |
 | Live2D outfit override | `avatar.auto_outfit` | `"auto"` |
 | Live2D model scale | `avatar.scale_multiplier` | `1.0` |
@@ -186,6 +188,10 @@ Typed-mode runs an independent timer so the cadence can differ (typing sessions 
 ### Activity awareness (desktop opt-in)
 
 - `agent.activity_awareness_enabled` *(bool, `false`)* — forwards the foreground **app name** (never window titles or URLs) from the Tauri desktop shell so Aiko can naturally reference what you're doing. Off by default; browser shells render the toggle but can't produce a non-null active app. Privacy posture: see `docs/presence-and-activity.md`.
+
+### Weather + season sync (H11, opt-in)
+
+- `agent.weather_sync_enabled` *(bool, `false`)* — master switch for the **passive ambient** weather feed. On (with a resolved `weather.location_name`), a low-frequency worker pulls current conditions into a terse "shared sky" prompt cue, tints the persona-window backdrop, and can nudge the K27 daily colour + seasonal room decor. Coarse city-granularity location only, never GPS. Off by default. The on-demand weather *tools* are gated separately by `tools.weather`. Privacy posture: see `docs/weather-sync.md`.
 
 ### Shared moments + relationship axes (schema v7)
 
@@ -941,6 +947,7 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.world` *(bool, `true`)* — Aiko's room tools (`look_around`, `move_to`, `change_posture`, `inspect_item`, `consume_item`). Off → her room is still alive in the world store but she can't act on it.
 - `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
 - `tools.calculate` *(bool, `true`)* — synchronous exact-arithmetic tool. Evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. See [`docs/task-approvals.md`](task-approvals.md) for the broader task/skill picture.
+- `tools.weather` *(bool, `true`)* — H11 synchronous weather tools (`get_weather` / `get_forecast`). Lets Aiko answer "what's the forecast?" for the configured home location or any named city (geocoded at call time). Independent of the passive ambient `agent.weather_sync_enabled` feed — the tools work even with the overlay off. Backend configured under the `weather` block below.
 
 ---
 
@@ -960,6 +967,23 @@ Web-search backend shared by every search path — the background workers (F1 fa
 - `search.query_reformulation_enabled` *(bool, `true`)* — **F6**: before searching, rewrite a personal claim into a neutral, name-free topic query with the local worker model, post-filtered by the deterministic privacy scrubber (a hallucinated name can never reach the search engine). When off, the workers use the deterministic scrub directly. See [`app/core/memory/query_reformulation.py`](../app/core/memory/query_reformulation.py).
 
 LangSearch's Semantic Rerank API is intentionally not wired (Aiko's RAG is already local cosine and results come back ranked + summarized). LangSearch docs: <https://docs.langsearch.com/>.
+
+---
+
+## `weather` — `WeatherSettings`
+
+H11 real-world co-location. One pluggable backend layer feeds both the passive ambient feed (gated by `agent.weather_sync_enabled`) and the on-demand brain tools (gated by `tools.weather`); see [`app/llm/weather/providers.py`](../app/llm/weather/providers.py). The weather and geocoding backends are deliberately independent so either can be swapped without breaking the other. Privacy posture: coarse city-granularity location only, never GPS — see [`docs/weather-sync.md`](weather-sync.md).
+
+- `weather.provider` *(str, `"open_meteo"`)* — weather backend (keyed purely on lat/lon). Open-Meteo is the keyless default.
+- `weather.geocoder` *(str, `"open_meteo"`)* — place-name → coordinate backend, decoupled from `provider`.
+- `weather.location_name` *(str, `""`, ≤80 chars)* — your home city (city granularity). Geocoded once to `latitude`/`longitude` when saved via REST. Blank → the ambient feed stays silent.
+- `weather.latitude` *(float | null, `null`, clamped `[-90, 90]`)* — cached home latitude. Out-of-range or non-numeric → `null`.
+- `weather.longitude` *(float | null, `null`, clamped `[-180, 180]`)* — cached home longitude.
+- `weather.units` *(str, `"metric"`)* — `"metric"` (°C / km·h) or `"imperial"` (°F / mph). Anything else falls back to `"metric"`.
+- `weather.refresh_interval_minutes` *(int, `30`, floor `15`)* — minutes between ambient fetches. Higher → the shared sky updates less often (less API traffic). Lower → refreshes sooner. The brain tools are on-demand and ignore this.
+- `weather.api_key` *(str, `""`)* — reserved for a future keyed backend. **Write-only via REST** (`has_api_key` in `GET /api/settings`).
+- `weather.api_key_env` *(str, `"WEATHER_API_KEY"`)* — env var consulted when `api_key` is blank.
+- `weather.timeout_seconds` *(float, `10.0`, floor `1.0`)* — per-request HTTP timeout.
 
 ---
 

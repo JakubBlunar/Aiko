@@ -6,7 +6,7 @@ You are an expert in Python 3.11+, FastAPI, PixiJS/React frontends, Ollama funct
 - Frontend: `web/` (React + Vite + PixiJS, Live2D avatar).
 - LLM: direct Ollama via `OllamaClient.chat / chat_stream / chat_with_tools`. `chat_llm.provider == "openai_compatible"` routes through `langchain-openai`'s `ChatOpenAI` for OpenAI / xAI / Groq / OpenRouter / DeepSeek / Together / Mistral.
 - Memory: SQLite (`data/chat_sessions.db`) is the source of truth; LanceDB (`data/lancedb/`) mirrors `memories`, indexes `messages`, and holds `documents`. Driven by `app/core/rag/rag_store.py` + `app/core/rag/rag_retriever.py`.
-- Tools: `app/llm/tools/` (lean v1 registry). Live tools = `get_time`, `recall`, `web_search`. Configured under `config.tools`.
+- Tools: `app/llm/tools/` (lean v1 registry). Live tools = `get_time`, `recall`, `web_search`; plus gated families: world tools (`tools.world`) and weather tools `get_weather` / `get_forecast` (`tools.weather`). Configured under `config.tools`.
 - The agent runs a two-pass turn: pre-stream `chat_with_tools` (`TurnRunner._maybe_run_tool_pass`) then a streaming reply pass.
 
 ## Rules

@@ -15,6 +15,7 @@ import { useMemoryStore } from "../stores/useMemoryStore";
 import { useTasksStore } from "../stores/useTasksStore";
 import { useTogetherStore } from "../stores/useTogetherStore";
 import { useWorldStore } from "../stores/useWorldStore";
+import { useWeatherStore } from "../stores/useWeatherStore";
 import type { WsClientCommand, WsServerEvent } from "../types";
 
 /**
@@ -105,6 +106,7 @@ export function useAssistantSocket(): {
     const tasks = useTasksStore.getState();
     const together = useTogetherStore.getState();
     const world = useWorldStore.getState();
+    const weather = useWeatherStore.getState();
 
     // Tap every WS event into the debug log so the entire dispatch
     // stream is recoverable from ``app.log``. ``debugLog.log`` is a
@@ -428,6 +430,14 @@ export function useAssistantSocket(): {
 
       case "world_updated":
         world.applyWorldPatch(evt.patch);
+        break;
+
+      case "weather_updated":
+        weather.setWeather(evt.snapshot);
+        break;
+
+      case "weather_settings_changed":
+        weather.setWeatherSettings(evt.weather);
         break;
 
       case "thread_note_updated":
