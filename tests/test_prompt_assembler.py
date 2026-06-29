@@ -2116,6 +2116,83 @@ class DayColorProviderSlotTests(unittest.TestCase):
             )
 
 
+class IntimacyPacingProviderSlotTests(unittest.TestCase):
+    """J12 intimacy-pacing provider lands in the system prompt, survives
+    ``aggressive=True`` (a contained boundary matters most on long
+    replies), is NOT suppressed under the K16 grounding-line modes
+    (it's a consent/pacing cue, not ambient colour), and swallows
+    provider exceptions so a bad provider can never strand the turn.
+
+    The provider plumbing itself is exercised through the controller;
+    this class only verifies the slot wiring in the assembler.
+    """
+
+    _CUE = (
+        "Closeness dial -- reserved: keep your warmth gentle and "
+        "contained right now."
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ip1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                intimacy_pacing=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ip1", "what's up?",
+                context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_block_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ip2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                intimacy_pacing=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ip2", "x",
+                context_window=4096, response_budget=256, aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ip3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(intimacy_pacing=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ip3", "anything",
+                context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Closeness dial", messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ip4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("intimacy_pacing exploded")
+
+            assembler.set_inner_life_providers(intimacy_pacing=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "ip4", "x",
+                context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Closeness dial", messages[0]["content"])
+
+
 class VulnerabilityBudgetProviderSlotTests(unittest.TestCase):
     """K15 vulnerability-budget provider lands in the system prompt
     right after the K30 self-noticing cluster (same "patterns I'm in"

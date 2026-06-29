@@ -153,6 +153,7 @@ class PromptAssemblerHelpersMixin:
         follow_up: Callable[[], str] | None = None,
         upcoming_horizon: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
+        intimacy_pacing: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
@@ -290,6 +291,8 @@ class PromptAssemblerHelpersMixin:
             self._upcoming_horizon_provider = upcoming_horizon
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
+        if intimacy_pacing is not None:
+            self._intimacy_pacing_provider = intimacy_pacing
         if novelty is not None:
             self._novelty_provider = novelty
         if stagnation is not None:

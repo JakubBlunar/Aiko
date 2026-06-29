@@ -1313,6 +1313,33 @@ class AgentSettings:
     # Idle-worker decay cadence (seconds). Default 6h.
     affection_style_decay_interval_seconds: int = 21600
 
+    # ── J12: intimacy pacing & boundary calibration ───────────────────
+    # The consent dial. A float in [0, 1] (reserved <-> warm <->
+    # affectionate) that HARD-CAPS forwardness regardless of stage or
+    # the learned signal. The cap is always on (it's a boundary
+    # control, not a behaviour toggle): it scales the K15 disclosure
+    # budget, gates the J9 reciprocal-vulnerability beat, and renders a
+    # register cue. Default 0.7 ("warm") is behaviour-neutral — the cap
+    # only bites for an intimate-stage bond.
+    intimacy_ceiling: float = 0.7
+    # Master switch for the LEARNED half (the user-pace EMA + the
+    # "follow him, don't lead" cue). Off leaves the consent dial fully
+    # functional; only the learned-pacing behaviour stops.
+    intimacy_pacing_enabled: bool = True
+    # EMA rate for blending a new per-message / per-reaction forwardness
+    # score into the stored user_pace. Higher than the affection-style
+    # rate because pacing evidence is sparser (only affectionate /
+    # cooling messages move it).
+    intimacy_pacing_learning_rate: float = 0.15
+    # Half-life (days) of the slow decay of user_pace back toward the
+    # neutral 0.5 midpoint. ~14 days: a forward (or cold) stretch fades
+    # over a couple of weeks of neutral conversation.
+    intimacy_pacing_decay_half_life_days: float = 14.0
+    # How hard Aiko follows the user's own pace within the ceiling
+    # (0 = ignore the learned signal entirely, 1 = match it fully). The
+    # "slightly follow, never lead by much" knob.
+    intimacy_pacing_follow_strength: float = 0.5
+
     # ── K31 + K32: soft physicality (touch + reactions) ───────────────
     # Master switch for the K31 ``[[touch:KIND]]`` tag family. When
     # off, the streaming parser silently drops touch tags before they

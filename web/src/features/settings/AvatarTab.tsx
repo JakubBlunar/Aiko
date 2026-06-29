@@ -576,6 +576,58 @@ export function AvatarTab({
               <option value="tsundere_full">Full</option>
             </select>
           </label>
+          {/* J12 intimacy pacing — the consent ceiling. A plain
+           * boundary control that hard-caps how forward Aiko gets,
+           * regardless of how close the relationship has grown. The
+           * default (0.7, "warm") barely caps anything; lower it to
+           * keep her warm-but-contained. */}
+          <div className="mt-3 flex flex-col gap-1 text-xs text-ink-100/70">
+            <label className="flex items-center justify-between gap-2">
+              <span>
+                Closeness ceiling
+                <span className="ml-1 text-[10px] text-ink-100/40">
+                  caps how forward Aiko gets, regardless of stage
+                </span>
+              </span>
+              <span className="tabular-nums text-ink-100/50">
+                {companion.intimacy_ceiling < 0.4
+                  ? "Reserved"
+                  : companion.intimacy_ceiling >= 0.75
+                  ? "Affectionate"
+                  : "Warm"}
+              </span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={companion.intimacy_ceiling}
+              onChange={(e) =>
+                onPatchCompanion({
+                  intimacy_ceiling: Math.max(
+                    0,
+                    Math.min(1, Number(e.target.value) || 0),
+                  ),
+                })
+              }
+              className="accent-ink-400"
+            />
+            <div className="flex justify-between text-[10px] text-ink-100/40">
+              <span>Reserved</span>
+              <span>Warm</span>
+              <span>Affectionate</span>
+            </div>
+          </div>
+          <Toggle
+            checked={companion.intimacy_pacing_enabled}
+            inputClassName="accent-ink-400"
+            onChange={(checked) =>
+              onPatchCompanion({ intimacy_pacing_enabled: checked })
+            }
+          >
+            Let Aiko follow your pace on closeness
+          </Toggle>
         </Section>
       ) : null}
     </>

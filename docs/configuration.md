@@ -43,6 +43,7 @@ exists to keep them in lock-step.
 | Live2D outfit override | `avatar.auto_outfit` | `"auto"` |
 | Live2D model scale | `avatar.scale_multiplier` | `1.0` |
 | Switch the unified grounding line on/off | `agent.grounding_line_mode` | `"off"` (`"replace"` / `"split"` / `"off"`) |
+| Closeness ceiling (consent dial: reserved ↔ affectionate) | `agent.intimacy_ceiling` | `0.7` (0.0–1.0) |
 | Master switch for Aiko's long-term goals | `agent.goals_enabled` | `true` |
 | Hedge old / decayed memories with "(faded)" suffix | `memory.fade_hedge_enabled` | `true` |
 | Reinforce "Aiko remembered" beats (callback detector) | `agent.callback_detector_enabled` | `true` |
@@ -567,6 +568,18 @@ Optional fusion of seven "ambient" inner-life signals (circadian, world, activit
   - `"split"` — fused line replaces situational signals (circadian, world, activity, ambient_noise) but **keeps** trend-phrase blocks (affect, mood_hint, relationship, user_state) standalone.
 
   Verification: `provider_ms.grounding_line` in MCP `get_last_response_detail` is non-zero in `replace`/`split`, missing in `off`. Invalid values clamp to `"off"` with a debug log.
+
+### J12 — intimacy pacing & boundary calibration
+
+Two halves that keep Aiko's forwardness calibrated to the user. **(a)** a learned per-user *pacing signal* — a kv_meta EMA of how forward the user himself is (pet names for Aiko, warm / affectionate messages, affectionate reactions) so Aiko *slightly follows, never leads by much*. **(b)** a plain consent *ceiling* that hard-caps forwardness regardless of relationship stage. The ceiling is the always-on boundary control; only the learned half is gated by the master switch. At the default ceiling (`0.7`, "warm") J12 is behaviour-neutral — the cap only bites for an intimate-stage bond. The cap surfaces three ways: a register cue in the system prompt, a scale factor on the K15 disclosure budget, and a gate on the J9 reciprocal-vulnerability beat.
+
+- `agent.intimacy_ceiling` *(float, `0.7`, clamped `[0, 1]`)* — the consent dial (`reserved` < 0.4 ≤ `warm` < 0.75 ≤ `affectionate`). Lower → Aiko stays warm-but-contained, shares less, and lets the user set the pace on closeness. Higher → removes the cap (stage + learned signal decide where she lands). Always on, independent of the master switch below.
+- `agent.intimacy_pacing_enabled` *(bool, `true`)* — master switch for the **learned** half (user-pace EMA + the "follow him, don't lead" cue). Off leaves the consent dial fully functional; only the learned-pacing behaviour stops.
+- `agent.intimacy_pacing_learning_rate` *(float, `0.15`, clamped `[0, 1]`)* — EMA blend rate for a new per-message / per-reaction forwardness score. Higher → the estimate tracks recent messages faster; lower → smoother, slower to move.
+- `agent.intimacy_pacing_decay_half_life_days` *(float, `14.0`, min `0`)* — half-life of the slow decay of the estimate back toward the neutral `0.5` midpoint. Higher → a forward / cold stretch lingers longer; lower → reverts to neutral faster.
+- `agent.intimacy_pacing_follow_strength` *(float, `0.5`, clamped `[0, 1]`)* — how hard Aiko follows the user's own pace within the ceiling. `0` → ignore the learned signal; `1` → match it fully. The "slightly follow, never lead by much" knob.
+
+Verification: MCP `get_intimacy_pacing_state()` dumps the ceiling, band, live user-pace, the per-stage effective forwardness, the K15 disclosure factor, and the cue that would render now; `set_intimacy_ceiling(value)` / `set_user_pace(value)` push known values for end-to-end repro. Tests: `tests/test_intimacy_pacing.py`, `IntimacyPacingProviderSlotTests` in `tests/test_prompt_assembler.py`, `IntimacyPacingSettingsTests` in `tests/test_settings.py`.
 
 ### K23 — subtle misattunement detection
 

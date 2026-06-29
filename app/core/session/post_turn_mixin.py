@@ -1360,6 +1360,59 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("affection-style hook raised", exc_info=True)
 
+        # J12 — intimacy pacing (learned half). Score how forward THIS
+        # user message was and blend it into the user-pace EMA, after
+        # decaying the stored estimate back toward neutral by elapsed
+        # wall-clock. Cheap + pure; a neutral message (no pacing signal)
+        # leaves the estimate to drift on decay alone. Gated by the
+        # learned-half master switch (the consent ceiling works
+        # regardless).
+        if agent_settings is not None and bool(
+            getattr(agent_settings, "intimacy_pacing_enabled", True)
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import intimacy_pacing as _ip
+
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    now = datetime.now(timezone.utc)
+                    state = _ip.deserialize(
+                        chat_db.kv_get(_ip.KV_INTIMACY_PACING)
+                    )
+                    decayed = _ip.decay_pace(
+                        state, now,
+                        half_life_days=float(
+                            getattr(
+                                agent_settings,
+                                "intimacy_pacing_decay_half_life_days",
+                                14.0,
+                            )
+                        ),
+                    )
+                    score = _ip.score_user_message(user_text)
+                    if score is not None:
+                        decayed = _ip.update_pace(
+                            decayed, score, now,
+                            learning_rate=float(
+                                getattr(
+                                    agent_settings,
+                                    "intimacy_pacing_learning_rate",
+                                    0.15,
+                                )
+                            ),
+                        )
+                        log.info(
+                            "intimacy-pacing message: score=%.2f pace=%.3f",
+                            score, decayed.user_pace,
+                        )
+                    chat_db.kv_set(
+                        _ip.KV_INTIMACY_PACING, _ip.serialize(decayed),
+                    )
+            except Exception:
+                log.debug("intimacy-pacing hook raised", exc_info=True)
+
         # Snapshot the per-turn gift / promise-kept flags ONCE, before any
         # consumer clears them. Both the relationship-axes updater and the
         # moment-detector scheduler read these signals; previously the axes

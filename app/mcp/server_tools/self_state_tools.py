@@ -1266,4 +1266,157 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_affection_style_decay raised: {exc}"
         return json.dumps(result or {}, indent=2, default=str)
 
+    @mcp.tool()
+    def get_intimacy_pacing_state() -> str:
+        """J12 — dump the intimacy pacing / boundary-calibration state.
+
+        Returns the consent ceiling (float + band), the learned-pacing
+        master switch, the live user-pace EMA, the per-stage effective
+        forwardness Aiko would land at after following the user and
+        capping at the ceiling, the K15 disclosure scale factor, the
+        cue that would render right now, and the settings snapshot.
+
+        Repro loop: ``set_intimacy_ceiling(0.2)`` (reserved) then
+        ``send_message`` and confirm the "Closeness dial -- reserved"
+        line lands in ``get_last_response_detail.system_prompt`` and the
+        J9 reciprocal-vulnerability beat is suppressed. Or
+        ``set_user_pace(0.2)`` then check the "follow his pace" cue.
+        """
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+            from app.core.relationship.relationship_axes import stage_rank
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            stored = None
+            if chat_db is not None:
+                try:
+                    stored = chat_db.kv_get(_ip.KV_INTIMACY_PACING)
+                except Exception:
+                    stored = None
+            state = _ip.deserialize(stored)
+            ceiling = _ip.clamp01(float(getattr(agent, "intimacy_ceiling", 0.7)))
+            follow = float(
+                getattr(agent, "intimacy_pacing_follow_strength", 0.5)
+            )
+            pacing_enabled = bool(
+                getattr(agent, "intimacy_pacing_enabled", True)
+            )
+            try:
+                cur_rank = stage_rank(session.relationship_stage_now())
+            except Exception:
+                cur_rank = 0
+            stages = ("new", "familiar", "close", "intimate")
+            return json.dumps(
+                {
+                    "intimacy_ceiling": round(ceiling, 4),
+                    "ceiling_band": _ip.ceiling_band(ceiling),
+                    "pacing_enabled": pacing_enabled,
+                    "user_pace": round(state.user_pace, 4),
+                    "updated_at": state.updated_at,
+                    "current_stage_rank": cur_rank,
+                    "disclosure_factor": round(
+                        _ip.disclosure_factor(ceiling), 4
+                    ),
+                    "effective_forwardness_by_stage": {
+                        stages[r]: round(
+                            _ip.effective_forwardness(
+                                r, state.user_pace, ceiling,
+                                follow_strength=follow,
+                            ),
+                            4,
+                        )
+                        for r in range(4)
+                    },
+                    "cue_preview": _ip.render_pacing_block(
+                        ceiling=ceiling,
+                        user_pace=state.user_pace,
+                        stage_rank=cur_rank,
+                        follow_strength=follow,
+                        pacing_enabled=pacing_enabled,
+                        user_display_name=session.user_display_name,
+                    ),
+                    "settings": {
+                        "learning_rate": float(
+                            getattr(
+                                agent, "intimacy_pacing_learning_rate", 0.15,
+                            )
+                        ),
+                        "decay_half_life_days": float(
+                            getattr(
+                                agent,
+                                "intimacy_pacing_decay_half_life_days",
+                                14.0,
+                            )
+                        ),
+                        "follow_strength": follow,
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_intimacy_pacing_state raised: {exc}"
+
+    @mcp.tool()
+    def set_intimacy_ceiling(value: float) -> str:
+        """J12 — set the consent ceiling in-memory (not persisted to disk).
+
+        ``value`` is clamped to ``[0, 1]``. Affects the running settings
+        object only; use the Settings drawer / REST for a durable change.
+        Returns the new ceiling + band.
+        """
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+
+            agent = session._settings.agent
+            v = _ip.clamp01(float(value))
+            agent.intimacy_ceiling = v
+            return json.dumps(
+                {"intimacy_ceiling": round(v, 4), "band": _ip.ceiling_band(v)}
+            )
+        except Exception as exc:
+            return f"set_intimacy_ceiling raised: {exc}"
+
+    @mcp.tool()
+    def set_user_pace(value: float) -> str:
+        """J12 — force the learned user-pace EMA to a known value.
+
+        ``value`` is clamped to ``[0, 1]`` (0 = cold/distancing, 0.5 =
+        neutral, 1 = very forward). Writes the kv_meta row directly so
+        the next turn's cue + caps read it. Returns the new pace.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import intimacy_pacing as _ip
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            v = _ip.clamp01(float(value))
+            state = _ip.IntimacyPacingState(
+                user_pace=v,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            chat_db.kv_set(_ip.KV_INTIMACY_PACING, _ip.serialize(state))
+            return json.dumps({"user_pace": round(v, 4)})
+        except Exception as exc:
+            return f"set_user_pace raised: {exc}"
+
+    @mcp.tool()
+    def reset_intimacy_pacing() -> str:
+        """J12 — wipe the learned user-pace back to neutral (0.5)."""
+        try:
+            from app.core.relationship import intimacy_pacing as _ip
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            chat_db.kv_set(
+                _ip.KV_INTIMACY_PACING, _ip.serialize(_ip.neutral_state()),
+            )
+            return json.dumps({"reset": True, "user_pace": _ip.NEUTRAL})
+        except Exception as exc:
+            return f"reset_intimacy_pacing raised: {exc}"
+
 

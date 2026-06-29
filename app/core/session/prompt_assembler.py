@@ -137,6 +137,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "mood_hint",
         "mood_inertia_block",
         "mood_shell_block",
+        "intimacy_pacing_block",
         "emotion_episode_block",
         "style_signal_block",
         "user_state_block",
@@ -502,6 +503,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # of the K16 ``replace`` suppression set because it folds
         # affect colour into a single tonal line.
         self._mood_shell_provider: Callable[[], str] | None = None
+        # J12 personality backlog: intimacy pacing / boundary-calibration
+        # cue. A standing register directive (closeness ceiling consent
+        # cap + "follow his pace" nudge). Built every turn (the stored
+        # user-pace EMA mutates after each reply); lands in T5 next to
+        # the mood-shell tilt. NOT dropped under ``aggressive`` and NOT
+        # in the K16 grounding-line suppression matrix — it's a
+        # consent/pacing cue, not an ambient grounding block.
+        self._intimacy_pacing_provider: Callable[[], str] | None = None
         # K1 personality backlog: "Aiko's quiet long-term goals" inner-life
         # bullet listing up to ``goals_max_rendered`` active goals plus the
         # most recent reflection note when one fits. Cheap mirror walk via
@@ -1538,6 +1547,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("mood shell provider raised", exc_info=True)
                     mood_shell_block = ""
 
+        # J12: closeness-ceiling consent cue + "follow his pace" nudge.
+        # A standing register directive; built every turn because the
+        # stored user-pace EMA mutates after each reply.
+        intimacy_pacing_block = ""
+        if getattr(self, "_intimacy_pacing_provider", None) is not None:
+            with _timed_phase(provider_ms, "intimacy_pacing"):
+                try:
+                    intimacy_pacing_block = (
+                        self._intimacy_pacing_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "intimacy_pacing provider raised", exc_info=True,
+                    )
+                    intimacy_pacing_block = ""
+
         # K57: directed emotion episode. Takes ``user_text`` for the
         # acknowledgment pass; NOT gated on aggressive mode (a live
         # episode is a register directive — exactly what a tight
@@ -2196,6 +2221,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # and dropped in K16 ``replace`` mode (the unified
             # grounding line subsumes it).
             system_parts.append(mood_shell_block)
+        if intimacy_pacing_block:
+            # J12: closeness-ceiling consent cap + "follow his pace"
+            # nudge. Sits next to the mood-shell tilt as a standing
+            # register directive. NOT dropped under aggressive and NOT
+            # in the K16 suppression matrix — a contained boundary is a
+            # consent cue, not ambient colour.
+            system_parts.append(intimacy_pacing_block)
         if emotion_episode_block:
             # K57: the strongest directed-emotion episode (or its
             # one-shot thaw). Sits right after the mood-shell line —
