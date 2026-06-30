@@ -194,6 +194,9 @@ class DetectorsInitMixin:
         # ``_growth_witness_force_next`` is the MCP debug bypass.
         self._growth_witness_force_next: bool = False
         self._growth_witness_worker: Any = None
+        # K71 self-callback — watermark-gated cue-producer (her continuity).
+        self._self_callback_force_next: bool = False
+        self._self_callback_worker: Any = None
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
         # ``self_noticing`` inner-life block. Agreement-streak is

@@ -825,6 +825,23 @@ class MemorySettings:
     growth_witness_min_valence_delta: float = 0.25
     growth_witness_min_axis_delta: float = 0.30
     growth_witness_journal_max: int = 4
+    # K71 self-callback. ``min_age_days`` is how old one of Aiko's own
+    # self / reflection memories must be before it reads as "a while back"
+    # (and stays distinct from K28's recent 24-72h reflections);
+    # ``journal_max`` bounds the ``aiko.self_callback`` cue ring.
+    self_callback_min_age_days: int = 14
+    self_callback_journal_max: int = 4
+    # K76 flashbulb encoding. At memory-write time the live AffectState
+    # arousal + any active K57 episode intensity fold into a [0,1] charge;
+    # ``flashbulb_max_boost`` is the most salience a fully-charged moment
+    # adds, ``arousal_weight`` / ``episode_weight`` weight the two inputs,
+    # ``arousal_neutral`` is the resting arousal below which nothing
+    # counts. Off → memory salience is encoding-affect-blind (legacy).
+    flashbulb_enabled: bool = True
+    flashbulb_max_boost: float = 0.35
+    flashbulb_arousal_weight: float = 0.6
+    flashbulb_episode_weight: float = 0.7
+    flashbulb_arousal_neutral: float = 0.4
     # K43 PromiseFollowthroughWorker cadence + pacing. The worker runs
     # during quiet windows (default every 30 min). ``min_age_hours`` is
     # how long an assistant promise must sit open before the cue arms
@@ -2146,6 +2163,36 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             growth_witness_journal_max=max(
                 1,
                 int(memory_raw.get("growth_witness_journal_max", 4)),
+            ),
+            self_callback_min_age_days=max(
+                1,
+                int(memory_raw.get("self_callback_min_age_days", 14)),
+            ),
+            self_callback_journal_max=max(
+                1,
+                int(memory_raw.get("self_callback_journal_max", 4)),
+            ),
+            flashbulb_enabled=bool(
+                memory_raw.get("flashbulb_enabled", True),
+            ),
+            flashbulb_max_boost=max(
+                0.0,
+                min(1.0, float(memory_raw.get("flashbulb_max_boost", 0.35))),
+            ),
+            flashbulb_arousal_weight=max(
+                0.0,
+                float(memory_raw.get("flashbulb_arousal_weight", 0.6)),
+            ),
+            flashbulb_episode_weight=max(
+                0.0,
+                float(memory_raw.get("flashbulb_episode_weight", 0.7)),
+            ),
+            flashbulb_arousal_neutral=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("flashbulb_arousal_neutral", 0.4)),
+                ),
             ),
             promise_followthrough_interval_seconds=max(
                 30,

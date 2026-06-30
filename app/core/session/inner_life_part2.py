@@ -1397,6 +1397,80 @@ class InnerLifePart2Mixin:
         log.info("growth-witness fire: at=%s kind=%s", at, kind)
         return line
 
+    def _render_self_callback_block(self) -> str:
+        """K71: surface one rare "close the loop on my own past" cue.
+
+        Consumer side of the :class:`SelfCallbackWorker` producer. The
+        worker drafts an aged feeling / intention of Aiko's own into the
+        ``aiko.self_callback`` kv ring; this provider folds the newest
+        unseen one into the prompt as a private cue so Aiko revisits it in
+        her own words (the resolution read -- eased? followed through? --
+        is the model's, using her current affect in context). NEVER
+        spoken verbatim.
+
+        Watermark-only (``self_callback.last_surfaced_at``), independent
+        of the gap-return cue family. MCP debug:
+        ``force_self_callback_surface`` arms ``_self_callback_force_next``.
+        """
+        if not bool(
+            getattr(self._settings.agent, "self_callback_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(getattr(self, "_self_callback_force_next", False))
+        if force_next:
+            self._self_callback_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.affect import self_callback as _sc
+        except Exception:
+            log.debug("self_callback import failed", exc_info=True)
+            return ""
+
+        ring = _sc.load_callbacks(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        kind = str(newest.get("kind") or "").strip()
+        excerpt = str(newest.get("excerpt") or "").strip()
+        if not kind or not excerpt:
+            return ""
+
+        watermark_key = "self_callback.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                return ""
+
+        line = _sc.render_inner_life_block(
+            kind,
+            excerpt,
+            int(newest.get("age_days") or 0),
+            user_display_name=self.user_display_name,
+        )
+        if not line:
+            return ""
+
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug("self_callback watermark write failed", exc_info=True)
+
+        log.info(
+            "self-callback fire: at=%s kind=%s id=%s",
+            at, kind, newest.get("memory_id"),
+        )
+        return line
+
     def _render_upcoming_horizon_block(self) -> str:
         """K-time3: surface a "coming up" heads-up with pre-resolved times.
 

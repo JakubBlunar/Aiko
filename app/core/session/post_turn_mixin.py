@@ -1445,6 +1445,79 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("affection-style hook raised", exc_info=True)
 
+        # K74 — humor-style calibration. Same two-pass shape as J11 but
+        # over humour *register* (pun / deadpan / absurdist /
+        # self-deprecating / playful-roast). Sparse by construction:
+        # classify_turn_humor returns [] on a non-funny turn, so most
+        # turns neither attribute nor tag. Never rendered as a standalone
+        # block — the learned top register only flavours the existing K48
+        # tease cue.
+        if agent_settings is not None and bool(
+            getattr(agent_settings, "humor_style_enabled", True)
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import humor_style as _hs
+
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    now = datetime.now(timezone.utc)
+                    state = _hs.deserialize(chat_db.kv_get(_hs.KV_HUMOR_STYLE))
+                    changed = False
+
+                    prev_kinds = getattr(self, "_prev_humor_kinds", None)
+                    tracker = getattr(self, "_engagement_tracker", None)
+                    last = tracker.last_result if tracker is not None else None
+                    if prev_kinds and last is not None and last.warmed:
+                        signal = _hs.engagement_to_signal(
+                            last.label, last.length_z,
+                        )
+                        if signal != 0.0:
+                            state = _hs.apply_observation(
+                                state,
+                                prev_kinds,
+                                signal,
+                                now,
+                                learning_rate=float(
+                                    getattr(
+                                        agent_settings,
+                                        "humor_style_learning_rate",
+                                        0.04,
+                                    )
+                                ),
+                                floor=float(
+                                    getattr(
+                                        agent_settings,
+                                        "humor_style_floor",
+                                        0.05,
+                                    )
+                                ),
+                            )
+                            changed = True
+                            log.info(
+                                "humor-style attribute: kinds=%s label=%s "
+                                "signal=%+.3f",
+                                prev_kinds, last.label, signal,
+                            )
+
+                    kinds = _hs.classify_turn_humor(
+                        raw_assistant_text, reaction,
+                    )
+                    self._prev_humor_kinds = kinds
+
+                    if changed:
+                        try:
+                            chat_db.kv_set(
+                                _hs.KV_HUMOR_STYLE, _hs.serialize(state),
+                            )
+                        except Exception:
+                            log.debug(
+                                "humor-style kv_set failed", exc_info=True,
+                            )
+            except Exception:
+                log.debug("humor-style hook raised", exc_info=True)
+
         # J12 — intimacy pacing (learned half). Score how forward THIS
         # user message was and blend it into the user-pace EMA, after
         # decaying the stored estimate back toward neutral by elapsed

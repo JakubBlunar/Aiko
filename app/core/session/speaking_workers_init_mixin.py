@@ -672,6 +672,7 @@ class SpeakingWorkersInitMixin:
             forward_curiosity=self._render_forward_curiosity_block,
             follow_up=self._render_follow_up_block,
             growth_witness=self._render_growth_witness_block,
+            self_callback=self._render_self_callback_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
             mood_shell=self._render_mood_shell_block,
             intimacy_pacing=self._render_intimacy_pacing_block,
@@ -897,6 +898,28 @@ class SpeakingWorkersInitMixin:
                     except Exception:
                         log.warning(
                             "affection_style worker registration failed",
+                            exc_info=True,
+                        )
+                # K74 — humor-style decay worker (sibling of J11's). The
+                # only path that moves the humour-register weights back
+                # toward uniform.
+                if bool(
+                    getattr(settings.agent, "humor_style_enabled", True)
+                ):
+                    try:
+                        from app.core.relationship.humor_style_worker import (
+                            HumorStyleDecayWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            HumorStyleDecayWorker(
+                                chat_db=self._chat_db,
+                                settings=settings.agent,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "humor_style worker registration failed",
                             exc_info=True,
                         )
                 # F1 — background fact-checker. Registered last because

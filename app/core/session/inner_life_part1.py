@@ -1269,12 +1269,44 @@ class InnerLifePart1Mixin:
         forced = getattr(self, "_tease_rhythm_force", None)
         if forced:
             self._tease_rhythm_force = None
-            return render_cue(forced, user_name=self.user_display_name)
+            return render_cue(
+                forced, user_name=self.user_display_name,
+            ) + self._humor_register_hint()
 
         cue = getattr(self, "_pending_tease_cue", None)
         self._pending_tease_cue = None
         if not cue:
             return ""
-        return render_cue(cue, user_name=self.user_display_name)
+        return render_cue(
+            cue, user_name=self.user_display_name,
+        ) + self._humor_register_hint()
+
+    def _humor_register_hint(self) -> str:
+        """K74: short learned-register suffix that rides the tease cue.
+
+        Returns the ``humor_style.register_hint`` suffix (or "") so the
+        learned top humour register only ever surfaces when humour is
+        already in play (a K48 tease cue fired). Never a standalone block.
+        Best-effort — any failure yields no suffix.
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "humor_style_enabled", True)):
+            return ""
+        try:
+            from app.core.relationship import humor_style as _hs
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+            state = _hs.deserialize(chat_db.kv_get(_hs.KV_HUMOR_STYLE))
+            return _hs.register_hint(
+                state,
+                self.user_display_name,
+                min_rel=float(
+                    getattr(agent, "humor_style_hint_min_rel", 1.25)
+                ),
+            )
+        except Exception:
+            return ""
 
 

@@ -1119,6 +1119,39 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     )
                 ),
             ),
+            humor_style_enabled=bool(
+                agent_raw.get("humor_style_enabled", True),
+            ),
+            humor_style_learning_rate=max(
+                0.0,
+                float(agent_raw.get("humor_style_learning_rate", 0.04)),
+            ),
+            humor_style_reaction_weight=max(
+                0.0,
+                float(agent_raw.get("humor_style_reaction_weight", 0.06)),
+            ),
+            humor_style_floor=max(
+                0.0,
+                min(0.2, float(agent_raw.get("humor_style_floor", 0.05))),
+            ),
+            humor_style_decay_half_life_days=max(
+                0.0,
+                float(
+                    agent_raw.get("humor_style_decay_half_life_days", 30.0)
+                ),
+            ),
+            humor_style_hint_min_rel=max(
+                1.0,
+                float(agent_raw.get("humor_style_hint_min_rel", 1.25)),
+            ),
+            humor_style_decay_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "humor_style_decay_interval_seconds", 21600
+                    )
+                ),
+            ),
             intimacy_ceiling=max(
                 0.0,
                 min(1.0, float(agent_raw.get("intimacy_ceiling", 0.7))),
@@ -1500,6 +1533,24 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             growth_witness_cooldown_days=max(
                 0.0,
                 float(agent_raw.get("growth_witness_cooldown_days", 14.0)),
+            ),
+            self_callback_enabled=bool(
+                agent_raw.get("self_callback_enabled", True),
+            ),
+            self_callback_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "self_callback_check_interval_seconds", 21600
+                    )
+                ),
+            ),
+            self_callback_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("self_callback_cooldown_days", 10.0)),
+            ),
+            self_callback_llm_enabled=bool(
+                agent_raw.get("self_callback_llm_enabled", True),
             ),
             promise_followthrough_enabled=bool(
                 agent_raw.get("promise_followthrough_enabled", True),

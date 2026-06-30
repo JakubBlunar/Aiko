@@ -1253,6 +1253,128 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_growth_witness_surface raised: {exc}"
 
     @mcp.tool()
+    def get_self_callback_state() -> str:
+        """K71 — dump the self-callback worker + surfacing state.
+
+        The SelfCallbackWorker mines Aiko's aged ``self`` / ``reflection``
+        memories for a past feeling / intention worth revisiting and
+        drafts a cue into ``aiko.self_callback``;
+        ``_render_self_callback_block`` surfaces the newest unseen one on a
+        later turn (watermark-gated). It is NEVER spoken verbatim.
+
+        Returns a JSON dict with the master switch, cadence + cooldown,
+        whether the worker wired up, the MCP force-next flag, the cue ring,
+        and the producer/surfacing watermarks.
+        """
+        try:
+            from app.core.affect import self_callback as _sc
+
+            agent = session._settings.agent
+            mem = session._memory_settings
+
+            def kv(key: str) -> str | None:
+                try:
+                    return session._chat_db.kv_get(key)
+                except Exception:
+                    return None
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "self_callback_enabled", True)
+                    ),
+                    "check_interval_seconds": int(
+                        getattr(
+                            agent,
+                            "self_callback_check_interval_seconds",
+                            21600,
+                        )
+                    ),
+                    "cooldown_days": float(
+                        getattr(agent, "self_callback_cooldown_days", 10.0)
+                    ),
+                    "min_age_days": int(
+                        getattr(mem, "self_callback_min_age_days", 14)
+                    ),
+                    "llm_enabled": bool(
+                        getattr(agent, "self_callback_llm_enabled", True)
+                    ),
+                    "llm_active": bool(
+                        getattr(
+                            getattr(
+                                session, "_self_callback_worker", None
+                            ),
+                            "_worker_client",
+                            None,
+                        )
+                        is not None
+                    ),
+                    "worker_registered": getattr(
+                        session, "_self_callback_worker", None
+                    )
+                    is not None,
+                    "force_next": bool(
+                        getattr(session, "_self_callback_force_next", False)
+                    ),
+                    "callbacks": _sc.load_callbacks(session._chat_db.kv_get),
+                    "last_fired_at": kv("self_callback.last_fired_at"),
+                    "last_surfaced_at": kv("self_callback.last_surfaced_at"),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_self_callback_state raised: {exc}"
+
+    @mcp.tool()
+    def force_self_callback_draft() -> str:
+        """Run the self-callback worker once, right now.
+
+        Arms a one-shot cooldown bypass, then calls ``run()`` directly so a
+        cue is drafted (when an aged self / reflection memory qualifies).
+        Pairs with ``force_self_callback_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_self_callback_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no MemoryStore?)"},
+                    indent=2,
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_self_callback_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_self_callback_surface() -> str:
+        """Arm a one-shot bypass on the self-callback cue watermark.
+
+        Sets ``_self_callback_force_next`` so the next provider call
+        ignores the watermark. The ring still has to be non-empty (run
+        ``force_self_callback_draft`` first if it isn't).
+
+        Repro: ``force_self_callback_draft()`` ->
+        ``force_self_callback_surface()`` -> ``send_message(skip_tts=true)``
+        -> confirm the "..., you opened up about how you were feeling ..."
+        line in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._self_callback_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the self-callback "
+                        "watermark; ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_self_callback_surface raised: {exc}"
+
+    @mcp.tool()
     def get_task_report_decision_state() -> str:
         """C6 — dump the worker-model task-report decision state.
 

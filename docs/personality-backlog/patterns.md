@@ -688,7 +688,28 @@ copy; `agent.growth_witness_enabled`.
 
 ---
 
-## K71. Self-callback — her own continuity over time
+## K71. Self-callback — her own continuity over time ✅ shipped
+
+> ✅ **Shipped.** Pure module
+> [`app/core/affect/self_callback.py`](../../app/core/affect/self_callback.py)
+> (`classify_self_memory` → feeling / intention / other; `select_candidate`
+> picks the *oldest* aged feeling/intention worth revisiting, excluding
+> recently-surfaced; `render_inner_life_block` leaves the resolution read
+> to the model) + silent producer
+> [`app/core/proactive/self_callback_worker.py`](../../app/core/proactive/self_callback_worker.py)
+> (`SelfCallbackWorker`, ~6h cadence, 10-day cooldown, mines her own aged
+> `self` / `reflection` memories ≥ 14 days old via `iter_by_kinds`) →
+> `aiko.self_callback` ring → `_render_self_callback_block` watermark-gated
+> provider (T6, after `growth_witness_block`, retained under aggressive).
+> Per-memory `self:<id>` signature de-dup. Distinct from K28 (recent
+> 24-72h preoccupation) and K63 (user callbacks). Persona "Closing the
+> loop on myself" block. Settings `agent.self_callback_enabled` /
+> `_check_interval_seconds` / `_cooldown_days` +
+> `memory.self_callback_min_age_days` / `_journal_max`. MCP
+> `get_self_callback_state` / `force_self_callback_draft` /
+> `force_self_callback_surface`. Tests: `tests/test_self_callback.py`,
+> `SelfCallbackProviderSlotTests` in `tests/test_prompt_assembler.py`,
+> `test_self_callback_round_trip` in `tests/test_settings.py`.
 
 **Motivation.** K63 lets Aiko reach back to something *the user* said weeks
 ago; the symmetric self-side is missing — she never references **her own** past
@@ -753,7 +774,38 @@ provider + a Together-tab surface, persona copy, `agent.shared_ritual_enabled`.
 
 ---
 
-## K74. Humor-style calibration — what kind of funny lands
+## K74. Humor-style calibration — what kind of funny lands ✅ shipped
+
+> ✅ **Shipped.** Pure module
+> [`app/core/relationship/humor_style.py`](../../app/core/relationship/humor_style.py)
+> mirrors J11 `affection_style` exactly over a 5-kind humour taxonomy
+> (`pun` / `deadpan` / `absurdist` / `self_deprecating` /
+> `playful_roast`): `classify_turn_humor` (cheap per-kind regexes;
+> deadpan = a humour-signalling `[[reaction:]]` with no overt marker;
+> returns `[]` on a non-funny turn so learning is sparse),
+> `engagement_to_signal` / `apply_observation` / `apply_reaction_confirmation`
+> / `decay_toward_uniform` / `register_hint`. Learned **passively** in
+> [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) (two
+> passes beside the J11 hook: attribute prev-turn engagement → tag this
+> turn into `_prev_humor_kinds`); 😂/🙄 K32 reactions confirm the prev
+> kinds in [`world_mixin.py`](../../app/core/session/world_mixin.py);
+> slow decay via
+> [`humor_style_worker.py`](../../app/core/relationship/humor_style_worker.py)
+> (`HumorStyleDecayWorker`, registered beside the affection one). **Effect
+> (design note):** there is no deterministic humour-register *selector*
+> in code to multiply a cooldown against, so the learned top register
+> surfaces as a short suffix on the **existing K48 tease cue** only
+> (`_humor_register_hint` in
+> [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py),
+> gated `>= humor_style_hint_min_rel × uniform`) — never a new standalone
+> narrated block. Settings `agent.humor_style_enabled` /
+> `_learning_rate` / `_reaction_weight` / `_floor` /
+> `_decay_half_life_days` / `_hint_min_rel` / `_decay_interval_seconds`.
+> Persona: a soft-nudge note on the tease-rhythm block ("keep your
+> range"). MCP `get_humor_style_state` / `set_humor_style` /
+> `reset_humor_style` / `force_humor_style_decay`. Tests:
+> `tests/test_humor_style.py`, `test_humor_style_round_trip` in
+> `tests/test_settings.py`.
 
 **Motivation.** K48 tease-rhythm governs the *budget* (how much snark, warmth
 balance) and K59 the *economy* (payback), but nothing tracks **which kind of
@@ -801,7 +853,29 @@ estimator updated post-turn, a T5/T6 inner-life depth cue in
 
 ---
 
-## K76. Affective memory salience — flashbulb encoding
+## K76. Affective memory salience — flashbulb encoding ✅ shipped
+
+> ✅ **Shipped.** Pure mechanic, no worker / no LLM / no schema change.
+> [`app/core/memory/flashbulb.py`](../../app/core/memory/flashbulb.py)
+> (`compute_charge` folds live arousal *above baseline* + active K57
+> episode intensity into a `[0,1]` charge; `apply_flashbulb` →
+> `salience = clamp(base + max_boost*charge)`). Optional hook on
+> [`MemoryStore.add`](../../app/core/memory/memory_store.py)
+> (`set_flashbulb(provider, …)`): every non-pinned write boosts salience
+> by the charge and stamps `metadata.affect_at_encoding`
+> (`{arousal, episode_intensity, charge, boost}`). Neutral affect → 0
+> charge → no boost, so no kind allow-list is needed and small talk is
+> untouched. Wired in `SessionController` via `_read_encoding_affect`
+> (`_affect_store` arousal + `_peak_emotion_intensity`), keeping
+> MemoryStore decoupled from AffectState / K57. Higher initial salience
+> both surfaces the memory more (RAG) and resists decay/prune — the
+> "burns in / fades slower" half. Settings `memory.flashbulb_enabled` /
+> `_max_boost` (0.35) / `_arousal_weight` (0.6) / `_episode_weight`
+> (0.7) / `_arousal_neutral` (0.4). MCP `get_flashbulb_state` (knobs +
+> live affect + boost preview). Tests: `tests/test_flashbulb.py` (pure
+> math + the add-hook: charged boosts + stamps, neutral untouched,
+> disabled / pinned / broken-provider safe), `test_flashbulb_round_trip`
+> in `tests/test_settings.py`.
 
 **Motivation.** Human memory isn't flat: moments that hit you *emotionally*
 burn in harder and fade slower (a flashbulb memory). Aiko's memories carry a

@@ -2188,6 +2188,89 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.growth_witness_min_samples, 2)
         self.assertEqual(result.memory.growth_witness_journal_max, 1)
 
+    def test_self_callback_round_trip(self) -> None:
+        # K71: agent master switch + cadence/cooldown + memory age floor.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.self_callback_enabled)
+        self.assertEqual(
+            result.agent.self_callback_check_interval_seconds, 21600,
+        )
+        self.assertAlmostEqual(
+            result.agent.self_callback_cooldown_days, 10.0,
+        )
+        self.assertTrue(result.agent.self_callback_llm_enabled)
+        self.assertEqual(result.memory.self_callback_min_age_days, 14)
+        path = self._write_config(
+            agent_extra={
+                "self_callback_enabled": False,
+                "self_callback_llm_enabled": False,
+                "self_callback_check_interval_seconds": 5,  # floor 60
+            },
+        )
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "self_callback_min_age_days": 0,  # floor 1
+            "self_callback_journal_max": 0,  # floor 1
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.self_callback_enabled)
+        self.assertFalse(result.agent.self_callback_llm_enabled)
+        self.assertEqual(
+            result.agent.self_callback_check_interval_seconds, 60,
+        )
+        self.assertEqual(result.memory.self_callback_min_age_days, 1)
+        self.assertEqual(result.memory.self_callback_journal_max, 1)
+
+    def test_humor_style_round_trip(self) -> None:
+        # K74: agent-side humor-style learner knobs + clamps.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.humor_style_enabled)
+        self.assertAlmostEqual(result.agent.humor_style_learning_rate, 0.04)
+        self.assertAlmostEqual(result.agent.humor_style_floor, 0.05)
+        self.assertAlmostEqual(result.agent.humor_style_hint_min_rel, 1.25)
+        self.assertEqual(
+            result.agent.humor_style_decay_interval_seconds, 21600,
+        )
+        path = self._write_config(
+            agent_extra={
+                "humor_style_enabled": False,
+                "humor_style_floor": 0.9,  # clamp to 0.2
+                "humor_style_hint_min_rel": 0.1,  # clamp to 1.0
+                "humor_style_decay_interval_seconds": 5,  # floor 60
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.humor_style_enabled)
+        self.assertAlmostEqual(result.agent.humor_style_floor, 0.2)
+        self.assertAlmostEqual(result.agent.humor_style_hint_min_rel, 1.0)
+        self.assertEqual(
+            result.agent.humor_style_decay_interval_seconds, 60,
+        )
+
+    def test_flashbulb_round_trip(self) -> None:
+        # K76: memory-side affective-salience knobs + clamps.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.memory.flashbulb_enabled)
+        self.assertAlmostEqual(result.memory.flashbulb_max_boost, 0.35)
+        self.assertAlmostEqual(result.memory.flashbulb_arousal_weight, 0.6)
+        self.assertAlmostEqual(result.memory.flashbulb_episode_weight, 0.7)
+        self.assertAlmostEqual(result.memory.flashbulb_arousal_neutral, 0.4)
+        path = self._write_config()
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "flashbulb_enabled": False,
+            "flashbulb_max_boost": 5.0,  # clamp to 1.0
+            "flashbulb_arousal_neutral": 2.0,  # clamp to 1.0
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.memory.flashbulb_enabled)
+        self.assertAlmostEqual(result.memory.flashbulb_max_boost, 1.0)
+        self.assertAlmostEqual(result.memory.flashbulb_arousal_neutral, 1.0)
+
     def test_defaults_load_when_keys_missing(self) -> None:
         path = self._write_config()
         result = load_settings(config_path=path)

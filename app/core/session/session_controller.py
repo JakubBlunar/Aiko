@@ -608,6 +608,30 @@ class SessionController(
                     archive_cap=self._memory_settings.archive_cap,
                     dedupe_threshold=self._memory_settings.dedupe_threshold,
                 )
+                # K76 flashbulb encoding — boost a new memory's salience by
+                # the live emotional charge (arousal + active K57 episode)
+                # at write time. Best-effort; affect reads stay on the
+                # controller so MemoryStore stays decoupled.
+                try:
+                    _mem_s = self._memory_settings
+                    self._memory_store.set_flashbulb(
+                        self._read_encoding_affect,
+                        enabled=bool(
+                            getattr(_mem_s, "flashbulb_enabled", True)
+                        ),
+                        max_boost=getattr(_mem_s, "flashbulb_max_boost", 0.35),
+                        arousal_weight=getattr(
+                            _mem_s, "flashbulb_arousal_weight", 0.6
+                        ),
+                        episode_weight=getattr(
+                            _mem_s, "flashbulb_episode_weight", 0.7
+                        ),
+                        arousal_neutral=getattr(
+                            _mem_s, "flashbulb_arousal_neutral", 0.4
+                        ),
+                    )
+                except Exception:
+                    log.debug("flashbulb wiring failed", exc_info=True)
                 # Boot RAG store (best-effort -- if probe / Lance fail, we
                 # gracefully fall back to the SQLite path).
                 try:
