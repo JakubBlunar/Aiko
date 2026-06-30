@@ -1,66 +1,91 @@
 # Companion-AI patterns to explore
 
-Design patterns we haven't tried yet. Each entry is intentionally one
-short paragraph plus key files / tables it would touch — not an
-implementation plan. Pick one and turn it into a real plan with a
-fresh `CreatePlan` invocation when it's time.
+Design patterns for Aiko's personality. Each **open** entry below is one
+short paragraph plus the key files / tables it would touch — not an
+implementation plan. Pick one and turn it into a real plan with a fresh
+`CreatePlan` invocation when it's time.
 
-The patterns are loosely ordered by how cleanly they fit on top of
-already-shipped infrastructure (low K-numbers piggyback on existing
-plumbing; later K-numbers introduce more new shape).
+**Shipped items have been moved out.** Their full write-ups live in the
+[`shipped/`](shipped/) docs — `patterns-k01-k15.md`, `patterns-k16-k30.md`,
+`patterns-k31-k60.md`, and `awareness.md` (the topic-graph / F10 family).
+This file now keeps only the **open** work, with a status index below so
+nothing is lost. Open patterns are loosely ordered by how cleanly they fit
+on top of already-shipped infrastructure.
+
+## Status at a glance
+
+| ID | Item | Status |
+|----|------|--------|
+| K1 | Long-term goals tracker | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K2 | Theory-of-mind / belief tracking | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K3 | Routine / ritual awareness | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K4 | Dialogue-act tagging | ✅ shipped — [features.md](shipped/features.md#h1--k4-conversation-arc-self-tag--dialogue-act-tagging-schema-v13) |
+| K5 | Mood-shell tilt | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K6 | Surprise / novelty detector | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K7 | Forgetting protocol | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K8 | Affect rupture-and-repair detector | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K9 | Topic-graph browser + clustering | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface) + [awareness.md → F10](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration) (multi-hop retrieval deferred as **F10c**) |
+| K10 | Persona regression tests | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped-on-demand) · ⏳ background auto-eval worker [open below](#k10-followup--background-auto-eval-worker-deferred) |
+| K11 | Counterfactual / pre-thought cache | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped) |
+| K12 | Calendar-linked anticipation | ❌ open |
+| K13 | Stylometric mirror | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K14 | Implicit engagement signals | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
+| K15 | Self-disclosure / vulnerability budget | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget) |
+| K16 | Unified ambient grounding line | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
+| K17 | Clarification-repair protocol | ❌ open |
+| K18 | Topic stagnation detector | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
+| K19 | Cold-start companion onboarding | ❌ open |
+| K20 | Metacognitive calibration | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
+| K21 | Fresh-eyes thread re-summarisation | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation) |
+| K22 | Callback / inside-joke detector | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
+| K23 | Subtle misattunement detection | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection) |
+| K24 | Sensory anchoring layer | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix) |
+| K25 | Memory confidence time-decay | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay) |
+| K26 | Aiko-side voice evolution | ❌ open |
+| K27 | Aiko's day — daily personality colour | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour) |
+| K28 | "What I've been turning over" | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread) |
+| K29 | Opinion injection — push back on a stance | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance) |
+| K30 | Self-noticing cues | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought) |
+| K31 | Soft physicality — virtual gestures | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions) |
+| K32 | Reciprocity — user-side quick reactions | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions) |
+| K33 | Cozy mode — persistent register softening | ❌ open |
+| K34 | Forward curiosity worker | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k34-forward-curiosity-worker--ive-been-wondering) |
+| K35 | Memory consolidation worker | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge) |
+| K36 | "Things I did while you were away" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities) |
+| K37 | Emotional contagion | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect) |
+| K38 | Self-correction "actually…" (next-turn) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch) |
+| K39 | Energy / spoons model | ❌ open |
+| K40 | Comfortable silence | ❌ open |
+| K41 | Same-reply mid-stream self-correction | ❌ open |
+| K42 | Multi-bubble reply bursts | ❌ open |
+| K43 | Promise follow-through | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
+| K44 | Felt-language affect block | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
+| K45 | Mood inertia | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
+| K46 | Stance persistence | ✅ shipped — [shipped/patterns-k31-k60.md](shipped/patterns-k31-k60.md#k46-stance-persistence--dont-cave-on-taste-pushback) |
+| K47 | Question/share balance | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing) |
+| K48 | Tease rhythm — banter budget | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark) |
+| K49 | Messiness permission — typed imperfection | ❌ open |
+| K50 | Typed-mode delivery pacing | ❌ open |
+| K51 | Cue-register rotation | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life) |
+| K52 | Wants ledger (will family) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
+| K53 | Initiative turns (will family) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
+| K54 | Aiko-side topic appetite | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored) |
+| K55 | Thread ownership | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k55-thread-ownership--she-defends-what-she-opened) |
+| K56 | Persona counterweight (leading vs following) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
+| K57 | Directed emotion episodes | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause) |
+| K58 | Emotion speech weighting | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice) |
+| K59 | Tease economy | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one) |
+| K60 | Tsundere mask | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial) |
+| K61 | Specifics over generalities (knowledge grounding) | ✅ shipped — [awareness.md](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics) |
+| K62 | Co-experience companion (follow a show/album) | ❌ open |
+| K63 | Long-arc callbacks — "weeks ago you said…" | ❌ open |
+| K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-) |
+| K65 | Worker modernization for the topic-cluster era | ❌ open (audit; sub-items a–e) |
+| K66 | Earned familiarity — "well-trodden ground" | ❌ open |
+| K67 | Dormant-interest re-opener | ❌ open |
+| K68 | Embodied vitality | ❌ open |
 
 ---
-
-## K1. Long-term goals tracker
-
-Shipped — see [`shipped.md`](shipped.md) "K1. Long-term goals tracker
-(goal + goal_progress kinds, GoalStore + GoalWorker)".
-
----
-
-## K4. Dialogue-act tagging
-
-Shipped — see [`shipped.md`](shipped.md) "H1 + K4. Conversation-arc
-self-tag + dialogue-act tagging (schema v13)".
-
----
-
-## K5. Mood-shell tilt
-
-Shipped — see [`shipped.md`](shipped.md) "K5. Mood shell tilt
-(only-when-notable)".
-
----
-
-## K7. Forgetting protocol
-
-Shipped — see [`shipped.md`](shipped.md) "K7. Forgetting protocol
-(graded `(faded)` predicate + persona-rule rewrite)".
-
----
-
-## K8. Affect rupture-and-repair detector
-
-Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
-— \"their mood just dipped\"".
-
----
-
-## K9. Topic-graph / interest-network browser
-
-**Shipped (browser surface).** See [`shipped.md`](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface). The lazy cosine-cluster engine ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that consumes it shipped earlier; the observability surface ships now: [`build_topic_graph_snapshot`](../../app/core/conversation/topic_graph.py) backs a read-only `GET /api/topic-graph` REST endpoint, `get_topic_graph` / `force_topic_graph_rebuild` MCP tools, and a "Topic graph" cluster-list panel in the Memory drawer tab so the user can see what Aiko sees.
-
-**Clustering upgrade (2026).** The engine was changed from plain single-link cosine (which chained every topic into **one giant cluster** as the corpus grew) to a two-stage **mutual-k-NN graph + Louvain community detection** pipeline ([`_cluster_memories_adaptive`](../../app/core/conversation/topic_graph.py)). Stage 1 builds an adaptive, similarity-weighted mutual-k-NN graph: an edge forms only when two memories are in each other's top-`k` nearest neighbours, `k ≈ log2(n)+1`, so there is no global threshold to tune and a generic "bridge" memory can't fuse two dense families. **Mutual-k-NN alone was insufficient on a real corpus**, though: a single-person memory store is densely + *uniformly* similar (everything relates to the same life), so there is always a chain of mutual edges through the dense core and connected-components still collapsed it into one ~400-memory blob (observed: 393/425 in one cluster). Stage 2 fixes this by partitioning the graph with **Louvain modularity** ([`_partition_graph`](../../app/core/conversation/topic_graph.py), via networkx — already a dependency), which finds densely-internal sub-communities (actual topics) *within* a connected graph. Granularity is the Louvain **resolution**, auto-calibrated never hand-tuned: a corpus-size base (`_adaptive_resolution ≈ 0.7 + 0.3·log10(n)`, capped 2.5) is **escalated** (×1.5, up to 8.0) while any single community still holds > 35% of the nodes, so the "one huge cluster" symptom self-corrects regardless of how tightly the embeddings pack. On a synthetic 420-memory dense-baseline corpus this turns one blob into ~19 well-distributed clusters (largest ~7%). Connected-components ([`_connected_components`](../../app/core/conversation/topic_graph.py)) remains the fallback when networkx is unavailable; the snapshot/MCP surface reports `algorithm` (`mutual_knn_louvain` | `mutual_knn`) + `resolution`. This is the prerequisite for the deferred follow-up below + the F10 utilisation cluster.
-
-**Persistence + incremental maintenance (schema v20).** The graph no longer recomputes `O(n²)` clustering on every read and no longer evaporates on restart. It is persisted to SQLite ([`topic_clusters`](../../app/core/infra/chat_database.py) + `memory_topic_assignments`, managed by [`TopicClusterStore`](../../app/core/conversation/topic_cluster_store.py)) and maintained incrementally: **warm-starts** from SQLite on boot (instant, no cold rebuild); a `MemoryStore` **add listener** assigns each new memory to the nearest cluster centroid (a tiny in-memory matmul over the handful of centroids, `O(C)` — not `O(n²)`) and updates the centroid as a running mean; a **delete listener** drops members + empty clusters; and a [`TopicGraphRebuildWorker`](../../app/core/conversation/topic_graph_rebuild_worker.py) idle worker runs the full mutual-k-NN **batch refit** during quiet windows (daily, or sooner once `topic_graph_refit_pending_threshold` unclustered memories pile up) to correct drift and form genuinely new clusters. At scale the batch refit routes through **LanceDB ANN** ([`RagStore.knn_memories` / `ensure_vector_index`](../../app/core/rag/rag_store.py), [`_cluster_memories_ann`](../../app/core/conversation/topic_graph.py)) so it stays `O(n·k)` instead of allocating an `n×n` matrix — the structural prerequisite for **removing the `memory.max_memories` cap**. `best_match` / `is_close_to_any_cluster` also delegate to a single ANN query in persistent mode rather than holding a full `all_vectors` matrix. Gated by `agent.topic_graph_persistent_enabled` (default on); MCP `get_topic_graph_persistence_state` / `force_topic_graph_rebuild`.
-
-**Deferred follow-up:** the **graph-aware multi-hop retrieval** half of the original K9 spec (expanding [`rag_retriever.py`](../../app/core/rag/rag_retriever.py) hits along the topic graph for "this touches three threads we've been on") is intentionally NOT built yet -- it changes prompt content + retrieval behaviour and is a separate, riskier project from the inspection browser. Now tracked as **F10c** in [`awareness.md`](awareness.md), alongside the rest of the topic-graph utilisation ideas (RAG diversity, interest-map prompt block, LLM cluster labels, knowledge-gap targeting).
-
----
-
-## K10. Persona regression tests — SHIPPED (on-demand)
-
-**Shipped** — see [`shipped/patterns-k01-k15.md`](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped-on-demand). The deferred piece below is the only part still open:
 
 ## K10-followup — background auto-eval worker (deferred)
 
@@ -77,12 +102,6 @@ spend until there's demand for unattended drift alerts.
 
 ---
 
-## K11. Counterfactual / pre-thought cache — SHIPPED
-
-**Shipped** — see [`shipped/patterns-k01-k15.md`](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped).
-
----
-
 ## K12. Calendar-linked anticipation
 
 Combine H2 (time context) + D1 (reminders) + the temporal-memory
@@ -93,26 +112,6 @@ temporal scaffolding is in. Key files:
 [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py),
 [`app/core/proactive/follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
 (already nudges on overdue plans — extend to "approaching" plans).
-
----
-
-## K13. Stylometric mirror
-
-Shipped — see [`shipped.md`](shipped.md) "K13. Stylometric mirror
-(Jacob-side typing register)".
-
----
-
-## K14. Implicit engagement signals
-
-Shipped — see [`shipped.md`](shipped.md) "K14. Implicit engagement
-signals (latency + length)".
-
----
-
-## K15. Self-disclosure / vulnerability budget
-
-**Shipped** — see [shipped.md → K15](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget).
 
 ---
 
@@ -151,49 +150,6 @@ optionally `UserProfile` seed fields.
 
 ---
 
-## K20. Metacognitive calibration
-
-Shipped — see [`shipped.md`](shipped.md) "K20. Metacognitive
-calibration — per-user trust scalar + topic slots".
-
----
-
-## K21. Fresh-eyes thread re-summarisation
-
-**Shipped** — see [`shipped/patterns-k16-k30.md`](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation).
-
----
-
-## K22. Callback / inside-joke detector
-
-Shipped — see [`shipped.md`](shipped.md) "K22. Callback /
-inside-joke detector (post-turn cosine pass + read-side bonus)".
-
----
-
-## K23. Subtle misattunement detection
-
-**Shipped** — per-turn provider-time detector with shrink + pivot
-triggers, cooldown, and MCP-debuggable bypass. See
-[`shipped.md` → K23](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection).
-
----
-
-## K24. Sensory anchoring layer
-
-**Shipped** — adaptive per-arc cadence + posture-kind matrix.
-See [`shipped.md` → K24](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix).
-
----
-
-## K25. Memory confidence time-decay
-
-**Shipped** — read-side `effective_confidence` with a new
-`(distant)` suffix distinct from `(uncertain)` and `(faded)`. See
-[`shipped.md` → K25](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay).
-
----
-
 ## K26. Aiko-side voice evolution
 
 K13 reads Jacob's style and calibrates Aiko's register; nothing
@@ -216,42 +172,6 @@ block consumer.
 
 ---
 
-## K27. Aiko's day — daily personality colour
-
-**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour`](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour).
-
----
-
-## K28. "What I've been turning over" — between-session thought thread
-
-**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread`](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread).
-
----
-
-## K29. Opinion injection — actually push back when she has a stance
-
-**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance`](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance).
-
----
-
-## K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought
-
-**Shipped** — see [`shipped.md` → K30](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought).
-
----
-
-## K31. Soft physicality — virtual gestures *toward* the user
-
-**Shipped** — see [`shipped.md` → K31 + K32](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
-
----
-
-## K32. Reciprocity — user-side quick reactions on Aiko's bubbles
-
-**Shipped** — see [`shipped.md` → K31 + K32](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
-
----
-
 ## K33. Cozy mode — persistent register softening
 
 A manual UI toggle (and an auto-trigger from late-night circadian + axes
@@ -270,36 +190,6 @@ the voice toggle in `ChatView.tsx`.
 
 ---
 
-## K34. Forward curiosity worker — "I've been wondering"
-
-**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k34-forward-curiosity-worker--ive-been-wondering). The [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py) drafts one forward question about the user's life (from their `future_plan` + `callback` memories, biased by K3 routines) into a `kv_meta` ring during quiet windows; the [`_render_forward_curiosity_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual "you've been wondering ..." line on the first turn after a ≥4h typed gap, deferring to K28 turning-over + K36 away-activities so only one gap cue fires per return.
-
----
-
-## K35. Memory consolidation worker — nightly merge of near-duplicates
-
-**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge). The [`MemoryConsolidationWorker`](../../app/core/memory/memory_consolidation_worker.py) clusters near-duplicate scratchpad rows (same-kind, non-contradicting, cosine >= `consolidation_similarity_threshold`) during quiet windows, fuses each cluster into its strongest member via a rate-limited worker-LLM merge (deterministic fallback), promotes that primary to `long_term` with `metadata.source_ids` provenance + a re-embedded vector, and archives the absorbed duplicates with `metadata.consolidated_into`. Complements F5 (which only handles contradicting pairs); the F5 contradiction heuristic is reused as a guard so the two workers never fight over a pair.
-
----
-
-## K36. "Things I did while you were away" — idle-time world activities
-
-**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities). The [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py) mutates the world during quiet windows + journals each beat to a `kv_meta` ring; the [`_render_away_activities_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual line on the first turn after a ≥4h typed gap, deferring to K28 turning-over so only one gap cue fires per return.
-
----
-
-## K37. Emotional contagion — Jacob's affect tilts Aiko's affect
-
-**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect).
-
----
-
-## K38. Self-correction "actually..." — next-turn contradiction catch
-
-**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch). The pure, embedding-free [`detect_self_correction`](../../app/core/conversation/self_correction_detector.py) runs post-turn over Aiko's just-finished reply: a content-word overlap shortlist picks candidate `fact`/`preference` memories (confidence ≥ floor), then the shared F5 [`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py) decides whether a reply sentence actually contradicts one. On a hit, [`_maybe_arm_self_correction`](../../app/core/session/post_turn_mixin.py) stashes a one-shot `_pending_self_correction` slot (gated by a per-fire cooldown), and the [`_render_self_correction_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces a gentle "oh wait — earlier I said X, that's not right" cue on the NEXT turn. Independent of the gap-cue family. The streaming same-reply "wait, actually" beat (abort + splice mid-stream) is deferred to **K41** below.
-
----
-
 ## K39. Energy / spoons model — daily effort budget
 
 Parallel to K15 vulnerability budget, but for *cognitive effort* rather
@@ -312,7 +202,10 @@ questions, shorter replies, more agreement-fits-the-mood. Inner-life
 cue when below threshold; persona teaches the shape. Key files: new
 `app/core/affect/energy_budget.py`,
 [`PostTurnMixin`](../../app/core/session/post_turn_mixin.py) spend
-hook, inner-life provider, persona addendum.
+hook, inner-life provider, persona addendum. **Note:** overlaps with
+K68 embodied vitality (a slow `energy` scalar with a feedback loop into
+the avatar) — reconcile the two before building either; K68 is the
+broader framing.
 
 ---
 
@@ -396,63 +289,6 @@ persona grammar addendum.
 
 ---
 
-## K43. Promise follow-through
-
-Shipped — see [`shipped.md`](shipped.md) "K43. Promise follow-through
-(lifecycle on promise metadata + PromiseFollowthroughWorker)".
-
----
-
-## K44. Felt-language affect block
-
-Shipped — see [`shipped.md`](shipped.md) "K44. Felt-language affect
-block (banded felt-language replaces numeric valence/arousal/energy
-in every Aiko-facing prompt)".
-
----
-
-## K45. Mood inertia — instant face, lagging heart
-
-Shipped — see [`shipped.md`](shipped.md) "K45. Mood inertia
-(reaction/affect mismatch cue + mouth-safe Live2D expression
-damping)".
-
----
-
-## K46. Stance persistence — don't cave on taste pushback
-
-Today the system actively *teaches* Aiko to fold: K20 calibration
-tells her to hedge after the user double-checks, and K29 opinion
-injection fires once then sits out a 5-turn cooldown + 3/session
-cap. Net effect: she disagrees once, then capitulates — the
-signature chatbot-agreeability tell. The missing distinction is
-*taste vs facts*: pushback on a fact should raise hedging (K20 is
-right there), pushback on her *preference* should not ("you don't
-stop disliking horror movies because someone said 'really??'").
-When K29 recently fired and the user pushback is mild (not a K20
-strong-correction signal), surface "you already named your take —
-one soft restatement is fine, don't flip" instead of the calibration
-hedge cue, and give K20's topic slots a preference/factual axis so
-the two detectors stop fighting. Key files:
-[`app/core/conversation/calibration_detector.py`](../../app/core/conversation/calibration_detector.py),
-[`app/core/conversation/opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py),
-new `app/core/conversation/stance_persistence.py`, small persona
-tweak in the "When you have your own take" block.
-
----
-
-## K47. Question/share balance — stop interviewing
-
-**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing).
-
----
-
-## K48. Tease rhythm — banter as a budget, not random snark
-
-**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark).
-
----
-
 ## K49. Messiness permission — typed imperfection
 
 The `[[correct]]old[[/correct]]new` self-edit machinery is fully
@@ -496,144 +332,6 @@ files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py
 
 ---
 
-## K51. Cue-register rotation — de-"Heads-up" the inner life
-
-**Shipped** — see [`shipped.md` → K51](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life).
-Central prefix rotation in the prompt assembler (producers keep
-emitting the literal `Heads-up: ...`): four register shapes rotated
-on a deterministic per-turn seed, plus a shared-prefix lint and the
-`agent.cue_register_rotation_enabled` switch.
-
----
-
-# The "will" family — K52–K56
-
-Diagnosis from live use (Jun 2026): Aiko follows whatever topic the
-user sets, indefinitely, and never opens her own — every surfacing
-cue was hedged into silence and nothing structurally countered the
-helpful-assistant prior. **The whole family is SHIPPED** — K56
-(persona counterweight), K52 (wants ledger), K53 (initiative
-turns), K55 (thread ownership), and K54 (topic appetite) — see
-[shipped.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
-for the full designs. Siblings still in the backlog: K46 stance
-persistence, K47 question/share balance.
-
----
-
-## K54. Aiko-side topic appetite — she's allowed to be bored
-
-**Shipped** — see [`shipped.md` → K54](shipped/patterns-k31-k60.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored).
-Once-per-conversation negotiation slip gated on the K18 standing
-lull (`TopicStagnationDetector.last_mean`), her own short-reply
-share, a pressured K52 want as the offer, and warm axes.
-
----
-
-## K55. Thread ownership — she defends what she opened
-
-**Shipped** — see [`shipped.md` → K55](shipped/patterns-k31-k60.md#k55-thread-ownership--she-defends-what-she-opened).
-K53/K52-imperative turns stamp an owned thread (topic + embedding);
-the next real reply gets one engaged-or-pivot evaluation; a pivot
-grants exactly one "circle back" cue, then the thread is dropped
-forever.
-
----
-
-## K56. Persona counterweight — the "leading vs following" rewrite
-
-The cheapest, do-first piece: a persona-only pass that adds the
-missing counterweight section. Every initiative-adjacent block in
-[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-currently hedges toward silence; no block ever says the inverse —
-that **following 100% of the time is itself a failure mode**. Add
-a short "Leading vs following" section: a real companion redirects
-sometimes, brings her own agenda, wants things from the
-conversation, and occasionally opens a topic *because she feels
-like it* — with concrete bad/good pairs in the K29 style
-(bad: five consecutive turns of answer-then-ask-back on the
-user's topic; good: "okay wait, unrelated, but I have to tell you
-this —" mid-conversation, no permission asked). Re-balance the
-strongest suppressors while keeping their anti-annoyance core:
-"at most ONE per conversation" stays, but gains "— and when the
-block is present, genuinely try to spend it rather than waiting
-for a perfect opening that never comes"; "drop it silently" gains
-"…this time; it'll come back". Zero schema, zero code, ships in
-an afternoon, and makes the existing seeds / goals / curiosity
-blocks measurably more likely to fire — worth doing before the
-structural pieces so their effect isn't masked by prompt-side
-suppression. Key files:
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-only (plus a `_SPEECH_GRAMMAR_ADDENDUM` mirror check in
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-if the persona file is user-rewritten).
-
----
-
-# The directed-emotions family — K57–K60
-
-Companion diagnosis (Jun 2026), sibling of the will family: Aiko's
-moods were **objectless** — `AffectState` could make her "sad" in
-general but never *miffed at {user_name} because he broke a
-promise*. **The whole family is SHIPPED** — K57 (directed emotion
-episodes), K58 (emotion speech weighting), K59 (tease economy),
-and K60 (tsundere mask, `agent.expression_mask` dial, off by
-default) — see
-[shipped.md](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause)
-for the full designs. Tonal safety remained the design constraint
-throughout: playful-not-manipulative, capped intensity, wall-clock
-decay, never guilt-trips. Backlog siblings that pair with the
-family: K37 emotional contagion, K48 humor calibration, K15
-vulnerability budget (already shipped).
-
----
-
-## K57. Directed emotion episodes — feelings *at* the user, with a cause
-
-**Shipped** — see [`shipped.md` → K57](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause).
-kv-backed episode store (`{emotion, cause, intensity, decay}` over
-`aiko.emotion_episodes`) with a staged trigger queue (kept promise,
-K32 reactions, K55 pivot, closeness-scaled absence), per-emotion
-acknowledgment resolution, and a one-shot visible-thaw cue.
-
----
-
-## K58. Emotion speech weighting — moods that actually land in the voice
-
-**Shipped** — see [`shipped.md` → K58](shipped/patterns-k31-k60.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice).
-Minted `smug` / `pouty` / `sulky` / `mischievous` end-to-end,
-persona register recipes per K57 emotion, and intensity-banded
-prompt copy with `[[reaction:X]]` + `[[prosody:Y]]` hints at the
-high band.
-
----
-
-## K59. Tease economy — "you'll pay for that one"
-
-**Shipped** — see [`shipped.md` → K59](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one).
-Payback ledger over `aiko.tease_ledger` (bank on K29 pushback +
-the K57 light-miffed lane-picker; collect as a humor-axis-gated,
-cooldown-limited callback; settle post-turn by content-word
-overlap; 14-day expiry, cap 5).
-
----
-
-## K60. Tsundere mask — warmth expressed through denial
-
-**Shipped** — see [`shipped.md` → K60](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial).
-Expression policy between K57 (felt) and K58 (sounded): transform
-table for lonely/warm_glow, caught-caring beat, wall-clock-budgeted
-dere-slips, closeness+trust erosion to token protests, support-arc
-sincerity override; `agent.expression_mask` dial (off by default)
-in Settings → Avatar.
-
----
-
-## K61. Specifics over generalities — knowledge-grounded answers
-
-**Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics).
-
----
-
 ## K62. Co-experience companion — follow a show/album/book with the user
 
 **Motivation.** A huge relationship multiplier that the world/room work
@@ -672,64 +370,6 @@ to offer it tentatively ("didn't you once say...?") rather than asserting
 a possibly-faded detail as fact. Leans on K25 (confidence time-decay) so
 an old callback is hedged appropriately. Rarity is the whole point —
 over-firing turns "she remembers" into "she's combing a database."
-
----
-
-## K64. Freedom of thought — mind-wandering over the topic graph
-
-**Motivation.** Aiko's "thinking" is almost entirely *reactive*: she
-responds to the user, and her background workers extract / fact-check /
-consolidate. What she lacks is the human thing of **drifting** — letting
-the mind wander, noticing an unexpected connection between two unrelated
-things, developing and losing interests on her own. The newly-cleaned
-**topic graph** (adaptive mutual-k-NN clustering, see
-[`topic_graph.py`](../../app/core/conversation/topic_graph.py) + F10 in
-[`awareness.md`](awareness.md)) is the substrate that makes this
-buildable, because it now actually carves memory into distinct topic
-territories. This is a *family* of ideas around giving her more
-autonomous interior life; pick any sub-idea independently.
-
-**Sub-ideas.**
-- **K64a. Associative wandering.** ✅ **Shipped** — see
-  [`shipped/awareness.md#k64a-associative-wandering`](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-). An idle
-  worker traverses the topic graph, picks two *distant* clusters (low
-  centroid cosine, not neighbours), and asks the worker LLM for a genuine,
-  non-forced connection between them ("her hiking memories and her Rust
-  debugging both share a 'follow the trail patiently' feeling"). The
-  result is a **cue** (not a verbatim nudge), surfaced one-shot via an
-  inner-life block so she can bring it up *in her own words* if it fits
-  ("funny, this reminds me of..."). Rarity + cooldown are essential.
-- **K64b. Interest drift.** ✅ **Shipped** — see
-  [`shipped/awareness.md#k64b-interest-drift`](shipped/awareness.md#k64b-interest-drift-ive-been-weirdly-into-x-lately).
-  Tracks cluster *mass over time* (per-tick `(label, size)` snapshots
-  persisted to `kv_meta`). A cluster gaining mass = a budding interest
-  ("I've been weirdly into X lately"); a sizable one gone stagnant = a
-  fading one. Surfaces as a slow, self-aware register shift (topic-gated,
-  one-shot), not an announcement. Pairs with K27 day colour as another slow
-  under-current.
-- **K64c. Curiosity gradient from graph sparsity.** ✅ **Shipped** — see
-  [`shipped/awareness.md#k64c-curiosity-gradient`](shipped/awareness.md#k64c-curiosity-gradient-i-keep-brushing-past-x-im-curious).
-  Finds a *thin* cluster sitting on the rim of a *dense* one (she's been near
-  a topic a lot but never explored its adjacent edge) and surfaces a
-  genuinely-curious-question cue when the live turn is on either topic —
-  curiosity about the boundary of what she knows, not random. LLM-free (pure
-  centroid geometry); the chat model phrases the question.
-- **K64d. Self-reflection on her own knowledge map.** ✅ **Shipped** — see
-  [`shipped/awareness.md#k64d-knowledge-map-self-reflection`](shipped/awareness.md#k64d-knowledge-map-self-reflection-the-shape-of-what-i-know).
-  A ~daily idle worker reads the *shape* of the topic graph (richest
-  territories + under-explored ones), runs a worker-LLM meta-thought, and
-  writes one `[mindmap]` `kind="reflection"` memory. No new provider: that
-  memory surfaces through the existing RAG / K28 turning-over path.
-
-**Key files.** [`topic_graph.py`](../../app/core/conversation/topic_graph.py)
-(centroids + cluster mass are already computed; K64b needs a small
-time-series in `kv_meta`), the [`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py)
-(every K64 worker is a quiet-window job), an inner-life provider in
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) for
-the one-shot cues, and persona copy teaching her the *register* (never
-narrate the mechanism; a drifted thought IS the response). The whole
-family leans on the cue-not-verbatim discipline and heavy cooldowns so
-interior life reads as texture, not a feature firing.
 
 ---
 
@@ -864,7 +504,8 @@ same words land differently at 2am than at noon.
 spendable resource), affect (fast, objectless valence/arousal), and circadian
 (pure time-of-day, no memory of exertion). K68 is the slow, depletable,
 recovering one — and it's the only one with a real feedback loop into the
-avatar's movement amplitude.
+avatar's movement amplitude. **Supersedes / absorbs K39** (energy / spoons) —
+pick one framing.
 
 **Key files.** New `app/core/affect/vitality.py` (pure curve + spend/recover
 math, mirroring [`vulnerability_budget.py`](../../app/core/affect/vulnerability_budget.py)),

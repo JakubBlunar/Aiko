@@ -41,6 +41,9 @@ class InnerLifePart3Mixin:
         heuristic gates -- a forced bypass on an unrelated message
         still silently expires when no stance contradicts).
         """
+        # K46: reset the per-turn "a stance cue fired" flag at the top so
+        # every path below leaves it accurate for the post-turn hook.
+        self._opinion_injection_cue_emitted = False
         if not bool(
             getattr(self._settings.agent, "opinion_injection_enabled", True)
         ):
@@ -59,6 +62,7 @@ class InnerLifePart3Mixin:
         pending_cue = getattr(self, "_opinion_injection_pending_cue", None)
         if pending_cue:
             self._opinion_injection_pending_cue = None
+            self._opinion_injection_cue_emitted = True  # K46
             return pending_cue
 
         # Decrement cooldown first so a quiet turn always whittles
@@ -242,13 +246,15 @@ class InnerLifePart3Mixin:
             log.debug("opinion-pushback tease bank failed", exc_info=True)
 
         try:
-            return opinion_injection_detector.render_inner_life_block(
+            block = opinion_injection_detector.render_inner_life_block(
                 result,
                 user_display_name=self.user_display_name,
             )
         except Exception:
             log.debug("opinion-injection render failed", exc_info=True)
             return ""
+        self._opinion_injection_cue_emitted = True  # K46
+        return block
 
     def _opinion_injection_llm_verdict(
         self,
@@ -418,6 +424,92 @@ class InnerLifePart3Mixin:
             log.debug(
                 "opinion-pushback tease bank failed (resolve)", exc_info=True
             )
+
+    def _render_stance_persistence_block(self, user_text: str) -> str:
+        """K46: surface a "hold your take" cue on mild taste pushback.
+
+        Fires only when Aiko has *recently* stated a taste/opinion (a K29
+        cue fired within the last ``memory.stance_persistence_window``
+        turns, tracked by ``_stance_recent_window`` which is armed +
+        decremented post-turn) AND the live user message reads as a
+        *mild* pushback in K20's calibration regex (``pushback_mild``).
+        A strong correction ("no, that's wrong") is deliberately left to
+        K20 — that's a factual signal even mid-taste-talk.
+
+        The companion write-side shield (skip the K20 calibration drop on
+        this same turn) lives in the post-turn hook; both share the
+        :func:`app.core.conversation.stance_persistence.evaluate` gate so
+        the cue and the shield never disagree.
+
+        MCP debug: ``force_stance_persistence`` arms a one-shot
+        ``_stance_persistence_force_next`` that fires the cue regardless
+        of the recent-stance window (it still needs a mild-pushback band
+        to classify a band for the line).
+        """
+        if not bool(
+            getattr(self._settings.agent, "stance_persistence_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.affect import calibration_detector
+            from app.core.conversation import stance_persistence
+        except Exception:
+            log.debug("stance-persistence import failed", exc_info=True)
+            return ""
+
+        force_next = bool(
+            getattr(self, "_stance_persistence_force_next", False)
+        )
+        if force_next:
+            self._stance_persistence_force_next = False
+
+        recent_window = int(getattr(self, "_stance_recent_window", 0) or 0)
+        recent_stance = recent_window > 0 or force_next
+        if not recent_stance:
+            return ""
+
+        # Classify the live user turn. Regex-only (no vecs) — strong /
+        # mild / affirmation are pure regex; the softening band needs the
+        # prior-assistant vector we don't carry here, and K46 only acts on
+        # the mild band anyway.
+        band: str | None = None
+        try:
+            signal = calibration_detector.detect(user_text=user_text or "")
+            band = signal.kind if signal is not None else None
+        except Exception:
+            log.debug("stance-persistence band classify raised", exc_info=True)
+            band = None
+
+        verdict = stance_persistence.evaluate(
+            recent_stance=recent_stance, pushback_band=band,
+        )
+        if not verdict.hold:
+            return ""
+
+        stance_text = str(getattr(self, "_stance_recent_text", "") or "")
+        try:
+            block = stance_persistence.render_block(
+                stance_text, user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("stance-persistence render failed", exc_info=True)
+            return ""
+        if not block:
+            return ""
+
+        self._last_stance_persistence = {
+            "band": band,
+            "window": recent_window,
+            "forced": force_next,
+            "stance_text": stance_text,
+        }
+        log.info(
+            "stance-persistence fire: band=%s window=%d forced=%s",
+            band,
+            recent_window,
+            force_next,
+        )
+        return block
 
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.

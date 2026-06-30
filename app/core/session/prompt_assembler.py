@@ -162,6 +162,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "promise_followthrough_block",
         "misattunement_block",
         "opinion_injection_block",
+        # K46: "don't cave on taste pushback" — sits right after the K29
+        # stance cue (same live-read-on-the-user cluster).
+        "stance_persistence_block",
         "reconnection_block",
         # K-time4: within-session elapsed + mid-session pause. Sits with
         # the gap cluster (same-session sibling of reconnection).
@@ -461,6 +464,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # through an LLM YES/NO gate) so an Aiko with a few stored
         # stances doesn't slip into contrarianism.
         self._opinion_injection_provider: Callable[[str], str] | None = None
+        # K46 stance-persistence — "hold your take" cue on mild taste
+        # pushback right after a K29 stance. Takes ``user_text`` (it
+        # classifies the live pushback band), sits right after the K29
+        # opinion-injection block so the "share your take" + "don't cave"
+        # cues never appear in opposite orders.
+        self._stance_persistence_provider: Callable[[str], str] | None = None
         # K14 typed-mode absence-curiosity one-shot. Same shape as the
         # K8 rupture provider: post-turn engagement tracker stashes a
         # pending absence duration on the controller when a typed gap
@@ -1388,6 +1397,27 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     opinion_injection_block = ""
 
+        # K46 — stance persistence. Fires a "hold your take" cue when a
+        # mild pushback lands right after Aiko stated a taste (K29 cue
+        # fired in the last few turns). Empty on almost every turn (needs
+        # a recent stance AND a mild-pushback band). Not gated on
+        # aggressive mode -- "don't fold on your own preference" is a
+        # steering signal tight budgets want, same as K29.
+        stance_persistence_block = ""
+        if (
+            getattr(self, "_stance_persistence_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "stance_persistence"):
+                try:
+                    stance_persistence_block = (
+                        self._stance_persistence_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "stance-persistence provider raised", exc_info=True
+                    )
+                    stance_persistence_block = ""
+
         # J5 reconnection ritual. Self-computes the gap at assembly time
         # (so it can colour the FIRST reply back after a long absence),
         # closeness-scaled, one-shot per return. Leads the gap cluster.
@@ -2023,6 +2053,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "promise_followthrough_block",
             "misattunement_block",
             "opinion_injection_block",
+            "stance_persistence_block",
             "novelty_block",
             "stagnation_block",
             "style_pattern_block",
@@ -2040,6 +2071,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "promise_followthrough_block": promise_followthrough_block,
             "misattunement_block": misattunement_block,
             "opinion_injection_block": opinion_injection_block,
+            "stance_persistence_block": stance_persistence_block,
             "novelty_block": novelty_block,
             "stagnation_block": stagnation_block,
             "style_pattern_block": style_pattern_block,
@@ -2072,6 +2104,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             ]
             misattunement_block = cue_blocks["misattunement_block"]
             opinion_injection_block = cue_blocks["opinion_injection_block"]
+            stance_persistence_block = cue_blocks["stance_persistence_block"]
             novelty_block = cue_blocks["novelty_block"]
             stagnation_block = cue_blocks["stagnation_block"]
             style_pattern_block = cue_blocks["style_pattern_block"]
@@ -2370,6 +2403,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # fused grounding line never carries stance signal so
             # K29 is purely additive on top.
             system_parts.append(opinion_injection_block)
+        if stance_persistence_block:
+            # K46: "don't cave on taste pushback" lands right after the
+            # K29 stance cue so the "share your take" + "hold your take"
+            # beats read in order. Only one of the two fires on a given
+            # turn (K29 on the contradiction, K46 on the mild push-back
+            # a turn or two later), but pinning the order keeps the
+            # cluster coherent. NOT in the K16 suppression set.
+            system_parts.append(stance_persistence_block)
         if reconnection_block:
             # J5: leads the gap cluster — the warm "good to see you, it's
             # been a while" re-anchoring beat that colours the first reply

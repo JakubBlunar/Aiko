@@ -168,6 +168,11 @@ class LifecycleMixin:
         # prior one.
         self._opinion_injection_pending_borderline = None
         self._opinion_injection_pending_cue = None
+        self._opinion_injection_cue_emitted = False
+        # K46 — drop any warm-stance window so the new conversation
+        # doesn't inherit a "hold your take" beat from the prior one.
+        self._stance_recent_window = 0
+        self._stance_recent_text = ""
         # K28 — wipe any stashed turning-over slot so the new session
         # doesn't inherit a "this is a comeback" cue from the prior
         # one. The force-next bypass and last-fire diagnostic also
@@ -269,6 +274,12 @@ class LifecycleMixin:
         self._last_opinion_injection = None
         self._opinion_injection_pending_borderline = None
         self._opinion_injection_pending_cue = None
+        self._opinion_injection_cue_emitted = False
+        # K46 — clear the warm-stance window + diagnostics on a full wipe.
+        self._stance_recent_window = 0
+        self._stance_recent_text = ""
+        self._stance_persistence_force_next = False
+        self._last_stance_persistence = None
         # K28 — same logic: a full clear should leave no stashed
         # turning-over slot or force-next bypass.
         self._pending_turning_over_seconds = None

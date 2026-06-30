@@ -1103,6 +1103,72 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_opinion_injection raised: {exc}"
 
     @mcp.tool()
+    def get_stance_persistence_state() -> str:
+        """K46 — dump the "don't cave on taste pushback" state.
+
+        Shows the master switch, the configured warm-stance window, the
+        live ``_stance_recent_window`` countdown + stashed stance snippet
+        (armed post-turn whenever a K29 cue fires, decremented per turn),
+        the one-shot force flag, and the last fire diagnostic. First stop
+        for "why didn't Aiko hold her take when I said 'really?'".
+        """
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "stance_persistence_enabled",
+                    True,
+                )
+            ),
+            "window_setting": int(
+                getattr(
+                    session._memory_settings,
+                    "stance_persistence_window",
+                    3,
+                )
+            ),
+            "recent_window": int(
+                getattr(session, "_stance_recent_window", 0) or 0
+            ),
+            "recent_text": str(
+                getattr(session, "_stance_recent_text", "") or ""
+            ),
+            "force_next": bool(
+                getattr(session, "_stance_persistence_force_next", False)
+            ),
+            "last_fire": getattr(session, "_last_stance_persistence", None),
+        }
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_stance_persistence() -> str:
+        """K46 — arm a one-shot bypass on the warm-stance window.
+
+        Sets ``_stance_persistence_force_next`` so the next provider call
+        fires the "hold your take" cue even without a recent K29 stance.
+        The mild-pushback band gate still applies: send a *mild* push
+        ("really?", "are you sure?") so the calibration regex classifies
+        ``pushback_mild``; a strong correction or a plain statement won't
+        fire. Repro: call this, then send Aiko "really? you don't like
+        that?" and check ``tail_logs(module_contains="stance")`` for
+        ``stance-persistence fire:``.
+        """
+        try:
+            session._stance_persistence_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the recent-stance "
+                        "window; a mild-pushback band is still required"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_stance_persistence raised: {exc}"
+
+    @mcp.tool()
     def get_knowledge_gap_notice_state() -> str:
         """F10f — dump the KnowledgeGapNoticeWorker + provider state.
 

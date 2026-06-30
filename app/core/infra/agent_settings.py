@@ -1713,6 +1713,16 @@ class AgentSettings:
     opinion_injection_enabled: bool = True
     opinion_injection_require_definite: bool = False
 
+    # ── K46: stance persistence ───────────────────────────────────────
+    # Master switch for the "don't cave on taste pushback" cue. When on
+    # and Aiko has recently stated a taste/opinion (a K29 cue fired in
+    # the last ``memory.stance_persistence_window`` turns), a *mild*
+    # pushback from the user surfaces a "hold your take" cue and shields
+    # the K20 calibration from a factual-trust hit (a taste disagreement
+    # shouldn't teach Aiko her facts are suspect). A *strong* correction
+    # is left to K20 untouched. Off → neither the cue nor the shield run.
+    stance_persistence_enabled: bool = True
+
     # ── K28: "What I've been turning over" ────────────────────────────
     # Master switch for the between-session reflection-surfacing cue.
     # Off → no turning-over block ever lands in the prompt. On (default)

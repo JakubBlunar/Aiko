@@ -3545,6 +3545,118 @@ class OpinionInjectionProviderTests(unittest.TestCase):
             self.assertLess(misattunement_pos, opinion_pos)
 
 
+class StancePersistenceProviderTests(unittest.TestCase):
+    """K46 ``stance_persistence`` provider slot tests.
+
+    Per-turn provider that takes ``user_text``. Sits in the T6 detector
+    tier right after K29 ``opinion_injection_block`` so the "share your
+    take" + "don't cave" cues read in order. NOT in the K16 suppression
+    set; NOT dropped under aggressive mode.
+    """
+
+    _CUE = (
+        "Heads-up: Jacob is pushing back a little on a taste you just "
+        "shared (you noted: 'I prefer cozy stories') -- but this is your "
+        "*preference*, not a fact he's correcting."
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sp1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                stance_persistence=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sp1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("pushing back a little", messages[0]["content"])
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sp2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                stance_persistence=lambda _ut: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sp2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("pushing back a little", messages[0]["content"])
+
+    def test_provider_receives_user_text(self) -> None:
+        captured: list[str] = []
+
+        def provider(user_text: str) -> str:
+            captured.append(user_text)
+            return ""
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sp3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(stance_persistence=provider)
+            assembler.assemble_with_budget(
+                "sp3", "really?", context_window=4096, response_budget=256,
+            )
+            self.assertEqual(captured, ["really?"])
+
+    def test_not_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sp4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                stance_persistence=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sp4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn("pushing back a little", messages[0]["content"])
+
+    def test_lands_after_opinion_injection(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sp5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                opinion_injection=lambda _ut: (
+                    "Heads-up: you've got a stored stance on this.\nSay it."
+                ),
+                stance_persistence=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sp5", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            opinion_pos = content.find("stored stance on this")
+            stance_pos = content.find("pushing back a little")
+            self.assertGreater(opinion_pos, -1)
+            self.assertGreater(stance_pos, -1)
+            self.assertLess(opinion_pos, stance_pos)
+
+    def test_tier_slot_after_opinion_injection(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("stance_persistence_block", t6)
+        self.assertLess(
+            t6.index("opinion_injection_block"),
+            t6.index("stance_persistence_block"),
+        )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

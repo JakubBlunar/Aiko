@@ -156,6 +156,14 @@ class MemorySettings:
     opinion_injection_per_hour_cap: int = 6
     opinion_injection_per_day_cap: int = 30
 
+    # ── K46: stance persistence ──────────────────────────────────────
+    # How many turns after Aiko states a taste/opinion (a K29 cue
+    # actually fired) the stance stays "warm" — i.e. a mild pushback in
+    # this window is read as taste disagreement (hold the take, shield
+    # the K20 calibration from a factual-trust hit) rather than a
+    # correction. Decremented once per turn.
+    stance_persistence_window: int = 3
+
     # ── K28 personality backlog: turning-over picker ─────────────────
     # The "What I've been turning over" cue (see ``AgentSettings.
     # turning_over_enabled`` for the master switch) only arms when
@@ -1061,6 +1069,11 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             opinion_injection_per_day_cap=max(
                 0,
                 int(memory_raw.get("opinion_injection_per_day_cap", 30)),
+            ),
+            # ── K46: stance persistence ───────────────────────────────
+            stance_persistence_window=max(
+                0,
+                int(memory_raw.get("stance_persistence_window", 3)),
             ),
             # ── K28: turning-over picker ──────────────────────────────
             # ``turning_over_min_gap_minutes`` clamped to >= 5 so a

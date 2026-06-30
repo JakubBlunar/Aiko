@@ -609,6 +609,7 @@ class SpeakingWorkersInitMixin:
             promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
             opinion_injection=self._render_opinion_injection_block,
+            stance_persistence=self._render_stance_persistence_block,
             absence_curiosity=self._render_absence_curiosity_block,
             reconnection=self._render_reconnection_block,
             session_clock=self._render_session_clock_block,
