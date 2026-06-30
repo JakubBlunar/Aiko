@@ -116,4 +116,51 @@ forwards synthesized ones),
 
 ---
 
-_Shipped avatar items (B1, B2, B4, B5, B6) live in [`shipped.md`](shipped.md) — see B4 for the Phase 5 close-out (new reactions, persona idiom fix, tail-wag breath boost, ear-wiggle override). Open: B3 (blink-rate modulation by arousal) and B7 (open-vocabulary touch gestures)._
+## B8. Live "listening" face — visual backchannel while you type
+
+**✅ Shipped.** Implemented as a `composing` flag on the `ui` store slice
+(set by the chat composer on each keystroke, cleared on send / blur / a
+2.5 s idle debounce), polled per gaze tick through `ChannelStoreSnapshot`.
+Rather than a standalone channel (which would double-write params the
+existing channels already own), the behaviour rides the two natural
+owners: `GazeChannel` gains a typed-listening branch (eye-contact bias +
+low-amplitude sway, outranking thinking drift), and `AmbientBodyChannel`'s
+lean-in now also triggers on `composing`. Both decay out via their
+existing `approach()` easing when the user stops typing. Amplitudes stay
+small and `avatar.expressiveness`-scaled (lean-in). No backend cost, no
+new rig params. Tests: `GazeChannel.test.ts` (typed-listening branch),
+`AmbientBodyChannel.test.ts` (composing lean-in + relax), and
+`ui.composing.test.ts` (store flag). The brow-flicker / anticipatory-nod
+flourishes sketched below are a possible follow-up.
+
+**Motivation.** H6/H7 cover *audible* backchannels in voice mode, but in typed
+mode the avatar is socially dead while the user composes — she stares blankly
+until the message lands. A real listener's face moves *while you talk*: a small
+attentive head-tilt, a brow flicker, a tiny anticipatory nod. If the frontend
+emits a lightweight "user is composing" signal (the same `composer_draft` / P7
+typed-prefetch plumbing), the avatar can run a subtle **listening posture** —
+gaze settles on the user, a low-amplitude attentive micro-motion — that decays
+when the field goes idle and resolves into the real reaction when the message
+arrives. Pure embodiment polish, no backend cost, and it makes typed mode feel
+as *present* as voice. The whole risk is over-animating into the uncanny, so it's
+low-amplitude and `avatar.expressiveness`-scaled like every other continuous
+overlay.
+
+**The enabling fact.** This is a channel, not a model change. A new
+`ListeningChannel` (or a mode on `GazeChannel` / `AmbientBodyChannel`) reading a
+`composing` boolean + idle timer needs no new rig parameters — it reuses head
+angle, gaze focus, and breath amplitude already owned by existing channels.
+
+**Key files.** A new channel under
+[`web/src/live2d/channels/`](../../web/src/live2d/) hooking `tickPreModel`, a
+`composing` flag plumbed from the composer in
+[`ChatView.tsx`](../../web/src/components/ChatView.tsx) into the avatar engine
+(via the store), capability-gated on head-angle / gaze params. Backend: none, or
+at most reuse the typed-prefetch frame. Scale every amplitude by
+`avatar.expressiveness`.
+
+**Effort.** Small–medium (one channel + one frontend flag).
+
+---
+
+_Shipped avatar items (B1, B2, B4, B5, B6) live in [`shipped.md`](shipped.md) — see B4 for the Phase 5 close-out (new reactions, persona idiom fix, tail-wag breath boost, ear-wiggle override). B8 (live "listening" face) shipped — see the ✅ note in its section above. Open: B3 (blink-rate modulation by arousal) and B7 (open-vocabulary touch gestures)._

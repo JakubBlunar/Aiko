@@ -171,6 +171,14 @@ export interface ChannelStoreSnapshot {
    * that pre-date this field — channels default to ``1`` when
    * absent. */
   expressiveness?: number;
+  /** B8 "listening face": true while the user is actively composing a
+   * typed message (set by the chat composer; cleared on send / blur /
+   * idle). ``GazeChannel`` settles her gaze on the user and
+   * ``AmbientBodyChannel`` leans her in while it's true, so typed mode
+   * reads as attentive listening the way voice mode already does.
+   * Optional for backwards-compatibility with snapshots that pre-date
+   * the field — channels default to ``false`` when absent. */
+  composing?: boolean;
   /** K45 mood-inertia damping toggle, mirroring
    * ``avatar.mood_inertia_damping``. When true (the default for
    * absent snapshots is FALSE — the channel only damps when the

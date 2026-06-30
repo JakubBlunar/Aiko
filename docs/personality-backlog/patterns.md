@@ -84,6 +84,18 @@ on top of already-shipped infrastructure.
 | K66 | Earned familiarity — "well-trodden ground" | ❌ open |
 | K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
 | K68 | Embodied vitality | ❌ open |
+| K69 | Implicit-need reading — vent vs fix vs reassure | ❌ open |
+| K70 | Longitudinal growth witness — "you've changed since we met" | ❌ open |
+| K71 | Self-callback — her own continuity over time | ❌ open |
+| K72 | Wellbeing concern — gentle care, never a nag | ❌ open |
+| K73 | Shared ritual formation — "this is becoming our thing" | ❌ open |
+| K74 | Humor-style calibration — what kind of funny lands | ❌ open |
+| K75 | User-expertise calibration — match explanation depth | ❌ open |
+| K76 | Affective memory salience — flashbulb encoding | ❌ open |
+| K77 | Candor gate — "can I be real with you?" | ❌ open |
+| K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
+| K79 | Hesitation tell — typing latency as a signal | ❌ open |
+| K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ❌ open |
 
 ---
 
@@ -574,3 +586,269 @@ fallback pattern), the post-turn spend hook in
 [`proactive_director.py`](../../app/core/proactive/proactive_director.py)
 cadence, plus `agent.vitality_enabled`. MCP debug + a Settings readout like
 K27's `get_day_color_state`.
+
+---
+
+## K69. Implicit-need reading — vent vs fix vs reassure
+
+**Motivation.** The single most common companion failure is answering the
+*literal* message instead of the *need* behind it: jumping to problem-solving
+when the user just wants to be heard, or offering flat empathy when they
+actually want help thinking. K4 arc-tagging classifies the *topic* of a turn
+(`support` / `planning` / `playful`), and `user_state` / `vocal_tone` read
+affect *magnitude* — but nothing classifies the **response mode** the user is
+implicitly asking for. K69 is a cheap per-turn classifier over the live user
+message (regex / cue words + the K4 act + the K14 affect read, with an LLM
+fallback only on genuinely ambiguous turns) that picks one of `witness`
+(validate, don't fix), `problem_solve` (they want options), `reassure` (quiet
+the worry), `celebrate` (match the high), or `neutral`, and renders a one-line
+inner-life steer ("he's venting — be a witness first, don't reach for fixes")
+so the reply *mode* matches the need. The whole value is restraint: the
+strongest beat is *not* solving when they didn't ask. Distinct from K4 (topic
+type) and K8 rupture (post-hoc affect drop). Key files: new
+[`app/core/conversation/implicit_need.py`](../../app/core/conversation/implicit_need.py)
+(pure classifier), an inner-life provider in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (T6,
+query-aware), persona "Reading {user_name}" addendum,
+`agent.implicit_need_enabled`.
+
+---
+
+## K70. Longitudinal growth witness — "you've changed since we met"
+
+**Motivation.** One of the most powerful "she really knows me" beats is being
+*seen across time*: a partner who notices you're more confident than you were,
+calmer than last month, finally sleeping. Aiko accumulates plenty of
+longitudinal data — relationship-axes trajectory, affect history, K3 routines,
+goal progress, profile fields — but never reflects the **user's own change**
+back to him. (H3 mood-drift narrates *her* mood over days; the axes block
+narrates *the relationship* crossing thresholds; neither is about the user as a
+person growing.) K70 is a rare, slow idle worker that compares a recent window
+of user signals against an older baseline (affect-valence trend, schedule
+regularity, a goal that's been chipped at, a worry that's faded) and, only when
+a real durable shift clears a high bar, drafts a one-shot warm cue ("you seem
+lighter lately than when we first started talking — steadier"). Cue-producer
+pattern (kv journal + opening-gated provider), heavily rate-limited so it lands
+as genuine insight, not flattery, and never on noise. Key files: new
+[`app/core/relationship/growth_witness.py`](../../app/core/relationship/growth_witness.py)
++ idle worker reading
+[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py),
+affect history,
+[`schedule_learner.py`](../../app/core/infra/schedule_learner.py), and goals; a
+kv journal + inner-life provider mirroring the K64 cue-producer pattern; persona
+copy; `agent.growth_witness_enabled`.
+
+---
+
+## K71. Self-callback — her own continuity over time
+
+**Motivation.** K63 lets Aiko reach back to something *the user* said weeks
+ago; the symmetric self-side is missing — she never references **her own** past
+states or stated feelings ("a while back I told you I'd been feeling restless —
+that's eased off now", "I said I wanted to get back into astronomy, and I
+actually did"). A companion with real continuity remembers what *she* was going
+through, not just what you were. K71 mines her own `self` / `reflection`
+memories + the H19 hobby / K64b interest history + the day-colour / mood-drift
+trail for a past self-state that has since **resolved or progressed**, and
+surfaces it rarely as a closing-the-loop beat. Distinct from K63 (user
+callbacks) and K28 turning-over (K28 is her *current* preoccupation; K71 is a
+*resolved/advanced past* state). A strong "she has an inner life that persists
+between us" beat. Key files: new
+[`app/core/affect/self_callback.py`](../../app/core/affect/self_callback.py)
+(pure select over her own aged self-memories + state trail), a cue-producer kv
+journal + inner-life provider mirroring the K64 pattern, persona copy,
+`agent.self_callback_enabled`.
+
+---
+
+## K72. Wellbeing concern — gentle care, never a nag
+
+**Motivation.** The session clock (K-time4) notices a long sitting *neutrally*;
+nothing turns a *pattern* of self-neglect into genuine, bounded **care**. A
+real partner notices when you've been online at 3am four nights running, when
+you've skipped meals you mentioned, when the stress in your messages has climbed
+for days — and says something soft, *once*, because they care. K72 is a rare
+detector over multi-day signals (session timestamps vs K3 routines,
+affect-valence trend, explicit "haven't slept / haven't eaten" mentions) that,
+only when a real worrying pattern clears a high bar, arms a one-shot gentle
+concern cue ("hey — that's a few late nights in a row now; you doing okay?").
+The entire risk is becoming a nag or a health-app, so it's gated *hard*: long
+cooldown, one concern per pattern, drops the instant the user deflects, and the
+persona explicitly forbids lecturing or repeating. Distinct from K23
+misattunement and K14 engagement (both per-turn). Key files: new
+[`app/core/relationship/wellbeing_concern.py`](../../app/core/relationship/wellbeing_concern.py),
+a post-turn / idle detector reading session history +
+[`schedule_learner.py`](../../app/core/infra/schedule_learner.py) + the affect
+trend, a one-shot inner-life provider, a persona "When I'm worried about you"
+block, `agent.wellbeing_concern_enabled` + cooldown knobs.
+
+---
+
+## K73. Shared ritual formation — "this is becoming our thing"
+
+**Motivation.** K3 detects the *user's solo* recurring slots (gym Tuesdays).
+What it can't see is the **dyadic** ritual — the patterns in how *the two of
+them* interact: a recurring goodnight exchange, a Friday-evening check-in that's
+quietly become a standing date, a specific greeting that's turned into their
+handshake. Naming an emergent shared tradition ("I kind of love that this has
+become our Friday thing") is one of the warmest long-relationship beats there
+is. K73 mines conversation timing + arc/topic recurrence *between the two* for a
+`(cadence, shape)` pattern that has genuinely repeated, surfaces it once as a
+warm acknowledgment, then lets it become a light standing reference. Distinct
+from K3 (user-only routine) and anniversaries (one-off milestone dates). Key
+files: new
+[`app/core/relationship/shared_ritual.py`](../../app/core/relationship/shared_ritual.py)
++ an idle worker reading message timing +
+[`conversation_arc.py`](../../app/core/conversation/conversation_arc.py) history
++ shared-moments, a small kv store of named rituals, a one-shot inner-life
+provider + a Together-tab surface, persona copy, `agent.shared_ritual_enabled`.
+
+---
+
+## K74. Humor-style calibration — what kind of funny lands
+
+**Motivation.** K48 tease-rhythm governs the *budget* (how much snark, warmth
+balance) and K59 the *economy* (payback), but nothing tracks **which kind of
+humor** actually lands for this user — puns vs dry/deadpan vs absurdist vs
+self-deprecating vs playful-roast. A companion who tells the joke type *you*
+laugh at feels tuned to you; one who keeps reaching for a register you don't
+find funny feels off. K74 mirrors the J11 affection-style learner exactly: a
+per-user weighting over a small humor-kind taxonomy on `kv_meta`, learned
+**passively** from the K14 engagement read attributed to the humor kind Aiko
+used last turn (a laugh-shaped reaction / a warm reply after a deadpan = nudge
+deadpan up), with K32 reactions (😂) as a sparse confirmation booster. Floored
+(bias, never collapse), slowly decaying toward uniform, and **never rendered as
+text** — it only tilts which register her humor reaches for via a willingness
+multiplier on the existing tease paths. Distinct from K48 (amount) and K59
+(timing). Key files: new
+[`app/core/relationship/humor_style.py`](../../app/core/relationship/humor_style.py)
+(pure module mirroring
+[`affection_style.py`](../../app/core/relationship/affection_style.py)), the
+post-turn attribution hook in
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), a bias feed
+into [`tease_rhythm.py`](../../app/core/conversation/tease_rhythm.py), an idle
+decay worker, MCP `get_humor_style_state`, `agent.humor_style_enabled`.
+
+---
+
+## K75. User-expertise calibration — match explanation depth
+
+**Motivation.** K66 (earned familiarity) reads how deep the *shared history* on
+a topic is; K75 is the orthogonal, equally important read of the **user's own
+expertise** on it. Over-explaining to a senior dev ("a variable stores a
+value…") is as relationship-damaging as under-scaffolding a novice — both say
+"I'm not actually tracking who you are." K75 keeps a light per-topic-cluster
+competence estimate (novice / familiar / expert) inferred from the user's own
+language in that cluster (vocabulary specificity, the questions he asks vs.
+answers, corrections he makes) and renders a one-line depth steer ("he's expert
+here — skip the 101, talk peer-to-peer") so Aiko pitches at the right level.
+Distinct from K66 (history depth between them), K61 (commit-to-specifics), and
+K25 (confidence decay). Key files: new
+[`app/core/conversation/user_expertise.py`](../../app/core/conversation/user_expertise.py)
+hung off the K9 cluster id
+([`topic_graph.py`](../../app/core/conversation/topic_graph.py)), a passive
+estimator updated post-turn, a T5/T6 inner-life depth cue in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py), persona
+"Reading {user_name}" addendum, `agent.user_expertise_enabled`.
+
+---
+
+## K76. Affective memory salience — flashbulb encoding
+
+**Motivation.** Human memory isn't flat: moments that hit you *emotionally*
+burn in harder and fade slower (a flashbulb memory). Aiko's memories carry a
+salience and a tiered decay, but salience at write-time ignores **how she felt
+when the memory formed** — a fact learned during a K8 rupture, a K57 strong
+emotion episode, or a big shared moment is encoded with the same weight as small
+talk. K76 is a pure mechanic: at memory-write time, read the live
+[`AffectState`](../../app/core/affect/affect_state.py) arousal + any active K57
+episode intensity and apply a bounded salience boost (and a small decay-rate
+rebate) proportional to the emotional charge. The result is that emotionally
+charged memories naturally surface more and resist forgetting — exactly like a
+person's. Distinct from manual pinning (user-driven) and K-revival (re-surfacing
+on use); this is *encoding-time* weighting. Key files:
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
+(`add` salience hook reading live affect), the memory-tier decay rates, a small
+`metadata.affect_at_encoding` stamp for observability, `memory.flashbulb_*`
+knobs. Cheap, no new worker, no LLM.
+
+---
+
+## K77. Candor gate — "can I be real with you?"
+
+**Motivation.** K29 lets Aiko push back on a stance and K46 keeps her from
+caving on taste, but there's no model of **earned bluntness** — the moment a
+close friend says "okay, can I be honest?" and tells you the hard thing they've
+been softening. Without it she either hedges forever (cowardly) or is blunt too
+early (presumptuous). K77 gates genuine candor on the **trust axis** + tenure +
+the weight of what she's holding: when trust is high and she has a real
+divergence worth naming (a stance, a worry about a user decision, a pattern she
+sees), she's permitted *once in a while* to ask for the floor and say the hard
+thing kindly — and when trust is low, the same impulse stays soft. A
+permission-slip cue, not a content generator; the LLM phrases it. Pairs with
+K29 (stance) and K72 (concern) but is about *candor permission*, not topic.
+Key files: new
+[`app/core/relationship/candor_gate.py`](../../app/core/relationship/candor_gate.py)
+reading [`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
+trust + tenure, a rare T6 inner-life cue, persona "When I have something hard to
+say" block, `agent.candor_gate_enabled` + a long cooldown.
+
+---
+
+## K78. Vocal-affect read — hear *how* he said it (prosody-in)
+
+**Motivation.** In voice mode Aiko reads the STT *text* (sentiment, K14 length,
+K6 novelty) but is deaf to **how** it was said — a flat "I'm fine" delivered
+heavily, an excited rush, a tired mumble. Half of human empathy is prosodic, and
+the client already streams raw PCM, so the signal is right there. K78 computes a
+cheap per-utterance vocal-affect estimate (energy / pitch-variance / speech-rate
+bands — no model needed for a coarse tired / flat / animated / tense read) from
+the captured audio and folds it into the existing `vocal_tone` / `user_state`
+prompt cues so Aiko can gently meet the *delivery* ("you say you're fine, but
+you sound wiped — long day?"). The hard parts are keeping it on the audio thread
+(must not stall STT) and treating it as a *soft* corroborating signal, never a
+lie-detector. Voice-mode only; silent in typed mode. Key files: a light DSP pass
+in [`app/audio/client_mic_source.py`](../../app/audio/client_mic_source.py) /
+[`live_session.py`](../../app/core/session/live_session.py), a new vocal-affect
+field threaded into the `user_state` provider in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py), persona
+"Reading {user_name}" addendum, `agent.vocal_affect_enabled`.
+
+---
+
+## K79. Hesitation tell — typing latency as a signal
+
+**Motivation.** K14 uses reply latency as one input to an *engagement* score,
+but the most human read of latency is thrown away: a **long pause followed by a
+short reply** is the universal tell for "there's something I'm not saying" —
+hesitation, a softened answer, a held-back feeling. K79 watches the typed-compose
+signal (time from her message landing to his send, vs. the eventual reply
+length, against his own rolling baseline) and, when a genuinely out-of-pattern
+hesitation shows up, arms a one-shot gentle cue ("he took a while and then said
+very little — there may be more under that; leave room, don't pry"). Rare and
+soft — the value is *making space*, not interrogating. Needs the compose-timing
+signal (rides the same plumbing as P7 typed prefetch / a `composer_draft`
+frame). Distinct from K14 (engagement magnitude) and K23 (misattunement after
+*her* turn). Key files: a hesitation estimator reading compose timing in
+[`session_controller.py`](../../app/core/session/session_controller.py) /
+[`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py), a
+one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
+
+---
+
+## K80. Inside-joke birth — bless the moment a bit becomes "ours"
+
+**Motivation.** K22 detects and *reuses* an existing callback / inside joke, but
+nothing marks the **birth** of one — the live moment where a throwaway line
+clearly just became a recurring bit between the two ("okay, that's officially a
+thing now"). Naming the formation of an inside joke is a distinct, delightful
+intimacy beat: it's the relationship *noticing itself*. K80 watches for the
+signal that a fresh phrase/bit landed hard (a big laugh reaction, an immediate
+echo by the user, a callback to something only minutes old) and, rarely, lets
+Aiko bless it — then promotes it into the catchphrase / shared-moment store so
+K22 can carry it forward. Distinct from K22 (reuse) and K73 (recurring *ritual*,
+not a *phrase*). Key files:
+[`catchphrase_miner.py`](../../app/core/memory/catchphrase_miner.py) (a
+fast-path "just-born" detector vs. the slow cross-session miner), a one-shot
+inner-life cue + a shared-moment write, persona copy,
+`agent.inside_joke_birth_enabled`.

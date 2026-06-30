@@ -234,8 +234,12 @@ export class AmbientBodyChannel implements AvatarChannel {
       let bodyY = 0;
       let bodyZ = 0;
 
-      // (a) Listening lean-in.
-      const isListeningNow = LISTENING_VOICE_MODES.has(snap.voiceMode);
+      // (a) Listening lean-in — voice listening/transcribing OR (B8)
+      // the user is typing a message, so she leans in attentively in
+      // typed mode too. The ``approach`` easing relaxes the lean back
+      // out when composing clears.
+      const isListeningNow =
+        LISTENING_VOICE_MODES.has(snap.voiceMode) || snap.composing === true;
       this._leanIn = approach(
         this._leanIn,
         isListeningNow ? 1 : 0,

@@ -61,8 +61,8 @@ forces the engine to grow new event types.
 | `LipsyncChannel` | `tickPreModel` | Writes `ParamMouthOpenY` on **`beforeModelUpdate`** so the motion-manager can't clobber it (see §5 of `docs/alexia-model-notes.md`). |
 | `ExpressionChannel` | `onReaction`, `onVoiceMode`, `onBackchannel`, `onExpressionSlotReleased` | Persistent reaction expression + voice-mode override + transient backchannel overlay. |
 | `GestureChannel` | `onOverlay`, `tickTier3` | `wink_left`, `wink_right`, `ear_wiggle` (per-frame drives) + `tail_wag` (sets a deadline read by `AmbientBodyChannel`). |
-| `GazeChannel` | `tickGaze` | Mouse follow + conversation lock + thinking drift + idle break + micro-saccades. |
-| `AmbientBodyChannel` | `onReaction`, `tickTier3` | Auto-blush, auto-sweat, cat-tail sine, body-language sums (lean-in, slump, excited bounce, breath, sass tilt). |
+| `GazeChannel` | `tickGaze` | Mouse follow + conversation lock + **typed-listening (B8: eye-contact while `composing`)** + thinking drift + idle break + micro-saccades. |
+| `AmbientBodyChannel` | `onReaction`, `tickTier3` | Auto-blush, auto-sweat, cat-tail sine, body-language sums (lean-in **(voice listening OR B8 typed `composing`)**, slump, excited bounce, breath, sass tilt). |
 
 ## Tick rates and write-discipline
 

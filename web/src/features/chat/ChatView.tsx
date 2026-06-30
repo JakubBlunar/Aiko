@@ -52,6 +52,12 @@ const REACTION_EMOJI: Record<string, string> = {
 
 const MAX_ATTACHMENTS = 8;
 
+// B8 "listening face": how long after the last keystroke we keep the
+// avatar in its attentive typed-listening posture before relaxing. Short
+// enough that pausing to think relaxes her, long enough that normal
+// inter-keystroke gaps don't flicker the pose.
+const COMPOSING_IDLE_MS = 2500;
+
 // I6: how many older messages to fetch per "Load older" click.
 const OLDER_PAGE_SIZE = 100;
 // react-virtuoso prepend pattern: ``firstItemIndex`` starts at a large
@@ -83,6 +89,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   const historyHasMore = useAssistantStore((s) => s.historyHasMore);
   const setHistoryHasMore = useAssistantStore((s) => s.setHistoryHasMore);
   const prependMessages = useAssistantStore((s) => s.prependMessages);
+  const setComposing = useAssistantStore((s) => s.setComposing);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   useMicCapture({ sendBytes });
@@ -256,6 +263,33 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     return () => window.clearTimeout(id);
   }, [lastTranscript, setLastTranscript]);
 
+  // B8 "listening face": flip the shared ``composing`` flag the avatar
+  // engine polls so typed mode reads as "she's paying attention". A
+  // keystroke marks composing + arms an idle timer; send / blur / empty
+  // draft clear it immediately. The timer relaxes the pose if the user
+  // stops typing without sending.
+  const composingTimerRef = useRef<number | null>(null);
+  const stopComposing = useCallback(() => {
+    if (composingTimerRef.current !== null) {
+      window.clearTimeout(composingTimerRef.current);
+      composingTimerRef.current = null;
+    }
+    setComposing(false);
+  }, [setComposing]);
+  const markComposing = useCallback(() => {
+    setComposing(true);
+    if (composingTimerRef.current !== null) {
+      window.clearTimeout(composingTimerRef.current);
+    }
+    composingTimerRef.current = window.setTimeout(() => {
+      composingTimerRef.current = null;
+      setComposing(false);
+    }, COMPOSING_IDLE_MS);
+  }, [setComposing]);
+  // Clear the pose on unmount so a view switch mid-draft doesn't leave
+  // her stuck leaning in.
+  useEffect(() => stopComposing, [stopComposing]);
+
   // Auto-grow the input textarea up to its max-height so the row doesn't
   // start out as a tall 2-line box but still expands naturally. On phones
   // the floor is a single 40px line and the cap is lower so a long draft
@@ -328,6 +362,9 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         : { type: "chat", text },
     );
     setDraft("");
+    // Sending ends the compose gesture — relax the listening pose now
+    // rather than waiting for the idle debounce.
+    stopComposing();
     // Collapse the auto-grown box back to a single line immediately.
     // The ``[draft]`` effect also does this on the next render, but
     // clearing the inline height here removes any one-frame flash of the
@@ -575,7 +612,15 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             <textarea
               ref={textareaRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                if (e.target.value) {
+                  markComposing();
+                } else {
+                  stopComposing();
+                }
+              }}
+              onBlur={stopComposing}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={

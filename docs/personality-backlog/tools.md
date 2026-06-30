@@ -276,3 +276,26 @@ makes the K/F/J features regression-testable end-to-end. Build on DT1
 prompt + `provider_ms`). Key files: a new `scripts/scenario_runner.py`,
 the MCP message path, `get_last_response_detail`. **Effort.** Medium
 (largely unlocked once DT1 + DT2 exist).
+
+---
+
+## D7. Anticipatory routine assistance — act on what she's learned
+
+**Motivation.** K3 already learns the user's recurring `(weekday, bucket)` slots
+("gym Tuesdays", "work starts ~9am") and the brain-orchestration task framework
+can run real background work, but the two never meet: Aiko *knows* your rhythm
+and *can* do things, yet never **offers** anything anchored to it. The natural
+next beat is gentle anticipation — "you usually start work around now; want me to
+pull up where we left off / your todo for today?" — a learned-routine trigger
+that, at a recurring moment, optionally pre-stages a useful task and offers it
+(never auto-runs anything destructive; reuses the D-approval posture). This is
+where the companion crosses from *reactive* to *quietly helpful*. The whole risk
+is becoming a clingy reminder app, so it's hard-gated: tied to an actually-learned
+routine (high K3 confidence), one offer per slot, easy to wave off, and silent if
+ignored. Distinct from D1 (explicit reminders the user sets) — this is *Aiko*
+noticing the pattern. Key files:
+[`schedule_learner.py`](../../app/core/infra/schedule_learner.py) (the routine
+source) + a routine-trigger worker, the
+[`ProactiveDirector`](../../app/core/proactive/) surface for the offer, the task
+orchestrator for any pre-staged work, `agent.routine_assist_enabled` + cooldowns.
+**Effort.** Medium.

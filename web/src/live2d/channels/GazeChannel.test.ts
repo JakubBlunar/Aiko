@@ -158,6 +158,42 @@ describe("GazeChannel — conversation lock", () => {
   });
 });
 
+describe("GazeChannel — typed-listening (B8)", () => {
+  it("settles gaze on the user (eye-contact Y, small X) while composing, ignoring the cursor", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock } = makeDeps({ voiceMode: "off", composing: true });
+    channel.attach(adapter, deps);
+
+    // Cursor parked at the far edge — composing must override cursor follow.
+    channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 800, clock.now()));
+    const last = adapter.focusCalls[adapter.focusCalls.length - 1];
+    // Sway X is tiny (<= 0.08); Y holds the upward eye-contact bias.
+    expect(Math.abs(last.x)).toBeLessThan(0.12);
+    expect(last.y).toBeGreaterThan(0.12);
+    expect(last.y).toBeLessThan(0.3);
+  });
+
+  it("outranks thinking drift so typing wins over a wander", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock } = makeDeps({
+      voiceMode: "off",
+      composing: true,
+      turnInProgress: true,
+    });
+    channel.attach(adapter, deps);
+    const xs: number[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      clock.advance(50);
+      channel.tickGaze!(clock.now(), 0.05, mouseAt(1600, 100, clock.now()));
+      xs.push(adapter.focusCalls[adapter.focusCalls.length - 1].x);
+    }
+    // Thinking drift would sweep to ~0.35; composing sway is capped near 0.08.
+    expect(Math.max(...xs.map(Math.abs))).toBeLessThan(0.15);
+  });
+});
+
 describe("GazeChannel — idle break", () => {
   it("decays the target toward 0 when the window has lost focus", () => {
     const adapter = new FakeAdapter();
