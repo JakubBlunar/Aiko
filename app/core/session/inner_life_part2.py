@@ -1912,27 +1912,54 @@ class InnerLifePart2Mixin:
         except Exception:
             log.debug("topic-temperature: member walk failed", exc_info=True)
             return ""
+        from app.core.conversation.topic_temperature import (
+            MomentCandidate,
+            render_block,
+            score_cluster,
+        )
+
         vibes: list[str] = []
+        candidates: list[MomentCandidate] = []
         for mid in member_ids:
             mem = store.get(mid)
             if mem is None or getattr(mem, "kind", "") != "shared_moment":
                 continue
             meta = getattr(mem, "metadata", None) or {}
-            vibe = meta.get("vibe") if isinstance(meta, dict) else None
-            if vibe:
-                vibes.append(str(vibe))
+            if not isinstance(meta, dict):
+                continue
+            vibe = meta.get("vibe")
+            if not vibe:
+                continue
+            vibes.append(str(vibe))
+            # H8: keep the moment's summary so we can later name the
+            # origin of the topic's feel.
+            what = str(
+                meta.get("what") or getattr(mem, "content", "") or ""
+            ).strip()
+            candidates.append(
+                MomentCandidate(
+                    moment_id=int(getattr(mem, "id", 0) or 0),
+                    vibe=str(vibe),
+                    what=what,
+                    when=str(meta.get("when") or ""),
+                    created_at=str(getattr(mem, "created_at", "") or ""),
+                )
+            )
         if not vibes:
             return ""
-
-        from app.core.conversation.topic_temperature import (
-            render_block,
-            score_cluster,
-        )
 
         temp = score_cluster(vibes, threshold=(0.0 if force else threshold))
         if temp.dominant is None:
             return ""
-        line = render_block(temp, label or "this topic", self.user_display_name)
+        # H8: stamp / read the per-cluster mood origin so Aiko can name
+        # what gave the topic its feel ("ever since you told me about X").
+        origin_what = self._topic_mood_origin(cid, temp.dominant, candidates)
+        line = render_block(
+            temp,
+            label or "this topic",
+            self.user_display_name,
+            origin_what=origin_what,
+        )
         if not line:
             return ""
 
@@ -1946,6 +1973,7 @@ class InnerLifePart2Mixin:
             "tenderness": temp.tenderness,
             "dominant": temp.dominant,
             "moment_count": temp.moment_count,
+            "origin_what": origin_what,
         }
         log.info(
             "topic-temperature fire: cluster=%s dominant=%s warmth=%.2f "
@@ -1957,6 +1985,81 @@ class InnerLifePart2Mixin:
             temp.moment_count,
         )
         return line
+
+    def _topic_mood_origin(
+        self, cluster_id: int, dominant: str, candidates: list,
+    ) -> str | None:
+        """H8: persist + return the origin moment for a charged cluster.
+
+        Keyed by ``cluster_id`` in the ``aiko.topic_mood_origin`` kv side-
+        table, the origin is the shared moment that *gave* the topic its
+        feel (``topic_temperature.pick_origin``). Stamped the first time a
+        cluster reaches a pole, and re-stamped if the pole later flips
+        (e.g. a warm topic turns tender). Returns the stored summary so
+        ``render_block`` can append the "ever since…" clause, or ``None``
+        when the feature is off / no candidate carries the pole. All paths
+        are best-effort (swallow + log on failure) so origin bookkeeping
+        never breaks the tonal cue.
+        """
+        if not bool(
+            getattr(self._settings.agent, "topic_mood_origin_enabled", True)
+        ):
+            return None
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return None
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+
+        from app.core.conversation.topic_temperature import (
+            KV_MOOD_ORIGIN,
+            ORIGIN_WHAT_MAXLEN,
+            pick_origin,
+        )
+
+        try:
+            raw = chat_db.kv_get(KV_MOOD_ORIGIN)
+            origin_map = _json.loads(raw) if raw else {}
+            if not isinstance(origin_map, dict):
+                origin_map = {}
+        except Exception:
+            log.debug("topic-mood-origin: kv_get/parse failed", exc_info=True)
+            origin_map = {}
+
+        key = str(int(cluster_id))
+        entry = origin_map.get(key)
+        if not isinstance(entry, dict):
+            entry = None
+
+        if entry is None or entry.get("pole") != dominant:
+            cand = pick_origin(candidates, dominant)
+            if cand is not None and cand.what:
+                entry = {
+                    "pole": dominant,
+                    "what": cand.what[:ORIGIN_WHAT_MAXLEN],
+                    "when": cand.when,
+                    "moment_id": cand.moment_id,
+                    "stamped_at": _dt.now(_tz.utc).isoformat(),
+                }
+                origin_map[key] = entry
+                try:
+                    chat_db.kv_set(KV_MOOD_ORIGIN, _json.dumps(origin_map))
+                    log.info(
+                        "topic-mood-origin stamped: cluster=%s pole=%s "
+                        "moment=%s",
+                        cluster_id,
+                        dominant,
+                        cand.moment_id,
+                    )
+                except Exception:
+                    log.debug(
+                        "topic-mood-origin: kv_set failed", exc_info=True
+                    )
+
+        if entry and entry.get("pole") == dominant:
+            what = entry.get("what")
+            return str(what) if what else None
+        return None
 
     def _render_topic_confidence_block(self, user_text: str) -> str:
         """F10i: calibrate how confidently Aiko speaks about the live topic.

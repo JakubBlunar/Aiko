@@ -444,6 +444,7 @@
     "builtin_file_skills_enabled": true,
     "knowledge_gap_notice_enabled": true,
     "topic_temperature_enabled": true,
+    "topic_mood_origin_enabled": true,
     "topic_confidence_enabled": true,
     "upcoming_horizon_enabled": true,
     "cluster_scoped_memory_hygiene_enabled": true,

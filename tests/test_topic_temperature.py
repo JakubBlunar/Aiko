@@ -11,8 +11,13 @@ import unittest
 from dataclasses import dataclass, field
 from typing import Any
 
+import json
+
 from app.core.conversation.topic_temperature import (
+    KV_MOOD_ORIGIN,
     ClusterTemperature,
+    MomentCandidate,
+    pick_origin,
     render_block,
     score_cluster,
 )
@@ -247,6 +252,199 @@ class ProviderTests(unittest.TestCase):
         # Force consumed; min_sim dropped to 0 on the bypass call.
         self.assertFalse(host._topic_temperature_force_next)
         self.assertEqual(host._topic_temperature_last["dominant"], "warm")
+
+
+# ── H8: origin selection + clause (pure) ─────────────────────────────────
+
+
+class PickOriginTests(unittest.TestCase):
+    def _c(self, mid, vibe, what="m", created="2026-01-01") -> MomentCandidate:
+        return MomentCandidate(
+            moment_id=mid, vibe=vibe, what=what, when="", created_at=created,
+        )
+
+    def test_empty_is_none(self) -> None:
+        self.assertIsNone(pick_origin([], "tender"))
+
+    def test_no_pole_match_is_none(self) -> None:
+        # Warm-only candidates can't explain a tender pole.
+        cands = [self._c(1, "warm"), self._c(2, "playful")]
+        self.assertIsNone(pick_origin(cands, "tender"))
+
+    def test_picks_highest_weight_for_pole(self) -> None:
+        cands = [
+            self._c(1, "comfort"),     # tender 1.1
+            self._c(2, "vulnerable"),  # tender 1.4 -> winner
+            self._c(3, "warm"),        # not tender
+        ]
+        best = pick_origin(cands, "tender")
+        self.assertIsNotNone(best)
+        self.assertEqual(best.moment_id, 2)
+
+    def test_recency_breaks_tie(self) -> None:
+        cands = [
+            self._c(1, "warm", created="2026-01-01"),
+            self._c(2, "warm", created="2026-06-01"),  # newer wins
+        ]
+        best = pick_origin(cands, "warm")
+        self.assertEqual(best.moment_id, 2)
+
+
+class OriginRenderTests(unittest.TestCase):
+    def test_tender_appends_origin_clause(self) -> None:
+        out = render_block(
+            ClusterTemperature(0.0, 0.9, "tender", 2),
+            "his dad",
+            "Jacob",
+            origin_what="you told me you lost your dad last year",
+        )
+        self.assertIn("tender ground", out)
+        self.assertIn("ever since", out)
+        self.assertIn("lost your dad", out)
+
+    def test_warm_appends_origin_clause(self) -> None:
+        out = render_block(
+            ClusterTemperature(0.9, 0.0, "warm", 2),
+            "guitar",
+            "Jacob",
+            origin_what="we jammed together for the first time",
+        )
+        self.assertIn("warm spot", out)
+        self.assertIn("traces back", out)
+        self.assertIn("jammed", out)
+
+    def test_no_origin_is_bare_line(self) -> None:
+        out = render_block(
+            ClusterTemperature(0.0, 0.9, "tender", 2), "his dad", "Jacob",
+        )
+        self.assertIn("tender ground", out)
+        self.assertNotIn("ever since", out)
+
+    def test_blank_origin_is_bare_line(self) -> None:
+        out = render_block(
+            ClusterTemperature(0.9, 0.0, "warm", 2),
+            "guitar",
+            "Jacob",
+            origin_what="   ",
+        )
+        self.assertNotIn("traces back", out)
+
+
+# ── H8: provider stamping + read-back ────────────────────────────────────
+
+
+@dataclass
+class _RichMem:
+    kind: str
+    id: int
+    content: str
+    created_at: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class _RichStore:
+    def __init__(self, mems: dict[int, _RichMem]) -> None:
+        self._mems = mems
+
+    def get(self, mid):
+        return self._mems.get(mid)
+
+
+class _FakeChatDb:
+    def __init__(self) -> None:
+        self._kv: dict[str, str] = {}
+
+    def kv_get(self, key: str):
+        return self._kv.get(key)
+
+    def kv_set(self, key: str, value: str) -> None:
+        self._kv[key] = value
+
+
+class OriginProviderTests(unittest.TestCase):
+    def _host(self, *, match, mems, chat_db) -> _Host:
+        host = _Host(
+            _FakeGraph(match=match, members=list(mems.keys())),
+            _RichStore(mems),
+        )
+        host._chat_db = chat_db
+        host._settings.agent.topic_mood_origin_enabled = True
+        return host
+
+    def _moment(self, mid, vibe, what) -> _RichMem:
+        return _RichMem(
+            kind="shared_moment",
+            id=mid,
+            content=what,
+            created_at="2026-01-0%d" % mid,
+            metadata={"vibe": vibe, "what": what, "when": "2026-01-01"},
+        )
+
+    def test_stamps_and_surfaces_origin(self) -> None:
+        db = _FakeChatDb()
+        mems = {
+            20: self._moment(20, "vulnerable", "you opened up about your dad"),
+            21: self._moment(21, "comfort", "I sat with you that night"),
+        }
+        host = self._host(match=(7, "his dad", 0.8), mems=mems, chat_db=db)
+        out = host._render_topic_temperature_block("thinking about my dad")
+        self.assertIn("tender ground", out)
+        self.assertIn("ever since", out)
+        self.assertIn("opened up about your dad", out)
+        # Origin persisted to kv keyed by cluster id.
+        stored = json.loads(db.kv_get(KV_MOOD_ORIGIN))
+        self.assertIn("7", stored)
+        self.assertEqual(stored["7"]["pole"], "tender")
+        self.assertEqual(stored["7"]["moment_id"], 20)
+
+    def test_origin_is_stable_across_fires(self) -> None:
+        db = _FakeChatDb()
+        mems = {
+            20: self._moment(20, "vulnerable", "you opened up about your dad"),
+        }
+        host = self._host(match=(7, "his dad", 0.8), mems=mems, chat_db=db)
+        host._render_topic_temperature_block("about my dad please")
+        host._topic_temperature_cooldown = 0  # clear cooldown
+        # A new vulnerable moment appears, but the origin stays the first.
+        host._memory_store._mems[22] = self._moment(
+            22, "vulnerable", "a totally different admission"
+        )
+        host._topic_graph._members = [20, 22]
+        out = host._render_topic_temperature_block("dad again here")
+        self.assertIn("opened up about your dad", out)
+        self.assertNotIn("totally different admission", out)
+
+    def test_disabled_origin_gives_bare_line(self) -> None:
+        db = _FakeChatDb()
+        mems = {
+            20: self._moment(20, "vulnerable", "you opened up about your dad"),
+        }
+        host = self._host(match=(7, "his dad", 0.8), mems=mems, chat_db=db)
+        host._settings.agent.topic_mood_origin_enabled = False
+        out = host._render_topic_temperature_block("thinking about my dad")
+        self.assertIn("tender ground", out)
+        self.assertNotIn("ever since", out)
+        self.assertIsNone(db.kv_get(KV_MOOD_ORIGIN))
+
+    def test_pole_flip_restamps(self) -> None:
+        db = _FakeChatDb()
+        # Pre-seed a stale warm origin for the cluster.
+        db.kv_set(
+            KV_MOOD_ORIGIN,
+            json.dumps(
+                {"7": {"pole": "warm", "what": "old warm thing",
+                       "when": "", "moment_id": 1, "stamped_at": "x"}}
+            ),
+        )
+        mems = {
+            20: self._moment(20, "vulnerable", "you opened up about your dad"),
+        }
+        host = self._host(match=(7, "his dad", 0.8), mems=mems, chat_db=db)
+        out = host._render_topic_temperature_block("thinking about my dad")
+        self.assertIn("tender ground", out)
+        self.assertIn("opened up about your dad", out)
+        stored = json.loads(db.kv_get(KV_MOOD_ORIGIN))
+        self.assertEqual(stored["7"]["pole"], "tender")
 
 
 if __name__ == "__main__":

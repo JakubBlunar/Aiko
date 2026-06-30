@@ -331,6 +331,7 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         # Defaults.
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.agent.topic_temperature_enabled)
+        self.assertTrue(result.agent.topic_mood_origin_enabled)  # H8
         self.assertAlmostEqual(result.memory.topic_temperature_min_sim, 0.45)
         self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.5)
         self.assertEqual(
@@ -338,7 +339,10 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
         # Overrides + clamps.
         path = self._write_config(
-            agent_extra={"topic_temperature_enabled": False},
+            agent_extra={
+                "topic_temperature_enabled": False,
+                "topic_mood_origin_enabled": False,  # H8
+            },
             memory_extra={
                 "topic_temperature_min_sim": 2.0,        # clamped to 1.0
                 "topic_temperature_threshold": -1.0,     # clamped to 0.0
@@ -347,6 +351,7 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.topic_temperature_enabled)
+        self.assertFalse(result.agent.topic_mood_origin_enabled)  # H8
         self.assertAlmostEqual(result.memory.topic_temperature_min_sim, 1.0)
         self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.0)
         self.assertEqual(result.memory.topic_temperature_cooldown_turns, 0)

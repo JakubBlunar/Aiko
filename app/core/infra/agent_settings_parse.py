@@ -105,6 +105,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_temperature_enabled=bool(
                 agent_raw.get("topic_temperature_enabled", True),
             ),
+            topic_mood_origin_enabled=bool(
+                agent_raw.get("topic_mood_origin_enabled", True),
+            ),
             topic_confidence_enabled=bool(
                 agent_raw.get("topic_confidence_enabled", True),
             ),
