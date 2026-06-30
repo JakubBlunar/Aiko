@@ -698,6 +698,174 @@ def register(mcp, session: "SessionController") -> None:
             return f"reroll_day_color raised: {exc}"
 
     @mcp.tool()
+    def get_mood_drift_state() -> str:
+        """H3 — dump the live mood-drift narrator state.
+
+        Returns a JSON dict with the master switch
+        (``agent.mood_drift_enabled``), the sampler cadence + cooldown
+        knobs, the daily sample ring (count + the trailing few points),
+        the cooldown / signature watermarks, and a dry-run of
+        :func:`mood_drift.detect_drift` over the live ring (the finding
+        that *would* surface, plus whether it's currently gated by the
+        cooldown or the signature watermark).
+
+        Pairs with ``force_mood_drift_sample`` / ``force_mood_drift_
+        surface`` for end-to-end repro:
+
+        1. ``force_mood_drift_sample`` a few times (or seed the ring) so
+           ``detect_drift`` has something to find.
+        2. ``get_mood_drift_state`` — read ``would_surface``.
+        3. ``force_mood_drift_surface`` then send a message — the
+           reflective line lands in ``get_last_response_detail``.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import mood_drift as _md
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            samples: list = []
+            last_at = None
+            last_sig = None
+            if chat_db is not None:
+                try:
+                    samples = _md.deserialize_samples(
+                        chat_db.kv_get(_md.KV_SAMPLES)
+                    )
+                except Exception:
+                    samples = []
+                try:
+                    last_at = chat_db.kv_get(_md.KV_LAST_SURFACED_AT)
+                    last_sig = chat_db.kv_get(_md.KV_LAST_SIGNATURE)
+                except Exception:
+                    last_at, last_sig = None, None
+
+            verdict = _md.detect_drift(samples)
+            cooldown_days = float(
+                getattr(agent, "mood_drift_cooldown_days", 4.0)
+            )
+            cooldown_remaining = 0.0
+            if last_at and cooldown_days > 0:
+                try:
+                    prev = datetime.fromisoformat(
+                        str(last_at).replace("Z", "+00:00")
+                    )
+                    if prev.tzinfo is None:
+                        prev = prev.replace(tzinfo=timezone.utc)
+                    elapsed = (
+                        datetime.now(timezone.utc) - prev
+                    ).total_seconds() / 86400.0
+                    cooldown_remaining = round(max(0.0, cooldown_days - elapsed), 3)
+                except Exception:
+                    cooldown_remaining = 0.0
+
+            would: dict | None = None
+            if verdict is not None:
+                gated_sig = bool(last_sig and verdict.signature == last_sig)
+                would = {
+                    "kind": verdict.kind,
+                    "axis": verdict.axis,
+                    "magnitude": verdict.magnitude,
+                    "signature": verdict.signature,
+                    "summary": verdict.summary,
+                    "gated_by_signature": gated_sig,
+                    "gated_by_cooldown": (not gated_sig)
+                    and cooldown_remaining > 0,
+                }
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "mood_drift_enabled", True)
+                    ),
+                    "interval_seconds": int(
+                        getattr(
+                            agent, "mood_drift_check_interval_seconds", 3600,
+                        )
+                    ),
+                    "cooldown_days": cooldown_days,
+                    "cooldown_remaining_days": cooldown_remaining,
+                    "sample_count": len(samples),
+                    "samples_tail": [s.to_dict() for s in samples[-6:]],
+                    "last_surfaced_at": last_at,
+                    "last_signature": last_sig,
+                    "would_surface": would,
+                    "force_surface_armed": bool(
+                        getattr(session, "_mood_drift_force_surface", False)
+                    ),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_mood_drift_state raised: {exc}"
+
+    @mcp.tool()
+    def force_mood_drift_sample() -> str:
+        """H3 — record one mood/axes sample into the ring right now.
+
+        Respects the once-per-day dedupe (same contract as the worker):
+        the sample only lands if today's date isn't already in the ring.
+        Returns whether a write happened + the new ring count.
+        """
+        try:
+            from datetime import datetime
+
+            from app.core.affect.mood_drift_worker import record_daily_sample
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat_db"}, indent=2)
+            samples, wrote = record_daily_sample(
+                chat_db=chat_db,
+                affect_store=session._affect_store,
+                axes_store=getattr(session, "_relationship_axes_store", None),
+                user_id=session._user_id,
+                now=datetime.now().astimezone(),
+            )
+            return json.dumps(
+                {
+                    "wrote": bool(wrote),
+                    "count": len(samples),
+                    "latest": samples[-1].to_dict() if samples else None,
+                    "note": (
+                        "one sample per local day; wrote=false means "
+                        "today's sample already existed"
+                    ),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"force_mood_drift_sample raised: {exc}"
+
+    @mcp.tool()
+    def force_mood_drift_surface() -> str:
+        """H3 — arm a one-shot bypass of the cooldown + signature gates.
+
+        Sets ``_mood_drift_force_surface`` so the next provider call
+        renders whatever :func:`mood_drift.detect_drift` finds in the
+        live ring (if anything) without consuming the cooldown / writing
+        the watermark. If the ring has no detectable drift the cue is
+        still empty — seed it with ``force_mood_drift_sample`` first.
+        """
+        try:
+            session._mood_drift_force_surface = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call renders the live verdict "
+                        "(if any) bypassing cooldown + signature; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_mood_drift_surface raised: {exc}"
+
+    @mcp.tool()
     def get_weather_state() -> str:
         """H11 — dump the live weather-sync state.
 

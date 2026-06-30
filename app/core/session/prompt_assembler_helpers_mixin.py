@@ -138,6 +138,7 @@ class PromptAssemblerHelpersMixin:
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
         mood_inertia: Callable[[], str] | None = None,
+        mood_drift: Callable[[], str] | None = None,
         self_correction: Callable[[], str] | None = None,
         promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
@@ -262,6 +263,8 @@ class PromptAssemblerHelpersMixin:
             self._rupture_provider = rupture
         if mood_inertia is not None:
             self._mood_inertia_provider = mood_inertia
+        if mood_drift is not None:
+            self._mood_drift_provider = mood_drift
         if self_correction is not None:
             self._self_correction_provider = self_correction
         if promise_followthrough is not None:

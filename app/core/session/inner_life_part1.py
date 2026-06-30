@@ -420,6 +420,117 @@ class InnerLifePart1Mixin:
             log.debug("day_color block render failed", exc_info=True)
             return ""
 
+    def _render_mood_drift_block(self) -> str:
+        """H3: surface a rare, gentle note when mood / relationship drift.
+
+        Reads the daily sample ring written by
+        :class:`~app.core.affect.mood_drift_worker.MoodDriftSampleWorker`
+        (with a cheap lazy-sample fallback so the ring keeps growing even
+        when the idle scheduler is starved), runs the pure
+        :func:`mood_drift.detect_drift` over it, and surfaces ONE finding
+        at a time gated by:
+
+        * a per-finding signature watermark (``aiko.mood_drift_last_
+          signature``) so the *same* ongoing finding never re-surfaces;
+        * a wall-clock cooldown (``agent.mood_drift_cooldown_days``) so
+          two *different* findings can't fire back-to-back.
+
+        The MCP ``force_mood_drift_surface`` one-shot bypasses both gates.
+        Best-effort: every failure path returns ``""`` so a corrupt kv row
+        never disturbs prompt assembly.
+        """
+        agent_settings = self._settings.agent
+        if not bool(getattr(agent_settings, "mood_drift_enabled", True)):
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import mood_drift as _md
+            from app.core.affect.mood_drift_worker import record_daily_sample
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+            now = datetime.now().astimezone()
+
+            # Lazy daily sample — seatbelt for a starved idle scheduler.
+            try:
+                samples, _wrote = record_daily_sample(
+                    chat_db=chat_db,
+                    affect_store=self._affect_store,
+                    axes_store=getattr(self, "_relationship_axes_store", None),
+                    user_id=self._user_id,
+                    now=now,
+                )
+            except Exception:
+                log.debug("mood_drift lazy sample failed", exc_info=True)
+                samples = _md.deserialize_samples(
+                    chat_db.kv_get(_md.KV_SAMPLES)
+                )
+
+            verdict = _md.detect_drift(samples)
+
+            if bool(getattr(self, "_mood_drift_force_surface", False)):
+                # One-shot MCP override: render the live verdict (if any)
+                # without touching the cooldown / watermark.
+                self._mood_drift_force_surface = False
+                if verdict is None:
+                    return ""
+                return _md.render_block(
+                    verdict, user_display_name=self.user_display_name,
+                )
+
+            if verdict is None:
+                return ""
+
+            try:
+                last_at = chat_db.kv_get(_md.KV_LAST_SURFACED_AT)
+                last_sig = chat_db.kv_get(_md.KV_LAST_SIGNATURE)
+            except Exception:
+                last_at, last_sig = None, None
+
+            # Already surfaced this exact finding — stay quiet.
+            if last_sig and verdict.signature == last_sig:
+                return ""
+
+            cooldown_days = float(
+                getattr(agent_settings, "mood_drift_cooldown_days", 4.0)
+            )
+            if last_at and cooldown_days > 0:
+                try:
+                    prev = datetime.fromisoformat(
+                        str(last_at).replace("Z", "+00:00")
+                    )
+                    if prev.tzinfo is None:
+                        prev = prev.replace(tzinfo=timezone.utc)
+                    elapsed_days = (
+                        datetime.now(timezone.utc) - prev
+                    ).total_seconds() / 86400.0
+                    if elapsed_days < cooldown_days:
+                        return ""
+                except Exception:
+                    pass
+
+            block = _md.render_block(
+                verdict, user_display_name=self.user_display_name,
+            )
+            if not block:
+                return ""
+            try:
+                chat_db.kv_set(_md.KV_LAST_SURFACED_AT, now.isoformat())
+                chat_db.kv_set(_md.KV_LAST_SIGNATURE, verdict.signature)
+            except Exception:
+                log.debug("mood_drift watermark write failed", exc_info=True)
+            log.info(
+                "mood-drift fire: kind=%s axis=%s mag=%.3f sig=%s",
+                verdict.kind, verdict.axis, verdict.magnitude,
+                verdict.signature,
+            )
+            return block
+        except Exception:
+            log.debug("mood_drift block render failed", exc_info=True)
+            return ""
+
     def _render_vulnerability_budget_block(self) -> str:
         """K15: render the self-disclosure / vulnerability budget cue.
 

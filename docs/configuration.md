@@ -193,6 +193,12 @@ Typed-mode runs an independent timer so the cadence can differ (typing sessions 
 
 - `agent.weather_sync_enabled` *(bool, `false`)* — master switch for the **passive ambient** weather feed. On (with a resolved `weather.location_name`), a low-frequency worker pulls current conditions into a terse "shared sky" prompt cue, tints the persona-window backdrop, and can nudge the K27 daily colour + seasonal room decor. Coarse city-granularity location only, never GPS. Off by default. The on-demand weather *tools* are gated separately by `tools.weather`. Privacy posture: see `docs/weather-sync.md`.
 
+### Mood-drift narrator (H3)
+
+- `agent.mood_drift_enabled` *(bool, `true`)* — master switch for the slow, read-only awareness of how the user's mood (`valence`) and the four relationship axes have drifted over days/weeks. On → a daily idle-worker samples one point per local day into a small `kv_meta` ring, and a provider surfaces ONE gentle reflective cue per finding (sustained low / recovery / single-axis drift). Off → no sampling, no cue.
+- `agent.mood_drift_check_interval_seconds` *(int, `3600`, min `60`)* — sampler cadence. The tick is cheap (a date compare); the sample only lands once per local day.
+- `agent.mood_drift_cooldown_days` *(float, `4.0`, min `0`)* — minimum days between two surfaced notes. The per-finding signature watermark already prevents the *same* finding repeating; this guards against two *different* findings firing back-to-back.
+
 ### Shared moments + relationship axes (schema v7)
 
 - `agent.shared_moments_enabled` *(bool, `true`)* — master switch for the whole shared-moments subsystem (inline `[[moment:]]` tags, the LLM detector, the Together tab, anniversaries). Off → `[[moment:]]` tags are still stripped from chat but never persisted.

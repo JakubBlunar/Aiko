@@ -112,6 +112,8 @@ Completed work, split by family so each file stays small (the combined log had g
 ## [Shipped — Immersion polish (H-series)](shipped/immersion.md)
 
 - [H0. Intentional-placement hold — workers defer to deliberate choices](shipped/immersion.md#h0-intentional-placement-hold--workers-defer-to-deliberate-choices)
+- [H3. Mood-drift narrator](shipped/immersion.md#h3-mood-drift-narrator)
+- [H4. Document-recall recency boost](shipped/immersion.md#h4-document-recall-recency-boost)
 - [H9. Aiko's diary — a readable window into her inner life](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life)
 - [H11. Real-world co-location — weather + season sync](shipped/immersion.md#h11-real-world-co-location--weather--season-sync)
 - [H13. Idle worker actually moves Aiko around the room](shipped/immersion.md#h13-idle-worker-actually-moves-aiko-around-the-room)
