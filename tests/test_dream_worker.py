@@ -217,5 +217,72 @@ class DreamWorkerTests(unittest.TestCase):
         self.assertLess(len(out), 260)
 
 
+class HotClusterTests(unittest.TestCase):
+    """K65e: ground the dream in the day's hot K9 clusters."""
+
+    @staticmethod
+    def _user(ollama: _FakeOllama) -> str:
+        return next(
+            m for m in ollama.calls[0]["messages"] if m["role"] == "user"
+        )["content"]
+
+    def test_hot_clusters_land_in_prompt(self) -> None:
+        f = _Fixture()
+        try:
+            ollama = _FakeOllama("Turning over the rust thing.")
+            worker = _make_worker(fixture=f, ollama=ollama)
+            mem = worker.maybe_run(
+                user_id="u1",
+                session_key="s1",
+                hours_since_last=10.0,
+                rolling_summary="We talked shop.",
+                hot_clusters=["rust borrow checker", "weekend cooking"],
+            )
+            self.assertIsNotNone(mem)
+            user = self._user(ollama)
+            self.assertIn("Threads that kept coming up lately:", user)
+            self.assertIn("rust borrow checker", user)
+            self.assertIn("weekend cooking", user)
+        finally:
+            f.close()
+
+    def test_hot_clusters_alone_does_not_trigger(self) -> None:
+        f = _Fixture()
+        try:
+            ollama = _FakeOllama()
+            worker = _make_worker(fixture=f, ollama=ollama)
+            mem = worker.maybe_run(
+                user_id="u1",
+                session_key="s1",
+                hours_since_last=10.0,
+                rolling_summary="",
+                recent_callbacks=None,
+                recent_self_memories=None,
+                hot_clusters=["rust borrow checker"],
+            )
+            self.assertIsNone(mem)
+            self.assertEqual(ollama.calls, [])
+            self.assertEqual(worker.stats()["skipped_no_context"], 1)
+        finally:
+            f.close()
+
+    def test_no_hot_clusters_omits_line(self) -> None:
+        f = _Fixture()
+        try:
+            ollama = _FakeOllama("A quiet thought.")
+            worker = _make_worker(fixture=f, ollama=ollama)
+            worker.maybe_run(
+                user_id="u1",
+                session_key="s1",
+                hours_since_last=10.0,
+                rolling_summary="We talked shop.",
+            )
+            self.assertNotIn(
+                "Threads that kept coming up lately:", self._user(ollama)
+            )
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":
     unittest.main()

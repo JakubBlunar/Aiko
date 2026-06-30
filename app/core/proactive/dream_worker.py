@@ -132,6 +132,7 @@ class DreamWorker:
         rolling_summary: str = "",
         recent_callbacks: list[str] | None = None,
         recent_self_memories: list[str] | None = None,
+        hot_clusters: list[str] | None = None,
         affect: "AffectState | None" = None,
         on_memory_added: Callable[["Memory"], None] | None = None,
     ) -> "Memory | None":
@@ -161,6 +162,11 @@ class DreamWorker:
         rolling = (rolling_summary or "").strip()
         callbacks = [c.strip() for c in (recent_callbacks or []) if c and c.strip()]
         selfs = [s.strip() for s in (recent_self_memories or []) if s and s.strip()]
+        # K65e: the day's hot clusters are *flavour* — they ground the dream
+        # on a recent topic but never on their own justify a dream (so a
+        # boot with only cluster labels and no real recent content stays
+        # silent, mirroring the K65d self-image stance).
+        hot = [h.strip() for h in (hot_clusters or []) if h and h.strip()]
         if not (rolling or callbacks or selfs):
             self._stats["skipped_no_context"] += 1
             return None
@@ -173,6 +179,7 @@ class DreamWorker:
             rolling_summary=rolling,
             callbacks=callbacks,
             self_memories=selfs,
+            hot_clusters=hot,
             affect=affect,
         )
         try:
@@ -258,6 +265,7 @@ class DreamWorker:
         callbacks: list[str],
         self_memories: list[str],
         affect: "AffectState | None",
+        hot_clusters: list[str] | None = None,
     ) -> str:
         parts: list[str] = [
             f"Hours since last conversation: {hours_since_last:.1f}",
@@ -279,6 +287,9 @@ class DreamWorker:
         if self_memories:
             joined = "; ".join(s[:160] for s in self_memories[:3])
             parts.append(f"Things you've been quietly thinking about yourself: {joined}")
+        if hot_clusters:
+            joined = ", ".join(h[:80] for h in hot_clusters[:3])
+            parts.append(f"Threads that kept coming up lately: {joined}")
         return "\n\n".join(parts)
 
 

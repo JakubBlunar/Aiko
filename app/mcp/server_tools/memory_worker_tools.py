@@ -1612,6 +1612,125 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_interest_drift_surface raised: {exc}"
 
     @mcp.tool()
+    def get_dormant_interest_state() -> str:
+        """K67 — dump the dormant-interest re-opener worker + provider state.
+
+        Shows the master switch, the worker registration, the kv journal ring
+        of drafted re-openers (``aiko.dormant_interests`` — topic + dormancy
+        age + size), the per-topic cooldown map, the surfaced-keys set and the
+        wall-clock surfacing-cooldown stamp the provider tracks, and the
+        one-shot provider force flag. First stop for "why didn't Aiko re-open
+        X that we used to talk about all the time?". Remember the provider also
+        needs a live conversational lull (K18 ``last_mean`` below the
+        mild-stagnation threshold) to surface — ``force_dormant_interest_surface``
+        bypasses that.
+        """
+        worker = getattr(session, "_dormant_interest_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "dormant_interest_enabled", True,
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_dormant_interest_force_next", False)
+            ),
+        }
+        detector = getattr(session, "_topic_stagnation_detector", None)
+        out["lull_mean"] = getattr(detector, "last_mean", None)
+        out["lull_threshold"] = float(
+            getattr(
+                session._memory_settings, "stagnation_mild_threshold", 0.18,
+            )
+        )
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                from app.core.proactive.dormant_interest_worker import (
+                    load_dormant,
+                )
+
+                out["journal"] = load_dormant(chat_db.kv_get)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["journal_error"] = str(exc)
+            try:
+                raw = chat_db.kv_get("dormant_interest.surfaced_keys")
+                out["surfaced_keys"] = json.loads(raw) if raw else []
+            except Exception:
+                out["surfaced_keys"] = []
+            try:
+                out["surfaced_clock"] = chat_db.kv_get(
+                    "dormant_interest.surfaced_clock"
+                )
+            except Exception:
+                out["surfaced_clock"] = None
+            try:
+                raw = chat_db.kv_get("dormant_interest.topic_cooldowns")
+                out["topic_cooldowns"] = json.loads(raw) if raw else {}
+            except Exception:
+                out["topic_cooldowns"] = {}
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_dormant_interest() -> str:
+        """K67 — run the DormantInterestWorker once, bypassing the caps.
+
+        Scans cluster activity and drafts the most-dormant qualifying interest
+        even if it's on its per-topic cooldown or the daily cap is spent (a
+        cluster must still clear the ``min_size`` peak-mass + ``dormant_days``
+        age gates — there must actually be a once-big topic that's gone quiet).
+        Returns the run result (``drafted``, ``topic``, ``days_since`` …) or a
+        skip reason. Pair with ``force_dormant_interest_surface`` +
+        ``send_message`` to land the cue.
+        """
+        worker = getattr(session, "_dormant_interest_worker", None)
+        if worker is None:
+            return (
+                "dormant_interest worker not registered "
+                "(agent.dormant_interest_enabled may be off, or no memory "
+                "store / topic graph)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_dormant_interest raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_dormant_interest_surface() -> str:
+        """K67 — arm a one-shot bypass on the provider's gates.
+
+        Sets ``_dormant_interest_force_next`` so the next provider call
+        surfaces the newest journal entry regardless of the natural-lull gate,
+        the wall-clock surfacing cooldown, or the surfaced-keys set (the ring
+        must still be non-empty — draft one first via
+        ``force_dormant_interest``). Then ``send_message`` and verify the "we
+        haven't talked about X in ages" line lands in
+        ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._dormant_interest_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call surfaces the newest re-opener, "
+                        "ignoring the lull + cooldown + surfaced gates"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_dormant_interest_surface raised: {exc}"
+
+    @mcp.tool()
     def get_curiosity_gradient_state() -> str:
         """K64c — dump the curiosity-gradient worker + provider state.
 

@@ -248,6 +248,14 @@ class AgentSettings:
     # live turn is on either topic. Off → the worker never registers and the
     # provider stays empty. Cadence / thresholds live under MemorySettings.
     curiosity_gradient_enabled: bool = True
+    # K67: master switch for the dormant-interest re-opener. When on, the
+    # DormantInterestWorker notices a topic cluster that was once a genuine,
+    # high-mass user interest and has since gone quiet for weeks, and the
+    # inner-life provider surfaces a rare, warm "we haven't talked about X in
+    # ages — still into that?" re-opener on a natural conversational lull.
+    # Off → the worker never registers and the provider stays empty. Cadence
+    # / thresholds live under MemorySettings.
+    dormant_interest_enabled: bool = True
     # K64d: master switch for knowledge-map self-reflection. When on, the
     # KnowledgeMapReflectionWorker periodically reads the *shape* of the topic
     # graph (richest territories + under-explored ones), runs a worker-LLM
@@ -341,6 +349,15 @@ class AgentSettings:
     # writes beliefs and the gap detector still surfaces mismatches;
     # only the autonomous inference pass is suppressed.
     belief_worker_enabled: bool = True
+    # K65b master switch: fold the K9 interest map into the belief
+    # worker's extraction prompt (prioritise the densest clusters +
+    # re-check active beliefs sitting on them). When off the worker
+    # mines the flat last-N user turns exactly as it did pre-K65b. The
+    # ``memory.belief_worker_interest_top_n`` / ``_reconsider_max`` knobs
+    # tune the behaviour; this switch turns it off wholesale (and on a
+    # cold store with no labelled clusters the worker is byte-identical
+    # to the legacy path regardless).
+    belief_interest_bias_enabled: bool = True
     # Hourly + daily caps on LLM extraction calls the worker is
     # allowed to issue. Lower-cap by default than the F1 fact-checker
     # because belief inference is a "nice-to-have" mining job, not a
@@ -878,6 +895,14 @@ class AgentSettings:
     # Self-image pulse: once per UTC day in the first speaking window after
     # midnight. ``enabled=False`` skips entirely.
     self_image_pulse_enabled: bool = True
+    # K65d: seed the self-image pulse from the K9 interest map. When on
+    # (default) the daily rewrite is handed a "lately you've been spending
+    # time on: X, Y, Z" line (the densest topic clusters) so her
+    # self-narrative can legitimately reflect what she's been engaging with
+    # ("lately I've been drawn to …"). Off → the pulse uses only her
+    # top-salience self/reflection memories as before. No effect on a cold /
+    # unlabelled store (the provider returns nothing).
+    self_image_interest_seed_enabled: bool = True
     # ``num_predict`` ceiling for the self-image LLM call. The prompt asks
     # for a 60–120 word paragraph (~160 tokens), but reasoning models like
     # qwen3.x can leak chain-of-thought into the response and eat budget
@@ -1943,6 +1968,18 @@ class AgentSettings:
     # resume opener can prefer it. Set ``enabled=false`` to disable.
     dream_worker_enabled: bool = True
     dream_worker_min_hours_since_last: float = 6.0
+    # K65e: ground the dream in the day's hot K9 cluster. When on (default)
+    # the dream seed gains a "threads that kept coming up lately: …" line of
+    # the most recently-active established clusters (within
+    # ``dream_hot_cluster_recency_days``) so "I kept turning over your X"
+    # lands on a real, recent topic instead of generic summary material.
+    # Off → the dream seeds from summary + callbacks + self memories only.
+    # No effect on a cold / non-persistent graph.
+    dream_hot_cluster_enabled: bool = True
+    # A cluster counts as part of "the day's" activity when its newest
+    # member is no older than this many days. Keeps the dream anchored to
+    # genuinely recent threads, not a months-old interest.
+    dream_hot_cluster_recency_days: float = 3.0
 
     # ── Catchphrase miner (Phase 2c) ──────────────────────────────────
     # Walks the recent history and promotes 3-7-word phrases that recur
@@ -1958,6 +1995,16 @@ class AgentSettings:
     curiosity_worker_min_turns_between: int = 3
     curiosity_worker_min_seconds_between: float = 60.0
     curiosity_worker_max_user_word_count: int = 8
+    # K65c: cluster-aware re-anchor. When on (default) the worker, on an
+    # eligible shallow/idle turn, anchors its follow-up on a *known-but-
+    # quiet* K9 interest (an established cluster the user hasn't touched in
+    # a while) instead of echoing their literal last words. Falls back to
+    # the legacy literal-words prompt when no quiet interest is available
+    # (cold / non-persistent graph). Off → pure legacy behaviour.
+    curiosity_worker_cluster_anchor_enabled: bool = True
+    # A cluster counts as "quiet" once its newest member is at least this
+    # many days old. Higher → only reach back to long-dormant interests.
+    curiosity_worker_quiet_days: float = 7.0
     # ── F2.1 personality backlog: knowledge-gap memory-match resolver ─
     # Companion to F1's web-search resolver. F1 closes a gap by going
     # to look the answer up; this worker closes it by noticing the

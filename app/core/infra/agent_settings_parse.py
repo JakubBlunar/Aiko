@@ -93,6 +93,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             interest_drift_enabled=bool(
                 agent_raw.get("interest_drift_enabled", True),
             ),
+            dormant_interest_enabled=bool(
+                agent_raw.get("dormant_interest_enabled", True),
+            ),
             curiosity_gradient_enabled=bool(
                 agent_raw.get("curiosity_gradient_enabled", True),
             ),
@@ -143,6 +146,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             belief_worker_enabled=bool(
                 agent_raw.get("belief_worker_enabled", True),
+            ),
+            belief_interest_bias_enabled=bool(
+                agent_raw.get("belief_interest_bias_enabled", True),
             ),
             belief_worker_per_hour_cap=max(
                 0, int(agent_raw.get("belief_worker_per_hour_cap", 8)),
@@ -606,6 +612,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             agenda_groom_every_n_turns=max(1, int(agent_raw.get("agenda_groom_every_n_turns", 8))),
             arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
             self_image_pulse_enabled=bool(agent_raw.get("self_image_pulse_enabled", True)),
+            self_image_interest_seed_enabled=bool(
+                agent_raw.get("self_image_interest_seed_enabled", True),
+            ),
             self_image_max_tokens=max(120, int(agent_raw.get("self_image_max_tokens", 320))),
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
@@ -1483,6 +1492,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
+            dream_hot_cluster_enabled=bool(
+                agent_raw.get("dream_hot_cluster_enabled", True),
+            ),
+            dream_hot_cluster_recency_days=max(
+                0.0, float(agent_raw.get("dream_hot_cluster_recency_days", 3.0)),
+            ),
             dream_worker_min_hours_since_last=max(
                 0.0, float(agent_raw.get("dream_worker_min_hours_since_last", 6.0)),
             ),
@@ -1507,6 +1522,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             curiosity_worker_max_user_word_count=max(
                 1, int(agent_raw.get("curiosity_worker_max_user_word_count", 8)),
+            ),
+            curiosity_worker_cluster_anchor_enabled=bool(
+                agent_raw.get("curiosity_worker_cluster_anchor_enabled", True),
+            ),
+            curiosity_worker_quiet_days=max(
+                0.0, float(agent_raw.get("curiosity_worker_quiet_days", 7.0)),
             ),
             gap_resolver_enabled=bool(
                 agent_raw.get("gap_resolver_enabled", True),

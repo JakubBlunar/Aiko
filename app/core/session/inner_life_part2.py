@@ -1730,6 +1730,151 @@ class InnerLifePart2Mixin:
             "you announce. If it doesn't fit, just engage normally."
         )
 
+    def _render_dormant_interest_block(self) -> str:
+        """K67: gently re-open a once-loved topic that's gone quiet.
+
+        Consumer side of the
+        :class:`~app.core.proactive.dormant_interest_worker.DormantInterestWorker`
+        producer. The worker finds a topic cluster that was once a genuine,
+        high-mass user interest and has since gone silent for weeks, and
+        drafts it into the ``aiko.dormant_interests`` kv ring during quiet
+        windows. This provider surfaces one **only on a natural conversational
+        lull** (the K18 ``TopicStagnationDetector`` standing reading dips below
+        the mild-stagnation threshold) — the dormant interest by definition
+        isn't the live topic, so unlike the K64b drift cue this reaches for
+        something *off* the current thread, which is exactly why it waits for a
+        lull rather than topic-relevance.
+
+        Rare and warm by construction: one-shot per topic (a surfaced
+        ``topic_key`` lands in ``dormant_interest.surfaced_keys`` and never
+        resurfaces), plus a long wall-clock surfacing cooldown across ALL
+        topics (``dormant_interest.surfaced_clock``) so even with several
+        re-openers queued the beat stays occasional. The cue is a private
+        prompt hint, NEVER spoken verbatim — the chat model phrases the actual
+        re-opener. MCP debug: ``force_dormant_interest_surface`` arms
+        ``_dormant_interest_force_next`` to bypass the lull + cooldown +
+        surfaced gates (the ring must still be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "dormant_interest_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_dormant_interest_force_next", False)
+        )
+        if force_next:
+            self._dormant_interest_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        # Natural-lull gate (same standing reading K54 consumes). When the
+        # window hasn't filled (last_mean is None) or the conversation is
+        # still moving, hold — a re-opener only lands on a real quiet beat.
+        if not force_next:
+            detector = getattr(self, "_topic_stagnation_detector", None)
+            lull_mean = getattr(detector, "last_mean", None)
+            threshold = float(
+                getattr(
+                    self._memory_settings, "stagnation_mild_threshold", 0.18,
+                )
+            )
+            if lull_mean is None or float(lull_mean) >= threshold:
+                return ""
+
+        try:
+            from app.core.proactive.dormant_interest_worker import (
+                load_dormant,
+            )
+        except Exception:
+            log.debug("dormant_interest import failed", exc_info=True)
+            return ""
+
+        ring = load_dormant(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        # Wall-clock surfacing cooldown across all topics — keeps the beat
+        # occasional even when several re-openers are queued.
+        clock_key = "dormant_interest.surfaced_clock"
+        if not force_next:
+            from datetime import datetime, timezone
+
+            cooldown_h = float(
+                getattr(
+                    self._memory_settings,
+                    "dormant_interest_surface_cooldown_hours",
+                    24.0,
+                )
+            )
+            if cooldown_h > 0:
+                last = _parse_dt_utc(chat_db.kv_get(clock_key))
+                if last is not None:
+                    elapsed_h = (
+                        datetime.now(timezone.utc) - last
+                    ).total_seconds() / 3600.0
+                    if elapsed_h < cooldown_h:
+                        return ""
+
+        surfaced_key = "dormant_interest.surfaced_keys"
+        try:
+            raw = chat_db.kv_get(surfaced_key)
+            surfaced = set(json.loads(raw)) if raw else set()
+        except Exception:
+            surfaced = set()
+
+        chosen: dict | None = None
+        for entry in reversed(ring):  # newest first
+            key = str(entry.get("topic_key") or "")
+            topic = str(entry.get("topic") or "").strip()
+            if not topic:
+                continue
+            if not force_next and key and key in surfaced:
+                continue
+            chosen = entry
+            break
+        if chosen is None:
+            return ""
+
+        key = str(chosen.get("topic_key") or "")
+        topic = str(chosen.get("topic") or "").strip()
+        days_since = chosen.get("days_since")
+        if key:
+            surfaced.add(key)
+            try:
+                trimmed = list(surfaced)[-64:]
+                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+            except Exception:
+                log.debug(
+                    "dormant_interest surfaced write failed", exc_info=True
+                )
+        try:
+            from datetime import datetime, timezone
+
+            chat_db.kv_set(
+                clock_key,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except Exception:
+            log.debug("dormant_interest clock write failed", exc_info=True)
+
+        log.info(
+            "dormant-interest fire: topic=%r days=%s key=%s",
+            topic[:60], days_since, key,
+        )
+        return (
+            f"Heads-up: \"{topic}\" used to come up between you two a lot, but "
+            "it's gone quiet for a good while now. The conversation just hit a "
+            "natural lull — if it feels warm, you can gently reach back and "
+            "re-open it (\"hey, you used to be all about "
+            f"{topic} — still into that, or did it fizzle?\") as a genuine, "
+            "low-pressure callback. Keep it light and curious, never an "
+            "interrogation; if it doesn't fit the moment, just let the lull "
+            "breathe."
+        )
+
     def _render_curiosity_gradient_block(self, user_text: str) -> str:
         """K64c: surface one "I keep brushing past X, I'm curious" edge.
 

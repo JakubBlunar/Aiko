@@ -923,6 +923,212 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.forward_curiosity_journal_max, 1)
 
 
+class DreamHotClusterSettingsTests(unittest.TestCase):
+    """K65e: dream hot-cluster agent switch + recency knob default/round-trip/clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in ("dream_hot_cluster_enabled", "dream_hot_cluster_recency_days"):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_when_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.dream_hot_cluster_enabled)
+        self.assertAlmostEqual(result.agent.dream_hot_cluster_recency_days, 3.0)
+
+    def test_override_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "dream_hot_cluster_enabled": False,
+                "dream_hot_cluster_recency_days": 1.5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.dream_hot_cluster_enabled)
+        self.assertAlmostEqual(result.agent.dream_hot_cluster_recency_days, 1.5)
+
+    def test_clamps_negative_recency(self) -> None:
+        path = self._write_config(
+            agent_extra={"dream_hot_cluster_recency_days": -2.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.agent.dream_hot_cluster_recency_days, 0.0)
+
+
+class SelfImageInterestSeedSettingsTests(unittest.TestCase):
+    """K65d: self-image interest-seed agent switch default / round-trip."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("self_image_interest_seed_enabled", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_default_true_when_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.self_image_interest_seed_enabled)
+
+    def test_override_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"self_image_interest_seed_enabled": False},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.self_image_interest_seed_enabled)
+
+
+class CuriosityClusterAnchorSettingsTests(unittest.TestCase):
+    """K65c: curiosity-worker cluster-anchor agent knobs default/round-trip/clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "curiosity_worker_cluster_anchor_enabled",
+            "curiosity_worker_quiet_days",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.curiosity_worker_cluster_anchor_enabled)
+        self.assertAlmostEqual(result.agent.curiosity_worker_quiet_days, 7.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "curiosity_worker_cluster_anchor_enabled": False,
+                "curiosity_worker_quiet_days": 14.0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.curiosity_worker_cluster_anchor_enabled)
+        self.assertAlmostEqual(result.agent.curiosity_worker_quiet_days, 14.0)
+
+    def test_clamps_negative_quiet_days(self) -> None:
+        path = self._write_config(
+            agent_extra={"curiosity_worker_quiet_days": -3.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.agent.curiosity_worker_quiet_days, 0.0)
+
+
+class BeliefInterestBiasSettingsTests(unittest.TestCase):
+    """K65b: belief-worker interest-bias agent switch + memory knobs."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("belief_interest_bias_enabled", None)
+        for k in (
+            "belief_worker_interest_top_n",
+            "belief_worker_reconsider_max",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.belief_interest_bias_enabled)
+        self.assertEqual(result.memory.belief_worker_interest_top_n, 5)
+        self.assertEqual(result.memory.belief_worker_reconsider_max, 3)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"belief_interest_bias_enabled": False},
+            memory_extra={
+                "belief_worker_interest_top_n": 8,
+                "belief_worker_reconsider_max": 2,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.belief_interest_bias_enabled)
+        self.assertEqual(result.memory.belief_worker_interest_top_n, 8)
+        self.assertEqual(result.memory.belief_worker_reconsider_max, 2)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "belief_worker_interest_top_n": -3,  # floor 0
+                "belief_worker_reconsider_max": -1,  # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.belief_worker_interest_top_n, 0)
+        self.assertEqual(result.memory.belief_worker_reconsider_max, 0)
+
+
 class PromiseFollowthroughSettingsTests(unittest.TestCase):
     """K43: agent master switch + memory cadence/age knobs round-trip + clamps."""
 
@@ -2250,6 +2456,141 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
         )
         self.assertEqual(result.memory.long_arc_callback_per_session_cap, 0)
         self.assertEqual(result.memory.long_arc_callback_min_user_words, 0)
+
+
+class DormantInterestSettingsTests(unittest.TestCase):
+    """K67: 1 agent flag + 7 memory knobs round-trip with clamps."""
+
+    _DI_AGENT_KEYS = ("dormant_interest_enabled",)
+    _DI_MEMORY_KEYS = (
+        "dormant_interest_interval_seconds",
+        "dormant_interest_daily_cap",
+        "dormant_interest_journal_max",
+        "dormant_interest_min_size",
+        "dormant_interest_max_clusters",
+        "dormant_interest_dormant_days",
+        "dormant_interest_topic_cooldown_hours",
+        "dormant_interest_surface_cooldown_hours",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._DI_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._DI_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.dormant_interest_enabled)
+        self.assertEqual(
+            result.memory.dormant_interest_interval_seconds, 21600,
+        )
+        self.assertEqual(result.memory.dormant_interest_daily_cap, 2)
+        self.assertEqual(result.memory.dormant_interest_journal_max, 6)
+        self.assertEqual(result.memory.dormant_interest_min_size, 6)
+        self.assertEqual(result.memory.dormant_interest_max_clusters, 40)
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_dormant_days, 21.0,
+        )
+        self.assertEqual(
+            result.memory.dormant_interest_topic_cooldown_hours, 336,
+        )
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_surface_cooldown_hours, 24.0,
+        )
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"dormant_interest_enabled": False},
+            memory_extra={
+                "dormant_interest_interval_seconds": 7200,
+                "dormant_interest_daily_cap": 1,
+                "dormant_interest_journal_max": 10,
+                "dormant_interest_min_size": 8,
+                "dormant_interest_max_clusters": 20,
+                "dormant_interest_dormant_days": 30.0,
+                "dormant_interest_topic_cooldown_hours": 168,
+                "dormant_interest_surface_cooldown_hours": 12.0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.dormant_interest_enabled)
+        self.assertEqual(
+            result.memory.dormant_interest_interval_seconds, 7200,
+        )
+        self.assertEqual(result.memory.dormant_interest_daily_cap, 1)
+        self.assertEqual(result.memory.dormant_interest_journal_max, 10)
+        self.assertEqual(result.memory.dormant_interest_min_size, 8)
+        self.assertEqual(result.memory.dormant_interest_max_clusters, 20)
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_dormant_days, 30.0,
+        )
+        self.assertEqual(
+            result.memory.dormant_interest_topic_cooldown_hours, 168,
+        )
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_surface_cooldown_hours, 12.0,
+        )
+
+    def test_clamps(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "dormant_interest_interval_seconds": 1,  # floors at 60
+                "dormant_interest_daily_cap": -1,  # floors at 0
+                "dormant_interest_journal_max": 0,  # floors at 1
+                "dormant_interest_min_size": 1,  # floors at 2
+                "dormant_interest_max_clusters": 0,  # floors at 1
+                "dormant_interest_dormant_days": -5.0,  # floors at 0
+                "dormant_interest_topic_cooldown_hours": -3,  # floors at 0
+                "dormant_interest_surface_cooldown_hours": -2.0,  # floors at 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.memory.dormant_interest_interval_seconds, 60,
+        )
+        self.assertEqual(result.memory.dormant_interest_daily_cap, 0)
+        self.assertEqual(result.memory.dormant_interest_journal_max, 1)
+        self.assertEqual(result.memory.dormant_interest_min_size, 2)
+        self.assertEqual(result.memory.dormant_interest_max_clusters, 1)
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_dormant_days, 0.0,
+        )
+        self.assertEqual(
+            result.memory.dormant_interest_topic_cooldown_hours, 0,
+        )
+        self.assertAlmostEqual(
+            result.memory.dormant_interest_surface_cooldown_hours, 0.0,
+        )
 
 
 class TurningOverSettingsTests(unittest.TestCase):

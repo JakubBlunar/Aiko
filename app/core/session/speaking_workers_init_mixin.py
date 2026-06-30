@@ -149,6 +149,26 @@ class SpeakingWorkersInitMixin:
                         getattr(settings.agent, "curiosity_worker_max_user_word_count", 8),
                     ),
                     user_display_name_provider=lambda: self.user_display_name,
+                    # K65c: anchor the follow-up on a known-but-quiet K9
+                    # interest. Late-bound lambda — the topic graph is built
+                    # later in this same mixin, so it resolves at fire time.
+                    # Returns [] in the non-persistent / cold state, which
+                    # keeps the worker on its legacy literal-words anchoring.
+                    interest_provider=lambda: (
+                        self._topic_graph.cluster_activity(top_n=8, min_size=3)
+                        if getattr(self, "_topic_graph", None) is not None
+                        else []
+                    ),
+                    cluster_anchor_enabled=bool(
+                        getattr(
+                            settings.agent,
+                            "curiosity_worker_cluster_anchor_enabled",
+                            True,
+                        )
+                    ),
+                    quiet_min_days=float(
+                        getattr(settings.agent, "curiosity_worker_quiet_days", 7.0),
+                    ),
                 )
             except Exception:
                 log.warning("CuriosityWorker init failed", exc_info=True)
@@ -272,6 +292,21 @@ class SpeakingWorkersInitMixin:
                     target_path=self_image_path,
                     model=self._effective_worker_model,
                     max_tokens=settings.agent.self_image_max_tokens,
+                    # K65d: seed the daily self-image from the K9 interest
+                    # map. Late-bound lambda; returns [] in the cold /
+                    # non-persistent state, keeping the legacy prompt.
+                    interest_provider=lambda: (
+                        self._topic_graph.interest_map(top_n=5, min_size=3)
+                        if getattr(self, "_topic_graph", None) is not None
+                        else []
+                    ),
+                    interest_seed_enabled=bool(
+                        getattr(
+                            settings.agent,
+                            "self_image_interest_seed_enabled",
+                            True,
+                        )
+                    ),
                 )
             except Exception:
                 log.warning("SelfImageWorker init failed", exc_info=True)
@@ -595,6 +630,7 @@ class SpeakingWorkersInitMixin:
             associative_wander=self._render_associative_wander_block,
             long_arc_callback=self._render_long_arc_callback_block,
             interest_drift=self._render_interest_drift_block,
+            dormant_interest=self._render_dormant_interest_block,
             curiosity_gradient=self._render_curiosity_gradient_block,
             topic_temperature=self._render_topic_temperature_block,
             topic_confidence=self._render_topic_confidence_block,

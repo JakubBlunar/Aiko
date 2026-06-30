@@ -538,6 +538,51 @@ class IdleWorkersInitMixin:
                     "InterestDriftWorker init failed", exc_info=True
                 )
 
+        # K67 DormantInterestWorker — the symmetric sibling of K64b: notices
+        # a topic cluster that was once a genuine, high-mass user interest and
+        # has since gone quiet for weeks, and drafts a rare "we haven't talked
+        # about X in ages" re-opener. Cheap kv pass (no LLM); the provider only
+        # surfaces it on a natural conversational lull.
+        self._dormant_interest_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.dormant_interest_worker import (
+                    DormantInterestWorker,
+                )
+
+                mem = self._memory_settings
+                self._dormant_interest_worker = DormantInterestWorker(
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "dormant_interest_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=mem.dormant_interest_interval_seconds,
+                    daily_cap=mem.dormant_interest_daily_cap,
+                    journal_max=mem.dormant_interest_journal_max,
+                    min_size=mem.dormant_interest_min_size,
+                    max_clusters=mem.dormant_interest_max_clusters,
+                    dormant_days=mem.dormant_interest_dormant_days,
+                    topic_cooldown_hours=(
+                        mem.dormant_interest_topic_cooldown_hours
+                    ),
+                )
+                self._idle_scheduler.register(self._dormant_interest_worker)
+            except Exception:
+                log.warning(
+                    "DormantInterestWorker init failed", exc_info=True
+                )
+
         # K64c CuriosityGradientWorker — finds a thin topic cluster on the
         # rim of a dense one (the under-explored edge of familiar territory)
         # and drafts a genuinely-curious-question cue. Cheap geometry pass

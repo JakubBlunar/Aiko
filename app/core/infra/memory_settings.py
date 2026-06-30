@@ -495,6 +495,31 @@ class MemorySettings:
     # Per-topic cooldown: once a drift is noticed for a topic, don't
     # re-notice it for this long. Keyed on a stable hash of the label.
     interest_drift_topic_cooldown_hours: int = 72
+    # ── K67: dormant-interest re-opener ("haven't talked about X in ages") ─
+    # How often the DormantInterestWorker scans cluster activity + may draft
+    # a re-opener. Long (6h default): a dropped interest is a slow signal.
+    dormant_interest_interval_seconds: int = 21600
+    # Max re-openers drafted per local day. Tiny — re-opening a dropped
+    # thread is a rare, warm beat, never a sweep.
+    dormant_interest_daily_cap: int = 2
+    # Size of the kv journal ring of drafted re-openers.
+    dormant_interest_journal_max: int = 6
+    # A cluster must have at least this many members to count as a genuine
+    # past interest worth re-opening (its accumulated members ≈ peak mass).
+    dormant_interest_min_size: int = 6
+    # Cap on how many of the largest clusters get scanned per tick.
+    dormant_interest_max_clusters: int = 40
+    # A cluster counts as dormant once its newest member is at least this
+    # many days old (no new activity for a real stretch). 21 ≈ three weeks.
+    dormant_interest_dormant_days: float = 21.0
+    # Per-topic cooldown: once a topic is drafted as a re-opener, don't
+    # re-draft it for this long (14 days) so the ring doesn't fill with the
+    # same dead thread. Keyed on a stable hash of the label.
+    dormant_interest_topic_cooldown_hours: int = 336
+    # Provider-side wall-clock surfacing cooldown: at most one re-opener may
+    # surface across ALL topics in this window (24h), so even with several
+    # dormant interests queued the beat stays rare.
+    dormant_interest_surface_cooldown_hours: float = 24.0
     # ── K64c: curiosity gradient (thin edge of a dense topic) ────────────
     # How often the CuriosityGradientWorker may draft a curiosity-edge cue.
     curiosity_gradient_interval_seconds: int = 5400
@@ -849,6 +874,18 @@ class MemorySettings:
     # per extraction. Larger windows give a richer signal but cost
     # more tokens; 12 is enough to span a few conversational beats.
     belief_worker_lookback_turns: int = 12
+    # ── K65b: bias the belief worker toward high-mass interests ───────
+    # How many of the densest K9 topic clusters (by member count) are
+    # folded into the extraction prompt as a "topics the user keeps
+    # returning to -- prioritise theory-of-mind here" hint. 0 disables
+    # the interest hint without touching the master switch.
+    belief_worker_interest_top_n: int = 5
+    # On each tick the worker may also nominate up to this many *active*
+    # beliefs whose topic sits on one of those high-mass interests for a
+    # "still true?" re-check, folded into the SAME LLM call (zero extra
+    # spend). Keeps long-lived beliefs on durable interests fresh
+    # instead of letting them rot until the 90-day stale sweep.
+    belief_worker_reconsider_max: int = 3
     # ── Phase 3c (reworked): context-aware promise extraction worker ──
     # Cadence + context budgets for
     # :class:`app.core.memory.promise_worker.PromiseExtractionWorker`.
@@ -1490,6 +1527,48 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     )
                 ),
             ),
+            dormant_interest_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("dormant_interest_interval_seconds", 21600)
+                ),
+            ),
+            dormant_interest_daily_cap=max(
+                0,
+                int(memory_raw.get("dormant_interest_daily_cap", 2)),
+            ),
+            dormant_interest_journal_max=max(
+                1,
+                int(memory_raw.get("dormant_interest_journal_max", 6)),
+            ),
+            dormant_interest_min_size=max(
+                2,
+                int(memory_raw.get("dormant_interest_min_size", 6)),
+            ),
+            dormant_interest_max_clusters=max(
+                1,
+                int(memory_raw.get("dormant_interest_max_clusters", 40)),
+            ),
+            dormant_interest_dormant_days=max(
+                0.0,
+                float(memory_raw.get("dormant_interest_dormant_days", 21.0)),
+            ),
+            dormant_interest_topic_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "dormant_interest_topic_cooldown_hours", 336,
+                    )
+                ),
+            ),
+            dormant_interest_surface_cooldown_hours=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "dormant_interest_surface_cooldown_hours", 24.0,
+                    )
+                ),
+            ),
             curiosity_gradient_interval_seconds=max(
                 60,
                 int(
@@ -2023,6 +2102,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             belief_worker_lookback_turns=max(
                 1,
                 int(memory_raw.get("belief_worker_lookback_turns", 12)),
+            ),
+            belief_worker_interest_top_n=max(
+                0,
+                int(memory_raw.get("belief_worker_interest_top_n", 5)),
+            ),
+            belief_worker_reconsider_max=max(
+                0,
+                int(memory_raw.get("belief_worker_reconsider_max", 3)),
             ),
             promise_worker_interval_seconds=max(
                 60,

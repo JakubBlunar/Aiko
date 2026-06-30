@@ -80,9 +80,9 @@ on top of already-shipped infrastructure.
 | K62 | Co-experience companion (follow a show/album) | ❌ open |
 | K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
 | K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-) |
-| K65 | Worker modernization for the topic-cluster era | ❌ open (audit; sub-items a–e) |
+| K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65a-cluster-scope-the-f5-conflict-detector-pair-scan-shipped-via-f10j) |
 | K66 | Earned familiarity — "well-trodden ground" | ❌ open |
-| K67 | Dormant-interest re-opener | ❌ open |
+| K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
 | K68 | Embodied vitality | ❌ open |
 
 ---
@@ -372,7 +372,22 @@ share one lever: read [`topic_graph.py`](../../app/core/conversation/topic_graph
 cluster instead of the whole pool. Sub-items are independent; ship in any
 order.
 
-- **K65a. Cluster-scope the F5 conflict-detector pair scan.** Today
+**Status (rolling).** All sub-items done. K65a ✅ shipped (covered by F10j
+cluster-scoped hygiene). K65b ✅ shipped. K65c ✅ shipped (modernised —
+cluster-aware re-anchor, kept not retired). K65d ✅ shipped. K65e ✅ shipped.
+
+- **K65a. ✅ shipped (via F10j).** Cluster-scope the F5 conflict-detector
+  pair scan. This was already delivered by F10j cluster-scoped memory
+  hygiene: [`cluster_scope.partition_by_cluster`](../../app/core/memory/cluster_scope.py)
+  groups the conflict worker's candidate snapshot by
+  `topic_graph.cluster_id_for` so the cosine sweep only nominates
+  within-cluster pairs (cost `O(Σ kᵢ²)`), gated by the
+  `agent.cluster_scoped_memory_hygiene_enabled` master switch and
+  degrading to the legacy all-pairs sweep when the graph is absent /
+  non-persistent. The heuristic + LLM gate are untouched. No further work
+  needed. Original spec below for reference.
+
+  Today
   [`MemoryConflictWorker`](../../app/core/memory/memory_conflict_worker.py)
   does an **all-pairs** cosine sweep over the allow-listed corpus, bounded
   only by `conflict_detector_max_corpus` / `_max_pairs_per_run` caps — so on
@@ -385,17 +400,39 @@ order.
   coverage while *cutting* CPU. Pure win; keep the existing heuristic + LLM
   gate untouched, only change which pairs are nominated.
 
-- **K65b. Bias the K2 belief worker toward high-mass interests.**
-  [`BeliefWorker`](../../app/core/relationship/belief_worker.py) mines only
-  the active session's last `belief_worker_lookback_turns`=12 user messages —
-  a recency window with no notion of what the user actually cares about. Pass
-  it the `interest_map` so extraction is *prioritised* on the densest
-  clusters (the topics worth holding a theory-of-mind on), and add a periodic
-  "stale-belief refresh" that re-checks beliefs whose cluster mass shifted
-  notably since they were formed. Reduces wasted LLM passes on one-off chatter
-  and keeps beliefs anchored to durable interests.
+- **K65b. ✅ shipped.** Bias the K2 belief worker toward high-mass
+  interests. [`BeliefInferenceWorker`](../../app/core/relationship/belief_worker.py)
+  still mines the last `belief_worker_lookback_turns`=12 user messages, but
+  now folds the K9 `interest_map` into the **same** extraction call: (1) the
+  top `memory.belief_worker_interest_top_n`=5 densest cluster labels arrive
+  as a "topics this user keeps returning to — prioritise here" hint, and (2)
+  up to `memory.belief_worker_reconsider_max`=3 stalest active beliefs whose
+  topic sits on one of those high-mass interests are nominated for an
+  in-prompt "still true?" re-check (zero extra LLM spend). Gated by
+  `agent.belief_interest_bias_enabled` (default on); on a cold / unlabelled
+  store the provider returns `[]` and the worker is byte-identical to the
+  legacy flat-transcript path. Interest labels + re-check topics are
+  privacy-scrubbed (PII-only labels dropped). Debug: `force_run("belief_worker")`
+  + grep `belief-worker interest-bias:`. See
+  [shipped doc](shipped/patterns-k31-k60.md#k65b-bias-the-belief-worker-toward-high-mass-interests).
 
-- **K65c. Modernise or retire the Phase-4c `CuriosityWorker`.** The
+- **K65c. ✅ shipped (modernised, not retired).** The Phase-4c
+  [`CuriosityWorker`](../../app/core/proactive/curiosity_worker.py) now
+  anchors its shallow-arc follow-up on a **known-but-quiet K9 interest**
+  (the most-dormant established cluster from `topic_graph.cluster_activity`,
+  picked by largest `days_since` clearing `curiosity_worker_quiet_days`=7)
+  instead of echoing the user's literal last words — so a flagging
+  small-talk beat reaches back to something they care about but haven't
+  raised lately ("still into rock climbing? it's been a while"). Falls back
+  to the legacy literal-words prompt when no quiet interest is available
+  (cold / non-persistent graph), preserving its reactive in-session niche
+  that K9 / K34 / K64c (all idle/proactive) don't cover. Gated by
+  `agent.curiosity_worker_cluster_anchor_enabled` (default on). The overlap
+  audit (see [shipped doc](shipped/patterns-k31-k60.md#k65c-modernise-the-phase-4c-curiosityworker--cluster-aware-re-anchor))
+  concluded **modernise** over retire: it owns the only *reactive* curiosity
+  surface. See shipped doc for the worked comparison. Original spec below.
+
+  The
   speaking-window [`CuriosityWorker`](../../app/core/proactive/curiosity_worker.py)
   drafts a next-turn "ask {user} a small follow-up about <topic>"
   `open_question`, but its topic is just the *literal last short user turn*
@@ -407,22 +444,34 @@ order.
   redundant and should be merged into the curiosity family / retired. Decide
   with a quick overlap audit before adding more curiosity surface.
 
-- **K65d. Seed self-image from the interest map.**
-  [`SelfImageWorker`](../../app/core/persona/self_image_worker.py) rebuilds
-  `data/persona/self_image.txt` daily from top-salience `self` + `reflection`
-  memories only — so her self-narrative never reflects *what she's been
-  engaging with*. Feed the `interest_map` (and optionally K64b's rising/fading
-  signal) into the prompt so "lately I've been drawn to X" can legitimately
-  enter her self-image. Ties the slow self-narrative to the actual shape of
-  the conversation.
+- **K65d. ✅ shipped.** Seed self-image from the interest map.
+  [`SelfImageWorker`](../../app/core/persona/self_image_worker.py) still
+  rebuilds `data/persona/self_image.txt` daily from top-salience `self` +
+  `reflection` memories, but now also folds the K9 `interest_map` into the
+  pulse: when `agent.self_image_interest_seed_enabled` (default on) and the
+  graph yields labelled clusters, the prompt gains a "Lately you've been
+  spending time on: X, Y, Z" line plus a system rule permitting one natural
+  "lately I've been drawn to …" phrase, so her self-narrative can reflect
+  what she's been engaging with. Cold / non-persistent graph → no interest
+  line (byte-identical legacy prompt); the interest map is a *flavour*, not
+  an input source, so an empty self/reflection set still skips the pulse.
+  See [shipped doc](shipped/patterns-k31-k60.md#k65d-seed-self-image-from-the-interest-map).
 
-- **K65e. Ground the DreamWorker in the day's hot cluster (optional).**
-  [`DreamWorker`](../../app/core/proactive/dream_worker.py) seeds between-
-  session dreams from the rolling summary + callbacks + self memories. Now
-  that K64d reflects on graph *shape*, DreamWorker could optionally bias its
-  dream toward the day's most-active cluster for a more grounded
-  "I kept turning over your X" — but watch for overlap with K64d; this is the
-  lowest-priority sub-item.
+- **K65e. ✅ shipped.** Ground the DreamWorker in the day's hot cluster.
+  [`DreamWorker`](../../app/core/proactive/dream_worker.py) still seeds
+  between-session dreams from the rolling summary + callbacks + self
+  memories, but the bootstrap seed now also carries a "threads that kept
+  coming up lately: …" line of the day's most recently-active established
+  K9 clusters (`topic_graph.cluster_activity`, filtered to
+  `agent.dream_hot_cluster_recency_days`=3, most-recent first, top 2;
+  computed in `chat_turn_mixin._dream_hot_clusters`) so "I kept turning over
+  your X" lands on a real recent topic. Gated by
+  `agent.dream_hot_cluster_enabled` (default on). Kept **light to avoid K64d
+  overlap**: it's *flavour* only (a cold graph / no recent clusters →
+  byte-identical legacy seed; cluster labels alone never justify a dream),
+  the dream stays a one-shot felt `[dream]` reflection distinct from K64d's
+  structural knowledge-map reflection. See
+  [shipped doc](shipped/patterns-k31-k60.md#k65e-ground-the-dreamworker-in-the-days-hot-cluster).
 
 ---
 
@@ -450,6 +499,27 @@ other topic cues, persona copy in
 ---
 
 ## K67. Dormant-interest re-opener — "we haven't talked about X in ages"
+
+- **✅ Shipped.** New idle worker
+  [`DormantInterestWorker`](../../app/core/proactive/dormant_interest_worker.py)
+  reads `topic_graph.cluster_activity`, keeps once-high-mass clusters
+  (`size >= dormant_interest_min_size`=6) that have gone silent
+  (`days_since >= dormant_interest_dormant_days`=21), ranks most-dormant
+  first, and drafts `{topic, days_since, size}` into the
+  `aiko.dormant_interests` kv journal (long per-topic cooldown so the ring
+  doesn't fill with the same dead thread). The consumer
+  [`_render_dormant_interest_block`](../../app/core/session/inner_life_part2.py)
+  surfaces one **only on a natural lull** (K18 `TopicStagnationDetector.last_mean`
+  below `stagnation_mild_threshold` — a dormant interest isn't the live topic,
+  so unlike K64b it reaches *off* the current thread), one-shot per topic plus
+  a wall-clock surfacing cooldown (default 24h) so the warm "you used to be all
+  about X — still into that?" reach stays rare. Lands in T6 right after K54
+  `topic_appetite_block` (both lull-gated permission slips); dropped under
+  aggressive. Gated by `agent.dormant_interest_enabled` (default on) + seven
+  `memory.dormant_interest_*` knobs. MCP: `get_dormant_interest_state` /
+  `force_dormant_interest` / `force_dormant_interest_surface`. See
+  [shipped doc](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages).
+  Original spec below.
 
 **Motivation.** K64b notices when *Aiko's* interest fades; K34 asks about the
 *user's* upcoming plans. The missing symmetric beat: a cluster that was once a

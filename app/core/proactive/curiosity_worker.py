@@ -41,15 +41,46 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.curiosity_worker")
 
 
-def _build_curiosity_prompt(user_display_name: str = "the user") -> str:
+def _build_curiosity_prompt(
+    user_display_name: str = "the user",
+    *,
+    quiet_interest: str | None = None,
+) -> str:
     """Curiosity-worker prompt, templated on the user's display name.
 
     The required ``"Maybe ask <name>"`` prefix is asserted by
     :func:`_clean_curiosity_output`, which accepts whatever name is
     threaded in here -- so renaming the user mid-session takes effect
     on the next sweep without invalidating the produced text.
+
+    K65c: when ``quiet_interest`` is supplied (a known-but-dormant K9
+    cluster the user cares about but hasn't raised in a while), the prompt
+    steers the follow-up to *circle back* to that interest instead of
+    echoing the user's literal last words. With no quiet interest it falls
+    back to the legacy "reference a word they just used" prompt.
     """
     name = user_display_name or "the user"
+    if quiet_interest:
+        return (
+            f"You are Aiko in a quiet beat between turns. {name} has been "
+            "making small talk. You realise there's a topic they genuinely "
+            f"care about but haven't brought up in a while: \"{quiet_interest}\". "
+            "You'd like to gently circle back to it next time you speak — not "
+            "now, but next turn.\n"
+            "\n"
+            "Compose ONE short instruction to your future self (<= 22 words, "
+            "third person, plain sentence). It must:\n"
+            f"  - start with \"Maybe ask {name}\"\n"
+            f"  - gently reconnect to {quiet_interest} (reshape the wording "
+            "naturally; don't quote it robotically)\n"
+            "  - end on a soft open question, not a yes/no or factual quiz\n"
+            "\n"
+            "Examples (do NOT copy verbatim):\n"
+            f"  - \"Maybe ask {name} if they're still into {quiet_interest} "
+            "lately — it's been a while since it came up.\"\n"
+            "\n"
+            "Output ONLY the sentence. No quotes, no JSON, no preamble."
+        )
     return (
         f"You are Aiko in a quiet beat between turns. {name} just said "
         "something short and casual. You're noticing you'd like to ask "
@@ -118,6 +149,9 @@ class CuriosityWorker:
         max_tokens: int = 80,
         salience: float = 0.55,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        interest_provider: "Callable[[], Any] | None" = None,
+        cluster_anchor_enabled: bool = True,
+        quiet_min_days: float = 7.0,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -129,6 +163,12 @@ class CuriosityWorker:
         self._max_tokens = max(40, int(max_tokens))
         self._salience = max(0.0, min(1.0, float(salience)))
         self._user_display_name_provider = user_display_name_provider
+        # K65c: returns the K9 cluster-activity rows (objects with .label /
+        # .days_since, e.g. topic_graph.InterestActivity). ``None`` / missing
+        # keeps the legacy literal-last-words anchoring.
+        self._interest_provider = interest_provider
+        self._cluster_anchor_enabled = bool(cluster_anchor_enabled)
+        self._quiet_min_days = max(0.0, float(quiet_min_days))
         self._last_run_turn = -10**9
         self._last_run_at = 0.0
         self._turn_counter = 0
@@ -140,6 +180,7 @@ class CuriosityWorker:
             "skipped_user_too_long": 0,
             "skipped_user_already_asked": 0,
             "skipped_no_topic": 0,
+            "anchored_on_interest": 0,
             "completed": 0,
             "failed": 0,
             "memories_written": 0,
@@ -220,10 +261,17 @@ class CuriosityWorker:
         self._last_run_at = now
         self._stats["scheduled"] += 1
 
+        # K65c: prefer a known-but-quiet interest as the anchor; fall back
+        # to the legacy literal-last-words prompt when none is available.
+        quiet_interest = self._pick_quiet_interest()
+        if quiet_interest:
+            self._stats["anchored_on_interest"] += 1
+
         prompt_user = self._compose_user_payload(
             user_text=user_text,
             assistant_text=assistant_text,
             arc_label=arc,
+            quiet_interest=quiet_interest,
         )
         user_name = resolve_user_name(self._user_display_name_provider)
         try:
@@ -232,7 +280,9 @@ class CuriosityWorker:
                 [
                     {
                         "role": "system",
-                        "content": _build_curiosity_prompt(user_name),
+                        "content": _build_curiosity_prompt(
+                            user_name, quiet_interest=quiet_interest,
+                        ),
                     },
                     {"role": "user", "content": prompt_user},
                 ],
@@ -296,13 +346,51 @@ class CuriosityWorker:
         user_text: str,
         assistant_text: str,
         arc_label: str,
+        quiet_interest: str | None = None,
     ) -> str:
         user_name = resolve_user_name(self._user_display_name_provider)
-        return (
-            f"Conversation arc: {arc_label}\n"
-            f"{user_name} just said: \"{(user_text or '').strip()[:400]}\"\n"
-            f"You replied: \"{(assistant_text or '').strip()[:400]}\""
-        )
+        parts = [
+            f"Conversation arc: {arc_label}",
+            f"{user_name} just said: \"{(user_text or '').strip()[:400]}\"",
+            f"You replied: \"{(assistant_text or '').strip()[:400]}\"",
+        ]
+        if quiet_interest:
+            parts.append(
+                f"A topic {user_name} cares about but hasn't raised in a "
+                f"while: \"{quiet_interest}\""
+            )
+        return "\n".join(parts)
+
+    def _pick_quiet_interest(self) -> str | None:
+        """Pick the most-dormant known interest, or ``None``.
+
+        Reads the K9 cluster-activity rows from ``interest_provider`` and
+        returns the label of the *quietest* established cluster (largest
+        ``days_since`` that still clears ``quiet_min_days``). A row with an
+        unknown ``days_since`` is treated as very dormant. Disabled / no
+        provider / empty graph → ``None`` (legacy anchoring).
+        """
+        if not self._cluster_anchor_enabled or self._interest_provider is None:
+            return None
+        try:
+            rows = self._interest_provider()
+        except Exception:
+            log.debug("curiosity interest_provider raised", exc_info=True)
+            return None
+        best_label: str | None = None
+        best_days = -1.0
+        for item in rows or []:
+            label = str(getattr(item, "label", "") or "").strip()
+            if not label:
+                continue
+            days_raw = getattr(item, "days_since", None)
+            days = float(days_raw) if days_raw is not None else 1.0e9
+            if days < self._quiet_min_days:
+                continue
+            if days > best_days:
+                best_days = days
+                best_label = label
+        return best_label
 
 
 def _clean_curiosity_output(
