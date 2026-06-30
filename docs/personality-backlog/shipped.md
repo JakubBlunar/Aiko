@@ -109,6 +109,22 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K47. Question/share balance — stop interviewing](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing)
 - [K48. Tease rhythm — banter as a budget, not random snark](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark)
 
+## [Shipped — Immersion polish (H-series)](shipped/immersion.md)
+
+- [H0. Intentional-placement hold — workers defer to deliberate choices](shipped/immersion.md#h0-intentional-placement-hold--workers-defer-to-deliberate-choices)
+- [H9. Aiko's diary — a readable window into her inner life](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life)
+- [H11. Real-world co-location — weather + season sync](shipped/immersion.md#h11-real-world-co-location--weather--season-sync)
+- [H13. Idle worker actually moves Aiko around the room](shipped/immersion.md#h13-idle-worker-actually-moves-aiko-around-the-room)
+- [H14. Model-generated idle activities — open-vocab verbs, grounded in the room](shipped/immersion.md#h14-model-generated-idle-activities--open-vocab-verbs-grounded-in-the-room)
+- [H15. Needs-driven, richer garden + outdoor life](shipped/immersion.md#h15-needs-driven-richer-garden--outdoor-life)
+- [H16. Circadian "where you find her" — believable default location on arrival](shipped/immersion.md#h16-circadian-where-you-find-her--believable-default-location-on-arrival)
+- [H17. Idle life feeds the idea machine — beats become conversational seeds](shipped/immersion.md#h17-idle-life-feeds-the-idea-machine--beats-become-conversational-seeds)
+- [H18. Weighted, anti-repetition activity selection](shipped/immersion.md#h18-weighted-anti-repetition-activity-selection)
+- [H19. Hobbies & ongoing personal projects](shipped/immersion.md#h19-hobbies--ongoing-personal-projects)
+- [H20. A room that evolves — depleting + accruing micro-state](shipped/immersion.md#h20-a-room-that-evolves--depleting--accruing-micro-state)
+- [H21. Sleep & overnight rhythm — and dreams that surface](shipped/immersion.md#h21-sleep--overnight-rhythm--and-dreams-that-surface)
+- [H22. Light outings — "I stepped out for a bit"](shipped/immersion.md#h22-light-outings--i-stepped-out-for-a-bit)
+
 ## [Shipped — Standalone features](shipped/features.md)
 
 - [User-facing memory editor](shipped/features.md#user-facing-memory-editor)
