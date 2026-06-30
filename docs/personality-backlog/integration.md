@@ -285,3 +285,69 @@ different effort profiles; layer 1 is a contained frontend pass, layer
 
 **Effort.** Medium (responsive layout) / Large (full PWA + hosted
 HTTPS + update flow).
+
+---
+
+## I10. Make `llm.routes` the single runtime source; retire the legacy `chat_llm` mirror
+
+**Motivation.** The LLM provider catalogue (`llm.providers` + `llm.routes`)
+is the **UI-facing** source of truth, but it is **not** what the runtime
+actually builds clients from. The boot path
+[`SessionController.__init__`](../../app/core/session/session_controller.py)
+constructs `self._chat_client` via `_build_chat_client(chat_llm, ollama, …)`
+— it reads the legacy `chat_llm` block directly. The catalogue stays in
+sync only because the controller **mirror-writes both directions**
+(`reconfigure_chat_llm` and the `llm_settings_mixin` route-edit paths push
+catalogue edits down into `chat_llm`/`ollama`, and `_migrate_legacy_llm`
+synthesises the catalogue up from the legacy blocks on first boot). The
+result is three overlapping homes for the same setting (model, base_url,
+temperature, context_window, max_tokens) across `ollama`, `chat_llm`, and
+`llm.routes`, kept consistent by mirror logic that's easy to get subtly
+wrong and confusing to configure by hand.
+
+Worker model/ctx is already route-first (`worker_default` via
+`_worker_route_model_ctx`, P13). This item finishes the job for the **chat**
+path: build `_chat_client` from `llm.routes.main_chat` + its
+`_find_llm_provider(route.provider_id)` through the existing `ClientCache`,
+and reduce `chat_llm` to a **read-only back-compat shim** (or drop it
+entirely once nothing reads it).
+
+**The one field with no route home:** `chat_llm.workers_use_local` (the
+global "background workers stay on local Ollama" flag). Its semantic should
+migrate to the routing table — "workers use local" simply *is*
+`worker_default.provider_id == local_ollama` — so the boolean can be
+derived from the routes instead of stored separately.
+
+**Already done (config-file slimming, this pass).** `default.json` no longer
+ships the `chat_llm` block or `ollama.context_window`; the `ollama` parser
+is tolerant (defaults instead of `_required`) so the block can degrade to
+just its infra/embedding keys. `ollama` is now documented as the "local
+Ollama base + embeddings" block, not the chat-routing block (see
+[`docs/configuration.md`](../configuration.md)). This item is the *code*
+follow-up that removes the runtime dependency on the mirror.
+
+**Key files.**
+[`session_controller.py`](../../app/core/session/session_controller.py)
+(`_build_chat_client`, the `__init__` client-build block, `_effective_*`
+resolution),
+[`llm_settings_mixin.py`](../../app/core/session/llm_settings_mixin.py) +
+[`llm_clients_mixin.py`](../../app/core/session/llm_clients_mixin.py) (the
+mirror-write + reconfigure paths),
+[`settings.py`](../../app/core/infra/settings.py) (`_migrate_legacy_llm`,
+the `chat_llm` parse + the `workers_use_local` home),
+[`sessions_settings_routes.py`](../../app/web/rest/sessions_settings_routes.py)
++ the `chat_llm` REST/WS surface,
+[`ChatProviderSection.tsx`](../../web/src/components/settings/ChatProviderSection.tsx)
+(decide whether the single-provider preset UX stays or folds into the
+routes table). Tests: `test_session_controller_provider_switch.py`,
+`test_web_server_chat_llm.py`, `test_settings_llm_migration.py`,
+`test_session_controller_llm_catalogue.py`.
+
+**Open questions.** Keep `chat_llm` as a thin read-only shim for external
+scripts (the original back-compat rationale) or remove it outright and
+accept a one-time break? Does the legacy migration path stay forever (for
+users upgrading from pre-catalogue configs) or get a sunset version?
+
+**Effort.** Medium–Large (touches the boot client-build, both mirror
+mixins, REST/WS, the frontend Chat tab, and the migration/round-trip
+tests).

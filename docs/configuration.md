@@ -91,16 +91,20 @@ Personal identity + the one global TTS knob.
 
 ---
 
-## `ollama` — `OllamaSettings` (legacy, mirror of `local_ollama` provider)
+## `ollama` — `OllamaSettings` (local Ollama base + embeddings)
 
-The local Ollama runtime that hosts the chat + embedding models. Sits **behind** `chat_llm` (which can route to a different provider). The `embedding_*` fields are still authoritative (the embedder is not catalogued); the rest is mirror-written to the `local_ollama` entry in `llm.providers` on every reconfigure.
+The local Ollama runtime that hosts the **embedding** model and serves as the default local chat base. **Chat/worker model selection, context windows, temperatures and max-tokens now live in `llm.routes`** (Settings → Chat) — this block is no longer the chat-routing block. Its still-authoritative job is the embedder (which is *not* catalogued) plus the local-Ollama defaults used to seed a fresh install and as the `local_ollama` provider mirror.
 
-- `ollama.base_url` *(string, `"http://127.0.0.1:11434"`)* — where the local Ollama daemon listens.
+All keys are parsed tolerantly (sensible defaults when absent), so `default.json` ships only a lean subset — `base_url`, `chat_model`, `temperature`, `think_num_predict_headroom`. The chat-routing fields (`context_window`, etc.) were removed from `default.json` because the per-role values in `llm.routes` own them; they remain readable if you re-add them.
+
+- `ollama.base_url` *(string, `"http://127.0.0.1:11434"`)* — where the local Ollama daemon listens. Used by the embedder and by the `local_ollama` provider in the catalogue.
 - `ollama.embedding_base_url` *(string, `""`)* — separate URL for the embedding model if you split it onto another box; empty falls back to `base_url`.
-- `ollama.chat_model` *(string, `"jaahas/qwen3.5-uncensored:27b"`)* — model name Aiko uses for chat. Larger → smarter / slower; smaller → snappier / drifts more often. Must already be `ollama pull`-ed.
-- `ollama.temperature` *(float, `0.6`)* — sampling temperature. Higher → more creative / unhinged; lower → more deterministic / dry. Inherited by `chat_llm.temperature` when unset there.
-- `ollama.context_window` *(int | null, `null`)* — context-window override. `null` auto-detects via the Ollama API. Set explicitly only if auto-detect picks wrong.
+- `ollama.chat_model` *(string, `"qwen3.6:27b"`)* — local chat model. Now used as the **fresh-install default** + the seed for the synthesised `worker_default` route + a fallback when a route leaves the model blank. The active chat/worker models are normally set in `llm.routes`. Must already be `ollama pull`-ed.
+- `ollama.temperature` *(float, `0.6`)* — default local sampling temperature; per-route `llm.routes[role].temperature` overrides it when set.
+- `ollama.context_window` *(int | null, `null`)* — legacy context-window fallback. `null` auto-detects via the Ollama API. **Prefer `llm.routes[role].context_window`**; this exists only as a fallback and is no longer shipped in `default.json`.
 - `ollama.embedding_model` *(string, `"qwen3-embedding:0.6b"`)* — the embedder used for RAG, beliefs, novelty, conflicts, curiosity seeds, etc. Changing this **invalidates the LanceDB** (existing vectors won't match new vectors).
+- `ollama.embedding_num_gpu` / `ollama.embedding_num_ctx` *(int | null, `null`)* — VRAM levers for the embedder (force CPU with `0`, shrink the KV window). See the inline docs in `OllamaSettings`.
+- `ollama.think_num_predict_headroom` *(int, `2048`)* — extra `num_predict` budget added automatically on `think=True` worker calls so the reasoning trace doesn't starve the answer.
 - `ollama.timeout` *(int, `300`)* — HTTP timeout in seconds, shared by every Ollama client (chat + embeddings). Bump if a slow model occasionally times out mid-generation.
 
 ---

@@ -9,21 +9,7 @@
     "base_url": "http://127.0.0.1:11434",
     "chat_model": "qwen3.6:27b",
     "temperature": 0.6,
-    "context_window": 65536,
     "think_num_predict_headroom": 2048
-  },
-  "chat_llm": {
-    "provider": "ollama",
-    "provider_preset": "",
-    "model": "",
-    "base_url": "",
-    "api_key": "",
-    "api_key_env": "",
-    "max_tokens": 512,
-    "keep_alive": "30m",
-    "workers_use_local": true,
-    "reasoning_effort": "",
-    "extra_headers": {}
   },
   "agent": {
     "proactive_silence_seconds": 45,

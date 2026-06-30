@@ -1707,10 +1707,18 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
         ),
         ollama=OllamaSettings(
-            base_url=_required(ollama, "base_url"),
+            # The ``ollama`` block is now the "local Ollama base + embeddings"
+            # block, not the chat-routing block (chat/worker models, context
+            # windows and temperatures live in ``llm.routes`` — see
+            # docs/llm-providers.md). These three keys are kept tolerant
+            # (default instead of _required) so the block can be slimmed to
+            # just its infra/embedding keys without crashing the loader.
+            # ``chat_model`` still seeds the legacy migration + the
+            # local-Ollama fresh-install default, so it ships in default.json.
+            base_url=str(ollama.get("base_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434").strip(),
             embedding_base_url=str(ollama.get("embedding_base_url", "") or "").strip(),
-            chat_model=_required(ollama, "chat_model"),
-            temperature=float(_required(ollama, "temperature")),
+            chat_model=str(ollama.get("chat_model", "") or "").strip(),
+            temperature=float(ollama.get("temperature", 0.6) if ollama.get("temperature") is not None else 0.6),
             context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
             embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
             timeout=int(ollama.get("timeout", 300)),
