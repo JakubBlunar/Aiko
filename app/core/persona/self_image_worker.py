@@ -23,7 +23,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -47,6 +47,15 @@ Rules:
 - Keep it under 120 words."""
 
 
+# K65d: appended to the system prompt only when an interest line is present.
+_INTEREST_RULE = (
+    "\n- If a \"Lately you've been spending time on\" line is present, you "
+    "may weave in ONE natural phrase about what you've been drawn to lately "
+    "(e.g. \"lately I've been pulled toward ...\"). Don't list them "
+    "mechanically and don't force it if it doesn't fit."
+)
+
+
 class SelfImageWorker:
     """Daily LLM pulse that rewrites ``self_image.txt``.
 
@@ -65,6 +74,9 @@ class SelfImageWorker:
         max_reflection_memories: int = 6,
         min_hours_between: float = 20.0,
         max_tokens: int = 240,
+        interest_provider: "Callable[[], Any] | None" = None,
+        interest_seed_enabled: bool = True,
+        interest_top_n: int = 5,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -74,6 +86,12 @@ class SelfImageWorker:
         self._max_reflect = max(0, int(max_reflection_memories))
         self._min_hours = max(0.0, float(min_hours_between))
         self._max_tokens = max(80, int(max_tokens))
+        # K65d: returns the K9 interest map (entries with .label, or
+        # (label, size) tuples, or bare strings). ``None`` / disabled keeps
+        # the legacy self/reflection-only prompt.
+        self._interest_provider = interest_provider
+        self._interest_seed_enabled = bool(interest_seed_enabled)
+        self._interest_top_n = max(0, int(interest_top_n))
         self._stats = {
             "scheduled": 0,
             "skipped_recent": 0,
@@ -120,10 +138,20 @@ class SelfImageWorker:
         if not bullets:
             self._stats["skipped_no_input"] += 1
             return None
+        # K65d: optionally fold the interest map into the prompt.
+        interest_labels = self._interest_labels()
+        system_content = _PROMPT
+        user_content = "\n".join(f"- {b}" for b in bullets)
+        if interest_labels:
+            system_content = _PROMPT + _INTEREST_RULE
+            user_content += (
+                "\n\nLately you've been spending time on: "
+                + ", ".join(interest_labels)
+            )
         try:
             messages = [
-                {"role": "system", "content": _PROMPT},
-                {"role": "user", "content": "\n".join(f"- {b}" for b in bullets)},
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
             ]
             text = self._ollama.chat(
                 messages,
@@ -165,6 +193,38 @@ class SelfImageWorker:
         return cleaned
 
     # ── helpers ─────────────────────────────────────────────────────────
+
+    def _interest_labels(self) -> list[str]:
+        """Top K9 interest labels for the prompt, or ``[]`` when off/cold."""
+        if not self._interest_seed_enabled or self._interest_provider is None:
+            return []
+        if self._interest_top_n <= 0:
+            return []
+        try:
+            raw = self._interest_provider()
+        except Exception:
+            log.debug("self-image interest_provider raised", exc_info=True)
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw or []:
+            if isinstance(item, str):
+                label = item
+            elif hasattr(item, "label"):
+                label = getattr(item, "label")
+            elif isinstance(item, (tuple, list)) and item:
+                label = item[0]
+            else:
+                continue
+            text = str(label or "").strip()
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+            if len(out) >= self._interest_top_n:
+                break
+        return out
 
     def _collect_bullets(self) -> list[str]:
         store = self._memory_store

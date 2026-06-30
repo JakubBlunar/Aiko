@@ -79,6 +79,7 @@ class _StubOllama:
 class _StubAgent:
     belief_tracking_enabled: bool = True
     belief_worker_enabled: bool = True
+    belief_interest_bias_enabled: bool = True
     belief_worker_per_hour_cap: int = 10
     belief_worker_per_day_cap: int = 50
 
@@ -87,6 +88,8 @@ class _StubAgent:
 class _StubBeliefSettings:
     belief_worker_interval_seconds: int = 3600
     belief_worker_lookback_turns: int = 12
+    belief_worker_interest_top_n: int = 5
+    belief_worker_reconsider_max: int = 3
     belief_max_active_per_user: int = 200
 
 
@@ -97,6 +100,8 @@ def _build_world(
     cap_day: int = 50,
     session_id: str = "session-1",
     user_messages: list[str] | None = None,
+    agent: "_StubAgent | None" = None,
+    interest_map: Any = None,
 ) -> tuple[BeliefInferenceWorker, BeliefStore, _StubOllama, FactCheckRateLimiter]:
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "t.db")
@@ -130,12 +135,13 @@ def _build_world(
         chat_model="llama3:latest",
         rate_limiter=rate_limiter,
         cancel_event=threading.Event(),
-        agent_settings=_StubAgent(),
+        agent_settings=agent or _StubAgent(),
         belief_settings=_StubBeliefSettings(),
         session_id_provider=lambda: session_id,
         user_id_provider=lambda: "u1",
         user_names_provider=lambda: ["Jacob"],
         assistant_name_provider=lambda: "Aiko",
+        interest_map_provider=(lambda: interest_map) if interest_map is not None else None,
     )
     return worker, store, ollama, rate_limiter
 
@@ -274,6 +280,150 @@ class SelfTagGuardTests(unittest.TestCase):
         latest = store.get(existing.id)
         self.assertEqual(latest.predicted_state, "excited")
         self.assertEqual(latest.confidence, 0.85)
+
+
+class _InterestEntry:
+    """Mimics topic_graph.InterestEntry (has .label / .size)."""
+
+    def __init__(self, label: str, size: int) -> None:
+        self.label = label
+        self.size = size
+
+
+class CoerceLabelsTests(unittest.TestCase):
+    def test_accepts_strings_tuples_and_objects(self) -> None:
+        from app.core.relationship.belief_worker import _coerce_labels
+
+        out = _coerce_labels([
+            "bare label",
+            ("tuple label", 7),
+            _InterestEntry("object label", 4),
+        ])
+        self.assertEqual(out, ["bare label", "tuple label", "object label"])
+
+    def test_dedupes_and_drops_blanks(self) -> None:
+        from app.core.relationship.belief_worker import _coerce_labels
+
+        out = _coerce_labels(["Cats", "", "  ", "cats", "Dogs"])
+        self.assertEqual(out, ["Cats", "Dogs"])
+
+    def test_empty_and_non_iterable(self) -> None:
+        from app.core.relationship.belief_worker import _coerce_labels
+
+        self.assertEqual(_coerce_labels(None), [])
+        self.assertEqual(_coerce_labels([]), [])
+        self.assertEqual(_coerce_labels(123), [])
+
+
+class InterestBiasTests(unittest.TestCase):
+    def _prompt(self, ollama: _StubOllama) -> str:
+        return ollama.chat_calls[0]["messages"][-1]["content"]
+
+    def test_interest_hint_lands_in_prompt(self) -> None:
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[
+                _InterestEntry("tokyo travel", 9),
+                _InterestEntry("rust programming", 5),
+            ],
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertIn("keeps returning to", prompt)
+        self.assertIn("tokyo travel", prompt)
+        self.assertIn("rust programming", prompt)
+
+    def test_no_provider_is_legacy_prompt(self) -> None:
+        # interest_map=None -> provider not wired -> byte-identical legacy
+        # prompt with no interest hint section.
+        worker, _, ollama, _ = _build_world(responses=["[]"])
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertNotIn("keeps returning to", prompt)
+        self.assertNotIn("re-check whether", prompt)
+
+    def test_master_switch_off_suppresses_hint(self) -> None:
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            agent=_StubAgent(belief_interest_bias_enabled=False),
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+        )
+        worker.run()
+        self.assertNotIn("keeps returning to", self._prompt(ollama))
+
+    def test_reconsider_includes_stale_active_belief_on_hot_interest(self) -> None:
+        worker, store, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+        )
+        # Active belief whose topic shares the word "tokyo" with the
+        # interest label -> nominated for a re-check.
+        store.upsert(
+            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+            predicted_state="excited", confidence=0.6, source="worker",
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertIn("re-check whether", prompt)
+        self.assertIn("tokyo trip", prompt)
+
+    def test_reconsider_skips_unrelated_active_belief(self) -> None:
+        worker, store, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+        )
+        store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="database indexing",
+            predicted_state="tedious", confidence=0.6, source="worker",
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        # No topical overlap -> no reconsider block at all.
+        self.assertNotIn("re-check whether", prompt)
+
+    def test_reconsider_cap_respected(self) -> None:
+        worker, store, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+        )
+        for i in range(6):
+            store.upsert(
+                user_id="u1", kind=KIND_MOOD, topic=f"tokyo plan {i}",
+                predicted_state="keen", confidence=0.5, source="worker",
+            )
+        worker.run()
+        prompt = self._prompt(ollama)
+        # reconsider_max defaults to 3 -> at most 3 topics enumerated.
+        mentioned = sum(1 for i in range(6) if f"tokyo plan {i}" in prompt)
+        self.assertLessEqual(mentioned, 3)
+        self.assertGreaterEqual(mentioned, 1)
+
+    def test_pii_only_label_scrubbed_out(self) -> None:
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[
+                _InterestEntry("test@example.com", 9),
+                _InterestEntry("weekend hiking", 5),
+            ],
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertNotIn("test@example.com", prompt)
+        self.assertIn("weekend hiking", prompt)
+
+    def test_still_single_llm_call(self) -> None:
+        # The whole point of K65b: the re-check rides the SAME extraction
+        # call, no extra LLM spend.
+        worker, store, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+        )
+        store.upsert(
+            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+            predicted_state="excited", confidence=0.6, source="worker",
+        )
+        worker.run()
+        self.assertEqual(len(ollama.chat_calls), 1)
 
 
 if __name__ == "__main__":

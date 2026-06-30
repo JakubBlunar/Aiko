@@ -129,6 +129,7 @@ class PromptAssemblerHelpersMixin:
         associative_wander: Callable[[str], str] | None = None,
         long_arc_callback: Callable[[str], str] | None = None,
         interest_drift: Callable[[str], str] | None = None,
+        dormant_interest: Callable[[], str] | None = None,
         curiosity_gradient: Callable[[str], str] | None = None,
         topic_temperature: Callable[[str], str] | None = None,
         topic_confidence: Callable[[str], str] | None = None,
@@ -247,6 +248,8 @@ class PromptAssemblerHelpersMixin:
             self._long_arc_callback_provider = long_arc_callback
         if interest_drift is not None:
             self._interest_drift_provider = interest_drift
+        if dormant_interest is not None:
+            self._dormant_interest_provider = dormant_interest
         if curiosity_gradient is not None:
             self._curiosity_gradient_provider = curiosity_gradient
         if topic_temperature is not None:

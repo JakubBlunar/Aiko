@@ -185,5 +185,96 @@ class SelfImageWorkerTests(unittest.TestCase):
             self.assertNotIn("loves coffee", user_msg["content"])
 
 
+class _FakeInterest:
+    """Mimics topic_graph.InterestEntry (has .label / .size)."""
+
+    def __init__(self, label: str, size: int = 5) -> None:
+        self.label = label
+        self.size = size
+
+
+class InterestSeedTests(unittest.TestCase):
+    """K65d: seed the self-image pulse from the K9 interest map."""
+
+    def _make(self, response, memories, **overrides):
+        ollama = _FakeOllama(response=response)
+        store = _FakeMemoryStore(memories or [])
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "self_image.txt"
+            kwargs = {
+                "ollama": ollama,
+                "memory_store": store,
+                "target_path": target,
+                "model": "m",
+                "min_hours_between": 24.0,
+            }
+            kwargs.update(overrides)
+            yield ollama, target, SelfImageWorker(**kwargs)
+
+    @staticmethod
+    def _user(ollama: _FakeOllama) -> str:
+        return next(
+            m for m in ollama.calls[0]["messages"] if m["role"] == "user"
+        )["content"]
+
+    @staticmethod
+    def _system(ollama: _FakeOllama) -> str:
+        return next(
+            m for m in ollama.calls[0]["messages"] if m["role"] == "system"
+        )["content"]
+
+    def test_interest_line_lands_in_prompt(self) -> None:
+        memories = [_FakeMemory("I value warmth", "self", salience=0.9)]
+        for ollama, _t, worker in self._make(
+            "I'm warm and lately drawn to rust.",
+            memories,
+            interest_provider=lambda: [
+                _FakeInterest("rust programming", 9),
+                _FakeInterest("rock climbing", 5),
+            ],
+        ):
+            worker.pulse()
+            user = self._user(ollama)
+            self.assertIn("Lately you've been spending time on:", user)
+            self.assertIn("rust programming", user)
+            self.assertIn("rock climbing", user)
+            # System prompt grew the interest rule.
+            self.assertIn("Lately you've been spending time on", self._system(ollama))
+
+    def test_no_provider_no_interest_line(self) -> None:
+        memories = [_FakeMemory("I value warmth", "self", salience=0.9)]
+        for ollama, _t, worker in self._make("ok", memories):
+            worker.pulse()
+            self.assertNotIn(
+                "Lately you've been spending time on:", self._user(ollama)
+            )
+
+    def test_seed_disabled_suppresses_interest_line(self) -> None:
+        memories = [_FakeMemory("I value warmth", "self", salience=0.9)]
+        for ollama, _t, worker in self._make(
+            "ok",
+            memories,
+            interest_provider=lambda: [_FakeInterest("rust programming", 9)],
+            interest_seed_enabled=False,
+        ):
+            worker.pulse()
+            self.assertNotIn(
+                "Lately you've been spending time on:", self._user(ollama)
+            )
+
+    def test_interest_alone_does_not_trigger_without_memories(self) -> None:
+        # No self/reflection memories -> still skipped, interest map is a
+        # flavour not an input source.
+        for ollama, target, worker in self._make(
+            "ok",
+            [],
+            interest_provider=lambda: [_FakeInterest("rust programming", 9)],
+        ):
+            text = worker.pulse()
+            self.assertIsNone(text)
+            self.assertEqual(worker.stats()["skipped_no_input"], 1)
+            self.assertEqual(ollama.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,15 @@ class _FakeEmbedder:
         return [float(len(text))]
 
 
+@dataclass
+class _FakeInterest:
+    """Mimics topic_graph.InterestActivity (has .label / .days_since)."""
+
+    label: str
+    days_since: float | None = None
+    size: int = 5
+
+
 class _FakeOllama:
     def __init__(self, output: str = "") -> None:
         self.calls = 0
@@ -86,6 +95,9 @@ def _make(
     min_seconds_between: float = 0.0,
     max_user_word_count: int = 8,
     has_components: bool = True,
+    interest_rows: list | None = None,
+    cluster_anchor_enabled: bool = True,
+    quiet_min_days: float = 7.0,
 ) -> tuple[CuriosityWorker, _FakeOllama, _FakeMemoryStore]:
     ollama = _FakeOllama(ollama_output)
     memory = _FakeMemoryStore()
@@ -99,6 +111,11 @@ def _make(
         min_seconds_between=min_seconds_between,
         max_user_word_count=max_user_word_count,
         user_display_name_provider=lambda: "Jacob",
+        interest_provider=(
+            (lambda: interest_rows) if interest_rows is not None else None
+        ),
+        cluster_anchor_enabled=cluster_anchor_enabled,
+        quiet_min_days=quiet_min_days,
     )
     return worker, ollama, memory
 
@@ -246,6 +263,101 @@ class CuriosityWorkerTests(unittest.TestCase):
         # The throttle counter advances even on a refusal so a flaky
         # model can't make us spin on every turn.
         self.assertEqual(worker.stats()["scheduled"], 1)
+
+
+class ClusterAnchorTests(unittest.TestCase):
+    """K65c: anchor the follow-up on a known-but-quiet interest."""
+
+    def _sys_prompt(self, ollama: _FakeOllama) -> str:
+        return ollama.last_messages[0]["content"]
+
+    def test_anchors_on_quiet_interest(self) -> None:
+        worker, ollama, _ = _make(
+            ollama_output="Maybe ask Jacob if he's still rock climbing lately.",
+            interest_rows=[_FakeInterest("rock climbing", days_since=30.0)],
+        )
+        result = worker.maybe_run(
+            session_key="s1",
+            user_text="yeah, sounds nice",
+            assistant_text="Glad you like it.",
+            arc_label="casual_check_in",
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("rock climbing", self._sys_prompt(ollama))
+        self.assertEqual(worker.stats()["anchored_on_interest"], 1)
+
+    def test_picks_quietest_interest(self) -> None:
+        worker, ollama, _ = _make(
+            ollama_output="Maybe ask Jacob about the old band stuff.",
+            interest_rows=[
+                _FakeInterest("rust", days_since=8.0),
+                _FakeInterest("the band", days_since=45.0),
+                _FakeInterest("cooking", days_since=12.0),
+            ],
+        )
+        worker.maybe_run(
+            session_key="s1",
+            user_text="ok cool",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+        # Largest days_since wins.
+        self.assertIn("the band", self._sys_prompt(ollama))
+
+    def test_recent_interests_fall_back_to_legacy(self) -> None:
+        worker, ollama, _ = _make(
+            interest_rows=[_FakeInterest("rust", days_since=2.0)],
+            quiet_min_days=7.0,
+        )
+        result = worker.maybe_run(
+            session_key="s1",
+            user_text="yeah",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+        self.assertIsNotNone(result)
+        # No quiet interest cleared the threshold -> legacy prompt, no anchor.
+        self.assertNotIn("rust", self._sys_prompt(ollama))
+        self.assertEqual(worker.stats()["anchored_on_interest"], 0)
+
+    def test_unknown_days_since_treated_as_dormant(self) -> None:
+        worker, ollama, _ = _make(
+            ollama_output="Maybe ask Jacob about gardening again sometime.",
+            interest_rows=[_FakeInterest("gardening", days_since=None)],
+        )
+        worker.maybe_run(
+            session_key="s1",
+            user_text="ok",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+        self.assertIn("gardening", self._sys_prompt(ollama))
+
+    def test_switch_off_disables_anchor(self) -> None:
+        worker, ollama, _ = _make(
+            interest_rows=[_FakeInterest("rock climbing", days_since=30.0)],
+            cluster_anchor_enabled=False,
+        )
+        result = worker.maybe_run(
+            session_key="s1",
+            user_text="yeah",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+        self.assertIsNotNone(result)
+        self.assertNotIn("rock climbing", self._sys_prompt(ollama))
+        self.assertEqual(worker.stats()["anchored_on_interest"], 0)
+
+    def test_no_provider_is_legacy(self) -> None:
+        worker, ollama, _ = _make()  # interest_rows=None -> no provider
+        result = worker.maybe_run(
+            session_key="s1",
+            user_text="yeah",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(worker.stats()["anchored_on_interest"], 0)
 
 
 if __name__ == "__main__":

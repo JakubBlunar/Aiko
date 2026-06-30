@@ -344,6 +344,7 @@ class ChatTurnMixin:
                     rolling = ""
                 callbacks = self._top_inner_life_contents("callback", limit=3)
                 self_memories = self._top_inner_life_contents("self", limit=3)
+                hot_clusters = self._dream_hot_clusters()
                 affect = None
                 try:
                     affect = self._affect_store.get(self._user_id)
@@ -356,6 +357,7 @@ class ChatTurnMixin:
                     rolling_summary=rolling,
                     recent_callbacks=callbacks,
                     recent_self_memories=self_memories,
+                    hot_clusters=hot_clusters,
                     affect=affect,
                 )
             except Exception:
@@ -394,6 +396,41 @@ class ChatTurnMixin:
             if len(out) >= limit:
                 break
         return out
+
+    def _dream_hot_clusters(self, *, limit: int = 2) -> list[str]:
+        """K65e: labels of the day's most-active established K9 clusters.
+
+        Reads ``topic_graph.cluster_activity`` and keeps clusters whose
+        newest member is within ``dream_hot_cluster_recency_days`` days,
+        ordered most-recent first. Returns ``[]`` when disabled, the graph
+        is absent / non-persistent, or nothing has been touched recently.
+        """
+        if not bool(
+            getattr(self._settings.agent, "dream_hot_cluster_enabled", True)
+        ):
+            return []
+        graph = getattr(self, "_topic_graph", None)
+        if graph is None:
+            return []
+        recency = float(
+            getattr(self._settings.agent, "dream_hot_cluster_recency_days", 3.0)
+        )
+        try:
+            rows = graph.cluster_activity(top_n=8, min_size=3)
+        except Exception:
+            log.debug("dream hot-cluster lookup failed", exc_info=True)
+            return []
+        recent = []
+        for row in rows or []:
+            label = str(getattr(row, "label", "") or "").strip()
+            if not label:
+                continue
+            days = getattr(row, "days_since", None)
+            if days is None or float(days) > recency:
+                continue
+            recent.append((float(days), label))
+        recent.sort(key=lambda t: t[0])
+        return [label for _d, label in recent[:limit]]
 
     def _compute_user_reply_latency_seconds(
         self, *, user_message_id: int | None,

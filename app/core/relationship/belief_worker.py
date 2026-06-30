@@ -131,6 +131,52 @@ def _preview(text: str | None) -> str:
     return s[: _LOG_PREVIEW_CHARS - 1] + "\u2026"
 
 
+def _coerce_labels(raw: Any) -> list[str]:
+    """Normalise an interest-map payload to an ordered list of labels.
+
+    Accepts anything iterable whose items are bare label strings,
+    ``(label, size)`` tuples, or objects exposing a ``.label`` attribute
+    (e.g. :class:`app.core.conversation.topic_graph.InterestEntry`).
+    Blank labels are dropped; order + de-dupe are preserved so the
+    caller's "densest first" ordering survives.
+    """
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        items = list(raw)
+    except TypeError:
+        return []
+    for item in items:
+        label: Any = None
+        if isinstance(item, str):
+            label = item
+        elif hasattr(item, "label"):
+            label = getattr(item, "label")
+        elif isinstance(item, (tuple, list)) and item:
+            label = item[0]
+        text = str(label or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+# Tiny tokenizer for the reconsider-candidate overlap. Words of length
+# >= 3 only, so trivial joiners ("the", "a", "of") don't manufacture a
+# match between an interest label and a belief topic.
+_TOPIC_WORD_RE = re.compile(r"[a-z0-9]{3,}")
+
+
+def _topic_words(text: str | None) -> set[str]:
+    return set(_TOPIC_WORD_RE.findall((text or "").lower()))
+
+
 @dataclass(slots=True)
 class _BeliefTuple:
     """One belief returned by the LLM extractor."""
@@ -164,6 +210,7 @@ class BeliefInferenceWorker:
         assistant_name_provider: Callable[[], str | None] | None = None,
         notify_belief_added: Callable[[dict[str, Any]], None] | None = None,
         notify_belief_updated: Callable[[dict[str, Any]], None] | None = None,
+        interest_map_provider: Callable[[], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._belief_store = belief_store
@@ -181,6 +228,11 @@ class BeliefInferenceWorker:
         self._assistant_name_provider = assistant_name_provider
         self._notify_belief_added = notify_belief_added
         self._notify_belief_updated = notify_belief_updated
+        # K65b: returns the K9 interest map (densest topic clusters). Any
+        # iterable of items exposing ``.label`` / ``.size`` or ``(label,
+        # size)`` tuples / bare label strings is accepted; ``None`` /
+        # missing keeps the legacy flat-transcript behaviour.
+        self._interest_map_provider = interest_map_provider
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -297,8 +349,42 @@ class BeliefInferenceWorker:
             _preview(scrubbed),
         )
 
+        # K65b: bias extraction toward the user's densest K9 interests and
+        # fold a few "still true?" re-checks into the *same* LLM call. Both
+        # are best-effort and degrade to the legacy flat prompt on a cold
+        # store (no labelled clusters / no active beliefs).
+        interest_labels = self._interest_labels()
+        interest_hint = ""
+        reconsider_block = ""
+        reconsider_count = 0
+        if interest_labels:
+            clean_labels = self._scrub_terms(
+                interest_labels, user_names, assistant_name,
+            )
+            if clean_labels:
+                interest_hint = ", ".join(clean_labels)
+            reconsider_topics = self._reconsider_topics(
+                user_id=self._user_id_provider(), labels=interest_labels,
+            )
+            clean_reconsider = self._scrub_terms(
+                reconsider_topics, user_names, assistant_name,
+            )
+            reconsider_count = len(clean_reconsider)
+            if clean_reconsider:
+                reconsider_block = "; ".join(clean_reconsider)
+            if interest_hint or reconsider_block:
+                log.info(
+                    "belief-worker interest-bias: interests=%d reconsider=%d",
+                    len(interest_labels),
+                    reconsider_count,
+                )
+
         t0 = time.monotonic()
-        tuples = self._extract_with_llm(scrubbed)
+        tuples = self._extract_with_llm(
+            scrubbed,
+            interest_hint=interest_hint,
+            reconsider_block=reconsider_block,
+        )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         if tuples is None:
             log.info(
@@ -418,6 +504,87 @@ class BeliefInferenceWorker:
         log.info("belief-worker done: %s", result)
         return result
 
+    # ── K65b: interest-map bias helpers ──────────────────────────────
+
+    def _interest_labels(self) -> list[str]:
+        """Top high-mass K9 cluster labels, or ``[]`` when disabled/cold."""
+        if not bool(
+            getattr(self._agent_settings, "belief_interest_bias_enabled", True)
+        ):
+            return []
+        if self._interest_map_provider is None:
+            return []
+        top_n = int(
+            getattr(self._belief_settings, "belief_worker_interest_top_n", 5)
+        )
+        if top_n <= 0:
+            return []
+        try:
+            raw = self._interest_map_provider()
+        except Exception:
+            log.debug(
+                "belief-worker: interest_map_provider raised", exc_info=True
+            )
+            return []
+        return _coerce_labels(raw)[:top_n]
+
+    def _reconsider_topics(
+        self, *, user_id: str, labels: list[str]
+    ) -> list[str]:
+        """Stalest active beliefs whose topic sits on a top interest.
+
+        ``list_active`` is ``observed_at DESC`` so we walk it in reverse
+        (oldest-observed first) and keep the first ``reconsider_max`` whose
+        topic shares a content word with any high-mass interest label.
+        """
+        max_n = int(
+            getattr(self._belief_settings, "belief_worker_reconsider_max", 3)
+        )
+        if max_n <= 0 or not labels:
+            return []
+        try:
+            active = self._belief_store.list_active(user_id=user_id, limit=200)
+        except Exception:
+            log.debug("belief-worker: list_active raised", exc_info=True)
+            return []
+        if not active:
+            return []
+        label_words = _topic_words(" ".join(labels))
+        if not label_words:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for belief in reversed(active):
+            topic = (getattr(belief, "topic", "") or "").strip()
+            key = topic.lower()
+            if not topic or key in seen:
+                continue
+            if _topic_words(topic) & label_words:
+                out.append(topic)
+                seen.add(key)
+                if len(out) >= max_n:
+                    break
+        return out
+
+    def _scrub_terms(
+        self,
+        terms: list[str],
+        user_names: list[str] | None,
+        assistant_name: str | None,
+    ) -> list[str]:
+        """Privacy-scrub each short term; drop any that scrub to empty."""
+        out: list[str] = []
+        for term in terms:
+            s = (term or "").strip()
+            if not s:
+                continue
+            scrubbed = scrub_claim_for_search(
+                s, user_names=user_names, assistant_name=assistant_name,
+            )
+            if scrubbed and scrubbed.strip():
+                out.append(scrubbed.strip())
+        return out
+
     # ── transcript snapshot ──────────────────────────────────────────
 
     def _snapshot_transcript(
@@ -449,8 +616,26 @@ class BeliefInferenceWorker:
 
     # ── LLM extractor ────────────────────────────────────────────────
 
-    def _extract_with_llm(self, scrubbed_transcript: str) -> list[_BeliefTuple] | None:
-        user_content = _USER_TEMPLATE.format(transcript=scrubbed_transcript)
+    def _extract_with_llm(
+        self,
+        scrubbed_transcript: str,
+        *,
+        interest_hint: str = "",
+        reconsider_block: str = "",
+    ) -> list[_BeliefTuple] | None:
+        sections = [_USER_TEMPLATE.format(transcript=scrubbed_transcript)]
+        if interest_hint:
+            sections.append(
+                "Topics this user keeps returning to (prioritise beliefs "
+                f"about these when the transcript supports it): {interest_hint}."
+            )
+        if reconsider_block:
+            sections.append(
+                "Also re-check whether these earlier beliefs still hold: if a "
+                "transcript turn speaks to one, return an updated belief for "
+                f"that topic; otherwise ignore it: {reconsider_block}."
+            )
+        user_content = "\n\n".join(sections)
         # K-time8: anchor "now" so the model resolves relative phrases in the
         # transcript ("he was stressed yesterday") instead of guessing.
         system_content = f"{timephrase.today_anchor(self._clock())}\n\n{_SYSTEM_PROMPT}"

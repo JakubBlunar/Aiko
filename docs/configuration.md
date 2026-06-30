@@ -56,6 +56,7 @@ exists to keep them in lock-step.
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
 | Don't cave on taste pushback (K46 stance persistence) | `agent.stance_persistence_enabled` | `true` |
 | Long-arc callbacks "weeks ago you said…" (K63) | `agent.long_arc_callback_enabled` | `true` |
+| Dormant-interest re-opener "we haven't talked about X in ages" (K67) | `agent.dormant_interest_enabled` | `true` |
 | Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Cue-register rotation (K51 de-"Heads-up") | `agent.cue_register_rotation_enabled` | `true` |
@@ -233,6 +234,7 @@ LLM-driven background workers run during the gap when Aiko is speaking the previ
 - `agent.agenda_groom_every_n_turns` *(int, `8`, min `1`)* — agenda groomer cadence in user-turns. Higher → stale items linger.
 - `agent.arc_update_every_n_turns` *(int, `1`, min `1`)* — conversation-arc worker cadence. `1` = every turn (it's cheap; arc tag drives expression + TTS speed).
 - `agent.self_image_pulse_enabled` *(bool, `true`)* — daily self-image worker. Off → Aiko never re-introspects how she feels about herself.
+- `agent.self_image_interest_seed_enabled` *(bool, `true`)* — **K65d.** Fold the K9 interest map into the daily self-image pulse ("Lately you've been spending time on: …") so her self-narrative can reflect what she's been engaging with. Off → the pulse uses only her top-salience self/reflection memories. No effect on a cold / unlabelled store.
 - `agent.self_image_max_tokens` *(int, `320`, min `120`)* — `num_predict` ceiling on the self-image LLM call. Bump if you see `surface=self_image_worker` truncation warnings.
 - `agent.prepared_nudge_ttl_seconds` *(float, `600.0`, min `30`)* — how stale a prepared proactive nudge can be before `ProactiveDirector` re-synthesises.
 
@@ -387,6 +389,8 @@ Bootstrap-time reflection that fires once per app start when the gap since the l
 
 - `agent.dream_worker_enabled` *(bool, `true`)* — master switch.
 - `agent.dream_worker_min_hours_since_last` *(float, `6.0`, min `0`)* — minimum offline-gap hours before the dream worker runs at boot.
+- `agent.dream_hot_cluster_enabled` *(bool, `true`)* — **K65e.** Add the day's most recently-active K9 clusters to the dream seed ("threads that kept coming up lately: …") so the dream lands on a real recent topic. Off / cold graph → the dream seeds from summary + callbacks + self memories only. Flavour-only: cluster labels never trigger a dream by themselves.
+- `agent.dream_hot_cluster_recency_days` *(float, `3.0`, min `0`)* — **K65e.** A cluster counts as part of "the day's" activity only when its newest member is no older than this many days.
 
 ### Catchphrase miner
 
@@ -403,6 +407,8 @@ One-line follow-up question prep when the recent conversation has gone shallow.
 - `agent.curiosity_worker_min_turns_between` *(int, `3`, min `1`)* — minimum turns between candidate emissions.
 - `agent.curiosity_worker_min_seconds_between` *(float, `60.0`, min `0`)* — wall-clock cooldown.
 - `agent.curiosity_worker_max_user_word_count` *(int, `8`, min `1`)* — only fires when the recent user turns are this short on average (signal that the conversation has gone shallow).
+- `agent.curiosity_worker_cluster_anchor_enabled` *(bool, `true`)* — **K65c.** Anchor the follow-up on a known-but-quiet K9 interest (the most-dormant established cluster) instead of echoing the user's literal last words. Falls back to the legacy literal-words prompt when no quiet interest is available (cold / non-persistent graph). Off → pure legacy anchoring.
+- `agent.curiosity_worker_quiet_days` *(float, `7.0`, min `0`)* — **K65c.** How many days a cluster's newest member must be old for it to count as "quiet" and eligible as a re-anchor target. Higher → only reach back to long-dormant interests.
 
 ### F1 — background fact-checker
 
@@ -493,6 +499,7 @@ F9 is the `idle_knowledge` worker: on an idle tick it reads the K9 topic graph, 
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.
 - `agent.belief_worker_enabled` *(bool, `true`)* — toggle only the background inference worker. With tracking on and worker off, the self-tag fast path still writes beliefs and gaps still surface.
+- `agent.belief_interest_bias_enabled` *(bool, `true`)* — **K65b.** Fold the K9 interest map into the belief worker's extraction prompt: prioritise the densest topic clusters and re-check stale active beliefs sitting on them, all in the same LLM call. Off → the worker mines the flat last-N user turns exactly as before. On a cold / unlabelled store the worker is byte-identical to the legacy path regardless. Verify with `force_run("belief_worker")` then grep `belief-worker interest-bias:`.
 - `agent.belief_worker_per_hour_cap` *(int, `8`, min `0`)* — hourly cap on LLM extraction calls.
 - `agent.belief_worker_per_day_cap` *(int, `40`, min `0`)* — daily cap.
 
@@ -725,6 +732,24 @@ Only memory kinds representing things the *user* told Aiko qualify (`fact` / `pr
 
 Verification: enable INFO logging on `app.session` and watch for `long-arc-callback fire: mem=… kind=… cosine=… age_days=… forced=…`. MCP `get_long_arc_callback_state()` dumps the switch, all knobs, the live per-session count, the kv cooldown stamp + don't-repeat ring, `cooldown_elapsed`, the force flag, and the last fire; `force_long_arc_callback()` arms a one-shot bypass on the cap + cooldown + min-words gates (the age / cosine / kind gates still apply, so an old topically-matching memory is still required). Repro: seed an old (≥ 21-day) memory on a topic, `force_long_arc_callback()`, send a message on that topic, and the tentative line lands in `get_last_response_detail.system_prompt`. Tests: `tests/test_long_arc_callback.py`, `LongArcCallbackProviderTests` in `tests/test_prompt_assembler.py`, `LongArcCallbackSettingsTests` in `tests/test_settings.py`.
 
+### K67 — dormant-interest re-opener ("we haven't talked about X in ages")
+
+The symmetric sibling of K64b (interest drift) and K34 (future plans): when a topic the user was genuinely into has quietly dropped off, Aiko gently re-opens it on a natural lull ("you used to be all about your band — still playing, or did that fizzle?"). The `DormantInterestWorker` (a cheap, no-LLM idle worker) reads `topic_graph.cluster_activity`, keeps once-high-mass clusters that have gone silent for weeks, and drafts them into the `aiko.dormant_interests` kv journal; a lull-gated provider surfaces one rarely. Unlike the K64b drift cue (which fires when the live turn is *on* the drifting topic), a dormant interest is by definition *not* the live topic, so this one waits for a conversational lull and reaches off-thread.
+
+- `agent.dormant_interest_enabled` *(bool, `true`)* — master switch. Off → the worker never registers and the provider stays empty.
+- `memory.dormant_interest_interval_seconds` *(int, `21600`, min `60`)* — how often the worker scans cluster activity (6h default; a dropped interest is a slow signal).
+- `memory.dormant_interest_daily_cap` *(int, `2`, min `0`)* — max re-openers drafted per local day. `0` disables drafting.
+- `memory.dormant_interest_journal_max` *(int, `6`, min `1`)* — size of the kv journal ring.
+- `memory.dormant_interest_min_size` *(int, `6`, min `2`)* — a cluster must have at least this many members to count as a genuine past interest (its accumulated members ≈ peak mass).
+- `memory.dormant_interest_max_clusters` *(int, `40`, min `1`)* — cap on how many of the largest clusters get scanned per tick.
+- `memory.dormant_interest_dormant_days` *(float, `21.0`, min `0`)* — a cluster counts as dormant once its newest member is at least this many days old (~3 weeks).
+- `memory.dormant_interest_topic_cooldown_hours` *(int, `336`, min `0`)* — per-topic cooldown so the same dead thread isn't re-drafted (14 days).
+- `memory.dormant_interest_surface_cooldown_hours` *(float, `24.0`, min `0`)* — provider-side wall-clock cooldown across ALL topics: at most one re-opener may surface per window, so the beat stays rare even with several queued.
+
+The natural-lull gate reuses the K18 `TopicStagnationDetector.last_mean` standing reading vs. `memory.stagnation_mild_threshold` (the same signal K54 topic-appetite consumes). Each topic surfaces at most once (per-topic `surfaced_keys`). The cue lands in T6 right after `topic_appetite_block`; no-arg, dropped under aggressive mode.
+
+Verification: enable INFO logging and watch for `dormant-interest drafted: …` (`app.dormant_interest_worker`) and `dormant-interest fire: …` (`app.session`). MCP `get_dormant_interest_state()` dumps the switch, registration, journal ring, surfaced keys + clock, topic cooldowns, the live `lull_mean` vs threshold, and the force flag; `force_dormant_interest()` runs the worker once bypassing the caps (a once-big-but-quiet cluster must still exist); `force_dormant_interest_surface()` arms a one-shot bypass on the lull + cooldown + surfaced gates (the ring must be non-empty). Repro: seed a big, weeks-old topic cluster, `force_dormant_interest()`, `force_dormant_interest_surface()`, send a message, and the "we haven't talked about X in ages" line lands in `get_last_response_detail.system_prompt`. Tests: `tests/test_dormant_interest.py`, `DormantInterestProviderTests` in `tests/test_prompt_assembler.py`, `DormantInterestSettingsTests` in `tests/test_settings.py`.
+
 ### K-time1 — wall-clock prefixes on chat history
 
 Per-message relative-age tag prepended to every chat-history message sent to the LLM: `[just now] ...`, `[2 min ago] ...`, `[today 13:32] ...`, `[yesterday 18:45] ...`, `[Wednesday 18:45] ...`, `[May 28 18:45] ...`. The current user message Aiko is replying to is appended *after* the history block and never gets a prefix. Default on.
@@ -868,6 +893,8 @@ Idle LLM workers were retuned to run more often (they no longer block the brain 
 ### K2 — belief thresholds
 
 - `memory.belief_worker_lookback_turns` *(int, `12`, min `1`)* — how many recent **user** messages the worker passes to the LLM per extraction. Larger → richer signal at the cost of tokens.
+- `memory.belief_worker_interest_top_n` *(int, `5`, min `0`)* — **K65b.** How many of the densest K9 topic clusters (by member count) are folded into the extraction prompt as a "prioritise these interests" hint. `0` disables the interest hint without touching `agent.belief_interest_bias_enabled`.
+- `memory.belief_worker_reconsider_max` *(int, `3`, min `0`)* — **K65b.** Max stalest active beliefs sitting on a high-mass interest that get nominated for an in-prompt "still true?" re-check each tick (rides the same LLM call, no extra spend). `0` disables the re-check track.
 - `memory.belief_gap_valence_threshold` *(float, `0.30`, clamped `[0, 1]`)* — minimum `|valence_predicted - valence_observed|` for a mood-belief gap. Higher → fewer "am I reading this wrong?" beats.
 - `memory.belief_gap_arousal_threshold` *(float, `0.25`, clamped `[0, 1]`)* — same for arousal.
 - `memory.belief_recent_window_hours` *(int, `24`, min `1`)* — window for mood-pass predictions. Older mood beliefs age out via the stale sweep instead. Opinion beliefs have no recency window.

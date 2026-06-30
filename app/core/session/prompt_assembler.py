@@ -213,6 +213,12 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "thread_ownership_block",
         "wants_block",
         "topic_appetite_block",
+        # K67: dormant-interest re-opener — "we haven't talked about X in
+        # ages". A rare, lull-gated reach back to a once-loved-but-quiet
+        # topic; clusters with the other "things Aiko could bring up on a
+        # lull" permission slips, and reads the K18 standing lull reading so
+        # it must run after the stagnation provider.
+        "dormant_interest_block",
         "tease_ledger_block",
         "curiosity_seeds_block",
         # H17: "while I was <doing X> earlier I started wondering ..." —
@@ -395,6 +401,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # lately" / "X has gone quiet" register shift when the live turn is
         # on a topic whose mass has drifted. Query-aware; dropped aggressive.
         self._interest_drift_provider: Callable[[str], str] | None = None
+        # K67: dormant-interest re-opener. No-arg (lull-gated, not query-
+        # aware) — surfaces a once-loved-but-quiet topic on a natural lull.
+        self._dormant_interest_provider: Callable[[], str] | None = None
         # K64c: curiosity gradient — surface a "I keep brushing past X, I'm
         # curious" cue when the live turn is on a familiar topic with an
         # under-explored adjacent edge. Query-aware; dropped aggressive.
@@ -1944,6 +1953,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="topic_appetite",
             )
 
+        # K67: dormant-interest re-opener. Lull-gated (reads the K18 standing
+        # reading, so it must run after the stagnation provider, like
+        # topic_appetite above), no-arg, dropped under aggressive — a rare
+        # nicety, not load-bearing context.
+        dormant_interest_block = ""
+        if not aggressive and self._dormant_interest_provider is not None:
+            dormant_interest_block = _safe_provider(
+                self._dormant_interest_provider,
+                timing_sink=provider_ms,
+                timing_name="dormant_interest",
+            )
+
         # K59: tease-ledger collection opportunity. Same posture as
         # wants / topic_appetite — a permission slip, dropped under
         # aggressive (the provider only stamps offered/cooldown when
@@ -2619,6 +2640,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # slip. Lands right under the wants block — its offer IS
             # the strongest want, so the two read as one thought.
             system_parts.append(topic_appetite_block)
+        if dormant_interest_block:
+            # K67: the rare "we haven't talked about X in ages" re-opener.
+            # Clusters with the other lull-gated "things Aiko could bring
+            # up" permission slips — a warm reach back to a dropped thread.
+            system_parts.append(dormant_interest_block)
         if tease_ledger_block:
             # K59: the rare "collect on an old one" permission slip.
             # Clusters with the wants/appetite "things on Aiko's

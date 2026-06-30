@@ -357,6 +357,23 @@ class DetectorsInitMixin:
                     assistant_name_provider=lambda: "Aiko",
                     notify_belief_added=self._notify_belief_added,
                     notify_belief_updated=self._notify_belief_updated,
+                    # K65b: feed the K9 interest map so extraction biases
+                    # toward the densest clusters. Returns [] in the
+                    # non-persistent / unlabelled-cold state, which keeps
+                    # the worker on its legacy flat-transcript path.
+                    interest_map_provider=lambda: (
+                        self._topic_graph.interest_map(
+                            top_n=int(
+                                getattr(
+                                    self._memory_settings,
+                                    "belief_worker_interest_top_n",
+                                    5,
+                                )
+                            )
+                        )
+                        if getattr(self, "_topic_graph", None) is not None
+                        else []
+                    ),
                 )
                 self._idle_scheduler.register(self._belief_worker)
             except Exception:

@@ -3745,6 +3745,75 @@ class LongArcCallbackProviderTests(unittest.TestCase):
         )
 
 
+class DormantInterestProviderTests(unittest.TestCase):
+    """K67 ``dormant_interest`` provider slot tests.
+
+    No-arg, lull-gated provider. Sits in the T6 detector tier right after
+    K54 ``topic_appetite_block`` (both are "things Aiko could bring up on a
+    lull" permission slips) and must therefore land after the K18 stagnation
+    provider. DROPPED under aggressive mode (a rare nicety, not steering).
+    """
+
+    _CUE = (
+        "Heads-up: \"garage band\" used to come up between you two a lot, but "
+        "it's gone quiet for a good while now."
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="di1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                dormant_interest=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "di1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("gone quiet", messages[0]["content"])
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="di2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(dormant_interest=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "di2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("gone quiet", messages[0]["content"])
+
+    def test_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="di3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                dormant_interest=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "di3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("gone quiet", messages[0]["content"])
+
+    def test_tier_slot_after_topic_appetite(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("dormant_interest_block", t6)
+        self.assertLess(
+            t6.index("topic_appetite_block"),
+            t6.index("dormant_interest_block"),
+        )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 
