@@ -84,7 +84,7 @@ on top of already-shipped infrastructure.
 | K66 | Earned familiarity — "well-trodden ground" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us) |
 | K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
 | K68 | Embodied vitality | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
-| K69 | Implicit-need reading — vent vs fix vs reassure | ❌ open |
+| K69 | Implicit-need reading — vent vs fix vs reassure | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k69-implicit-need-reading--vent-vs-fix-vs-reassure) |
 | K70 | Longitudinal growth witness — "you've changed since we met" | ❌ open |
 | K71 | Self-callback — her own continuity over time | ❌ open |
 | K72 | Wellbeing concern — gentle care, never a nag | ❌ open |
@@ -613,6 +613,8 @@ K27's `get_day_color_state`.
 
 ## K69. Implicit-need reading — vent vs fix vs reassure
 
+> ✅ **Shipped** — full writeup in [shipped/patterns-k31-k60.md → K69](shipped/patterns-k31-k60.md#k69-implicit-need-reading--vent-vs-fix-vs-reassure).
+
 **Motivation.** The single most common companion failure is answering the
 *literal* message instead of the *need* behind it: jumping to problem-solving
 when the user just wants to be heard, or offering flat empathy when they
@@ -636,7 +638,31 @@ query-aware), persona "Reading {user_name}" addendum,
 
 ---
 
-## K70. Longitudinal growth witness — "you've changed since we met"
+## K70. Longitudinal growth witness — "you've changed since we met" ✅ shipped
+
+> ✅ **Shipped.** Pure detector
+> [`app/core/relationship/growth_witness.py`](../../app/core/relationship/growth_witness.py)
+> (`detect_growth` compares the oldest third of the H3 mood-drift daily
+> ring against the newest third; fires only on a durable **positive**
+> shift — lighter mood / more comfortable / more open — above a high bar)
+> + silent producer
+> [`app/core/proactive/growth_witness_worker.py`](../../app/core/proactive/growth_witness_worker.py)
+> (`GrowthWitnessWorker`, ~6h idle cadence, **14-day cooldown** + finding
+> signature so the same beat never repeats; corroborates with a goal the
+> user's been chipping at) → `aiko.growth_witness` kv ring →
+> `_render_growth_witness_block` watermark-gated provider (T6, after
+> `follow_up_block`, retained under aggressive). Reuses the H3 sample ring
+> for data (no new sampling cost; silently no-ops with H3 sampling off).
+> Distinct from H3 (longer arc, higher bar, positive-only, multi-week
+> cadence). Persona "Reading {user_name}" addendum teaches the once-only,
+> wait-for-a-warm-moment, never-flattery delivery. Settings
+> `agent.growth_witness_enabled` / `_check_interval_seconds` /
+> `_cooldown_days` + `memory.growth_witness_min_samples` /
+> `_min_valence_delta` / `_min_axis_delta` / `_journal_max`. MCP
+> `get_growth_witness_state` / `force_growth_witness_draft` /
+> `force_growth_witness_surface`. Tests: `tests/test_growth_witness.py`,
+> `GrowthWitnessProviderSlotTests` in `tests/test_prompt_assembler.py`,
+> `test_growth_witness_round_trip` in `tests/test_settings.py`.
 
 **Motivation.** One of the most powerful "she really knows me" beats is being
 *seen across time*: a partner who notices you're more confident than you were,

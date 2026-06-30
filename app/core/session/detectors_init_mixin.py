@@ -70,6 +70,10 @@ class DetectorsInitMixin:
         self._misattunement_force_next: bool = False
         self._last_misattunement_trigger: str | None = None
         self._last_misattunement_fire_turn: int | None = None
+        # K69 implicit-need reading — stateless classifier; these just
+        # hold the last verdict (MCP debug) + a one-shot force flag.
+        self._last_implicit_need: dict | None = None
+        self._implicit_need_force_mode: str | None = None
         # P22 — shared recent-history memo. K23 misattunement, K30
         # self-noticing and K54 topic-appetite each need the last N
         # rows within one assembly; they route through
@@ -185,6 +189,11 @@ class DetectorsInitMixin:
         self._pending_forward_curiosity_seconds: float | None = None
         self._forward_curiosity_force_next: bool = False
         self._forward_curiosity_worker: Any = None
+        # K70 growth-witness — watermark-gated cue-producer. The worker
+        # (set in idle_workers_init) drafts a rare "you've grown" finding;
+        # ``_growth_witness_force_next`` is the MCP debug bypass.
+        self._growth_witness_force_next: bool = False
+        self._growth_witness_worker: Any = None
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
         # ``self_noticing`` inner-life block. Agreement-streak is

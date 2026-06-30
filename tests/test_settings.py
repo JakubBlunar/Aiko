@@ -2129,6 +2129,65 @@ class MisattunementSettingsTests(unittest.TestCase):
         path.write_text(json.dumps(cfg), encoding="utf-8")
         return path
 
+    def test_implicit_need_round_trip(self) -> None:
+        # K69: agent master switch + memory confidence floor (clamped).
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.implicit_need_enabled)
+        self.assertAlmostEqual(
+            result.memory.implicit_need_min_confidence, 2.0,
+        )
+        path = self._write_config(
+            agent_extra={"implicit_need_enabled": False},
+        )
+        # Inject the memory override directly (clamp floor 0.5).
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "implicit_need_min_confidence": 0.0,
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.implicit_need_enabled)
+        self.assertAlmostEqual(
+            result.memory.implicit_need_min_confidence, 0.5,
+        )
+
+    def test_growth_witness_round_trip(self) -> None:
+        # K70: agent master switch + cadence/cooldown + memory thresholds.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.growth_witness_enabled)
+        self.assertEqual(
+            result.agent.growth_witness_check_interval_seconds, 21600,
+        )
+        self.assertAlmostEqual(
+            result.agent.growth_witness_cooldown_days, 14.0,
+        )
+        self.assertEqual(result.memory.growth_witness_min_samples, 10)
+        self.assertAlmostEqual(
+            result.memory.growth_witness_min_valence_delta, 0.25,
+        )
+        path = self._write_config(
+            agent_extra={
+                "growth_witness_enabled": False,
+                # interval clamps to floor 60.
+                "growth_witness_check_interval_seconds": 5,
+            },
+        )
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "growth_witness_min_samples": 1,  # clamps to floor 2
+            "growth_witness_journal_max": 0,  # clamps to floor 1
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.growth_witness_enabled)
+        self.assertEqual(
+            result.agent.growth_witness_check_interval_seconds, 60,
+        )
+        self.assertEqual(result.memory.growth_witness_min_samples, 2)
+        self.assertEqual(result.memory.growth_witness_journal_max, 1)
+
     def test_defaults_load_when_keys_missing(self) -> None:
         path = self._write_config()
         result = load_settings(config_path=path)

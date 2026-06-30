@@ -913,6 +913,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             misattunement_detection_enabled=bool(
                 agent_raw.get("misattunement_detection_enabled", True),
             ),
+            implicit_need_enabled=bool(
+                agent_raw.get("implicit_need_enabled", True),
+            ),
             misattunement_shrink_min_prev_words=max(
                 0,
                 int(
@@ -1482,6 +1485,21 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             follow_up_enabled=bool(
                 agent_raw.get("follow_up_enabled", True),
+            ),
+            growth_witness_enabled=bool(
+                agent_raw.get("growth_witness_enabled", True),
+            ),
+            growth_witness_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "growth_witness_check_interval_seconds", 21600
+                    )
+                ),
+            ),
+            growth_witness_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("growth_witness_cooldown_days", 14.0)),
             ),
             promise_followthrough_enabled=bool(
                 agent_raw.get("promise_followthrough_enabled", True),

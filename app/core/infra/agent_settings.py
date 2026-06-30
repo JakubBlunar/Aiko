@@ -1217,6 +1217,17 @@ class AgentSettings:
     misattunement_pivot_max_user_words: int = 8
     misattunement_cooldown_turns: int = 3
 
+    # ── K69: implicit-need reading (vent vs fix vs reassure) ──────────
+    # Master switch for the per-turn response-mode classifier. When on, a
+    # cheap pure heuristic over the live user message (cue words + the
+    # K14 affect read + the K4 arc) picks witness / problem_solve /
+    # reassure / celebrate (or stays silent on a neutral turn) and renders
+    # a one-line steer so the reply *mode* matches the need, not the
+    # literal words. No LLM on the hot path. The confidence floor lives in
+    # ``memory.implicit_need_min_confidence``. Off -> the provider stays
+    # empty.
+    implicit_need_enabled: bool = True
+
     # ── K30: self-noticing cues (agreement / flat-affect / repeated) ──
     # K20 metacognitive calibration tracks {user}'s trust in Aiko;
     # K30 is the symmetric loop -- Aiko notices HER own patterns.
@@ -1919,6 +1930,26 @@ class AgentSettings:
     # Off = no proactive follow-up cue (the retrieval-tag path still
     # lets Aiko ask retrospectively when the memory surfaces).
     follow_up_enabled: bool = True
+
+    # ── K70: longitudinal growth witness ──────────────────────────────
+    # Master switch for the rare "you've grown since we met" beat. When
+    # ON, a slow idle worker compares an older baseline window of the H3
+    # mood-drift daily ring against a recent window and, only when a real
+    # durable POSITIVE shift clears a high bar, drafts one private cue
+    # into ``aiko.growth_witness``; ``_render_growth_witness_block``
+    # surfaces it on a later turn so Aiko reflects it back in her own
+    # words. Depends on H3 sampling (``mood_drift_enabled``) for its
+    # data — with no ring it silently no-ops. Cadence + cooldown below;
+    # detection thresholds live on ``MemorySettings.growth_witness_*``.
+    # Off → the provider stays empty.
+    growth_witness_enabled: bool = True
+    # How often the worker checks for a durable shift during quiet
+    # windows (default every 6h; clamped to >= 60s).
+    growth_witness_check_interval_seconds: int = 21600
+    # Wall-clock cooldown between drafted cues. Deliberately multi-week so
+    # a growth observation lands as genuine insight, not flattery on a
+    # loop. A *different* finding still has to clear the signature gate.
+    growth_witness_cooldown_days: float = 14.0
 
     # ── K43: promise follow-through ───────────────────────────────────
     # Master switch for the promise lifecycle + follow-through cue. When

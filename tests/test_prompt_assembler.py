@@ -1318,6 +1318,176 @@ class EarnedFamiliarityProviderSlotTests(unittest.TestCase):
         )
 
 
+class ImplicitNeedProviderSlotTests(unittest.TestCase):
+    """K69 implicit-need block lands in the system prompt, is silent when
+    the provider returns empty, is RETAINED under aggressive mode (a
+    response-mode steer matters most on a tight budget), swallows
+    provider exceptions, and is registered in the T6 tier table right
+    after misattunement (both live-read 'how to respond' cues)."""
+
+    _CUE = "needs to be heard, not fixed"
+
+    def _cue_line(self) -> str:
+        return (
+            "Read: Jacob sounds like he needs to be heard, not fixed -- "
+            "this is a vent."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="in1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                implicit_need=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "in1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="in2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(implicit_need=lambda _t: "")
+            messages, _ = assembler.assemble_with_budget(
+                "in2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="in3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                implicit_need=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "in3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="in4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_t: str) -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(implicit_need=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "in4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("implicit_need_block", t6)
+        # Pinned ordering: right after misattunement — both are live-read
+        # response-mode steers.
+        self.assertEqual(
+            t6.index("implicit_need_block"),
+            t6.index("misattunement_block") + 1,
+        )
+
+
+class GrowthWitnessProviderSlotTests(unittest.TestCase):
+    """K70 growth-witness block lands in the system prompt, is silent
+    when empty, is RETAINED under aggressive mode (a watermark-consuming
+    one-shot must not be silently dropped after it ran), swallows
+    provider exceptions, and is registered in the T6 tier table right
+    after follow_up (the cue-producer / time-anchored family)."""
+
+    _CUE = "Something you've quietly noticed"
+
+    def _cue_line(self) -> str:
+        return (
+            "Something you've quietly noticed about Jacob lately: he seems "
+            "lighter and steadier than he was a while back."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="gw1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                growth_witness=lambda: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "gw1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="gw2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(growth_witness=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "gw2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="gw3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                growth_witness=lambda: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "gw3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="gw4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(growth_witness=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "gw4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("growth_witness_block", t6)
+        # Pinned ordering: right after follow_up — both are watermark-gated
+        # cue-producer surfaces.
+        self.assertEqual(
+            t6.index("growth_witness_block"),
+            t6.index("follow_up_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

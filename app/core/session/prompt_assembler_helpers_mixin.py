@@ -146,6 +146,7 @@ class PromptAssemblerHelpersMixin:
         self_correction: Callable[[], str] | None = None,
         promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
+        implicit_need: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         stance_persistence: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
@@ -158,6 +159,7 @@ class PromptAssemblerHelpersMixin:
         away_activities: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
         follow_up: Callable[[], str] | None = None,
+        growth_witness: Callable[[], str] | None = None,
         upcoming_horizon: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         intimacy_pacing: Callable[[], str] | None = None,
@@ -284,6 +286,8 @@ class PromptAssemblerHelpersMixin:
             self._promise_followthrough_provider = promise_followthrough
         if misattunement is not None:
             self._misattunement_provider = misattunement
+        if implicit_need is not None:
+            self._implicit_need_provider = implicit_need
         if opinion_injection is not None:
             self._opinion_injection_provider = opinion_injection
         if stance_persistence is not None:
@@ -308,6 +312,8 @@ class PromptAssemblerHelpersMixin:
             self._forward_curiosity_provider = forward_curiosity
         if follow_up is not None:
             self._follow_up_provider = follow_up
+        if growth_witness is not None:
+            self._growth_witness_provider = growth_witness
         if upcoming_horizon is not None:
             self._upcoming_horizon_provider = upcoming_horizon
         if mood_shell is not None:
