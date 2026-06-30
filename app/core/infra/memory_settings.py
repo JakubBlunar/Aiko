@@ -831,6 +831,19 @@ class MemorySettings:
     # ``journal_max`` bounds the ``aiko.self_callback`` cue ring.
     self_callback_min_age_days: int = 14
     self_callback_journal_max: int = 4
+    # K72 wellbeing concern. ``window_days`` is the multi-day lookback for
+    # behavioral signal; ``late_night_min`` distinct small-hours days and
+    # ``neglect_min_days`` distinct days with an explicit "haven't slept /
+    # eaten" mention each trigger a concern. ``rough_run`` / ``rough_
+    # threshold`` gate the H3 low-stretch fallback (longer + deeper than
+    # H3 sustained_low so K72 reads as care, not mood narration).
+    # ``journal_max`` bounds the ``aiko.wellbeing_concern`` cue ring.
+    wellbeing_concern_window_days: int = 7
+    wellbeing_concern_late_night_min: int = 3
+    wellbeing_concern_neglect_min_days: int = 2
+    wellbeing_concern_rough_run: int = 5
+    wellbeing_concern_rough_threshold: float = -0.25
+    wellbeing_concern_journal_max: int = 4
     # K76 flashbulb encoding. At memory-write time the live AffectState
     # arousal + any active K57 episode intensity fold into a [0,1] charge;
     # ``flashbulb_max_boost`` is the most salience a fully-charged moment
@@ -2171,6 +2184,29 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             self_callback_journal_max=max(
                 1,
                 int(memory_raw.get("self_callback_journal_max", 4)),
+            ),
+            wellbeing_concern_window_days=max(
+                1,
+                int(memory_raw.get("wellbeing_concern_window_days", 7)),
+            ),
+            wellbeing_concern_late_night_min=max(
+                1,
+                int(memory_raw.get("wellbeing_concern_late_night_min", 3)),
+            ),
+            wellbeing_concern_neglect_min_days=max(
+                1,
+                int(memory_raw.get("wellbeing_concern_neglect_min_days", 2)),
+            ),
+            wellbeing_concern_rough_run=max(
+                1,
+                int(memory_raw.get("wellbeing_concern_rough_run", 5)),
+            ),
+            wellbeing_concern_rough_threshold=float(
+                memory_raw.get("wellbeing_concern_rough_threshold", -0.25)
+            ),
+            wellbeing_concern_journal_max=max(
+                1,
+                int(memory_raw.get("wellbeing_concern_journal_max", 4)),
             ),
             flashbulb_enabled=bool(
                 memory_raw.get("flashbulb_enabled", True),

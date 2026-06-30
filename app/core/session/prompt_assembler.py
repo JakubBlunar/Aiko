@@ -191,6 +191,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K71: rare "close the loop on my own past" cue (her continuity).
         # Sibling of growth_witness — watermark-gated cue-producer.
         "self_callback_block",
+        # K72: rare, hard-gated "you doing okay?" wellbeing concern.
+        # Sibling cue-producer; watermark-gated one-shot, drops on deflect.
+        "wellbeing_concern_block",
         # K-time3: forward sweep over future_plan rows due in the horizon
         # window, with the relative times pre-resolved. Clusters with the
         # other future-plan / time-anchored cues (follow_up).
@@ -577,6 +580,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # observation on a later turn. Watermark-gated one-shot,
         # independent of the gap-return cue family (like follow_up).
         self._growth_witness_provider: Callable[[], str] | None = None
+        self._wellbeing_concern_provider: Callable[[], str] | None = None
         # K71 self-callback cue. Consumer of the SelfCallbackWorker ring;
         # surfaces a rare "close the loop on my own aged feeling /
         # intention" beat. Watermark-gated one-shot, independent of the
@@ -1713,6 +1717,21 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("self_callback provider raised", exc_info=True)
                     self_callback_block = ""
 
+        # K72 wellbeing concern: rare, hard-gated "you doing okay?" cue.
+        # Built every turn (consumes a watermark) but almost always empty.
+        wellbeing_concern_block = ""
+        if getattr(self, "_wellbeing_concern_provider", None) is not None:
+            with _timed_phase(provider_ms, "wellbeing_concern"):
+                try:
+                    wellbeing_concern_block = (
+                        self._wellbeing_concern_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "wellbeing_concern provider raised", exc_info=True,
+                    )
+                    wellbeing_concern_block = ""
+
         # K-time3 upcoming-horizon: pre-resolved future relative times for
         # plans due within the horizon window. Time-anchored (not gap-gated),
         # independent of the _gap_cue_surfaced family.
@@ -2653,6 +2672,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # after the K70 growth-witness cue — both are watermark-gated
             # cue-producer surfaces (her continuity vs his growth).
             system_parts.append(self_callback_block)
+        if wellbeing_concern_block:
+            # K72: rare, hard-gated "you doing okay?" concern. Sits with
+            # the growth_witness / self_callback cue-producer family;
+            # watermark-gated one-shot. NOT in the K16 suppression set —
+            # the grounding line carries no multi-day wellbeing signal.
+            system_parts.append(wellbeing_concern_block)
         if upcoming_horizon_block:
             # K-time3: "coming up ..." with the relative times pre-resolved.
             # Sits right after the follow_up cue — both are future-plan /

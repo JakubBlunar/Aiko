@@ -1552,6 +1552,21 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             self_callback_llm_enabled=bool(
                 agent_raw.get("self_callback_llm_enabled", True),
             ),
+            wellbeing_concern_enabled=bool(
+                agent_raw.get("wellbeing_concern_enabled", True),
+            ),
+            wellbeing_concern_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "wellbeing_concern_check_interval_seconds", 21600
+                    )
+                ),
+            ),
+            wellbeing_concern_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("wellbeing_concern_cooldown_days", 7.0)),
+            ),
             promise_followthrough_enabled=bool(
                 agent_raw.get("promise_followthrough_enabled", True),
             ),

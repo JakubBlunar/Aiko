@@ -1994,6 +1994,23 @@ class AgentSettings:
     # when off or no worker client. ~monthly cadence -> negligible cost.
     self_callback_llm_enabled: bool = True
 
+    # K72 wellbeing concern. A rare, hard-gated detector over multi-day
+    # signal (small-hours activity, explicit "haven't slept / eaten"
+    # mentions, a heavy H3 low stretch) that drafts ONE gentle "you doing
+    # okay?" cue into ``aiko.wellbeing_concern``;
+    # ``_render_wellbeing_concern_block`` surfaces it on a later turn.
+    # The whole risk is becoming a nag, so cooldown is long and the
+    # persona/cue forbid lecturing + repeating. Off -> provider stays
+    # empty. Detection thresholds live on ``MemorySettings``.
+    wellbeing_concern_enabled: bool = True
+    # How often the worker checks during quiet windows (default 6h;
+    # clamped to >= 60s).
+    wellbeing_concern_check_interval_seconds: int = 21600
+    # Wall-clock cooldown between ANY two concern cues. Deliberately long
+    # so Aiko never reads as a health app; a *different* pattern still has
+    # to clear the date-free signature gate on top of this.
+    wellbeing_concern_cooldown_days: float = 7.0
+
     # ── K43: promise follow-through ───────────────────────────────────
     # Master switch for the promise lifecycle + follow-through cue. When
     # ON, assistant-side ``kind="promise"`` memories carry an

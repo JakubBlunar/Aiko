@@ -1375,6 +1375,175 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_self_callback_surface raised: {exc}"
 
     @mcp.tool()
+    def get_wellbeing_concern_state() -> str:
+        """K72 — dump the wellbeing-concern worker + surfacing state.
+
+        The WellbeingConcernWorker reads multi-day signal (small-hours
+        activity, explicit "haven't slept / eaten" mentions, a heavy H3
+        low stretch) and, only when a real worrying pattern clears a high
+        bar + a long cooldown, drafts one gentle "you doing okay?" cue
+        into ``aiko.wellbeing_concern``; ``_render_wellbeing_concern_
+        block`` surfaces the newest unseen finding (watermark-gated). It is
+        NEVER spoken verbatim and drops the instant the user deflects.
+
+        Returns a JSON dict with the master switch, cadence + cooldown,
+        whether the worker wired up, the MCP force-next flag, the finding
+        ring, the producer pacing + surfacing watermarks, and a dry-run
+        re-detection (re-runs the worker's signal collection without
+        drafting).
+        """
+        try:
+            from app.core.relationship import wellbeing_concern as _wc
+
+            agent = session._settings.agent
+            mem = session._memory_settings
+
+            def kv(key: str) -> str | None:
+                try:
+                    return session._chat_db.kv_get(key)
+                except Exception:
+                    return None
+
+            worker = getattr(session, "_wellbeing_concern_worker", None)
+            dry: dict[str, Any] | None = None
+            if worker is not None:
+                try:
+                    from datetime import datetime, timezone
+
+                    now = datetime.now(timezone.utc)
+                    late, neg_days, neg_cats = worker._collect_message_signal(
+                        now
+                    )
+                    from app.core.affect import mood_drift as _md
+
+                    drift = _md.deserialize_samples(kv(_md.KV_SAMPLES))
+                    finding = _wc.pick_concern(
+                        late_night_dates=late,
+                        neglect_days=neg_days,
+                        neglect_categories=neg_cats,
+                        drift_samples=drift,
+                        late_night_min=int(
+                            getattr(mem, "wellbeing_concern_late_night_min", 3)
+                        ),
+                        neglect_min_days=int(
+                            getattr(
+                                mem, "wellbeing_concern_neglect_min_days", 2
+                            )
+                        ),
+                        rough_run=int(
+                            getattr(mem, "wellbeing_concern_rough_run", 5)
+                        ),
+                        rough_threshold=float(
+                            getattr(
+                                mem,
+                                "wellbeing_concern_rough_threshold",
+                                -0.25,
+                            )
+                        ),
+                    )
+                    dry = {
+                        "late_night_days": len(late),
+                        "neglect_days": len(neg_days),
+                        "neglect_categories": neg_cats,
+                        "drift_samples": len(drift),
+                        "finding": (
+                            None
+                            if finding is None
+                            else {
+                                "kind": finding.kind,
+                                "detail": finding.detail,
+                                "severity": finding.severity,
+                                "signature": finding.signature,
+                            }
+                        ),
+                    }
+                except Exception as exc:  # pragma: no cover - debug only
+                    dry = {"error": str(exc)}
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "wellbeing_concern_enabled", True)
+                    ),
+                    "check_interval_seconds": int(
+                        getattr(
+                            agent,
+                            "wellbeing_concern_check_interval_seconds",
+                            21600,
+                        )
+                    ),
+                    "cooldown_days": float(
+                        getattr(agent, "wellbeing_concern_cooldown_days", 7.0)
+                    ),
+                    "worker_registered": worker is not None,
+                    "force_next": bool(
+                        getattr(
+                            session, "_wellbeing_concern_force_next", False
+                        )
+                    ),
+                    "findings": _wc.load_findings(session._chat_db.kv_get),
+                    "last_fired_at": kv("wellbeing_concern.last_fired_at"),
+                    "last_signature": kv("wellbeing_concern.last_signature"),
+                    "last_surfaced_at": kv(
+                        "wellbeing_concern.last_surfaced_at"
+                    ),
+                    "dry_run": dry,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_wellbeing_concern_state raised: {exc}"
+
+    @mcp.tool()
+    def force_wellbeing_concern_draft() -> str:
+        """Run the wellbeing-concern worker once, right now.
+
+        Arms a one-shot bypass of the cooldown + signature gates, then
+        calls ``run()`` directly so a cue is drafted (when the live signal
+        actually shows a worrying pattern). Pairs with
+        ``force_wellbeing_concern_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_wellbeing_concern_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_wellbeing_concern_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_wellbeing_concern_surface() -> str:
+        """Arm a one-shot bypass on the wellbeing-concern cue watermark.
+
+        Sets ``_wellbeing_concern_force_next`` so the next provider call
+        ignores the last-surfaced watermark. The ring still has to be
+        non-empty (run ``force_wellbeing_concern_draft`` first if it isn't).
+
+        Repro: ``force_wellbeing_concern_draft()`` ->
+        ``force_wellbeing_concern_surface()`` -> ``send_message(skip_tts=
+        true)`` -> confirm the "Something you've quietly clocked ..." line
+        in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._wellbeing_concern_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the wellbeing-concern "
+                        "watermark; ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_wellbeing_concern_surface raised: {exc}"
+
+    @mcp.tool()
     def get_task_report_decision_state() -> str:
         """C6 — dump the worker-model task-report decision state.
 
