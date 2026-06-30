@@ -192,8 +192,9 @@ motions, textures) under `data/personas/active/Alexia/`. The folder is
 gitignored — each developer copies their own avatar in. The FastAPI
 backend serves the contents from `/avatar/...` based on
 `avatar.root_dir` in `config/default.json` (overridable via
-`config/user.json`). The legacy `live-2d-models/Alexia/` path is still
-honoured if you override the setting, so existing checkouts keep working.
+`config/user.json`). This is the single source of truth: the Tauri
+bundle resource map (`web/src-tauri/tauri.conf.json`) bakes the bundle
+into the app from this same path.
 
 ## Persona window settings persistence
 

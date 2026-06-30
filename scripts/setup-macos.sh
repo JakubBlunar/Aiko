@@ -181,17 +181,14 @@ copy_bundle_assets() {
     fi
   done
 
-  # Live2D bundle: prefer the new location, fall back to legacy.
+  # Live2D bundle — canonical source is data/personas/active/<name> (the
+  # same path it's served from at runtime; bundled into the .app
+  # Resources there too). Seed it into the user-data dir if empty.
   local avatar_target="${DATA_DIR}/personas/active/Alexia"
   if [[ ! -d "${avatar_target}" || -z "$(ls -A "${avatar_target}" 2>/dev/null)" ]]; then
     mkdir -p "${avatar_target}"
-    local avatar_src=""
-    if [[ -d "${REPO_ROOT}/data/personas/active/Alexia" ]]; then
-      avatar_src="${REPO_ROOT}/data/personas/active/Alexia"
-    elif [[ -d "${REPO_ROOT}/live-2d-models/Alexia" ]]; then
-      avatar_src="${REPO_ROOT}/live-2d-models/Alexia"
-    fi
-    if [[ -n "${avatar_src}" ]]; then
+    local avatar_src="${REPO_ROOT}/data/personas/active/Alexia"
+    if [[ -d "${avatar_src}" ]]; then
       cp -R "${avatar_src}/." "${avatar_target}/"
       log "Seeded Live2D bundle into ${avatar_target}."
     else

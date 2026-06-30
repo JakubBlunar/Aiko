@@ -7,9 +7,9 @@
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
-    "chat_model": "qwen3-coder:30b",
+    "chat_model": "qwen3.6:27b",
     "temperature": 0.6,
-    "context_window": 32768,
+    "context_window": 65536,
     "think_num_predict_headroom": 2048
   },
   "chat_llm": {

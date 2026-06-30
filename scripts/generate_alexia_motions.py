@@ -42,7 +42,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path("live-2d-models/Alexia")
+ROOT = Path("data/personas/active/Alexia")
 MOTION_DIR = ROOT  # motions live next to the model3.json by convention
 
 

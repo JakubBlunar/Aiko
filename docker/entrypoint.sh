@@ -9,9 +9,10 @@
 #     /opt/aiko/seed/persona, copy-if-absent so a user edit is never
 #     clobbered.
 #   * the Live2D avatar bundle — NOT seeded here: the app self-heals it on
-#     boot from /app/live-2d-models/<name> into data/personas/active/<name>
-#     (see SessionController._maybe_seed_avatar), which lives outside the
-#     volume.
+#     boot from $AIKO_AVATAR_SEED_DIR/<name> (baked at
+#     /opt/aiko/seed/personas-active, outside the volume) into
+#     data/personas/active/<name> (see
+#     SessionController._seed_avatar_root_if_empty).
 #
 # Host / port / Ollama URL come from env (AIKO_WEB_HOST, AIKO_WEB_PORT,
 # AIKO_OLLAMA_BASE_URL) — see app/web/__main__._apply_env_overrides — so no

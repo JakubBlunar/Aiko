@@ -69,29 +69,22 @@ def check_backup_removed() -> None:
 
 
 def check_avatar_bundle() -> None:
-    """The bundle takes its Live2D source from either the new
-    ``data/personas/active/<name>/`` location or the legacy
-    ``live-2d-models/<name>/`` location. The destination inside the
-    .app's Resources is always ``data/personas/active/<name>/``, so a
-    build is fine as long as one of the two source dirs has a
-    ``*.model3.json`` file we can bundle.
+    """The Live2D bundle's canonical home is
+    ``data/personas/active/<name>/`` — the same path it's served from at
+    runtime and bundled into the .app's Resources. A build is fine as
+    long as one persona dir there has a ``*.model3.json`` file we can
+    bundle.
     """
-    candidate_roots = [
-        REPO_ROOT / "data" / "personas" / "active",
-        REPO_ROOT / "live-2d-models",
-    ]
-    for root in candidate_roots:
-        if not root.exists():
-            continue
+    root = REPO_ROOT / "data" / "personas" / "active"
+    if root.exists():
         for sub in root.iterdir():
             if not sub.is_dir():
                 continue
             if list(sub.glob("*.model3.json")):
                 return
     fail(
-        "no *.model3.json found under data/personas/active/<name>/ or "
-        "live-2d-models/<name>/.\n"
-        "  drop the Live2D bundle into one of those directories."
+        "no *.model3.json found under data/personas/active/<name>/.\n"
+        "  drop the Live2D bundle into that directory."
     )
 
 

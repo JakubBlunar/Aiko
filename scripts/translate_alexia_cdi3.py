@@ -1,5 +1,5 @@
 """One-shot translator for the Chinese display labels in
-``live-2d-models/Alexia/Alexia.cdi3.json``.
+``data/personas/active/Alexia/Alexia.cdi3.json``.
 
 What this touches and why
 -------------------------
@@ -43,7 +43,7 @@ import re
 import sys
 from pathlib import Path
 
-CDI3_PATH = Path("live-2d-models/Alexia/Alexia.cdi3.json")
+CDI3_PATH = Path("data/personas/active/Alexia/Alexia.cdi3.json")
 
 
 # ── Literal translations ────────────────────────────────────────────

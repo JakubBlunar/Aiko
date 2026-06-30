@@ -35,15 +35,20 @@ web/src-tauri/gen
 # Tests
 tests
 
-# Runtime / user state under data/. The persona text is kept (seeded into
-# the volume by the entrypoint); the avatar reseeds from live-2d-models/.
+# Runtime / user state under data/. The persona text + the active avatar
+# bundle are kept (baked outside the volume and seeded into it on first
+# boot); everything else under data/ is dev/user state and must not ship.
 data/*.db
 data/*.db-shm
 data/*.db-wal
 data/lancedb
 data/documents
 data/attachments
-data/personas
+# Exclude persona runtime state, but keep the active avatar bundle so the
+# image can seed it into the data volume on first boot.
+data/personas/*
+!data/personas/active
+data/personas/active/runtime
 data/uploads
 data/app.log*
 data/crashlog.txt

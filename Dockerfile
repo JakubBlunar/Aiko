@@ -41,7 +41,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     AIKO_WEB_HOST=0.0.0.0 \
     AIKO_WEB_PORT=6275 \
-    AIKO_OLLAMA_BASE_URL=http://host.docker.internal:11434
+    AIKO_OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+    AIKO_AVATAR_SEED_DIR=/opt/aiko/seed/personas-active
 
 # System deps. libsndfile1 backs `soundfile` (a core dep) in both profiles;
 # ffmpeg + build tools only matter for the voice stack in the full profile.
@@ -71,15 +72,19 @@ RUN python -m pip install --upgrade pip wheel setuptools \
 # this source tree (WORKDIR=/app), so settings.py's parents[3] resolves the
 # repo root to /app and data/ + config/ land under it.
 COPY config ./config
-COPY live-2d-models ./live-2d-models
 COPY --from=web-build /web/dist ./web/dist
-# Persona text is baked outside the data volume and seeded in by the
-# entrypoint (the volume would otherwise shadow it).
+# Persona text + the Live2D avatar bundle are baked OUTSIDE the data
+# volume and seeded into it on first boot (the volume would otherwise
+# shadow anything baked under /app/data). Persona text is copied in by
+# the entrypoint; the avatar bundle is self-healed by the app on boot
+# from $AIKO_AVATAR_SEED_DIR (see SessionController._seed_avatar_root_if_empty).
 COPY data/persona ./_seed-persona
+COPY data/personas/active ./_seed-personas-active
 COPY docker/entrypoint.sh /usr/local/bin/aiko-entrypoint
 RUN chmod +x /usr/local/bin/aiko-entrypoint \
  && mkdir -p /opt/aiko/seed \
- && mv ./_seed-persona /opt/aiko/seed/persona
+ && mv ./_seed-persona /opt/aiko/seed/persona \
+ && mv ./_seed-personas-active /opt/aiko/seed/personas-active
 
 EXPOSE 6275
 VOLUME ["/app/data"]

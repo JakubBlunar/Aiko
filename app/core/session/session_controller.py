@@ -235,19 +235,44 @@ def _build_chat_client(
     )
 
 
+def _avatar_seed_sources(name: str) -> list[Path]:
+    """Candidate source bundles to self-heal ``data/personas/active/<name>``.
+
+    The canonical home for the avatar bundle is the runtime path itself
+    (``data/personas/active/<name>/``) — in a dev checkout the bundle
+    already lives there, so seeding is a no-op. Seeding only matters when
+    the runtime path is empty *and* a copy lives somewhere outside it,
+    namely:
+
+      * ``$AIKO_AVATAR_SEED_DIR/<name>`` — the distribution seam. Docker
+        bakes the bundle here (outside the ``/app/data`` volume that would
+        otherwise shadow it) and the entrypoint / app copies it into the
+        volume on first boot. Same idea as the persona-text seed.
+      * ``<repo>/live-2d-models/<name>/`` — the pre-consolidation source
+        location, still honoured if a developer kept it around.
+
+    Returned most-preferred first.
+    """
+    candidates: list[Path] = []
+    env_seed = (os.environ.get("AIKO_AVATAR_SEED_DIR") or "").strip()
+    if env_seed:
+        candidates.append(Path(env_seed) / name)
+    repo_root = Path(__file__).resolve().parents[3]
+    candidates.append(repo_root / "live-2d-models" / name)
+    return candidates
+
+
 def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
-    """Copy the Live2D bundle from the source tree into the runtime path.
+    """Copy the Live2D bundle into the runtime path when it's empty.
 
-    Mirrors ``scripts/setup-macos.sh``: when the configured avatar
-    directory is missing or empty, look for a matching bundle under
-    ``<repo>/live-2d-models/<name>/`` and copy its contents in.
-
-    This makes the Windows / Linux ``npm run desktop`` flow self-healing
-    (no setup-macos.sh equivalent) and recovers from a user manually
-    cleaning out ``data/personas/`` to shrink the working tree. Silent
-    no-op if either the target is already populated or no source bundle
-    exists — the regular ``_avatar_from_disk`` call downstream will then
-    surface the "not loaded" payload to the frontend.
+    When the configured avatar directory is missing or empty, look for a
+    matching bundle in :func:`_avatar_seed_sources` and copy its contents
+    in. This makes the Windows / Linux ``npm run desktop`` flow + the
+    Docker volume self-healing, and recovers from a user manually cleaning
+    out ``data/personas/`` to shrink the working tree. Silent no-op when
+    the target is already populated or no source bundle exists — the
+    regular ``_avatar_from_disk`` call downstream will then surface the
+    "not loaded" payload to the frontend.
     """
     try:
         if avatar_root.exists() and any(avatar_root.iterdir()):
@@ -255,9 +280,11 @@ def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
     except OSError:
         return
 
-    repo_root = Path(__file__).resolve().parents[3]
-    source = repo_root / "live-2d-models" / avatar_root.name
-    if not source.is_dir():
+    source = next(
+        (src for src in _avatar_seed_sources(avatar_root.name) if src.is_dir()),
+        None,
+    )
+    if source is None:
         return
 
     import shutil
@@ -430,9 +457,10 @@ class SessionController(
         self._avatar_root: Path = avatar_root
         # If the runtime path is missing/empty (common on Windows where
         # there's no setup-macos.sh seeding step, or after a manual
-        # cleanup of ``data/personas/``), seed from the source bundle at
-        # ``live-2d-models/<name>/`` automatically. Mirrors the macOS
-        # setup script so all platforms self-heal on boot.
+        # cleanup of ``data/personas/``), seed from a bundled source if
+        # one exists (``$AIKO_AVATAR_SEED_DIR/<name>`` in Docker, or the
+        # legacy ``live-2d-models/<name>/``). See ``_avatar_seed_sources``.
+        # Mirrors the macOS setup script so all platforms self-heal.
         try:
             _seed_avatar_root_if_empty(avatar_root)
         except Exception as exc:  # noqa: BLE001 - never block boot on seeding
