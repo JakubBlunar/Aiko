@@ -511,6 +511,135 @@ class InnerLifePart3Mixin:
         )
         return block
 
+    def _render_long_arc_callback_block(self, user_text: str) -> str:
+        """K63: rarely surface a "weeks ago you said…" long-arc callback.
+
+        Where K22 catches short-horizon callbacks, this reaches *weeks or
+        months* back to connect the live turn to something the user told
+        Aiko long ago — the strongest "she actually knows me" beat a
+        companion can produce, so it's paced hard for rarity:
+
+        * Master switch (``agent.long_arc_callback_enabled``).
+        * Per-session cap (``memory.long_arc_callback_per_session_cap``,
+          default 1) and a wall-clock cooldown
+          (``memory.long_arc_callback_cooldown_hours``, default 6h) — both
+          checked *before* the embed so the search only runs on a genuinely
+          eligible turn.
+        * Short turns (< ``memory.long_arc_callback_min_user_words``) are
+          skipped — too little topic to anchor a callback.
+        * The aged retrieval lane keeps only memories at least
+          ``min_age_days`` old whose cosine clears ``min_cosine`` (a higher
+          bar than normal RAG), and a don't-repeat ring suppresses anything
+          recently surfaced. Leans on K25 hedging via the tentative cue.
+
+        MCP debug: ``force_long_arc_callback`` arms a one-shot
+        ``_long_arc_callback_force_next`` that bypasses the cap + cooldown +
+        min-words gates (but NOT the age / cosine / kind gates — a forced
+        bypass on a turn with no old topical memory still silently
+        expires).
+        """
+        if not bool(
+            getattr(self._settings.agent, "long_arc_callback_enabled", True)
+        ):
+            return ""
+        retriever = getattr(self, "_rag_retriever", None)
+        if retriever is None or not hasattr(
+            retriever, "aged_callback_candidate"
+        ):
+            return ""
+        try:
+            from app.core.conversation import long_arc_callback as lac
+        except Exception:
+            log.debug("long-arc-callback import failed", exc_info=True)
+            return ""
+
+        force_next = bool(getattr(self, "_long_arc_callback_force_next", False))
+        if force_next:
+            self._long_arc_callback_force_next = False
+
+        mem = self._memory_settings
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        kv_get = self._chat_db.kv_get
+        kv_set = self._chat_db.kv_set
+
+        if not force_next:
+            cap = max(
+                0, int(getattr(mem, "long_arc_callback_per_session_cap", 1))
+            )
+            if int(getattr(self, "_long_arc_callback_session_count", 0)) >= cap:
+                return ""
+            cooldown_hours = float(
+                getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
+            )
+            if not lac.cooldown_elapsed(
+                kv_get, now=now, cooldown_hours=cooldown_hours
+            ):
+                return ""
+            min_words = max(
+                0, int(getattr(mem, "long_arc_callback_min_user_words", 5))
+            )
+            if len((user_text or "").split()) < min_words:
+                return ""
+
+        try:
+            candidates = retriever.aged_callback_candidate(
+                user_text or "",
+                min_age_days=int(
+                    getattr(mem, "long_arc_callback_min_age_days", 21)
+                ),
+                min_cosine=float(
+                    getattr(mem, "long_arc_callback_min_cosine", 0.55)
+                ),
+                allowed_kinds=lac.ALLOWED_KINDS,
+                top_k=lac.CANDIDATE_TOP_K,
+            )
+        except Exception:
+            log.debug("long-arc-callback aged search raised", exc_info=True)
+            return ""
+        if not candidates:
+            return ""
+
+        recent_ids = lac.load_recent_ids(kv_get)
+        pick = lac.select(candidates, exclude_ids=recent_ids)
+        if pick is None:
+            return ""
+
+        try:
+            block = lac.render_block(
+                pick, user_display_name=self.user_display_name, now=now,
+            )
+        except Exception:
+            log.debug("long-arc-callback render failed", exc_info=True)
+            return ""
+        if not block:
+            return ""
+
+        # Arm the rarity gates only on an actual fire.
+        lac.mark_fired(kv_set, now=now)
+        lac.append_recent_id(kv_get, kv_set, pick.memory_id)
+        self._long_arc_callback_session_count = (
+            int(getattr(self, "_long_arc_callback_session_count", 0)) + 1
+        )
+        self._last_long_arc_callback = {
+            "memory_id": pick.memory_id,
+            "kind": pick.kind,
+            "cosine": round(pick.cosine, 3),
+            "age_days": round(pick.age_days, 1),
+            "forced": force_next,
+        }
+        log.info(
+            "long-arc-callback fire: mem=%d kind=%s cosine=%.3f age_days=%.1f "
+            "forced=%s",
+            pick.memory_id,
+            pick.kind,
+            pick.cosine,
+            pick.age_days,
+            force_next,
+        )
+        return block
+
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.
 

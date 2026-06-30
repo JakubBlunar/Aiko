@@ -3657,6 +3657,94 @@ class StancePersistenceProviderTests(unittest.TestCase):
         )
 
 
+class LongArcCallbackProviderTests(unittest.TestCase):
+    """K63 ``long_arc_callback`` provider slot tests.
+
+    Per-turn provider that takes ``user_text``. Sits in the T6 detector
+    tier right after K64a ``associative_wander_block`` (both are "this
+    reminds me of" surfaces). Query-aware; DROPPED under aggressive mode
+    (a rare flourish, not a steering signal).
+    """
+
+    _CUE = (
+        "Heads-up: what Jacob just said connects to something he told you a "
+        "long while back -- \"your dad's workshop\" (about 3 months ago). "
+        "Float it as a question."
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="lac1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                long_arc_callback=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "lac1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("long while back", messages[0]["content"])
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="lac2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(long_arc_callback=lambda _ut: "")
+            messages, _ = assembler.assemble_with_budget(
+                "lac2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("long while back", messages[0]["content"])
+
+    def test_provider_receives_user_text(self) -> None:
+        captured: list[str] = []
+
+        def provider(user_text: str) -> str:
+            captured.append(user_text)
+            return ""
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="lac3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(long_arc_callback=provider)
+            assembler.assemble_with_budget(
+                "lac3", "tell me more", context_window=4096, response_budget=256,
+            )
+            self.assertEqual(captured, ["tell me more"])
+
+    def test_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="lac4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                long_arc_callback=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "lac4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("long while back", messages[0]["content"])
+
+    def test_tier_slot_after_associative_wander(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("long_arc_callback_block", t6)
+        self.assertLess(
+            t6.index("associative_wander_block"),
+            t6.index("long_arc_callback_block"),
+        )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

@@ -173,6 +173,10 @@ class LifecycleMixin:
         # doesn't inherit a "hold your take" beat from the prior one.
         self._stance_recent_window = 0
         self._stance_recent_text = ""
+        # K63 — reset the per-session callback cap. The wall-clock cooldown
+        # + don't-repeat ring stay in kv_meta on purpose (a long-arc
+        # callback should remain rare across a session switch, not reset).
+        self._long_arc_callback_session_count = 0
         # K28 — wipe any stashed turning-over slot so the new session
         # doesn't inherit a "this is a comeback" cue from the prior
         # one. The force-next bypass and last-fire diagnostic also
@@ -280,6 +284,20 @@ class LifecycleMixin:
         self._stance_recent_text = ""
         self._stance_persistence_force_next = False
         self._last_stance_persistence = None
+        # K63 — a full memory wipe resets everything, including the kv
+        # cooldown + don't-repeat ring (the memories they reference are
+        # gone). Best-effort kv clear so a stale id can't suppress a
+        # fresh callback after the user nukes their history.
+        self._long_arc_callback_session_count = 0
+        self._long_arc_callback_force_next = False
+        self._last_long_arc_callback = None
+        try:
+            from app.core.conversation import long_arc_callback as _lac
+
+            self._chat_db.kv_set(_lac.KV_LAST_FIRED_AT, "")
+            self._chat_db.kv_set(_lac.KV_RECENT_IDS, "[]")
+        except Exception:
+            pass
         # K28 — same logic: a full clear should leave no stashed
         # turning-over slot or force-next bypass.
         self._pending_turning_over_seconds = None

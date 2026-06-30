@@ -2153,6 +2153,105 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.stance_persistence_window, 0)
 
 
+class LongArcCallbackSettingsTests(unittest.TestCase):
+    """K63: 1 agent flag + 5 memory knobs round-trip with clamps."""
+
+    _LAC_AGENT_KEYS = ("long_arc_callback_enabled",)
+    _LAC_MEMORY_KEYS = (
+        "long_arc_callback_min_age_days",
+        "long_arc_callback_min_cosine",
+        "long_arc_callback_cooldown_hours",
+        "long_arc_callback_per_session_cap",
+        "long_arc_callback_min_user_words",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._LAC_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._LAC_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.long_arc_callback_enabled)
+        self.assertEqual(result.memory.long_arc_callback_min_age_days, 21)
+        self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 0.55)
+        self.assertAlmostEqual(
+            result.memory.long_arc_callback_cooldown_hours, 6.0,
+        )
+        self.assertEqual(result.memory.long_arc_callback_per_session_cap, 1)
+        self.assertEqual(result.memory.long_arc_callback_min_user_words, 5)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"long_arc_callback_enabled": False},
+            memory_extra={
+                "long_arc_callback_min_age_days": 60,
+                "long_arc_callback_min_cosine": 0.7,
+                "long_arc_callback_cooldown_hours": 12.0,
+                "long_arc_callback_per_session_cap": 2,
+                "long_arc_callback_min_user_words": 8,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.long_arc_callback_enabled)
+        self.assertEqual(result.memory.long_arc_callback_min_age_days, 60)
+        self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 0.7)
+        self.assertAlmostEqual(
+            result.memory.long_arc_callback_cooldown_hours, 12.0,
+        )
+        self.assertEqual(result.memory.long_arc_callback_per_session_cap, 2)
+        self.assertEqual(result.memory.long_arc_callback_min_user_words, 8)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "long_arc_callback_min_age_days": 0,  # floors at 1
+                "long_arc_callback_min_cosine": 5.0,  # clamps to 1.0
+                "long_arc_callback_cooldown_hours": -3.0,  # floors at 0
+                "long_arc_callback_per_session_cap": -1,  # floors at 0
+                "long_arc_callback_min_user_words": -4,  # floors at 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.long_arc_callback_min_age_days, 1)
+        self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 1.0)
+        self.assertAlmostEqual(
+            result.memory.long_arc_callback_cooldown_hours, 0.0,
+        )
+        self.assertEqual(result.memory.long_arc_callback_per_session_cap, 0)
+        self.assertEqual(result.memory.long_arc_callback_min_user_words, 0)
+
+
 class TurningOverSettingsTests(unittest.TestCase):
     """K28: 1 agent flag + 5 memory knobs round-trip with clamps."""
 

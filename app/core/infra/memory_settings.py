@@ -164,6 +164,22 @@ class MemorySettings:
     # correction. Decremented once per turn.
     stance_persistence_window: int = 3
 
+    # ── K63: long-arc callbacks ("weeks ago you said…") ──────────────
+    # An eligible callback memory must be at least this many days old
+    # (keeps it firmly "long arc" — K22 covers fresher callbacks).
+    long_arc_callback_min_age_days: int = 21
+    # Topical bar: cosine of the live turn vs. the old memory. Higher
+    # than the normal RAG ``score_threshold`` so a callback is a real
+    # link, not a loose association.
+    long_arc_callback_min_cosine: float = 0.55
+    # Wall-clock cooldown between callbacks (hours). Long for rarity.
+    long_arc_callback_cooldown_hours: float = 6.0
+    # At most this many callbacks per session, regardless of cooldown.
+    long_arc_callback_per_session_cap: int = 1
+    # Skip turns shorter than this many words (too little topic to anchor
+    # a callback; also avoids an embed/search on trivial replies).
+    long_arc_callback_min_user_words: int = 5
+
     # ── K28 personality backlog: turning-over picker ─────────────────
     # The "What I've been turning over" cue (see ``AgentSettings.
     # turning_over_enabled`` for the master switch) only arms when
@@ -1074,6 +1090,27 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             stance_persistence_window=max(
                 0,
                 int(memory_raw.get("stance_persistence_window", 3)),
+            ),
+            # ── K63: long-arc callbacks ────────────────────────────────
+            long_arc_callback_min_age_days=max(
+                1,
+                int(memory_raw.get("long_arc_callback_min_age_days", 21)),
+            ),
+            long_arc_callback_min_cosine=max(
+                0.0,
+                min(1.0, float(memory_raw.get("long_arc_callback_min_cosine", 0.55))),
+            ),
+            long_arc_callback_cooldown_hours=max(
+                0.0,
+                float(memory_raw.get("long_arc_callback_cooldown_hours", 6.0)),
+            ),
+            long_arc_callback_per_session_cap=max(
+                0,
+                int(memory_raw.get("long_arc_callback_per_session_cap", 1)),
+            ),
+            long_arc_callback_min_user_words=max(
+                0,
+                int(memory_raw.get("long_arc_callback_min_user_words", 5)),
             ),
             # ── K28: turning-over picker ──────────────────────────────
             # ``turning_over_min_gap_minutes`` clamped to >= 5 so a

@@ -1416,6 +1416,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             stance_persistence_enabled=bool(
                 agent_raw.get("stance_persistence_enabled", True),
             ),
+            long_arc_callback_enabled=bool(
+                agent_raw.get("long_arc_callback_enabled", True),
+            ),
             turning_over_enabled=bool(
                 agent_raw.get("turning_over_enabled", True),
             ),

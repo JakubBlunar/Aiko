@@ -240,6 +240,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # connects the live topic to a distant cluster. Sits with the
         # other topic-graph-derived surfaces (it's drawn from the graph).
         "associative_wander_block",
+        # K63: long-arc callback — "weeks ago you said ...". A rare reach
+        # back to an old, topically-linked memory; query-aware, clusters
+        # with the other "this reminds me of" surfaces.
+        "long_arc_callback_block",
         # K64b: interest drift — "I've been drawn to X lately" / fading.
         # Slow self-aware register shift from per-cluster mass over time;
         # sits with the other topic-graph-derived surfaces.
@@ -383,6 +387,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # of ..." connection between the live topic and a distant cluster.
         # Query-aware (consumes ``user_text``); dropped in aggressive mode.
         self._associative_wander_provider: Callable[[str], str] | None = None
+        # K63: long-arc callback — surface a rare "weeks ago you said ..."
+        # reach back to an old, topically-linked memory. Query-aware
+        # (consumes ``user_text``); dropped in aggressive mode.
+        self._long_arc_callback_provider: Callable[[str], str] | None = None
         # K64b: interest drift — surface a slow "I've been drawn to X
         # lately" / "X has gone quiet" register shift when the live turn is
         # on a topic whose mass has drifted. Query-aware; dropped aggressive.
@@ -1168,6 +1176,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "associative wander provider raised", exc_info=True
                     )
                     associative_wander_block = ""
+
+        # K63: long-arc callback — surface a rare "weeks ago you said ..."
+        # reach to an old topically-linked memory. Query-aware, dropped in
+        # aggressive mode (a flourish, not a steering signal).
+        long_arc_callback_block = ""
+        if not aggressive and self._long_arc_callback_provider is not None:
+            with _timed_phase(provider_ms, "long_arc_callback"):
+                try:
+                    long_arc_callback_block = (
+                        self._long_arc_callback_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "long-arc callback provider raised", exc_info=True
+                    )
+                    long_arc_callback_block = ""
 
         # K64b: interest drift — surface a slow "I've been drawn to X
         # lately" / "X has gone quiet" register shift when the live turn is
@@ -2641,6 +2665,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # connection cue, sits with the other topic-graph-derived
             # surfaces (it is drawn from the same cluster geometry).
             system_parts.append(associative_wander_block)
+        if long_arc_callback_block:
+            # K63: long-arc callback — rare "weeks ago you said ..." reach,
+            # clusters with the other "this reminds me of" surfaces.
+            system_parts.append(long_arc_callback_block)
         if interest_drift_block:
             # K64b: interest drift — slow "drawn to X lately" / "X gone
             # quiet" register shift.

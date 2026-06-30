@@ -1371,6 +1371,64 @@ class RagRetriever:
         ]
         return label, hits
 
+    # ── aged callback lane (K63) ────────────────────────────────────────
+
+    def aged_callback_candidate(
+        self,
+        query_text: str,
+        *,
+        min_age_days: int,
+        min_cosine: float,
+        allowed_kinds: Iterable[str] | None = None,
+        top_k: int = 24,
+    ) -> list:
+        """Old, topically-linked memories for a long-arc callback (K63).
+
+        The *inverse* of the recency-aware main retrieval lane: instead of
+        nudging fresh hits up, this deliberately keeps only memories at
+        least ``min_age_days`` old whose cosine to the live turn clears the
+        (higher-than-normal) ``min_cosine`` bar — the "weeks ago you said…"
+        reach. Reuses the existing ``search_memories`` ANN (with its native
+        ``kinds`` filter + ``min_score`` cut) so it costs one embed + one
+        Lance query; everything else is a cheap pure projection
+        (:func:`long_arc_callback.candidates_from_hits`). Returns a list of
+        :class:`long_arc_callback.AgedCandidate`, most-similar first, or
+        ``[]`` on any failure / empty query. Does **not** touch the main
+        ``retrieve`` path, ``last_surfaced_memory_ids``, or ``mark_used`` —
+        a callback peek must not perturb normal RAG ordering / recency.
+        """
+        from app.core.conversation import long_arc_callback as _lac
+
+        query = (query_text or "").strip()
+        if not query:
+            return []
+        try:
+            embedding = self._embedder.embed(query)
+        except Exception:
+            log.debug("aged_callback: embed failed", exc_info=True)
+            return []
+        kinds = list(allowed_kinds) if allowed_kinds is not None else None
+        try:
+            hits = self._store.search_memories(
+                embedding,
+                top_k=max(1, int(top_k)),
+                min_score=float(min_cosine),
+                kinds=kinds,
+            )
+        except Exception:
+            log.debug("aged_callback: search_memories failed", exc_info=True)
+            return []
+        try:
+            return _lac.candidates_from_hits(
+                hits,
+                now=datetime.now(timezone.utc),
+                min_age_days=int(min_age_days),
+                allowed_kinds=kinds,
+            )
+        except Exception:
+            log.debug("aged_callback: candidate projection failed", exc_info=True)
+            return []
+
     # ── cluster-aware diversity (F10b) ──────────────────────────────────
 
     def _select_diverse(self, candidates: list[RagHit]) -> list[RagHit]:
