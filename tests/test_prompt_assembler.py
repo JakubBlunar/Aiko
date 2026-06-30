@@ -1248,6 +1248,76 @@ class KnowledgeGroundingProviderSlotTests(unittest.TestCase):
         )
 
 
+class EarnedFamiliarityProviderSlotTests(unittest.TestCase):
+    """K66 earned-familiarity block lands in the system prompt, is silent
+    when the provider returns empty, is dropped under aggressive mode
+    (it's a non-critical register cue), and is registered in the T6 tier
+    table right after the topic-confidence slot (both topic-graph cues)."""
+
+    _CUE = "well-worn ground between you"
+
+    def _cue_line(self) -> str:
+        return (
+            'Heads-up: "his training" is well-worn ground between you and '
+            "Jacob — lean on the shorthand you've built."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ef1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                earned_familiarity=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ef1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ef2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                earned_familiarity=lambda _t: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ef2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ef3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                earned_familiarity=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ef3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("earned_familiarity_block", t6)
+        # Pinned ordering: right after the topic-confidence slot — both
+        # are topic-graph-derived register cues.
+        self.assertEqual(
+            t6.index("earned_familiarity_block"),
+            t6.index("topic_confidence_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

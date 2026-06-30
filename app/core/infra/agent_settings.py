@@ -282,6 +282,16 @@ class AgentSettings:
     # from cluster size + learned-fact coverage (no worker); thresholds /
     # cooldown live under MemorySettings.
     topic_confidence_enabled: bool = True
+    # K66: master switch for the earned-familiarity register cue. When on,
+    # a turn that lands on a *high-mass* topic cluster (one the pair has
+    # returned to many times) nudges Aiko to let that shared history show as
+    # register — lean on shared shorthand, skip the 101-level recap, assume
+    # the context you both already have — never as a stated fact. Orthogonal
+    # to F10i topic_confidence (which reads *knowledge richness*, not shared
+    # history depth). Off → the provider stays empty. Computed live from
+    # cluster mass (no worker); thresholds / cooldown live under
+    # MemorySettings.
+    earned_familiarity_enabled: bool = True
     # K-time3: master switch for the upcoming-horizon block. When on, a
     # cheap forward sweep over ``future_plan`` memories due within the
     # horizon window renders one terse "coming up" cue with the relative

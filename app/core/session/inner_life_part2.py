@@ -2326,6 +2326,114 @@ class InnerLifePart2Mixin:
         )
         return line
 
+    def _render_earned_familiarity_block(self, user_text: str) -> str:
+        """K66: let *deep shared history* on a topic show as register.
+
+        Maps ``user_text`` to its nearest topic cluster
+        (``TopicGraph.best_clusters_for``), reads that cluster's **mass**
+        (member count, via ``cluster_member_ids``), and when the territory
+        is well-worn (``size >= earned_familiarity_deep_threshold``) surfaces
+        one private register nudge: lean on the shorthand you've built, skip
+        the 101-level recap, assume the shared context — never count the
+        history out loud.
+
+        Orthogonal to F10h topic_temperature (emotional charge) and F10i
+        topic_confidence (knowledge richness). The signal here is pure
+        shared-history *depth*, deliberately NOT knowledge-weighted, so it
+        fires on the big-but-unstudied conversational clusters F10i leaves
+        silent. The two can co-occur on a genuinely rich+deep cluster, but
+        the long K66 cooldown keeps that rare. Computed live in the provider
+        (no worker / kv); same cheap shape as F10h/F10i. MCP debug:
+        ``force_earned_familiarity_surface`` arms
+        ``_earned_familiarity_force_next`` to bypass the cooldown + min-sim
+        and force the deep band on the matched cluster.
+        """
+        if not bool(
+            getattr(self._settings.agent, "earned_familiarity_enabled", True)
+        ):
+            return ""
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        embedder = getattr(self, "_embedder", None)
+        if graph is None or embedder is None:
+            return ""
+        if not bool(getattr(graph, "persistent", False)):
+            return ""
+
+        force = bool(getattr(self, "_earned_familiarity_force_next", False))
+        if force:
+            self._earned_familiarity_force_next = False
+
+        cooldown = int(getattr(self, "_earned_familiarity_cooldown", 0) or 0)
+        if cooldown > 0 and not force:
+            self._earned_familiarity_cooldown = cooldown - 1
+            return ""
+
+        mem_settings = self._memory_settings
+        min_sim = float(
+            getattr(mem_settings, "earned_familiarity_min_sim", 0.45)
+        )
+        deep_threshold = int(
+            getattr(mem_settings, "earned_familiarity_deep_threshold", 14)
+        )
+        if force:
+            # Force the deep band on whatever cluster matches.
+            min_sim, deep_threshold = 0.0, 1
+
+        try:
+            qvec = embedder.embed(text)
+        except Exception:
+            log.debug("earned-familiarity: embed failed", exc_info=True)
+            return ""
+        try:
+            matches = graph.best_clusters_for(qvec, top_n=1, min_sim=min_sim)
+        except Exception:
+            log.debug(
+                "earned-familiarity: best_clusters_for failed", exc_info=True
+            )
+            return ""
+        if not matches:
+            return ""
+        cid, label, _sim = matches[0]
+
+        try:
+            member_ids = graph.cluster_member_ids(cid)
+        except Exception:
+            log.debug("earned-familiarity: member walk failed", exc_info=True)
+            return ""
+        size = len(member_ids or ())
+
+        from app.core.conversation.earned_familiarity import (
+            render_block,
+            score_familiarity,
+        )
+
+        read = score_familiarity(size, deep_threshold=deep_threshold)
+        if read.band is None:
+            return ""
+        line = render_block(read, label or "this topic", self.user_display_name)
+        if not line:
+            return ""
+
+        self._earned_familiarity_cooldown = max(
+            0, int(getattr(mem_settings, "earned_familiarity_cooldown_turns", 12))
+        )
+        self._earned_familiarity_last = {
+            "cluster_id": int(cid),
+            "label": label,
+            "size": read.size,
+            "band": read.band,
+        }
+        log.info(
+            "earned-familiarity fire: cluster=%s size=%d label=%r",
+            cid,
+            read.size,
+            (label or "")[:60],
+        )
+        return line
+
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.
 

@@ -242,6 +242,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # F10i: per-topic confidence self-model — hedge / earned
         # familiarity, last of the topic-graph-derived cues.
         "topic_confidence_block",
+        # K66: earned familiarity — let deep shared history on a topic show
+        # as shorthand register. Sits with the other topic-graph cues.
+        "earned_familiarity_block",
         # K64a: associative wandering — "funny, this reminds me of ..."
         # connects the live topic to a distant cluster. Sits with the
         # other topic-graph-derived surfaces (it's drawn from the graph).
@@ -389,6 +392,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # speak with earned familiarity on a rich one. Query-aware
         # (consumes ``user_text``); dropped in aggressive mode.
         self._topic_confidence_provider: Callable[[str], str] | None = None
+        # K66: earned familiarity — deep shared history on a topic shown as
+        # shorthand register. Query-aware (consumes ``user_text``); dropped
+        # in aggressive mode.
+        self._earned_familiarity_provider: Callable[[str], str] | None = None
         # K64a: associative wandering — surface a "funny, this reminds me
         # of ..." connection between the live topic and a distant cluster.
         # Query-aware (consumes ``user_text``); dropped in aggressive mode.
@@ -1168,6 +1175,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "topic confidence provider raised", exc_info=True
                     )
                     topic_confidence_block = ""
+
+        # K66: earned familiarity — deep shared history on the live topic
+        # surfaced as shorthand register. Query-aware (the provider embeds
+        # user_text + matches a high-mass cluster), dropped in aggressive
+        # mode.
+        earned_familiarity_block = ""
+        if not aggressive and self._earned_familiarity_provider is not None:
+            with _timed_phase(provider_ms, "earned_familiarity"):
+                try:
+                    earned_familiarity_block = (
+                        self._earned_familiarity_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "earned familiarity provider raised", exc_info=True
+                    )
+                    earned_familiarity_block = ""
 
         # K64a: associative wandering — surface a "funny, this reminds me
         # of ..." connection between the live topic and a distant cluster.
@@ -2686,6 +2710,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # F10i: per-topic confidence — hedge / earned-familiarity
             # register cue, last of the topic-graph-derived surfaces.
             system_parts.append(topic_confidence_block)
+        if earned_familiarity_block:
+            # K66: earned familiarity — deep shared history shown as
+            # shorthand register, clusters with the other topic-graph cues.
+            system_parts.append(earned_familiarity_block)
         if associative_wander_block:
             # K64a: associative wandering — "funny, this reminds me of ..."
             # connection cue, sits with the other topic-graph-derived

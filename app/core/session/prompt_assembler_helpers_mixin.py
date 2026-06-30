@@ -133,6 +133,7 @@ class PromptAssemblerHelpersMixin:
         curiosity_gradient: Callable[[str], str] | None = None,
         topic_temperature: Callable[[str], str] | None = None,
         topic_confidence: Callable[[str], str] | None = None,
+        earned_familiarity: Callable[[str], str] | None = None,
         knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
@@ -256,6 +257,8 @@ class PromptAssemblerHelpersMixin:
             self._topic_temperature_provider = topic_temperature
         if topic_confidence is not None:
             self._topic_confidence_provider = topic_confidence
+        if earned_familiarity is not None:
+            self._earned_familiarity_provider = earned_familiarity
         if knowledge_grounding is not None:
             self._knowledge_grounding_provider = knowledge_grounding
         if belief_gaps is not None:

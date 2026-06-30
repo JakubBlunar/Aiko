@@ -587,6 +587,21 @@ class MemorySettings:
     topic_confidence_familiar_threshold: float = 0.7
     # Global cooldown (in turns) after a confidence cue fires.
     topic_confidence_cooldown_turns: int = 6
+    # ── K66: earned familiarity ("well-trodden ground between us") ───────
+    # Minimum centroid cosine for the live turn to count as "on" a topic
+    # cluster before its shared-history depth is judged (mirrors the
+    # temperature / confidence gates).
+    earned_familiarity_min_sim: float = 0.45
+    # Cluster mass (member count) at/above which a topic reads as deep,
+    # well-worn shared ground -> the shorthand / skip-the-recap register
+    # cue fires. Set above F10i's effective size band so K66 fires on the
+    # big-but-unstudied *conversational* clusters F10i (knowledge-weighted)
+    # leaves silent. Distinct signal from topic_confidence on purpose.
+    earned_familiarity_deep_threshold: int = 14
+    # Global cooldown (in turns) after an earned-familiarity cue fires.
+    # Longer than its siblings: deep familiarity is a slow-moving register,
+    # not a per-charged-topic beat, so it should surface rarely.
+    earned_familiarity_cooldown_turns: int = 12
     # ── K-time3: upcoming-horizon block (pre-resolved future times) ──────
     # How far ahead the forward sweep looks for ``future_plan`` events
     # (in days). Within this window the resolved phrasing stays specific
@@ -1734,6 +1749,21 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             topic_confidence_cooldown_turns=max(
                 0,
                 int(memory_raw.get("topic_confidence_cooldown_turns", 6)),
+            ),
+            earned_familiarity_min_sim=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("earned_familiarity_min_sim", 0.45)),
+                ),
+            ),
+            earned_familiarity_deep_threshold=max(
+                1,
+                int(memory_raw.get("earned_familiarity_deep_threshold", 14)),
+            ),
+            earned_familiarity_cooldown_turns=max(
+                0,
+                int(memory_raw.get("earned_familiarity_cooldown_turns", 12)),
             ),
             upcoming_horizon_days=max(
                 1,
