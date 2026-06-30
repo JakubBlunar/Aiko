@@ -100,6 +100,7 @@ class PromptAssemblerHelpersMixin:
         self,
         *,
         affect: Callable[[], str] | None = None,
+        vitality: Callable[[], str] | None = None,
         circadian: Callable[[], str] | None = None,
         day_color: Callable[[], str] | None = None,
         profile: Callable[[], str] | None = None,
@@ -191,6 +192,8 @@ class PromptAssemblerHelpersMixin:
         """
         if affect is not None:
             self._affect_provider = affect
+        if vitality is not None:
+            self._vitality_provider = vitality
         if circadian is not None:
             self._circadian_provider = circadian
         if day_color is not None:

@@ -420,6 +420,103 @@ class InnerLifePart1Mixin:
             log.debug("day_color block render failed", exc_info=True)
             return ""
 
+    def _render_vitality_block(self) -> str:
+        """K68: render Aiko's embodied-energy register cue at the extremes.
+
+        Reads the persistent ``aiko.vitality`` energy scalar, relaxes it
+        toward the current circadian baseline over the wall-clock time
+        since the last update (the lazy-recovery seatbelt, mirroring K27
+        day_color), persists the recovered state, and renders a soft
+        register cue **only** when energy is in the LOW or HIGH band (the
+        silent ``normal`` middle is the common case).
+
+        The per-turn spend / interest-boost lives in the post-turn hook
+        ([`post_turn_mixin.py`](post_turn_mixin.py)); this provider is the
+        read + render + idle-recovery half. Best-effort: any failure path
+        returns ``""`` so a corrupt kv row never disturbs prompt assembly.
+
+        MCP debug: ``force_vitality_energy`` arms ``_vitality_force_energy``
+        (a one-shot float) so a tester can pin energy to any level and see
+        the cue / band without waiting on the clock.
+        """
+        agent_settings = self._settings.agent
+        if not bool(getattr(agent_settings, "vitality_enabled", True)):
+            return ""
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return ""
+
+        try:
+            from datetime import datetime
+
+            from app.core.affect import vitality as _vit
+            from app.core.affect import vitality_rhythm as _vr
+
+            mem = self._memory_settings
+            now = datetime.now().astimezone()
+            baseline, rhythm = _vr.current_baseline(
+                chat_db,
+                now,
+                enabled=bool(
+                    getattr(agent_settings, "vitality_rhythm_enabled", True)
+                ),
+                exception_chance=float(
+                    getattr(mem, "vitality_rhythm_exception_chance", 0.3)
+                ),
+            )
+
+            forced = getattr(self, "_vitality_force_energy", None)
+            if forced is not None:
+                # One-shot override: render the requested energy's band
+                # and persist it so the embodiment broadcast picks it up.
+                self._vitality_force_energy = None
+                energy = max(0.0, min(1.0, float(forced)))
+                state = _vit.VitalityState(
+                    energy=energy, last_update_at=now.isoformat(),
+                )
+                try:
+                    chat_db.kv_set(_vit.KV_VITALITY, _vit.serialize(state))
+                except Exception:
+                    log.debug("vitality force kv_set failed", exc_info=True)
+            else:
+                try:
+                    raw = chat_db.kv_get(_vit.KV_VITALITY)
+                except Exception:
+                    log.debug("vitality kv_get failed", exc_info=True)
+                    raw = None
+                state = _vit.deserialize(raw, baseline=baseline, now=now)
+                state = _vit.step_recover(
+                    state,
+                    baseline,
+                    now,
+                    half_life_hours=float(
+                        getattr(mem, "vitality_recover_half_life_hours", 2.0)
+                    ),
+                )
+                try:
+                    chat_db.kv_set(_vit.KV_VITALITY, _vit.serialize(state))
+                except Exception:
+                    log.debug("vitality kv_set failed", exc_info=True)
+
+            band_label = _vit.band(
+                state.energy,
+                low_threshold=float(
+                    getattr(mem, "vitality_low_threshold", 0.30)
+                ),
+                high_threshold=float(
+                    getattr(mem, "vitality_high_threshold", 0.70)
+                ),
+            )
+            return _vit.render_inner_life_block(
+                state.energy, band_label,
+                user_display_name=self.user_display_name,
+                rhythm_note=rhythm.note,
+            )
+        except Exception:
+            log.debug("vitality block render failed", exc_info=True)
+            return ""
+
     def _render_mood_drift_block(self) -> str:
         """H3: surface a rare, gentle note when mood / relationship drift.
 

@@ -602,6 +602,58 @@ class MemorySettings:
     # Longer than its siblings: deep familiarity is a slow-moving register,
     # not a per-charged-topic beat, so it should surface rarely.
     earned_familiarity_cooldown_turns: int = 12
+    # ── K68: embodied vitality (body energy) ─────────────────────────────
+    # Half-life (hours) of the relaxation toward the circadian baseline.
+    # After this many idle hours the gap to baseline halves. Short enough
+    # that a livened-up evening settles back overnight; long enough that a
+    # within-session boost persists across a conversation.
+    vitality_recover_half_life_hours: float = 2.0
+    # Energy at/below which the LOW register cue fires (sleepy, smaller /
+    # slower body language) and the avatar droops.
+    vitality_low_threshold: float = 0.30
+    # Energy at/above which the HIGH register cue fires (lit-up, more
+    # animated).
+    vitality_high_threshold: float = 0.70
+    # Avatar gesture/breath amplitude multiplier at energy 0 (floor) and
+    # energy 1 (ceil). Multiplied onto the user's avatar.expressiveness
+    # setting, so a tired Aiko visibly shrinks without overwriting the
+    # slider. floor < 1 < ceil keeps a normal-energy day near 1.0x.
+    vitality_expressiveness_floor: float = 0.7
+    vitality_expressiveness_ceil: float = 1.2
+    # ── spend (per turn) ──
+    # Chars of Aiko's reply per one "length cost unit"; a longer, more
+    # effortful reply spends more energy. 1200 chars ~ one unit.
+    vitality_cost_chars_per_unit: float = 1200.0
+    # Energy spent per length unit and per unit of K57 emotion intensity.
+    vitality_cost_length_unit: float = 0.04
+    vitality_cost_emotion_gain: float = 0.06
+    # Hard cap on total per-turn spend so one turn can't crater the bucket.
+    vitality_cost_max: float = 0.12
+    # ── boost (the liven-up) ──
+    # Energy gained when K14 reads the user as ``engaged``.
+    vitality_boost_engaged: float = 0.05
+    # Arousal (her own activation) above this adds (arousal - thr) * gain.
+    vitality_boost_arousal_threshold: float = 0.55
+    vitality_boost_arousal_gain: float = 0.22
+    # Energy gained on a K6 strong-novelty / mild-shift topic.
+    vitality_boost_strong_novelty: float = 0.04
+    vitality_boost_mild_novelty: float = 0.02
+    # Hard cap on total per-turn boost so one great turn can't slam to full.
+    vitality_boost_max: float = 0.15
+    # ── proactivity feedback ──
+    # At energy 0 a tired Aiko stretches her proactive silence threshold
+    # by this factor (initiates less); at energy 1 it shrinks by it. 0.0
+    # disables the proactivity feedback. e.g. 0.4 -> up to +40% longer
+    # silence when exhausted, -40% when lit up.
+    vitality_proactive_factor: float = 0.4
+    # ── K68 rhythm exceptions (off-rhythm days) ──
+    # Probability that a given local day rolls an *off-rhythm* baseline
+    # (early-bird / night-owl / flipped / sluggish / wired) instead of the
+    # plain circadian curve. Drawn once per day, stable all day. 0.0 ->
+    # always normal (feature effectively off via the agent master switch);
+    # clamped to [0, 1]. At the default ~1-in-3 days is off-rhythm, with a
+    # full day/night flip being the rarest slice of that.
+    vitality_rhythm_exception_chance: float = 0.3
     # ── K-time3: upcoming-horizon block (pre-resolved future times) ──────
     # How far ahead the forward sweep looks for ``future_plan`` events
     # (in days). Within this window the resolved phrasing stays specific
@@ -1764,6 +1816,98 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             earned_familiarity_cooldown_turns=max(
                 0,
                 int(memory_raw.get("earned_familiarity_cooldown_turns", 12)),
+            ),
+            vitality_recover_half_life_hours=max(
+                0.01,
+                float(
+                    memory_raw.get("vitality_recover_half_life_hours", 2.0)
+                ),
+            ),
+            vitality_low_threshold=max(
+                0.0,
+                min(1.0, float(memory_raw.get("vitality_low_threshold", 0.30))),
+            ),
+            vitality_high_threshold=max(
+                0.0,
+                min(
+                    1.0, float(memory_raw.get("vitality_high_threshold", 0.70))
+                ),
+            ),
+            vitality_expressiveness_floor=max(
+                0.0,
+                min(
+                    2.0,
+                    float(
+                        memory_raw.get("vitality_expressiveness_floor", 0.7)
+                    ),
+                ),
+            ),
+            vitality_expressiveness_ceil=max(
+                0.0,
+                min(
+                    3.0,
+                    float(memory_raw.get("vitality_expressiveness_ceil", 1.2)),
+                ),
+            ),
+            vitality_cost_chars_per_unit=max(
+                1.0,
+                float(memory_raw.get("vitality_cost_chars_per_unit", 1200.0)),
+            ),
+            vitality_cost_length_unit=max(
+                0.0,
+                float(memory_raw.get("vitality_cost_length_unit", 0.04)),
+            ),
+            vitality_cost_emotion_gain=max(
+                0.0,
+                float(memory_raw.get("vitality_cost_emotion_gain", 0.06)),
+            ),
+            vitality_cost_max=max(
+                0.0,
+                min(1.0, float(memory_raw.get("vitality_cost_max", 0.12))),
+            ),
+            vitality_boost_engaged=max(
+                0.0,
+                float(memory_raw.get("vitality_boost_engaged", 0.05)),
+            ),
+            vitality_boost_arousal_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "vitality_boost_arousal_threshold", 0.55
+                        )
+                    ),
+                ),
+            ),
+            vitality_boost_arousal_gain=max(
+                0.0,
+                float(memory_raw.get("vitality_boost_arousal_gain", 0.22)),
+            ),
+            vitality_boost_strong_novelty=max(
+                0.0,
+                float(memory_raw.get("vitality_boost_strong_novelty", 0.04)),
+            ),
+            vitality_boost_mild_novelty=max(
+                0.0,
+                float(memory_raw.get("vitality_boost_mild_novelty", 0.02)),
+            ),
+            vitality_boost_max=max(
+                0.0,
+                min(1.0, float(memory_raw.get("vitality_boost_max", 0.15))),
+            ),
+            vitality_proactive_factor=max(
+                0.0,
+                min(1.0, float(memory_raw.get("vitality_proactive_factor", 0.4))),
+            ),
+            vitality_rhythm_exception_chance=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("vitality_rhythm_exception_chance", 0.3)
+                    ),
+                ),
             ),
             upcoming_horizon_days=max(
                 1,

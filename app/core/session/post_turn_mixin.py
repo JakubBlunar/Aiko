@@ -1641,6 +1641,23 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     "vulnerability-budget spend hook raised", exc_info=True,
                 )
 
+        # K68 — embodied vitality spend + the liven-up boost. The
+        # headline twist: a sleepy Aiko gains energy when the
+        # conversation is genuinely interesting (K14 engaged + her own
+        # arousal + a K6 novel topic) and spends it on long /
+        # emotionally heavy turns. The provider (inner_life_part1) owns
+        # the idle-recovery + render half; this owns the per-turn delta
+        # + the embodiment broadcast so the avatar visibly perks up.
+        # Best-effort, swallow-and-log like every sibling hook.
+        if (
+            agent_settings is not None
+            and bool(getattr(agent_settings, "vitality_enabled", True))
+        ):
+            try:
+                self._apply_vitality_turn(raw_assistant_text)
+            except Exception:
+                log.debug("vitality turn hook raised", exc_info=True)
+
         # K52 — wants-ledger acted-on detection. A want is satisfied
         # when its topic surfaced this turn, whether Aiko raised it or
         # the user happened to (once a topic has come up even briefly,

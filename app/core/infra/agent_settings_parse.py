@@ -1026,6 +1026,18 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     agent_raw.get("day_color_check_interval_seconds", 3600)
                 ),
             ),
+            vitality_enabled=bool(
+                agent_raw.get("vitality_enabled", True),
+            ),
+            vitality_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get("vitality_check_interval_seconds", 900)
+                ),
+            ),
+            vitality_rhythm_enabled=bool(
+                agent_raw.get("vitality_rhythm_enabled", True),
+            ),
             mood_drift_enabled=bool(
                 agent_raw.get("mood_drift_enabled", True),
             ),

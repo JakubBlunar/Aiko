@@ -464,6 +464,151 @@ class PostTurnHelpersMixin:
         except Exception:
             log.debug("tease settle failed", exc_info=True)
 
+    def _peak_emotion_intensity(self) -> float:
+        """K68 helper: strongest live K57 emotion-episode intensity, decayed.
+
+        Reads the standing episode store (this turn's freshly-queued
+        triggers are drained later in the post-turn pipeline, so this
+        reflects the carried emotional weight). Best-effort -> 0.0.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import emotion_episodes as _ee
+
+            if not bool(
+                getattr(self._settings.agent, "emotion_episodes_enabled", True)
+            ):
+                return 0.0
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return 0.0
+            now = datetime.now(timezone.utc)
+            state = _ee.apply_decay(
+                _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)), now,
+            )
+            ep = _ee.strongest(state)
+            return float(ep.intensity) if ep is not None else 0.0
+        except Exception:
+            return 0.0
+
+    def _apply_vitality_turn(self, raw_assistant_text: str) -> None:
+        """K68: apply this turn's energy spend + interest boost, then broadcast.
+
+        * **Spend** — long reply (effort) + standing K57 emotion intensity
+          (an emotionally heavy stretch drains her).
+        * **Boost (the liven-up)** — K14 ``engaged`` + her own
+          ``AffectState.arousal`` + a K6 ``strong_novelty`` / ``mild_shift``
+          topic. A sleepy Aiko can wake up over a genuinely engaging chat.
+
+        Reads the kv state, applies the tiny wall-clock recovery toward
+        the circadian baseline (≈0 inside a live turn), then the net
+        delta, persists, and broadcasts the new energy so the avatar
+        embodiment (gesture/breath amplitude) updates. Best-effort.
+        """
+        from datetime import datetime
+
+        from app.core.affect import vitality as _vit
+        from app.core.affect import vitality_rhythm as _vr
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return
+        mem = self._memory_settings
+        now = datetime.now().astimezone()
+        baseline, _rhythm = _vr.current_baseline(
+            chat_db,
+            now,
+            enabled=bool(
+                getattr(self._settings.agent, "vitality_rhythm_enabled", True)
+            ),
+            exception_chance=float(
+                getattr(mem, "vitality_rhythm_exception_chance", 0.3)
+            ),
+        )
+
+        try:
+            raw = chat_db.kv_get(_vit.KV_VITALITY)
+        except Exception:
+            raw = None
+        state = _vit.deserialize(raw, baseline=baseline, now=now)
+        state = _vit.step_recover(
+            state, baseline, now,
+            half_life_hours=float(
+                getattr(mem, "vitality_recover_half_life_hours", 2.0)
+            ),
+        )
+
+        cost = _vit.compute_turn_cost(
+            reply_chars=len(raw_assistant_text or ""),
+            emotion_intensity=self._peak_emotion_intensity(),
+            chars_per_unit=float(
+                getattr(mem, "vitality_cost_chars_per_unit", 1200.0)
+            ),
+            length_cost_unit=float(
+                getattr(mem, "vitality_cost_length_unit", 0.04)
+            ),
+            emotion_cost_gain=float(
+                getattr(mem, "vitality_cost_emotion_gain", 0.06)
+            ),
+            max_cost=float(getattr(mem, "vitality_cost_max", 0.12)),
+        )
+
+        arousal: float | None = None
+        try:
+            arousal = float(self._affect_store.get(self._user_id).arousal)
+        except Exception:
+            arousal = None
+        novelty_band = getattr(
+            getattr(self, "_novelty_detector", None), "last_band", None,
+        )
+        boost = _vit.compute_interest_boost(
+            engagement_label=getattr(self, "_last_engagement_label", None),
+            arousal=arousal,
+            novelty_band=novelty_band,
+            engaged_boost=float(getattr(mem, "vitality_boost_engaged", 0.05)),
+            arousal_threshold=float(
+                getattr(mem, "vitality_boost_arousal_threshold", 0.55)
+            ),
+            arousal_gain=float(
+                getattr(mem, "vitality_boost_arousal_gain", 0.22)
+            ),
+            strong_novelty_boost=float(
+                getattr(mem, "vitality_boost_strong_novelty", 0.04)
+            ),
+            mild_novelty_boost=float(
+                getattr(mem, "vitality_boost_mild_novelty", 0.02)
+            ),
+            max_boost=float(getattr(mem, "vitality_boost_max", 0.15)),
+        )
+
+        new_energy = _vit.apply_turn(state.energy, cost=cost, boost=boost)
+        new_state = _vit.VitalityState(
+            energy=new_energy, last_update_at=now.isoformat(),
+        )
+        try:
+            chat_db.kv_set(_vit.KV_VITALITY, _vit.serialize(new_state))
+        except Exception:
+            log.debug("vitality kv_set failed", exc_info=True)
+
+        if cost > 0 or boost > 0 or abs(new_energy - state.energy) > 1e-9:
+            log.info(
+                "vitality turn: energy=%.3f -> %.3f cost=%.3f boost=%.3f "
+                "baseline=%.3f label=%s arousal=%s novelty=%s",
+                float(state.energy), float(new_energy), cost, boost,
+                baseline,
+                getattr(self, "_last_engagement_label", None),
+                (f"{arousal:.2f}" if arousal is not None else "-"),
+                novelty_band or "-",
+            )
+
+        notify = getattr(self, "_notify_vitality", None)
+        if notify is not None:
+            try:
+                notify(new_energy)
+            except Exception:
+                log.debug("vitality notify raised", exc_info=True)
+
     def _drain_emotion_triggers(self) -> None:
         """K57: apply staged triggers to the kv-backed episode store.
 

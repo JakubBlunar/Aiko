@@ -137,6 +137,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # T5 — per-turn affect / style. Updates after every reply.
     "T5_affect_style": (
         "affect_block",
+        # K68: embodied vitality (body energy). The layer between "what
+        # she feels" (affect) and "how she moves" (Live2D); a slow body
+        # state that updates per turn, so it sits in the affect cluster
+        # right after affect_block.
+        "vitality_block",
         "mood_hint",
         "mood_inertia_block",
         # H3: rare slow-drift reflective note (sustained low / recovery /
@@ -324,6 +329,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # prompt. They run on the hot path so must be cheap (<1ms each):
         # SQL reads + dict lookups, no LLM. Set via ``set_inner_life_providers``.
         self._affect_provider: Callable[[], str] | None = None
+        # K68: embodied vitality — body-energy register cue. Updates per
+        # turn (idle recovery + spend/boost); survives aggressive mode
+        # (a tired body is exactly when the terse-register cue matters).
+        self._vitality_provider: Callable[[], str] | None = None
         self._circadian_provider: Callable[[], str] | None = None
         # K27 -- daily personality colour. Slow ambient cue rolled
         # once per local day, kept standalone (not folded into the
@@ -947,6 +956,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         ambient = slices.ambient
         mood_hint = slices.mood_hint
         affect_block = slices.affect_block
+        # K68 -- embodied vitality. NOT cached in _StaticSlices because
+        # the provider mutates kv_meta on every call (lazy recovery toward
+        # the circadian baseline + the one-shot MCP force flag), same
+        # rationale as day_color below. Cheap: one kv_get + one float
+        # relax + one kv_set on the steady-state path.
+        vitality_block = ""
+        if self._vitality_provider is not None:
+            with _timed_phase(provider_ms, "vitality"):
+                try:
+                    vitality_block = self._vitality_provider() or ""
+                except Exception:
+                    log.debug("vitality provider raised", exc_info=True)
+                    vitality_block = ""
         circadian_block = slices.circadian_block
         # K27 -- daily personality colour. NOT cached in _StaticSlices
         # because the provider mutates state on two paths: (1) the
@@ -2357,6 +2379,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # prefix so the cache covers everything up to here.
         if affect_block:
             system_parts.append(affect_block)
+        if vitality_block:
+            # K68: embodied-energy register cue (LOW/HIGH only). Sits
+            # right after affect — the body-state counterpart to the
+            # feeling. NOT dropped under aggressive (a low-battery body is
+            # exactly when the terse-register cue matters) and NOT in the
+            # K16 grounding-line suppression matrix (it's a delivery
+            # mechanic, not ambient colour).
+            system_parts.append(vitality_block)
         if mood_hint:
             system_parts.append(mood_hint)
         if mood_inertia_block:

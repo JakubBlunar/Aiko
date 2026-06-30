@@ -45,6 +45,16 @@ export interface SessionSlice {
   companionSettings: Partial<CompanionSettings> | null;
   setCompanionSettings: (patch: Partial<CompanionSettings>) => void;
 
+  /** K68 embodied vitality: body-energy + the derived avatar gesture /
+   * breath amplitude multiplier. Multiplied onto avatar.expressiveness
+   * in the Live2D snapshot so a tired Aiko visibly droops. */
+  vitality: { energy: number | null; expressivenessMult: number; band: string };
+  setVitality: (patch: {
+    energy?: number | null;
+    expressiveness_mult?: number;
+    band?: string;
+  }) => void;
+
   // Status
   status: string;
   setStatus: (msg: string) => void;
@@ -89,6 +99,22 @@ export const createSessionSlice: SliceCreator<SessionSlice> = (set) => ({
   setCompanionSettings: (patch) =>
     set((state) => ({
       companionSettings: { ...(state.companionSettings ?? {}), ...patch },
+    })),
+
+  vitality: { energy: null, expressivenessMult: 1, band: "normal" },
+  setVitality: (patch) =>
+    set((state) => ({
+      vitality: {
+        energy:
+          patch.energy === undefined ? state.vitality.energy : patch.energy,
+        expressivenessMult:
+          typeof patch.expressiveness_mult === "number" &&
+          Number.isFinite(patch.expressiveness_mult)
+            ? patch.expressiveness_mult
+            : state.vitality.expressivenessMult,
+        band:
+          typeof patch.band === "string" ? patch.band : state.vitality.band,
+      },
     })),
 
   status: "",

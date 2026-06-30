@@ -468,6 +468,51 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             result.memory.earned_familiarity_cooldown_turns, 0,
         )
 
+    def test_vitality_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.vitality_enabled)
+        self.assertEqual(result.agent.vitality_check_interval_seconds, 900)
+        self.assertAlmostEqual(
+            result.memory.vitality_recover_half_life_hours, 2.0,
+        )
+        self.assertAlmostEqual(result.memory.vitality_low_threshold, 0.30)
+        self.assertAlmostEqual(result.memory.vitality_high_threshold, 0.70)
+        self.assertAlmostEqual(result.memory.vitality_boost_max, 0.15)
+        self.assertAlmostEqual(result.memory.vitality_proactive_factor, 0.4)
+        self.assertTrue(result.agent.vitality_rhythm_enabled)
+        self.assertAlmostEqual(
+            result.memory.vitality_rhythm_exception_chance, 0.3,
+        )
+        # Overrides + clamps.
+        path = self._write_config(
+            agent_extra={
+                "vitality_enabled": False,
+                "vitality_check_interval_seconds": 5,  # floor 60
+                "vitality_rhythm_enabled": False,
+            },
+            memory_extra={
+                "vitality_low_threshold": 2.0,        # clamped 1.0
+                "vitality_high_threshold": -1.0,      # clamped 0.0
+                "vitality_proactive_factor": 5.0,     # clamped 1.0
+                "vitality_recover_half_life_hours": 0.0,  # floor 0.01
+                "vitality_rhythm_exception_chance": 5.0,  # clamped 1.0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.vitality_enabled)
+        self.assertEqual(result.agent.vitality_check_interval_seconds, 60)
+        self.assertAlmostEqual(result.memory.vitality_low_threshold, 1.0)
+        self.assertAlmostEqual(result.memory.vitality_high_threshold, 0.0)
+        self.assertAlmostEqual(result.memory.vitality_proactive_factor, 1.0)
+        self.assertAlmostEqual(
+            result.memory.vitality_recover_half_life_hours, 0.01,
+        )
+        self.assertFalse(result.agent.vitality_rhythm_enabled)
+        self.assertAlmostEqual(
+            result.memory.vitality_rhythm_exception_chance, 1.0,
+        )
+
     def test_interest_map_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())
