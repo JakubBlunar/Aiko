@@ -453,6 +453,48 @@ class WeatherBlockProviderTests(unittest.TestCase):
             self.assertNotIn("Real-world sky", messages[0]["content"])
 
 
+class MoodDriftProviderSlotTests(unittest.TestCase):
+    """H3 ``mood_drift`` slot surfaces the reflective note in the system
+    prompt and — unlike most ambient blocks — SURVIVES ``aggressive``
+    (a wellbeing read should land even under a tight budget; it fires
+    rarely anyway)."""
+
+    _LINE = (
+        "You've quietly noticed Jacob has seemed low for a few days now."
+    )
+
+    def test_mood_drift_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="md1", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(mood_drift=lambda: self._LINE)
+            messages, _ = assembler.assemble_with_budget(
+                "md1", "hey", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._LINE, messages[0]["content"])
+
+    def test_mood_drift_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="md2", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(mood_drift=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "md2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("seemed low", messages[0]["content"])
+
+    def test_mood_drift_block_survives_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="md3", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(mood_drift=lambda: self._LINE)
+            messages, _ = assembler.assemble_with_budget(
+                "md3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._LINE, messages[0]["content"])
+
+
 class AnniversaryBlockProviderTests(unittest.TestCase):
     """The anniversary inner-life provider lands in the system prompt
     after the relationship block, and is dropped under ``aggressive``."""

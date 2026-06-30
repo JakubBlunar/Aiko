@@ -139,6 +139,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "affect_block",
         "mood_hint",
         "mood_inertia_block",
+        # H3: rare slow-drift reflective note (sustained low / recovery /
+        # single-axis drift). Clusters with the mood family; surfaces at
+        # most once per finding.
+        "mood_drift_block",
         "mood_shell_block",
         "intimacy_pacing_block",
         "emotion_episode_block",
@@ -420,6 +424,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # next turn and clears the slot. T5 (reaction-shaping family,
         # sits right after the mood carryover hint).
         self._mood_inertia_provider: Callable[[], str] | None = None
+        # H3 — mood-drift narrator. Slow read-only awareness of how the
+        # user's mood + the relationship axes have drifted over days/weeks.
+        # Provider samples lazily, detects drift, and surfaces ONE gentle
+        # reflective note per finding (cooldown + signature watermark in
+        # the provider). T5 (mood family); not dropped under aggressive —
+        # a wellbeing read is exactly what should survive a tight budget,
+        # and it already fires rarely.
+        self._mood_drift_provider: Callable[[], str] | None = None
         # K38 — self-correction one-shot. Post-turn detector stashes a
         # SelfCorrectionHit when Aiko's reply contradicted one of her own
         # high-confidence fact/preference memories; this provider renders
@@ -1291,6 +1303,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 except Exception:
                     log.debug("mood-inertia provider raised", exc_info=True)
                     mood_inertia_block = ""
+
+        # H3 — mood-drift narrator. Built every turn (the provider samples
+        # lazily + mutates kv watermark state), but almost always empty
+        # since a finding surfaces at most once. Not dropped under
+        # aggressive — see the provider-init comment.
+        mood_drift_block = ""
+        if self._mood_drift_provider is not None:
+            with _timed_phase(provider_ms, "mood_drift"):
+                try:
+                    mood_drift_block = self._mood_drift_provider() or ""
+                except Exception:
+                    log.debug("mood-drift provider raised", exc_info=True)
+                    mood_drift_block = ""
 
         # K38 — self-correction one-shot. Sibling of the rupture
         # provider; same one-shot contract and same not-gated-on-
@@ -2237,6 +2262,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # both are reaction-shaping beats ("carry the mood" vs
             # "your face outran the feeling, let the words catch up").
             system_parts.append(mood_inertia_block)
+        if mood_drift_block:
+            # H3: slow multi-day/week reflective note, clustered with the
+            # mood family. Surfaces rarely (once per finding).
+            system_parts.append(mood_drift_block)
         if mood_shell_block:
             # K5 mood-shell tilt: one-line emotional directive (e.g.
             # "Lean affectionate and steady; let warmth show.") sits

@@ -1249,6 +1249,24 @@ class AgentSettings:
     # so a buggy override can't spin the scheduler.
     day_color_check_interval_seconds: int = 3600
 
+    # ── H3: mood-drift narrator ───────────────────────────────────────
+    # Slow, read-only awareness of how the user's mood + the relationship
+    # axes have drifted over days/weeks. A daily sampler
+    # (:class:`MoodDriftSampleWorker`) records one (valence + four axes)
+    # point per local day into a small kv ring; the ``_render_mood_drift_
+    # block`` provider detects a sustained low / recovery / single-axis
+    # drift and surfaces ONE gentle reflective cue, then stays quiet until
+    # a *different* finding appears. Off → no sampling, no cue.
+    mood_drift_enabled: bool = True
+    # Sampler cadence. Cheap (one kv_get + a date compare on the no-op
+    # tick; two SQLite reads + one kv_set once per day). Floored at 60s
+    # in ``_parse_agent``.
+    mood_drift_check_interval_seconds: int = 3600
+    # Minimum days between two surfaced notes. Guards against two
+    # different findings firing back-to-back; the per-finding signature
+    # watermark already stops the *same* finding repeating.
+    mood_drift_cooldown_days: float = 4.0
+
     # ── K15: self-disclosure / vulnerability budget ───────────────────
     # Master switch for the rolling token-bucket that paces Aiko's
     # personal disclosures (``[[remember:self:...]]`` tags). When off,

@@ -55,6 +55,15 @@ log = logging.getLogger("app.rag_retriever")
 _MEMORY_PRIOR = 0.05
 _MESSAGE_PRIOR = -0.04
 _DOCUMENT_PRIOR = 0.0
+# H4 — document-recall recency boost. A document chunk whose ``created_at``
+# is within the last ``_DOCUMENT_RECENCY_DAYS`` days gets a flat additive
+# ``_DOCUMENT_RECENCY_BONUS`` so freshly-uploaded notes/PDFs surface
+# preferentially before they fade into the long-term pool. Same magnitude as
+# the pinned / knowledge nudges so it nudges near-ties without overpowering
+# raw cosine relevance; documents have no salience/decay of their own, so a
+# flat in-window bonus is the cheapest way to give recent uploads an edge.
+_DOCUMENT_RECENCY_DAYS = 7.0
+_DOCUMENT_RECENCY_BONUS = 0.05
 # Half-life in days for message recency decay; messages older than ~3 weeks
 # get heavily penalized in the merged score.
 _MESSAGE_HALFLIFE_DAYS = 21.0
@@ -1150,6 +1159,11 @@ class RagRetriever:
             try:
                 for h in doc_hits:
                     h.score += _DOCUMENT_PRIOR
+                    # H4: nudge freshly-uploaded documents up so newly-added
+                    # knowledge surfaces before it fades into the pool.
+                    h.score += _document_recency_bonus(
+                        getattr(h.record, "created_at", "")
+                    )
                     merged.append(h)
             except Exception:
                 log.debug("document search failed", exc_info=True)
@@ -1959,6 +1973,24 @@ def _recency_bonus(created_at: str) -> float:
 
     weight = math.pow(0.5, delta_days / _MESSAGE_HALFLIFE_DAYS)
     return 0.06 * (weight - 0.5)
+
+
+def _document_recency_bonus(created_at: str) -> float:
+    """H4: flat additive bonus for a document chunk uploaded within the
+    last ``_DOCUMENT_RECENCY_DAYS`` days, else ``0.0``.
+
+    Documents carry no salience or decay of their own, so a recently
+    uploaded note would otherwise rank purely on cosine and could be
+    buried under older chunks. A small in-window nudge gives fresh
+    uploads a chance to feel "current". Unparseable / missing timestamps
+    return ``0.0`` (no bonus, never a penalty).
+    """
+    hrs = _hours_since(created_at)
+    if hrs is None:
+        return 0.0
+    if hrs <= _DOCUMENT_RECENCY_DAYS * 24.0:
+        return _DOCUMENT_RECENCY_BONUS
+    return 0.0
 
 
 def _hours_since(iso_ts: str | None) -> float | None:

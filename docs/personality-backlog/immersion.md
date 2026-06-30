@@ -14,8 +14,8 @@ now holds **only the open work**.
 | H0  | Intentional-placement hold                    | ✅ shipped — [immersion.md](shipped/immersion.md#h0-intentional-placement-hold--workers-defer-to-deliberate-choices) |
 | H1  | Conversation-arc surfacing via tag            | ✅ shipped — [features.md](shipped/features.md#h1--k4-conversation-arc-self-tag--dialogue-act-tagging-schema-v13) |
 | H2  | Calendar / time context (holiday + birthday)  | ⚠️ partial — circadian + K3 routines done; holiday/birthday open |
-| H3  | Mood drift narrator                           | ❌ open |
-| H4  | Document-recall recency boost                 | ❌ open (message recency exists; the document 7-day boost does not) |
+| H3  | Mood drift narrator                           | ✅ shipped — [immersion.md](shipped/immersion.md#h3-mood-drift-narrator) |
+| H4  | Document-recall recency boost                 | ✅ shipped — [immersion.md](shipped/immersion.md#h4-document-recall-recency-boost) |
 | H5  | Second scene / travel semantics               | ❌ open (deferred; H22 shipped the lightweight precursor) |
 | H6  | Audible backchannels ("mm-hm")                | ❌ open |
 | H7  | Listen while speaking (soften half-duplex)    | ❌ open |
@@ -45,33 +45,6 @@ new helper in
 right after `world_block` and dropped in `aggressive` mode,
 [`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py)
 (new `birthday` field + LLM worker prompt update).
-
----
-
-## H3. Mood drift narrator
-
-Read-only periodic check on `affect_state` history and
-`relationship_axes`. If Jacob's mood has been low for 3+ sessions or
-Aiko's axes have drifted notably in a single direction (e.g.
-`closeness` has been climbing for two weeks), surface a small
-reflective note for Aiko to acknowledge gently — never mechanically
-("you seem to be in a better place lately, I've noticed"). Key
-files: [`app/core/affect/affect_state.py`](../../app/core/affect/affect_state.py),
-[`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py),
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-inner-life providers.
-
----
-
-## H4. Document-recall recency boost
-
-Documents Jacob uploaded in the last 7 days get a `+0.05` retrieval
-score in [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-so newly-added knowledge surfaces preferentially without crowding
-out long-term anchors. Cheap to ship; gives uploaded docs a chance
-to feel "current" before fading into the long-term pool. Note: the
-retriever already does *message* recency decay + *memory* revival,
-but the `documents` source has no upload-date boost yet.
 
 ---
 

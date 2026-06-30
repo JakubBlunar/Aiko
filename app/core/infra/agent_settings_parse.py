@@ -1011,6 +1011,19 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     agent_raw.get("day_color_check_interval_seconds", 3600)
                 ),
             ),
+            mood_drift_enabled=bool(
+                agent_raw.get("mood_drift_enabled", True),
+            ),
+            mood_drift_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get("mood_drift_check_interval_seconds", 3600)
+                ),
+            ),
+            mood_drift_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("mood_drift_cooldown_days", 4.0)),
+            ),
             vulnerability_budget_enabled=bool(
                 agent_raw.get("vulnerability_budget_enabled", True),
             ),

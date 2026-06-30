@@ -2731,6 +2731,80 @@ class DayColorSettingsTests(unittest.TestCase):
         self.assertTrue(result.agent.day_color_enabled)
 
 
+class MoodDriftSettingsTests(unittest.TestCase):
+    """H3: 3 agent knobs round-trip with the documented clamps."""
+
+    _MD_AGENT_KEYS = (
+        "mood_drift_enabled",
+        "mood_drift_check_interval_seconds",
+        "mood_drift_cooldown_days",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._MD_AGENT_KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.mood_drift_enabled)
+        self.assertEqual(
+            result.agent.mood_drift_check_interval_seconds, 3600,
+        )
+        self.assertEqual(result.agent.mood_drift_cooldown_days, 4.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "mood_drift_enabled": False,
+                "mood_drift_check_interval_seconds": 7200,
+                "mood_drift_cooldown_days": 2.5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.mood_drift_enabled)
+        self.assertEqual(
+            result.agent.mood_drift_check_interval_seconds, 7200,
+        )
+        self.assertEqual(result.agent.mood_drift_cooldown_days, 2.5)
+
+    def test_interval_clamps_to_floor(self) -> None:
+        path = self._write_config(
+            agent_extra={"mood_drift_check_interval_seconds": 5},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.mood_drift_check_interval_seconds, 60,
+        )
+
+    def test_cooldown_clamps_nonnegative(self) -> None:
+        path = self._write_config(
+            agent_extra={"mood_drift_cooldown_days": -3},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.agent.mood_drift_cooldown_days, 0.0)
+
+
 class VulnerabilityBudgetSettingsTests(unittest.TestCase):
     """K15: 7 agent knobs round-trip with the documented clamps."""
 

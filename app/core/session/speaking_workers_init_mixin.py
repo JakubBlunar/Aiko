@@ -604,6 +604,7 @@ class SpeakingWorkersInitMixin:
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
             mood_inertia=self._render_mood_inertia_block,
+            mood_drift=self._render_mood_drift_block,
             self_correction=self._render_self_correction_block,
             promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
@@ -765,6 +766,35 @@ class SpeakingWorkersInitMixin:
                     except Exception:
                         log.warning(
                             "day_color worker registration failed",
+                            exc_info=True,
+                        )
+                # H3 — mood-drift daily sampler. Records one (valence +
+                # four axes) point per local day into the kv ring the
+                # provider reads. Cheap (a date compare on the no-op tick).
+                # The provider has a lazy-sample fallback for the starved-
+                # scheduler case, same hybrid design as K27.
+                if bool(
+                    getattr(settings.agent, "mood_drift_enabled", True)
+                ):
+                    try:
+                        from app.core.affect.mood_drift_worker import (
+                            MoodDriftSampleWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            MoodDriftSampleWorker(
+                                chat_db=self._chat_db,
+                                settings=settings.agent,
+                                affect_store=self._affect_store,
+                                axes_store=getattr(
+                                    self, "_relationship_axes_store", None,
+                                ),
+                                user_id=self._user_id,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "mood_drift worker registration failed",
                             exc_info=True,
                         )
                 # J11 — affection-style slow decay toward uniform. Cheap
