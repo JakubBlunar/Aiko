@@ -114,6 +114,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_confidence_enabled=bool(
                 agent_raw.get("topic_confidence_enabled", True),
             ),
+            earned_familiarity_enabled=bool(
+                agent_raw.get("earned_familiarity_enabled", True),
+            ),
             upcoming_horizon_enabled=bool(
                 agent_raw.get("upcoming_horizon_enabled", True),
             ),

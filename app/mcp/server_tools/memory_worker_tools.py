@@ -2203,6 +2203,100 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_topic_confidence_surface raised: {exc}"
 
     @mcp.tool()
+    def get_earned_familiarity_state() -> str:
+        """K66 — dump the earned-familiarity register-cue state + dry-run.
+
+        Shows the master switch, the similarity / deep-mass / cooldown
+        knobs, the live cooldown remaining, the last fire, and a dry-run
+        scan of every cluster that currently reads as *deep* shared ground
+        (mass at/above the deep threshold). First stop for "why did Aiko
+        (not) lean on shorthand for that topic?". Orthogonal to
+        ``get_topic_confidence_state`` (knowledge richness): this is pure
+        shared-history depth.
+        """
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "earned_familiarity_enabled", True
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_earned_familiarity_force_next", False)
+            ),
+            "cooldown_remaining": int(
+                getattr(session, "_earned_familiarity_cooldown", 0) or 0
+            ),
+            "last_fire": getattr(session, "_earned_familiarity_last", None),
+        }
+        mem = getattr(session, "_memory_settings", None)
+        deep_threshold = int(
+            getattr(mem, "earned_familiarity_deep_threshold", 14)
+        )
+        out["settings"] = {
+            "min_sim": float(
+                getattr(mem, "earned_familiarity_min_sim", 0.45)
+            ),
+            "deep_threshold": deep_threshold,
+            "cooldown_turns": int(
+                getattr(mem, "earned_familiarity_cooldown_turns", 12)
+            ),
+        }
+        graph = getattr(session, "_topic_graph", None)
+        if graph is not None:
+            try:
+                from app.core.conversation.earned_familiarity import (
+                    score_familiarity,
+                )
+
+                deep: list[dict[str, Any]] = []
+                for cluster in graph.topic_clusters():
+                    kinds = getattr(cluster, "member_kinds", ()) or ()
+                    size = len(kinds)
+                    read = score_familiarity(
+                        size, deep_threshold=deep_threshold
+                    )
+                    if read.band is None:
+                        continue
+                    deep.append(
+                        {
+                            "cluster_id": cluster.cluster_id,
+                            "label": (cluster.summary or "")[:120],
+                            "size": read.size,
+                        }
+                    )
+                deep.sort(key=lambda d: d["size"], reverse=True)
+                out["deep_clusters"] = deep
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["deep_clusters_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_earned_familiarity_surface() -> str:
+        """K66 — arm a one-shot bypass on the earned-familiarity provider.
+
+        Sets ``_earned_familiarity_force_next`` so the next provider call
+        ignores the cooldown, drops ``min_sim`` to 0, and forces the deep
+        band on the matched cluster (deep_threshold → 1). Then
+        ``send_message`` with text on that topic and verify the shorthand /
+        skip-the-recap line lands in ``get_last_response_detail``'s
+        system_prompt.
+        """
+        try:
+            session._earned_familiarity_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores cooldown + min_sim and "
+                        "forces the deep band on the matched cluster"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_earned_familiarity_surface raised: {exc}"
+
+    @mcp.tool()
     def get_upcoming_horizon_state() -> str:
         """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
 

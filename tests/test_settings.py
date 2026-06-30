@@ -434,6 +434,40 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
         self.assertEqual(result.memory.topic_confidence_cooldown_turns, 0)
 
+    def test_earned_familiarity_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.earned_familiarity_enabled)
+        self.assertAlmostEqual(
+            result.memory.earned_familiarity_min_sim, 0.45,
+        )
+        self.assertEqual(
+            result.memory.earned_familiarity_deep_threshold, 14,
+        )
+        self.assertEqual(
+            result.memory.earned_familiarity_cooldown_turns, 12,
+        )
+        # Overrides + clamps.
+        path = self._write_config(
+            agent_extra={"earned_familiarity_enabled": False},
+            memory_extra={
+                "earned_familiarity_min_sim": 2.0,         # clamped 1.0
+                "earned_familiarity_deep_threshold": -3,   # floor 1
+                "earned_familiarity_cooldown_turns": -5,   # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.earned_familiarity_enabled)
+        self.assertAlmostEqual(
+            result.memory.earned_familiarity_min_sim, 1.0,
+        )
+        self.assertEqual(
+            result.memory.earned_familiarity_deep_threshold, 1,
+        )
+        self.assertEqual(
+            result.memory.earned_familiarity_cooldown_turns, 0,
+        )
+
     def test_interest_map_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())

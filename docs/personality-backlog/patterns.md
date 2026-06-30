@@ -81,7 +81,7 @@ on top of already-shipped infrastructure.
 | K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
 | K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-) |
 | K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65a-cluster-scope-the-f5-conflict-detector-pair-scan-shipped-via-f10j) |
-| K66 | Earned familiarity — "well-trodden ground" | ❌ open |
+| K66 | Earned familiarity — "well-trodden ground" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us) |
 | K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
 | K68 | Embodied vitality | ❌ open |
 | K69 | Implicit-need reading — vent vs fix vs reassure | ❌ open |
@@ -488,6 +488,26 @@ cluster-aware re-anchor, kept not retired). K65d ✅ shipped. K65e ✅ shipped.
 ---
 
 ## K66. Earned familiarity — "well-trodden ground between us"
+
+- **✅ Shipped.** New pure module
+  [`earned_familiarity.py`](../../app/core/conversation/earned_familiarity.py)
+  (`score_familiarity(size, deep_threshold)` → single `deep` band, +
+  `render_block`) plus the live provider
+  [`_render_earned_familiarity_block`](../../app/core/session/inner_life_part2.py).
+  Maps `user_text` to its nearest cluster via `TopicGraph.best_clusters_for`,
+  reads that cluster's **mass** (member count via `cluster_member_ids`), and
+  when the territory is well-worn (`size >= earned_familiarity_deep_threshold`
+  =14) surfaces one private register cue: lean on shared shorthand, skip the
+  101-level recap, assume shared context — never count the history out loud.
+  Deliberately keyed on **pure mass, not knowledge** (orthogonal to F10i
+  `topic_confidence`), so it fires on the big-but-unstudied conversational
+  clusters F10i leaves silent. Lands in T6 right after `topic_confidence_block`
+  (clusters with the other topic-graph cues); dropped under aggressive. Long
+  cooldown (12 turns) keeps it rare. Gated by `agent.earned_familiarity_enabled`
+  (default on) + three `memory.earned_familiarity_*` knobs. MCP:
+  `get_earned_familiarity_state` / `force_earned_familiarity_surface`. See
+  [shipped doc](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us).
+  Original spec below.
 
 **Motivation.** F10h topic temperature reads how a topic *feels* (warm /
 tender); K66 is orthogonal — it reads how *deep* the shared history on a
