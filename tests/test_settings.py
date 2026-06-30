@@ -2223,6 +2223,50 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.self_callback_min_age_days, 1)
         self.assertEqual(result.memory.self_callback_journal_max, 1)
 
+    def test_wellbeing_concern_round_trip(self) -> None:
+        # K72: agent master switch + cadence/cooldown + memory thresholds.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.wellbeing_concern_enabled)
+        self.assertEqual(
+            result.agent.wellbeing_concern_check_interval_seconds, 21600,
+        )
+        self.assertAlmostEqual(
+            result.agent.wellbeing_concern_cooldown_days, 7.0,
+        )
+        self.assertEqual(result.memory.wellbeing_concern_window_days, 7)
+        self.assertEqual(result.memory.wellbeing_concern_late_night_min, 3)
+        self.assertEqual(result.memory.wellbeing_concern_neglect_min_days, 2)
+        self.assertEqual(result.memory.wellbeing_concern_rough_run, 5)
+        self.assertAlmostEqual(
+            result.memory.wellbeing_concern_rough_threshold, -0.25,
+        )
+        path = self._write_config(
+            agent_extra={
+                "wellbeing_concern_enabled": False,
+                "wellbeing_concern_check_interval_seconds": 5,  # floor 60
+                "wellbeing_concern_cooldown_days": 12.0,
+            },
+        )
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "wellbeing_concern_window_days": 0,  # floor 1
+            "wellbeing_concern_late_night_min": 0,  # floor 1
+            "wellbeing_concern_journal_max": 0,  # floor 1
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.wellbeing_concern_enabled)
+        self.assertEqual(
+            result.agent.wellbeing_concern_check_interval_seconds, 60,
+        )
+        self.assertAlmostEqual(
+            result.agent.wellbeing_concern_cooldown_days, 12.0,
+        )
+        self.assertEqual(result.memory.wellbeing_concern_window_days, 1)
+        self.assertEqual(result.memory.wellbeing_concern_late_night_min, 1)
+        self.assertEqual(result.memory.wellbeing_concern_journal_max, 1)
+
     def test_humor_style_round_trip(self) -> None:
         # K74: agent-side humor-style learner knobs + clamps.
         result = load_settings(config_path=self._write_config())

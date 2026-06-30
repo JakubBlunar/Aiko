@@ -85,13 +85,13 @@ on top of already-shipped infrastructure.
 | K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
 | K68 | Embodied vitality | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
 | K69 | Implicit-need reading — vent vs fix vs reassure | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k69-implicit-need-reading--vent-vs-fix-vs-reassure) |
-| K70 | Longitudinal growth witness — "you've changed since we met" | ❌ open |
-| K71 | Self-callback — her own continuity over time | ❌ open |
-| K72 | Wellbeing concern — gentle care, never a nag | ❌ open |
+| K70 | Longitudinal growth witness — "you've changed since we met" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k70-longitudinal-growth-witness--youve-changed-since-we-met) |
+| K71 | Self-callback — her own continuity over time | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k71-self-callback--her-own-continuity-over-time) |
+| K72 | Wellbeing concern — gentle care, never a nag | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k72-wellbeing-concern--gentle-care-never-a-nag) |
 | K73 | Shared ritual formation — "this is becoming our thing" | ❌ open |
-| K74 | Humor-style calibration — what kind of funny lands | ❌ open |
+| K74 | Humor-style calibration — what kind of funny lands | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k74-humor-style-calibration--what-kind-of-funny-lands) |
 | K75 | User-expertise calibration — match explanation depth | ❌ open |
-| K76 | Affective memory salience — flashbulb encoding | ❌ open |
+| K76 | Affective memory salience — flashbulb encoding | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k76-affective-memory-salience--flashbulb-encoding) |
 | K77 | Candor gate — "can I be real with you?" | ❌ open |
 | K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |

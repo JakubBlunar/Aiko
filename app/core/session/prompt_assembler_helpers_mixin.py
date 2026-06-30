@@ -161,6 +161,7 @@ class PromptAssemblerHelpersMixin:
         follow_up: Callable[[], str] | None = None,
         growth_witness: Callable[[], str] | None = None,
         self_callback: Callable[[], str] | None = None,
+        wellbeing_concern: Callable[[], str] | None = None,
         upcoming_horizon: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         intimacy_pacing: Callable[[], str] | None = None,
@@ -317,6 +318,8 @@ class PromptAssemblerHelpersMixin:
             self._growth_witness_provider = growth_witness
         if self_callback is not None:
             self._self_callback_provider = self_callback
+        if wellbeing_concern is not None:
+            self._wellbeing_concern_provider = wellbeing_concern
         if upcoming_horizon is not None:
             self._upcoming_horizon_provider = upcoming_horizon
         if mood_shell is not None:

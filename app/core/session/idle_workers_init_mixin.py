@@ -153,6 +153,58 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("SelfCallbackWorker init failed", exc_info=True)
 
+            # K72 — wellbeing-concern worker (rare, hard-gated "you doing
+            # okay?"). Reads recent message timestamps + text + the H3
+            # mood-drift ring. Watermark-gated cue-producer, long cooldown.
+            try:
+                from app.core.proactive.wellbeing_concern_worker import (
+                    WellbeingConcernWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._wellbeing_concern_worker = WellbeingConcernWorker(
+                    chat_db=self._chat_db,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "wellbeing_concern_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=getattr(
+                        agent,
+                        "wellbeing_concern_check_interval_seconds",
+                        21600,
+                    ),
+                    cooldown_days=getattr(
+                        agent, "wellbeing_concern_cooldown_days", 7.0
+                    ),
+                    window_days=getattr(
+                        mem, "wellbeing_concern_window_days", 7
+                    ),
+                    late_night_min=getattr(
+                        mem, "wellbeing_concern_late_night_min", 3
+                    ),
+                    neglect_min_days=getattr(
+                        mem, "wellbeing_concern_neglect_min_days", 2
+                    ),
+                    rough_run=getattr(
+                        mem, "wellbeing_concern_rough_run", 5
+                    ),
+                    rough_threshold=getattr(
+                        mem, "wellbeing_concern_rough_threshold", -0.25
+                    ),
+                    journal_max=getattr(
+                        mem, "wellbeing_concern_journal_max", 4
+                    ),
+                )
+                self._idle_scheduler.register(self._wellbeing_concern_worker)
+            except Exception:
+                log.warning(
+                    "WellbeingConcernWorker init failed", exc_info=True,
+                )
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local

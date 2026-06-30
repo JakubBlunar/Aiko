@@ -1471,6 +1471,82 @@ class InnerLifePart2Mixin:
         )
         return line
 
+    def _render_wellbeing_concern_block(self) -> str:
+        """K72: surface one rare, gentle "you doing okay?" concern cue.
+
+        Consumer side of the :class:`WellbeingConcernWorker` producer. The
+        worker reads multi-day behavioral signal (small-hours activity,
+        explicit "haven't slept / eaten" mentions, a heavy H3 low stretch)
+        and, only when a real worrying pattern clears a high bar + a long
+        cooldown, drafts one finding into ``aiko.wellbeing_concern``. This
+        provider folds the newest unseen finding into the prompt as one
+        optional, private cue Aiko phrases herself -- offered as care, one
+        soft check-in, dropped the instant he deflects. NEVER spoken
+        verbatim.
+
+        Watermark-only (``wellbeing_concern.last_surfaced_at``),
+        independent of the gap-return cue family. MCP debug:
+        ``force_wellbeing_concern_surface`` arms
+        ``_wellbeing_concern_force_next`` (ring must be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "wellbeing_concern_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_wellbeing_concern_force_next", False)
+        )
+        if force_next:
+            self._wellbeing_concern_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.relationship import wellbeing_concern as _wc
+        except Exception:
+            log.debug("wellbeing_concern import failed", exc_info=True)
+            return ""
+
+        ring = _wc.load_findings(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        kind = str(newest.get("kind") or "").strip()
+        if not kind:
+            return ""
+
+        watermark_key = "wellbeing_concern.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                return ""
+
+        line = _wc.render_inner_life_block(
+            kind,
+            user_display_name=self.user_display_name,
+            detail=str(newest.get("detail") or ""),
+        )
+        if not line:
+            return ""
+
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug(
+                "wellbeing_concern watermark write failed", exc_info=True,
+            )
+
+        log.info("wellbeing-concern fire: at=%s kind=%s", at, kind)
+        return line
+
     def _render_upcoming_horizon_block(self) -> str:
         """K-time3: surface a "coming up" heads-up with pre-resolved times.
 

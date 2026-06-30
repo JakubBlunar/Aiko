@@ -673,6 +673,7 @@ class SpeakingWorkersInitMixin:
             follow_up=self._render_follow_up_block,
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
+            wellbeing_concern=self._render_wellbeing_concern_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
             mood_shell=self._render_mood_shell_block,
             intimacy_pacing=self._render_intimacy_pacing_block,
