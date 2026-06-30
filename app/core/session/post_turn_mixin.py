@@ -497,7 +497,45 @@ class PostTurnMixin(PostTurnHelpersMixin):
                         )
                     ),
                 )
-                if signal is not None:
+                # K46: shield the calibration write from a mild pushback
+                # that lands right after Aiko stated a taste. A taste
+                # disagreement ("really? you don't like horror?") must
+                # not teach K20 that her *facts* are suspect — so we drop
+                # the apply entirely on that turn. A strong correction is
+                # not the mild band and still flows through. Same gate as
+                # the K46 cue, so the read + write never disagree.
+                shielded = False
+                if signal is not None and bool(
+                    getattr(
+                        self._settings.agent,
+                        "stance_persistence_enabled",
+                        True,
+                    )
+                ):
+                    try:
+                        from app.core.conversation import stance_persistence
+
+                        recent_window = int(
+                            getattr(self, "_stance_recent_window", 0) or 0
+                        )
+                        verdict = stance_persistence.evaluate(
+                            recent_stance=recent_window > 0,
+                            pushback_band=signal.kind,
+                        )
+                        shielded = verdict.hold
+                    except Exception:
+                        log.debug(
+                            "stance-persistence shield raised", exc_info=True
+                        )
+                        shielded = False
+                    if shielded:
+                        log.info(
+                            "stance-persistence: shielded calibration "
+                            "from taste pushback (band=%s window=%d)",
+                            signal.kind,
+                            recent_window,
+                        )
+                if signal is not None and not shielded:
                     now_cal = datetime.now(timezone.utc)
                     state = calibration_store.get(self._user_id)
                     # Decay before applying so the delta lands on a
@@ -553,6 +591,53 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     calibration_store.upsert(self._user_id, state)
             except Exception:
                 log.debug("calibration detector raised", exc_info=True)
+
+        # K46: arm / decrement the warm-stance window. When a K29 cue
+        # actually fired this turn (Aiko stated a taste) re-arm to the
+        # configured width and stash the stance snippet for the cue;
+        # otherwise tick it down by one. Runs every turn so the window
+        # always ages even on quiet / proactive turns. Best-effort.
+        try:
+            if bool(
+                getattr(
+                    self._settings.agent,
+                    "stance_persistence_enabled",
+                    True,
+                )
+            ):
+                cue_emitted = bool(
+                    getattr(self, "_opinion_injection_cue_emitted", False)
+                )
+                if cue_emitted:
+                    width = max(
+                        0,
+                        int(
+                            getattr(
+                                self._memory_settings,
+                                "stance_persistence_window",
+                                3,
+                            )
+                        ),
+                    )
+                    self._stance_recent_window = width
+                    last = getattr(self, "_last_opinion_injection", None)
+                    self._stance_recent_text = str(
+                        getattr(last, "stance_text", "") or ""
+                    )
+                else:
+                    self._stance_recent_window = max(
+                        0,
+                        int(getattr(self, "_stance_recent_window", 0) or 0) - 1,
+                    )
+                    if self._stance_recent_window == 0:
+                        self._stance_recent_text = ""
+                # One-shot: consume the per-turn flag so a later turn that
+                # doesn't run the K29 provider can't re-arm off a stale True.
+                self._opinion_injection_cue_emitted = False
+        except Exception:
+            log.debug(
+                "stance-persistence window bookkeeping raised", exc_info=True
+            )
 
         # Carry the just-emitted assistant vec forward so the next
         # turn's K20 detector can read it as the "claim Jacob is

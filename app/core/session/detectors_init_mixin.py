@@ -99,6 +99,21 @@ class DetectorsInitMixin:
         # arms ``_pending_cue`` (the rendered block) for the NEXT turn.
         self._opinion_injection_pending_borderline: dict[str, Any] | None = None
         self._opinion_injection_pending_cue: str | None = None
+        # ``_opinion_injection_cue_emitted`` is a per-turn flag set by the
+        # K29 provider whenever it actually returns a cue (inline definite
+        # or deferred pending). The K46 post-turn hook reads it to arm the
+        # stance-persistence window. Reset at the top of the K29 provider.
+        self._opinion_injection_cue_emitted: bool = False
+        # K46 — stance persistence. ``_stance_recent_window`` counts down
+        # the turns during which a just-stated taste stays "warm" (armed
+        # post-turn when a K29 cue fired, decremented once per turn);
+        # ``_stance_recent_text`` is the stance snippet for the cue;
+        # ``_last_stance_persistence`` / ``_stance_persistence_force_next``
+        # back the MCP debug tools.
+        self._stance_recent_window: int = 0
+        self._stance_recent_text: str = ""
+        self._stance_persistence_force_next: bool = False
+        self._last_stance_persistence: dict[str, Any] | None = None
         # K28 — "What I've been turning over" between-session cue.
         # ``_pending_turning_over_seconds`` is armed by the post-turn
         # engagement tracker when a typed turn lands after a gap of

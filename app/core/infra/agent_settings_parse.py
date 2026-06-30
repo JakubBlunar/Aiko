@@ -1413,6 +1413,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             opinion_injection_require_definite=bool(
                 agent_raw.get("opinion_injection_require_definite", False),
             ),
+            stance_persistence_enabled=bool(
+                agent_raw.get("stance_persistence_enabled", True),
+            ),
             turning_over_enabled=bool(
                 agent_raw.get("turning_over_enabled", True),
             ),

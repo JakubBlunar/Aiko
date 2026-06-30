@@ -2017,6 +2017,7 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
     _OI_AGENT_KEYS = (
         "opinion_injection_enabled",
         "opinion_injection_require_definite",
+        "stance_persistence_enabled",  # K46
     )
     _OI_MEMORY_KEYS = (
         "opinion_injection_min_cosine",
@@ -2025,6 +2026,7 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
         "opinion_injection_per_session_cap",
         "opinion_injection_per_hour_cap",
         "opinion_injection_per_day_cap",
+        "stance_persistence_window",  # K46
     )
 
     def setUp(self) -> None:
@@ -2075,12 +2077,16 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.opinion_injection_per_session_cap, 3)
         self.assertEqual(result.memory.opinion_injection_per_hour_cap, 6)
         self.assertEqual(result.memory.opinion_injection_per_day_cap, 30)
+        # K46 stance persistence.
+        self.assertTrue(result.agent.stance_persistence_enabled)
+        self.assertEqual(result.memory.stance_persistence_window, 3)
 
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(
             agent_extra={
                 "opinion_injection_enabled": False,
                 "opinion_injection_require_definite": True,
+                "stance_persistence_enabled": False,
             },
             memory_extra={
                 "opinion_injection_min_cosine": 0.70,
@@ -2089,11 +2095,14 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
                 "opinion_injection_per_session_cap": 1,
                 "opinion_injection_per_hour_cap": 12,
                 "opinion_injection_per_day_cap": 50,
+                "stance_persistence_window": 5,
             },
         )
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.opinion_injection_enabled)
         self.assertTrue(result.agent.opinion_injection_require_definite)
+        self.assertFalse(result.agent.stance_persistence_enabled)
+        self.assertEqual(result.memory.stance_persistence_window, 5)
         self.assertAlmostEqual(
             result.memory.opinion_injection_min_cosine, 0.70,
         )
@@ -2132,6 +2141,7 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
                 "opinion_injection_per_session_cap": -1,
                 "opinion_injection_per_hour_cap": -5,
                 "opinion_injection_per_day_cap": -50,
+                "stance_persistence_window": -2,
             },
         )
         result = load_settings(config_path=path)
@@ -2140,6 +2150,7 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.opinion_injection_per_session_cap, 0)
         self.assertEqual(result.memory.opinion_injection_per_hour_cap, 0)
         self.assertEqual(result.memory.opinion_injection_per_day_cap, 0)
+        self.assertEqual(result.memory.stance_persistence_window, 0)
 
 
 class TurningOverSettingsTests(unittest.TestCase):

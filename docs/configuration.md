@@ -54,6 +54,7 @@ exists to keep them in lock-step.
 | Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
 | Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
+| Don't cave on taste pushback (K46 stance persistence) | `agent.stance_persistence_enabled` | `true` |
 | Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Cue-register rotation (K51 de-"Heads-up") | `agent.cue_register_rotation_enabled` | `true` |
@@ -698,6 +699,15 @@ Settings:
 - `memory.opinion_injection_per_hour_cap` *(int, `6`, min `0`)* and `memory.opinion_injection_per_day_cap` *(int, `30`, min `0`)* — LLM-gate budgets for the borderline path. Independent from F5's conflict-detector budget (different `state_key`). Setting either to `0` disables the LLM gate (effectively `require_definite=true`).
 
 Verification: enable INFO logging on `app.session` and watch for `opinion-injection fire: trigger=… cosine=… stance_id=… heuristic=… signals=… llm_verdict=… cooldown_set=… session_count=…` on every fire. The MCP tools `get_opinion_injection_state()` and `force_opinion_injection()` cover end-to-end repro without waiting for an organic trigger; the `get_opinion_injection_state` payload includes the rate-limiter snapshot, the last-fire diagnostics, and the live settings snapshot so the tuning loop is "tweak `user.json`, restart, call the tool, see how the rendered cue would change". Tests: `tests/test_opinion_injection_detector.py`, `tests/test_opinion_injection_provider.py`, `OpinionInjectionProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
+
+### K46 — stance persistence (don't cave on taste pushback)
+
+Rides on top of K29 + K20 to draw the **taste vs facts** line. After Aiko states a taste (a K29 cue fired), a *mild* pushback from the user ("really?", "you don't like that?") should NOT make her hedge or flip — that's the chatbot-agreeability tell. K46 surfaces a one-line "hold your take" cue AND shields the K20 calibration from a factual-trust hit on that turn (a taste disagreement must not teach Aiko her *facts* are suspect). A *strong* correction ("no, that's wrong", "let me check") is left to K20 untouched — it's a factual signal even mid-taste-talk.
+
+- `agent.stance_persistence_enabled` *(bool, `true`)* — master switch. Off → neither the cue nor the calibration shield run.
+- `memory.stance_persistence_window` *(int, `3`, min `0`)* — how many turns a just-stated taste stays "warm". The window is armed (post-turn) whenever a K29 cue fires and decremented once per turn; while it's `> 0` a mild pushback is read as taste disagreement. `0` effectively disables the feature (window can never be positive).
+
+Verification: enable INFO logging on `app.session` and watch for `stance-persistence fire: band=… window=… forced=…` (cue) and `stance-persistence: shielded calibration from taste pushback (band=… window=…)` (write shield). MCP `get_stance_persistence_state()` dumps the switch, the window setting, the live countdown + stance snippet, and the last-fire diagnostic; `force_stance_persistence()` arms a one-shot bypass on the window (a mild-pushback band is still required). Tests: `tests/test_stance_persistence.py`, `StancePersistenceProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
 
 ### K-time1 — wall-clock prefixes on chat history
 
