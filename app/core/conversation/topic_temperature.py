@@ -32,6 +32,18 @@ from dataclasses import dataclass
 from typing import Sequence
 
 
+# H8 — kv_meta key for the per-cluster "mood origin" side-table. Namespaced
+# under ``aiko.*`` like the other backlog state. Maps ``str(cluster_id)`` ->
+# ``{pole, what, when, moment_id, stamped_at}`` so the provider can name the
+# moment that *gave* a topic its feel ("ever since you told me about X").
+# Exported so the provider + MCP debug tool share the exact string.
+KV_MOOD_ORIGIN = "aiko.topic_mood_origin"
+
+# Cap on the stored origin summary so a runaway moment ``what`` can't bloat
+# the kv blob or the prompt clause.
+ORIGIN_WHAT_MAXLEN = 160
+
+
 # Per-vibe contribution to each pole. A vibe lands in exactly one pole
 # (or neither). Weights are hand-tuned: milestone/victory read as the
 # warmest, vulnerable/repair as the most "tread carefully".
@@ -116,29 +128,91 @@ def score_cluster(
     )
 
 
+@dataclass(slots=True, frozen=True)
+class MomentCandidate:
+    """One shared-moment member of a cluster, for origin selection (H8)."""
+
+    moment_id: int
+    vibe: str
+    what: str
+    when: str
+    created_at: str
+
+
+def pick_origin(
+    candidates: Sequence[MomentCandidate], dominant: str,
+) -> MomentCandidate | None:
+    """Pick the shared moment that best *explains* a cluster's pole (H8).
+
+    Among the candidates whose vibe contributes to the ``dominant`` pole,
+    return the strongest one (highest pole weight), tie-broken by the most
+    recent ``created_at`` — that's "what made this topic warm / tender".
+    Returns ``None`` when no candidate carries a vibe in the pole.
+    """
+    weights = _TENDER_WEIGHTS if dominant == "tender" else _WARM_WEIGHTS
+    scored: list[tuple[float, str, MomentCandidate]] = []
+    for cand in candidates:
+        w = weights.get(str(cand.vibe or "").strip().lower(), 0.0)
+        if w > 0:
+            scored.append((w, str(cand.created_at or ""), cand))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return scored[0][2]
+
+
+def _origin_clause(dominant: str, origin_what: str) -> str:
+    """Append clause naming where a topic's feel comes from (H8)."""
+    what = (origin_what or "").strip()
+    if len(what) > ORIGIN_WHAT_MAXLEN:
+        what = what[: ORIGIN_WHAT_MAXLEN - 1].rstrip() + "…"
+    if not what:
+        return ""
+    if dominant == "tender":
+        return (
+            f' It\'s felt this way ever since: "{what}". You can name that '
+            "origin once, gently, if the moment opens for it — never as a "
+            "rehearsed line."
+        )
+    return (
+        f' The warmth traces back to: "{what}". You can let that show, and '
+        "name where it comes from once if it fits naturally."
+    )
+
+
 def render_block(
-    temp: ClusterTemperature, label: str, user_display_name: str,
+    temp: ClusterTemperature,
+    label: str,
+    user_display_name: str,
+    *,
+    origin_what: str | None = None,
 ) -> str:
     """Render the one-line tonal cue, or ``""`` when not charged.
 
     Mirrors the terse relationship-axes block: a single private
     Heads-up line, never a numeric dashboard. Aiko phrases the actual
     delivery herself; this only sets the register.
+
+    H8: when ``origin_what`` is supplied (the summary of the shared moment
+    that gave this topic its feel), an "ever since…" clause is appended so
+    Aiko can name the *origin* of the mood, not just the mood.
     """
     name = (user_display_name or "them").strip() or "them"
     topic = (label or "this topic").strip() or "this topic"
     if temp.dominant == "tender":
-        return (
+        base = (
             f'Heads-up: "{topic}" is tender ground with {name} — you\'ve had '
             "vulnerable or patched-up moments here. Meet it gently; don't "
             "open with a joke or a breezy take."
         )
+        return base + _origin_clause("tender", origin_what or "")
     if temp.dominant == "warm":
-        return (
+        base = (
             f'Heads-up: "{topic}" is a warm spot for you and {name} — good '
             "moments live here. Let a little of that fondness colour how you "
             "pick it up."
         )
+        return base + _origin_clause("warm", origin_what or "")
     return ""
 
 
@@ -154,4 +228,12 @@ def _saturate(value: float, saturation: float) -> float:
     return 1.0 - math.exp(-value / saturation)
 
 
-__all__ = ["ClusterTemperature", "score_cluster", "render_block"]
+__all__ = [
+    "ClusterTemperature",
+    "MomentCandidate",
+    "score_cluster",
+    "render_block",
+    "pick_origin",
+    "KV_MOOD_ORIGIN",
+    "ORIGIN_WHAT_MAXLEN",
+]

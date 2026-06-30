@@ -261,6 +261,12 @@ class AgentSettings:
     # → the provider stays empty. Computed live from shared-moment vibes
     # (no worker); thresholds / cooldown live under MemorySettings.
     topic_temperature_enabled: bool = True
+    # H8: master switch for "topic mood origin" — when a cluster first reads
+    # warm / tender (F10h), stamp the shared moment that gave it that feel so
+    # Aiko can name the origin ("ever since you told me about X") instead of
+    # just the feeling. Rides on top of topic_temperature; off → no origin
+    # clause is ever appended (the bare warm / tender cue still fires).
+    topic_mood_origin_enabled: bool = True
     # F10i: master switch for the per-topic confidence self-model. When on,
     # a turn that lands on a *thin* topic cluster nudges Aiko to admit she
     # doesn't know much yet (rather than bluff), and a *rich* one nudges her

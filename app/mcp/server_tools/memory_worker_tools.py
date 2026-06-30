@@ -1691,6 +1691,13 @@ def register(mcp, session: "SessionController") -> None:
                 getattr(session, "_topic_temperature_cooldown", 0) or 0
             ),
             "last_fire": getattr(session, "_topic_temperature_last", None),
+            "mood_origin_enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "topic_mood_origin_enabled",
+                    True,
+                )
+            ),
         }
         mem = getattr(session, "_memory_settings", None)
         out["settings"] = {
@@ -1702,6 +1709,15 @@ def register(mcp, session: "SessionController") -> None:
                 getattr(mem, "topic_temperature_cooldown_turns", 6)
             ),
         }
+        # H8: surface the per-cluster mood-origin side-table.
+        try:
+            from app.core.conversation.topic_temperature import KV_MOOD_ORIGIN
+
+            chat_db = getattr(session, "_chat_db", None)
+            raw = chat_db.kv_get(KV_MOOD_ORIGIN) if chat_db else None
+            out["mood_origins"] = json.loads(raw) if raw else {}
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["mood_origins_error"] = str(exc)
         graph = getattr(session, "_topic_graph", None)
         store = getattr(session, "_memory_store", None)
         if graph is not None and store is not None:
@@ -1778,6 +1794,35 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"force_topic_temperature_surface raised: {exc}"
+
+    @mcp.tool()
+    def clear_topic_mood_origins() -> str:
+        """H8 — wipe the per-cluster mood-origin side-table.
+
+        Clears ``aiko.topic_mood_origin`` so the next time each charged
+        cluster surfaces it re-stamps its origin moment from scratch. Use
+        to re-test the stamping path end-to-end after editing shared
+        moments. Does not touch the temperature scoring itself.
+        """
+        try:
+            from app.core.conversation.topic_temperature import KV_MOOD_ORIGIN
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"cleared": False, "reason": "no chat_db"})
+            before = chat_db.kv_get(KV_MOOD_ORIGIN)
+            count = 0
+            if before:
+                try:
+                    count = len(json.loads(before) or {})
+                except Exception:
+                    count = 0
+            chat_db.kv_set(KV_MOOD_ORIGIN, "{}")
+            return json.dumps(
+                {"cleared": True, "origins_removed": count}, indent=2
+            )
+        except Exception as exc:
+            return f"clear_topic_mood_origins raised: {exc}"
 
     @mcp.tool()
     def get_topic_confidence_state() -> str:

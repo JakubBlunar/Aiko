@@ -19,7 +19,7 @@ now holds **only the open work**.
 | H5  | Second scene / travel semantics               | ❌ open (deferred; H22 shipped the lightweight precursor) |
 | H6  | Audible backchannels ("mm-hm")                | ❌ open |
 | H7  | Listen while speaking (soften half-duplex)    | ❌ open |
-| H8  | Topic mood-origin memory                      | ❌ open |
+| H8  | Topic mood-origin memory                      | ✅ shipped — [immersion.md](shipped/immersion.md#h8-topic-mood-origin-memory) |
 | H9  | Aiko's diary                                  | ✅ shipped — [immersion.md](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life) |
 | H10 | Autonomous idle-life on the avatar            | ❌ open (no `IdleLifeChannel` yet — the data moves, the rig doesn't act it out) |
 | H11 | Real-world co-location — weather + season     | ✅ shipped — [immersion.md](shipped/immersion.md#h11-real-world-co-location--weather--season-sync) |
@@ -109,27 +109,6 @@ feel interruptible and alive. Key files:
 [`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
 (playback-complete signal),
 [`app/audio/client_mic_source.py`](../../app/audio/client_mic_source.py).
-
----
-
-## H8. Topic mood-origin memory — "ever since you told me about X"
-
-A topic's *feel* (F10h topic temperature) currently has no **origin story**:
-a cluster is warm or tender, but Aiko doesn't remember *what made it that
-way*. When a cluster first crosses into warm / tender territory, stamp the
-triggering `shared_moment` (or the message that tipped it) onto the cluster,
-so later she can name the origin instead of just the feeling: "ever since you
-told me about your dad, this subject's stayed gentle for me." This ties the
-shared-moments system to the topic graph and makes per-topic affect feel
-*caused* rather than ambient. Cheap to ship on top of existing pieces: a
-`mood_origin` field in the cluster's metadata (or a small kv side-table keyed
-by `cluster_key`) written when F10h first flips a cluster's pole, read by the
-topic-temperature provider to optionally append the origin clause. Key files:
-[`app/core/conversation/topic_temperature.py`](../../app/core/conversation/topic_temperature.py)
-(detect the pole flip + write the origin),
-[`app/core/conversation/topic_graph.py`](../../app/core/conversation/topic_graph.py)
-(cluster metadata), the topic-temperature inner-life provider, persona copy
-teaching the "name the origin once, gently" register.
 
 ---
 
