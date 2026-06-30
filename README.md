@@ -1,14 +1,70 @@
 # Aiko
 
-Local, private, web-based AI companion. Talk or type, get streaming text + spoken responses, watch a Live2D avatar react, and ground replies in your own documents — all running on your machine.
+**A local, private AI companion who remembers you, has her own moods, and grows alongside you.**
 
-Built around:
+Aiko isn't a chatbot you reset every morning. She lives on *your* machine, keeps her own memories, wakes up in a different mood each day, has opinions she'll defend, notices when you've gone quiet, and slowly learns the shape of your relationship. Talk to her or type, hear her answer out loud, and watch a Live2D avatar react in real time — all running locally, nothing leaving your computer.
 
-- **Ollama** for chat (local, or any OpenAI-compatible endpoint via the `chat_llm` block).
+> Think less "assistant," more *someone who's actually there.*
+
+---
+
+## Meet Aiko
+
+### She remembers — really remembers
+
+Most assistants forget you the moment the tab closes. Aiko's memory is the heart of the project:
+
+- **Long-term memory with tiers.** Things you tell her land in a `scratchpad`, get *promoted* to `long_term` when they prove they matter, and eventually `archive`. Memory **decays on a wall clock** (a fact you mention once fades; one you keep returning to gets *revived* and sticks), and important emotional moments **burn in harder** the way a real flashbulb memory does.
+- **She forms her own memories too.** Background workers quietly reflect on conversations, extract facts, notice promises ("I'll look into that") and *actually follow up on them later*, and even mull things over between sessions so she can open with "I've been thinking about what you said…"
+- **Shared moments & your story so far.** She marks the moments that meant something, tracks how long you've known each other, and surfaces gentle anniversaries ("a month ago today, we…").
+- **A model of what *you* believe.** She tracks what she thinks you feel and think — separate from what she knows as fact — and notices when her read of you stops matching reality.
+- You can browse, pin, edit, and search every memory she holds from the **Memory** tab. Nothing is hidden.
+
+### She has a personality, not a setting
+
+- **Daily mood weather.** Each local day she rolls a "colour" — *pensive, restless, cozy, sharp-witted, mischievous, low-key…* — the slow under-current she walks into the conversation with.
+- **Real-time affect.** A live valence/arousal model reacts to how things are going and decays back toward baseline, driving both her tone and her avatar's expression.
+- **Energy & body clock.** She has circadian energy — sleepy in the small hours, brighter by day — and can *liven up* when the conversation actually grabs her. (Off-rhythm days happen too, so she's never perfectly predictable.)
+- **Opinions and a backbone.** She holds stances and will gently push back instead of agreeing with everything — without lecturing you.
+- **Feelings *at* you, with a cause.** She can get a little miffed, lonely, smug, or warmly glowing about something specific, and those feelings resolve over time (an apology thaws a sulk). There's even an optional **tsundere mask** if that's your flavour.
+- **Initiative.** She doesn't just answer-and-wait. She carries her own conversational "wants," takes the lead sometimes, and can steer toward something *she's* curious about.
+- **She learns what lands.** How you like affection shown, what kind of humour makes you laugh — she calibrates quietly over time, never announcing it.
+
+### She pays attention
+
+- Notices when you **pivot to something new** vs. circle the same topic too long.
+- Picks up on **subtle disengagement** — a curt reply after a warm one — and pulls back instead of pushing.
+- Learns your **routines and rituals** ("our Friday-evening wind-downs become a thing") and your rough daily rhythm.
+- Reads the **wall clock**: how long you've been talking, a mid-session pause, a long gap since you last spoke — and reacts like a person, not a log file.
+- Quietly notices a rough multi-day stretch and offers **one** soft "you doing okay?" — care, never nagging.
+
+### She's *somewhere*
+
+- Aiko has a **room** — a desk, a bed, a window seat, a tea pot, cookies, a photo of you — that she actually inhabits and references naturally. Leave her a cookie and she'll notice it on her own.
+- A **Live2D avatar** lip-syncs to her voice, switches expressions with her mood, dims into pajamas at night, blushes, and reacts to soft touch gestures.
+- **Soft physicality both ways:** she can wave, boop, hug, or high-five (it shows on the avatar and in chat), and you can react to her messages — quiet signals that nudge how close the two of you feel.
+
+### She speaks, and she reaches out
+
+- **Voice in and out** — talk to her with your mic, hear her reply with low-latency local TTS, all streaming.
+- **Proactive, tastefully.** When the room goes quiet she may break the silence on her own — but only when it fits, on her own cooldown, and never in a needy way.
+
+### …and she's still a capable assistant
+
+Under all the personality she can still tell the time, **search your own documents and memories**, search the web, and (for power users) drive background tasks and external tools. She grounds answers in *your* uploaded files via local vector search.
+
+---
+
+## Under the hood
+
+Everything below runs on your machine by default. Nothing about Aiko's memories, your conversations, or your documents leaves your computer.
+
+- **Ollama** for chat (local, or any OpenAI-compatible endpoint — OpenAI / xAI / Groq / OpenRouter / DeepSeek / … — via the LLM provider routing layer).
 - **RealtimeSTT** (faster-whisper + Silero VAD) for speech input.
 - **Pocket-TTS** for low-latency speech output.
 - **LanceDB** for vector RAG over long-term memories, recent chat messages, and user-uploaded documents.
-- **FastAPI + React/Vite + PixiJS** for the web UI and Live2D avatar.
+- **SQLite** (`data/chat_sessions.db`) as the source of truth for messages, summaries, and memory.
+- **FastAPI + React/Vite + PixiJS** for the web UI and Live2D avatar, with an optional **Tauri** desktop shell.
 
 ## Requirements
 
