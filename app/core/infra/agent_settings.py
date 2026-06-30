@@ -1420,6 +1420,25 @@ class AgentSettings:
     # Idle-worker decay cadence (seconds). Default 6h.
     affection_style_decay_interval_seconds: int = 21600
 
+    # ── K74: humor-style calibration ──────────────────────────────────
+    # Learn which KIND of funny (pun / deadpan / absurdist /
+    # self-deprecating / playful-roast) lands for this user. Mirrors J11
+    # exactly: passive engagement (K14) attributed to the humor kind Aiko
+    # used last turn, K32 laugh/eyeroll reactions as a sparse confirmation
+    # booster, floored weights, slow decay toward uniform. NOT rendered as
+    # a standalone block — the learned top register only flavours the
+    # *existing* K48 tease-rhythm cue (when humour is already in play).
+    humor_style_enabled: bool = True
+    humor_style_learning_rate: float = 0.04
+    humor_style_reaction_weight: float = 0.06
+    humor_style_floor: float = 0.05
+    humor_style_decay_half_life_days: float = 30.0
+    # Top register must sit this many × the uniform share before the
+    # register hint rides the tease cue (a genuinely emerged preference).
+    humor_style_hint_min_rel: float = 1.25
+    # Idle-worker decay cadence (seconds). Default 6h.
+    humor_style_decay_interval_seconds: int = 21600
+
     # ── J12: intimacy pacing & boundary calibration ───────────────────
     # The consent dial. A float in [0, 1] (reserved <-> warm <->
     # affectionate) that HARD-CAPS forwardness regardless of stage or
@@ -1950,6 +1969,30 @@ class AgentSettings:
     # a growth observation lands as genuine insight, not flattery on a
     # loop. A *different* finding still has to clear the signature gate.
     growth_witness_cooldown_days: float = 14.0
+
+    # ── K71: self-callback (her own continuity over time) ─────────────
+    # Master switch for the symmetric self-side of K63. When ON, a slow
+    # idle worker mines Aiko's own aged ``self`` / ``reflection`` memories
+    # for a past feeling / stated intention worth revisiting and drafts
+    # one private cue into ``aiko.self_callback``; the provider surfaces
+    # it on a later turn so Aiko closes the loop in her own words ("a
+    # while back I told you I'd been restless -- that's eased now"). The
+    # resolution read is left to the model. Cadence + cooldown below;
+    # age floor on ``MemorySettings.self_callback_min_age_days``. Off →
+    # the provider stays empty.
+    self_callback_enabled: bool = True
+    # How often the worker checks during quiet windows (default 6h;
+    # clamped to >= 60s).
+    self_callback_check_interval_seconds: int = 21600
+    # Wall-clock cooldown between drafted cues (per-memory signature
+    # de-dup is structural, so this just paces *how often* she circles
+    # back on herself at all).
+    self_callback_cooldown_days: float = 10.0
+    # Use the worker model to select + classify the candidate (more robust
+    # than the regex feeling/intention prefilter; rejects biographical
+    # facts the regex false-positives). Falls back to the pure heuristic
+    # when off or no worker client. ~monthly cadence -> negligible cost.
+    self_callback_llm_enabled: bool = True
 
     # ── K43: promise follow-through ───────────────────────────────────
     # Master switch for the promise lifecycle + follow-through cue. When

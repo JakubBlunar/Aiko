@@ -492,6 +492,21 @@ class PostTurnHelpersMixin:
         except Exception:
             return 0.0
 
+    def _read_encoding_affect(self) -> tuple[float, float]:
+        """K76 flashbulb hook: live ``(arousal, episode_intensity)``.
+
+        Called by ``MemoryStore.add`` at memory-write time (on whatever
+        thread is writing) to boost a new row's salience by its emotional
+        charge. Both reads are best-effort — a neutral fallback
+        ``(0.4, 0.0)`` yields zero charge / zero boost (legacy behaviour).
+        """
+        arousal = 0.4
+        try:
+            arousal = float(self._affect_store.get(self._user_id).arousal)
+        except Exception:
+            arousal = 0.4
+        return arousal, self._peak_emotion_intensity()
+
     def _apply_vitality_turn(self, raw_assistant_text: str) -> None:
         """K68: apply this turn's energy spend + interest boost, then broadcast.
 

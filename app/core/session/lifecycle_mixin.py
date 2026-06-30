@@ -196,6 +196,8 @@ class LifecycleMixin:
         # K70 growth-witness: clear the MCP force-next flag on switch
         # (ring + watermark live in kv_meta, not per-session).
         self._growth_witness_force_next = False
+        # K71 self-callback: clear the MCP force-next flag on switch.
+        self._self_callback_force_next = False
         # K38 — wipe the self-correction slot + cooldown on switch.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0
@@ -316,6 +318,8 @@ class LifecycleMixin:
         self._follow_up_force_next = False
         # K70 growth-witness: clear the MCP force-next flag on a full wipe.
         self._growth_witness_force_next = False
+        # K71 self-callback: clear the MCP force-next flag on a full wipe.
+        self._self_callback_force_next = False
         # K38 — clear the self-correction slot + cooldown on a wipe.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0

@@ -423,6 +423,19 @@ class MemoryStore:
         # a new memory never triggers a full re-cluster. Fired outside
         # the store lock (same discipline as delete listeners).
         self._added_listeners: list[Any] = []
+        # K76 flashbulb encoding — optional affect hook. ``_flashbulb_
+        # provider`` returns the live ``(arousal, episode_intensity)`` at
+        # write time; when enabled, ``add`` boosts a new row's salience by
+        # the emotional charge. Off by default; wired by SessionController
+        # via ``set_flashbulb``. Reading affect is the caller's concern, so
+        # MemoryStore stays decoupled from AffectState / K57.
+        self._flashbulb_provider: Any = None
+        self._flashbulb_enabled = False
+        self._flashbulb_max_boost = 0.35
+        self._flashbulb_arousal_weight = 0.6
+        self._flashbulb_episode_weight = 0.7
+        self._flashbulb_arousal_neutral = 0.4
+        self._flashbulb_min_charge = 0.05
         self._reload_mirror()
 
     def add_delete_listener(self, callback: Any) -> None:
@@ -435,6 +448,33 @@ class MemoryStore:
             self._delete_listeners.remove(callback)
         except ValueError:
             pass
+
+    def set_flashbulb(
+        self,
+        provider: Any,
+        *,
+        enabled: bool = True,
+        max_boost: float = 0.35,
+        arousal_weight: float = 0.6,
+        episode_weight: float = 0.7,
+        arousal_neutral: float = 0.4,
+        min_charge: float = 0.05,
+    ) -> None:
+        """Wire K76 flashbulb encoding.
+
+        ``provider()`` must return ``(arousal, episode_intensity)`` floats
+        (the live affect at write time). When ``enabled``, every non-pinned
+        ``add`` boosts the new row's salience by the emotional charge and
+        stamps ``metadata.affect_at_encoding``. Pass ``enabled=False`` to
+        disable without dropping the provider.
+        """
+        self._flashbulb_provider = provider
+        self._flashbulb_enabled = bool(enabled)
+        self._flashbulb_max_boost = float(max_boost)
+        self._flashbulb_arousal_weight = float(arousal_weight)
+        self._flashbulb_episode_weight = float(episode_weight)
+        self._flashbulb_arousal_neutral = float(arousal_neutral)
+        self._flashbulb_min_charge = float(min_charge)
 
     def add_memory_listener(self, callback: Any) -> None:
         """Register ``callback(memory: Memory)`` invoked after a new insert."""
@@ -681,6 +721,42 @@ class MemoryStore:
         if kind not in VALID_KINDS:
             kind = "fact"
         salience_clipped = max(0.0, min(1.0, float(salience)))
+        # K76 flashbulb encoding: boost salience by the live emotional
+        # charge at write time. Best-effort — a broken provider must never
+        # break a memory write. Pinned rows are skipped (already special).
+        if (
+            self._flashbulb_enabled
+            and self._flashbulb_provider is not None
+            and not pinned
+        ):
+            try:
+                from app.core.memory import flashbulb as _fb
+
+                arousal, episode_intensity = self._flashbulb_provider()
+                result = _fb.apply_flashbulb(
+                    salience_clipped,
+                    arousal=float(arousal),
+                    episode_intensity=float(episode_intensity),
+                    max_boost=self._flashbulb_max_boost,
+                    arousal_weight=self._flashbulb_arousal_weight,
+                    episode_weight=self._flashbulb_episode_weight,
+                    arousal_neutral=self._flashbulb_arousal_neutral,
+                )
+                salience_clipped = result.salience
+                if result.charge >= self._flashbulb_min_charge:
+                    metadata = {
+                        **(metadata or {}),
+                        "affect_at_encoding": {
+                            "arousal": round(float(arousal), 3),
+                            "episode_intensity": round(
+                                float(episode_intensity), 3
+                            ),
+                            "charge": round(result.charge, 3),
+                            "boost": round(result.boost, 3),
+                        },
+                    }
+            except Exception:
+                log.debug("flashbulb salience hook failed", exc_info=True)
         emb = np.asarray(embedding, dtype=np.float32)
         if emb.size == 0:
             return None

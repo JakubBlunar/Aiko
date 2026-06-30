@@ -101,6 +101,58 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("GrowthWitnessWorker init failed", exc_info=True)
 
+            # K71 — self-callback worker (rare "close the loop on my own
+            # past"). Mines Aiko's aged self / reflection memories.
+            try:
+                from app.core.proactive.self_callback_worker import (
+                    SelfCallbackWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._self_callback_worker = SelfCallbackWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "self_callback_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=getattr(
+                        agent, "self_callback_check_interval_seconds", 21600
+                    ),
+                    cooldown_days=getattr(
+                        agent, "self_callback_cooldown_days", 10.0
+                    ),
+                    min_age_days=getattr(
+                        mem, "self_callback_min_age_days", 14
+                    ),
+                    journal_max=getattr(
+                        mem, "self_callback_journal_max", 4
+                    ),
+                    # K71 robustness: worker-model selection/classification
+                    # pass (heuristic prefilter + graceful fallback). Runs
+                    # at most ~monthly thanks to the cooldown, so the LLM
+                    # cost is negligible.
+                    worker_client=self._maintenance_client,
+                    worker_model=self._effective_worker_model,
+                    cancel_event=getattr(self, "_fact_check_cancel", None),
+                    llm_enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "self_callback_llm_enabled",
+                            True,
+                        )
+                    ),
+                    user_name_provider=lambda: self.user_display_name,
+                )
+                self._idle_scheduler.register(self._self_callback_worker)
+            except Exception:
+                log.warning("SelfCallbackWorker init failed", exc_info=True)
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local

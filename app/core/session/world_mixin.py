@@ -574,6 +574,51 @@ class WorldMixin:
                     "affection-style reaction confirm failed", exc_info=True,
                 )
 
+        # K74 — humor-style confirmation booster. A laugh / eyeroll on a
+        # message is the explicit "that landed" channel; it confirms
+        # whichever humour register Aiko used last (her ``_prev_humor_kinds``
+        # proxy). Sparse + optional — K74 learns primarily from passive
+        # engagement. Other reactions are a no-op here.
+        if bool(getattr(agent, "humor_style_enabled", True)) and (
+            normalized_kind in ("laugh", "eyeroll")
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import humor_style as _hs
+
+                chat_db = getattr(self, "_chat_db", None)
+                prev_kinds = getattr(self, "_prev_humor_kinds", None)
+                if chat_db is not None and prev_kinds:
+                    now = datetime.now(timezone.utc)
+                    state = _hs.deserialize(
+                        chat_db.kv_get(_hs.KV_HUMOR_STYLE)
+                    )
+                    new_state = _hs.apply_reaction_confirmation(
+                        state,
+                        prev_kinds,
+                        now,
+                        reaction_weight=float(
+                            getattr(
+                                agent, "humor_style_reaction_weight", 0.06,
+                            ),
+                        ),
+                        floor=float(
+                            getattr(agent, "humor_style_floor", 0.05),
+                        ),
+                    )
+                    chat_db.kv_set(
+                        _hs.KV_HUMOR_STYLE, _hs.serialize(new_state),
+                    )
+                    log.info(
+                        "humor-style confirm: reaction=%s -> kinds=%s",
+                        normalized_kind, prev_kinds,
+                    )
+            except Exception:
+                log.debug(
+                    "humor-style reaction confirm failed", exc_info=True,
+                )
+
         # J12 — intimacy pacing. An affectionate reaction is sparse but
         # high-quality evidence that the user is running warm; blend its
         # forwardness score into the user-pace EMA (upward only — you

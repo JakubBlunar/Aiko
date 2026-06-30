@@ -892,6 +892,76 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_vitality_rhythm raised: {exc}"
 
     @mcp.tool()
+    def get_flashbulb_state() -> str:
+        """K76 — dump the flashbulb (affective memory salience) state.
+
+        At memory-write time the live ``AffectState`` arousal + any active
+        K57 emotion-episode intensity fold into a [0,1] emotional charge,
+        and a new row's salience is boosted by ``max_boost * charge``.
+        Neutral affect → 0 charge → no boost.
+
+        Returns the knobs, whether the hook is wired on the live
+        MemoryStore, the *current* live ``(arousal, episode_intensity)``,
+        and a preview of the charge + boost a memory written **right now**
+        would receive (off a base salience of 0.5). Send an emotionally
+        charged message first, then call this to see the boost climb.
+        """
+        try:
+            from app.core.memory import flashbulb as _fb
+
+            mem_s = session._memory_settings
+            store = getattr(session, "_memory_store", None)
+            wired = bool(getattr(store, "_flashbulb_enabled", False))
+
+            arousal, episode = (0.4, 0.0)
+            try:
+                arousal, episode = session._read_encoding_affect()
+            except Exception:
+                pass
+
+            preview = _fb.apply_flashbulb(
+                0.5,
+                arousal=arousal,
+                episode_intensity=episode,
+                max_boost=getattr(mem_s, "flashbulb_max_boost", 0.35),
+                arousal_weight=getattr(mem_s, "flashbulb_arousal_weight", 0.6),
+                episode_weight=getattr(
+                    mem_s, "flashbulb_episode_weight", 0.7
+                ),
+                arousal_neutral=getattr(
+                    mem_s, "flashbulb_arousal_neutral", 0.4
+                ),
+            )
+            return json.dumps(
+                {
+                    "enabled_setting": bool(
+                        getattr(mem_s, "flashbulb_enabled", True)
+                    ),
+                    "wired_on_store": wired,
+                    "max_boost": getattr(mem_s, "flashbulb_max_boost", 0.35),
+                    "arousal_weight": getattr(
+                        mem_s, "flashbulb_arousal_weight", 0.6
+                    ),
+                    "episode_weight": getattr(
+                        mem_s, "flashbulb_episode_weight", 0.7
+                    ),
+                    "arousal_neutral": getattr(
+                        mem_s, "flashbulb_arousal_neutral", 0.4
+                    ),
+                    "live_arousal": round(float(arousal), 3),
+                    "live_episode_intensity": round(float(episode), 3),
+                    "preview_base_0.5": {
+                        "charge": round(preview.charge, 3),
+                        "boost": round(preview.boost, 3),
+                        "salience": round(preview.salience, 3),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_flashbulb_state raised: {exc}"
+
+    @mcp.tool()
     def get_implicit_need_state() -> str:
         """K69 — dump the implicit-need (vent/fix/reassure) classifier.
 
@@ -1826,6 +1896,178 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"force_affection_style_decay raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def get_humor_style_state() -> str:
+        """K74 — dump the learned humor-style weighting.
+
+        Returns the master switch, the learned weight per humour kind
+        (pun / deadpan / absurdist / self_deprecating / playful_roast,
+        summing to ~1.0 from a uniform 0.2 baseline), the top kind, the
+        register hint that would ride the next tease cue right now, the
+        previous turn's tagged humour kinds (next-turn attribution +
+        reaction-confirmation target), and the settings snapshot.
+
+        Learned passively from K14 engagement attributed to the humour
+        kind Aiko used last turn; 😂/🙄 reactions confirm. Repro: send a
+        few of Aiko's funny turns + warm replies, then re-read — the
+        register's weight should drift; ``force_humor_style_decay`` pulls
+        it back toward uniform.
+        """
+        try:
+            from app.core.relationship import humor_style as _hs
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            stored = None
+            if chat_db is not None:
+                try:
+                    stored = chat_db.kv_get(_hs.KV_HUMOR_STYLE)
+                except Exception:
+                    stored = None
+            state = _hs.deserialize(stored)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "humor_style_enabled", True)
+                    ),
+                    "weights": {
+                        k: round(state.weight_of(k), 4)
+                        for k in _hs.HUMOR_KINDS
+                    },
+                    "top_kind": _hs.top_kind(state),
+                    "updated_at": state.updated_at,
+                    "register_hint_preview": _hs.register_hint(
+                        state,
+                        session.user_display_name,
+                        min_rel=float(
+                            getattr(agent, "humor_style_hint_min_rel", 1.25)
+                        ),
+                    ),
+                    "prev_turn_kinds": list(
+                        getattr(session, "_prev_humor_kinds", []) or []
+                    ),
+                    "settings": {
+                        "learning_rate": float(
+                            getattr(agent, "humor_style_learning_rate", 0.04)
+                        ),
+                        "reaction_weight": float(
+                            getattr(
+                                agent, "humor_style_reaction_weight", 0.06,
+                            )
+                        ),
+                        "floor": float(
+                            getattr(agent, "humor_style_floor", 0.05)
+                        ),
+                        "decay_half_life_days": float(
+                            getattr(
+                                agent,
+                                "humor_style_decay_half_life_days",
+                                30.0,
+                            )
+                        ),
+                        "hint_min_rel": float(
+                            getattr(agent, "humor_style_hint_min_rel", 1.25)
+                        ),
+                        "decay_interval_seconds": int(
+                            getattr(
+                                agent,
+                                "humor_style_decay_interval_seconds",
+                                21600,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_humor_style_state raised: {exc}"
+
+    @mcp.tool()
+    def set_humor_style(kind: str, weight: float) -> str:
+        """K74 — force one humour kind's raw weight, then renormalise."""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import humor_style as _hs
+
+            norm = (kind or "").strip().lower()
+            if norm not in _hs.HUMOR_KINDS:
+                return json.dumps(
+                    {"error": "unknown kind", "kinds": list(_hs.HUMOR_KINDS)}
+                )
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            state = _hs.deserialize(chat_db.kv_get(_hs.KV_HUMOR_STYLE))
+            raw = {k: state.weight_of(k) for k in _hs.HUMOR_KINDS}
+            raw[norm] = max(0.0, float(weight))
+            floor = max(
+                0.0,
+                min(
+                    1.0 / len(_hs.HUMOR_KINDS),
+                    float(getattr(agent, "humor_style_floor", 0.05)),
+                ),
+            )
+            floored = {k: max(floor, raw[k]) for k in _hs.HUMOR_KINDS}
+            total = sum(floored.values()) or 1.0
+            persisted = _hs.HumorStyleState(
+                weights={k: v / total for k, v in floored.items()},
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            chat_db.kv_set(_hs.KV_HUMOR_STYLE, _hs.serialize(persisted))
+            return json.dumps(
+                {
+                    "weights": {
+                        k: round(persisted.weight_of(k), 4)
+                        for k in _hs.HUMOR_KINDS
+                    },
+                    "top_kind": _hs.top_kind(persisted),
+                    "register_hint_preview": _hs.register_hint(
+                        persisted, session.user_display_name,
+                        min_rel=float(
+                            getattr(agent, "humor_style_hint_min_rel", 1.25)
+                        ),
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"set_humor_style raised: {exc}"
+
+    @mcp.tool()
+    def reset_humor_style() -> str:
+        """K74 — wipe the learned humour weighting back to uniform."""
+        try:
+            from app.core.relationship import humor_style as _hs
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            chat_db.kv_set(
+                _hs.KV_HUMOR_STYLE, _hs.serialize(_hs.uniform_state()),
+            )
+            return json.dumps({"reset": True})
+        except Exception as exc:
+            return f"reset_humor_style raised: {exc}"
+
+    @mcp.tool()
+    def force_humor_style_decay() -> str:
+        """K74 — run the HumorStyleDecayWorker once, ignoring gates."""
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running"
+        try:
+            result = sched.force_run("humor_style_decay")
+        except KeyError:
+            return (
+                "humor_style_decay worker not registered "
+                "(agent.humor_style_enabled may be off)"
+            )
+        except Exception as exc:
+            return f"force_humor_style_decay raised: {exc}"
         return json.dumps(result or {}, indent=2, default=str)
 
     @mcp.tool()

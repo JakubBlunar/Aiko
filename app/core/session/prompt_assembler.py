@@ -188,6 +188,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # with the cue-producer / time-anchored family (follow_up); a
         # watermark-gated one-shot drafted by GrowthWitnessWorker.
         "growth_witness_block",
+        # K71: rare "close the loop on my own past" cue (her continuity).
+        # Sibling of growth_witness — watermark-gated cue-producer.
+        "self_callback_block",
         # K-time3: forward sweep over future_plan rows due in the horizon
         # window, with the relative times pre-resolved. Clusters with the
         # other future-plan / time-anchored cues (follow_up).
@@ -574,6 +577,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # observation on a later turn. Watermark-gated one-shot,
         # independent of the gap-return cue family (like follow_up).
         self._growth_witness_provider: Callable[[], str] | None = None
+        # K71 self-callback cue. Consumer of the SelfCallbackWorker ring;
+        # surfaces a rare "close the loop on my own aged feeling /
+        # intention" beat. Watermark-gated one-shot, independent of the
+        # gap-return cue family (like growth_witness / follow_up).
+        self._self_callback_provider: Callable[[], str] | None = None
         # K-time3: upcoming-horizon cue. A forward sweep over future_plan
         # rows due within the horizon window, rendered with the relative
         # times pre-resolved so the model never recomputes a future date.
@@ -1691,6 +1699,20 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("growth_witness provider raised", exc_info=True)
                     growth_witness_block = ""
 
+        # K71 self-callback: rare "close the loop on my own past" cue.
+        # Built every turn (consumes a watermark) but almost always empty.
+        # Watermark-gated, independent of the gap-return family.
+        self_callback_block = ""
+        if getattr(self, "_self_callback_provider", None) is not None:
+            with _timed_phase(provider_ms, "self_callback"):
+                try:
+                    self_callback_block = (
+                        self._self_callback_provider() or ""
+                    )
+                except Exception:
+                    log.debug("self_callback provider raised", exc_info=True)
+                    self_callback_block = ""
+
         # K-time3 upcoming-horizon: pre-resolved future relative times for
         # plans due within the horizon window. Time-anchored (not gap-gated),
         # independent of the _gap_cue_surfaced family.
@@ -2626,6 +2648,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # surfaces. NOT in the K16 suppression set (the grounding
             # line carries no longitudinal-growth signal).
             system_parts.append(growth_witness_block)
+        if self_callback_block:
+            # K71: rare "close the loop on my own past" cue. Sits right
+            # after the K70 growth-witness cue — both are watermark-gated
+            # cue-producer surfaces (her continuity vs his growth).
+            system_parts.append(self_callback_block)
         if upcoming_horizon_block:
             # K-time3: "coming up ..." with the relative times pre-resolved.
             # Sits right after the follow_up cue — both are future-plan /
