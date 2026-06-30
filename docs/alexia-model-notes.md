@@ -1,8 +1,8 @@
 # Alexia Live2D rig — agent notes
 
-The bundled avatar at `live-2d-models/Alexia/` is a third-party Cubism
+The bundled avatar at `data/personas/active/Alexia/` is a third-party Cubism
 4 model. The model files themselves are **gitignored** (see
-`.gitignore` — `live-2d-models/`), so anything in this document refers
+`.gitignore` — `data/personas/`), so anything in this document refers
 to the rig as users actually download it; clone the original Alexia
 release into that folder before running the app.
 
@@ -93,7 +93,7 @@ the same accumulator; no further structural change needed.
 
 ## 2. Parameter cheat-sheet (after the CDI3 translation pass)
 
-The CDI3 file at `live-2d-models/Alexia/Alexia.cdi3.json` had its
+The CDI3 file at `data/personas/active/Alexia/Alexia.cdi3.json` had its
 269 Chinese `Name` fields translated to English by
 `scripts/translate_alexia_cdi3.py`. Capability detection in
 `_detect_capabilities` substring-matches against these names AND the
@@ -128,7 +128,7 @@ doesn't touch them.
 
 ## 3. Expression files (`.exp3.json`)
 
-Sit in the model root: `live-2d-models/Alexia/*.exp3.json`. The
+Sit in the model root: `data/personas/active/Alexia/*.exp3.json`. The
 **authoritative visual identity audit** (third pass, anchored on
 the user's live observation in Cubism Viewer Standalone for SDK 5)
 lives in [`docs/Alexia-my-observation.md`](Alexia-my-observation.md).

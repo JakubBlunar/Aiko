@@ -883,12 +883,17 @@ class AvatarAccessoriesTests(unittest.TestCase):
 
 
 class SeedAvatarRootTests(unittest.TestCase):
-    """Self-healing seed step that copies ``live-2d-models/<name>/`` into
-    the runtime avatar directory when the latter is empty.
+    """Self-healing seed step that copies a bundled source into the
+    runtime avatar directory (``data/personas/active/<name>/``) when the
+    latter is empty.
 
-    Documents the contract for the Windows / Linux ``npm run desktop``
-    flow (no ``setup-macos.sh`` runs there) and for users who manually
-    nuke ``data/personas/`` to shrink the working tree.
+    The canonical home is the runtime path itself; seeding only fires
+    when it's empty AND a copy lives outside it — either
+    ``$AIKO_AVATAR_SEED_DIR/<name>`` (the Docker / distribution seam) or
+    the legacy ``live-2d-models/<name>/`` source. Documents the contract
+    for the Windows / Linux ``npm run desktop`` flow (no
+    ``setup-macos.sh`` runs there) and for users who manually nuke
+    ``data/personas/`` to shrink the working tree.
     """
 
     def _make_layout(
@@ -981,8 +986,40 @@ class SeedAvatarRootTests(unittest.TestCase):
                 tmp, with_source=False, with_target=True,
             )
             with self._patch_repo_root(tmp / "repo"):
-                _seed_avatar_root_if_empty(target)
+                with mock.patch.dict("os.environ", {}, clear=False):
+                    import os as _os
+
+                    _os.environ.pop("AIKO_AVATAR_SEED_DIR", None)
+                    _seed_avatar_root_if_empty(target)
             self.assertEqual(list(target.iterdir()), [])
+
+    def test_seeds_from_env_seed_dir(self) -> None:
+        # The Docker / distribution seam: the bundle is baked outside the
+        # runtime data volume and pointed to via ``AIKO_AVATAR_SEED_DIR``.
+        with TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # No legacy live-2d-models source — only the env seed dir.
+            _source, target = self._make_layout(
+                tmp, with_source=False, with_target=True,
+            )
+            seed_dir = tmp / "seed" / "personas-active"
+            bundle = seed_dir / "Alexia"
+            bundle.mkdir(parents=True)
+            (bundle / "Alexia.model3.json").write_text("{}", encoding="utf-8")
+            (bundle / "Alexia.8192").mkdir()
+            (bundle / "Alexia.8192" / "texture_00.png").write_bytes(b"png")
+            with self._patch_repo_root(tmp / "repo"):
+                with mock.patch.dict(
+                    "os.environ",
+                    {"AIKO_AVATAR_SEED_DIR": str(seed_dir)},
+                    clear=False,
+                ):
+                    _seed_avatar_root_if_empty(target)
+            self.assertTrue((target / "Alexia.model3.json").is_file())
+            self.assertTrue(
+                (target / "Alexia.8192" / "texture_00.png").is_file(),
+                "nested directories must be copied recursively",
+            )
 
 
 if __name__ == "__main__":

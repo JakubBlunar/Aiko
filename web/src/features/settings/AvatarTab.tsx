@@ -423,7 +423,7 @@ export function AvatarTab({
         ) : (
           <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/50">
             Place the Alexia model files at{" "}
-            <code>live-2d-models/Alexia/</code>. The bundle is
+            <code>data/personas/active/Alexia/</code>. The bundle is
             gitignored so each developer drops their own copy in.
           </p>
         )}

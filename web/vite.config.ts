@@ -78,7 +78,7 @@ export default defineConfig({
     proxy: {
       "/api": httpProxy,
       // ``/avatar`` -> the bundled Alexia model files (FastAPI mounts
-      // them out of ``live-2d-models/Alexia/`` at runtime).
+      // them out of ``data/personas/active/Alexia/`` at runtime).
       "/avatar": httpProxy,
       // ``/persona-text`` -> ``data/persona/`` (self-image text used
       // by the inner-life prompt; nothing to do with the avatar).

@@ -118,11 +118,12 @@ so an empty volume doesn't blank them out:
 
 - **Persona text** — the entrypoint copies `data/persona/*` from the image
   into the volume **only if absent** (your edits are never clobbered).
-- **Live2D avatar** — the app self-heals it on boot from
-  `/app/live-2d-models/Alexia` into `data/personas/active/Alexia`.
+- **Live2D avatar** — baked at `/opt/aiko/seed/personas-active` (outside the
+  volume) via `AIKO_AVATAR_SEED_DIR`; the app self-heals it on boot into
+  `data/personas/active/Alexia`.
 
 > The avatar bundle is gitignored, so it ships in the image only if it's
-> present on your machine at build time (under `live-2d-models/Alexia/`).
+> present on your machine at build time (under `data/personas/active/Alexia/`).
 > If you build on a machine without it, drop the bundle into the volume
 > yourself or mount it in.
 
@@ -218,6 +219,6 @@ backend address.
 |---|---|
 | UI loads but chat errors / "connection refused" to Ollama | Ollama isn't reachable. Host Ollama: is it running and listening on `0.0.0.0`/all interfaces? Try `AIKO_OLLAMA_BASE_URL=http://host.docker.internal:11434`. In-compose: did you set it to `http://ollama:11434` and pull the models? |
 | "model not found" on first message | `ollama pull <chat_model>` and `ollama pull qwen3-embedding:0.6b` (host or `docker compose exec ollama ...`). |
-| Avatar doesn't load | The Live2D bundle wasn't in the build context. Ensure `live-2d-models/Alexia/` exists at build time, or drop the bundle into the `aiko-data` volume at `personas/active/Alexia/`. |
+| Avatar doesn't load | The Live2D bundle wasn't in the build context. Ensure `data/personas/active/Alexia/` exists at build time, or drop the bundle into the `aiko-data` volume at `personas/active/Alexia/`. |
 | Voice controls do nothing | You're on the `slim` image. Rebuild with `AIKO_PROFILE=full`. |
 | Want a clean slate | `docker compose down -v` then `up -d --build`. |

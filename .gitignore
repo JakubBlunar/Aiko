@@ -24,7 +24,6 @@ data/browser-profile/
 *.wav
 *.log
 realtimesst.log
-live-2d-models/
 data/lancedb/
 data/documents/
 data/attachments/

@@ -12,7 +12,7 @@ gestures plus the new B2 backchannel micro-gestures (``tilt_left``,
     listening micro-cues).
 
 Tests work in a temporary directory so they don't touch the real
-``live-2d-models/Alexia/`` bundle on disk.
+``data/personas/active/Alexia/`` bundle on disk.
 """
 from __future__ import annotations
 

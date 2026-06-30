@@ -141,7 +141,7 @@ The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it e
 
 ## Live2D avatar
 
-- The bundled avatar (Alexia by default) lives at `data/personas/active/Alexia/`. The directory is gitignored so each developer drops their own copy in. `app/core/persona/avatar_profile.py` reads `*.model3.json` + `*.cdi3.json` at boot, infers a capability map (pajamas, blush, sweat, cat tail, glasses, …), and serves the files at `/avatar/`. (The legacy `live-2d-models/Alexia/` path is still honoured if you point `config/user.json -> avatar.root_dir` at it.)
+- The bundled avatar (Alexia by default) lives at `data/personas/active/Alexia/`. The directory is gitignored so each developer drops their own copy in. `app/core/persona/avatar_profile.py` reads `*.model3.json` + `*.cdi3.json` at boot, infers a capability map (pajamas, blush, sweat, cat tail, glasses, …), and serves the files at `/avatar/`. This is the single source of truth for the bundle — it's bundled into the Tauri/macOS app and the Docker image from here, and `config/user.json -> avatar.root_dir` can point elsewhere if you want a custom path.
 - The avatar plays an idle motion loop, syncs lip movement to TTS audio amplitude, switches expressions based on `[[reaction:...]]` tags, and supports Tier-3 auto-driven effects: pajamas at night, auto-blush on tender moods, auto-sweat on concerned reactions, and a cat-tail wag whose frequency tracks the current arousal. The LLM can also fire transient overlays via `[[overlay:sweat]]` / `[[overlay:blush]]` / etc. — only those whose capability is detected on the loaded model are advertised in the system prompt.
 - User-tunable knobs (scale, auto-outfit mode) live in `config.avatar` and on the Avatar tab of the Settings drawer.
 
