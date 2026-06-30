@@ -892,6 +892,92 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_vitality_rhythm raised: {exc}"
 
     @mcp.tool()
+    def get_implicit_need_state() -> str:
+        """K69 — dump the implicit-need (vent/fix/reassure) classifier.
+
+        Returns the master switch, the confidence floor, the last
+        classified verdict (mode / confidence / per-mode scores /
+        reasons / whether it was forced), and the force-flag state. The
+        classifier is stateless per turn, so ``last`` reflects the most
+        recent assembled turn.
+
+        Pairs with ``force_implicit_need(mode)`` for end-to-end repro:
+
+        1. ``force_implicit_need(mode="witness")``.
+        2. Send a message; ``get_last_response_detail`` should show the
+           "Read: ... needs to be heard, not fixed" steer in the prompt.
+        """
+        try:
+            agent = session._settings.agent
+            mem = session._memory_settings
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "implicit_need_enabled", True)
+                    ),
+                    "min_confidence": float(
+                        getattr(mem, "implicit_need_min_confidence", 2.0)
+                    ),
+                    "last": getattr(session, "_last_implicit_need", None),
+                    "force_mode": getattr(
+                        session, "_implicit_need_force_mode", None
+                    ),
+                    "modes": [
+                        "witness",
+                        "problem_solve",
+                        "reassure",
+                        "celebrate",
+                        "neutral",
+                    ],
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_implicit_need_state raised: {exc}"
+
+    @mcp.tool()
+    def force_implicit_need(mode: str) -> str:
+        """K69 — pin the next turn's response-mode steer to ``mode``.
+
+        Arms a one-shot override so the *next* provider call renders the
+        given mode's steer regardless of what the live message says.
+        Valid: witness, problem_solve, reassure, celebrate. ``neutral``
+        (or anything else) clears the override (next turn classifies
+        normally).
+        """
+        try:
+            from app.core.conversation import implicit_need as _need
+
+            valid = {
+                _need.MODE_WITNESS,
+                _need.MODE_PROBLEM_SOLVE,
+                _need.MODE_REASSURE,
+                _need.MODE_CELEBRATE,
+            }
+            m = (mode or "").strip().lower()
+            if m not in valid:
+                session._implicit_need_force_mode = None
+                return json.dumps(
+                    {
+                        "cleared": True,
+                        "note": "unknown/neutral mode -> override cleared",
+                        "valid": sorted(valid),
+                    },
+                    indent=2,
+                )
+            session._implicit_need_force_mode = m
+            return json.dumps(
+                {
+                    "armed": True,
+                    "mode": m,
+                    "note": "next provider call renders this mode's steer; one-shot",
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_implicit_need raised: {exc}"
+
+    @mcp.tool()
     def get_mood_drift_state() -> str:
         """H3 — dump the live mood-drift narrator state.
 

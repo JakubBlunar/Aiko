@@ -166,6 +166,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "self_correction_block",
         "promise_followthrough_block",
         "misattunement_block",
+        # K69: implicit-need response-mode steer. Sits right after
+        # misattunement (both are live-read "how to respond to THIS
+        # message" cues).
+        "implicit_need_block",
         "opinion_injection_block",
         # K46: "don't cave on taste pushback" — sits right after the K29
         # stance cue (same live-read-on-the-user cluster).
@@ -180,6 +184,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "away_activities_block",
         "forward_curiosity_block",
         "follow_up_block",
+        # K70: rare longitudinal "you've grown since we met" cue. Sits
+        # with the cue-producer / time-anchored family (follow_up); a
+        # watermark-gated one-shot drafted by GrowthWitnessWorker.
+        "growth_witness_block",
         # K-time3: forward sweep over future_plan rows due in the horizon
         # window, with the relative times pre-resolved. Clusters with the
         # other future-plan / time-anchored cues (follow_up).
@@ -485,6 +493,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # runs the detector itself on every call -- cooldown lives on
         # the controller, not in a pending slot.
         self._misattunement_provider: Callable[[str], str] | None = None
+        # K69 — implicit-need reading. Per-turn provider that classifies
+        # the response *mode* the live user message is implicitly asking
+        # for (witness / problem_solve / reassure / celebrate) and steers
+        # the reply to answer the need, not the literal words. Takes
+        # ``user_text``; silent on the common neutral turn. NOT dropped
+        # under aggressive mode (sibling of misattunement).
+        self._implicit_need_provider: Callable[[str], str] | None = None
         # K29 — opinion injection detector. Per-turn provider that
         # fires a one-line cue when {user_name}'s latest message
         # contradicts one of Aiko's stored ``kind="self"`` stance
@@ -554,6 +569,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Independent of the gap-return cue family (does not touch
         # _gap_cue_surfaced).
         self._follow_up_provider: Callable[[], str] | None = None
+        # K70 growth-witness cue. Consumer of the GrowthWitnessWorker
+        # finding ring; surfaces a rare "you've grown since we met"
+        # observation on a later turn. Watermark-gated one-shot,
+        # independent of the gap-return cue family (like follow_up).
+        self._growth_witness_provider: Callable[[], str] | None = None
         # K-time3: upcoming-horizon cue. A forward sweep over future_plan
         # rows due within the horizon window, rendered with the relative
         # times pre-resolved so the model never recomputes a future date.
@@ -1453,6 +1473,24 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("misattunement provider raised", exc_info=True)
                     misattunement_block = ""
 
+        # K69 — implicit-need reading (vent vs fix vs reassure). Per-turn
+        # heuristic classifier over the live user message that steers the
+        # *response mode* (witness / problem_solve / reassure / celebrate),
+        # silent on the common neutral turn. Not gated on aggressive mode --
+        # answering the need instead of the literal message matters most
+        # when the budget is tight. Sits with misattunement (both steer how
+        # to respond to THIS message).
+        implicit_need_block = ""
+        if getattr(self, "_implicit_need_provider", None) is not None:
+            with _timed_phase(provider_ms, "implicit_need"):
+                try:
+                    implicit_need_block = (
+                        self._implicit_need_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug("implicit_need provider raised", exc_info=True)
+                    implicit_need_block = ""
+
         # K29 — opinion injection detector. Per-turn detector that
         # checks the live user message against Aiko's stored
         # ``kind="self"`` stance memories and fires a "you've got a
@@ -1637,6 +1675,21 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 except Exception:
                     log.debug("follow_up provider raised", exc_info=True)
                     follow_up_block = ""
+
+        # K70 growth-witness: rare "you've grown since we met" cue. Built
+        # every turn (the provider consumes a watermark) but almost always
+        # empty — a finding surfaces at most once every couple of weeks.
+        # Watermark-gated, independent of the gap-return family.
+        growth_witness_block = ""
+        if getattr(self, "_growth_witness_provider", None) is not None:
+            with _timed_phase(provider_ms, "growth_witness"):
+                try:
+                    growth_witness_block = (
+                        self._growth_witness_provider() or ""
+                    )
+                except Exception:
+                    log.debug("growth_witness provider raised", exc_info=True)
+                    growth_witness_block = ""
 
         # K-time3 upcoming-horizon: pre-resolved future relative times for
         # plans due within the horizon window. Time-anchored (not gap-gated),
@@ -2491,6 +2544,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # fused grounding line never carries misattunement
             # signal, so K23 is purely additive on top.
             system_parts.append(misattunement_block)
+        if implicit_need_block:
+            # K69: response-mode steer (vent vs fix vs reassure vs
+            # celebrate) sits right after misattunement -- both read the
+            # live user turn and steer HOW to reply. NOT in the K16
+            # suppression set (the grounding line carries no need signal).
+            system_parts.append(implicit_need_block)
         if opinion_injection_block:
             # K29: stance-contradiction sits in the same "live read on
             # the user's turn" cluster as K8 / K17 / K23 -- they all
@@ -2561,6 +2620,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # how it went". Time-anchored, independent of the gap-cue
             # family, watermark-gated one-shot.
             system_parts.append(follow_up_block)
+        if growth_witness_block:
+            # K70: rare "you've grown since we met" cue. Sits right after
+            # the follow_up cue — both are watermark-gated cue-producer
+            # surfaces. NOT in the K16 suppression set (the grounding
+            # line carries no longitudinal-growth signal).
+            system_parts.append(growth_witness_block)
         if upcoming_horizon_block:
             # K-time3: "coming up ..." with the relative times pre-resolved.
             # Sits right after the follow_up cue — both are future-plan /

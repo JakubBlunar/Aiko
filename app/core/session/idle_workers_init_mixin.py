@@ -54,6 +54,53 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("FollowUpWorker init failed", exc_info=True)
 
+            # K70 — growth-witness worker (rare "you've grown since we
+            # met"). Reads the H3 mood-drift ring; corroborates with the
+            # goal store when available. Watermark-gated cue-producer.
+            try:
+                from app.core.proactive.growth_witness_worker import (
+                    GrowthWitnessWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._growth_witness_worker = GrowthWitnessWorker(
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "growth_witness_enabled",
+                            True,
+                        )
+                    ),
+                    goal_store=getattr(self, "_goal_store", None),
+                    interval_seconds=getattr(
+                        agent, "growth_witness_check_interval_seconds", 21600
+                    ),
+                    cooldown_days=getattr(
+                        agent, "growth_witness_cooldown_days", 14.0
+                    ),
+                    min_samples=getattr(
+                        mem, "growth_witness_min_samples", 10
+                    ),
+                    min_valence_delta=getattr(
+                        mem, "growth_witness_min_valence_delta", 0.25
+                    ),
+                    min_axis_delta=getattr(
+                        mem, "growth_witness_min_axis_delta", 0.30
+                    ),
+                    journal_max=getattr(
+                        mem, "growth_witness_journal_max", 4
+                    ),
+                )
+                self._idle_scheduler.register(self._growth_witness_worker)
+            except Exception:
+                log.warning("GrowthWitnessWorker init failed", exc_info=True)
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local

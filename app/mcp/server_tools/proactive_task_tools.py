@@ -1115,6 +1115,144 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_follow_up_surface raised: {exc}"
 
     @mcp.tool()
+    def get_growth_witness_state() -> str:
+        """K70 — dump the growth-witness worker + surfacing state.
+
+        The GrowthWitnessWorker compares an older baseline window of the
+        H3 mood-drift ring against a recent window and, when a durable
+        POSITIVE shift clears a high bar, drafts a "you've grown since we
+        met" cue into ``aiko.growth_witness``; ``_render_growth_witness_
+        block`` surfaces the newest unseen finding on a later turn
+        (watermark-gated). It is NEVER spoken verbatim.
+
+        Returns a JSON dict with the master switch, cadence + cooldown,
+        whether the worker wired up, the MCP force-next flag, the finding
+        ring, the producer pacing watermarks, the surfacing watermark, and
+        a dry-run detection over the current mood-drift ring.
+        """
+        try:
+            from app.core.affect import mood_drift as _md
+            from app.core.relationship import growth_witness as _gw
+
+            agent = session._settings.agent
+            mem = session._memory_settings
+
+            def kv(key: str) -> str | None:
+                try:
+                    return session._chat_db.kv_get(key)
+                except Exception:
+                    return None
+
+            samples = _md.deserialize_samples(kv(_md.KV_SAMPLES))
+            dry = _gw.detect_growth(
+                samples,
+                min_samples=int(
+                    getattr(mem, "growth_witness_min_samples", 10)
+                ),
+                min_valence_delta=float(
+                    getattr(mem, "growth_witness_min_valence_delta", 0.25)
+                ),
+                min_axis_delta=float(
+                    getattr(mem, "growth_witness_min_axis_delta", 0.30)
+                ),
+            )
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "growth_witness_enabled", True)
+                    ),
+                    "check_interval_seconds": int(
+                        getattr(
+                            agent,
+                            "growth_witness_check_interval_seconds",
+                            21600,
+                        )
+                    ),
+                    "cooldown_days": float(
+                        getattr(agent, "growth_witness_cooldown_days", 14.0)
+                    ),
+                    "min_samples": int(
+                        getattr(mem, "growth_witness_min_samples", 10)
+                    ),
+                    "worker_registered": getattr(
+                        session, "_growth_witness_worker", None
+                    )
+                    is not None,
+                    "force_next": bool(
+                        getattr(session, "_growth_witness_force_next", False)
+                    ),
+                    "sample_count": len(samples),
+                    "findings": _gw.load_findings(session._chat_db.kv_get),
+                    "last_fired_at": kv("growth_witness.last_fired_at"),
+                    "last_signature": kv("growth_witness.last_signature"),
+                    "last_surfaced_at": kv("growth_witness.last_surfaced_at"),
+                    "dry_run": (
+                        None
+                        if dry is None
+                        else {
+                            "kind": dry.kind,
+                            "magnitude": dry.magnitude,
+                            "span_days": dry.span_days,
+                            "signature": dry.signature,
+                        }
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_growth_witness_state raised: {exc}"
+
+    @mcp.tool()
+    def force_growth_witness_draft() -> str:
+        """Run the growth-witness worker once, right now.
+
+        Arms a one-shot bypass of the cooldown + signature gates, then
+        calls ``run()`` directly so a cue is drafted into the ring
+        immediately (when the mood-drift ring actually shows a durable
+        shift). Pairs with ``force_growth_witness_surface`` for the
+        end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_growth_witness_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_growth_witness_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_growth_witness_surface() -> str:
+        """Arm a one-shot bypass on the growth-witness cue watermark.
+
+        Sets ``_growth_witness_force_next`` so the next provider call
+        ignores the last-surfaced watermark. The ring still has to be
+        non-empty (run ``force_growth_witness_draft`` first if it isn't).
+
+        Repro: ``force_growth_witness_draft()`` ->
+        ``force_growth_witness_surface()`` -> ``send_message(skip_tts=
+        true)`` -> confirm the "Something you've quietly noticed ..." line
+        in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._growth_witness_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the growth-witness "
+                        "watermark; ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_growth_witness_surface raised: {exc}"
+
+    @mcp.tool()
     def get_task_report_decision_state() -> str:
         """C6 — dump the worker-model task-report decision state.
 

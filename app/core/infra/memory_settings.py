@@ -654,6 +654,13 @@ class MemorySettings:
     # clamped to [0, 1]. At the default ~1-in-3 days is off-rhythm, with a
     # full day/night flip being the rarest slice of that.
     vitality_rhythm_exception_chance: float = 0.3
+    # ── K69: implicit-need reading ──
+    # Score floor for the per-turn response-mode classifier: a winning
+    # mode below this stays silent (``neutral``). At the default 2.0 a
+    # single soft cue (weight 1.0) isn't enough -- it takes one strong
+    # marker or two corroborating signals to steer, which keeps the cue
+    # rare and the restraint honest. Floored at 0.5.
+    implicit_need_min_confidence: float = 2.0
     # ── K-time3: upcoming-horizon block (pre-resolved future times) ──────
     # How far ahead the forward sweep looks for ``future_plan`` events
     # (in days). Within this window the resolved phrasing stays specific
@@ -807,6 +814,17 @@ class MemorySettings:
     # FollowUpWorker cue ring size (``aiko.follow_up_cues``). Bounds the
     # number of drafted "ask how their plan went" cues kept around.
     follow_up_journal_max: int = 8
+    # K70 growth-witness detection thresholds. The worker compares the
+    # oldest third of the H3 mood-drift ring against the newest third;
+    # ``min_samples`` is the floor before any finding fires (a real
+    # multi-week history), ``min_valence_delta`` / ``min_axis_delta`` are
+    # how far mood / a relationship axis (comfort, trust) must have risen
+    # to read as durable growth, and ``journal_max`` bounds the
+    # ``aiko.growth_witness`` cue ring.
+    growth_witness_min_samples: int = 10
+    growth_witness_min_valence_delta: float = 0.25
+    growth_witness_min_axis_delta: float = 0.30
+    growth_witness_journal_max: int = 4
     # K43 PromiseFollowthroughWorker cadence + pacing. The worker runs
     # during quiet windows (default every 30 min). ``min_age_hours`` is
     # how long an assistant promise must sit open before the cue arms
@@ -1909,6 +1927,10 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     ),
                 ),
             ),
+            implicit_need_min_confidence=max(
+                0.5,
+                float(memory_raw.get("implicit_need_min_confidence", 2.0)),
+            ),
             upcoming_horizon_days=max(
                 1,
                 int(memory_raw.get("upcoming_horizon_days", 7)),
@@ -2106,6 +2128,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             follow_up_journal_max=max(
                 1,
                 int(memory_raw.get("follow_up_journal_max", 8)),
+            ),
+            growth_witness_min_samples=max(
+                2,
+                int(memory_raw.get("growth_witness_min_samples", 10)),
+            ),
+            growth_witness_min_valence_delta=max(
+                0.0,
+                float(
+                    memory_raw.get("growth_witness_min_valence_delta", 0.25)
+                ),
+            ),
+            growth_witness_min_axis_delta=max(
+                0.0,
+                float(memory_raw.get("growth_witness_min_axis_delta", 0.30)),
+            ),
+            growth_witness_journal_max=max(
+                1,
+                int(memory_raw.get("growth_witness_journal_max", 4)),
             ),
             promise_followthrough_interval_seconds=max(
                 30,
