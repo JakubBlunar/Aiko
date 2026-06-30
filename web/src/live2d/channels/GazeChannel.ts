@@ -7,15 +7,22 @@
  *      ``speaking``): centred X with slight upward bias so the user
  *      reads as being looked at.
  *
- *   2. **Thinking drift**: slow random wander while the LLM is
+ *   2. **Typed-listening** (``composing``, B8): the user is typing a
+ *      message, so settle the gaze on them with the same upward
+ *      eye-contact bias as the voice lock, plus a slow low-amplitude
+ *      sway so she reads as *actively attending* rather than a frozen
+ *      stare. Outranks thinking drift so the moment the user starts
+ *      typing she looks up at them.
+ *
+ *   3. **Thinking drift**: slow random wander while the LLM is
  *      composing (no TTS playing yet).
  *
- *   3. **Idle break**: window unfocused OR cursor stopped >
+ *   4. **Idle break**: window unfocused OR cursor stopped >
  *      ``IDLE_BREAK_MS`` — ease the current target back to centre.
  *      Saccades + the focusController's own velocity smoothing keep
  *      her alive even at rest.
  *
- *   4. **Cursor follow** (default): track normalised mouse offset,
+ *   5. **Cursor follow** (default): track normalised mouse offset,
  *      clamped to a comfortable range so the rig saturates near the
  *      bounds and never feels like she's straining.
  *
@@ -48,6 +55,10 @@ const IDLE_DECAY = 0.92;
  * usually below the screen; lifting the gaze ~0.2 reads as "looking
  * at you" rather than "staring at your hairline". */
 const CONVERSATION_LOCK_Y = 0.2;
+/** B8 typed-listening sway amplitudes. Kept tiny so she reads as
+ * attentively looking at the user with a little life, not wandering. */
+const COMPOSING_SWAY_X = 0.08;
+const COMPOSING_SWAY_Y = 0.05;
 const CURSOR_X_CLAMP = 0.7;
 const CURSOR_Y_LO = -0.5;
 const CURSOR_Y_HI = 0.7;
@@ -107,6 +118,7 @@ export class GazeChannel implements AvatarChannel {
     const isThinking =
       snap.voiceMode === "thinking" ||
       (snap.turnInProgress && snap.ttsState !== "speaking");
+    const isComposing = snap.composing === true;
     const cursorStillActive =
       mouse.lastMoveAt > 0 && now - mouse.lastMoveAt <= IDLE_BREAK_MS;
     const isIdle = !mouse.windowFocused || !cursorStillActive;
@@ -114,6 +126,12 @@ export class GazeChannel implements AvatarChannel {
     if (isListening || isSpeaking) {
       this._target.x = 0;
       this._target.y = CONVERSATION_LOCK_Y;
+    } else if (isComposing) {
+      // Typed-listening: eye contact with the user + a gentle slow sway
+      // so she's clearly attending rather than staring through them.
+      const t = now / 1000;
+      this._target.x = COMPOSING_SWAY_X * Math.sin(t * 0.5);
+      this._target.y = CONVERSATION_LOCK_Y + COMPOSING_SWAY_Y * Math.sin(t * 0.35);
     } else if (isThinking) {
       const t = now / 1000;
       this._target.x = 0.35 * Math.sin(t * 0.6);

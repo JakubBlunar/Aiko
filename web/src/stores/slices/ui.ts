@@ -24,6 +24,16 @@ export interface UiSlice {
   loggingSettings: LoggingSettings;
   setLoggingSettings: (settings: LoggingSettings) => void;
   patchLoggingSettings: (patch: Partial<LoggingSettings>) => void;
+
+  /** B8 "listening face": true while the user is actively composing a
+   * typed message. The chat composer flips it on each keystroke and
+   * back off on send / blur / a short idle debounce. The avatar engine
+   * polls it per gaze tick (GazeChannel settles her gaze on the user;
+   * AmbientBodyChannel leans her in) so typed mode reads as "she's
+   * listening" the way voice mode already does. Purely ephemeral UI
+   * state — never persisted, never sent to the backend. */
+  composing: boolean;
+  setComposing: (active: boolean) => void;
 }
 
 export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
@@ -50,4 +60,10 @@ export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
     set((state) => ({
       loggingSettings: { ...state.loggingSettings, ...patch },
     })),
+
+  composing: false,
+  setComposing: (active) =>
+    set((state) =>
+      state.composing === active ? state : { composing: Boolean(active) },
+    ),
 });

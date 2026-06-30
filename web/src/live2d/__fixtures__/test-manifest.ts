@@ -53,6 +53,7 @@ export function buildStoreSnapshot(overrides: Record<string, unknown> = {}) {
     mood: NEUTRAL_MOOD,
     resolvedOutfit: "" as const,
     backchannelHint: "",
+    composing: false,
     circadianPeriod: "",
     expressiveness: 1,
     ...overrides,

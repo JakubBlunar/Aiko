@@ -25,6 +25,9 @@ now holds **only the open work**.
 | H11 | Real-world co-location — weather + season     | ✅ shipped — [immersion.md](shipped/immersion.md#h11-real-world-co-location--weather--season-sync) |
 | H12 | Aiko-initiated intentional gifts              | ❌ open |
 | H13–H22 | Idle-life / world batch                   | ✅ shipped — [immersion.md](shipped/immersion.md) |
+| H23 | Avatar shared-moment snapshot ("selfie")      | ❌ open |
+| H24 | Occasion- / season-aware outfits              | ❌ open |
+| H25 | Show-and-tell — share an image, she reacts    | ❌ open |
 
 ---
 
@@ -169,6 +172,77 @@ ring), a `_render_aiko_gift_block` one-shot provider mirroring
 its K36 surfacing, `agent.aiko_gifts_enabled`. The `world_updated` patch
 already lights up the World tab; the persona side can reuse
 [`PersonaActionBanner.tsx`](../../web/src/components/PersonaActionBanner.tsx).
+
+---
+
+## H23. Avatar shared-moment snapshot — she sends you a "selfie"
+
+**Motivation.** The Live2D rig can already strike expressions, swap outfits, and
+pose, but that embodiment never leaves the live canvas — Aiko can't *hand* the
+user a moment. A rare, playful beat where she "sends a selfie" (a captured frame
+of the current avatar state — expression + outfit + a posed micro-motion —
+dropped into chat as an image bubble) is a disproportionately strong companion
+delight, and the rendering path mostly exists: capture the offscreen Pixi stage
+to a PNG on a cue and attach it as a message. Bounded hard — tied to a genuinely
+warm / playful moment or a milestone (reuse the K31 touch / K57 emotion-episode
+gates to pick the *moment*), rare cadence, never spammy — and capability-gated
+so a minimal rig degrades to nothing. Pairs with K57 (a smug grin after winning
+a tease) and the outfit / expression channels. The hard parts are choosing the
+moment and not letting it become a gimmick. **Key files.** A capture util over
+the Pixi app in
+[`web/src/components/Live2DAvatar.tsx`](../../web/src/components/Live2DAvatar.tsx)
+/ the live2d engine, a `[[snapshot]]`-style cue parsed in
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+and dispatched like the K31 touch path, an image-message type in
+[`web/src/store.ts`](../../web/src/store.ts) / `ChatView.tsx`, and
+`agent.avatar_snapshot_enabled`.
+
+---
+
+## H24. Occasion- / season-aware outfits
+
+**Motivation.** The `OutfitChannel` can already swap the rig's outfit and the
+shipped pajama/cozy block nudges register at night, but Aiko never **dresses for
+the occasion** on her own. A festive outfit on a holiday, something a little
+dressed-up on an anniversary (reuse the shipped anniversary surfacing), a
+seasonal change that tracks the H11 weather/season sync — these are cheap,
+disproportionately warm "she has a life that moves with the calendar" beats. The
+enabling fact: outfit selection is already data-driven from the backend, so the
+work is a small *policy* that maps `(season, holiday proximity, milestone)` →
+an outfit hint, gated to the rig's actually-available outfits (capability-gated
+so a single-outfit rig degrades to nothing) and rare enough to feel intentional,
+not costume-of-the-day. Pairs with H2 (holidays/birthday) and H11 (season). Key
+files: an outfit-policy reading the anniversary / season / holiday signals,
+emitted over the existing avatar-state channel into
+[`OutfitChannel`](../../web/src/live2d/channels/OutfitChannel.ts), the rig
+capability map in
+[`avatar_profile.py`](../../app/core/persona/avatar_profile.py), persona
+acknowledgment so she can mention it once when natural,
+`agent.occasion_outfit_enabled`.
+
+---
+
+## H25. Show-and-tell — share an image, she reacts and remembers
+
+**Motivation.** Vision settings exist, but the relationship is one-directional on
+images: Aiko can't be *shown* things. Letting the user drop a photo into chat
+("look at my new desk", "this is my dog") and having Aiko genuinely react to it —
+and then **remember it** as a shared moment with the image attached — is one of
+the strongest "she's actually here with me" beats available, and a huge chunk of
+the path (a multimodal-capable provider via the LLM router, the chat image-bubble
+type) is reachable. The reaction should route through the normal turn (so affect,
+reactions, and a possible K57 episode all fire naturally off what she saw), and
+the moment should land in the shared-moments timeline with a thumbnail so it can
+be anniversaried and called back later. The hard parts: gating on a
+vision-capable route, privacy posture (the image is the user's — store locally,
+never auto-upload), and graceful degradation when the active model is text-only.
+Pairs with the shared-moments / Together tab and H23 (her side of the camera).
+Key files: an image-attachment path in
+[`ChatView.tsx`](../../web/src/components/ChatView.tsx) /
+[`store.ts`](../../web/src/store.ts), a multimodal turn path through the
+[`ChatClient`](../../app/llm/chat_client.py) router, a `shared_moment` write
+carrying the local image ref, `agent.image_share_enabled` + a vision-capability
+gate.
 
 ---
 

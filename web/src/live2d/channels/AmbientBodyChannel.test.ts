@@ -216,6 +216,24 @@ describe("AmbientBodyChannel — body language", () => {
     expect(adapter.params.get("ParamBodyAngleY")).toBeGreaterThan(5.5);
   });
 
+  it("B8: typed composing also raises ParamBodyAngleY (lean-in), then relaxes when it clears", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, setSnapshot } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "off", composing: true },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 50; i += 1) channel.tickTier3!(0, 0.05);
+    expect(channel.leanInEnvelope).toBeGreaterThan(0.9);
+    expect(adapter.params.get("ParamBodyAngleY")).toBeGreaterThan(5.5);
+
+    // User stopped typing — the lean relaxes back out.
+    setSnapshot({ composing: false });
+    for (let i = 0; i < 60; i += 1) channel.tickTier3!(0, 0.05);
+    expect(channel.leanInEnvelope).toBeLessThan(0.05);
+  });
+
   it("late-night + low arousal triggers slump (negative Y contribution)", () => {
     const adapter = new FakeAdapter();
     const channel = new AmbientBodyChannel();

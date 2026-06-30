@@ -178,6 +178,7 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
               mood: s.mood,
               resolvedOutfit: s.avatar?.resolved_outfit ?? "",
               backchannelHint: s.backchannelHint ?? "",
+              composing: s.composing ?? false,
               circadianPeriod: s.avatar?.circadian_period ?? "",
               expressiveness: s.avatar?.settings?.expressiveness ?? 1,
               moodInertiaDamping:
