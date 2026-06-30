@@ -283,6 +283,23 @@ _ARC_PATTERNS: tuple[tuple[str, re.Pattern[str], float], ...] = (
 )
 
 
+def estimate_arc(user_text: str) -> str | None:
+    """Pure regex arc guess for a single utterance, or ``None``.
+
+    Shares the exact ``_ARC_PATTERNS`` ladder :class:`ArcEstimator` uses
+    on the hot path, but with no store / confidence bookkeeping — handy
+    for offline passes (e.g. K73 shared-ritual shape derivation) that
+    only need the coarse arc label of a message.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+    for arc, pattern, _conf in _ARC_PATTERNS:
+        if pattern.search(text):
+            return arc
+    return None
+
+
 class ArcEstimator:
     """Regex-only classifier (microseconds) that proposes an arc per turn."""
 
@@ -582,6 +599,7 @@ __all__ = [
     "ArcState",
     "ArcStore",
     "VALID_ARCS",
+    "estimate_arc",
     "_format_smooth_block",
     "_parse_smooth_output",
 ]

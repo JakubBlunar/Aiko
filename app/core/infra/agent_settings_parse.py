@@ -1567,6 +1567,23 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 0.0,
                 float(agent_raw.get("wellbeing_concern_cooldown_days", 7.0)),
             ),
+            shared_ritual_enabled=bool(
+                agent_raw.get("shared_ritual_enabled", True),
+            ),
+            shared_ritual_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get(
+                        "shared_ritual_check_interval_seconds", 86400
+                    )
+                ),
+            ),
+            shared_ritual_surface_cooldown_days=max(
+                0.0,
+                float(
+                    agent_raw.get("shared_ritual_surface_cooldown_days", 3.0)
+                ),
+            ),
             promise_followthrough_enabled=bool(
                 agent_raw.get("promise_followthrough_enabled", True),
             ),

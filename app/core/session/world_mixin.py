@@ -923,6 +923,15 @@ class WorldMixin:
             except Exception:
                 days_known = 0
 
+        # K73 shared rituals (read-only list for the Together tab).
+        shared_rituals: list[dict[str, Any]] = []
+        try:
+            from app.core.relationship import shared_ritual as _sr
+
+            shared_rituals = _sr.load_rituals(self._chat_db.kv_get)
+        except Exception:
+            log.debug("together shared_rituals load failed", exc_info=True)
+
         return {
             "phase": phase,
             "days_known": int(days_known),
@@ -937,6 +946,7 @@ class WorldMixin:
             "recent_moments_count": (
                 store.count() if store is not None else 0
             ),
+            "shared_rituals": shared_rituals,
         }
 
     def note_gift_received(self) -> None:

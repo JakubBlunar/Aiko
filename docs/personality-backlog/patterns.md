@@ -753,7 +753,21 @@ block, `agent.wellbeing_concern_enabled` + cooldown knobs.
 
 ---
 
-## K73. Shared ritual formation — "this is becoming our thing"
+## K73. Shared ritual formation — "this is becoming our thing" ✅ shipped
+
+> ✅ **Shipped.** Pure module
+> [`shared_ritual.py`](../../app/core/relationship/shared_ritual.py) +
+> [`SharedRitualWorker`](../../app/core/proactive/shared_ritual_worker.py)
+> mine message timing + a coarse per-session conversation-arc *shape*
+> (via the new pure `conversation_arc.estimate_arc`) for
+> `(weekday, bucket, shape)` slots that recurred across ≥ `min_weeks`
+> distinct ISO weeks; `_render_shared_ritual_block` (T6, after
+> `wellbeing_concern`) surfaces the strongest un-acknowledged one once as
+> a warm "this has become our thing" beat (cooldown + acknowledged-flag
+> gated), then it's a light standing reference. Named-ritual kv store
+> (`aiko.shared_rituals`) feeds a read-only "Our things" Together-tab
+> section. `agent.shared_ritual_enabled`. Full writeup:
+> [shipped/patterns-k31-k60.md → K73](shipped/patterns-k31-k60.md#k73-shared-ritual-formation--this-is-becoming-our-thing).
 
 **Motivation.** K3 detects the *user's solo* recurring slots (gym Tuesdays).
 What it can't see is the **dyadic** ritual — the patterns in how *the two of

@@ -197,6 +197,9 @@ class DetectorsInitMixin:
         # K72 wellbeing-concern producer + MCP surfacing bypass.
         self._wellbeing_concern_force_next: bool = False
         self._wellbeing_concern_worker: Any = None
+        # K73 shared-ritual producer + MCP surfacing bypass.
+        self._shared_ritual_force_next: bool = False
+        self._shared_ritual_worker: Any = None
         # K71 self-callback — watermark-gated cue-producer (her continuity).
         self._self_callback_force_next: bool = False
         self._self_callback_worker: Any = None

@@ -1544,6 +1544,130 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_wellbeing_concern_surface raised: {exc}"
 
     @mcp.tool()
+    def get_shared_ritual_state() -> str:
+        """K73 — dump the shared-ritual worker + surfacing state.
+
+        The SharedRitualWorker names dyadic ``(cadence, shape)`` rituals
+        that genuinely recurred across weeks into ``aiko.shared_rituals``;
+        ``_render_shared_ritual_block`` surfaces the newest un-acknowledged
+        one once as a warm "this has become our thing" beat (cooldown +
+        acknowledged-flag gated). It is NEVER spoken verbatim.
+
+        Returns a JSON dict with the master switch, cadence + surface
+        cooldown, detection thresholds, whether the worker wired up, the
+        MCP force-next flag, the full ritual store, the strongest pending
+        ritual, and the surfacing watermark.
+        """
+        try:
+            from app.core.relationship import shared_ritual as _sr
+
+            agent = session._settings.agent
+            mem = session._memory_settings
+
+            def kv(key: str) -> str | None:
+                try:
+                    return session._chat_db.kv_get(key)
+                except Exception:
+                    return None
+
+            rituals = _sr.load_rituals(session._chat_db.kv_get)
+            pending = _sr.pick_unacknowledged(rituals)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "shared_ritual_enabled", True)
+                    ),
+                    "check_interval_seconds": int(
+                        getattr(
+                            agent,
+                            "shared_ritual_check_interval_seconds",
+                            86400,
+                        )
+                    ),
+                    "surface_cooldown_days": float(
+                        getattr(
+                            agent, "shared_ritual_surface_cooldown_days", 3.0
+                        )
+                    ),
+                    "window_days": int(
+                        getattr(mem, "shared_ritual_window_days", 56)
+                    ),
+                    "min_weeks": int(
+                        getattr(mem, "shared_ritual_min_weeks", 3)
+                    ),
+                    "min_share": float(
+                        getattr(mem, "shared_ritual_min_share", 0.34)
+                    ),
+                    "min_messages": int(
+                        getattr(mem, "shared_ritual_min_messages", 30)
+                    ),
+                    "worker_registered": getattr(
+                        session, "_shared_ritual_worker", None
+                    )
+                    is not None,
+                    "force_next": bool(
+                        getattr(session, "_shared_ritual_force_next", False)
+                    ),
+                    "rituals": rituals,
+                    "pending": pending,
+                    "last_surfaced_at": kv("shared_ritual.last_surfaced_at"),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_shared_ritual_state raised: {exc}"
+
+    @mcp.tool()
+    def force_shared_ritual_draft() -> str:
+        """Run the shared-ritual worker once, right now.
+
+        Arms a one-shot bypass of the min-messages floor, then calls
+        ``run()`` directly so the ritual store is refreshed from the live
+        message history immediately. Pairs with
+        ``force_shared_ritual_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_shared_ritual_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_shared_ritual_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_shared_ritual_surface() -> str:
+        """Arm a one-shot bypass on the shared-ritual surfacing gates.
+
+        Sets ``_shared_ritual_force_next`` so the next provider call
+        ignores both the surface cooldown and the acknowledged flag of the
+        strongest pending ritual. The store still has to be non-empty (run
+        ``force_shared_ritual_draft`` first if it isn't).
+
+        Repro: ``force_shared_ritual_draft()`` ->
+        ``force_shared_ritual_surface()`` -> ``send_message(skip_tts=true)``
+        -> confirm the "... have become our thing" line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._shared_ritual_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the shared-ritual cooldown "
+                        "+ ack flag; store must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_shared_ritual_surface raised: {exc}"
+
+    @mcp.tool()
     def get_task_report_decision_state() -> str:
         """C6 — dump the worker-model task-report decision state.
 

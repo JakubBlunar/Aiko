@@ -2011,6 +2011,21 @@ class AgentSettings:
     # to clear the date-free signature gate on top of this.
     wellbeing_concern_cooldown_days: float = 7.0
 
+    # K73 shared-ritual formation. A daily idle sweep names dyadic
+    # ``(cadence, shape)`` rituals that genuinely recurred across weeks
+    # into ``aiko.shared_rituals``; ``_render_shared_ritual_block``
+    # surfaces the newest un-acknowledged one once as a warm "this has
+    # become our thing" beat (then it's a light standing reference).
+    # Detection thresholds live on ``MemorySettings``. Off -> no naming,
+    # no cue.
+    shared_ritual_enabled: bool = True
+    # How often the worker refreshes the ritual store (default daily;
+    # clamped to >= 60s). The sweep is idempotent.
+    shared_ritual_check_interval_seconds: int = 86400
+    # Wall-clock cooldown between two ritual acknowledgments so a burst of
+    # newly-qualified rituals doesn't announce back-to-back.
+    shared_ritual_surface_cooldown_days: float = 3.0
+
     # ── K43: promise follow-through ───────────────────────────────────
     # Master switch for the promise lifecycle + follow-through cue. When
     # ON, assistant-side ``kind="promise"`` memories carry an
