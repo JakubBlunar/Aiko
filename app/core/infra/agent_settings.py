@@ -1723,6 +1723,15 @@ class AgentSettings:
     # is left to K20 untouched. Off → neither the cue nor the shield run.
     stance_persistence_enabled: bool = True
 
+    # ── K63: long-arc callbacks ───────────────────────────────────────
+    # Master switch for the rare "weeks ago you said…" reach. When on
+    # (default) the inner-life provider may, on an eligible turn (past its
+    # per-session cap + wall-clock cooldown), surface an old, topically-
+    # linked memory as a tentative callback cue. The age / cosine / cap /
+    # cooldown knobs live under ``memory.long_arc_callback_*``. Off → the
+    # provider never runs (no embed, no search).
+    long_arc_callback_enabled: bool = True
+
     # ── K28: "What I've been turning over" ────────────────────────────
     # Master switch for the between-session reflection-surfacing cue.
     # Off → no turning-over block ever lands in the prompt. On (default)

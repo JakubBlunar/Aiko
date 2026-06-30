@@ -78,7 +78,7 @@ on top of already-shipped infrastructure.
 | K60 | Tsundere mask | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial) |
 | K61 | Specifics over generalities (knowledge grounding) | ✅ shipped — [awareness.md](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics) |
 | K62 | Co-experience companion (follow a show/album) | ❌ open |
-| K63 | Long-arc callbacks — "weeks ago you said…" | ❌ open |
+| K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
 | K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-) |
 | K65 | Worker modernization for the topic-cluster era | ❌ open (audit; sub-items a–e) |
 | K66 | Earned familiarity — "well-trodden ground" | ❌ open |
@@ -356,20 +356,7 @@ the user's stated progress; default to cautious when unsure.
 
 ## K63. Long-arc callbacks — "weeks ago you said..."
 
-**Motivation.** K22 catches inside-jokes and short-horizon callbacks, but
-Aiko rarely reaches *weeks* back to connect a current moment to something
-the user said long ago ("this reminds me of that thing you mentioned about
-your dad back in May"). That long reach is one of the strongest "she
-actually knows me" signals a companion can produce. Key files:
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(an *aged* retrieval lane that deliberately surfaces an older, topically
-linked memory alongside the recent ones — inverse of the recency boost),
-a callback-candidate picker that gates on age (> N weeks) + topical link
-+ a cooldown so it stays rare and special, and a persona cue teaching her
-to offer it tentatively ("didn't you once say...?") rather than asserting
-a possibly-faded detail as fact. Leans on K25 (confidence time-decay) so
-an old callback is hedged appropriately. Rarity is the whole point —
-over-firing turns "she remembers" into "she's combing a database."
+✅ **Shipped.** See [shipped/patterns-k31-k60.md → K63](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said).
 
 ---
 

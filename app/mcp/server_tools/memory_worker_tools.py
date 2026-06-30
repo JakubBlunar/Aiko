@@ -1169,6 +1169,96 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_stance_persistence raised: {exc}"
 
     @mcp.tool()
+    def get_long_arc_callback_state() -> str:
+        """K63 — dump the long-arc callback ("weeks ago you said…") state.
+
+        Shows the master switch, the age / cosine / cooldown / cap / min-
+        words knobs, the live per-session count, the wall-clock cooldown
+        kv stamp + don't-repeat ring, the one-shot force flag, the last
+        fire diagnostic, and (when ``user_text`` is supplied) a dry-run of
+        the aged retrieval lane so you can see which old memories *would*
+        qualify for the current turn. First stop for "why didn't Aiko reach
+        back to that thing from months ago?".
+        """
+        from datetime import datetime, timezone
+
+        mem = session._memory_settings
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(session._settings.agent, "long_arc_callback_enabled", True)
+            ),
+            "settings": {
+                "min_age_days": int(
+                    getattr(mem, "long_arc_callback_min_age_days", 21)
+                ),
+                "min_cosine": float(
+                    getattr(mem, "long_arc_callback_min_cosine", 0.55)
+                ),
+                "cooldown_hours": float(
+                    getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
+                ),
+                "per_session_cap": int(
+                    getattr(mem, "long_arc_callback_per_session_cap", 1)
+                ),
+                "min_user_words": int(
+                    getattr(mem, "long_arc_callback_min_user_words", 5)
+                ),
+            },
+            "session_count": int(
+                getattr(session, "_long_arc_callback_session_count", 0) or 0
+            ),
+            "force_next": bool(
+                getattr(session, "_long_arc_callback_force_next", False)
+            ),
+            "last_fire": getattr(session, "_last_long_arc_callback", None),
+        }
+        try:
+            from app.core.conversation import long_arc_callback as _lac
+
+            now = datetime.now(timezone.utc)
+            out["last_fired_at"] = session._chat_db.kv_get(_lac.KV_LAST_FIRED_AT)
+            out["recent_ids"] = _lac.load_recent_ids(session._chat_db.kv_get)
+            out["cooldown_elapsed"] = _lac.cooldown_elapsed(
+                session._chat_db.kv_get,
+                now=now,
+                cooldown_hours=float(
+                    getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
+                ),
+            )
+        except Exception as exc:
+            out["kv_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_long_arc_callback() -> str:
+        """K63 — arm a one-shot bypass on the cap + cooldown + min-words.
+
+        Sets ``_long_arc_callback_force_next`` so the next provider call
+        skips the per-session cap, the wall-clock cooldown, and the min-
+        words gate. The age / cosine / kind gates still apply: the turn
+        must mention something that actually cosine-matches an old (>=
+        ``min_age_days``) memory, or the bypass silently expires. Repro:
+        seed an old memory, call this, then send a message on that topic
+        and check ``tail_logs(module_contains="long_arc")`` for
+        ``long-arc-callback fire:``.
+        """
+        try:
+            session._long_arc_callback_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the cap/cooldown/min-words "
+                        "gates; an old topically-matching memory is still "
+                        "required to fire"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_long_arc_callback raised: {exc}"
+
+    @mcp.tool()
     def get_knowledge_gap_notice_state() -> str:
         """F10f — dump the KnowledgeGapNoticeWorker + provider state.
 

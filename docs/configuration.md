@@ -55,6 +55,7 @@ exists to keep them in lock-step.
 | Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
 | Don't cave on taste pushback (K46 stance persistence) | `agent.stance_persistence_enabled` | `true` |
+| Long-arc callbacks "weeks ago you said…" (K63) | `agent.long_arc_callback_enabled` | `true` |
 | Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Cue-register rotation (K51 de-"Heads-up") | `agent.cue_register_rotation_enabled` | `true` |
@@ -708,6 +709,21 @@ Rides on top of K29 + K20 to draw the **taste vs facts** line. After Aiko states
 - `memory.stance_persistence_window` *(int, `3`, min `0`)* — how many turns a just-stated taste stays "warm". The window is armed (post-turn) whenever a K29 cue fires and decremented once per turn; while it's `> 0` a mild pushback is read as taste disagreement. `0` effectively disables the feature (window can never be positive).
 
 Verification: enable INFO logging on `app.session` and watch for `stance-persistence fire: band=… window=… forced=…` (cue) and `stance-persistence: shielded calibration from taste pushback (band=… window=…)` (write shield). MCP `get_stance_persistence_state()` dumps the switch, the window setting, the live countdown + stance snippet, and the last-fire diagnostic; `force_stance_persistence()` arms a one-shot bypass on the window (a mild-pushback band is still required). Tests: `tests/test_stance_persistence.py`, `StancePersistenceProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
+
+### K63 — long-arc callbacks ("weeks ago you said...")
+
+A rare "she actually knows me" beat: occasionally Aiko reaches **weeks or months** back to connect the live turn to something the user told her long ago ("wait — didn't you once mention your dad's workshop, back in spring?"). An *aged retrieval lane* on the RAG retriever (the inverse of the recency boost) finds an old, topically-linked memory; a provider surfaces it as a tentative callback cue, leaning on K25's hedging posture. Rarity is the whole point — paced by a per-session cap, a wall-clock cooldown, a high topical bar, a hard age floor, and a don't-repeat ring.
+
+- `agent.long_arc_callback_enabled` *(bool, `true`)* — master switch. Off → the provider never runs (no embed, no search).
+- `memory.long_arc_callback_min_age_days` *(int, `21`, min `1`)* — a callback memory must be at least this old (keeps it "long arc"; K22 covers fresher callbacks).
+- `memory.long_arc_callback_min_cosine` *(float, `0.55`, clamped `0..1`)* — topical bar of the live turn vs. the old memory. Higher than the normal RAG `score_threshold` so a callback is a genuine link.
+- `memory.long_arc_callback_cooldown_hours` *(float, `6.0`, min `0`)* — wall-clock cooldown between callbacks (persisted in `kv_meta`, survives restarts).
+- `memory.long_arc_callback_per_session_cap` *(int, `1`, min `0`)* — at most this many callbacks per session, regardless of cooldown. `0` disables.
+- `memory.long_arc_callback_min_user_words` *(int, `5`, min `0`)* — skip turns shorter than this (too little topic to anchor a callback; also avoids a search on trivial replies).
+
+Only memory kinds representing things the *user* told Aiko qualify (`fact` / `preference` / `event` / `relationship` / `shared_moment`); her own self-stances / distilled knowledge never become callbacks. The cue is query-aware and dropped under aggressive mode.
+
+Verification: enable INFO logging on `app.session` and watch for `long-arc-callback fire: mem=… kind=… cosine=… age_days=… forced=…`. MCP `get_long_arc_callback_state()` dumps the switch, all knobs, the live per-session count, the kv cooldown stamp + don't-repeat ring, `cooldown_elapsed`, the force flag, and the last fire; `force_long_arc_callback()` arms a one-shot bypass on the cap + cooldown + min-words gates (the age / cosine / kind gates still apply, so an old topically-matching memory is still required). Repro: seed an old (≥ 21-day) memory on a topic, `force_long_arc_callback()`, send a message on that topic, and the tentative line lands in `get_last_response_detail.system_prompt`. Tests: `tests/test_long_arc_callback.py`, `LongArcCallbackProviderTests` in `tests/test_prompt_assembler.py`, `LongArcCallbackSettingsTests` in `tests/test_settings.py`.
 
 ### K-time1 — wall-clock prefixes on chat history
 

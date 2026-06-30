@@ -269,6 +269,7 @@
     "opinion_injection_enabled": true,
     "opinion_injection_require_definite": false,
     "stance_persistence_enabled": true,
+    "long_arc_callback_enabled": true,
     "turning_over_enabled": true,
     "confidence_time_decay_enabled": true,
     "callback_detector_enabled": true,

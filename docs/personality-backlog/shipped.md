@@ -96,6 +96,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K44. Felt-language affect block — stop leaking robot coordinates](shipped/patterns-k31-k60.md#k44-felt-language-affect-block--stop-leaking-robot-coordinates)
 - [K45. Mood inertia — instant face, lagging heart](shipped/patterns-k31-k60.md#k45-mood-inertia--instant-face-lagging-heart)
 - [K46. Stance persistence — don't cave on taste pushback](shipped/patterns-k31-k60.md#k46-stance-persistence--dont-cave-on-taste-pushback)
+- [K63. Long-arc callbacks — "weeks ago you said..."](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said)
 - [K51. Cue-register rotation — de-"Heads-up" the inner life](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life)
 - [K56. Persona counterweight — the "leading vs following" rewrite](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
 - [K52. Wants ledger — desire with pressure](shipped/patterns-k31-k60.md#k52-wants-ledger--desire-with-pressure)

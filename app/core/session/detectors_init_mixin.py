@@ -114,6 +114,15 @@ class DetectorsInitMixin:
         self._stance_recent_text: str = ""
         self._stance_persistence_force_next: bool = False
         self._last_stance_persistence: dict[str, Any] | None = None
+        # K63 — long-arc callbacks ("weeks ago you said…").
+        # ``_long_arc_callback_session_count`` caps how many callbacks may
+        # fire this session (reset on switch_session); the wall-clock
+        # cooldown + don't-repeat ring live in kv_meta so the rarity
+        # survives a restart. ``_long_arc_callback_force_next`` is the MCP
+        # one-shot bypass; ``_last_long_arc_callback`` backs the debug dump.
+        self._long_arc_callback_session_count: int = 0
+        self._long_arc_callback_force_next: bool = False
+        self._last_long_arc_callback: dict[str, Any] | None = None
         # K28 — "What I've been turning over" between-session cue.
         # ``_pending_turning_over_seconds`` is armed by the post-turn
         # engagement tracker when a typed turn lands after a gap of
