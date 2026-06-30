@@ -205,6 +205,42 @@ class IdleWorkersInitMixin:
                     "WellbeingConcernWorker init failed", exc_info=True,
                 )
 
+            # K73 — shared-ritual worker (names dyadic "(cadence, shape)"
+            # rituals that genuinely recurred across weeks). Reads message
+            # timing + coarse conversation-arc shape; idempotent sweep.
+            try:
+                from app.core.proactive.shared_ritual_worker import (
+                    SharedRitualWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._shared_ritual_worker = SharedRitualWorker(
+                    chat_db=self._chat_db,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "shared_ritual_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=getattr(
+                        agent, "shared_ritual_check_interval_seconds", 86400
+                    ),
+                    window_days=getattr(
+                        mem, "shared_ritual_window_days", 56
+                    ),
+                    min_weeks=getattr(mem, "shared_ritual_min_weeks", 3),
+                    min_share=getattr(mem, "shared_ritual_min_share", 0.34),
+                    max_active=getattr(mem, "shared_ritual_max_active", 6),
+                    min_messages=getattr(
+                        mem, "shared_ritual_min_messages", 30
+                    ),
+                )
+                self._idle_scheduler.register(self._shared_ritual_worker)
+            except Exception:
+                log.warning("SharedRitualWorker init failed", exc_info=True)
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local

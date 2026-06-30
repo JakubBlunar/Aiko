@@ -2267,6 +2267,52 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.wellbeing_concern_late_night_min, 1)
         self.assertEqual(result.memory.wellbeing_concern_journal_max, 1)
 
+    def test_shared_ritual_round_trip(self) -> None:
+        # K73: agent master switch + cadence/cooldown + memory thresholds.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.shared_ritual_enabled)
+        self.assertEqual(
+            result.agent.shared_ritual_check_interval_seconds, 86400,
+        )
+        self.assertAlmostEqual(
+            result.agent.shared_ritual_surface_cooldown_days, 3.0,
+        )
+        self.assertEqual(result.memory.shared_ritual_window_days, 56)
+        self.assertEqual(result.memory.shared_ritual_min_weeks, 3)
+        self.assertAlmostEqual(result.memory.shared_ritual_min_share, 0.34)
+        self.assertEqual(result.memory.shared_ritual_max_active, 6)
+        self.assertEqual(result.memory.shared_ritual_min_messages, 30)
+        path = self._write_config(
+            agent_extra={
+                "shared_ritual_enabled": False,
+                "shared_ritual_check_interval_seconds": 5,  # floor 60
+                "shared_ritual_surface_cooldown_days": 9.0,
+            },
+        )
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "shared_ritual_window_days": 0,  # floor 7
+            "shared_ritual_min_weeks": 0,  # floor 1
+            "shared_ritual_min_share": 5.0,  # clamp to 1.0
+            "shared_ritual_max_active": 0,  # floor 1
+            "shared_ritual_min_messages": 0,  # floor 1
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.shared_ritual_enabled)
+        self.assertEqual(
+            result.agent.shared_ritual_check_interval_seconds, 60,
+        )
+        self.assertAlmostEqual(
+            result.agent.shared_ritual_surface_cooldown_days, 9.0,
+        )
+        self.assertEqual(result.memory.shared_ritual_window_days, 7)
+        self.assertEqual(result.memory.shared_ritual_min_weeks, 1)
+        self.assertAlmostEqual(result.memory.shared_ritual_min_share, 1.0)
+        self.assertEqual(result.memory.shared_ritual_max_active, 1)
+        self.assertEqual(result.memory.shared_ritual_min_messages, 1)
+
     def test_humor_style_round_trip(self) -> None:
         # K74: agent-side humor-style learner knobs + clamps.
         result = load_settings(config_path=self._write_config())

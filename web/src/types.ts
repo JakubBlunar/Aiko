@@ -806,6 +806,18 @@ export interface AnniversaryTodayPayload {
   window_label: string;
 }
 
+export interface SharedRitual {
+  key: string;
+  label: string;
+  cadence: string;
+  shape: string;
+  shape_label: string;
+  weeks_seen: number;
+  share?: number;
+  first_seen?: string;
+  acknowledged: boolean;
+}
+
 export interface TogetherSummary {
   phase: string;
   days_known: number;
@@ -816,6 +828,8 @@ export interface TogetherSummary {
   axes: RelationshipAxes;
   anniversary_today: AnniversaryTodayPayload | null;
   recent_moments_count: number;
+  /** K73 dyadic shared rituals ("our Friday-evening wind-downs"). */
+  shared_rituals?: SharedRitual[];
 }
 
 export interface MemoriesResponse {

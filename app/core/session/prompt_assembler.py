@@ -194,6 +194,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K72: rare, hard-gated "you doing okay?" wellbeing concern.
         # Sibling cue-producer; watermark-gated one-shot, drops on deflect.
         "wellbeing_concern_block",
+        # K73: warm "this has become our thing" shared-ritual beat.
+        # Sibling cue-producer; cooldown + acknowledged-flag gated.
+        "shared_ritual_block",
         # K-time3: forward sweep over future_plan rows due in the horizon
         # window, with the relative times pre-resolved. Clusters with the
         # other future-plan / time-anchored cues (follow_up).
@@ -581,6 +584,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # independent of the gap-return cue family (like follow_up).
         self._growth_witness_provider: Callable[[], str] | None = None
         self._wellbeing_concern_provider: Callable[[], str] | None = None
+        self._shared_ritual_provider: Callable[[], str] | None = None
         # K71 self-callback cue. Consumer of the SelfCallbackWorker ring;
         # surfaces a rare "close the loop on my own aged feeling /
         # intention" beat. Watermark-gated one-shot, independent of the
@@ -1732,6 +1736,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     wellbeing_concern_block = ""
 
+        # K73 shared ritual: warm "this has become our thing" beat.
+        # Built every turn (consumes a cooldown/ack flag) but rare.
+        shared_ritual_block = ""
+        if getattr(self, "_shared_ritual_provider", None) is not None:
+            with _timed_phase(provider_ms, "shared_ritual"):
+                try:
+                    shared_ritual_block = (
+                        self._shared_ritual_provider() or ""
+                    )
+                except Exception:
+                    log.debug("shared_ritual provider raised", exc_info=True)
+                    shared_ritual_block = ""
+
         # K-time3 upcoming-horizon: pre-resolved future relative times for
         # plans due within the horizon window. Time-anchored (not gap-gated),
         # independent of the _gap_cue_surfaced family.
@@ -2678,6 +2695,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # watermark-gated one-shot. NOT in the K16 suppression set —
             # the grounding line carries no multi-day wellbeing signal.
             system_parts.append(wellbeing_concern_block)
+        if shared_ritual_block:
+            # K73: warm "this has become our thing" beat. Sits with the
+            # cue-producer family; cooldown + acknowledged-flag gated
+            # one-shot. NOT in the K16 suppression set.
+            system_parts.append(shared_ritual_block)
         if upcoming_horizon_block:
             # K-time3: "coming up ..." with the relative times pre-resolved.
             # Sits right after the follow_up cue — both are future-plan /

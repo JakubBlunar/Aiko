@@ -1654,6 +1654,89 @@ class WellbeingConcernProviderSlotTests(unittest.TestCase):
         )
 
 
+class SharedRitualProviderSlotTests(unittest.TestCase):
+    """K73 shared-ritual block lands in the system prompt, is silent when
+    empty, RETAINED under aggressive mode (cooldown/ack-consuming one-shot),
+    swallows provider exceptions, and is registered in T6 right after
+    wellbeing_concern (the cue-producer family)."""
+
+    _CUE = "have become our thing"
+
+    def _cue_line(self) -> str:
+        return (
+            "You've quietly realised something has become a real pattern "
+            "between you and Jacob: our Friday-evening wind-downs have "
+            "become our thing the two of you do."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sr1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                shared_ritual=lambda: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sr1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sr2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(shared_ritual=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "sr2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sr3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                shared_ritual=lambda: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sr3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sr4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(shared_ritual=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "sr4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_after_wellbeing(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("shared_ritual_block", t6)
+        self.assertEqual(
+            t6.index("shared_ritual_block"),
+            t6.index("wellbeing_concern_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

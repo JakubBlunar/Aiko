@@ -128,6 +128,30 @@ export function TogetherTab({
         </Section>
       ) : null}
 
+      {/* Shared rituals ("our things") */}
+      {summary?.shared_rituals?.length ? (
+        <Section title="Our things">
+          <ul className="space-y-1 text-[12px]">
+            {summary.shared_rituals.map((r) => (
+              <li
+                key={r.key}
+                className={`flex items-center gap-2 rounded-md px-2 py-1 ${
+                  r.acknowledged
+                    ? "bg-pink-500/10 text-pink-100"
+                    : "text-ink-100/55"
+                }`}
+              >
+                <span>{r.acknowledged ? "♥" : "·"}</span>
+                <span>{r.label}</span>
+                <span className="ml-auto font-mono text-[10px] text-ink-100/40">
+                  {r.weeks_seen}w
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
+
       {/* Milestones */}
       {summary?.milestones?.length ? (
         <Section title="Milestones">

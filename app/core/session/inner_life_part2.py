@@ -1547,6 +1547,104 @@ class InnerLifePart2Mixin:
         log.info("wellbeing-concern fire: at=%s kind=%s", at, kind)
         return line
 
+    def _render_shared_ritual_block(self) -> str:
+        """K73: surface one warm "this has become our thing" cue.
+
+        Consumer side of the :class:`SharedRitualWorker` producer. The
+        worker names dyadic ``(cadence, shape)`` rituals into
+        ``aiko.shared_rituals``; this provider folds the newest
+        un-acknowledged one into the prompt as a warm, optional
+        acknowledgment Aiko phrases herself, then flags it acknowledged so
+        it never re-announces (it becomes a light standing reference).
+        NEVER spoken verbatim.
+
+        Gated by a per-acknowledgment wall-clock cooldown
+        (``shared_ritual.last_surfaced_at``) so a burst of newly-qualified
+        rituals doesn't announce back-to-back. MCP debug:
+        ``force_shared_ritual_surface`` arms ``_shared_ritual_force_next``
+        (bypasses both the cooldown and the acknowledged flag of the
+        strongest pending ritual; store must be non-empty).
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "shared_ritual_enabled", True)):
+            return ""
+
+        force_next = bool(getattr(self, "_shared_ritual_force_next", False))
+        if force_next:
+            self._shared_ritual_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        from datetime import datetime, timezone
+
+        try:
+            from app.core.relationship import shared_ritual as _sr
+        except Exception:
+            log.debug("shared_ritual import failed", exc_info=True)
+            return ""
+
+        rituals = _sr.load_rituals(chat_db.kv_get)
+        if not rituals:
+            return ""
+        pick = _sr.pick_unacknowledged(rituals)
+        if pick is None:
+            return ""
+
+        watermark_key = "shared_ritual.last_surfaced_at"
+        now = datetime.now(timezone.utc)
+        if not force_next:
+            cooldown_days = float(
+                getattr(agent, "shared_ritual_surface_cooldown_days", 3.0)
+            )
+            if cooldown_days > 0:
+                try:
+                    raw_last = chat_db.kv_get(watermark_key)
+                except Exception:
+                    raw_last = None
+                last = self._parse_iso_or_none(raw_last)
+                if last is not None and (
+                    (now - last).total_seconds() < cooldown_days * 86400.0
+                ):
+                    return ""
+
+        line = _sr.render_inner_life_block(
+            pick, user_display_name=self.user_display_name,
+        )
+        if not line:
+            return ""
+
+        key = str(pick.get("key"))
+        try:
+            _sr.save_rituals(
+                chat_db.kv_set, _sr.mark_acknowledged(rituals, key),
+            )
+            chat_db.kv_set(watermark_key, now.isoformat(timespec="seconds"))
+        except Exception:
+            log.debug("shared_ritual ack/watermark write failed", exc_info=True)
+
+        log.info("shared-ritual fire: key=%s label=%r", key, pick.get("label"))
+        return line
+
+    @staticmethod
+    def _parse_iso_or_none(value: object):
+        """Best-effort ISO-8601 parse to an aware datetime, else ``None``."""
+        from datetime import datetime, timezone
+
+        if not isinstance(value, str) or not value.strip():
+            return None
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
     def _render_upcoming_horizon_block(self) -> str:
         """K-time3: surface a "coming up" heads-up with pre-resolved times.
 

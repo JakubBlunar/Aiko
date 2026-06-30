@@ -844,6 +844,16 @@ class MemorySettings:
     wellbeing_concern_rough_run: int = 5
     wellbeing_concern_rough_threshold: float = -0.25
     wellbeing_concern_journal_max: int = 4
+    # K73 shared-ritual formation. ``window_days`` is the multi-week
+    # lookback; a ``(weekday, bucket, shape)`` slot becomes a ritual once
+    # it recurs in ``min_weeks`` distinct ISO weeks AND ``min_share`` of
+    # the window's weeks. ``min_messages`` is the floor before any naming;
+    # ``max_active`` caps the stored list.
+    shared_ritual_window_days: int = 56
+    shared_ritual_min_weeks: int = 3
+    shared_ritual_min_share: float = 0.34
+    shared_ritual_max_active: int = 6
+    shared_ritual_min_messages: int = 30
     # K76 flashbulb encoding. At memory-write time the live AffectState
     # arousal + any active K57 episode intensity fold into a [0,1] charge;
     # ``flashbulb_max_boost`` is the most salience a fully-charged moment
@@ -2207,6 +2217,26 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             wellbeing_concern_journal_max=max(
                 1,
                 int(memory_raw.get("wellbeing_concern_journal_max", 4)),
+            ),
+            shared_ritual_window_days=max(
+                7,
+                int(memory_raw.get("shared_ritual_window_days", 56)),
+            ),
+            shared_ritual_min_weeks=max(
+                1,
+                int(memory_raw.get("shared_ritual_min_weeks", 3)),
+            ),
+            shared_ritual_min_share=max(
+                0.0,
+                min(1.0, float(memory_raw.get("shared_ritual_min_share", 0.34))),
+            ),
+            shared_ritual_max_active=max(
+                1,
+                int(memory_raw.get("shared_ritual_max_active", 6)),
+            ),
+            shared_ritual_min_messages=max(
+                1,
+                int(memory_raw.get("shared_ritual_min_messages", 30)),
             ),
             flashbulb_enabled=bool(
                 memory_raw.get("flashbulb_enabled", True),
