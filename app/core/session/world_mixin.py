@@ -204,6 +204,109 @@ class WorldMixin:
             except Exception:
                 log.debug("axes listener raised", exc_info=True)
 
+    # ── K68 embodied vitality broadcast ─────────────────────────────
+
+    def add_vitality_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(patch)`` for body-energy updates.
+
+        Patch shape: ``{energy, expressiveness_mult, band}``. Debounced by
+        :meth:`_notify_vitality` (fires only on a ≥ 0.03 energy step) so a
+        chatty session doesn't flood the WS with micro-movements.
+        """
+        if callback and callback not in self._vitality_listeners:
+            self._vitality_listeners.append(callback)
+
+    def vitality_snapshot(self) -> dict[str, Any]:
+        """Current energy + derived embodiment fields (for the WS hello).
+
+        Reads the persisted ``aiko.vitality`` state, applies lazy
+        recovery toward the circadian baseline so a long idle gap is
+        reflected, and returns the same patch shape the listeners get.
+        Best-effort: returns a neutral default on any failure or when the
+        feature is disabled.
+        """
+        try:
+            from datetime import datetime
+
+            from app.core.affect import vitality as _vit
+            from app.core.affect import vitality_rhythm as _vr
+
+            mem = self._memory_settings
+            agent = self._settings.agent
+            if not bool(getattr(agent, "vitality_enabled", True)):
+                return {"energy": None, "expressiveness_mult": 1.0, "band": "normal"}
+            chat_db = getattr(self, "_chat_db", None)
+            now = datetime.now().astimezone()
+            baseline, _rhythm = _vr.current_baseline(
+                chat_db,
+                now,
+                enabled=bool(getattr(agent, "vitality_rhythm_enabled", True)),
+                exception_chance=float(
+                    getattr(mem, "vitality_rhythm_exception_chance", 0.3)
+                ),
+            )
+            raw = chat_db.kv_get(_vit.KV_VITALITY) if chat_db is not None else None
+            state = _vit.deserialize(raw, baseline=baseline, now=now)
+            state = _vit.step_recover(
+                state, baseline, now,
+                half_life_hours=float(
+                    getattr(mem, "vitality_recover_half_life_hours", 2.0)
+                ),
+            )
+            return self._vitality_patch(state.energy)
+        except Exception:
+            log.debug("vitality_snapshot failed", exc_info=True)
+            return {"energy": None, "expressiveness_mult": 1.0, "band": "normal"}
+
+    def _vitality_patch(self, energy: float) -> dict[str, Any]:
+        """Build the ``{energy, expressiveness_mult, band}`` patch."""
+        from app.core.affect import vitality as _vit
+
+        mem = self._memory_settings
+        e = max(0.0, min(1.0, float(energy)))
+        return {
+            "energy": round(e, 4),
+            "expressiveness_mult": _vit.expressiveness_multiplier(
+                e,
+                floor=float(getattr(mem, "vitality_expressiveness_floor", 0.7)),
+                ceil=float(getattr(mem, "vitality_expressiveness_ceil", 1.2)),
+            ),
+            "band": _vit.band(
+                e,
+                low_threshold=float(getattr(mem, "vitality_low_threshold", 0.30)),
+                high_threshold=float(
+                    getattr(mem, "vitality_high_threshold", 0.70)
+                ),
+            ),
+        }
+
+    def _notify_vitality(self, energy: float, *, force: bool = False) -> None:
+        """Broadcast a vitality patch when energy moved ≥ 0.03 (debounced).
+
+        ``force=True`` bypasses the debounce (used for the one-shot MCP
+        override + the first broadcast of a session).
+        """
+        try:
+            e = max(0.0, min(1.0, float(energy)))
+        except (TypeError, ValueError):
+            return
+        last = getattr(self, "_vitality_last_broadcast", None)
+        if (
+            not force
+            and last is not None
+            and abs(e - float(last)) < 0.03
+        ):
+            return
+        self._vitality_last_broadcast = e
+        patch = self._vitality_patch(e)
+        for listener in list(getattr(self, "_vitality_listeners", [])):
+            try:
+                listener(patch)
+            except Exception:
+                log.debug("vitality listener raised", exc_info=True)
+
     # ── Shared moments public API (consumed by REST layer) ──────────
 
     def list_shared_moments(

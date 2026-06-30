@@ -378,6 +378,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         except Exception:
             log.debug("axes broadcast failed", exc_info=True)
 
+    def _on_vitality(patch: dict[str, Any]) -> None:
+        # K68: body-energy update -> avatar gesture/breath amplitude.
+        try:
+            hub.broadcast({"type": "vitality_changed", **dict(patch)})
+        except Exception:
+            log.debug("vitality broadcast failed", exc_info=True)
+
     try:
         session.add_shared_moment_listener(_on_shared_moment)
     except Exception:
@@ -386,6 +393,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         session.add_relationship_axes_listener(_on_relationship_axes)
     except Exception:
         log.debug("axes listener subscribe failed", exc_info=True)
+    try:
+        session.add_vitality_listener(_on_vitality)
+    except Exception:
+        log.debug("vitality listener subscribe failed", exc_info=True)
 
     def _on_knowledge_gap(patch: dict[str, Any]) -> None:
         try:

@@ -81,6 +81,34 @@ class ProactivePresenceMixin:
                 return False
         return True
 
+    def _vitality_scale_silence(self, budget: float) -> float:
+        """K68: scale a proactive silence window by current body-energy.
+
+        Returns ``budget * (1 + factor * (1 - 2*energy))`` so a tired Aiko
+        (low energy) waits longer before initiating and a lit-up one
+        initiates sooner. ``vitality_proactive_factor=0`` or the feature
+        disabled -> the budget is returned unchanged. Best-effort.
+        """
+        try:
+            agent = self._settings.agent
+            if not bool(getattr(agent, "vitality_enabled", True)):
+                return budget
+            factor = float(
+                getattr(self._memory_settings, "vitality_proactive_factor", 0.4)
+            )
+            if factor <= 0.0:
+                return budget
+            snap = self.vitality_snapshot()
+            energy = snap.get("energy") if isinstance(snap, dict) else None
+            if energy is None:
+                return budget
+            e = max(0.0, min(1.0, float(energy)))
+            mult = 1.0 + factor * (1.0 - 2.0 * e)
+            return max(1.0, budget * mult)
+        except Exception:
+            log.debug("vitality silence scale raised", exc_info=True)
+            return budget
+
     def _arm_typed_silence_timer(self) -> None:
         """Schedule a one-shot fire after ``proactive_silence_seconds_typed``.
 
@@ -94,6 +122,12 @@ class ProactivePresenceMixin:
         if not bool(getattr(agent, "proactive_typed_enabled", True)):
             return
         budget = float(getattr(agent, "proactive_silence_seconds_typed", 240.0))
+        if budget <= 0.0:
+            return
+        # K68: a tired Aiko initiates less (stretch the silence window),
+        # a lit-up Aiko initiates sooner (shrink it). Energy 0 -> longer,
+        # energy 1 -> shorter, energy 0.5 -> unchanged.
+        budget = self._vitality_scale_silence(budget)
         if budget <= 0.0:
             return
         with self._typed_silence_lock:

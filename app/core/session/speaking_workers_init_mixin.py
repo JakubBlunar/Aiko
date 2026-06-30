@@ -548,6 +548,17 @@ class SpeakingWorkersInitMixin:
         self._relationship_axes_listeners: list[
             Callable[[dict[str, Any]], None]
         ] = []
+        # K68 embodied vitality: listeners fire when the body-energy
+        # scalar moves enough to matter (post-turn spend/boost or the
+        # idle-worker recovery tick). Patches carry ``energy`` +
+        # ``expressiveness_mult`` + ``band``; the WS hub broadcasts as
+        # ``vitality_changed`` so the avatar visibly droops / perks.
+        self._vitality_listeners: list[
+            Callable[[dict[str, Any]], None]
+        ] = []
+        # Last broadcast energy, for the 0.03-step debounce so a noisy
+        # chat doesn't flood the WS with micro-movements.
+        self._vitality_last_broadcast: float | None = None
         # F2 personality backlog: knowledge-gap listeners fire on create,
         # on resolve, and on delete. Patches carry ``gap`` (full row dict)
         # or ``deleted_gap_id``. WS hub broadcasts as
@@ -600,6 +611,7 @@ class SpeakingWorkersInitMixin:
         # pure functions). Token accounting runs through PromptTelemetry.
         self._prompt_assembler.set_inner_life_providers(
             affect=self._render_affect_block,
+            vitality=self._render_vitality_block,
             circadian=self._render_circadian_block,
             day_color=self._render_day_color_block,
             vulnerability_budget=self._render_vulnerability_budget_block,
@@ -805,6 +817,31 @@ class SpeakingWorkersInitMixin:
                     except Exception:
                         log.warning(
                             "day_color worker registration failed",
+                            exc_info=True,
+                        )
+                # K68 — embodied-vitality idle recovery. Relaxes the
+                # body-energy scalar toward the circadian baseline during
+                # quiet windows and broadcasts so the avatar visibly
+                # droops while she's left alone. The provider has a lazy
+                # recovery fallback for the next-turn case, same hybrid
+                # design as K27.
+                if bool(getattr(settings.agent, "vitality_enabled", True)):
+                    try:
+                        from app.core.affect.vitality_worker import (
+                            VitalityWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            VitalityWorker(
+                                chat_db=self._chat_db,
+                                agent_settings=settings.agent,
+                                memory_settings=self._memory_settings,
+                                notify=self._notify_vitality,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "vitality worker registration failed",
                             exc_info=True,
                         )
                 # H3 — mood-drift daily sampler. Records one (valence +

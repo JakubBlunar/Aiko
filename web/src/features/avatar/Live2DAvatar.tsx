@@ -180,7 +180,14 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
               backchannelHint: s.backchannelHint ?? "",
               composing: s.composing ?? false,
               circadianPeriod: s.avatar?.circadian_period ?? "",
-              expressiveness: s.avatar?.settings?.expressiveness ?? 1,
+              // K68: scale the user's expressiveness setting by Aiko's
+              // current body-energy so a tired Aiko visibly droops
+              // (smaller, slower gestures + breath) and a lit-up one
+              // gets a touch more animated — without overwriting the
+              // user's own slider.
+              expressiveness:
+                (s.avatar?.settings?.expressiveness ?? 1) *
+                (s.vitality?.expressivenessMult ?? 1),
               moodInertiaDamping:
                 s.avatar?.settings?.mood_inertia_damping ?? true,
             };

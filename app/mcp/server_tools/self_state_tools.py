@@ -698,6 +698,200 @@ def register(mcp, session: "SessionController") -> None:
             return f"reroll_day_color raised: {exc}"
 
     @mcp.tool()
+    def get_vitality_state() -> str:
+        """K68 — dump the live embodied-vitality (body-energy) state.
+
+        Returns a JSON dict with the master switch, the persisted
+        ``energy`` + ``last_update_at``, the current circadian
+        ``baseline`` energy is relaxing toward, a dry-run of the lazy
+        recovery (``recovered_energy`` = what the next provider call
+        would compute), the resulting ``band`` + ``expressiveness_mult``
+        (the avatar amplitude multiplier), the worker cadence, the
+        one-shot force flag, and the full settings snapshot.
+
+        Pairs with ``force_vitality_energy`` for end-to-end repro:
+
+        1. ``force_vitality_energy(energy=0.15)`` — arm a low battery.
+        2. Send a message and read ``get_last_response_detail`` — the
+           system prompt should carry the LOW "Body check: you're
+           running low..." register cue.
+        3. ``get_vitality_state`` — confirm the persisted energy + the
+           broadcast ``expressiveness_mult`` < 1 (avatar droops).
+        """
+        try:
+            from datetime import datetime
+
+            from app.core.affect import vitality as _vit
+            from app.core.affect import vitality_rhythm as _vr
+
+            agent = session._settings.agent
+            mem = session._memory_settings
+            chat_db = getattr(session, "_chat_db", None)
+            now = datetime.now().astimezone()
+            baseline, rhythm = _vr.current_baseline(
+                chat_db,
+                now,
+                enabled=bool(getattr(agent, "vitality_rhythm_enabled", True)),
+                exception_chance=float(
+                    getattr(mem, "vitality_rhythm_exception_chance", 0.3)
+                ),
+            )
+            raw = None
+            if chat_db is not None:
+                try:
+                    raw = chat_db.kv_get(_vit.KV_VITALITY)
+                except Exception:
+                    raw = None
+            state = _vit.deserialize(raw, baseline=baseline, now=now)
+            recovered = _vit.step_recover(
+                state, baseline, now,
+                half_life_hours=float(
+                    getattr(mem, "vitality_recover_half_life_hours", 2.0)
+                ),
+            )
+            low = float(getattr(mem, "vitality_low_threshold", 0.30))
+            high = float(getattr(mem, "vitality_high_threshold", 0.70))
+            return json.dumps(
+                {
+                    "enabled": bool(getattr(agent, "vitality_enabled", True)),
+                    "interval_seconds": int(
+                        getattr(agent, "vitality_check_interval_seconds", 900)
+                    ),
+                    "stored": {
+                        "energy": round(float(state.energy), 4),
+                        "last_update_at": state.last_update_at,
+                    },
+                    "baseline": round(float(baseline), 4),
+                    "rhythm": {
+                        "name": rhythm.name,
+                        "enabled": bool(
+                            getattr(agent, "vitality_rhythm_enabled", True)
+                        ),
+                        "exception_chance": float(
+                            getattr(mem, "vitality_rhythm_exception_chance", 0.3)
+                        ),
+                        "phase_shift_hours": rhythm.phase_shift_hours,
+                        "energy_scale": rhythm.energy_scale,
+                        "floor_boost": rhythm.floor_boost,
+                        "note": rhythm.note,
+                        "palette": [r.name for r in _vr.RHYTHMS],
+                    },
+                    "recovered_energy": round(float(recovered.energy), 4),
+                    "band": _vit.band(
+                        recovered.energy, low_threshold=low, high_threshold=high,
+                    ),
+                    "expressiveness_mult": _vit.expressiveness_multiplier(
+                        recovered.energy,
+                        floor=float(
+                            getattr(mem, "vitality_expressiveness_floor", 0.7)
+                        ),
+                        ceil=float(
+                            getattr(mem, "vitality_expressiveness_ceil", 1.2)
+                        ),
+                    ),
+                    "force_energy": getattr(
+                        session, "_vitality_force_energy", None,
+                    ),
+                    "settings": {
+                        "low_threshold": low,
+                        "high_threshold": high,
+                        "recover_half_life_hours": float(
+                            getattr(mem, "vitality_recover_half_life_hours", 2.0)
+                        ),
+                        "proactive_factor": float(
+                            getattr(mem, "vitality_proactive_factor", 0.4)
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_vitality_state raised: {exc}"
+
+    @mcp.tool()
+    def force_vitality_energy(energy: float) -> str:
+        """K68 — arm a one-shot body-energy override.
+
+        Sets ``_vitality_force_energy`` so the *next* provider call pins
+        energy to the given level (clamped to [0, 1]), renders that
+        level's band cue, and persists it (so the embodiment broadcast
+        + avatar droop pick it up). One-shot: consumed by the next
+        provider call.
+        """
+        try:
+            e = max(0.0, min(1.0, float(energy)))
+            session._vitality_force_energy = e
+            return json.dumps(
+                {
+                    "armed": True,
+                    "energy": e,
+                    "note": (
+                        "next provider call pins energy to this level, "
+                        "renders its band cue, persists + broadcasts; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_vitality_energy raised: {exc}"
+
+    @mcp.tool()
+    def force_vitality_rhythm(name: str) -> str:
+        """K68 — pin today's off-rhythm day to a named rhythm.
+
+        Writes the rhythm directly into ``kv_meta`` (with today's date),
+        so it sticks for the rest of the local day exactly as a real roll
+        would. Use it to reproduce "sleepy at noon":
+
+        1. ``force_vitality_rhythm(name="nocturnal")`` — flip her clock.
+        2. ``get_vitality_state`` — the ``baseline`` is now inverted for
+           the current hour (low by day, high at night), and ``rhythm``
+           shows the flipped profile + its private register ``note``.
+        3. Send a message around midday — the next prompt should carry
+           the LOW body-check cue plus the flipped-clock note.
+
+        Valid names: normal, early_bird, night_owl, nocturnal, sluggish,
+        wired. Unknown names return the palette without writing.
+        """
+        try:
+            from datetime import datetime
+
+            from app.core.affect import vitality_rhythm as _vr
+
+            chosen = _vr.get_rhythm_by_name(name)
+            if chosen is None:
+                return json.dumps(
+                    {
+                        "error": "unknown rhythm",
+                        "palette": [r.name for r in _vr.RHYTHMS],
+                    },
+                    indent=2,
+                )
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "force_vitality_rhythm: no chat_db on session"
+            now = datetime.now().astimezone()
+            chat_db.kv_set(_vr.KV_RHYTHM, chosen.name)
+            chat_db.kv_set(_vr.KV_RHYTHM_SET_AT, now.isoformat())
+            return json.dumps(
+                {
+                    "set": True,
+                    "name": chosen.name,
+                    "phase_shift_hours": chosen.phase_shift_hours,
+                    "energy_scale": chosen.energy_scale,
+                    "floor_boost": chosen.floor_boost,
+                    "note": chosen.note,
+                    "note_hint": (
+                        "sticks for the rest of the local day; the next "
+                        "daily roll overwrites it"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_vitality_rhythm raised: {exc}"
+
+    @mcp.tool()
     def get_mood_drift_state() -> str:
         """H3 — dump the live mood-drift narrator state.
 

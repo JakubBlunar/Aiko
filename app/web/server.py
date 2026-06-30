@@ -1047,6 +1047,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "context_window": session.context_window_size,
                 "context_source": session.context_window_source,
                 "avatar": session.avatar_payload(),
+                # K68: current body-energy + derived avatar amplitude
+                # multiplier so the avatar starts at the right droop on
+                # connect (e.g. sleepy at 2am) without waiting for a turn.
+                "vitality": session.vitality_snapshot(),
                 "identity": {
                     "user_display_name": (
                         session._settings.assistant.user_display_name or ""

@@ -169,6 +169,11 @@ export function useAssistantSocket(): {
         if (evt.companion) {
           store.setCompanionSettings(evt.companion);
         }
+        // K68: prime the avatar's body-energy amplitude so she starts at
+        // the right droop on connect (sleepy at night, perky midday).
+        if (evt.vitality && typeof evt.vitality === "object") {
+          store.setVitality(evt.vitality);
+        }
         // One-shot boot notices (I7): destructive LanceDB rebuild, etc.
         // Surfaced as toasts; warnings stick around longer.
         if (Array.isArray(evt.notices)) {
@@ -457,6 +462,16 @@ export function useAssistantSocket(): {
         }
         break;
       }
+
+      case "vitality_changed":
+        // K68: body-energy moved -> update the avatar gesture/breath
+        // amplitude multiplier (and the optional energy/band readout).
+        store.setVitality({
+          energy: evt.energy,
+          expressiveness_mult: evt.expressiveness_mult,
+          band: evt.band,
+        });
+        break;
 
       case "relationship_axes_updated":
         together.setRelationshipAxes(evt.axes);

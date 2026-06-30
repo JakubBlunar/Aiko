@@ -83,7 +83,7 @@ on top of already-shipped infrastructure.
 | K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65a-cluster-scope-the-f5-conflict-detector-pair-scan-shipped-via-f10j) |
 | K66 | Earned familiarity — "well-trodden ground" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us) |
 | K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
-| K68 | Embodied vitality | ❌ open |
+| K68 | Embodied vitality | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
 | K69 | Implicit-need reading — vent vs fix vs reassure | ❌ open |
 | K70 | Longitudinal growth witness — "you've changed since we met" | ❌ open |
 | K71 | Self-callback — her own continuity over time | ❌ open |
@@ -570,6 +570,8 @@ inner-life provider mirroring the K64 cue-producer pattern, persona copy.
 ---
 
 ## K68. Embodied vitality — a body that has good days and tired nights
+
+> ✅ **Shipped** — full writeup in [shipped/patterns-k31-k60.md → K68](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting). Built with the user's twist: a sleepy Aiko **livens up when the conversation grabs her** (K14 engaged + her own arousal + K6 novelty boost the energy), and the avatar visibly droops/perks via an `expressiveness` multiplier.
 
 **Motivation.** Aiko has *moods* (`AffectState`, reactive valence/arousal),
 *weather* (K27 day colour, stable for the day), and a *clock* (circadian), but

@@ -1290,6 +1290,33 @@ class AgentSettings:
     # so a buggy override can't spin the scheduler.
     day_color_check_interval_seconds: int = 3600
 
+    # ── K68: embodied vitality ────────────────────────────────────────
+    # Master switch for the slow-moving body-energy layer. When on, a
+    # single ``energy`` scalar in [0, 1] (kv_meta ``aiko.vitality``)
+    # relaxes toward the circadian baseline over wall-clock idle time, is
+    # spent by long / emotionally heavy turns, and -- the headline --
+    # **livens up when the conversation is interesting** (engaged user,
+    # high arousal, novel topic). It feeds the avatar's gesture/breath
+    # amplitude and gates a soft low/high-energy register cue at the
+    # extremes. A mechanic, not persona text. Thresholds / rates live
+    # under MemorySettings. Off -> the provider stays empty, no spend, no
+    # broadcast.
+    vitality_enabled: bool = True
+    # Cadence of the :class:`VitalityWorker` idle tick (recovers energy
+    # toward baseline + broadcasts so she visibly droops while left
+    # alone). Cheap tick (one kv read + one float relax). Floored at 60s
+    # in ``_parse_agent``.
+    vitality_check_interval_seconds: int = 900
+    # Off-rhythm-day exceptions. When on, once per local day Aiko rolls a
+    # rhythm (early-bird / night-owl / fully-flipped / sluggish / wired)
+    # that reshapes the circadian resting curve for that day -- so she's
+    # occasionally drowsy at noon and wired at 3am instead of running the
+    # exact same energy shape every day. Probability + stability live in
+    # ``memory.vitality_rhythm_exception_chance``; the rhythm rides the
+    # same kv lazy-roll as K27 day colour. Requires ``vitality_enabled``.
+    # Off -> every day uses the plain circadian baseline.
+    vitality_rhythm_enabled: bool = True
+
     # ── H3: mood-drift narrator ───────────────────────────────────────
     # Slow, read-only awareness of how the user's mood + the relationship
     # axes have drifted over days/weeks. A daily sampler

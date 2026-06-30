@@ -783,6 +783,14 @@ export interface RelationshipAxes {
   enabled?: boolean;
 }
 
+/** K68 embodied vitality snapshot (WS ``hello.vitality`` +
+ * ``vitality_changed``). ``energy`` is null when the feature is off. */
+export interface VitalitySnapshot {
+  energy: number | null;
+  expressiveness_mult: number;
+  band: string;
+}
+
 export interface MilestoneEntry {
   label: string;
   human: string;
@@ -1562,6 +1570,9 @@ export type WsServerEvent =
         | "persona_touch_banner_enabled"
         | "persona_touch_banner_duration_seconds"
       >;
+      /** K68: current body-energy snapshot so the avatar starts at the
+       * right gesture/breath amplitude on connect. */
+      vitality?: VitalitySnapshot;
     }
   | {
       type: "voice_owner_changed";
@@ -1679,6 +1690,7 @@ export type WsServerEvent =
       type: "relationship_axes_updated";
       axes: RelationshipAxes;
     }
+  | ({ type: "vitality_changed" } & VitalitySnapshot)
   | {
       type: "avatar_settings_changed";
       settings: AvatarSettingsKnobs;

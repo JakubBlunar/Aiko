@@ -2282,6 +2282,82 @@ class DayColorProviderSlotTests(unittest.TestCase):
             )
 
 
+class VitalityProviderSlotTests(unittest.TestCase):
+    """K68 vitality provider lands in the system prompt (T5 affect
+    cluster, right after the affect block), is NOT dropped under
+    ``aggressive=True`` (a low-battery body is exactly when the terse
+    register cue matters), and swallows provider exceptions.
+
+    The provider plumbing is tested in ``tests/test_vitality_provider.py``;
+    this class only verifies the slot wiring + tier registration.
+    """
+
+    _CUE = "Body check: you're running low on energy right now"
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vt1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(vitality=lambda: self._CUE)
+            messages, _ = assembler.assemble_with_budget(
+                "vt1", "what's up?",
+                context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vt2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(vitality=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "vt2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Body check:", messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vt3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(vitality=lambda: self._CUE)
+            messages, _ = assembler.assemble_with_budget(
+                "vt3", "x",
+                context_window=4096, response_budget=256, aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vt4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("vitality exploded")
+
+            assembler.set_inner_life_providers(vitality=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "vt4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Body check:", messages[0]["content"])
+
+    def test_registered_in_t5_after_affect(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t5 = _PROMPT_BLOCK_TIERS["T5_affect_style"]
+        self.assertIn("vitality_block", t5)
+        self.assertEqual(
+            t5.index("vitality_block"), t5.index("affect_block") + 1,
+        )
+
+
 class IntimacyPacingProviderSlotTests(unittest.TestCase):
     """J12 intimacy-pacing provider lands in the system prompt, survives
     ``aggressive=True`` (a contained boundary matters most on long
