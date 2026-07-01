@@ -265,6 +265,31 @@ class ActedTests(unittest.TestCase):
         )
 
 
+class DropSourceRefsTests(unittest.TestCase):
+    def test_drops_matching_refs_no_cooldown(self) -> None:
+        state = _state_with(
+            _want("a", source_ref="seed:1"),
+            _want("b", source_ref="goal:2"),
+        )
+        after, dropped = wl.drop_source_refs(state, {"seed:1"})
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual({w.source_ref for w in after.wants}, {"goal:2"})
+        # Producer-gone pruning must NOT arm a re-entry cooldown.
+        self.assertEqual(after.acted_map(), {})
+
+    def test_empty_refs_noop(self) -> None:
+        state = _state_with(_want(source_ref="seed:1"))
+        after, dropped = wl.drop_source_refs(state, set())
+        self.assertEqual(dropped, [])
+        self.assertEqual(len(after.wants), 1)
+
+    def test_unmatched_ref_noop(self) -> None:
+        state = _state_with(_want(source_ref="seed:1"))
+        after, dropped = wl.drop_source_refs(state, {"seed:999"})
+        self.assertEqual(dropped, [])
+        self.assertEqual(len(after.wants), 1)
+
+
 class RenderTests(unittest.TestCase):
     def test_empty_ledger_silent(self) -> None:
         self.assertEqual(wl.render_block(wl.LedgerState(), _NOW), "")
@@ -331,13 +356,19 @@ class _FakeMemory:
     """Duck-typed seed row + memory store."""
 
     class Row:
-        def __init__(self, id: int, content: str, consumed: bool = False) -> None:
+        def __init__(
+            self,
+            id: int,
+            content: str,
+            consumed: bool = False,
+            tier: str = "scratchpad",
+        ) -> None:
             self.id = id
             self.content = content
             self.metadata = {"topic": content} | (
                 {"consumed_at": "x"} if consumed else {}
             )
-            self.tier = "scratchpad"
+            self.tier = tier
             self.created_at = "2026-06-01T00:00:00+00:00"
 
     def __init__(self, rows: list["Row"]) -> None:
@@ -438,6 +469,70 @@ class WorkerTests(unittest.TestCase):
         worker = self._worker(kv, enabled_provider=lambda: False)
         stats = worker.run()
         self.assertTrue(stats.get("disabled"))
+
+    def _seed_want(self, seed_id: int) -> wl.Want:
+        iso = datetime.now(timezone.utc).isoformat()
+        return wl.Want(
+            id=f"sw{seed_id}",
+            text=f"bring up what you've been curious about: topic {seed_id}",
+            kind="ask",
+            source="curiosity_seed",
+            source_ref=f"seed:{seed_id}",
+            created_at=iso,
+            pressure=0.68,
+            last_growth_at=iso,
+        )
+
+    def test_prunes_want_when_seed_consumed(self) -> None:
+        # The reported bug: seed retired (consumed) but its want lingered
+        # and kept growing pressure, re-asking an answered question.
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            memory_store=_FakeMemory([
+                _FakeMemory.Row(1, "first adult purchase", consumed=True),
+            ]),
+        )
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertNotIn("seed:1", {w.source_ref for w in state.wants})
+
+    def test_prunes_want_when_seed_archived(self) -> None:
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            memory_store=_FakeMemory([
+                _FakeMemory.Row(1, "topic", tier="archive"),
+            ]),
+        )
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 1)
+
+    def test_prunes_want_when_seed_missing(self) -> None:
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(99))))
+        worker = self._worker(kv, memory_store=_FakeMemory([]))
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(len(state.wants), 0)
+
+    def test_keeps_want_when_seed_active(self) -> None:
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            memory_store=_FakeMemory([
+                _FakeMemory.Row(1, "still curious topic"),
+            ]),
+        )
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 0)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertIn("seed:1", {w.source_ref for w in state.wants})
 
     def test_growth_applies_each_tick(self) -> None:
         kv = _KvStore()

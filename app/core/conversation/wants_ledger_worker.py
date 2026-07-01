@@ -121,6 +121,13 @@ class WantsLedgerWorker:
             max_age_days=self._max_age_days,
             reentry_cooldown_days=self._reentry_cooldown_days,
         )
+        # Tie curiosity-seed wants to their seed's lifetime: once the
+        # seed is consumed/archived (its topic came up) or deleted, the
+        # want is orphaned — the feeder stops offering it but nothing
+        # removed the live row, so its pressure kept climbing and drove
+        # Aiko to re-ask a question she'd already had answered. Self-heal
+        # every tick.
+        state, pruned = self._prune_dead_seed_wants(state)
 
         added = 0
         name = self._safe_name()
@@ -143,7 +150,50 @@ class WantsLedgerWorker:
             self._kv_set(wants_ledger.KV_WANTS_LEDGER, wants_ledger.serialize(state))
         except Exception:
             log.debug("wants ledger persist failed", exc_info=True)
-        return {"added": added, "live": len(state.wants)}
+        return {"added": added, "pruned": len(pruned), "live": len(state.wants)}
+
+    # ── maintenance ──────────────────────────────────────────────────
+
+    def _prune_dead_seed_wants(
+        self, state: "wants_ledger.LedgerState",
+    ) -> tuple["wants_ledger.LedgerState", list[str]]:
+        """Drop ``curiosity_seed`` wants whose backing seed is gone.
+
+        A seed's want is fed only while the seed is unconsumed + not
+        archived. Once the seed retires (topic surfaced) or is deleted,
+        its want must retire with it — otherwise it lingers, grows
+        pressure, and re-asks an answered question. Returns the pruned
+        state + the dropped want ids (best-effort; a memory-store hiccup
+        leaves the ledger untouched).
+        """
+        memory = self._memory_store
+        if memory is None or not state.wants:
+            return state, []
+        seed_refs = {
+            w.source_ref for w in state.wants
+            if w.source == "curiosity_seed"
+            and w.source_ref.startswith("seed:")
+        }
+        if not seed_refs:
+            return state, []
+        active_refs: set[str] = set()
+        try:
+            for seed in memory.iter_by_kind("curiosity_seed"):
+                if (seed.metadata or {}).get("consumed_at"):
+                    continue
+                if seed.tier == "archive":
+                    continue
+                active_refs.add(f"seed:{seed.id}")
+        except Exception:
+            log.debug("wants: dead-seed prune iter failed", exc_info=True)
+            return state, []
+        dead = seed_refs - active_refs
+        if not dead:
+            return state, []
+        state, dropped = wants_ledger.drop_source_refs(state, dead)
+        for ref in sorted(dead):
+            log.info("wants-ledger pruned dead seed want: ref=%s", ref)
+        return state, dropped
 
     # ── candidate producers ──────────────────────────────────────────
 

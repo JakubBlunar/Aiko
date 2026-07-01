@@ -324,6 +324,29 @@ def mark_acted(state: LedgerState, want_id: str, now: datetime) -> LedgerState:
     )
 
 
+def drop_source_refs(
+    state: LedgerState, refs: set[str],
+) -> tuple[LedgerState, list[str]]:
+    """Remove wants whose ``source_ref`` is in ``refs``.
+
+    Returns ``(new_state, dropped_ids)``. Unlike :func:`mark_acted`
+    this does NOT record a re-entry cooldown: the want is pruned
+    because its *producer is gone* (e.g. a curiosity seed was
+    consumed/archived once its topic came up), not because Aiko acted
+    on it — so there's nothing to cool down against, and the feeder
+    won't re-offer a dead producer anyway. Without this, a want
+    outlived its seed and kept growing pressure, driving Aiko to
+    re-ask a question she'd already had answered.
+    """
+    if not refs or not state.wants:
+        return state, []
+    dropped = [w.id for w in state.wants if w.source_ref in refs]
+    if not dropped:
+        return state, []
+    kept = tuple(w for w in state.wants if w.source_ref not in refs)
+    return LedgerState(wants=kept, recently_acted=state.recently_acted), dropped
+
+
 def detect_acted(
     state: LedgerState,
     turn_text: str,
@@ -419,6 +442,7 @@ __all__ = [
     "content_words",
     "deserialize",
     "detect_acted",
+    "drop_source_refs",
     "mark_acted",
     "render_block",
     "serialize",
