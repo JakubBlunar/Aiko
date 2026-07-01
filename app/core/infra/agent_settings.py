@@ -292,6 +292,15 @@ class AgentSettings:
     # cluster mass (no worker); thresholds / cooldown live under
     # MemorySettings.
     earned_familiarity_enabled: bool = True
+    # K75: master switch for user-expertise calibration. When on, a light
+    # per-topic-cluster competence estimate (novice / familiar / expert),
+    # learned post-turn from the user's own language (vocabulary, ask-vs-
+    # tell, corrections), lets Aiko pitch explanation depth to the user's
+    # level — skip the 101 for an expert, scaffold gently for a novice.
+    # Orthogonal to K66 (shared-history depth) and F10i (how much *Aiko*
+    # knows). Off → no learning, no depth cue. Thresholds / cadence live
+    # under MemorySettings.
+    user_expertise_enabled: bool = True
     # K-time3: master switch for the upcoming-horizon block. When on, a
     # cheap forward sweep over ``future_plan`` memories due within the
     # horizon window renders one terse "coming up" cue with the relative

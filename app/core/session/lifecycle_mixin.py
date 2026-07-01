@@ -202,6 +202,10 @@ class LifecycleMixin:
         self._wellbeing_concern_force_next = False
         # K73 shared-ritual: clear the MCP force-next flag on switch.
         self._shared_ritual_force_next = False
+        # K75 user-expertise: clear the provider cooldown + force flag.
+        self._user_expertise_force_next = False
+        self._user_expertise_cooldown = 0
+        self._user_expertise_last = None
         # K38 — wipe the self-correction slot + cooldown on switch.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0
@@ -328,6 +332,10 @@ class LifecycleMixin:
         self._wellbeing_concern_force_next = False
         # K73 shared-ritual: clear the MCP force-next flag on a wipe.
         self._shared_ritual_force_next = False
+        # K75 user-expertise: clear the provider cooldown + force flag.
+        self._user_expertise_force_next = False
+        self._user_expertise_cooldown = 0
+        self._user_expertise_last = None
         # K38 — clear the self-correction slot + cooldown on a wipe.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0

@@ -1571,6 +1571,72 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("intimacy-pacing hook raised", exc_info=True)
 
+        # K75 — user-expertise calibration (learned half). Classify how
+        # this message reads on the novice↔expert axis (cheap regex, no
+        # embed) and, only when it carries a real competence signal, resolve
+        # the live topic cluster and fold the signal into that cluster's EMA
+        # in aiko.user_expertise. Classify-first means neutral chit-chat
+        # pays nothing (no embed) and never drags the estimate; the cluster
+        # min-sim gate means we only learn on topically-substantive turns.
+        if agent_settings is not None and bool(
+            getattr(agent_settings, "user_expertise_enabled", True)
+        ):
+            try:
+                from app.core.conversation import user_expertise as _ue
+
+                signal = _ue.classify_message(user_text)
+                chat_db = getattr(self, "_chat_db", None)
+                graph = getattr(self, "_topic_graph", None)
+                embedder = getattr(self, "_embedder", None)
+                if (
+                    signal is not None
+                    and chat_db is not None
+                    and graph is not None
+                    and embedder is not None
+                    and bool(getattr(graph, "persistent", False))
+                ):
+                    from datetime import datetime, timezone
+
+                    mem = getattr(self, "_memory_settings", None)
+                    min_sim = float(
+                        getattr(mem, "user_expertise_min_sim", 0.45)
+                    )
+                    qvec = embedder.embed(user_text)
+                    matches = graph.best_clusters_for(
+                        qvec, top_n=1, min_sim=min_sim,
+                    )
+                    if matches:
+                        cid, label, _sim = matches[0]
+                        key = str(int(cid))
+                        state_map = _ue.load_map(chat_db.kv_get)
+                        updated = _ue.update_state(
+                            state_map.get(key),
+                            signal,
+                            learning_rate=float(
+                                getattr(
+                                    mem,
+                                    "user_expertise_learning_rate",
+                                    0.25,
+                                )
+                            ),
+                            now_iso=datetime.now(timezone.utc).isoformat(
+                                timespec="seconds"
+                            ),
+                        )
+                        state_map[key] = updated
+                        _ue.save_map(chat_db.kv_set, state_map)
+                        log.info(
+                            "user-expertise learn: cluster=%s signal=%.2f "
+                            "score=%.3f samples=%d label=%r",
+                            cid,
+                            signal,
+                            updated.score,
+                            updated.samples,
+                            (label or "")[:40],
+                        )
+            except Exception:
+                log.debug("user-expertise hook raised", exc_info=True)
+
         # Snapshot the per-turn gift / promise-kept flags ONCE, before any
         # consumer clears them. Both the relationship-axes updater and the
         # moment-detector scheduler read these signals; previously the axes

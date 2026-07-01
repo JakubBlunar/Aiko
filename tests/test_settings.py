@@ -468,6 +468,49 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             result.memory.earned_familiarity_cooldown_turns, 0,
         )
 
+    def test_user_expertise_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.user_expertise_enabled)
+        self.assertAlmostEqual(result.memory.user_expertise_min_sim, 0.45)
+        self.assertAlmostEqual(
+            result.memory.user_expertise_learning_rate, 0.25,
+        )
+        self.assertEqual(result.memory.user_expertise_min_samples, 4)
+        self.assertAlmostEqual(
+            result.memory.user_expertise_novice_threshold, -0.35,
+        )
+        self.assertAlmostEqual(
+            result.memory.user_expertise_expert_threshold, 0.35,
+        )
+        self.assertEqual(result.memory.user_expertise_cooldown_turns, 12)
+        # Overrides + clamps.
+        path = self._write_config(
+            agent_extra={"user_expertise_enabled": False},
+            memory_extra={
+                "user_expertise_min_sim": 2.0,             # clamp 1.0
+                "user_expertise_learning_rate": 5.0,       # clamp 1.0
+                "user_expertise_min_samples": 0,           # floor 1
+                "user_expertise_novice_threshold": 0.9,    # clamp 0.0
+                "user_expertise_expert_threshold": 9.0,    # clamp 1.0
+                "user_expertise_cooldown_turns": -5,       # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.user_expertise_enabled)
+        self.assertAlmostEqual(result.memory.user_expertise_min_sim, 1.0)
+        self.assertAlmostEqual(
+            result.memory.user_expertise_learning_rate, 1.0,
+        )
+        self.assertEqual(result.memory.user_expertise_min_samples, 1)
+        self.assertAlmostEqual(
+            result.memory.user_expertise_novice_threshold, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.user_expertise_expert_threshold, 1.0,
+        )
+        self.assertEqual(result.memory.user_expertise_cooldown_turns, 0)
+
     def test_vitality_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())
