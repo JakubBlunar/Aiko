@@ -11,6 +11,25 @@ tools as **background-worker skills only**.
 > tools; the filesystem MCP server (when configured) runs *alongside* them,
 > used only by background workers.
 
+> **ToolPlugins.** As well as hand-writing `mcp_clients.servers[]`, you can
+> drop a **ToolPlugin** (a `plugin.json` stub + `entry.py`) whose
+> `define_plugin(api)` registers its MCP server, planner guidance, and
+> optional tool-result middleware in code. See [`docs/plugins.md`](plugins.md).
+> A plugin's server is built into exactly the same `ExternalMcpServer` shape
+> described here and flows through the same manager (a disabled plugin's code
+> is never imported).
+
+## Runtime-captured guidance (fallback)
+
+On connect the manager captures each server's `initialize()`
+`instructions` and a best-effort `list_prompts()` snapshot
+(`server_instructions(id)` / `list_prompts(id)` / `captured_group_guidance()`,
+surfaced in `server_status()` as `has_instructions` / `prompt_count`).
+This is the runtime-captured guidance source the planner uses when a
+server (plugin or plain config) has no `SKILL.md` — precedence is **plugin
+`SKILL.md` > captured server instructions > hardcoded playbook**. Inspect
+it with the MCP tool `get_external_mcp_instructions`.
+
 ## Architecture
 
 ```
@@ -62,6 +81,12 @@ env var, not in `config/user.json`:
 
 Keychain-backed write-only secret storage + a Settings UI is deferred to
 Phase 3.
+
+For **ToolPlugins** there is no manifest placeholder syntax: an `entry.py`
+reads machine-specific paths from its plugin-local `config/user.json`
+(`api.config[...]`, gitignored) and secret tokens from the environment
+(`api.env("MY_TOKEN")`), so a committed `plugin.json` (a bare stub) never
+carries either — see [`docs/plugins.md`](plugins.md).
 
 ## Log hygiene
 

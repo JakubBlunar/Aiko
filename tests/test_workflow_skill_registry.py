@@ -5,11 +5,8 @@ import unittest
 from typing import Any
 
 from app.core.tasks.handler_names import (
-    HANDLER_FILE_READ,
-    HANDLER_FILE_SEARCH,
     HANDLER_WEB_SEARCH,
 )
-from app.core.tasks.task_handler import INITIATED_BY_BACKGROUND
 from app.core.tasks.workflow import (
     WORKFLOW_SKILL_FINISH,
     SpawnContext,
@@ -73,31 +70,16 @@ class RegistryBasicsTests(unittest.TestCase):
 
 class BuiltinRegistryTests(unittest.TestCase):
     def test_default_skills(self) -> None:
+        # File skills are no longer built in — they come from the filesystem
+        # MCP plugin. The core registry ships web search + terminal finish.
         reg = build_builtin_skill_registry()
-        self.assertEqual(
-            reg.names(), ["finish", "read_file", "search_files", "web_search"]
-        )
-        self.assertEqual(
-            reg.spawnable_names(), ["read_file", "search_files", "web_search"]
-        )
+        self.assertEqual(reg.names(), ["finish", "web_search"])
+        self.assertEqual(reg.spawnable_names(), ["web_search"])
 
     def test_web_search_can_be_disabled(self) -> None:
         reg = build_builtin_skill_registry(web_search_enabled=False)
         self.assertNotIn("web_search", reg.names())
         # finish is always present.
-        self.assertIn(WORKFLOW_SKILL_FINISH, reg.names())
-
-    def test_file_skills_can_be_disabled(self) -> None:
-        # When files are handled solely via a filesystem MCP server, the
-        # built-in file skills are dropped (no built-in-vs-MCP overlap).
-        reg = build_builtin_skill_registry(
-            file_skills_enabled=False, file_write_enabled=True
-        )
-        self.assertNotIn("search_files", reg.names())
-        self.assertNotIn("read_file", reg.names())
-        self.assertNotIn("write_file", reg.names())
-        # Web + finish remain.
-        self.assertIn("web_search", reg.names())
         self.assertIn(WORKFLOW_SKILL_FINISH, reg.names())
 
     def test_describe_for_planner_shape(self) -> None:
@@ -114,41 +96,6 @@ class BuiltinRegistryTests(unittest.TestCase):
 
 
 class SpawnChildTests(unittest.TestCase):
-    def test_search_files_spawn(self) -> None:
-        reg = build_builtin_skill_registry()
-        orch = _FakeOrchestrator()
-        tid = reg.spawn_child(
-            "search_files", {"query": "report", "only_new": True}, _ctx(orch)
-        )
-        self.assertEqual(tid, 101)
-        call = orch.calls[0]
-        self.assertEqual(call["handler_name"], HANDLER_FILE_SEARCH)
-        self.assertEqual(call["parent_task_id"], 7)
-        self.assertEqual(call["user_id"], "u1")
-        self.assertFalse(call["notify_aiko"])
-        self.assertEqual(call["initiated_by"], INITIATED_BY_BACKGROUND)
-        self.assertTrue(call["args"]["only_new"])
-        self.assertEqual(call["args"]["query"], "report")
-
-    def test_read_file_spawn(self) -> None:
-        reg = build_builtin_skill_registry()
-        orch = _FakeOrchestrator()
-        tid = reg.spawn_child(
-            "read_file", {"path": "Documents:notes.md", "max_bytes": 4096}, _ctx(orch)
-        )
-        self.assertEqual(tid, 101)
-        call = orch.calls[0]
-        self.assertEqual(call["handler_name"], HANDLER_FILE_READ)
-        self.assertEqual(call["args"]["path"], "Documents:notes.md")
-        self.assertEqual(call["args"]["max_bytes"], 4096)
-
-    def test_read_file_empty_path_no_spawn(self) -> None:
-        reg = build_builtin_skill_registry()
-        orch = _FakeOrchestrator()
-        tid = reg.spawn_child("read_file", {"path": "   "}, _ctx(orch))
-        self.assertIsNone(tid)
-        self.assertEqual(orch.calls, [])
-
     def test_web_search_spawn(self) -> None:
         reg = build_builtin_skill_registry()
         orch = _FakeOrchestrator()

@@ -1,0 +1,6 @@
+{
+  "plugin_api_version": 1,
+  "id": "browser",
+  "name": "Browser",
+  "enabled": false
+}

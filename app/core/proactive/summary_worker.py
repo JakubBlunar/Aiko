@@ -125,13 +125,13 @@ class SummaryWorker:
         inline (so this blocks for `timeout_seconds`).
         """
         try:
+            # ``_maybe_summarize`` now owns the counter increment on a
+            # successful write, so both the synchronous and background
+            # paths are counted exactly once.
             wrote = self._maybe_summarize(session_key, min_msgs_override=2)
         except Exception as exc:
             log.warning("compact_now failed: %s", exc)
             return False
-        if wrote:
-            self._compactions_total += 1
-            self._last_compaction_at = time.monotonic()
         return bool(wrote)
 
     # ── loop ─────────────────────────────────────────────────────────────
@@ -247,6 +247,13 @@ class SummaryWorker:
             summary_tokens=estimate_tokens(text),
             messages_summarized=total,
         )
+        # Count every successful compaction here so the counter reflects
+        # background (idle-loop) runs too — the synchronous ``compact_now``
+        # path is no longer on the hot path (see TurnRunner P20 note), so
+        # keeping the increment only there left ``compactions_total`` stuck
+        # at 0 for the now-default background path.
+        self._compactions_total += 1
+        self._last_compaction_at = time.monotonic()
         log.info(
             "summary saved (%d msgs, %d tokens, %.0f ms; usage %d/%d)",
             total,

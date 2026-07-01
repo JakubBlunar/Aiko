@@ -222,6 +222,68 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
             self.assertEqual(telem_aggressive.rag_tokens, 0)
 
 
+class HardeningClipTests(unittest.TestCase):
+    """WS3 deep-hardening: a pathological user message or an oversized RAG
+    block must be clipped so it can never crowd out the rest of the prompt.
+    """
+
+    def test_oversized_user_message_is_clipped(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            # ~40k chars — far larger than a 4096-token window can hold.
+            huge = "lorem ipsum " * 4000
+            messages, telem = assembler.assemble_with_budget(
+                "sclip",
+                huge,
+                context_window=4096,
+                response_budget=256,
+            )
+            user_msg = messages[-1]
+            self.assertEqual(user_msg["role"], "user")
+            # The message was clipped and carries the truncation marker.
+            self.assertLess(len(user_msg["content"]), len(huge))
+            self.assertIn("truncated to fit context", user_msg["content"])
+            # The whole prompt now fits the budget.
+            self.assertLessEqual(
+                telem.prompt_tokens_estimate, telem.budget_tokens,
+            )
+
+    def test_normal_user_message_is_not_clipped(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            normal = "hey, what's up with the deploy?"
+            messages, _ = assembler.assemble_with_budget(
+                "sclip2",
+                normal,
+                context_window=8192,
+                response_budget=512,
+            )
+            self.assertEqual(messages[-1]["content"], normal)
+            self.assertNotIn("truncated", messages[-1]["content"])
+
+    def test_oversized_rag_block_is_clipped(self) -> None:
+        class _FatRag:
+            def block_for(self, *_a: object, **_k: object) -> str:
+                return "Memory: " + ("sushi and ramen. " * 5000)
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            assembler.set_rag_retriever(_FatRag())  # type: ignore[arg-type]
+            db.add_message(
+                session_id="sragclip", role="user", content="prior", token_count=2,
+            )
+            _, telem = assembler.assemble_with_budget(
+                "sragclip",
+                "what do i like to eat?",
+                context_window=4096,
+                response_budget=256,
+            )
+            # RAG is capped at 30% of usable context (~1152 tokens here); the
+            # fat block (~4000 tokens) must have been clipped well under that.
+            usable = 4096 - 256
+            self.assertLessEqual(telem.rag_tokens, int(usable * 0.30) + 8)
+
+
 class NarrativeBlockProviderTests(unittest.TestCase):
     """The ``narrative`` slot is the inner-monologue line that surfaces
     a fresh prepared nudge ("On your mind: ...") in typed-mode turns.

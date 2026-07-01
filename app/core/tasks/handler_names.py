@@ -25,18 +25,6 @@ this module enforces "must be canonically spelled" at compile time.
 from __future__ import annotations
 
 
-# Phase-1 handlers (shipped with chunks 11 + 12).
-HANDLER_FILE_SEARCH = "file_search"
-HANDLER_FILE_READ = "file_read"
-
-# File-write handler — the first *destructive* capability. Creates /
-# overwrites / appends / find-replaces text files inside a writable
-# root (``read_only=false``), gated by the reusable approval layer
-# (:mod:`app.core.tasks.approval` + :mod:`app.core.tasks.capabilities`).
-# Reachable only as a ``WorkflowSkill`` child of a goal workflow, never
-# as a fast brain tool.
-HANDLER_FILE_WRITE = "file_write"
-
 # Vision handler — describe an image with the local worker (multimodal)
 # model. Read-only (no approval), reuses the already-loaded worker
 # Ollama client + model, reachable only as the ``describe_image``
@@ -50,7 +38,7 @@ HANDLER_VISION_DESCRIBE = "vision_describe"
 #   too slow for the fast conversational lane; it's reachable only as
 #   a ``WorkflowSkill`` child of a goal workflow.
 # * ``goal_workflow`` — the parent multi-step orchestrator. Plans →
-#   spawns children (file_search / file_read / web_search / …) →
+#   spawns children (web_search / describe_image / MCP tools / …) →
 #   observes → replies with an aggregated summary.
 HANDLER_WEB_SEARCH = "web_search"
 HANDLER_GOAL_WORKFLOW = "goal_workflow"
@@ -69,9 +57,6 @@ HANDLER_MCP_TOOL = "mcp_tool"
 # extend this tuple; the orchestrator silently accepts unknown names
 # at register time so out-of-tree custom handlers still work.
 KNOWN_HANDLER_NAMES: tuple[str, ...] = (
-    HANDLER_FILE_SEARCH,
-    HANDLER_FILE_READ,
-    HANDLER_FILE_WRITE,
     HANDLER_VISION_DESCRIBE,
     HANDLER_WEB_SEARCH,
     HANDLER_GOAL_WORKFLOW,
@@ -80,9 +65,6 @@ KNOWN_HANDLER_NAMES: tuple[str, ...] = (
 
 
 __all__ = [
-    "HANDLER_FILE_SEARCH",
-    "HANDLER_FILE_READ",
-    "HANDLER_FILE_WRITE",
     "HANDLER_VISION_DESCRIBE",
     "HANDLER_WEB_SEARCH",
     "HANDLER_GOAL_WORKFLOW",

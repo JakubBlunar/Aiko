@@ -308,19 +308,6 @@
   "mcp_clients": {
     "servers": []
   },
-  "browser_perception": {
-    "enabled": false,
-    "server_id": "browser",
-    "snapshot_tools": ["browser_snapshot"],
-    "adapter": "real_browser",
-    "max_ranked_elements": 40,
-    "state_memory_pages": 8,
-    "weight_role": 1.0,
-    "weight_visibility": 1.0,
-    "weight_position": 1.0,
-    "weight_text": 1.0,
-    "weight_context": 1.0
-  },
   "web_server": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -431,7 +418,6 @@
     "idle_worker_max_per_tick": 0,
     "task_approval_mode": "ask",
     "task_approval_overrides": {},
-    "builtin_file_skills_enabled": true,
     "knowledge_gap_notice_enabled": true,
     "topic_temperature_enabled": true,
     "topic_mood_origin_enabled": true,
@@ -442,19 +428,6 @@
     "knowledge_topic_extraction_enabled ": false,
     "knowledge_enrichment_max_clusters_per_run ": 3,
     "knowledge_unresearchable_cooldown_hours ": 336,
-    "file_write": {
-      "enabled": false,
-      "max_bytes": 262144,
-      "allowed_extensions": [
-        ".txt", ".md", ".rst", ".log",
-        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-        ".csv", ".tsv",
-        ".py", ".js", ".ts", ".tsx", ".jsx",
-        ".html", ".css", ".xml",
-        ".sh", ".bat", ".ps1",
-        ".sql"
-      ]
-    },
     "vision": {
       "enabled": false,
       "model": "",
@@ -517,5 +490,15 @@
     "auto_outfit": "auto",
     "expressiveness": 1.0,
     "mood_inertia_damping": true
+  },
+  "plugins": {
+    "entries": {
+      "filesystem": {
+        "enabled": true,
+        "config": {
+          "root": ""
+        }
+      }
+    }
   }
 }

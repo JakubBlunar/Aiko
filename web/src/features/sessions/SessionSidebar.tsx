@@ -227,17 +227,31 @@ export function SessionSidebar({
     pushSystemMessage,
   ]);
 
-  const handleNew = () => {
-    send({ type: "new_session" });
+  // New / switch go over REST, not the fire-and-forget WS ``send``:
+  // ``send`` silently drops the command when the socket is momentarily
+  // reconnecting, which used to leave the server on the OLD session so the
+  // next message appended to (and pulled) the wrong conversation. REST
+  // fails loudly instead, and the server broadcasts ``session_changed`` on
+  // success so every window still resyncs the same way.
+  const handleNew = async () => {
+    try {
+      await api.newSession();
+    } catch (err) {
+      pushSystemMessage(`Failed to start new session: ${String(err)}`);
+    }
     onAfterNavigate?.();
   };
 
-  const handleSwitch = (row: SessionRow) => {
+  const handleSwitch = async (row: SessionRow) => {
     if (row.session_id === activeKey) {
       onAfterNavigate?.();
       return;
     }
-    send({ type: "switch_session", session_id: row.session_id });
+    try {
+      await api.switchSession(row.session_id);
+    } catch (err) {
+      pushSystemMessage(`Failed to switch session: ${String(err)}`);
+    }
     onAfterNavigate?.();
   };
 
@@ -249,7 +263,7 @@ export function SessionSidebar({
     try {
       await api.deleteSession(row.session_id);
       if (row.session_id === activeKey) {
-        send({ type: "new_session" });
+        await api.newSession();
       } else {
         await refresh();
       }

@@ -12,8 +12,16 @@ from typing import Any
 from unittest import mock
 
 from app.core.infra.log_context import reset_task_id, set_task_id
-from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskOutcome
-from app.core.tasks.workflow.goal_workflow_handler import GoalWorkflowHandler
+from app.core.tasks.task_handler import (
+    TaskCompleted,
+    TaskEventEmit,
+    TaskFailed,
+    TaskOutcome,
+)
+from app.core.tasks.workflow.goal_workflow_handler import (
+    EVENT_WORKFLOW_BLOCKED,
+    GoalWorkflowHandler,
+)
 from app.core.tasks.workflow.skill_registry import (
     SpawnContext,
     WorkflowSkill,
@@ -129,7 +137,6 @@ def _run(
         child_wait_timeout_seconds=5.0,
         max_consecutive_failures=max_consecutive_failures,
         max_wall_seconds=max_wall_seconds,
-        browser_skill_prefix="browser__",
     )
     h = _Harness()
     tok = set_task_id(f"{parent_id:08x}")
@@ -154,17 +161,27 @@ class FailureBreakerTests(unittest.TestCase):
         h = _run(orch, client, max_consecutive_failures=2)
         term = h.terminal()
         self.assertIsInstance(term, TaskCompleted)
-        self.assertEqual(term.result["outcome"], "partial")
+        # Consecutive-failure breaker now reports BLOCKED (stuck / needs
+        # help), not the budget-exhaustion "partial".
+        self.assertEqual(term.result["outcome"], "blocked")
         self.assertIn("Chrome", term.result["content"])
         # Broke after the 2nd consecutive failure — only 2 children spawned.
         self.assertEqual(len(orch.spawned), 2)
+        # A workflow_blocked audit event was appended before the finish.
+        blocked = [
+            o
+            for o in h.outcomes
+            if isinstance(o, TaskEventEmit) and o.type == EVENT_WORKFLOW_BLOCKED
+        ]
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0].data.get("reason"), "consecutive_failures")
 
     def test_success_resets_streak(self) -> None:
         orch = _Orchestrator()
         client = _ScriptedClient(
             [
                 {"action": "browser__browser_snapshot", "args": {}},  # fail
-                {"action": "search_files", "args": {"query": "x"}},  # ok -> reset
+                {"action": "web_search", "args": {"query": "x"}},  # ok -> reset
                 {"action": "browser__browser_click", "args": {"ref": "e1"}},  # fail
                 {"action": "finish", "findings": "done", "outcome": "success"},
             ]
@@ -175,7 +192,7 @@ class FailureBreakerTests(unittest.TestCase):
         # Never broke: reached the explicit finish.
         self.assertEqual(term.result["outcome"], "success")
         self.assertEqual(
-            orch.spawned, ["mcp_tool", "file_search", "mcp_tool"]
+            orch.spawned, ["mcp_tool", "web_search", "mcp_tool"]
         )
 
     def test_non_browser_failure_uses_generic_message(self) -> None:
@@ -206,7 +223,6 @@ class FailureBreakerTests(unittest.TestCase):
             ),
             child_wait_timeout_seconds=5.0,
             max_consecutive_failures=1,
-            browser_skill_prefix="browser__",
         )
         h = _Harness()
         tok = set_task_id("00000007")
@@ -221,48 +237,53 @@ class FailureBreakerTests(unittest.TestCase):
 
 
 class PlannerGuidanceTests(unittest.TestCase):
-    """_planner_guidance injects the browser playbook only when a browser
-    skill is in the menu and a browser group is configured."""
+    """_planner_guidance surfaces plugin / captured guidance for the
+    ``mcp:<server_id>`` groups actually present in the menu."""
 
-    def _handler(self, *, browser_group: str) -> GoalWorkflowHandler:
+    def _handler(self, *, group_guidance: dict[str, str]) -> GoalWorkflowHandler:
         registry = build_builtin_skill_registry()
         registry.register(_browser_skill("browser_snapshot"))
         return GoalWorkflowHandler(
             orchestrator=_Orchestrator(),
             skill_registry=registry,
             worker_client_provider=lambda: _ScriptedClient([{"action": "finish"}]),
-            browser_skill_group=browser_group,
+            group_guidance_provider=lambda: dict(group_guidance),
         )
 
     def test_guidance_present_for_browser_menu(self) -> None:
-        handler = self._handler(browser_group="mcp:browser")
+        handler = self._handler(
+            group_guidance={"mcp:browser": "Snapshot FIRST playbook"}
+        )
         skills = [
             {"name": "browser__browser_snapshot", "group": "mcp:browser"},
-            {"name": "search_files", "group": "files"},
+            {"name": "web_search", "group": "web"},
         ]
         out = handler._planner_guidance(skills)
         self.assertIn("Snapshot FIRST", out)
 
-    def test_no_guidance_without_browser_skill(self) -> None:
-        handler = self._handler(browser_group="mcp:browser")
-        skills = [{"name": "search_files", "group": "files"}]
+    def test_no_guidance_without_matching_group(self) -> None:
+        handler = self._handler(
+            group_guidance={"mcp:browser": "Snapshot FIRST playbook"}
+        )
+        skills = [{"name": "web_search", "group": "web"}]
         self.assertEqual(handler._planner_guidance(skills), "")
 
-    def test_no_guidance_without_configured_group(self) -> None:
-        handler = self._handler(browser_group="")
+    def test_no_guidance_without_group_guidance(self) -> None:
+        handler = self._handler(group_guidance={})
         skills = [{"name": "browser__browser_snapshot", "group": "mcp:browser"}]
         self.assertEqual(handler._planner_guidance(skills), "")
 
-    def test_filesystem_playbook_injected_by_capability(self) -> None:
-        # No browser group configured, but a filesystem MCP tool is present
-        # -> the filesystem playbook is auto-detected and injected.
-        handler = self._handler(browser_group="")
+    def test_filesystem_guidance_from_plugin(self) -> None:
+        # A filesystem MCP group in the menu surfaces its plugin guidance.
+        handler = self._handler(
+            group_guidance={"mcp:fs": "use absolute paths under the root"}
+        )
         skills = [
             {"name": "fs__write_file", "group": "mcp:fs"},
             {"name": "fs__list_allowed_directories", "group": "mcp:fs"},
         ]
         out = handler._planner_guidance(skills)
-        self.assertIn("outside allowed directories", out)
+        self.assertIn("absolute paths", out)
 
 
 class WallClockTests(unittest.TestCase):

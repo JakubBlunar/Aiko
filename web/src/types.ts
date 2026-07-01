@@ -1280,6 +1280,10 @@ export interface MetricsSnapshot {
   total_ms?: number;
   // Token totals (combined streaming + tool-pass).
   prompt_tokens?: number;
+  // Largest single Ollama call's prompt tokens = true context-window
+  // occupancy. ``prompt_tokens`` above is the summed cost across both
+  // passes and double-counts the system prompt on tool turns.
+  context_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
   // Ollama timing breakdown.
@@ -1298,6 +1302,7 @@ export interface MetricsSnapshot {
   history_tokens?: number;
   user_tokens?: number;
   tool_tokens?: number;
+  tool_schema_tokens?: number;
   history_messages_kept?: number;
   history_dropped_count?: number;
   summary_active?: boolean;

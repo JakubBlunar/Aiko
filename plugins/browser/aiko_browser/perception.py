@@ -13,15 +13,15 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.browser.accessibility import A11yNode
-from app.core.browser.adapters import get_adapter
-from app.core.browser.grouping import dedup_nodes, group_forms, heading_context
-from app.core.browser.page_state import PageStateMemory
-from app.core.browser.ranking import RankingWeights, rank_elements
-from app.core.browser.rendering import render_page
+from .accessibility import A11yNode
+from .adapters import get_adapter
+from .grouping import dedup_nodes, group_forms, heading_context
+from .page_state import PageStateMemory
+from .ranking import RankingWeights, rank_elements
+from .rendering import render_page
 
 
-log = logging.getLogger("app.browser.perception")
+log = logging.getLogger("aiko_browser.perception")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,21 +61,24 @@ class BrowserPerception:
         self._transform_count = 0
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "BrowserPerception":
+    def from_config(
+        cls, cfg: dict[str, Any], *, server_id: str
+    ) -> "BrowserPerception":
+        """Build from a plugin config dict (``plugins/browser/config``)."""
         return cls(
-            enabled=settings.enabled,
-            server_id=settings.server_id,
-            snapshot_tools=tuple(settings.snapshot_tools),
-            adapter=settings.adapter,
-            max_ranked_elements=settings.max_ranked_elements,
+            enabled=bool(cfg.get("enabled", True)),
+            server_id=server_id,
+            snapshot_tools=tuple(cfg.get("snapshot_tools") or ["browser_snapshot"]),
+            adapter=str(cfg.get("adapter") or "real_browser"),
+            max_ranked_elements=int(cfg.get("max_ranked_elements", 40)),
             weights=RankingWeights(
-                role=settings.weight_role,
-                visibility=settings.weight_visibility,
-                position=settings.weight_position,
-                text=settings.weight_text,
-                context=settings.weight_context,
+                role=float(cfg.get("weight_role", 1.0)),
+                visibility=float(cfg.get("weight_visibility", 1.0)),
+                position=float(cfg.get("weight_position", 1.0)),
+                text=float(cfg.get("weight_text", 1.0)),
+                context=float(cfg.get("weight_context", 1.0)),
             ),
-            state_memory_pages=settings.state_memory_pages,
+            state_memory_pages=int(cfg.get("state_memory_pages", 8)),
         )
 
     # ── public API ───────────────────────────────────────────────────

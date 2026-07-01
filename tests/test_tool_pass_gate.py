@@ -36,7 +36,7 @@ _ALL_TOOLS = [
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
-    "get_weather", "get_forecast",
+    "get_weather", "get_forecast", "calculate",
 ]
 
 _NO_CONTEXT = GateContext()
@@ -167,6 +167,21 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_tasks_signal(self) -> None:
         self._assert_runs("cancel that workflow", "tasks")
+
+    def test_math_keyword_signal(self) -> None:
+        self._assert_runs("can you calculate the compound interest?", "math")
+
+    def test_math_numeric_operator_signal(self) -> None:
+        # A bare arithmetic expression with no keyword still routes to math.
+        self._assert_runs("what's 2340 * 0.185", "math")
+
+    def test_calculate_is_mapped_no_unknown_tool(self) -> None:
+        # Regression guard: ``calculate`` must have a pattern family, else
+        # the gate degrades to ``unknown_tool`` (always-run) on EVERY turn,
+        # defeating P14 and paying the tool-schema payload each turn.
+        decision = _decide("hey, how are you?")
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, "no_signal")
 
     def test_multiple_families_join_in_reason(self) -> None:
         decision = _decide("search the files for my notes")

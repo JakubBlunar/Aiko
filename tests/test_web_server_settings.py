@@ -155,6 +155,13 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
         "workers_use_local": True,
         "extra_headers": {},
     }
+    # GET /api/settings also embeds the masked weather snapshot; return a
+    # serialisable dict so FastAPI's JSON encoder doesn't choke on a mock.
+    session._weather_public_snapshot.return_value = {
+        "provider": "open_meteo",
+        "location_name": "",
+        "has_api_key": False,
+    }
     # Track active-app state on the mock so the PATCH path can drop it.
     session._user_active_app = "Discord"
 

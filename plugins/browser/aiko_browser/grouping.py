@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.core.browser.accessibility import A11yNode
+from .accessibility import A11yNode
 
 
 @dataclass(frozen=True, slots=True)

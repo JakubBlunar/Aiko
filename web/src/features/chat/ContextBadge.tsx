@@ -46,11 +46,12 @@ export function ContextBadge() {
     return null;
   }
 
+  const occupancyTokens = metrics.context_tokens || metrics.prompt_tokens;
   const promptPct =
     typeof metrics.prompt_pct === "number" && metrics.prompt_pct > 0
       ? metrics.prompt_pct
-      : metrics.prompt_tokens && ctxWindow
-        ? metrics.prompt_tokens / ctxWindow
+      : occupancyTokens && ctxWindow
+        ? occupancyTokens / ctxWindow
         : 0;
   const pctText = `${Math.round(promptPct * 100)}%`;
   const llmText =
@@ -96,11 +97,14 @@ interface PopoverProps {
 function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
   const m = useAssistantStore((s) => s.metrics);
   const promptTokens = m.prompt_tokens ?? 0;
+  // True window occupancy = largest single call; falls back to the merged
+  // total on turns where the backend didn't stamp it (older builds).
+  const contextTokens = m.context_tokens || promptTokens;
   const promptPct =
     typeof m.prompt_pct === "number" && m.prompt_pct > 0
       ? m.prompt_pct
-      : promptTokens && ctxWindow
-        ? promptTokens / ctxWindow
+      : contextTokens && ctxWindow
+        ? contextTokens / ctxWindow
         : 0;
 
   const sourceLabel: Record<string, string> = {
@@ -125,7 +129,7 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
         <MeterBar pct={promptPct} />
       </div>
       <div className="mt-1 flex justify-between text-[11px] tabular-nums text-ink-100/60">
-        <span>{promptTokens.toLocaleString()} used</span>
+        <span>{contextTokens.toLocaleString()} used</span>
         <span>{Math.round(promptPct * 100)}%</span>
       </div>
 
@@ -136,7 +140,14 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
           <Row label="RAG" value={m.rag_tokens} />
           <Row label="History" value={m.history_tokens} />
           <Row label="User" value={m.user_tokens} />
-          {m.tool_tokens ? <Row label="Tool" value={m.tool_tokens} /> : null}
+          {m.tool_tokens ? <Row label="Tool result" value={m.tool_tokens} /> : null}
+          {m.tool_schema_tokens ? (
+            <Row
+              label="Tool defs"
+              value={m.tool_schema_tokens}
+              title="Token cost of the tool schemas sent on the tool-decision pass. Only charged on turns that run the tool check; banter turns skip it."
+            />
+          ) : null}
         </tbody>
       </table>
 
@@ -154,6 +165,7 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
         <Stat
           label="Tokens"
           value={`${promptTokens.toLocaleString()} / ${(m.completion_tokens ?? 0).toLocaleString()}`}
+          title="Total prompt / completion tokens billed this turn, summed across the tool-decision pass and the reply pass. On tool turns this is higher than 'used' because each pass re-sends the system prompt — 'used' above is the largest single call (true window occupancy)."
         />
       </div>
 
@@ -181,19 +193,35 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
   );
 }
 
-function Row({ label, value }: { label: string; value: number | undefined }) {
+function Row({
+  label,
+  value,
+  title,
+}: {
+  label: string;
+  value: number | undefined;
+  title?: string;
+}) {
   if (!value) return null;
   return (
-    <tr>
+    <tr title={title}>
       <td className="py-1 text-ink-100/60">{label}</td>
       <td className="py-1 text-right tabular-nums">{value.toLocaleString()}</td>
     </tr>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  title,
+}: {
+  label: string;
+  value: string;
+  title?: string;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-2">
+    <div className="flex items-baseline justify-between gap-2" title={title}>
       <span className="text-ink-100/55">{label}</span>
       <span>{value}</span>
     </div>

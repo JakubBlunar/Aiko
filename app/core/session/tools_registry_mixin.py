@@ -126,30 +126,12 @@ class ToolsRegistryMixin:
                         registry.register(tool)
                 except Exception:
                     log.warning("goal tools failed to register", exc_info=True)
-            # Chunk 10: filesystem task tools — ``start_file_search``
-            # and ``cancel_file_task``. Gated on ``tools.file_tasks``
-            # (default True) and skipped silently when the task
-            # subsystem itself is off (``agent.tasks_enabled=False``
-            # leaves ``_task_orchestrator`` as ``None``).
-            if (
-                getattr(tools_cfg, "file_tasks", True)
-                and getattr(self, "_task_orchestrator", None) is not None
-            ):
-                try:
-                    from app.llm.tools.file_tasks import build_file_task_tools
-
-                    for tool in build_file_task_tools(self):
-                        registry.register(tool)
-                except Exception:
-                    log.warning(
-                        "file task tools failed to register", exc_info=True
-                    )
             # Nested goal workflows — ``start_workflow`` / ``check_my_work``
             # / ``cancel_work``. The brain-facing control surface for the
             # background ``GoalWorkflowHandler`` (multi-step goals: search →
-            # read → summarise). Distinct from the fast file lane above:
-            # the file tools fold a single op into the turn, the workflow
-            # tools kick off a planned chain that reports asynchronously.
+            # read → summarise) — the workflow tools kick off a planned chain
+            # that reports asynchronously; file work (and any MCP tool) runs
+            # in that background lane, never as a fast brain tool.
             # Gated on ``tools.workflow`` AND a live orchestrator AND the
             # handler actually being registered (``agent.workflow_enabled``).
             if getattr(tools_cfg, "workflow", True) and (

@@ -27,7 +27,7 @@ from app.core.tasks.workflow import (
 from app.core.tasks.workflow.workflow_skill_router import select_skill_groups
 
 
-_BUILTIN_GROUPS = {"files", "web"}  # vision/file_write off by default
+_BUILTIN_GROUPS = {"files", "web"}  # hypothetical available groups for the router
 
 
 class SelectSkillGroupsTests(unittest.TestCase):
@@ -91,22 +91,36 @@ class SelectSkillGroupsTests(unittest.TestCase):
 
 class DescribeForPlannerGroupsTests(unittest.TestCase):
     def _registry(self) -> WorkflowSkillRegistry:
-        # files (search/read) + web + finish by default.
-        return build_builtin_skill_registry(web_search_enabled=True)
+        # Built-in web + finish, plus a couple of filesystem MCP skills to
+        # exercise the group filter (file skills now come from a plugin).
+        reg = build_builtin_skill_registry(web_search_enabled=True)
+        reg.register(
+            WorkflowSkill(
+                name="fs__search_files", description="d",
+                spawn=lambda a, c: 1, group="mcp:fs",
+            )
+        )
+        reg.register(
+            WorkflowSkill(
+                name="fs__read_file", description="d",
+                spawn=lambda a, c: 1, group="mcp:fs",
+            )
+        )
+        return reg
 
     def test_full_menu_when_groups_none(self) -> None:
         reg = self._registry()
         names = {s["name"] for s in reg.describe_for_planner()}
-        self.assertIn("search_files", names)
+        self.assertIn("fs__search_files", names)
         self.assertIn("web_search", names)
         self.assertIn(WORKFLOW_SKILL_FINISH, names)
 
-    def test_files_group_filter_keeps_finish_drops_web(self) -> None:
+    def test_fs_group_filter_keeps_finish_drops_web(self) -> None:
         reg = self._registry()
-        described = reg.describe_for_planner(groups={"files"})
+        described = reg.describe_for_planner(groups={"mcp:fs"})
         names = {s["name"] for s in described}
-        self.assertIn("search_files", names)
-        self.assertIn("read_file", names)
+        self.assertIn("fs__search_files", names)
+        self.assertIn("fs__read_file", names)
         # finish is terminal -> always present.
         self.assertIn(WORKFLOW_SKILL_FINISH, names)
         # web is a different group -> dropped.
@@ -117,25 +131,25 @@ class DescribeForPlannerGroupsTests(unittest.TestCase):
         reg.register(WorkflowSkill(name="misc", description="d", spawn=lambda a, c: 1))
         reg.register(
             WorkflowSkill(
-                name="search_files", description="d",
-                spawn=lambda a, c: 1, group="files",
+                name="fs__search_files", description="d",
+                spawn=lambda a, c: 1, group="mcp:fs",
             )
         )
         names = {
             s["name"] for s in reg.describe_for_planner(groups={"web"})
         }
-        # "misc" has no group -> always included; files dropped (not web).
+        # "misc" has no group -> always included; fs dropped (not web).
         self.assertIn("misc", names)
-        self.assertNotIn("search_files", names)
+        self.assertNotIn("fs__search_files", names)
 
     def test_groups_helper_lists_nonempty_groups(self) -> None:
         reg = self._registry()
-        self.assertEqual(reg.groups(), {"files", "web"})
+        self.assertEqual(reg.groups(), {"mcp:fs", "web"})
 
     def test_describe_includes_group_field(self) -> None:
         reg = self._registry()
         by_name = {s["name"]: s for s in reg.describe_for_planner()}
-        self.assertEqual(by_name["search_files"]["group"], "files")
+        self.assertEqual(by_name["fs__search_files"]["group"], "mcp:fs")
         self.assertEqual(by_name["web_search"]["group"], "web")
 
 

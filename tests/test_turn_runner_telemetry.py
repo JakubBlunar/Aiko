@@ -342,6 +342,98 @@ class DeferredCompactionTests(unittest.TestCase):
         # No synchronous compaction happened, so the counter is 0.
         self.assertEqual(result.compactions_run, 0)
 
+    def test_overflow_refits_even_without_summary_worker(self) -> None:
+        """WS3 bug: the aggressive reassembly must run on projected overflow
+        even when no SummaryWorker is attached — otherwise the overflowing
+        prompt would be sent to the model un-trimmed.
+        """
+        overflow = PromptTelemetry(
+            compaction_triggered=True,
+            prompt_tokens_estimate=9000,
+            budget_tokens=7000,
+        )
+        fitted = PromptTelemetry(compaction_triggered=False)
+        # summary_worker=None (default).
+        runner, _, prompt = _build_runner()
+        prompt.assemble_with_budget = MagicMock(
+            side_effect=[([], overflow), ([], fitted)],
+        )
+        runner.run(session_key="default:main", user_text="hi")
+        # The aggressive reassembly still ran (second call, aggressive=True)
+        # despite there being no summary worker to schedule.
+        self.assertEqual(prompt.assemble_with_budget.call_count, 2)
+        _, kwargs = prompt.assemble_with_budget.call_args_list[1]
+        self.assertTrue(kwargs.get("aggressive"))
+
+
+class ToolPassRetrimTests(unittest.TestCase):
+    """WS3 hardening: after the tool pass appends tool-result messages the
+    prompt can overflow again; ``_retrim_messages_to_budget`` drops the oldest
+    raw history in place while preserving the system prompt, the current user
+    message, and the whole tool exchange.
+    """
+
+    def _msg(self, role: str, content: str, **extra: Any) -> dict[str, Any]:
+        m: dict[str, Any] = {"role": role, "content": content}
+        m.update(extra)
+        return m
+
+    def test_retrim_drops_oldest_history_and_keeps_tool_exchange(self) -> None:
+        big = "word " * 400  # ~570 chars each
+        messages = [
+            self._msg("system", "S"),
+            self._msg("user", big),          # oldest history (droppable)
+            self._msg("assistant", big),     # history (droppable)
+            self._msg("user", "current turn"),  # current user message (keep)
+            self._msg("assistant", "", tool_calls=[{"id": "1"}]),  # tool exchange
+            self._msg("tool", big, tool_call_id="1"),
+        ]
+        total, dropped = TurnRunner._retrim_messages_to_budget(
+            messages, budget_tokens=300,
+        )
+        # Something was dropped from the head of history.
+        self.assertGreater(dropped, 0)
+        # System prompt survives at index 0.
+        self.assertEqual(messages[0]["role"], "system")
+        # The current user message and the tool exchange are preserved.
+        contents = [m["content"] for m in messages]
+        self.assertIn("current turn", contents)
+        self.assertTrue(any(m.get("role") == "tool" for m in messages))
+        self.assertTrue(
+            any(m.get("tool_calls") for m in messages),
+        )
+
+    def test_retrim_noop_when_within_budget(self) -> None:
+        messages = [
+            self._msg("system", "S"),
+            self._msg("user", "hi"),
+            self._msg("assistant", "", tool_calls=[{"id": "1"}]),
+            self._msg("tool", "small", tool_call_id="1"),
+        ]
+        before = list(messages)
+        total, dropped = TurnRunner._retrim_messages_to_budget(
+            messages, budget_tokens=100000,
+        )
+        self.assertEqual(dropped, 0)
+        self.assertEqual(messages, before)
+
+    def test_retrim_never_drops_below_system_and_user(self) -> None:
+        # Only system + current user + tool exchange, no droppable history.
+        big = "word " * 400
+        messages = [
+            self._msg("system", big),
+            self._msg("user", big),  # current user message
+            self._msg("assistant", "", tool_calls=[{"id": "1"}]),
+            self._msg("tool", big, tool_call_id="1"),
+        ]
+        _, dropped = TurnRunner._retrim_messages_to_budget(
+            messages, budget_tokens=10,
+        )
+        # Nothing droppable (index 1 is the current user turn), so 0 dropped
+        # and the message list is intact.
+        self.assertEqual(dropped, 0)
+        self.assertEqual(len(messages), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@ import logging
 import re
 from typing import Any, Protocol, runtime_checkable
 
-from app.core.browser.accessibility import A11yNode
+from .accessibility import A11yNode
 
 
 log = logging.getLogger("app.browser.adapters")

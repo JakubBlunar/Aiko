@@ -172,6 +172,8 @@ class ListenersMetricsMixin:
             "total_ms": 0.0,
             # Token totals (combined streaming + tool-pass).
             "prompt_tokens": 0,
+            # Largest single-call prompt tokens (true window occupancy).
+            "context_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
             # Ollama timing breakdown (full-precision).
@@ -190,6 +192,7 @@ class ListenersMetricsMixin:
             "history_tokens": 0,
             "user_tokens": 0,
             "tool_tokens": 0,
+            "tool_schema_tokens": 0,
             "history_messages_kept": 0,
             "history_dropped_count": 0,
             "summary_active": False,

@@ -28,6 +28,9 @@ data/lancedb/
 data/documents/
 data/attachments/
 data/personas/
+data/plugins/
+data/plugins-deps/
+plugins/*/config/user.json
 web/src-tauri/target/
 web/src-tauri/gen/
 .playwright-mcp/**

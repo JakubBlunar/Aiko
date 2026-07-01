@@ -52,7 +52,7 @@ from app.core.session.tool_pass_gate import (
     should_run_tool_pass,
 )
 from app.llm.ollama_client import OllamaClient, OllamaUsage
-from app.llm.token_utils import estimate_tokens
+from app.llm.token_utils import estimate_tokens, observe_actual_usage
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import MemoryStore
@@ -289,6 +289,9 @@ class TurnRunner:
         )
         # Names sent on the last run pass (for MCP get_tool_gate_state).
         self._last_active_tools: list[str] | None = None
+        # Token cost of the ``tools=`` payload on the last decision pass
+        # (0 when the gate skipped it). Surfaced in the context widget.
+        self._last_tool_schema_tokens: int = 0
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
@@ -569,18 +572,26 @@ class TurnRunner:
         # proper rolling summary instead of dropped context. ``compactions_run``
         # stays 0 — no synchronous compaction happens anymore.
         compactions_run = 0
-        if telemetry.compaction_triggered and self._summary is not None:
+        if telemetry.compaction_triggered:
+            # The aggressive reassembly is what actually *fits* the turn, so
+            # it must run whether or not a SummaryWorker is attached. Only the
+            # background-compaction scheduling below is summary-worker gated —
+            # otherwise a build without a summary worker (worker disabled) would
+            # send the overflowing prompt to the model un-trimmed.
             log.info(
                 "context overflow projected (est=%d > budget=%d); fitting this "
-                "turn aggressively and scheduling background compaction",
+                "turn aggressively%s",
                 telemetry.prompt_tokens_estimate, telemetry.budget_tokens,
+                " and scheduling background compaction"
+                if self._summary is not None else "",
             )
-            try:
-                self._summary.notify_compaction_soon(session_key)
-            except Exception:
-                log.debug(
-                    "notify_compaction_soon (overflow) failed", exc_info=True,
-                )
+            if self._summary is not None:
+                try:
+                    self._summary.notify_compaction_soon(session_key)
+                except Exception:
+                    log.debug(
+                        "notify_compaction_soon (overflow) failed", exc_info=True,
+                    )
             messages, telemetry = self._prompt.assemble_with_budget(
                 session_key,
                 cleaned_user,
@@ -613,6 +624,7 @@ class TurnRunner:
         # ``agent.tool_pass_gate_enabled=false`` restores the old
         # always-run behaviour.
         tool_usage = OllamaUsage()
+        self._last_tool_schema_tokens = 0
         if self._tool_registry is not None and len(self._tool_registry) > 0:
             gate_decision = self._gate_tool_pass(cleaned_user, messages)
             telemetry.tool_gate_event = gate_decision.as_event()
@@ -644,10 +656,29 @@ class TurnRunner:
                 # (``_maybe_run_tool_pass`` owns it on the run path).
                 self._last_turn_dispatched_tool = False
                 self._tool_gate_skips += 1
+            # Cost of the tool-schema payload on the decision pass (0 when
+            # skipped). Rides a different LLM call than the streamed reply,
+            # so it's tracked separately from ``system_tokens``.
+            telemetry.tool_schema_tokens = self._last_tool_schema_tokens
             # Tool-pass appendments grow the prompt; refresh telemetry so the
             # post-turn metrics reflect what actually got streamed.
             if tool_usage.prompt_tokens or tool_usage.completion_tokens:
                 tool_text_total = self._estimate_messages_tokens(messages)
+                # Hardening: the appended tool-call + tool-result messages can
+                # push the prompt back over budget (a large tool result on an
+                # already-full turn). Re-trim the oldest raw history in place —
+                # preserving the system prompt, the current user message, and
+                # the whole tool exchange — so the streaming pass still fits.
+                if tool_text_total > telemetry.budget_tokens > 0:
+                    tool_text_total, retrimmed = self._retrim_messages_to_budget(
+                        messages, telemetry.budget_tokens,
+                    )
+                    if retrimmed:
+                        log.info(
+                            "tool-pass overflow: re-trimmed %d history msg(s) to "
+                            "refit budget (est=%d budget=%d)",
+                            retrimmed, tool_text_total, telemetry.budget_tokens,
+                        )
                 telemetry.tool_tokens = max(
                     0, tool_text_total - telemetry.prompt_tokens_estimate,
                 )
@@ -905,19 +936,51 @@ class TurnRunner:
                     on_touch=on_touch,
                 )
 
+        # Adaptive tokenizer calibration: the streaming pass just reported the
+        # model's *true* prompt-token count for the exact ``messages`` we sent.
+        # Fold the observed chars/token ratio into the estimator's slow EMA so
+        # future budget maths track this model's real tokenizer. We subtract
+        # per-message framing (which the model counts but our char sum does not)
+        # so the ratio isn't biased by message count. Best-effort.
+        try:
+            stream_prompt_tokens = int(self._ollama.last_usage.prompt_tokens)
+            if stream_prompt_tokens > 0:
+                prompt_chars = sum(
+                    len(m.get("content", "") or "") for m in messages
+                )
+                content_tokens = stream_prompt_tokens - len(messages) * 4
+                observe_actual_usage(prompt_chars, content_tokens)
+        except Exception:
+            log.debug("token calibration observe failed", exc_info=True)
+
         # Merge the tool-pass usage into the streaming-pass usage so the turn
-        # totals reflect every Ollama call we made.
+        # totals reflect every Ollama call we made. NOTE: ``merge`` ADDS the
+        # per-pass prompt tokens, so ``usage.prompt_tokens`` is the turn's
+        # TOTAL billed prompt tokens — NOT the context-window occupancy.
         usage = self._ollama.last_usage.merge(tool_usage)
         duration_ms = (time.monotonic() - t0) * 1000.0
+
+        # Context-window occupancy is a PER-CALL property: the tool decision
+        # pass and the streaming reply pass each re-send their own copy of the
+        # (large) system prompt, so the merged sum above double-counts that
+        # prefix and overstates how full the window actually got (~2x on tool
+        # turns — a ~37k streaming call reads as ~68k). Use the LARGEST single
+        # call for the occupancy readout + the compaction trigger.
+        context_prompt_tokens = max(
+            int(self._ollama.last_usage.prompt_tokens),
+            int(tool_usage.prompt_tokens),
+        )
+        if telemetry is not None:
+            telemetry.context_prompt_tokens = context_prompt_tokens
 
         # Decide whether to schedule a proactive (background) compaction
         # because this turn left the prompt close to the limit.
         if (
-            usage.prompt_tokens > 0
+            context_prompt_tokens > 0
             and self._context_window > 0
             and self._summary is not None
         ):
-            prompt_pct = usage.prompt_tokens / float(self._context_window)
+            prompt_pct = context_prompt_tokens / float(self._context_window)
             if prompt_pct >= self._max_prompt_tokens_pct:
                 try:
                     self._summary.notify_compaction_soon(session_key)
@@ -953,8 +1016,8 @@ class TurnRunner:
         # key=value pairs is part of the contract documented in
         # AGENTS.md "Debugging via logs".
         ctx_pct = (
-            (usage.prompt_tokens / self._context_window) * 100.0
-            if self._context_window and usage.prompt_tokens
+            (context_prompt_tokens / self._context_window) * 100.0
+            if self._context_window and context_prompt_tokens
             else 0.0
         )
         tool_calls = sum(1 for m in messages if m.get("role") == "tool")
@@ -1177,6 +1240,15 @@ class TurnRunner:
         # that actually fixes chatty-model under-calling; reasoning
         # effort does not move the decision.
         tool_schemas = [*tool_schemas, _RESPOND_DIRECTLY_SCHEMA]
+        # Record what the ``tools=`` payload costs so the context widget can
+        # attribute the ~18-19k jump on tool turns (JSON-serialised the same
+        # way it's posted; +4/tool for framing the model counts).
+        try:
+            self._last_tool_schema_tokens = estimate_tokens(
+                json.dumps(tool_schemas, ensure_ascii=False)
+            ) + 4 * len(tool_schemas)
+        except Exception:
+            self._last_tool_schema_tokens = 0
         # ...except when a finished-task result is already in the prompt:
         # forcing a pick then just tempts the model to re-run the task it
         # already completed. Relax to "auto" so it narrates the result.
@@ -1298,6 +1370,39 @@ class TurnRunner:
             content = str(msg.get("content") or "")
             total += estimate_tokens(content) + 4  # _MESSAGE_OVERHEAD
         return total
+
+    @staticmethod
+    def _retrim_messages_to_budget(
+        messages: list[dict[str, Any]], budget_tokens: int,
+    ) -> tuple[int, int]:
+        """Drop the oldest raw history in place until the prompt refits budget.
+
+        Preserves ``messages[0]`` (the system prompt), the current user message,
+        and the entire trailing tool exchange (the assistant tool-call message
+        + every ``role="tool"`` result) so we never send a dangling tool_call
+        with no result (which 400s the streaming pass). Returns the refreshed
+        ``(total_estimate, dropped_count)``.
+        """
+        total = TurnRunner._estimate_messages_tokens(messages)
+        if total <= budget_tokens or len(messages) <= 2:
+            return total, 0
+        # Locate the start of the tool exchange; the message just before it is
+        # the current user turn, which we must keep.
+        tool_start = len(messages)
+        for i, m in enumerate(messages):
+            if m.get("role") == "tool" or m.get("tool_calls"):
+                tool_start = i
+                break
+        # History we may drop = everything between system[0] and the current
+        # user message at index (tool_start - 1).
+        droppable = max(0, tool_start - 2)
+        dropped = 0
+        while total > budget_tokens and dropped < droppable:
+            removed = messages.pop(1)
+            cost = estimate_tokens(str(removed.get("content") or "")) + 4
+            total = max(0, total - cost)
+            dropped += 1
+        return total, dropped
 
     def _is_stop_requested(self, predicate: StopPredicate | None) -> bool:
         if predicate is None:

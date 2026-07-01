@@ -19,7 +19,7 @@ are surfaced to the background-worker lane only), so ``on_input`` /
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from app.core.tasks.handler_names import HANDLER_MCP_TOOL
 from app.core.tasks.task_handler import (
@@ -30,8 +30,8 @@ from app.core.tasks.task_handler import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
-    from app.core.browser.perception import BrowserPerception
     from app.mcp.client.manager import ExternalMcpManager
+    from app.plugins.sdk import ToolResultMiddleware
 
 
 log = logging.getLogger("app.tasks.mcp_tool")
@@ -69,13 +69,22 @@ class McpToolHandler:
         self,
         *,
         manager: "ExternalMcpManager",
-        perception: "BrowserPerception | None" = None,
+        middlewares: "Sequence[ToolResultMiddleware] | None" = None,
+        perception: Any = None,
     ) -> None:
         self._manager = manager
-        # Optional server-agnostic middleware that reshapes accessibility
-        # snapshots (parse -> dedup -> group -> rank -> diff) before they
-        # reach the planner. None = every tool result flattened as-is.
-        self._perception = perception
+        # Ordered tool-result middleware chain. Each entry may reshape a
+        # claimed (server_id, tool_name) result (parse -> dedup -> group ->
+        # rank -> diff, etc.) before it reaches the planner; the first that
+        # claims AND returns a non-None transform wins. Empty chain = every
+        # tool result flattened as-is. ``perception`` is a back-compat alias
+        # that is prepended as one middleware.
+        chain: list[Any] = []
+        if perception is not None:
+            chain.append(perception)
+        if middlewares:
+            chain.extend(middlewares)
+        self._middlewares: list[Any] = chain
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -109,18 +118,13 @@ class McpToolHandler:
             )
             return {"args": args, "phase": "failed"}
 
-        # Browser perception hook: when a perception layer claims this
-        # (server_id, tool_name) and successfully parses the snapshot, use
-        # its compact ranked render; otherwise fall through to the raw
-        # flatten so every other tool (and an unparseable snapshot) is
-        # byte-identical to the no-perception path.
-        perceived = None
-        if self._perception is not None and self._perception.claims(
-            server_id, tool_name
-        ):
-            perceived = self._perception.transform(
-                server_id, tool_name, text, tool_args
-            )
+        # Tool-result middleware chain: the first middleware that claims this
+        # (server_id, tool_name) and returns a non-None transform reshapes the
+        # result (e.g. browser perception's compact ranked render); otherwise
+        # we fall through to the raw flatten so every other tool (and an
+        # unparseable / unclaimed result) is byte-identical to the no-middleware
+        # path.
+        perceived = self._run_middlewares(server_id, tool_name, text, tool_args)
         if perceived is not None:
             content = perceived.content[:_CONTENT_CAP]
             if len(perceived.content) > _CONTENT_CAP:
@@ -128,7 +132,7 @@ class McpToolHandler:
             summary = perceived.summary[:_SUMMARY_CAP]
             log.info(
                 "mcp_tool perceived: server=%s tool=%s elements=%d",
-                server_id, tool_name, perceived.element_count,
+                server_id, tool_name, getattr(perceived, "element_count", 0),
             )
             payload = {
                 "server_id": server_id,
@@ -156,11 +160,41 @@ class McpToolHandler:
         emit(TaskCompleted(result=payload))
         return {"args": args, "phase": "done"}
 
+    def _run_middlewares(
+        self,
+        server_id: str,
+        tool_name: str,
+        text: str,
+        tool_args: dict[str, Any],
+    ) -> Any | None:
+        """First middleware that claims + returns non-None wins. Best-effort."""
+        for mw in self._middlewares:
+            try:
+                if not mw.claims(server_id, tool_name):
+                    continue
+                result = mw.transform(server_id, tool_name, text, tool_args)
+            except Exception:  # noqa: BLE001 - a broken mw never breaks the tool
+                log.debug(
+                    "mcp_tool middleware raised: server=%s tool=%s",
+                    server_id, tool_name, exc_info=True,
+                )
+                continue
+            if result is not None:
+                return result
+        return None
+
     @staticmethod
     def _summary(tool_name: str, content: str, non_text: int) -> str:
-        if content:
-            first = content.strip().splitlines()[0] if content.strip() else ""
-            base = f"{tool_name}: {first}"
+        stripped = content.strip() if content else ""
+        if stripped:
+            lines = stripped.splitlines()
+            # Don't hide multi-line results (e.g. a directory listing)
+            # behind their first line — call out the line count so the
+            # UI + any fallback observation shows there's more than one.
+            if len(lines) > 1:
+                base = f"{tool_name}: {len(lines)} lines — {lines[0]}"
+            else:
+                base = f"{tool_name}: {lines[0]}"
         elif non_text:
             base = f"{tool_name}: returned {non_text} non-text item(s)"
         else:

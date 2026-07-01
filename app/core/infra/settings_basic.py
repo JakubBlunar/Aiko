@@ -4,37 +4,6 @@ from dataclasses import dataclass
 
 
 @dataclass(slots=True)
-class FileWriteSettings:
-    """Per-capability resource config for the ``file_write`` task.
-
-    The reusable pattern (see ``docs/task-approvals.md``): a destructive
-    capability owns a small nested settings block grouping its resource
-    knobs. The *approval* policy is generic and lives on
-    :class:`AgentSettings` (``task_approval_mode`` /
-    ``task_approval_overrides``); this block is only the file-write
-    resource limits.
-
-    ``enabled`` is the master switch — when off, the ``write_file``
-    workflow skill is never offered to the planner and the handler is
-    not registered. ``max_bytes`` caps the resulting file size.
-    ``allowed_extensions`` is the case-insensitive write allow-list
-    (empty = allow everything, same convention as the read handler).
-    """
-
-    enabled: bool = False
-    max_bytes: int = 262144
-    allowed_extensions: tuple[str, ...] = (
-        ".txt", ".md", ".rst", ".log",
-        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-        ".csv", ".tsv",
-        ".py", ".js", ".ts", ".tsx", ".jsx",
-        ".html", ".css", ".xml",
-        ".sh", ".bat", ".ps1",
-        ".sql",
-    )
-
-
-@dataclass(slots=True)
 class VisionSettings:
     """Resource config for the local-vision ``describe_image`` task.
 

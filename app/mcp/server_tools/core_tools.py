@@ -67,6 +67,74 @@ def register(mcp, session: "SessionController") -> None:
         return json.dumps(session.get_last_metrics(), indent=2, default=str)
 
     @mcp.tool()
+    def get_compaction_state() -> str:
+        """JSON snapshot of the rolling-summary / context-compaction subsystem.
+
+        Includes the current summary (present/size/messages-summarized), the
+        background compaction counter + last-run age, the unsummarized backlog,
+        and the live adaptive token-estimator calibration (chars/token EMA +
+        sample count). First stop for "is compaction actually running / how far
+        behind is it / is my token estimate honest?".
+        """
+        from app.llm.token_utils import calibration_state
+
+        sk = session.session_key
+        worker = getattr(session, "_summary_worker", None)
+        db = session._chat_db
+        try:
+            latest = db.get_latest_summary(sk)
+        except Exception:
+            latest = None
+        try:
+            total_msgs = int(db.get_message_count(sk))
+        except Exception:
+            total_msgs = 0
+        summarized = int(latest.messages_summarized) if latest else 0
+        out = {
+            "session_key": sk,
+            "context_window": session.context_window_size,
+            "summary_worker_attached": worker is not None,
+            "compactions_total": worker.compactions_total() if worker else 0,
+            "last_compaction_age_seconds": (
+                worker.last_compaction_age_seconds() if worker else None
+            ),
+            "summary": {
+                "present": bool(latest and latest.summary.strip()),
+                "chars": len(latest.summary) if latest else 0,
+                "summary_tokens": int(latest.summary_tokens) if latest else 0,
+                "messages_summarized": summarized,
+            },
+            "messages_total": total_msgs,
+            "messages_unsummarized": max(0, total_msgs - summarized),
+            "token_calibration": calibration_state(),
+        }
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_compaction() -> str:
+        """Force an immediate synchronous rolling-summary pass (active session).
+
+        Bypasses the idle deadline and lowers the min-unsummarized-messages bar
+        to 2 so a pass always makes progress if there's anything to summarise.
+        Returns whether a new summary was written + the updated counter.
+        """
+        worker = getattr(session, "_summary_worker", None)
+        if worker is None:
+            return json.dumps(
+                {"ok": False, "error": "no summary worker attached"}, indent=2,
+            )
+        wrote = worker.compact_now(session.session_key)
+        return json.dumps(
+            {
+                "ok": True,
+                "wrote_summary": bool(wrote),
+                "compactions_total": worker.compactions_total(),
+            },
+            indent=2,
+            default=str,
+        )
+
+    @mcp.tool()
     def clear_history() -> str:
         """Wipe the active session's conversation memory."""
         try:

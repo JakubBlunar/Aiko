@@ -86,6 +86,34 @@ class _FakeSession:
         return _FakeCallResult([_FakeTextBlock(f"called {name}")])
 
 
+class _FakePrompt:
+    def __init__(self, name, description) -> None:
+        self.name = name
+        self.description = description
+
+
+class _FakePromptsResult:
+    def __init__(self, prompts) -> None:
+        self.prompts = prompts
+
+
+class _FakeInitResult:
+    def __init__(self, instructions) -> None:
+        self.instructions = instructions
+
+
+class _FakeSessionWithGuidance(_FakeSession):
+    """Session that ships server instructions + prompts on connect."""
+
+    async def initialize(self):
+        return _FakeInitResult("Use the read tool before writing.")
+
+    async def list_prompts(self):
+        return _FakePromptsResult(
+            [_FakePrompt("summarize", "Summarize a file")]
+        )
+
+
 @contextlib.asynccontextmanager
 async def _fake_stdio_client(server, errlog=None):
     if errlog is not None:
@@ -204,6 +232,30 @@ class ManagerLifecycleTests(unittest.TestCase):
             self.assertEqual(mgr.list_available_tools(), [])
         finally:
             mgr.stop()
+
+    def test_captures_instructions_and_prompts(self) -> None:
+        p1 = mock.patch.object(mcp_stdio, "stdio_client", _fake_stdio_client)
+        p2 = mock.patch.object(mcp, "ClientSession", _FakeSessionWithGuidance)
+        with p1, p2:
+            mgr = ExternalMcpManager([_stdio_server()])
+            mgr.start()
+            try:
+                self.assertTrue(self._wait_connected(mgr))
+                self.assertIn(
+                    "read tool before writing",
+                    mgr.server_instructions("filesystem"),
+                )
+                prompts = mgr.list_prompts("filesystem")
+                self.assertEqual(prompts[0]["name"], "summarize")
+                gg = mgr.captured_group_guidance()
+                self.assertIn("mcp:filesystem", gg)
+                self.assertIn("read tool before writing", gg["mcp:filesystem"])
+                self.assertIn("summarize", gg["mcp:filesystem"])
+                status = {s["id"]: s for s in mgr.server_status()}
+                self.assertTrue(status["filesystem"]["has_instructions"])
+                self.assertEqual(status["filesystem"]["prompt_count"], 1)
+            finally:
+                mgr.stop()
 
     def test_call_tool_unknown_server_raises(self) -> None:
         mgr = ExternalMcpManager([])

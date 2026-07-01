@@ -163,6 +163,13 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
         "extra_headers": {},
     }
     session._chat_llm_public_snapshot.return_value = masked
+    # GET /api/settings also embeds the masked weather snapshot; return a
+    # serialisable dict so FastAPI's JSON encoder doesn't choke on a mock.
+    session._weather_public_snapshot.return_value = {
+        "provider": "open_meteo",
+        "location_name": "",
+        "has_api_key": False,
+    }
     session.provider_presets.return_value = _SAMPLE_PRESETS
     session.list_chat_models.return_value = ["llama3.1:8b"]
     # ``reconfigure_chat_llm`` returns the updated snapshot.

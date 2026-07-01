@@ -1,21 +1,34 @@
-"""Tests for the browser perception layer (pure modules + orchestrator)."""
+"""Tests for the browser perception layer (now the browser plugin package).
+
+The perception code ships inside ``plugins/browser/aiko_browser`` (the plugin
+runtime puts that root on ``sys.path`` at activation). Tests add the same
+path so ``import aiko_browser`` resolves without activating the plugin.
+"""
 from __future__ import annotations
 
 import json
+import sys
 import unittest
+from pathlib import Path
 
-from app.core.browser.accessibility import A11yNode
-from app.core.browser.adapters import (
+_BROWSER_PLUGIN_ROOT = (
+    Path(__file__).resolve().parents[1] / "plugins" / "browser"
+)
+if str(_BROWSER_PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BROWSER_PLUGIN_ROOT))
+
+from aiko_browser.accessibility import A11yNode
+from aiko_browser.adapters import (
     RealBrowserAdapter,
     get_adapter,
     parse_indented_tree,
     parse_json_tree,
 )
-from app.core.browser.grouping import dedup_nodes, group_forms, heading_context
-from app.core.browser.page_state import PageStateMemory
-from app.core.browser.perception import BrowserPerception
-from app.core.browser.ranking import RankingWeights, rank_elements
-from app.core.browser.rendering import render_page
+from aiko_browser.grouping import dedup_nodes, group_forms, heading_context
+from aiko_browser.page_state import PageStateMemory
+from aiko_browser.perception import BrowserPerception
+from aiko_browser.ranking import RankingWeights, rank_elements
+from aiko_browser.rendering import render_page
 
 
 _SAMPLE_TREE = """
