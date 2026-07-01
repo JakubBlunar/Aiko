@@ -2757,6 +2757,106 @@ class InnerLifePart2Mixin:
         )
         return line
 
+    def _render_user_expertise_block(self, user_text: str) -> str:
+        """K75: steer explanation depth to the user's competence on the topic.
+
+        Maps ``user_text`` to its nearest topic cluster
+        (``TopicGraph.best_clusters_for``), reads the running per-cluster
+        competence estimate from the ``aiko.user_expertise`` kv map (learned
+        post-turn from the user's own language — see the K75 block in
+        ``post_turn_mixin``), bands it, and when the read is confidently
+        ``expert`` or ``novice`` surfaces one private depth steer (skip the
+        101 / scaffold gently). The quiet ``familiar`` middle renders nothing.
+
+        Orthogonal to K66 earned_familiarity (shared-history depth *between*
+        them) and F10i topic_confidence (how much Aiko *knows*): this is the
+        *user's* competence. Cooldown-gated to stay rare. MCP debug:
+        ``force_user_expertise_surface`` arms ``_user_expertise_force_next``
+        to bypass the cooldown + min-sim + min-samples on the matched cluster.
+        """
+        if not bool(
+            getattr(self._settings.agent, "user_expertise_enabled", True)
+        ):
+            return ""
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        embedder = getattr(self, "_embedder", None)
+        if graph is None or embedder is None:
+            return ""
+        if not bool(getattr(graph, "persistent", False)):
+            return ""
+
+        force = bool(getattr(self, "_user_expertise_force_next", False))
+        if force:
+            self._user_expertise_force_next = False
+
+        cooldown = int(getattr(self, "_user_expertise_cooldown", 0) or 0)
+        if cooldown > 0 and not force:
+            self._user_expertise_cooldown = cooldown - 1
+            return ""
+
+        from app.core.conversation import user_expertise as _ue
+
+        mem = self._memory_settings
+        min_sim = float(getattr(mem, "user_expertise_min_sim", 0.45))
+        min_samples = int(getattr(mem, "user_expertise_min_samples", 4))
+        novice_threshold = float(
+            getattr(mem, "user_expertise_novice_threshold", -0.35)
+        )
+        expert_threshold = float(
+            getattr(mem, "user_expertise_expert_threshold", 0.35)
+        )
+        if force:
+            min_sim, min_samples = 0.0, 1
+
+        try:
+            qvec = embedder.embed(text)
+        except Exception:
+            log.debug("user-expertise: embed failed", exc_info=True)
+            return ""
+        try:
+            matches = graph.best_clusters_for(qvec, top_n=1, min_sim=min_sim)
+        except Exception:
+            log.debug("user-expertise: best_clusters_for failed", exc_info=True)
+            return ""
+        if not matches:
+            return ""
+        cid, label, _sim = matches[0]
+
+        state_map = _ue.load_map(self._chat_db.kv_get)
+        state = state_map.get(str(int(cid)))
+        band = _ue.band_for(
+            state,
+            novice_threshold=novice_threshold,
+            expert_threshold=expert_threshold,
+            min_samples=min_samples,
+        )
+        if band not in (_ue.BAND_NOVICE, _ue.BAND_EXPERT):
+            return ""
+        line = _ue.render_block(band, label or "this topic", self.user_display_name)
+        if not line:
+            return ""
+
+        self._user_expertise_cooldown = max(
+            0, int(getattr(mem, "user_expertise_cooldown_turns", 12))
+        )
+        self._user_expertise_last = {
+            "cluster_id": int(cid),
+            "label": label,
+            "band": band,
+            "score": round(float(state.score), 3) if state else None,
+            "samples": int(state.samples) if state else 0,
+        }
+        log.info(
+            "user-expertise fire: cluster=%s band=%s label=%r",
+            cid,
+            band,
+            (label or "")[:60],
+        )
+        return line
+
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.
 

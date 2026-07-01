@@ -1318,6 +1318,89 @@ class EarnedFamiliarityProviderSlotTests(unittest.TestCase):
         )
 
 
+class UserExpertiseProviderSlotTests(unittest.TestCase):
+    """K75 user-expertise depth-steer block lands in the system prompt, is
+    silent when empty, is dropped under aggressive mode (a non-critical
+    register cue, like its K66 sibling), swallows provider exceptions, and
+    is registered in T6 right after earned_familiarity (both topic-graph
+    register cues)."""
+
+    _CUE = "Depth check"
+
+    def _cue_line(self) -> str:
+        return (
+            'Depth check: Jacob is clearly at home with "python" — pitch '
+            "peer-to-peer."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ux1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                user_expertise=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ux1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ux2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(user_expertise=lambda _t: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ux2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ux3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                user_expertise=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ux3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ux4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_t: str) -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(user_expertise=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "ux4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_after_earned_familiarity(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("user_expertise_block", t6)
+        self.assertEqual(
+            t6.index("user_expertise_block"),
+            t6.index("earned_familiarity_block") + 1,
+        )
+
+
 class ImplicitNeedProviderSlotTests(unittest.TestCase):
     """K69 implicit-need block lands in the system prompt, is silent when
     the provider returns empty, is RETAINED under aggressive mode (a

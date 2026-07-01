@@ -267,6 +267,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K66: earned familiarity — let deep shared history on a topic show
         # as shorthand register. Sits with the other topic-graph cues.
         "earned_familiarity_block",
+        # K75: user-expertise calibration — steer explanation depth to the
+        # user's own competence on the topic. Sits with the topic-graph cues.
+        "user_expertise_block",
         # K64a: associative wandering — "funny, this reminds me of ..."
         # connects the live topic to a distant cluster. Sits with the
         # other topic-graph-derived surfaces (it's drawn from the graph).
@@ -422,6 +425,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # shorthand register. Query-aware (consumes ``user_text``); dropped
         # in aggressive mode.
         self._earned_familiarity_provider: Callable[[str], str] | None = None
+        # K75: user-expertise depth steer — pitch explanation depth to the
+        # user's competence on the live topic cluster. Query-aware (consumes
+        # ``user_text``); dropped in aggressive mode.
+        self._user_expertise_provider: Callable[[str], str] | None = None
         # K64a: associative wandering — surface a "funny, this reminds me
         # of ..." connection between the live topic and a distant cluster.
         # Query-aware (consumes ``user_text``); dropped in aggressive mode.
@@ -1250,6 +1257,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "earned familiarity provider raised", exc_info=True
                     )
                     earned_familiarity_block = ""
+
+        # K75: user-expertise depth steer — pitch explanation depth to the
+        # user's competence on the live topic cluster. Query-aware (embeds
+        # user_text + matches a cluster, reads the learned estimate),
+        # dropped in aggressive mode.
+        user_expertise_block = ""
+        if not aggressive and self._user_expertise_provider is not None:
+            with _timed_phase(provider_ms, "user_expertise"):
+                try:
+                    user_expertise_block = (
+                        self._user_expertise_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "user expertise provider raised", exc_info=True
+                    )
+                    user_expertise_block = ""
 
         # K64a: associative wandering — surface a "funny, this reminds me
         # of ..." connection between the live topic and a distant cluster.
@@ -2883,6 +2907,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # K66: earned familiarity — deep shared history shown as
             # shorthand register, clusters with the other topic-graph cues.
             system_parts.append(earned_familiarity_block)
+        if user_expertise_block:
+            # K75: user-expertise depth steer — pitch explanation depth to
+            # the user's competence, clusters with the other topic-graph cues.
+            system_parts.append(user_expertise_block)
         if associative_wander_block:
             # K64a: associative wandering — "funny, this reminds me of ..."
             # connection cue, sits with the other topic-graph-derived

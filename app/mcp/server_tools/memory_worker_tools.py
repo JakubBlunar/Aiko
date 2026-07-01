@@ -2297,6 +2297,120 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_earned_familiarity_surface raised: {exc}"
 
     @mcp.tool()
+    def get_user_expertise_state() -> str:
+        """K75 — dump the user-expertise depth-calibration state.
+
+        Shows the master switch, thresholds / cadence knobs, the live
+        provider cooldown + last fire, and the full learned per-cluster
+        competence map (score / samples / band + cluster label). First stop
+        for "why did Aiko (over/under)-explain that topic?". Orthogonal to
+        ``get_earned_familiarity_state`` (shared-history depth): this is the
+        *user's* competence, learned from his own language.
+        """
+        mem = getattr(session, "_memory_settings", None)
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(session._settings.agent, "user_expertise_enabled", True)
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_user_expertise_force_next", False)
+            ),
+            "cooldown_remaining": int(
+                getattr(session, "_user_expertise_cooldown", 0) or 0
+            ),
+            "last_fire": getattr(session, "_user_expertise_last", None),
+            "settings": {
+                "min_sim": float(
+                    getattr(mem, "user_expertise_min_sim", 0.45)
+                ),
+                "learning_rate": float(
+                    getattr(mem, "user_expertise_learning_rate", 0.25)
+                ),
+                "min_samples": int(
+                    getattr(mem, "user_expertise_min_samples", 4)
+                ),
+                "novice_threshold": float(
+                    getattr(mem, "user_expertise_novice_threshold", -0.35)
+                ),
+                "expert_threshold": float(
+                    getattr(mem, "user_expertise_expert_threshold", 0.35)
+                ),
+                "cooldown_turns": int(
+                    getattr(mem, "user_expertise_cooldown_turns", 12)
+                ),
+            },
+        }
+        try:
+            from app.core.conversation import user_expertise as _ue
+
+            state_map = _ue.load_map(session._chat_db.kv_get)
+            graph = getattr(session, "_topic_graph", None)
+            labels: dict[str, str] = {}
+            if graph is not None:
+                try:
+                    for cluster in graph.topic_clusters():
+                        labels[str(int(cluster.cluster_id))] = (
+                            cluster.summary or ""
+                        )[:120]
+                except Exception:
+                    pass
+            clusters: list[dict[str, Any]] = []
+            for cid, st in state_map.items():
+                band = _ue.band_for(
+                    st,
+                    novice_threshold=float(
+                        getattr(mem, "user_expertise_novice_threshold", -0.35)
+                    ),
+                    expert_threshold=float(
+                        getattr(mem, "user_expertise_expert_threshold", 0.35)
+                    ),
+                    min_samples=int(
+                        getattr(mem, "user_expertise_min_samples", 4)
+                    ),
+                )
+                clusters.append(
+                    {
+                        "cluster_id": cid,
+                        "label": labels.get(cid, ""),
+                        "score": round(float(st.score), 3),
+                        "samples": int(st.samples),
+                        "band": band,
+                        "updated_at": st.updated_at,
+                    }
+                )
+            clusters.sort(key=lambda d: abs(d["score"]), reverse=True)
+            out["clusters"] = clusters
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["clusters_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_user_expertise_surface() -> str:
+        """K75 — arm a one-shot bypass on the user-expertise provider.
+
+        Sets ``_user_expertise_force_next`` so the next provider call
+        ignores the cooldown, drops ``min_sim`` to 0, and trusts a cluster
+        estimate at ``min_samples=1``. Seed a few on-topic novice/expert
+        messages first (or check ``get_user_expertise_state`` for a learned
+        cluster), then ``send_message`` on that topic and verify the depth
+        steer lands in ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._user_expertise_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores cooldown + min_sim and "
+                        "trusts the matched cluster at min_samples=1"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_user_expertise_surface raised: {exc}"
+
+    @mcp.tool()
     def get_upcoming_horizon_state() -> str:
         """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
 

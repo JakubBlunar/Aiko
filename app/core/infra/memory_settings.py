@@ -602,6 +602,22 @@ class MemorySettings:
     # Longer than its siblings: deep familiarity is a slow-moving register,
     # not a per-charged-topic beat, so it should surface rarely.
     earned_familiarity_cooldown_turns: int = 12
+    # ── K75: user-expertise calibration (per-cluster competence) ─────────
+    # Minimum centroid cosine for the live turn to count as "on" a cluster
+    # before we learn from / steer on it (mirrors the K66 gate). Doubles as
+    # the noise filter: only topically-substantive turns feed the estimate.
+    user_expertise_min_sim: float = 0.45
+    # EMA learning rate blending each signal-bearing message into the
+    # per-cluster competence score (converges over ~4-8 messages).
+    user_expertise_learning_rate: float = 0.25
+    # Signal-bearing messages a cluster needs before any band is trusted.
+    user_expertise_min_samples: int = 4
+    # Score thresholds (score in [-1, +1]) for the confident bands; the
+    # middle stays "familiar" and renders no steer.
+    user_expertise_novice_threshold: float = -0.35
+    user_expertise_expert_threshold: float = 0.35
+    # Global cooldown (in turns) after a depth-steer cue fires.
+    user_expertise_cooldown_turns: int = 12
     # ── K68: embodied vitality (body energy) ─────────────────────────────
     # Half-life (hours) of the relaxation toward the circadian baseline.
     # After this many idle hours the gap to baseline halves. Short enough
@@ -1874,6 +1890,47 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             earned_familiarity_cooldown_turns=max(
                 0,
                 int(memory_raw.get("earned_familiarity_cooldown_turns", 12)),
+            ),
+            user_expertise_min_sim=max(
+                0.0,
+                min(1.0, float(memory_raw.get("user_expertise_min_sim", 0.45))),
+            ),
+            user_expertise_learning_rate=max(
+                0.01,
+                min(
+                    1.0,
+                    float(memory_raw.get("user_expertise_learning_rate", 0.25)),
+                ),
+            ),
+            user_expertise_min_samples=max(
+                1,
+                int(memory_raw.get("user_expertise_min_samples", 4)),
+            ),
+            user_expertise_novice_threshold=max(
+                -1.0,
+                min(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "user_expertise_novice_threshold", -0.35
+                        )
+                    ),
+                ),
+            ),
+            user_expertise_expert_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "user_expertise_expert_threshold", 0.35
+                        )
+                    ),
+                ),
+            ),
+            user_expertise_cooldown_turns=max(
+                0,
+                int(memory_raw.get("user_expertise_cooldown_turns", 12)),
             ),
             vitality_recover_half_life_hours=max(
                 0.01,

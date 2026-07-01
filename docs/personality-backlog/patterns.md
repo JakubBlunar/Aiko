@@ -845,7 +845,22 @@ decay worker, MCP `get_humor_style_state`, `agent.humor_style_enabled`.
 
 ---
 
-## K75. User-expertise calibration — match explanation depth
+## K75. User-expertise calibration — match explanation depth ✅ shipped
+
+> ✅ **Shipped.** Pure estimator + post-turn kv learner + provider (no
+> worker, no schema change). Pure module
+> [`app/core/conversation/user_expertise.py`](../../app/core/conversation/user_expertise.py)
+> (`classify_message` → signed novice↔expert signal from regex only;
+> `update_state` per-cluster EMA; `band_for` novice/familiar/expert;
+> `render_block` depth steer; `aiko.user_expertise` kv map). Learns
+> post-turn in [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+> (classify-first → embed only on a real signal → fold into the live
+> cluster's EMA), surfaces via `_render_user_expertise_block`
+> ([`inner_life_part2.py`](../../app/core/session/inner_life_part2.py)) as a
+> T6 block right after `earned_familiarity_block`. `agent.user_expertise_enabled`
+> + six `memory.user_expertise_*` knobs; persona "Meeting {user_name} at his
+> level" block; MCP `get_user_expertise_state` / `force_user_expertise_surface`.
+> Full writeup: [`shipped/patterns-k31-k60.md → K75`](shipped/patterns-k31-k60.md#k75-user-expertise-calibration--match-explanation-depth).
 
 **Motivation.** K66 (earned familiarity) reads how deep the *shared history* on
 a topic is; K75 is the orthogonal, equally important read of the **user's own

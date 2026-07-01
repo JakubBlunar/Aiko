@@ -647,6 +647,7 @@ class SpeakingWorkersInitMixin:
             topic_temperature=self._render_topic_temperature_block,
             topic_confidence=self._render_topic_confidence_block,
             earned_familiarity=self._render_earned_familiarity_block,
+            user_expertise=self._render_user_expertise_block,
             knowledge_grounding=self._render_knowledge_grounding_block,
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
