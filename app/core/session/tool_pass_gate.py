@@ -76,22 +76,20 @@ class GateDecision:
 
 
 # ── tool-name → family mapping ────────────────────────────────────────
-# Every live tool must appear here. A registered tool whose name is NOT
-# in this map makes the gate always run (``reason="unknown_tool"``) so a
-# future tool added without a pattern family degrades to the status quo
-# instead of silently never being callable.
+# Every live *brain-lane* tool must appear here. A registered tool whose
+# name is NOT in this map makes the gate always run
+# (``reason="unknown_tool"``) so a future tool added without a pattern
+# family degrades to the status quo instead of silently never being
+# callable. Tools that run only in the background workflow / MCP lane
+# (``web_search``, the filesystem task tools) are intentionally absent —
+# they are never in the brain ``ToolRegistry`` so the gate never sees
+# them. Plugin fast tools supply their own name→family at runtime via
+# ``TurnRunner.set_plugin_tool_gate``.
 _TOOL_FAMILY: dict[str, str] = {
     # builtins
     "get_time": "time",
-    "web_search": "web",
     "recall": "recall",
     "recall_topic": "recall",
-    # file tasks
-    "list_file_roots": "files",
-    "start_file_read": "files",
-    "start_file_search": "files",
-    "cancel_file_task": "files",
-    "answer_file_task": "files",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
@@ -106,8 +104,9 @@ _TOOL_FAMILY: dict[str, str] = {
     "update_goal_progress": "goals",
     "archive_goal": "goals",
     "list_goals": "goals",
-    # exact arithmetic (synchronous brain builtin)
-    "calculate": "math",
+    # NB: ``calculate`` (family ``math``) moved to the bundled
+    # ``calculator`` plugin; it registers its name -> family + patterns at
+    # runtime via ``TurnRunner.set_plugin_tool_gate``.
     # workflows / brain tasks
     "start_workflow": "tasks",
     "check_my_work": "tasks",
@@ -136,17 +135,9 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"today'?s date", r"what month", r"what year", r"o'?clock",
         r"timezone", r"time zone", r"clock",
     ]),
-    "web": _compile([
-        r"search", r"look (?:it |that |this )?up", r"google", r"web",
-        r"news", r"headlines?", r"latest",
-        r"price", r"prices", r"stock", r"score", r"release date",
-        r"who (?:is|was|are)", r"what (?:is|are|was) (?:the|a|an)\b",
-        r"how (?:much|many) (?:is|are|does|do)\b", r"happening",
-        r"look up",
-    ]),
-    # H11: weather / forecast questions route to the dedicated weather
-    # tools rather than web_search. Moved off the "web" family so a
-    # "what's the weather?" turn picks get_weather, not a slow DDG round-trip.
+    # NB: no "web" family — ``web_search`` runs only in the background
+    # workflow lane, never as a brain tool, so a "search the web" turn is
+    # not a fast-tool signal here.
     "weather": _compile([
         r"weather", r"forecast", r"temperature", r"how (?:hot|cold|warm)",
         r"rain", r"raining", r"snow", r"snowing", r"sunny", r"cloudy",
@@ -158,12 +149,8 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"what did i (?:say|tell)", r"we talked about",
         r"last (?:time|week|month) (?:i|we)\b",
     ]),
-    "files": _compile([
-        r"files?", r"folders?", r"director(?:y|ies)", r"documents?",
-        r"notes?", r"\.md", r"\.txt", r"\.pdf", r"read (?:the|that|my|this)",
-        r"open (?:the|that|my|this)", r"look (?:in|inside|at) (?:the|my)",
-        r"path", r"drive", r"downloads", r"desktop",
-    ]),
+    # NB: no "files" family — the filesystem task tools live in the
+    # background workflow / MCP lane, not the brain ``ToolRegistry``.
     "world": _compile([
         r"room", r"move", r"couch", r"bed", r"desk", r"window",
         r"bookshelf", r"kitchenette", r"beanbag", r"mirror",
@@ -176,16 +163,9 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"goals?", r"objectives?", r"milestones?", r"progress",
         r"working (?:on|towards?)", r"archive",
     ]),
-    # Exact arithmetic: route number-crunching turns to ``calculate`` so
-    # Aiko never guesses a sum. Generous by design (a false positive only
-    # costs the status-quo pass); the numeric-operator alternation catches
-    # "2340 * 0.185"-shaped asks that carry no keyword.
-    "math": _compile([
-        r"calculate", r"comput(?:e|ing|ation)", r"arithmetic",
-        r"square root", r"to the power", r"percent", r"percentage",
-        r"multipl(?:y|ied|ication)", r"divide[d]?", r"divided by",
-        r"how much is", r"\d+\s*[-+*/x^]\s*\d+",
-    ]),
+    # NB: the ``math`` family (``calculate``) moved to the bundled
+    # ``calculator`` plugin — it now supplies its family patterns at
+    # runtime via ``TurnRunner.set_plugin_tool_gate`` (extra_patterns).
     "tasks": _compile([
         r"tasks?", r"workflows?", r"cancel", r"status", r"running",
         r"done yet", r"finished?", r"check (?:my|your|the|on)",
@@ -205,12 +185,21 @@ _GENERIC_PATTERN = _compile([
 ])
 
 
-def families_for_tools(tool_names: Iterable[str]) -> tuple[set[str], set[str]]:
-    """Map registered tool names to (active pattern families, unknown names)."""
+def families_for_tools(
+    tool_names: Iterable[str],
+    *,
+    extra_families: "dict[str, str] | None" = None,
+) -> tuple[set[str], set[str]]:
+    """Map registered tool names to (active pattern families, unknown names).
+
+    ``extra_families`` overlays plugin-contributed tool → family mappings on
+    top of the built-in ``_TOOL_FAMILY`` (plugin wins on a name clash).
+    """
+    lookup = {**_TOOL_FAMILY, **extra_families} if extra_families else _TOOL_FAMILY
     families: set[str] = set()
     unknown: set[str] = set()
     for name in tool_names:
-        family = _TOOL_FAMILY.get(name)
+        family = lookup.get(name)
         if family is None:
             unknown.add(name)
         else:
@@ -237,6 +226,7 @@ def select_active_tool_names(
     *,
     core_families: Iterable[str] = BRAIN_CORE_FAMILIES,
     router_enabled: bool = False,
+    extra_families: "dict[str, str] | None" = None,
 ) -> set[str] | None:
     """Pick the brain tool subset to expose this turn, or ``None`` to send
     every registered tool (no narrowing).
@@ -259,9 +249,10 @@ def select_active_tool_names(
     if not decision.reason.startswith("signal_"):
         return None
     active_families = set(decision.matched) | set(core_families)
+    lookup = {**_TOOL_FAMILY, **extra_families} if extra_families else _TOOL_FAMILY
     allow: set[str] = set()
     for name in registered_tool_names:
-        family = _TOOL_FAMILY.get(name)
+        family = lookup.get(name)
         if family is not None and family in active_families:
             allow.add(name)
     return allow
@@ -272,12 +263,23 @@ def should_run_tool_pass(
     registered_tool_names: Iterable[str],
     *,
     context: GateContext,
+    extra_families: "dict[str, str] | None" = None,
+    extra_patterns: "dict[str, re.Pattern[str]] | None" = None,
 ) -> GateDecision:
     """Decide whether the forced tool-decision pass needs to run.
 
     Continuity signals win over the text heuristic; the text heuristic
     only consults pattern families that have registered tools.
+
+    ``extra_families`` / ``extra_patterns`` overlay plugin-contributed
+    tool → family mappings and family → regex patterns (see the fast-tool
+    plugin capability) on top of the built-ins.
     """
+    patterns = (
+        {**_FAMILY_PATTERNS, **extra_patterns}
+        if extra_patterns
+        else _FAMILY_PATTERNS
+    )
     # ── continuity / bypass rules (always run) ────────────────────────
     if context.force:
         decision = GateDecision(run=True, reason="force")
@@ -288,7 +290,9 @@ def should_run_tool_pass(
     elif context.last_turn_dispatched_tool:
         decision = GateDecision(run=True, reason="last_turn_tool")
     else:
-        families, unknown = families_for_tools(registered_tool_names)
+        families, unknown = families_for_tools(
+            registered_tool_names, extra_families=extra_families
+        )
         if unknown:
             # Future tool with no pattern family: degrade to status quo.
             decision = GateDecision(
@@ -303,7 +307,7 @@ def should_run_tool_pass(
             else:
                 matched = tuple(sorted(
                     family for family in families
-                    if _FAMILY_PATTERNS[family].search(text)
+                    if family in patterns and patterns[family].search(text)
                 ))
                 if matched:
                     decision = GateDecision(

@@ -580,11 +580,10 @@ class ToolsSettings:
     # tools can be hidden during prompt experiments. See
     # :mod:`app.llm.tools.workflow_tools`.
     workflow: bool = True
-    # Synchronous exact-arithmetic tool (``calculate``). Evaluates an
-    # expression via an AST whitelist (no ``eval``) and returns the
-    # result in the same turn so Aiko never has to guess a number. See
-    # :mod:`app.llm.tools.calc`.
-    calculate: bool = True
+    # NB: ``calculate`` used to live here as a core builtin; it now ships
+    # as the bundled ``calculator`` plugin (``plugins/calculator/``),
+    # toggled via ``plugins.entries.calculator.enabled`` instead of a
+    # ``tools.*`` flag.
     # H11: synchronous weather tools (``get_weather`` / ``get_forecast``).
     # Lets Aiko answer "what's the forecast?" for the configured home
     # location or any named city (geocoded at call time). Independent of
@@ -1749,7 +1748,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),
             workflow=bool(tools_raw.get("workflow", True)),
-            calculate=bool(tools_raw.get("calculate", True)),
             weather=bool(tools_raw.get("weather", True)),
         ),
         search=SearchSettings(

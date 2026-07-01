@@ -1,6 +1,6 @@
 """AST-whitelisted arithmetic evaluator — no ``eval``, no names leak.
 
-The ``calculate`` tool needs to give the LLM an *exact* arithmetic
+The ``calculate`` fast tool needs to give the LLM an *exact* arithmetic
 result instead of letting it guess ("what's 18.5% of 2340?" should not
 be a hallucinated number). The obvious-but-dangerous way is
 ``eval(expr)``; this module is the safe replacement.
@@ -20,6 +20,10 @@ Anything else — attribute access (``(1).__class__``), arbitrary names,
 calls to non-allowlisted functions, comprehensions, lambdas, string
 literals — raises :class:`CalcError`. Exponentiation is bounded so
 ``2 ** 10**9`` can't hang the process.
+
+Ships inside the ``calculator`` plugin bundle (the runtime puts the
+plugin root on ``sys.path`` so ``entry.py`` can ``import aiko_calc``);
+it does not depend on app core.
 """
 from __future__ import annotations
 

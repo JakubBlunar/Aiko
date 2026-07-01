@@ -866,10 +866,10 @@ class DetectorsInitMixin:
         except Exception:
             log.exception("task-orchestration init failed")
         # The initial ``rebuild_tool_registry()`` above ran before the
-        # orchestrator existed, so the filesystem task tools
-        # (``list_file_roots`` / ``start_file_search`` / …) were gated
-        # out (their gate is ``_task_orchestrator is not None``). Now
-        # that orchestration is wired, rebuild once more so those tools
+        # orchestrator existed, so the workflow tools (``start_workflow``
+        # / ``check_my_work`` / ``cancel_work``) were gated out (their
+        # gate is ``_task_orchestrator is not None``). Now that
+        # orchestration is wired, rebuild once more so those tools
         # actually land in the registry the LLM sees. Cheap + idempotent.
         if getattr(self, "_task_orchestrator", None) is not None:
             try:

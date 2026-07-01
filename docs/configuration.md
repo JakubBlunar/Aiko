@@ -64,7 +64,7 @@ exists to keep them in lock-step.
 | Per-capability approval overrides | `agent.task_approval_overrides` | `{}` (e.g. `{"file_write": "auto"}`) |
 | Let Aiko write files (workflow skill) | `agent.file_write.enabled` | `false` |
 | Let Aiko see images (workflow skill) | `agent.vision.enabled` | `false` |
-| Exact-arithmetic tool | `tools.calculate` | `true` |
+| Exact-arithmetic tool | bundled `calculator` plugin | enabled |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -1010,7 +1010,7 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.web_search` *(bool, `true`)* — gates whether the background `web_search` workflow skill is offered. The actual search backend (DuckDuckGo vs LangSearch) is configured separately under the `search` block below.
 - `tools.world` *(bool, `true`)* — Aiko's room tools (`look_around`, `move_to`, `change_posture`, `inspect_item`, `consume_item`). Off → her room is still alive in the world store but she can't act on it.
 - `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
-- `tools.calculate` *(bool, `true`)* — synchronous exact-arithmetic tool. Evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. See [`docs/task-approvals.md`](task-approvals.md) for the broader task/skill picture.
+- `calculate` is no longer a `tools.*` flag — it moved to the bundled `calculator` plugin (`plugins/calculator/`), a synchronous exact-arithmetic fast tool contributed through the ToolPlugin SDK (`api.register_fast_tool`). It evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. Toggle it by enabling/disabling the plugin (`plugin.json` `enabled`, or `plugins.entries.calculator.enabled`). See [`docs/skills-framework.md`](skills-framework.md) for the fast-tool plugin capability.
 - `tools.weather` *(bool, `true`)* — H11 synchronous weather tools (`get_weather` / `get_forecast`). Lets Aiko answer "what's the forecast?" for the configured home location or any named city (geocoded at call time). Independent of the passive ambient `agent.weather_sync_enabled` feed — the tools work even with the overlay off. Backend configured under the `weather` block below.
 
 ---

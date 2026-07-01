@@ -76,6 +76,30 @@ class ActivateTests(unittest.TestCase):
         self.assertEqual(len(result.middlewares), 1)
         self.assertIsNone(result.server)
 
+    def test_fast_tool_only_active(self) -> None:
+        # A plugin registering only a fast tool is a valid capability and
+        # its spec is read back on the activated result.
+        _write(
+            self.root, "p", _STUB,
+            entry=(
+                "def define_plugin(api):\n"
+                "    api.register_fast_tool(\n"
+                "        name='calc', description='math',\n"
+                "        parameters={'type': 'object', 'properties': {}},\n"
+                "        handler=lambda a: 'ok', family='math',\n"
+                "        gate_patterns=['calculate'],\n"
+                "    )\n"
+            ),
+        )
+        result = runtime.activate_plugin(self._stub())
+        self.assertEqual(result.status, "active")
+        self.assertIsNone(result.server)
+        self.assertEqual(len(result.fast_tools), 1)
+        spec = result.fast_tools[0]
+        self.assertEqual(spec.name, "calc")
+        self.assertEqual(spec.family, "math")
+        self.assertEqual(spec.handler({}), "ok")
+
     def test_gated_out_on_require(self) -> None:
         _write(
             self.root, "p", _STUB,

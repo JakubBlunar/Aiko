@@ -647,6 +647,12 @@ class TaskOrchestrationMixin:
         # Tool-result middlewares registered by code plugins (fed to the
         # McpToolHandler chain alongside the legacy global browser_perception).
         self._plugin_middlewares: list[Any] = []
+        # Brain-lane fast tools contributed by code plugins + their P14 gate
+        # maps. Consumed by ``rebuild_tool_registry`` (registry) and pushed
+        # to ``TurnRunner.set_plugin_tool_gate`` (gate families / patterns).
+        self._plugin_fast_tools: list[Any] = []
+        self._plugin_tool_families: dict[str, str] = {}
+        self._plugin_family_patterns: dict[str, Any] = {}
         if not bool(getattr(agent, "mcp_clients_enabled", True)):
             return
         mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
@@ -689,6 +695,8 @@ class TaskOrchestrationMixin:
                     self._mcp_plugin_guidance.update(plugin.group_guidance)
                     if plugin.middlewares:
                         self._plugin_middlewares.extend(plugin.middlewares)
+                    if getattr(plugin, "fast_tools", None):
+                        self._collect_plugin_fast_tools(plugin.fast_tools)
                     if plugin.server is not None:
                         plugin_servers.append(plugin.server)
                 if plugin_servers:
@@ -755,6 +763,46 @@ class TaskOrchestrationMixin:
         except Exception as exc:
             log.warning("external-mcp: manager init failed: %r", exc)
             self._external_mcp_manager = None
+
+    def _collect_plugin_fast_tools(self, specs: list[Any]) -> None:
+        """Collect plugin fast-tool specs + fold their P14 gate maps.
+
+        Each spec becomes a brain ``Tool`` at ``rebuild_tool_registry`` time.
+        A spec with both a ``family`` and ``gate_patterns`` also wires the
+        gate: the tool name maps to its family, and the family's regexes are
+        merged (compiled as one alternation) so the P14 gate / skill router
+        can skip / narrow like the builtins. A spec with no family (or a
+        family with no patterns) is left unmapped -- the gate then degrades
+        to always-run for it (safe, just un-optimized).
+        """
+        from app.core.session.tool_pass_gate import _compile
+
+        # Accumulate raw pattern strings per family across plugins, then
+        # (re)compile the affected families into one alternation each.
+        pattern_strs: dict[str, list[str]] = getattr(
+            self, "_plugin_family_pattern_strs", {}
+        )
+        for spec in specs or []:
+            name = str(getattr(spec, "name", "") or "").strip()
+            if not name:
+                continue
+            self._plugin_fast_tools.append(spec)
+            family = getattr(spec, "family", None)
+            patterns = tuple(getattr(spec, "gate_patterns", ()) or ())
+            if family and patterns:
+                self._plugin_tool_families[name] = str(family)
+                pattern_strs.setdefault(str(family), []).extend(patterns)
+        self._plugin_family_pattern_strs = pattern_strs
+        for family, words in pattern_strs.items():
+            if words:
+                try:
+                    self._plugin_family_patterns[family] = _compile(words)
+                except Exception:
+                    log.warning(
+                        "plugin fast-tool gate patterns invalid for family %s",
+                        family,
+                        exc_info=True,
+                    )
 
     def _mcp_group_guidance_live(self) -> dict[str, str]:
         """Live merged planner guidance keyed by ``mcp:<id>`` group.

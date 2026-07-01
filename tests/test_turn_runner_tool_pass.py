@@ -494,7 +494,7 @@ class SkillRouterNarrowingTests(unittest.TestCase):
                 },
             }
             for name in (
-                "get_time", "recall", "list_file_roots",
+                "get_time", "recall", "get_weather",
                 "add_goal", "consume_item",
             )
         }
@@ -541,7 +541,7 @@ class SkillRouterNarrowingTests(unittest.TestCase):
         self.assertIn("recall", names)
         self.assertIn("consume_item", names)  # world is always-on core
         # Irrelevant families dropped.
-        self.assertNotIn("list_file_roots", names)
+        self.assertNotIn("get_weather", names)
         self.assertNotIn("add_goal", names)
         # Escape tool always appended.
         self.assertIn(_RESPOND_DIRECTLY_TOOL, names)
