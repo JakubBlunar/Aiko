@@ -492,3 +492,79 @@ cluster ([`awareness.md`](awareness.md)).
 
 **Effort.** Small (a, cap bump + sentinel) → Medium (b/c, depends
 on P5/P17) → Large (d, mirror eviction / LRU rework).
+
+---
+
+## P31. Audit + trim the baseline system prompt (~25-30k resting floor)
+
+**Motivation.** On a *fresh* session with a single message the
+system prompt already measures ~25-30k tokens — that's the resting
+floor every turn pays before a word of history or RAG lands, and
+it's the dominant term in context occupancy now that the tool-pass
+double-count is fixed (see below). The floor is legitimate — it's
+the persona plus the full inner-life stack (K-series detectors,
+affect / mood shell, world, relationship, day-colour, circadian,
+grounding line, arc/agenda/goals, prosody + reaction grammar,
+etc.) — but it has never been *audited* block-by-block for
+value-per-token. Some blocks render every turn but only matter
+occasionally (K27 day-colour, K3 routines, anniversary windows);
+some persona sections may have grown redundant with the tag-
+grammar addenda; and OpenAI prompt caching only discounts the
+*stable prefix*, so a bloated-but-stable T0-T1 is cheap-per-turn
+while a bloated *volatile* T5-T6 pays full price every turn. A
+principled trim (or lazy-render) of the heaviest volatile blocks
+is likely the single biggest lever on both per-turn cost and
+effective context headroom.
+
+**Context (why now).** The recent double-count fix means the
+occupancy readout is finally *truthful*: `context_prompt_tokens`
+(largest single call) drives the widget + compaction trigger, not
+the summed tool+stream `prompt_tokens`. So the ~25-30k is now
+visible as the real floor rather than being masked by the ~2x
+tool-turn inflation — making this the obvious next lever. The
+per-block telemetry from P2 (`PromptTelemetry` already carries
+`affect_tokens` / `circadian_tokens` / `profile_tokens` / … per
+inner-life block, plus `provider_ms` / `slowest_provider`) means
+the measurement surface for the audit already exists.
+
+**Key files.**
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(`assemble_with_budget`, the `_PROMPT_BLOCK_TIERS` T0→T6 ladder,
+the `if block: system_parts.append(block)` cascade),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
++ the `inner_life_part*.py` / `post_turn_mixin.py` providers (the
+per-block renderers),
+[`app/core/session/prompt_support.py`](../../app/core/session/prompt_support.py)
+(`PromptTelemetry` per-block token fields — the audit's ruler),
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+(the largest single T0 block; candidate for redundancy trimming
+against the `_SPEECH_GRAMMAR_ADDENDUM` in `prompt_assembler.py`).
+
+**Sketched approach.** (a) **Measure** — add a one-shot MCP dump
+(or extend `get_last_response_detail`) that ranks every inner-life
+block by token cost × render-frequency × tier, so we see the
+heaviest *volatile* (T5-T6) blocks first — those are the ones
+paying full price past the cache prefix. (b) **Persona trim** —
+diff the persona's tag/grammar guidance against
+`_SPEECH_GRAMMAR_ADDENDUM` and collapse duplication (a persona-
+trim pass already shipped once; this is the follow-up now that
+more K-blocks exist). (c) **Lazy-render the occasional blocks** —
+several blocks render every turn but only carry signal rarely
+(day-colour tagline, routines, anniversary, upcoming-horizon when
+empty); gate them to render only when they actually have content,
+so an empty block costs 0 tokens instead of a boilerplate header.
+(d) **Tier hygiene** — confirm no volatile block accidentally
+sits in the stable prefix inflating cache-miss cost (cross-check
+against `_PROMPT_BLOCK_TIERS`).
+
+**Open questions.** What's the floor we're willing to accept —
+is ~15k a realistic target without losing personality fidelity,
+or does the K-series richness genuinely need ~25k? Which blocks
+are safe to make *conditional* vs. which provide value every turn
+even when terse (affect, relationship, persona core)? Does moving
+occasional blocks behind a content-gate risk them silently never
+firing (the same audit-before-splitting caution as P16)?
+
+**Effort.** Small (a, measurement tool) → Medium (b/c, per-block
+trim + lazy-render, one block family at a time) → the persona
+diff is a focused afternoon.

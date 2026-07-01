@@ -23,8 +23,6 @@ from __future__ import annotations
 
 from app.core.tasks.cue_render import render_cue_block
 from app.core.tasks.handler_names import (
-    HANDLER_FILE_READ,
-    HANDLER_FILE_SEARCH,
     KNOWN_HANDLER_NAMES,
 )
 from app.core.tasks.recovery import RecoveryReport, recover_interrupted_tasks
@@ -202,8 +200,6 @@ __all__ = [
     "KIND_FREE_TEXT",
     "KIND_CHOICE",
     "KIND_CONFIRM",
-    "HANDLER_FILE_SEARCH",
-    "HANDLER_FILE_READ",
     "KNOWN_HANDLER_NAMES",
     "HeartbeatChecker",
     "ACTION_WARN",

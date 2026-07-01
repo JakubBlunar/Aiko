@@ -1122,6 +1122,23 @@ Master switch lives on `agent`:
 
 ---
 
+## `plugins` — `PluginsSettings`
+
+SDK-primary MCP ToolPlugins — a small Python package (`plugin.json` stub +
+`entry.py` + plugin-local `config/` + optional `SKILL.md`) that registers an MCP
+server, planner guidance, and optional tool-result middleware in code. Discovered
+from the bundled `plugins/`, the user `data/plugins/`, and any `plugins.paths`, in
+that precedence order (first-seen id wins). A disabled plugin's code is never
+imported. See [`docs/plugins.md`](plugins.md) for the full model.
+
+- `plugins.enabled` *(bool, `true`)* — master switch for the whole plugin subsystem.
+- `plugins.paths` *(string[], `[]`)* — extra discovery roots beyond the two defaults.
+- `plugins.entries` *(object)* — per-plugin overrides keyed by plugin id:
+  - `entries.<id>.enabled` *(bool | null)* — override the stub's `enabled`.
+  - `entries.<id>.config` *(object)* — highest-precedence config override, merged on top of the plugin-local `config/default.json` < `config/user.json`. This central override lives in the app's `config/user.json`; machine-specific paths / tokens usually live in the **gitignored** plugin-local `config/user.json` instead (or are read at runtime via `api.env(...)`).
+
+---
+
 ## `browser_perception` — `BrowserPerceptionSettings`
 
 Optional server-agnostic middleware over an MCP browser server's accessibility-snapshot tool: parse → dedup → form-group → heading-context → heuristic rank → diff-vs-previous → compact render for the workflow planner. Off by default. See [`docs/browser-perception.md`](browser-perception.md) for the full design and the "swap the MCP server" runbook.

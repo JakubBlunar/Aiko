@@ -228,9 +228,20 @@ class ChatTurnMixin:
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
 
+        # Context occupancy uses the largest single Ollama call's prompt
+        # tokens (stamped on telemetry), NOT the merged tool+stream sum in
+        # ``usage.prompt_tokens`` (which double-counts the system prompt on
+        # tool turns and would falsely read ~2x). Fall back to the merged
+        # figure when telemetry is absent (banter turns: single == merged).
+        context_tokens = 0
+        if telemetry is not None:
+            context_tokens = int(getattr(telemetry, "context_prompt_tokens", 0) or 0)
+        if context_tokens <= 0:
+            context_tokens = int(usage.prompt_tokens)
+
         prompt_pct = 0.0
-        if self._context_window > 0 and usage.prompt_tokens > 0:
-            prompt_pct = round(usage.prompt_tokens / float(self._context_window), 4)
+        if self._context_window > 0 and context_tokens > 0:
+            prompt_pct = round(context_tokens / float(self._context_window), 4)
 
         metrics: dict[str, Any] = {
             "mode": mode,
@@ -240,6 +251,7 @@ class ChatTurnMixin:
             "tts_ms": 0.0,
             "total_ms": round(total_ms, 1),
             "prompt_tokens": int(usage.prompt_tokens),
+            "context_tokens": int(context_tokens),
             "completion_tokens": int(usage.completion_tokens),
             "total_tokens": int(usage.total_tokens),
             "total_duration_ms": round(usage.total_duration_ms, 1),
@@ -272,6 +284,7 @@ class ChatTurnMixin:
                 "history_tokens": tdict["history_tokens"],
                 "user_tokens": tdict["user_tokens"],
                 "tool_tokens": tdict["tool_tokens"],
+                "tool_schema_tokens": tdict["tool_schema_tokens"],
                 "history_messages_kept": tdict["history_messages_kept"],
                 "history_dropped_count": tdict["history_messages_dropped"],
                 "summary_active": tdict["summary_active"],

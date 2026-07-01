@@ -43,14 +43,13 @@ def register(mcp, session: "SessionController") -> None:
         }
         return json.dumps(info, indent=2, default=str)
 
-    # ── Brain-orchestration task debug surface (chunk 9) ─────────────
+    # ── Brain-orchestration task debug surface ───────────────────────
     #
-    # These tools let Cursor / VSCode MCP clients drive the
-    # filesystem reference handler end-to-end. Useful both as a
-    # smoke test for the queue path and as a real-world demo of
-    # the "Aiko does something in the background, surfaces the
-    # result on the next turn" flow described in
-    # ``docs/brain-orchestration.md``.
+    # ``list_file_roots`` mirrors the validated ``task_file_allowed_roots``
+    # (used by the vision ``describe_image`` skill + chat attachments);
+    # ``answer_file_task`` resolves any ``awaiting_input`` task. File
+    # read/search/write are handled by the filesystem MCP plugin, not
+    # these debug tools.
 
     @mcp.tool()
     def list_file_roots() -> str:
@@ -98,87 +97,12 @@ def register(mcp, session: "SessionController") -> None:
         return json.dumps(out, indent=2, default=str)
 
     @mcp.tool()
-    def start_file_search(
-        query: str, root_label: str = "", max_results: int = 50
-    ) -> str:
-        """Start an asynchronous file search task and return its id.
-
-        The search runs on the orchestrator's worker pool — this
-        call returns immediately with ``{"task_id": N}``. Results
-        land as a ``task_result`` cue on the brain queue and
-        surface in Aiko's next turn (or escalate to a proactive
-        turn after the silence window).
-
-        ``root_label`` scopes to a single configured root (empty =
-        all active roots). ``max_results`` caps the returned match
-        list; the handler stops walking once the cap is hit and
-        flags ``truncated=true`` on the result.
-        """
-        if session._task_orchestrator is None:
-            return json.dumps(
-                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
-            )
-        user_id = str(getattr(session, "_user_id", "default"))
-        title = f"file search: {query[:60]}"
-        if root_label:
-            title += f" (in {root_label})"
-        task_id = session._task_orchestrator.start_task(
-            user_id=user_id,
-            handler_name="file_search",
-            args={
-                "query": query,
-                "root_label": root_label,
-                "max_results": int(max_results),
-            },
-            title=title,
-            initiated_by="system",  # MCP path is admin-initiated
-        )
-        if task_id is None:
-            return json.dumps({"error": "task_spawn_rejected"})
-        return json.dumps({"task_id": task_id, "handler": "file_search"})
-
-    @mcp.tool()
-    def start_file_read(path: str, max_bytes: int = 0) -> str:
-        """Start an asynchronous file read task and return its id.
-
-        Reads a text file from one of the configured file roots
-        (``agent.task_file_allowed_roots``). Path can be label-
-        prefixed (``"Documents:notes/q4.md"``) or bare
-        (``"notes/q4.md"``); a bare path that matches in multiple
-        roots transitions the task to ``awaiting_input`` rather than
-        guessing — surface the candidate list via
-        :func:`list_active_tasks` and resolve with
-        :func:`answer_file_task`.
-
-        ``max_bytes`` of 0 (or omitted) uses the configured ceiling
-        ``agent.task_file_read_max_bytes`` (default 256 KiB).
-        """
-        if session._task_orchestrator is None:
-            return json.dumps(
-                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
-            )
-        user_id = str(getattr(session, "_user_id", "default"))
-        args: dict[str, Any] = {"path": path}
-        if max_bytes and int(max_bytes) > 0:
-            args["max_bytes"] = int(max_bytes)
-        task_id = session._task_orchestrator.start_task(
-            user_id=user_id,
-            handler_name="file_read",
-            args=args,
-            title=f"file read: {path[:80]}",
-            initiated_by="system",
-        )
-        if task_id is None:
-            return json.dumps({"error": "task_spawn_rejected"})
-        return json.dumps({"task_id": task_id, "handler": "file_read"})
-
-    @mcp.tool()
     def answer_file_task(task_id: int, answer: str) -> str:
-        """Resolve an ``awaiting_input`` file task with the user's answer.
+        """Resolve an ``awaiting_input`` task with the user's answer.
 
-        Used to disambiguate a bare-path read whose path matched in
-        multiple roots. ``answer`` should be one of the candidate
-        strings the handler emitted (typically
+        Used to disambiguate a bare-path image describe whose path
+        matched in multiple roots. ``answer`` should be one of the
+        candidate strings the handler emitted (typically
         ``"<label>:<relative_path>"`` from
         ``state.input_request.options``).
 
@@ -586,6 +510,139 @@ def register(mcp, session: "SessionController") -> None:
             return json.dumps({"restarted": bool(manager.restart(server_id))})
         except Exception as exc:
             return json.dumps({"error": f"restart failed: {exc}"})
+
+    @mcp.tool()
+    def get_external_mcp_instructions(server_id: str = "") -> str:
+        """Runtime-captured server instructions + prompts (fallback guidance).
+
+        These are the ``initialize()`` instructions and ``list_prompts()``
+        snapshot the manager captured per connected server — the
+        fallback guidance source folded below a plugin's SKILL.md. Pass a
+        ``server_id`` for one server, or leave blank for the merged
+        ``{group: guidance}`` map the planner actually reads.
+        """
+        manager = getattr(session, "_external_mcp_manager", None)
+        if manager is None:
+            return json.dumps(
+                {"enabled": False, "reason": "no external MCP manager running"}
+            )
+        try:
+            if server_id.strip():
+                return json.dumps(
+                    {
+                        "server_id": server_id,
+                        "instructions": manager.server_instructions(server_id),
+                        "prompts": manager.list_prompts(server_id),
+                    },
+                    indent=2,
+                    default=str,
+                )
+            merged = {}
+            live = getattr(session, "_mcp_group_guidance_live", None)
+            if callable(live):
+                merged = live()
+            return json.dumps(
+                {
+                    "captured": manager.captured_group_guidance(),
+                    "merged_planner_guidance": merged,
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"instructions read failed: {exc}"})
+
+    @mcp.tool()
+    def list_plugins() -> str:
+        """Every discovered ToolPlugin + its activation status.
+
+        Returns one entry per bundle found under the plugin roots
+        (``plugins/`` + ``data/plugins/`` + ``plugins.paths``):
+        ``{id, name, status, enabled, reason, root, server_id,
+        middleware_count, skill_count, groups, deps_status, warnings}``.
+        ``status`` is ``active`` / ``disabled`` / ``gated_out`` /
+        ``unsupported`` / ``invalid``.
+        """
+        try:
+            plugins = session.loaded_plugins()
+        except Exception as exc:
+            return json.dumps({"error": f"plugin list failed: {exc}"})
+        out = []
+        for p in plugins:
+            out.append(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "status": p.status,
+                    "enabled": p.enabled,
+                    "reason": p.reason,
+                    "root": p.root,
+                    "server_id": p.server.id if p.server is not None else None,
+                    "middleware_count": len(p.middlewares),
+                    "skill_count": p.skill_count,
+                    "groups": sorted(p.group_guidance.keys()),
+                    "deps_status": p.deps_status,
+                    "warnings": p.warnings,
+                }
+            )
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def get_plugin(plugin_id: str) -> str:
+        """Full detail for one activated ToolPlugin (server + guidance)."""
+        try:
+            plugins = session.loaded_plugins()
+        except Exception as exc:
+            return json.dumps({"error": f"plugin read failed: {exc}"})
+        for p in plugins:
+            if p.id != plugin_id:
+                continue
+            return json.dumps(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "status": p.status,
+                    "enabled": p.enabled,
+                    "reason": p.reason,
+                    "root": p.root,
+                    "deps_status": p.deps_status,
+                    "middleware_count": len(p.middlewares),
+                    "skill_count": p.skill_count,
+                    "server": (
+                        {
+                            "id": p.server.id,
+                            "transport": p.server.transport,
+                            "command": p.server.command,
+                            "args": list(p.server.args),
+                            "disabled_tools": list(p.server.disabled_tools),
+                        }
+                        if p.server is not None
+                        else None
+                    ),
+                    "group_guidance": p.group_guidance,
+                    "warnings": p.warnings,
+                },
+                indent=2,
+                default=str,
+            )
+        return json.dumps({"error": f"unknown plugin: {plugin_id!r}"})
+
+    @mcp.tool()
+    def reload_plugins() -> str:
+        """Re-run plugin discovery + activation and refresh planner GUIDANCE.
+
+        Hot-reloads the plugin SKILL.md guidance (read live by the planner
+        on the next workflow), so editing a bundled ``SKILL.md`` takes
+        effect without a restart. NOTE: adding/removing a plugin's MCP
+        SERVER, changing its tool-result middleware, or editing ``entry.py``
+        code still needs an app restart — the manager's connections + the
+        middleware chain are built once at boot, and Python does not reliably
+        re-import a changed module. Returns the refreshed plugin summary.
+        """
+        try:
+            return json.dumps(session.reload_plugin_guidance(), indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"reload failed: {exc}"})
 
     @mcp.tool()
     def get_browser_perception_state() -> str:

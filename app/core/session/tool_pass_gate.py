@@ -106,6 +106,8 @@ _TOOL_FAMILY: dict[str, str] = {
     "update_goal_progress": "goals",
     "archive_goal": "goals",
     "list_goals": "goals",
+    # exact arithmetic (synchronous brain builtin)
+    "calculate": "math",
     # workflows / brain tasks
     "start_workflow": "tasks",
     "check_my_work": "tasks",
@@ -173,6 +175,16 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "goals": _compile([
         r"goals?", r"objectives?", r"milestones?", r"progress",
         r"working (?:on|towards?)", r"archive",
+    ]),
+    # Exact arithmetic: route number-crunching turns to ``calculate`` so
+    # Aiko never guesses a sum. Generous by design (a false positive only
+    # costs the status-quo pass); the numeric-operator alternation catches
+    # "2340 * 0.185"-shaped asks that carry no keyword.
+    "math": _compile([
+        r"calculate", r"comput(?:e|ing|ation)", r"arithmetic",
+        r"square root", r"to the power", r"percent", r"percentage",
+        r"multipl(?:y|ied|ication)", r"divide[d]?", r"divided by",
+        r"how much is", r"\d+\s*[-+*/x^]\s*\d+",
     ]),
     "tasks": _compile([
         r"tasks?", r"workflows?", r"cancel", r"status", r"running",

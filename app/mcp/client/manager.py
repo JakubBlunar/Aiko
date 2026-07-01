@@ -72,6 +72,12 @@ class _ServerState:
     tools: list[McpToolDescriptor] = field(default_factory=list)
     session: Any = None  # mcp.ClientSession, touched only on the loop
     restart_event: Any = None  # asyncio.Event, created on the loop
+    # Captured at connect time (schema-free fallback guidance source).
+    # ``instructions`` is the ``initialize()`` result's server instructions
+    # (many servers ship a short "how to use my tools" blurb here);
+    # ``prompts`` is a best-effort ``list_prompts()`` snapshot.
+    instructions: str = ""
+    prompts: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _StderrPump:
@@ -292,9 +298,10 @@ class ExternalMcpManager:
             async with ctx as streams:
                 read_stream, write_stream = streams[0], streams[1]
                 async with ClientSession(read_stream, write_stream) as session:
-                    await asyncio.wait_for(
+                    init_result = await asyncio.wait_for(
                         session.initialize(), timeout=self._connect_timeout,
                     )
+                    await self._capture_guidance(state, session, init_result)
                     await self._refresh_tools(state, session)
                     state.session = session
                     state.status = STATUS_CONNECTED
@@ -319,6 +326,39 @@ class ExternalMcpManager:
             state.session = None
             if pump is not None:
                 pump.close()
+
+    async def _capture_guidance(
+        self, state: _ServerState, session: Any, init_result: Any
+    ) -> None:
+        """Capture server ``instructions`` + ``list_prompts()`` (best-effort).
+
+        These are the runtime-captured fallback guidance source for the
+        planner: a plugin's ``SKILL.md`` wins, but a plain (non-plugin)
+        MCP server that ships instructions still teaches the planner how
+        to use its tools. Never raises — a server that doesn't implement
+        prompts just yields an empty list.
+        """
+        try:
+            state.instructions = str(
+                getattr(init_result, "instructions", "") or ""
+            ).strip()
+        except Exception:
+            state.instructions = ""
+        prompts: list[dict[str, Any]] = []
+        try:
+            result = await session.list_prompts()
+            for prompt in getattr(result, "prompts", []) or []:
+                prompts.append(
+                    {
+                        "name": str(getattr(prompt, "name", "") or ""),
+                        "description": str(
+                            getattr(prompt, "description", "") or ""
+                        ),
+                    }
+                )
+        except Exception:
+            prompts = []
+        state.prompts = prompts
 
     async def _refresh_tools(self, state: _ServerState, session: Any) -> None:
         result = await session.list_tools()
@@ -423,6 +463,44 @@ class ExternalMcpManager:
                 out.extend(state.tools)
         return out
 
+    def server_instructions(self, server_id: str) -> str:
+        """The captured ``initialize()`` instructions for a server (or "")."""
+        state = self._states.get(server_id)
+        return state.instructions if state is not None else ""
+
+    def list_prompts(self, server_id: str) -> list[dict[str, Any]]:
+        """The captured ``list_prompts()`` snapshot for a server (or [])."""
+        state = self._states.get(server_id)
+        return list(state.prompts) if state is not None else []
+
+    def captured_group_guidance(self) -> dict[str, str]:
+        """``{"mcp:<id>": guidance}`` from captured server instructions/prompts.
+
+        The runtime-captured fallback guidance source (folded in below a
+        plugin's ``SKILL.md`` by the wiring). Only connected servers that
+        actually shipped instructions and/or prompts appear.
+        """
+        out: dict[str, str] = {}
+        for state in self._states.values():
+            if state.status != STATUS_CONNECTED:
+                continue
+            blocks: list[str] = []
+            if state.instructions.strip():
+                blocks.append(state.instructions.strip())
+            if state.prompts:
+                lines = [
+                    f"- {p.get('name', '')}: {p.get('description', '')}".rstrip(
+                        ": "
+                    )
+                    for p in state.prompts
+                    if p.get("name")
+                ]
+                if lines:
+                    blocks.append("Available prompts:\n" + "\n".join(lines))
+            if blocks:
+                out[f"mcp:{state.server.id}"] = "\n\n".join(blocks)
+        return out
+
     def server_status(self) -> list[dict[str, Any]]:
         """Debug snapshot of every configured server."""
         snapshot: list[dict[str, Any]] = []
@@ -436,6 +514,8 @@ class ExternalMcpManager:
                     "error": state.error,
                     "tool_count": len(state.tools),
                     "tools": [t.name for t in state.tools],
+                    "has_instructions": bool(state.instructions.strip()),
+                    "prompt_count": len(state.prompts),
                 }
             )
         return snapshot

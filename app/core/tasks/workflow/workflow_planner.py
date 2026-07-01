@@ -95,6 +95,10 @@ class PlannerInput:
     # snapshot-first workflow), injected only when the relevant group's
     # skills are in the menu. Empty = no GUIDANCE block.
     guidance: str = ""
+    # Exact (skill, args) calls already attempted this workflow, rendered
+    # as a short "do not repeat these" nudge so the planner stops looping
+    # on the same call. Empty = no ALREADY TRIED block.
+    already_tried: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,10 +221,20 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
     guidance_block = (
         f"GUIDANCE:\n{ctx.guidance.strip()}\n\n" if ctx.guidance.strip() else ""
     )
+    tried = [t for t in (ctx.already_tried or []) if str(t).strip()]
+    tried_block = (
+        "ALREADY TRIED (do NOT repeat these exact calls — either try a "
+        "materially different action or finish):\n"
+        + "\n".join(f"- {t}" for t in tried)
+        + "\n\n"
+        if tried
+        else ""
+    )
     user_block = (
         f"GOAL (for {ctx.user_name}): {ctx.goal.strip()}\n\n"
         f"SKILLS:\n{catalogue}\n\n"
         f"{guidance_block}"
+        f"{tried_block}"
         f"STEPS SO FAR (iteration {ctx.iteration + 1} of "
         f"{ctx.max_iterations}):\n{history}\n\n"
         "Decide the next action. Respond with one JSON object."

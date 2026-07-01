@@ -1,26 +1,21 @@
 """Aiko-callable tools for nested goal workflows.
 
 These are the brain-facing control surface for the background
-:class:`GoalWorkflowHandler`. They sit alongside the fast-lane file
-tools (``start_file_search`` / ``start_file_read``) but cover a
-different shape of request:
+:class:`GoalWorkflowHandler`. There is no fast file/browser lane on the
+brain anymore — every file, web, and MCP-tool operation runs in the
+background workflow lane, so ``start_workflow`` is the single entry point
+for anything that touches the outside world:
 
-* ``start_workflow`` — kick off a MULTI-STEP goal ("find any new files
-  and tell me what's in them", "look up X and summarise it"). The
-  workflow plans, runs several sub-steps in the background, and reports
-  an aggregated answer when it's done. Use this when one tool call
-  isn't enough.
+* ``start_workflow`` — kick off a goal ("find any new files and tell me
+  what's in them", "look up X and summarise it", "write a note to the
+  file plugin"). The workflow plans, runs the sub-steps in the
+  background using whatever plugin tools are available, and reports an
+  aggregated answer when it's done.
 * ``check_my_work`` — report what Aiko is currently working on: active
   tasks + their progress + anything she recently couldn't do yet
   ("missing capability"). The answer to "what are you up to?" /
   "how's that going?".
 * ``cancel_work`` — stop a running task/workflow by id.
-
-The fast-lane ``start_file_search`` / ``start_file_read`` stay for
-single, direct operations where the result is wanted in the same reply.
-The tool descriptions below draw the line explicitly so the LLM routes
-"read this one file" to the fast lane and "go find and read whatever's
-new" to ``start_workflow``.
 """
 from __future__ import annotations
 
@@ -65,16 +60,13 @@ class StartWorkflowTool:
                 "The way you actually DO things instead of just talking "
                 "about them: hand me any goal that needs action and I "
                 "plan it, run the steps in the background, and report back "
-                "when done. Reach for this for ANYTHING beyond a single "
-                "quick read/search — any multi-step work (more than one "
-                "step), and ESPECIALLY "
-                "anything that creates or changes something (writing, "
-                "creating, editing, or moving a file). You do NOT need to "
+                "when done. This is how you read, search, write, create, "
+                "edit or move files, browse the web, and anything else that "
+                "touches the outside world — you do NOT do any of that "
+                "inline. You do NOT need to "
                 "know which tools exist or what the steps are — just "
                 "describe the goal fully in plain language and let me work "
-                "it out. The fast tools (start_file_search / "
-                "start_file_read) are only for a single direct read or "
-                "search you want answered in this same reply. Returns "
+                "it out. Returns "
                 "JSON: {task_id, status, note}. CRITICAL: nothing has "
                 "happened yet when you call this — never tell the user "
                 "something was done / created / written / found until the "

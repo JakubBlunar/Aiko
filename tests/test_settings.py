@@ -4151,8 +4151,8 @@ class TaskLifecycleSafetySettingsTests(unittest.TestCase):
         self.assertFalse(a.task_cascade_cancel_children)
 
 
-class TaskApprovalAndFileWriteSettingsTests(unittest.TestCase):
-    """``agent.task_approval_*`` + the nested ``agent.file_write`` block."""
+class TaskApprovalSettingsTests(unittest.TestCase):
+    """``agent.task_approval_*`` generic approval policy."""
 
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
@@ -4188,21 +4188,16 @@ class TaskApprovalAndFileWriteSettingsTests(unittest.TestCase):
             strip_keys=(
                 "task_approval_mode",
                 "task_approval_overrides",
-                "file_write",
             ),
         )
         a = load_settings(config_path=path).agent
         self.assertEqual(a.task_approval_mode, "ask")
         self.assertEqual(a.task_approval_overrides, {})
-        self.assertFalse(a.file_write.enabled)
-        self.assertEqual(a.file_write.max_bytes, 262144)
-        self.assertIn(".md", a.file_write.allowed_extensions)
 
     def test_dataclass_default_matches_config(self) -> None:
         path = self._write_config()
         a = load_settings(config_path=path).agent
         self.assertEqual(a.task_approval_mode, "ask")
-        self.assertFalse(a.file_write.enabled)
 
     def test_approval_mode_invalid_falls_back(self) -> None:
         path = self._write_config(agent_extra={"task_approval_mode": "bogus"})
@@ -4225,21 +4220,6 @@ class TaskApprovalAndFileWriteSettingsTests(unittest.TestCase):
         )
         a = load_settings(config_path=path).agent
         self.assertEqual(a.task_approval_overrides, {"file_write": "auto"})
-
-    def test_file_write_enabled_and_clamp(self) -> None:
-        path = self._write_config(
-            agent_extra={
-                "file_write": {
-                    "enabled": True,
-                    "max_bytes": 5,  # below 1 KiB floor
-                    "allowed_extensions": ["TXT", ".md"],
-                }
-            }
-        )
-        a = load_settings(config_path=path).agent
-        self.assertTrue(a.file_write.enabled)
-        self.assertEqual(a.file_write.max_bytes, 1024)
-        self.assertEqual(a.file_write.allowed_extensions, (".txt", ".md"))
 
 
 class VisionSettingsTests(unittest.TestCase):
@@ -4421,6 +4401,70 @@ class ExternalMcpSettingsTests(unittest.TestCase):
         path = self._write_config(agent_extra={"mcp_clients_enabled": False})
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.mcp_clients_enabled)
+
+
+class PluginsSettingsTests(unittest.TestCase):
+    """Declarative plugin bundles: ``plugins`` block parse + defaults."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, plugins: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.pop("plugins", None)
+        if plugins is not None:
+            cfg["plugins"] = plugins
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_when_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.plugins.enabled)
+        self.assertEqual(result.plugins.paths, [])
+        self.assertEqual(result.plugins.entries, {})
+
+    def test_round_trip(self) -> None:
+        path = self._write_config(
+            plugins={
+                "enabled": False,
+                "paths": ["F:/custom/plugins", ""],
+                "entries": {
+                    "filesystem": {
+                        "enabled": True,
+                        "config": {"root": "F:/notes"},
+                    },
+                    "browser": {"enabled": False},
+                    "": {"enabled": True},  # blank id dropped
+                    "bad": "not-a-dict",  # dropped
+                },
+            }
+        )
+        p = load_settings(config_path=path).plugins
+        self.assertFalse(p.enabled)
+        self.assertEqual(p.paths, ["F:/custom/plugins"])
+        self.assertIn("filesystem", p.entries)
+        self.assertTrue(p.entries["filesystem"].enabled)
+        self.assertEqual(p.entries["filesystem"].config, {"root": "F:/notes"})
+        self.assertFalse(p.entries["browser"].enabled)
+        self.assertNotIn("", p.entries)
+        self.assertNotIn("bad", p.entries)
+
+    def test_malformed_block_defaults(self) -> None:
+        path = self._write_config(plugins=["not", "a", "dict"])
+        p = load_settings(config_path=path).plugins
+        self.assertTrue(p.enabled)
+        self.assertEqual(p.entries, {})
 
 
 class ReconnectionSettingsTests(unittest.TestCase):

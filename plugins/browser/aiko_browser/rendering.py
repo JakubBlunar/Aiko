@@ -1,9 +1,9 @@
 """Render a perceived page into a compact planner block + one-line summary."""
 from __future__ import annotations
 
-from app.core.browser.grouping import FormGroup
-from app.core.browser.page_state import PageDiff
-from app.core.browser.ranking import RankedElement
+from .grouping import FormGroup
+from .page_state import PageDiff
+from .ranking import RankedElement
 
 
 def _ref_suffix(ref: str) -> str:

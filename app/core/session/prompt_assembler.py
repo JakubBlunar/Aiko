@@ -37,6 +37,7 @@ from app.core.session.prompt_support import (
     DEFAULT_SELF_IMAGE_PATH,
     _SAFETY_TOKENS,
     _MESSAGE_OVERHEAD,
+    clip_text_to_tokens,
     build_speech_grammar_addendum,
     _SPEECH_GRAMMAR_ADDENDUM,
     _TOUCH_GRAMMAR_ADDENDUM,
@@ -53,6 +54,12 @@ from app.core.session.prompt_assembler_helpers_mixin import (
 )
 
 log = logging.getLogger("app.prompt_assembler")
+
+# Hardening: cap the RAG memory block at this fraction of the usable context
+# (context_window - response_budget) so a large retrieval can never crowd out
+# the persona / summary / recent history. The retriever orders hits by score,
+# so a clip drops the weakest tail first.
+_RAG_BLOCK_MAX_FRACTION = 0.30
 
 
 # ── Prompt-cache prefix-stability ladder ─────────────────────────────
@@ -1088,6 +1095,24 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # retrieval + legacy fallback). On ``aggressive=True`` builds the
         # whole block is skipped, so ``rag_lookup_ms`` reads ~0.
         rag_lookup_ms = (time.perf_counter() - rag_phase_start) * 1000.0
+
+        # Hardening: token-budget the RAG block so an unusually large retrieval
+        # (many long memories / document chunks) can never crowd out the
+        # persona, summary, and recent history. Cap it at a fraction of the
+        # usable context; the retriever already orders by score so the head
+        # (highest-scoring hits) is what survives a clip.
+        if memory_block:
+            rag_cap_tokens = max(
+                256,
+                int((int(context_window) - int(response_budget)) * _RAG_BLOCK_MAX_FRACTION),
+            )
+            clipped_block = clip_text_to_tokens(memory_block, rag_cap_tokens)
+            if len(clipped_block) < len(memory_block):
+                log.info(
+                    "clipped oversized RAG block: %d -> %d chars (cap=%d tokens)",
+                    len(memory_block), len(clipped_block), rag_cap_tokens,
+                )
+                memory_block = clipped_block
 
         summary_text = ""
         if summary and summary.summary.strip():
@@ -2951,17 +2976,34 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self_image_tokens = estimate_tokens(self_image_block) if self_image_block else 0
         system_tokens = estimate_tokens(system_prompt) + (_MESSAGE_OVERHEAD if system_prompt else 0)
 
-        cleaned_user = (user_text or "").strip()
-        user_tokens = (
-            estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD if cleaned_user else 0
-        )
-
         # Budget for history = context_window - response_budget - safety -
         # everything we already commit to (system block + the user message).
         budget_tokens = max(
             512,
             int(context_window) - int(response_budget) - _SAFETY_TOKENS,
         )
+
+        cleaned_user = (user_text or "").strip()
+        # Hardening: a single pathological user message (a pasted log / file
+        # dump) can be larger than the whole budget, which would leave zero
+        # room for the system prompt + history and force the model to truncate
+        # server-side. Clip it to whatever the budget can afford after the
+        # system block, keeping a floor so a normal message is never touched.
+        if cleaned_user:
+            user_cap_tokens = max(
+                2048, budget_tokens - system_tokens - 512,
+            )
+            clipped_user = clip_text_to_tokens(cleaned_user, user_cap_tokens)
+            if clipped_user is not cleaned_user and len(clipped_user) < len(cleaned_user):
+                log.info(
+                    "clipped oversized user message: %d -> %d chars (cap=%d tokens)",
+                    len(cleaned_user), len(clipped_user), user_cap_tokens,
+                )
+                cleaned_user = clipped_user
+        user_tokens = (
+            estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD if cleaned_user else 0
+        )
+
         history_budget = max(
             128, budget_tokens - system_tokens - user_tokens,
         )
@@ -3075,8 +3117,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             history_tokens,
             user_tokens,
             telemetry.rag_tokens,
+            len(history_msgs),
             kept_count,
-            dropped_count,
             provider_count,
             provider_ms_total,
             slowest_field,

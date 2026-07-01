@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.infra.settings_basic import FileWriteSettings, VisionSettings
+from app.core.infra.settings_basic import VisionSettings
 
 
 @dataclass(slots=True)
@@ -1584,50 +1584,12 @@ class AgentSettings:
     # missing / wrong-type roots get a WARNING but stay in the
     # list so a temporarily-unmounted external drive doesn't auto-
     # disappear from the config. See ``docs/brain-orchestration.md``.
+    # Backs the vision ``describe_image`` skill + in-chat attachments
+    # (the managed ``Attachments`` root is appended automatically). File
+    # read/search/write are handled by the filesystem MCP plugin, not by
+    # any built-in handler, so there are no built-in file-skill toggles or
+    # read caps here anymore.
     task_file_allowed_roots: tuple[dict[str, Any], ...] = ()
-    # When ``False``, the built-in workflow file skills (``file_search`` /
-    # ``read_file`` / ``write_file``) are not offered to the planner.
-    # Intended for users who handle files exclusively through a filesystem
-    # MCP server: removes the built-in-vs-MCP overlap (two path
-    # conventions for the same directory) that makes the planner hand a
-    # label/relative path to an MCP file tool and get "path outside
-    # allowed directories". Default ``True`` (built-ins on).
-    builtin_file_skills_enabled: bool = True
-    # ── Chunk 12: file_read handler safety caps ────────────────────────
-    # ``FileReadHandler`` is the first phase-1 handler that emits a
-    # ``TaskInputNeeded`` (multi-root disambiguation: a bare path that
-    # matches in more than one configured root). It also opens and
-    # reads file contents, so a small set of safety caps gate what
-    # actually reaches the LLM as a tool result.
-    #
-    # ``task_file_read_max_bytes`` — hard cap on bytes read off disk
-    # per call. Files larger than this are truncated at the byte
-    # boundary and the result row sets ``truncated=True``. Default
-    # 256 KiB — big enough for a Markdown doc, small enough that a
-    # rogue 4 GB log can't OOM Aiko's process.
-    task_file_read_max_bytes: int = 262144
-    # ``task_file_read_max_lines`` — secondary cap applied after the
-    # byte read so a 256 KiB single-line minified blob can still be
-    # rejected. Default 2000 lines.
-    task_file_read_max_lines: int = 2000
-    # ``task_file_read_allowed_extensions`` — case-insensitive
-    # extension allow-list. Empty tuple = "allow everything that
-    # passes the magic-byte text check". When non-empty, anything
-    # outside the list is rejected up-front (the magic-byte check
-    # still runs as a secondary filter). Defaults to a sensible
-    # text-only catalogue so the LLM can't accidentally read a PDF
-    # or a database file.
-    task_file_read_allowed_extensions: tuple[str, ...] = (
-        ".txt", ".md", ".rst", ".log",
-        ".py", ".js", ".ts", ".tsx", ".jsx",
-        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-        ".html", ".css", ".xml",
-        ".csv", ".tsv",
-        ".sh", ".bat", ".ps1",
-        ".sql",
-        ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".java", ".kt",
-        ".rb", ".lua",
-    )
     # ── External MCP-server clients ────────────────────────────────────
     # Master switch for connecting to the external MCP servers configured
     # under ``mcp_clients.servers``. When off (or no servers configured),
@@ -1642,7 +1604,11 @@ class AgentSettings:
     workflow_enabled: bool = True
     # Hard cap on planner iterations (plan->act->observe cycles) before a
     # workflow force-finishes. Bounds runaway loops. Clamped ``[1, 30]``.
-    workflow_max_iterations: int = 6
+    # Raised 6 -> 12 now that a dedicated no-progress/loop detector stops a
+    # genuinely stuck workflow early (as ``blocked``): the higher ceiling
+    # gives a legitimately-long-but-progressing workflow room to finish,
+    # while the loop detector — not the cap — catches spinning.
+    workflow_max_iterations: int = 12
     # Hard cap on child tasks a single workflow may spawn. Clamped
     # ``[1, 50]``.
     workflow_max_children: int = 8
@@ -1673,6 +1639,20 @@ class AgentSettings:
     # force-finishes (partial) once exceeded so piled-up slow timeouts
     # can't run for many minutes. ``0`` disables. Clamped ``[0, 3600]``.
     workflow_max_wall_seconds: int = 300
+    # ── No-progress / loop detection ───────────────────────────────────
+    # Master switch for the rolling-signature loop detector. When on, a
+    # workflow that keeps landing on the SAME result signature (even with
+    # different args, even while every step is ``done``) stops early with
+    # the ``blocked`` outcome (asks the user for help) instead of grinding
+    # to the iteration cap. Complements the exact-(skill,args) repeat guard
+    # and the consecutive-failure breaker.
+    workflow_loop_detection_enabled: bool = True
+    # Rolling window (most-recent completed steps) the detector inspects.
+    # Clamped ``[2, 20]``.
+    workflow_loop_window: int = 4
+    # How many times one result signature must recur within the window to
+    # count as a no-progress loop. Clamped ``[2, 20]``.
+    workflow_loop_repeat_threshold: int = 3
     # Cap on the per-task capability-gap log (missing_capability entries).
     # Clamped ``[1, 500]``.
     workflow_capability_gap_log_max: int = 50
@@ -1689,11 +1669,6 @@ class AgentSettings:
     # :mod:`app.core.tasks.approval` + ``docs/task-approvals.md``.
     task_approval_mode: str = "ask"
     task_approval_overrides: dict[str, str] = field(default_factory=dict)
-    # ── file_write capability resource config ───────────────────────────
-    # Nested per-capability block (master switch + byte cap + extension
-    # allow-list). The destructive-write APPROVAL is governed by the
-    # generic ``task_approval_*`` fields above, not here.
-    file_write: FileWriteSettings = field(default_factory=FileWriteSettings)
     # ── vision (describe_image) capability resource config ───────────────
     # Reuses the worker model; ``model`` empty = inherit the effective
     # worker model. Master switch gates the describe_image workflow skill.

@@ -14,10 +14,10 @@ log = logging.getLogger("app.web.server")
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: tasks files routes."""
     def _resolve_task_user_id() -> str:
-        """Mirror ``app.llm.tools.file_tasks._user_id``.
+        """Resolve the task-row user id for REST task queries.
 
         Lifts ``session._user_id`` (set by the identity layer) so
-        REST + LLM tool calls land on the same task rows. Falls back
+        REST + background task rows land on the same user. Falls back
         to ``"default"`` so a brand-new install before onboarding
         still has a coherent user_id stamp.
         """
@@ -706,8 +706,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     # Images + text files dropped into the chat composer. They land in
     # the managed ``data/attachments/`` root (auto-registered read-only
     # sandbox root) so Aiko can resolve ``Attachments:<file>`` through
-    # the describe_image / read_file workflow skills. No bytes are sent
-    # to the cloud chat model — the worker (local) model reads them.
+    # the describe_image (vision) workflow skill. No bytes are sent to
+    # the cloud chat model — the worker (local) model reads them.
 
     @app.post("/api/chat/attachments")
     async def upload_attachment(file: UploadFile = File(...)) -> JSONResponse:

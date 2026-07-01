@@ -67,7 +67,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
-import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -98,11 +97,7 @@ from app.core.tasks import (
     TaskStore,
     recover_interrupted_tasks,
 )
-from app.core.tasks.file_snapshot import FileSnapshotStore
 from app.core.tasks.handlers import (
-    FileReadHandler,
-    FileSearchHandler,
-    FileWriteHandler,
     VisionDescribeHandler,
 )
 from app.core.tasks.report_decision import (
@@ -389,17 +384,21 @@ class TaskOrchestrationMixin:
         )
 
     def _register_builtin_task_handlers(self, agent: Any) -> None:
-        """Build + register the phase-1 reference handlers.
+        """Build + register the built-in task handlers.
 
         Currently:
 
-        * :class:`FileSearchHandler` — read-only filename substring
-          search sandboxed to ``agent.task_file_allowed_roots``.
-        * :class:`FileReadHandler` — read-only file content fetch
-          with multi-root disambiguation via ``TaskInputNeeded``.
+        * :class:`VisionDescribeHandler` — describe an image (local
+          multimodal worker model) resolved against
+          ``agent.task_file_allowed_roots`` (+ the managed
+          ``Attachments`` root).
+        * :class:`WebSearchHandler` — background web search.
+        * :class:`GoalWorkflowHandler` — the multi-step planner.
 
-        Future siblings land here too — keep the method small and
-        let each handler take care of its own construction logic.
+        File read / search / write are NOT built in — they come from a
+        filesystem MCP server (the ``filesystem`` plugin). The file
+        roots below still back vision + chat attachments.
+
         The orchestrator's :meth:`register_handler` uses the
         handler's ``name`` attribute as the slot key; re-registering
         with the same name overwrites, which is the contract a
@@ -424,8 +423,8 @@ class TaskOrchestrationMixin:
         # D2 Part B — managed Attachments root. A fixed
         # ``data/attachments/`` dir, auto-created + appended as a
         # read-only sandbox root so in-chat attachments resolve as
-        # ``Attachments:<file>`` through the same file handlers
-        # (describe_image / read_file) with zero extra path plumbing.
+        # ``Attachments:<file>`` through the vision describe_image
+        # skill with zero extra path plumbing.
         # Never overrides a user-configured ``Attachments`` label.
         try:
             from app.core.tasks.attachments import (
@@ -454,92 +453,6 @@ class TaskOrchestrationMixin:
             len(active),
             [vr.root.label for vr in active],
         )
-        # Per-root seen-file index backing ``only_new`` searches.
-        # Shared across the FileSearchHandler (brain fast-lane) and the
-        # workflow ``search_files`` skill so both diff against the same
-        # baseline. kv-backed on the shared chat DB.
-        snapshot_store = FileSnapshotStore(self._chat_db)  # type: ignore[attr-defined]
-        self._file_snapshot_store = snapshot_store
-        try:
-            self._task_orchestrator.register_handler(
-                FileSearchHandler(roots=roots, snapshot_store=snapshot_store)
-            )
-        except Exception as exc:
-            log.warning(
-                "task-handlers: failed to register file_search handler: %r",
-                exc,
-            )
-        # Chunk 12: file_read handler. Reads live caps off the agent
-        # settings block so a hot reconfig that flips
-        # ``task_file_read_max_bytes`` lands on the next
-        # ``rebuild_tool_registry``-equivalent path (currently a full
-        # restart in phase 1, but the construction shape is ready).
-        try:
-            self._task_orchestrator.register_handler(
-                FileReadHandler(
-                    roots=roots,
-                    max_bytes=int(
-                        getattr(agent, "task_file_read_max_bytes", 262144)
-                    ),
-                    max_lines=int(
-                        getattr(agent, "task_file_read_max_lines", 2000)
-                    ),
-                    allowed_extensions=tuple(
-                        getattr(agent, "task_file_read_allowed_extensions", ())
-                        or ()
-                    ),
-                )
-            )
-        except Exception as exc:
-            log.warning(
-                "task-handlers: failed to register file_read handler: %r",
-                exc,
-            )
-
-        # File-write handler — the first destructive capability. Only
-        # registered when ``agent.file_write.enabled`` is on AND at least
-        # one writable root (``read_only=false``) exists. The approval
-        # gate is injected as two callbacks so the handler stays
-        # decoupled from the settings + session-approve-all state.
-        file_write_cfg = getattr(agent, "file_write", None)
-        file_write_enabled = bool(getattr(file_write_cfg, "enabled", False))
-        writable_roots = [r for r in roots if not r.read_only]
-        if file_write_enabled and writable_roots:
-            try:
-                self._task_orchestrator.register_handler(
-                    FileWriteHandler(
-                        roots=roots,
-                        max_bytes=int(
-                            getattr(file_write_cfg, "max_bytes", 262144)
-                        ),
-                        allowed_extensions=tuple(
-                            getattr(file_write_cfg, "allowed_extensions", ())
-                            or ()
-                        ),
-                        resolve_approval=self._resolve_task_approval,
-                        mark_session_approved=(
-                            self._mark_capability_session_approved
-                        ),
-                    )
-                )
-                log.info(
-                    "task-handlers: file_write handler registered "
-                    "(writable_roots=%d max_bytes=%d)",
-                    len(writable_roots),
-                    int(getattr(file_write_cfg, "max_bytes", 262144)),
-                )
-            except Exception as exc:
-                log.warning(
-                    "task-handlers: failed to register file_write handler: %r",
-                    exc,
-                )
-        elif file_write_enabled and not writable_roots:
-            log.info(
-                "task-handlers: file_write enabled but no writable root "
-                "configured (every task_file_allowed_roots entry is "
-                "read_only) -- skill not offered"
-            )
-
         # Vision (describe_image) handler — read-only, reuses the already-
         # loaded worker Ollama client + model (no second model in VRAM).
         # Only registered when ``agent.vision.enabled`` is on AND at least
@@ -627,20 +540,12 @@ class TaskOrchestrationMixin:
 
             tools_cfg = getattr(self._settings, "tools", None)  # type: ignore[attr-defined]
             web_enabled = bool(getattr(tools_cfg, "web_search", True))
-            # Built-in file skills can be disabled when files are handled
-            # exclusively through a filesystem MCP server — removes the
-            # built-in-vs-MCP path-convention overlap that confuses the
-            # planner (label path vs absolute-under-sandbox-root).
-            file_skills_enabled = bool(
-                getattr(agent, "builtin_file_skills_enabled", True)
-            )
-            # The destructive write skill is offered to the planner only
-            # when the master switch is on AND a writable root exists —
-            # otherwise the planner would pick a skill that always fails.
+            # File operations are provided exclusively by a filesystem MCP
+            # server (the ``filesystem`` plugin), registered onto this
+            # registry by ``_init_external_mcp``. The built-in registry
+            # ships only web search + vision + the terminal ``finish``.
             skill_registry = build_builtin_skill_registry(
                 web_search_enabled=web_enabled,
-                file_skills_enabled=file_skills_enabled,
-                file_write_enabled=file_write_enabled and bool(writable_roots),
                 vision_enabled=vision_enabled and bool(active),
             )
             # Future MCP-provided skills register onto this same object.
@@ -661,7 +566,7 @@ class TaskOrchestrationMixin:
                 ),
                 on_capability_gap=self._record_workflow_capability_gap,
                 max_iterations=int(
-                    getattr(agent, "workflow_max_iterations", 6)
+                    getattr(agent, "workflow_max_iterations", 12)
                 ),
                 max_children=int(getattr(agent, "workflow_max_children", 8)),
                 child_wait_timeout_seconds=float(
@@ -691,13 +596,18 @@ class TaskOrchestrationMixin:
                 max_wall_seconds=float(
                     getattr(agent, "workflow_max_wall_seconds", 300)
                 ),
-                browser_skill_prefix=(
-                    f"{getattr(getattr(self._settings, 'browser_perception', None), 'server_id', 'browser')}__"
+                # No-progress / loop detector.
+                loop_detection_enabled=bool(
+                    getattr(agent, "workflow_loop_detection_enabled", True)
                 ),
-                browser_skill_group=(
-                    f"mcp:{getattr(getattr(self._settings, 'browser_perception', None), 'server_id', 'browser')}"
+                loop_window=int(getattr(agent, "workflow_loop_window", 4)),
+                loop_repeat_threshold=int(
+                    getattr(agent, "workflow_loop_repeat_threshold", 3)
                 ),
-                mcp_root_provider=self._mcp_server_roots,
+                # Plugin / runtime-captured guidance, read live so plugin
+                # SKILL.md + connected-server instructions reach the planner
+                # per mcp:* group.
+                group_guidance_provider=self._mcp_group_guidance_live,
             )
             self._task_orchestrator.register_handler(handler)
             log.info(
@@ -718,33 +628,6 @@ class TaskOrchestrationMixin:
         # to the background planner only, never to the brain's fast tools).
         self._init_external_mcp(agent, skill_registry)
 
-    def _mcp_server_roots(self, server_id: str) -> list[str]:
-        """Configured sandbox root dir(s) for an MCP server, by id.
-
-        Used to inline the exact allowed root into the filesystem playbook
-        so the planner never guesses it. We pick the launch args that are
-        real directories on disk (``os.path.isdir``) — deterministic and
-        server-agnostic (a filesystem MCP must be given an existing root).
-        Returns ``[]`` for unknown ids / arg-less (e.g. SSE) servers."""
-        try:
-            mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
-            servers = list(getattr(mcp_clients, "servers", []) or [])
-            for srv in servers:
-                if str(getattr(srv, "id", "")) != str(server_id):
-                    continue
-                roots: list[str] = []
-                for arg in getattr(srv, "args", ()) or ():
-                    candidate = str(arg)
-                    try:
-                        if os.path.isdir(candidate):
-                            roots.append(os.path.normpath(candidate))
-                    except Exception:
-                        continue
-                return roots
-        except Exception:
-            log.debug("mcp server roots lookup failed", exc_info=True)
-        return []
-
     def _init_external_mcp(self, agent: Any, skill_registry: Any) -> None:
         """Build + start the external MCP manager and register its skills.
 
@@ -756,11 +639,80 @@ class TaskOrchestrationMixin:
         """
         self._external_mcp_manager = None
         self._browser_perception = None
+        # Plugin-provided planner guidance keyed by ``mcp:<id>`` group.
+        # Merged live (plugin wins) with captured server instructions in
+        # ``_mcp_group_guidance_live``.
+        self._mcp_plugin_guidance: dict[str, str] = {}
+        self._loaded_plugins = []
+        # Tool-result middlewares registered by code plugins (fed to the
+        # McpToolHandler chain alongside the legacy global browser_perception).
+        self._plugin_middlewares: list[Any] = []
         if not bool(getattr(agent, "mcp_clients_enabled", True)):
             return
         mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
         servers = list(getattr(mcp_clients, "servers", []) or [])
         enabled_servers = [s for s in servers if getattr(s, "enabled", True)]
+
+        # SDK-primary plugin bundles: the loader reads only the JSON stub +
+        # plugin-local config (no code); the runtime then imports entry.py and
+        # runs define_plugin(api) for enabled plugins, which register their MCP
+        # server, planner guidance, and any tool-result middleware. A plugin's
+        # server id shadows a same-id config server (plugin wins).
+        try:
+            plugins_cfg = getattr(self._settings, "plugins", None)  # type: ignore[attr-defined]
+            if plugins_cfg is None or bool(getattr(plugins_cfg, "enabled", True)):
+                from app.plugins.loader import (
+                    default_plugin_roots,
+                    discover_plugins,
+                )
+                from app.plugins.runtime import activate_all
+
+                extra_paths = list(getattr(plugins_cfg, "paths", []) or []) if plugins_cfg else []
+                roots = default_plugin_roots() + extra_paths
+                entries_cfg = (
+                    getattr(plugins_cfg, "entries", {}) or {} if plugins_cfg else {}
+                )
+                entries = {
+                    pid: {
+                        "enabled": getattr(entry, "enabled", None),
+                        "config": dict(getattr(entry, "config", {}) or {}),
+                    }
+                    for pid, entry in entries_cfg.items()
+                }
+                stubs = discover_plugins(roots, entries=entries)
+                activated = activate_all(stubs)
+                self._loaded_plugins = activated
+                plugin_servers = []
+                for plugin in activated:
+                    if plugin.status != "active":
+                        continue
+                    self._mcp_plugin_guidance.update(plugin.group_guidance)
+                    if plugin.middlewares:
+                        self._plugin_middlewares.extend(plugin.middlewares)
+                    if plugin.server is not None:
+                        plugin_servers.append(plugin.server)
+                if plugin_servers:
+                    plugin_ids = {s.id for s in plugin_servers}
+                    # Plugin shadows a same-id config server (plugin wins).
+                    enabled_servers = [
+                        s
+                        for s in enabled_servers
+                        if getattr(s, "id", None) not in plugin_ids
+                    ] + plugin_servers
+                    log.info(
+                        "external-mcp: %d plugin server(s) loaded: %s",
+                        len(plugin_ids),
+                        sorted(plugin_ids),
+                    )
+        except Exception as exc:
+            log.warning("external-mcp: plugin discovery failed: %r", exc)
+
+        # Remember the final server set so playbook root-lookup can consult
+        # plugin-synthesised servers (not just mcp_clients.servers).
+        self._active_mcp_servers = {
+            getattr(s, "id", ""): s for s in enabled_servers
+        }
+
         if not enabled_servers:
             log.debug("external-mcp: no enabled servers configured")
             return
@@ -769,28 +721,17 @@ class TaskOrchestrationMixin:
             from app.core.tasks.workflow.mcp_skills import register_mcp_skills
             from app.mcp.client.manager import ExternalMcpManager
 
-            # Optional browser perception middleware (parse -> dedup ->
-            # group -> rank -> diff over an accessibility snapshot). Built
-            # only when enabled; passed to the handler so the matching
-            # snapshot tool's result is reshaped, every other tool is
-            # untouched.
-            perception = None
-            bp = getattr(self._settings, "browser_perception", None)  # type: ignore[attr-defined]
-            if bp is not None and getattr(bp, "enabled", False):
-                try:
-                    from app.core.browser.perception import BrowserPerception
+            # Tool-result middleware chain: registered entirely by plugins
+            # (e.g. the browser plugin's BrowserPerception). Core no longer
+            # builds any perception itself.
+            middlewares = list(self._plugin_middlewares)
 
-                    perception = BrowserPerception.from_settings(bp)
-                    log.info(
-                        "browser-perception: enabled server=%s tools=%s adapter=%s",
-                        bp.server_id,
-                        list(bp.snapshot_tools),
-                        bp.adapter,
-                    )
-                except Exception as exc:
-                    log.warning("browser-perception: init failed: %r", exc)
-                    perception = None
-            self._browser_perception = perception
+            # Expose a perception-style middleware (one with ``debug_state``)
+            # to the browser debug MCP tools.
+            for mw in middlewares:
+                if hasattr(mw, "debug_state"):
+                    self._browser_perception = mw
+                    break
 
             manager = ExternalMcpManager(enabled_servers)
             # Re-register skills whenever a server's catalogue changes
@@ -800,7 +741,7 @@ class TaskOrchestrationMixin:
                 lambda: register_mcp_skills(skill_registry, manager)
             )
             self._task_orchestrator.register_handler(
-                McpToolHandler(manager=manager, perception=perception)
+                McpToolHandler(manager=manager, middlewares=middlewares)
             )
             manager.start()
             # Best-effort immediate pass (usually 0 — connect is async);
@@ -814,6 +755,89 @@ class TaskOrchestrationMixin:
         except Exception as exc:
             log.warning("external-mcp: manager init failed: %r", exc)
             self._external_mcp_manager = None
+
+    def _mcp_group_guidance_live(self) -> dict[str, str]:
+        """Live merged planner guidance keyed by ``mcp:<id>`` group.
+
+        Precedence: **plugin SKILL.md > runtime-captured server
+        instructions**. The captured layer is read from the live manager
+        each call (so a server connecting after boot starts contributing
+        without a rebuild); the plugin layer is stamped at load time. Both
+        override the hardcoded playbooks inside ``guidance_for_skills``.
+        """
+        merged: dict[str, str] = {}
+        manager = getattr(self, "_external_mcp_manager", None)
+        if manager is not None:
+            try:
+                merged.update(manager.captured_group_guidance())
+            except Exception:
+                log.debug("captured guidance read failed", exc_info=True)
+        merged.update(getattr(self, "_mcp_plugin_guidance", {}) or {})
+        return merged
+
+    def loaded_plugins(self) -> list[Any]:
+        """Snapshot of discovered plugin bundles (for the MCP debug tools)."""
+        return list(getattr(self, "_loaded_plugins", []) or [])
+
+    def reload_plugin_guidance(self) -> dict[str, Any]:
+        """Re-run plugin discovery and refresh planner guidance live.
+
+        Guidance only — the planner reads ``_mcp_plugin_guidance`` live via
+        ``_mcp_group_guidance_live``, so an edited ``SKILL.md`` lands on the
+        next workflow. Adding/removing an MCP SERVER still needs a restart
+        (the manager's connections are built once at boot).
+        """
+        plugins_cfg = getattr(getattr(self, "_settings", None), "plugins", None)
+        summary: dict[str, Any] = {
+            "active": [], "gated_out": [], "invalid": [], "disabled": [],
+        }
+        try:
+            from app.plugins.loader import (
+                default_plugin_roots,
+                discover_plugins,
+            )
+            from app.plugins.runtime import activate_all
+
+            if plugins_cfg is not None and not bool(
+                getattr(plugins_cfg, "enabled", True)
+            ):
+                return {"enabled": False, "reason": "plugins disabled"}
+            extra_paths = (
+                list(getattr(plugins_cfg, "paths", []) or []) if plugins_cfg else []
+            )
+            entries_cfg = (
+                getattr(plugins_cfg, "entries", {}) or {} if plugins_cfg else {}
+            )
+            entries = {
+                pid: {
+                    "enabled": getattr(entry, "enabled", None),
+                    "config": dict(getattr(entry, "config", {}) or {}),
+                }
+                for pid, entry in entries_cfg.items()
+            }
+            stubs = discover_plugins(
+                default_plugin_roots() + extra_paths, entries=entries
+            )
+            activated = activate_all(stubs)
+            self._loaded_plugins = activated
+            new_guidance: dict[str, str] = {}
+            for plugin in activated:
+                bucket = summary.get(plugin.status)
+                if bucket is not None:
+                    bucket.append(plugin.id)
+                if plugin.status == "active":
+                    new_guidance.update(plugin.group_guidance)
+            self._mcp_plugin_guidance = new_guidance
+            log.info(
+                "plugins reloaded: active=%s gated=%s invalid=%s",
+                summary["active"],
+                summary["gated_out"],
+                summary["invalid"],
+            )
+        except Exception as exc:
+            summary["error"] = repr(exc)
+            log.warning("plugin guidance reload failed: %r", exc)
+        return summary
 
     def _record_workflow_capability_gap(self, gap: dict[str, Any]) -> None:
         """Sink for goal-workflow capability gaps (bounded ring).

@@ -43,8 +43,10 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 import threading
 import time
+from collections import Counter, deque
 from typing import Any, Callable
 
 from app.core.infra.log_context import get_task_id
@@ -54,6 +56,7 @@ from app.core.tasks.task_handler import (
     TERMINAL_STATUSES,
     TaskCompleted,
     TaskEmitFn,
+    TaskEventEmit,
     TaskFailed,
     TaskProgress,
     TaskState,
@@ -80,7 +83,39 @@ log = logging.getLogger("app.tasks.workflow.handler")
 # because it needs a capability no skill provides.
 OUTCOME_MISSING_CAPABILITY = "missing_capability"
 
+# Sentinel outcome stamped when the workflow stopped because it got
+# STUCK — it kept repeating a step, looping on the same result, or a
+# tool kept failing — as distinct from cleanly running out of the
+# iteration / child / wall-clock budget (which stays ``partial``).
+# ``blocked`` is the "I couldn't finish and I need help" signal: the
+# findings ask the user for a hand rather than pretending progress.
+OUTCOME_BLOCKED = "blocked"
+
+# Audit-event types appended to ``task_events`` (schema v17) when the
+# loop stops itself. Pure audit — they don't change the row's hot state.
+EVENT_WORKFLOW_LOOP_DETECTED = "workflow_loop_detected"
+EVENT_WORKFLOW_BLOCKED = "workflow_blocked"
+
 _CHILD_OBS_CAP = 500
+
+# Signature normalisation cap for the no-progress detector.
+_SIGNATURE_OBS_CAP = 200
+_WS_RE = re.compile(r"\s+")
+
+
+def _observation_signature(status: str, observation: str) -> str:
+    """Stable signature of a completed step's *result* (not its args).
+
+    The exact-``(skill, args)`` repeat guard catches a planner that
+    re-issues an identical call; this signature is coarser — it folds a
+    step down to ``status|normalised-observation`` so the no-progress
+    detector can catch a planner that keeps issuing *different* calls
+    that all land on the same result (e.g. varied browser clicks that
+    each report the same failure, or repeated reads returning the same
+    body). Args are intentionally excluded.
+    """
+    obs = _WS_RE.sub(" ", (observation or "").strip().lower())[:_SIGNATURE_OBS_CAP]
+    return f"{status or 'unknown'}|{obs}"
 
 
 def _task_id_from_context() -> int | None:
@@ -106,13 +141,20 @@ def _summarize_child(row: Any, status: str) -> str:
         return f"[{status}] (no result row)"
     result = getattr(row, "result", None)
     if isinstance(result, dict):
-        summary = result.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()[:_CHILD_OBS_CAP]
-        # file_read returns content; show a clipped preview.
+        # Prefer the actual returned ``content`` over the terse
+        # ``summary``: the planner *reasons* over this observation and
+        # writes the final findings from it, so it needs the real data
+        # (a full directory listing, a file's text). Some handlers pack a
+        # one-line ``summary`` that collapses a multi-line result to its
+        # first line (the MCP tool handler did exactly this) — using that
+        # here made the planner see only the FIRST entry of a listing and
+        # report just that. ``content`` is bounded by ``_CHILD_OBS_CAP``.
         content = result.get("content")
         if isinstance(content, str) and content.strip():
             return content.strip()[:_CHILD_OBS_CAP]
+        summary = result.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()[:_CHILD_OBS_CAP]
         # Generic: list the result keys.
         keys = ", ".join(map(str, list(result.keys())[:8]))
         return f"result keys: {keys}"[:_CHILD_OBS_CAP]
@@ -158,9 +200,10 @@ class GoalWorkflowHandler:
         skill_router_enabled_provider: Callable[[], bool] | None = None,
         max_consecutive_failures: int = 2,
         max_wall_seconds: float = 300.0,
-        browser_skill_prefix: str = "",
-        browser_skill_group: str = "",
-        mcp_root_provider: "Callable[[str], list[str]] | None" = None,
+        loop_detection_enabled: bool = True,
+        loop_window: int = 4,
+        loop_repeat_threshold: int = 3,
+        group_guidance_provider: "Callable[[], dict[str, str]] | None" = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._skills = skill_registry
@@ -182,16 +225,20 @@ class GoalWorkflowHandler:
         # through every iteration on slow timeouts.
         self._max_consecutive_failures = max(1, int(max_consecutive_failures))
         self._max_wall_seconds = max(0.0, float(max_wall_seconds))
-        # Skill-name prefix that marks browser skills (``<server_id>__``),
-        # used only to tailor the give-up message.
-        self._browser_skill_prefix = str(browser_skill_prefix or "")
-        # Skill group (``mcp:<server_id>``) whose operational playbook is
-        # injected into the planner prompt when its skills are in the menu.
-        self._browser_skill_group = str(browser_skill_group or "")
-        # Maps an MCP server_id to its configured sandbox root path(s), so
-        # the filesystem playbook can inline the exact allowed root and the
-        # planner never has to guess it. ``None`` -> discover-via-tool copy.
-        self._mcp_root_provider = mcp_root_provider
+        # No-progress / loop detector: over a rolling window of the last
+        # ``loop_window`` completed steps, if the SAME result signature
+        # (status|observation, args-agnostic) recurs ``loop_repeat_threshold``
+        # times the workflow stops as ``blocked`` (stuck) rather than
+        # grinding to the iteration cap. Complements the exact-repeat guard
+        # (which needs identical args) and the consecutive-failure breaker
+        # (which needs actual failures — a loop can be all-``done``).
+        self._loop_detection_enabled = bool(loop_detection_enabled)
+        self._loop_window = max(2, int(loop_window))
+        self._loop_repeat_threshold = max(2, int(loop_repeat_threshold))
+        # Live-read planner guidance map keyed by ``mcp:<server_id>`` group.
+        # Sourced from plugin ``SKILL.md`` + runtime-captured server
+        # instructions; the sole source of per-group operational guidance.
+        self._group_guidance_provider = group_guidance_provider
         # Per-task daemon threads, keyed by task id, for shutdown joins.
         self._threads: dict[int, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -280,6 +327,8 @@ class GoalWorkflowHandler:
         """Plan→act→observe until finish / gap / cap. Emits terminal."""
         steps: list[PlannerStep] = []
         seen: set[str] = set()
+        tried_calls: list[str] = []
+        obs_window: deque[str] = deque(maxlen=self._loop_window)
         children_spawned = 0
         consecutive_failures = 0
         last_failed_skill = ""
@@ -338,6 +387,7 @@ class GoalWorkflowHandler:
                         history_budget_chars=self._history_budget,
                         user_name=self._user_name(),
                         guidance=self._planner_guidance(planner_skills),
+                        already_tried=list(tried_calls),
                     ),
                     valid_skill_names=set(self._skills.names()),
                     model=self._model(),
@@ -369,22 +419,32 @@ class GoalWorkflowHandler:
                     return
 
                 # Skill action. Repeat guard: an exact (skill, args)
-                # repeat means the planner is spinning — stop cleanly.
-                key = f"{decision.skill}:{_canonical_args(decision.args)}"
+                # repeat means the planner is spinning — it's stuck, not
+                # done, so this is a BLOCKED outcome (asks for help).
+                canon_args = _canonical_args(decision.args)
+                key = f"{decision.skill}:{canon_args}"
                 if key in seen:
                     log.info(
                         "workflow repeat guard: task=%d skill=%s",
                         task_id,
                         decision.skill,
                     )
-                    self._emit_finish(
+                    self._emit_blocked(
                         emit,
                         steps,
-                        OUTCOME_PARTIAL,
-                        "Stopped because I was about to repeat a step.",
+                        task_id,
+                        reason="repeat_step",
+                        findings=(
+                            "I got stuck — I kept coming back to the same "
+                            "step without making new progress, so I stopped. "
+                            "Could you give me a bit more detail or point me "
+                            "in the right direction?"
+                        ),
+                        detail={"skill": decision.skill},
                     )
                     return
                 seen.add(key)
+                tried_calls.append(f"{decision.skill}({canon_args})")
 
                 emit(
                     TaskProgress(
@@ -450,6 +510,53 @@ class GoalWorkflowHandler:
                             consecutive_failures,
                         )
                         return
+
+                # No-progress / loop detector. Catches the case the two
+                # guards above miss: the planner keeps issuing *different*
+                # calls that all land on the same result (args differ, so
+                # the repeat guard is silent; steps are ``done``, so the
+                # failure breaker is silent). Coarse args-agnostic
+                # signature over a rolling window.
+                obs_window.append(_observation_signature(status, observation))
+                looped = self._detect_loop(obs_window)
+                if looped is not None:
+                    signature, count = looped
+                    log.info(
+                        "workflow loop detected: task=%d count=%d window=%d "
+                        "signature=%r",
+                        task_id,
+                        count,
+                        self._loop_window,
+                        signature[:120],
+                    )
+                    try:
+                        emit(
+                            TaskEventEmit(
+                                EVENT_WORKFLOW_LOOP_DETECTED,
+                                {
+                                    "signature": signature[:200],
+                                    "count": count,
+                                    "window": self._loop_window,
+                                    "threshold": self._loop_repeat_threshold,
+                                },
+                            )
+                        )
+                    except Exception:
+                        log.debug("loop-detected audit emit failed", exc_info=True)
+                    self._emit_blocked(
+                        emit,
+                        steps,
+                        task_id,
+                        reason="no_progress_loop",
+                        findings=(
+                            "I got stuck in a loop — I kept getting the same "
+                            "result without making progress, so I stopped. "
+                            "Could you help me narrow this down or tell me "
+                            "what to try differently?"
+                        ),
+                        detail={"count": count, "window": self._loop_window},
+                    )
+                    return
 
             # Fell out of the loop without an explicit finish — cap hit.
             log.info(
@@ -560,13 +667,24 @@ class GoalWorkflowHandler:
     def _should_break(self, consecutive_failures: int) -> bool:
         return consecutive_failures >= self._max_consecutive_failures
 
+    def _detect_loop(self, window: "deque[str]") -> "tuple[str, int] | None":
+        """Return ``(signature, count)`` when the window shows no progress.
+
+        Fires when a single result signature recurs at least
+        ``loop_repeat_threshold`` times within the rolling window. Returns
+        ``None`` when disabled, too few samples, or under threshold.
+        """
+        if not self._loop_detection_enabled:
+            return None
+        if len(window) < self._loop_repeat_threshold:
+            return None
+        signature, count = Counter(window).most_common(1)[0]
+        if count >= self._loop_repeat_threshold:
+            return signature, count
+        return None
+
     def _is_browser_skill(self, skill: str) -> bool:
-        name = (skill or "").lower()
-        if self._browser_skill_prefix and name.startswith(
-            self._browser_skill_prefix.lower()
-        ):
-            return True
-        return "browser" in name
+        return "browser" in (skill or "").lower()
 
     def _emit_failure_break(
         self,
@@ -594,7 +712,48 @@ class GoalWorkflowHandler:
             consecutive_failures,
             last_failed_skill,
         )
-        self._emit_finish(emit, steps, OUTCOME_PARTIAL, findings)
+        self._emit_blocked(
+            emit,
+            steps,
+            task_id,
+            reason="consecutive_failures",
+            findings=findings,
+            detail={
+                "failures": consecutive_failures,
+                "last_skill": last_failed_skill,
+            },
+        )
+
+    def _emit_blocked(
+        self,
+        emit: TaskEmitFn,
+        steps: list[PlannerStep],
+        task_id: int,
+        *,
+        reason: str,
+        findings: str,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a BLOCKED (stuck / needs-help) finish + audit event.
+
+        Distinct from the budget-exhaustion finishes (iteration / child /
+        wall-clock caps stay ``partial``): a blocked outcome means the
+        workflow could not make progress on its own and the findings ask
+        the user for a hand.
+        """
+        log.info(
+            "workflow blocked: task=%d reason=%s", task_id, reason
+        )
+        try:
+            emit(
+                TaskEventEmit(
+                    EVENT_WORKFLOW_BLOCKED,
+                    {"reason": reason, **(detail or {})},
+                )
+            )
+        except Exception:
+            log.debug("blocked audit emit failed", exc_info=True)
+        self._emit_finish(emit, steps, OUTCOME_BLOCKED, findings)
 
     def _emit_finish(
         self,
@@ -709,23 +868,32 @@ class GoalWorkflowHandler:
         return skills
 
     def _planner_guidance(self, skills: list[dict[str, Any]]) -> str:
-        """Operational playbook(s) for the skills actually in the menu.
+        """Operational guidance for the skills actually in the menu.
 
         Reads the skills the planner will see this turn (so router
-        narrowing is respected) and returns the matching playbooks: the
-        browser snapshot-first workflow when a browser skill is present,
-        and the filesystem absolute-path discipline when a filesystem MCP
-        server's tools are present (auto-detected by capability). Empty
-        string when none apply."""
+        narrowing is respected) and returns the plugin / captured guidance
+        for each ``mcp:<server_id>`` group present. Empty string when no
+        group in the menu carries guidance."""
         try:
+            group_guidance: dict[str, str] = {}
+            if self._group_guidance_provider is not None:
+                try:
+                    group_guidance = dict(self._group_guidance_provider() or {})
+                except Exception:
+                    group_guidance = {}
             return guidance_for_skills(
                 skills,
-                browser_group=self._browser_skill_group,
-                root_lookup=self._mcp_root_provider,
+                group_guidance=group_guidance,
             )
         except Exception:
             log.debug("planner guidance render failed", exc_info=True)
             return ""
 
 
-__all__ = ["GoalWorkflowHandler", "OUTCOME_MISSING_CAPABILITY"]
+__all__ = [
+    "GoalWorkflowHandler",
+    "OUTCOME_MISSING_CAPABILITY",
+    "OUTCOME_BLOCKED",
+    "EVENT_WORKFLOW_LOOP_DETECTED",
+    "EVENT_WORKFLOW_BLOCKED",
+]

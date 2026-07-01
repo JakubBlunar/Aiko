@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from app.core.infra.settings_basic import FileWriteSettings, VisionSettings
+from app.core.infra.settings_basic import VisionSettings
 from app.core.infra.agent_settings import AgentSettings
 from app.core.infra.agent_settings_parse import parse_agent_settings
 from app.core.infra.memory_settings import MemorySettings, parse_memory_settings
@@ -507,35 +507,34 @@ class ExternalMcpSettings:
 
 
 @dataclass(slots=True)
-class BrowserPerceptionSettings:
-    """Server-agnostic "browser perception layer" over an MCP browser server.
+class PluginEntry:
+    """Per-plugin config override, keyed by plugin id in ``PluginsSettings``.
 
-    When ``enabled``, the result of a configured accessibility-snapshot
-    tool (``snapshot_tools`` on the server identified by ``server_id``) is
-    parsed by the named ``adapter`` into a normalized accessibility tree,
-    then deduped / form-grouped / heading-context-injected / heuristically
-    ranked / diffed against the previous page state, and re-rendered as a
-    compact, ranked block for the workflow planner. The MCP server stays a
-    swappable transport: switching servers means adding an
-    ``mcp_clients.servers`` entry and pointing ``server_id`` / ``adapter``
-    at it — the perception pipeline is unchanged.
-
-    Ranking is purely heuristic (no embeddings). ``weight_*`` knobs tune
-    the per-element ``interaction_likelihood`` score. ``state_memory_pages``
-    bounds the in-process (ephemeral) previous-page-state LRU.
+    ``enabled`` (when set) overrides the bundle's manifest ``enabled``.
+    ``config`` is an opaque per-plugin dict used for ``requires.config``
+    gating (a key must be truthy for the plugin to activate) and, later,
+    for code-contract configuration.
     """
 
-    enabled: bool = False
-    server_id: str = "browser"
-    snapshot_tools: tuple[str, ...] = ("browser_snapshot",)
-    adapter: str = "real_browser"
-    max_ranked_elements: int = 40
-    state_memory_pages: int = 8
-    weight_role: float = 1.0
-    weight_visibility: float = 1.0
-    weight_position: float = 1.0
-    weight_text: float = 1.0
-    weight_context: float = 1.0
+    enabled: bool | None = None
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PluginsSettings:
+    """Declarative MCP plugin bundles.
+
+    A plugin folder (``plugin.json`` + ``SKILL.md``) self-registers its
+    MCP server launch spec and planner guidance with no code change. The
+    loader ( :mod:`app.plugins.loader` ) scans the bundled ``plugins/``
+    directory, the user ``data/plugins/`` directory, and any extra
+    ``paths`` here, in that precedence order. ``entries`` carries per-plugin
+    enable overrides + config.
+    """
+
+    enabled: bool = True
+    paths: list[str] = field(default_factory=list)
+    entries: dict[str, PluginEntry] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -574,15 +573,6 @@ class ToolsSettings:
     # untouched (the tools themselves no-op because the store is unset).
     # See :mod:`app.llm.tools.goals`.
     goals: bool = True
-    # Brain-orchestration filesystem tools (chunk 10):
-    # ``start_file_search`` / ``cancel_file_task``. Returns a task
-    # id immediately so Aiko can say "I'm searching for that, I'll
-    # let you know" while the orchestrator walks the configured
-    # roots in the background. Gated independently from
-    # ``agent.tasks_enabled`` so a developer can keep the
-    # subsystem on but hide the tools from the LLM during prompt
-    # experiments. See :mod:`app.llm.tools.file_tasks`.
-    file_tasks: bool = True
     # Nested goal workflows (``start_workflow`` / ``check_my_work`` /
     # ``cancel_work``). The brain-facing control surface for the
     # background ``GoalWorkflowHandler``. Gated independently from
@@ -694,13 +684,10 @@ class AppSettings:
     # are surfaced only to the background-worker lane). Distinct from
     # ``mcp_server`` (the embedded debug server the app exposes).
     mcp_clients: ExternalMcpSettings = field(default_factory=ExternalMcpSettings)
-    # Optional middleware over an MCP browser server's accessibility
-    # snapshot (parse -> dedup -> group -> rank -> diff). Disabled by
-    # default; the underlying browser server is configured under
-    # ``mcp_clients.servers``.
-    browser_perception: BrowserPerceptionSettings = field(
-        default_factory=BrowserPerceptionSettings
-    )
+    # Declarative MCP plugin bundles discovered from ``plugins/`` (repo) +
+    # ``data/plugins/`` (user) + ``plugins.paths``. Each bundle synthesises
+    # an ``mcp_clients`` server row + planner guidance at boot.
+    plugins: PluginsSettings = field(default_factory=PluginsSettings)
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
@@ -1009,31 +996,6 @@ def _parse_approval_overrides(value: Any) -> dict[str, str]:
     return out
 
 
-def _parse_file_write_settings(value: Any) -> FileWriteSettings:
-    """Build a :class:`FileWriteSettings` from the raw ``file_write`` block.
-
-    Missing / non-dict input yields the defaults (disabled). ``max_bytes``
-    is clamped to ``[1 KiB, 16 MiB]``; ``allowed_extensions`` reuses
-    :func:`_parse_extension_list` (empty = allow all).
-    """
-    raw = value if isinstance(value, dict) else {}
-    defaults = FileWriteSettings()
-    if "allowed_extensions" in raw:
-        extensions = _parse_extension_list(raw.get("allowed_extensions"))
-    else:
-        extensions = defaults.allowed_extensions
-    try:
-        max_bytes = int(raw.get("max_bytes", defaults.max_bytes))
-    except (TypeError, ValueError):
-        max_bytes = defaults.max_bytes
-    max_bytes = max(1024, min(16 * 1024 * 1024, max_bytes))
-    return FileWriteSettings(
-        enabled=bool(raw.get("enabled", defaults.enabled)),
-        max_bytes=max_bytes,
-        allowed_extensions=extensions,
-    )
-
-
 def _parse_vision_settings(value: Any) -> VisionSettings:
     """Build a :class:`VisionSettings` from the raw ``vision`` block.
 
@@ -1339,56 +1301,37 @@ def _parse_external_mcp(raw: Any) -> ExternalMcpSettings:
     return ExternalMcpSettings(servers=servers)
 
 
-def _parse_browser_perception(raw: Any) -> BrowserPerceptionSettings:
-    """Validate the ``browser_perception`` config block.
+def _parse_plugins(raw: Any) -> PluginsSettings:
+    """Validate the ``plugins`` config block.
 
-    Returns defaults (disabled) when the block is missing/malformed so a
-    bad entry never aborts the load. Weights and caps are clamped to sane
-    floors; ``snapshot_tools`` falls back to the default when empty.
+    Returns defaults (enabled, no extra paths, no overrides) when missing
+    or malformed. ``entries`` maps a plugin id to an optional enable
+    override + opaque config dict.
     """
-    defaults = BrowserPerceptionSettings()
     if not isinstance(raw, dict):
-        return defaults
-
-    def _weight(key: str, fallback: float) -> float:
-        try:
-            return max(0.0, float(raw.get(key, fallback)))
-        except (TypeError, ValueError):
-            return fallback
-
-    tools_raw = raw.get("snapshot_tools")
-    if isinstance(tools_raw, (list, tuple)):
-        snapshot_tools = tuple(
-            str(t).strip() for t in tools_raw if str(t).strip()
-        )
-    else:
-        snapshot_tools = ()
-    if not snapshot_tools:
-        snapshot_tools = defaults.snapshot_tools
-
-    try:
-        max_ranked = max(1, int(raw.get("max_ranked_elements", defaults.max_ranked_elements)))
-    except (TypeError, ValueError):
-        max_ranked = defaults.max_ranked_elements
-    try:
-        state_pages = max(1, int(raw.get("state_memory_pages", defaults.state_memory_pages)))
-    except (TypeError, ValueError):
-        state_pages = defaults.state_memory_pages
-
-    return BrowserPerceptionSettings(
-        enabled=bool(raw.get("enabled", defaults.enabled)),
-        server_id=str(raw.get("server_id", defaults.server_id) or defaults.server_id).strip()
-        or defaults.server_id,
-        snapshot_tools=snapshot_tools,
-        adapter=str(raw.get("adapter", defaults.adapter) or defaults.adapter).strip()
-        or defaults.adapter,
-        max_ranked_elements=max_ranked,
-        state_memory_pages=state_pages,
-        weight_role=_weight("weight_role", defaults.weight_role),
-        weight_visibility=_weight("weight_visibility", defaults.weight_visibility),
-        weight_position=_weight("weight_position", defaults.weight_position),
-        weight_text=_weight("weight_text", defaults.weight_text),
-        weight_context=_weight("weight_context", defaults.weight_context),
+        return PluginsSettings()
+    paths_raw = raw.get("paths") or []
+    paths = (
+        [str(p).strip() for p in paths_raw if str(p).strip()]
+        if isinstance(paths_raw, (list, tuple))
+        else []
+    )
+    entries: dict[str, PluginEntry] = {}
+    entries_raw = raw.get("entries") or {}
+    if isinstance(entries_raw, dict):
+        for key, value in entries_raw.items():
+            pid = str(key).strip()
+            if not pid or not isinstance(value, dict):
+                continue
+            enabled_raw = value.get("enabled")
+            enabled = None if enabled_raw is None else bool(enabled_raw)
+            config_raw = value.get("config") or {}
+            config = dict(config_raw) if isinstance(config_raw, dict) else {}
+            entries[pid] = PluginEntry(enabled=enabled, config=config)
+    return PluginsSettings(
+        enabled=bool(raw.get("enabled", True)),
+        paths=paths,
+        entries=entries,
     )
 
 
@@ -1788,9 +1731,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
         mcp_clients=_parse_external_mcp(raw.get("mcp_clients", {})),
-        browser_perception=_parse_browser_perception(
-            raw.get("browser_perception", {})
-        ),
+        plugins=_parse_plugins(raw.get("plugins", {})),
         web_server=WebServerSettings(
             enabled=bool(web_server_raw.get("enabled", True)),
             host=str(web_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
@@ -1807,7 +1748,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),
-            file_tasks=bool(tools_raw.get("file_tasks", True)),
             workflow=bool(tools_raw.get("workflow", True)),
             calculate=bool(tools_raw.get("calculate", True)),
             weather=bool(tools_raw.get("weather", True)),

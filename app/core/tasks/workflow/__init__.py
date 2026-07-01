@@ -26,6 +26,9 @@ from app.core.tasks.workflow.skill_registry import (
     build_builtin_skill_registry,
 )
 from app.core.tasks.workflow.goal_workflow_handler import (
+    EVENT_WORKFLOW_BLOCKED,
+    EVENT_WORKFLOW_LOOP_DETECTED,
+    OUTCOME_BLOCKED,
     OUTCOME_MISSING_CAPABILITY,
     GoalWorkflowHandler,
 )
@@ -53,6 +56,9 @@ __all__ = [
     "build_builtin_skill_registry",
     "GoalWorkflowHandler",
     "OUTCOME_MISSING_CAPABILITY",
+    "OUTCOME_BLOCKED",
+    "EVENT_WORKFLOW_BLOCKED",
+    "EVENT_WORKFLOW_LOOP_DETECTED",
     "ACTION_SKILL",
     "ACTION_FINISH",
     "ACTION_MISSING_CAPABILITY",

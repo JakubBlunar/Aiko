@@ -208,5 +208,75 @@ class PerceptionHookTests(unittest.TestCase):
         self.assertEqual(outcomes[0].result["content"], "plain")
 
 
+class MiddlewareChainTests(unittest.TestCase):
+    def test_first_claiming_non_none_wins(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw")]))
+        # mw1 claims but returns None (passthrough), mw2 claims + reshapes.
+        mw1 = _StubPerception(result=None, server="browser", tool="browser_snapshot")
+        mw2 = _StubPerception(
+            result=_PerceptionResult("SHAPED", "sum", 3),
+            server="browser", tool="browser_snapshot",
+        )
+        handler = McpToolHandler(manager=mgr, middlewares=[mw1, mw2])
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "SHAPED")
+        self.assertEqual(len(mw1.transform_calls), 1)
+        self.assertEqual(len(mw2.transform_calls), 1)
+
+    def test_earlier_result_short_circuits_later(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw")]))
+        mw1 = _StubPerception(result=_PerceptionResult("FIRST", "s", 1))
+        mw2 = _StubPerception(result=_PerceptionResult("SECOND", "s", 1))
+        handler = McpToolHandler(manager=mgr, middlewares=[mw1, mw2])
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "FIRST")
+        self.assertEqual(mw2.transform_calls, [])
+
+    def test_none_of_them_claim_passthrough(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw text")]))
+        mw = _StubPerception(result=_PerceptionResult("X", "s", 1), tool="other")
+        handler = McpToolHandler(manager=mgr, middlewares=[mw])
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "raw text")
+
+    def test_middleware_exception_falls_through(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw text")]))
+
+        class _Boom:
+            def claims(self, s, t):
+                return True
+
+            def transform(self, s, t, txt, a=None):
+                raise RuntimeError("kaboom")
+
+        handler = McpToolHandler(manager=mgr, middlewares=[_Boom()])
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "raw text")
+
+    def test_perception_alias_prepended(self) -> None:
+        # perception= (back-compat) runs before middlewares=.
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw")]))
+        legacy = _StubPerception(result=_PerceptionResult("LEGACY", "s", 1))
+        extra = _StubPerception(result=_PerceptionResult("EXTRA", "s", 1))
+        handler = McpToolHandler(manager=mgr, perception=legacy, middlewares=[extra])
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "LEGACY")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,12 @@
-"""Tests for the chunk-9 MCP filesystem-task debug tools.
+"""Tests for the MCP task/file-roots debug tools.
 
-These verify that the four new tools registered in
+These verify that the tools registered in
 :func:`app.mcp.server.create_mcp_server` —
-``list_file_roots`` / ``start_file_search`` / ``list_active_tasks``
+``list_file_roots`` / ``list_active_tasks`` / ``answer_file_task``
 / ``cancel_task`` — wire up correctly to a session's
-:class:`TaskOrchestrator` and to the chunk-9 sandbox validator.
+:class:`TaskOrchestrator` and to the sandbox validator. File
+read/search now come from the filesystem MCP plugin, so their
+``start_*`` debug tools were removed.
 
 We use the same ``_FakeSession`` shape as the chunk-7 tests so the
 tools can be exercised through :meth:`FastMCP.call_tool` without
@@ -197,73 +199,6 @@ class ListFileRootsTests(unittest.TestCase):
         self.assertEqual(out[0]["reason"], "missing")
 
 
-class StartFileSearchTests(unittest.TestCase):
-    def test_calls_orchestrator_with_right_args(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(
-                server,
-                "start_file_search",
-                {"query": "alpha", "root_label": "Docs", "max_results": 25},
-            )
-        )
-        self.assertEqual(out["task_id"], 42)
-        self.assertEqual(out["handler"], "file_search")
-        self.assertEqual(len(orch.start_calls), 1)
-        call = orch.start_calls[0]
-        self.assertEqual(call["user_id"], "test-user")
-        self.assertEqual(call["handler_name"], "file_search")
-        self.assertEqual(call["args"]["query"], "alpha")
-        self.assertEqual(call["args"]["root_label"], "Docs")
-        self.assertEqual(call["args"]["max_results"], 25)
-        self.assertEqual(call["initiated_by"], "system")
-
-    def test_title_includes_query_and_root(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        _call_tool(
-            server,
-            "start_file_search",
-            {"query": "alpha", "root_label": "Docs"},
-        )
-        self.assertIn("alpha", orch.start_calls[0]["title"])
-        self.assertIn("Docs", orch.start_calls[0]["title"])
-
-    def test_title_truncates_long_query(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        long_q = "x" * 200
-        _call_tool(
-            server, "start_file_search", {"query": long_q}
-        )
-        title = orch.start_calls[0]["title"]
-        # 60-char cap on the query portion of the title.
-        self.assertLess(len(title), 200)
-
-    def test_orchestrator_rejection_surfaces_error(self) -> None:
-        orch = _FakeOrchestrator()
-        orch.next_task_id = None  # simulate per_user_cap rejection
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(server, "start_file_search", {"query": "x"})
-        )
-        self.assertEqual(out, {"error": "task_spawn_rejected"})
-
-    def test_disabled_subsystem_returns_error(self) -> None:
-        session = _FakeSession(orchestrator=None)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(server, "start_file_search", {"query": "x"})
-        )
-        self.assertIn("error", out)
-        self.assertIn("disabled", out["error"])
-
-
 class ListActiveTasksTests(unittest.TestCase):
     def test_empty_when_no_active_tasks(self) -> None:
         session = _FakeSession(orchestrator=_FakeOrchestrator())
@@ -299,72 +234,6 @@ class ListActiveTasksTests(unittest.TestCase):
         server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
         out = json.loads(_call_tool(server, "list_active_tasks", {}))
         self.assertEqual(out, [])
-
-
-class StartFileReadTests(unittest.TestCase):
-    """Chunk 12: `start_file_read` mirrors `start_file_search` but
-    routes through the ``file_read`` handler and accepts a ``path``
-    arg.
-    """
-
-    def test_calls_orchestrator_with_path(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(
-                server,
-                "start_file_read",
-                {"path": "Documents:notes/q4.md"},
-            )
-        )
-        self.assertEqual(out["task_id"], 42)
-        self.assertEqual(out["handler"], "file_read")
-        call = orch.start_calls[0]
-        self.assertEqual(call["handler_name"], "file_read")
-        self.assertEqual(call["args"]["path"], "Documents:notes/q4.md")
-        self.assertEqual(call["initiated_by"], "system")
-        # max_bytes not supplied -> NOT in args dict.
-        self.assertNotIn("max_bytes", call["args"])
-
-    def test_max_bytes_threaded(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        _call_tool(
-            server,
-            "start_file_read",
-            {"path": "foo.md", "max_bytes": 8192},
-        )
-        self.assertEqual(orch.start_calls[0]["args"]["max_bytes"], 8192)
-
-    def test_zero_max_bytes_omitted(self) -> None:
-        orch = _FakeOrchestrator()
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        _call_tool(
-            server, "start_file_read", {"path": "foo.md", "max_bytes": 0}
-        )
-        self.assertNotIn("max_bytes", orch.start_calls[0]["args"])
-
-    def test_disabled_subsystem_returns_error(self) -> None:
-        session = _FakeSession(orchestrator=None)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(server, "start_file_read", {"path": "x.md"})
-        )
-        self.assertIn("error", out)
-        self.assertIn("disabled", out["error"])
-
-    def test_orchestrator_rejection_surfaces_error(self) -> None:
-        orch = _FakeOrchestrator()
-        orch.next_task_id = None
-        session = _FakeSession(orchestrator=orch)
-        server = create_mcp_server(session, port=0)  # type: ignore[arg-type]
-        out = json.loads(
-            _call_tool(server, "start_file_read", {"path": "x.md"})
-        )
-        self.assertEqual(out, {"error": "task_spawn_rejected"})
 
 
 class AnswerFileTaskTests(unittest.TestCase):

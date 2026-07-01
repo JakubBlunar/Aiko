@@ -9,8 +9,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
     from app.core.infra.settings import (
         _normalize_approval_mode,
         _parse_approval_overrides,
-        _parse_extension_list,
-        _parse_file_write_settings,
         _parse_grounding_line_mode,
         _parse_task_file_allowed_roots,
         _parse_vision_settings,
@@ -1265,45 +1263,10 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             task_file_allowed_roots=_parse_task_file_allowed_roots(
                 agent_raw.get("task_file_allowed_roots", ())
             ),
-            builtin_file_skills_enabled=bool(
-                agent_raw.get("builtin_file_skills_enabled", True)
-            ),
-            task_file_read_max_bytes=max(
-                1024,
-                min(
-                    16 * 1024 * 1024,
-                    int(agent_raw.get("task_file_read_max_bytes", 262144)),
-                ),
-            ),
-            task_file_read_max_lines=max(
-                10,
-                min(
-                    50000,
-                    int(agent_raw.get("task_file_read_max_lines", 2000)),
-                ),
-            ),
-            task_file_read_allowed_extensions=_parse_extension_list(
-                agent_raw.get(
-                    "task_file_read_allowed_extensions",
-                    (
-                        ".txt", ".md", ".rst", ".log",
-                        ".py", ".js", ".ts", ".tsx", ".jsx",
-                        ".json", ".yaml", ".yml", ".toml",
-                        ".ini", ".cfg", ".conf",
-                        ".html", ".css", ".xml",
-                        ".csv", ".tsv",
-                        ".sh", ".bat", ".ps1",
-                        ".sql",
-                        ".go", ".rs", ".c", ".h", ".cpp", ".hpp",
-                        ".java", ".kt",
-                        ".rb", ".lua",
-                    ),
-                )
-            ),
             mcp_clients_enabled=bool(agent_raw.get("mcp_clients_enabled", True)),
             workflow_enabled=bool(agent_raw.get("workflow_enabled", True)),
             workflow_max_iterations=max(
-                1, min(30, int(agent_raw.get("workflow_max_iterations", 6)))
+                1, min(30, int(agent_raw.get("workflow_max_iterations", 12)))
             ),
             workflow_max_children=max(
                 1, min(50, int(agent_raw.get("workflow_max_children", 8)))
@@ -1361,6 +1324,20 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     int(agent_raw.get("workflow_max_wall_seconds", 300)),
                 ),
             ),
+            workflow_loop_detection_enabled=bool(
+                agent_raw.get("workflow_loop_detection_enabled", True)
+            ),
+            workflow_loop_window=max(
+                2,
+                min(20, int(agent_raw.get("workflow_loop_window", 4))),
+            ),
+            workflow_loop_repeat_threshold=max(
+                2,
+                min(
+                    20,
+                    int(agent_raw.get("workflow_loop_repeat_threshold", 3)),
+                ),
+            ),
             workflow_capability_gap_log_max=max(
                 1,
                 min(
@@ -1373,9 +1350,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             task_approval_overrides=_parse_approval_overrides(
                 agent_raw.get("task_approval_overrides", {})
-            ),
-            file_write=_parse_file_write_settings(
-                agent_raw.get("file_write", {})
             ),
             vision=_parse_vision_settings(
                 agent_raw.get("vision", {})

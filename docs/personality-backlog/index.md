@@ -240,6 +240,9 @@ compound across every K-series entry:
 - **P30.** Raise / disable the `memory.max_memories` cap (topic-graph
   persistence removed the `O(n²)` wall; mirror sweeps P5/P17 are the
   remaining blockers).
+- **P31.** Audit + trim the baseline system prompt (~25-30k resting
+  floor; rank inner-life blocks by token × frequency × tier, trim
+  persona/grammar duplication, lazy-render the occasional blocks).
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,
@@ -266,6 +269,10 @@ see [`shipped.md`](shipped.md).)
 
 ## Related docs
 
+- [`plugin-system.md`](plugin-system.md) — full plugin-system vision
+  (P1 declarative MCP + skills shipped; P2 code entrypoint / `PluginApi`,
+  P3 `hooks`, P4 provider contracts deferred).
+- [`docs/plugins.md`](../plugins.md) — the shipped P1 plugin-bundle format.
 - [`docs/memory-tiers.md`](../memory-tiers.md) — schema v8 memory
   tiers + `IdleWorkerScheduler`.
 - [`docs/aiko-room.md`](../aiko-room.md) — world / room / garden.

@@ -17,7 +17,11 @@ from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
 from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
-from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
+from app.llm.token_utils import (
+    chars_per_token,
+    estimate_messages_tokens,
+    estimate_tokens,
+)
 
 if TYPE_CHECKING:
     from app.core.memory.memory_retriever import MemoryRetriever
@@ -387,6 +391,34 @@ _SAFETY_TOKENS = 256
 
 _MESSAGE_OVERHEAD = 4  # framing tokens per message (matches token_utils)
 
+
+def clip_text_to_tokens(
+    text: str,
+    max_tokens: int,
+    *,
+    marker: str = "\n\n[... truncated to fit context ...]\n\n",
+) -> str:
+    """Clip ``text`` so its estimated token count fits ``max_tokens``.
+
+    Preserves the head (75%) and tail (25%) around a truncation marker so both
+    the opening framing and the most-recent content survive — the common shape
+    for a pasted log / document dump where both ends carry signal. A no-op when
+    the text already fits or ``max_tokens <= 0``.
+    """
+    if max_tokens <= 0 or not text:
+        return text
+    if estimate_tokens(text) <= max_tokens:
+        return text
+    budget_chars = max(1, int(max_tokens * chars_per_token()))
+    if budget_chars <= len(marker):
+        return text[:budget_chars]
+    body_chars = budget_chars - len(marker)
+    head_chars = int(body_chars * 0.75)
+    tail_chars = body_chars - head_chars
+    if tail_chars <= 0:
+        return text[:head_chars] + marker
+    return text[:head_chars] + marker + text[-tail_chars:]
+
 @dataclass(slots=True)
 class PromptTelemetry:
     """Accounting for how the next prompt's budget was spent.
@@ -408,6 +440,23 @@ class PromptTelemetry:
     history_tokens: int = 0
     user_tokens: int = 0
     tool_tokens: int = 0  # set by TurnRunner after the tool pre-pass
+    # Token cost of the ``tools=`` schema payload sent on the forced
+    # tool-decision pass. Stamped by ``TurnRunner._maybe_run_tool_pass``.
+    # 0 on turns where the P14 gate skipped the decision pass (banter),
+    # so the widget shows why a tool turn's prompt jumps ~18-19k while a
+    # banter turn stays lean. NOT part of ``system_tokens`` — it rides on
+    # a *different* LLM call (the decision pass) than the streamed reply.
+    tool_schema_tokens: int = 0
+    # Largest single Ollama call's prompt-token count this turn (the tool
+    # decision pass OR the streaming reply pass — whichever was bigger),
+    # stamped by ``TurnRunner`` after both passes run. This is the TRUE
+    # context-window occupancy: each pass re-sends its own copy of the
+    # system prompt, so the merged (summed) ``usage.prompt_tokens`` used
+    # for cost telemetry double-counts that prefix and overstates window
+    # pressure ~2x on tool turns. Use THIS for the occupancy bar + the
+    # compaction trigger, never the merged sum. 0 falls back to the merged
+    # figure (banter turns, where merged == single call).
+    context_prompt_tokens: int = 0
     # Phase-2/3/4 inner-life blocks. These are folded into ``system_tokens``
     # for budgeting; the per-block fields exist for the metrics drawer.
     affect_tokens: int = 0
@@ -474,6 +523,8 @@ class PromptTelemetry:
             "history_tokens": int(self.history_tokens),
             "user_tokens": int(self.user_tokens),
             "tool_tokens": int(self.tool_tokens),
+            "tool_schema_tokens": int(self.tool_schema_tokens),
+            "context_prompt_tokens": int(self.context_prompt_tokens),
             "affect_tokens": int(self.affect_tokens),
             "circadian_tokens": int(self.circadian_tokens),
             "profile_tokens": int(self.profile_tokens),

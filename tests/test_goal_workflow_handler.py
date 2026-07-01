@@ -7,12 +7,53 @@ import unittest
 from typing import Any
 
 from app.core.infra.log_context import reset_task_id, set_task_id
-from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskOutcome
+from app.core.tasks.task_handler import (
+    TaskCompleted,
+    TaskEventEmit,
+    TaskFailed,
+    TaskOutcome,
+)
 from app.core.tasks.workflow.goal_workflow_handler import (
+    EVENT_WORKFLOW_LOOP_DETECTED,
+    OUTCOME_BLOCKED,
     OUTCOME_MISSING_CAPABILITY,
     GoalWorkflowHandler,
 )
-from app.core.tasks.workflow.skill_registry import build_builtin_skill_registry
+from app.core.tasks.workflow.skill_registry import (
+    SpawnContext,
+    WorkflowSkill,
+    build_builtin_skill_registry,
+)
+
+
+def _file_skill(name: str, handler_name: str) -> WorkflowSkill:
+    """A file-like workflow skill (files now come from an MCP plugin, so the
+
+    tests register their own to exercise the planner loop mechanics).
+    """
+
+    def _spawn(args: dict[str, Any], ctx: SpawnContext) -> int | None:
+        path = str(args.get("path", "")).strip()
+        if name == "read_file" and not path:
+            return None
+        return ctx.orchestrator.start_task(
+            user_id=ctx.user_id,
+            handler_name=handler_name,
+            args=dict(args),
+            parent_task_id=ctx.parent_task_id,
+        )
+
+    return WorkflowSkill(
+        name=name, description=f"{name} test skill", spawn=_spawn, group="mcp:fs"
+    )
+
+
+def _registry_with_files():
+    """Built-in registry + ``search_files`` / ``read_file`` test skills."""
+    reg = build_builtin_skill_registry()
+    reg.register(_file_skill("search_files", "file_search"))
+    reg.register(_file_skill("read_file", "file_read"))
+    return reg
 
 
 class _Row:
@@ -117,9 +158,12 @@ def _run(
     max_iterations: int = 6,
     max_children: int = 8,
     on_gap: Any = None,
+    loop_detection_enabled: bool = True,
+    loop_window: int = 4,
+    loop_repeat_threshold: int = 3,
 ) -> _Harness:
     orch.set_parent(parent_id)
-    registry = build_builtin_skill_registry()
+    registry = _registry_with_files()
     handler = GoalWorkflowHandler(
         orchestrator=orch,
         skill_registry=registry,
@@ -130,6 +174,9 @@ def _run(
         max_iterations=max_iterations,
         max_children=max_children,
         child_wait_timeout_seconds=5.0,
+        loop_detection_enabled=loop_detection_enabled,
+        loop_window=loop_window,
+        loop_repeat_threshold=loop_repeat_threshold,
     )
     h = _Harness()
     tok = set_task_id(f"{parent_id:08x}")
@@ -205,7 +252,7 @@ class MissingCapabilityTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
-    def test_repeat_guard_finishes_partial(self) -> None:
+    def test_repeat_guard_finishes_blocked(self) -> None:
         orch = _FakeOrchestrator()
         client = _ScriptedClient(
             [
@@ -216,7 +263,9 @@ class GuardTests(unittest.TestCase):
         h = _run(orch, client)
         term = h.terminal()
         self.assertIsInstance(term, TaskCompleted)
-        self.assertEqual(term.result["outcome"], "partial")
+        # An exact-repeat is being stuck, not clean budget exhaustion.
+        self.assertEqual(term.result["outcome"], OUTCOME_BLOCKED)
+        self.assertIn("stuck", term.result["content"].lower())
         # Only the first search ran.
         self.assertEqual(len(orch.spawned), 1)
 
@@ -251,6 +300,58 @@ class GuardTests(unittest.TestCase):
         self.assertIsInstance(term, TaskCompleted)
         self.assertEqual(term.result["outcome"], "partial")
         self.assertEqual(len(orch.spawned), 2)
+
+
+class LoopDetectionTests(unittest.TestCase):
+    def test_no_progress_loop_blocks(self) -> None:
+        orch = _FakeOrchestrator()
+        # Three DISTINCT searches (so the exact-repeat guard stays silent)
+        # that all land on the canned "found 2 files" observation -> the
+        # args-agnostic loop detector should fire on the 3rd.
+        client = _ScriptedClient(
+            [
+                {"action": "search_files", "args": {"query": "a"}},
+                {"action": "search_files", "args": {"query": "b"}},
+                {"action": "search_files", "args": {"query": "c"}},
+            ]
+        )
+        h = _run(orch, client, max_iterations=6, loop_repeat_threshold=3)
+        term = h.terminal()
+        self.assertIsInstance(term, TaskCompleted)
+        self.assertEqual(term.result["outcome"], OUTCOME_BLOCKED)
+        self.assertIn("loop", term.result["content"].lower())
+        self.assertEqual(len(orch.spawned), 3)
+        # The audit event was emitted before the finish.
+        looped = [
+            o
+            for o in h.outcomes
+            if isinstance(o, TaskEventEmit)
+            and o.type == EVENT_WORKFLOW_LOOP_DETECTED
+        ]
+        self.assertEqual(len(looped), 1)
+        self.assertEqual(looped[0].data.get("count"), 3)
+
+    def test_loop_detection_disabled_hits_iteration_cap(self) -> None:
+        orch = _FakeOrchestrator()
+        client = _ScriptedClient(
+            [
+                {"action": "search_files", "args": {"query": "a"}},
+                {"action": "search_files", "args": {"query": "b"}},
+                {"action": "search_files", "args": {"query": "c"}},
+            ]
+        )
+        # Same repeated-observation scenario, but detector off + a low
+        # iteration cap -> it runs to the cap and reports partial.
+        h = _run(
+            orch,
+            client,
+            max_iterations=3,
+            loop_detection_enabled=False,
+        )
+        term = h.terminal()
+        self.assertIsInstance(term, TaskCompleted)
+        self.assertEqual(term.result["outcome"], "partial")
+        self.assertEqual(len(orch.spawned), 3)
 
 
 class CancelTests(unittest.TestCase):

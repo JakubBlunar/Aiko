@@ -1,0 +1,17 @@
+{
+  "adapter": "real_browser",
+  "snapshot_tools": ["browser_snapshot"],
+  "max_ranked_elements": 40,
+  "state_memory_pages": 8,
+  "weight_role": 1.0,
+  "weight_visibility": 1.0,
+  "weight_position": 1.0,
+  "weight_text": 1.0,
+  "weight_context": 1.0,
+  "disabled_tools": [
+    "browser_console",
+    "browser_network",
+    "browser_evaluate",
+    "browser_handle_dialog"
+  ]
+}

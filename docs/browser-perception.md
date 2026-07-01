@@ -33,12 +33,25 @@ flowchart LR
 ```
 
 The hook lives in
-[`McpToolHandler.start`](../app/core/tasks/handlers/mcp_tool.py): after the
-raw tool content is flattened, if a `BrowserPerception` `claims()` the
-`(server_id, tool_name)` and successfully parses the snapshot, its reshaped
-`content`/`summary` are emitted; otherwise (any other tool, or an
-unparseable snapshot) the raw flatten path runs exactly as before. The
-layer is **best-effort** — it never breaks browsing.
+[`McpToolHandler.start`](../app/core/tasks/handlers/mcp_tool.py): after the raw
+tool content is flattened, it runs the handler's **tool-result middleware chain**
+— the first middleware whose `claims()` matches the `(server_id, tool_name)` and
+whose `transform()` returns non-`None` supplies the reshaped `content`/`summary`;
+otherwise (any other tool, or an unparseable snapshot) the raw flatten path runs
+exactly as before. The layer is **best-effort** — a middleware that raises is
+skipped, so it never breaks browsing.
+
+`BrowserPerception` is one such middleware. It reaches the handler two ways:
+
+- **As a ToolPlugin (preferred).** The bundled `plugins/browser` plugin's
+  `entry.py` builds a `BrowserPerception` from its own `config/` and registers it
+  via `api.register_tool_result_middleware(...)`. This keeps the perception code
+  decoupled from app core and configured next to the plugin. See
+  [`docs/plugins.md`](plugins.md).
+- **As the legacy global block (back-compat).** The `browser_perception` config
+  block still builds a `BrowserPerception` wired straight into the handler. It is
+  **skipped** when a plugin already registered a middleware for the same
+  `server_id` (so a snapshot is never reshaped twice).
 
 ## Components (`app/core/browser/`)
 
