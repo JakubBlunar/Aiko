@@ -22,21 +22,23 @@ from app.core.session.tool_pass_gate import (
     BRAIN_CORE_FAMILIES,
     GateContext,
     GateDecision,
+    _compile,
     families_for_tools,
     select_active_tool_names,
     should_run_tool_pass,
 )
 
 
+# Only brain-lane tools that actually register in the ToolRegistry.
+# ``web_search`` and the filesystem task tools run in the background
+# workflow / MCP lane and are intentionally NOT gate-mapped.
 _ALL_TOOLS = [
-    "get_time", "recall", "web_search",
-    "list_file_roots", "start_file_read", "start_file_search",
-    "cancel_file_task", "answer_file_task",
+    "get_time", "recall", "recall_topic",
     "look_around", "move_to", "change_posture", "inspect_item",
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
-    "get_weather", "get_forecast", "calculate",
+    "get_weather", "get_forecast",
 ]
 
 _NO_CONTEXT = GateContext()
@@ -104,10 +106,20 @@ class UnknownToolTests(unittest.TestCase):
 
     def test_families_for_tools_splits_known_and_unknown(self) -> None:
         families, unknown = families_for_tools(
-            ["get_time", "web_search", "mystery"],
+            ["get_time", "recall", "mystery"],
         )
-        self.assertEqual(families, {"time", "web"})
+        self.assertEqual(families, {"time", "recall"})
         self.assertEqual(unknown, {"mystery"})
+
+    def test_background_lane_tools_are_unknown(self) -> None:
+        # ``web_search`` + filesystem task tools are background-only, so the
+        # gate does not map them (they never register on the brain lane).
+        _, unknown = families_for_tools(
+            ["web_search", "list_file_roots", "start_file_read"],
+        )
+        self.assertEqual(
+            unknown, {"web_search", "list_file_roots", "start_file_read"}
+        )
 
 
 class SignalFamilyTests(unittest.TestCase):
@@ -124,9 +136,6 @@ class SignalFamilyTests(unittest.TestCase):
     def test_time_date_signal(self) -> None:
         self._assert_runs("do you know what day it is?", "time")
 
-    def test_web_signal(self) -> None:
-        self._assert_runs("can you search for the latest python release?", "web")
-
     def test_weather_signal(self) -> None:
         # H11: weather/forecast route to the dedicated weather family,
         # not web (so the fast weather tool wins over a slow DDG round-trip).
@@ -137,9 +146,9 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_weather_phrase_skips_when_weather_tools_disabled(self) -> None:
         # With the weather tools removed, "weather" patterns aren't
-        # consulted and the phrase no longer matches web either.
+        # consulted and the phrase matches no other live family.
         decision = _decide(
-            "is it going to rain later?", tools=["get_time", "web_search"],
+            "is it going to rain later?", tools=["get_time", "recall"],
         )
         self.assertFalse(decision.run)
         self.assertEqual(decision.reason, "no_signal")
@@ -149,12 +158,6 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_recall_did_i_tell_signal(self) -> None:
         self._assert_runs("did I tell you about the interview?", "recall")
-
-    def test_files_signal(self) -> None:
-        self._assert_runs("what files can you see?", "files")
-
-    def test_files_read_signal(self) -> None:
-        self._assert_runs("read the notes from yesterday please", "files")
 
     def test_world_signal(self) -> None:
         self._assert_runs("go sit by the window", "world")
@@ -168,27 +171,12 @@ class SignalFamilyTests(unittest.TestCase):
     def test_tasks_signal(self) -> None:
         self._assert_runs("cancel that workflow", "tasks")
 
-    def test_math_keyword_signal(self) -> None:
-        self._assert_runs("can you calculate the compound interest?", "math")
-
-    def test_math_numeric_operator_signal(self) -> None:
-        # A bare arithmetic expression with no keyword still routes to math.
-        self._assert_runs("what's 2340 * 0.185", "math")
-
-    def test_calculate_is_mapped_no_unknown_tool(self) -> None:
-        # Regression guard: ``calculate`` must have a pattern family, else
-        # the gate degrades to ``unknown_tool`` (always-run) on EVERY turn,
-        # defeating P14 and paying the tool-schema payload each turn.
-        decision = _decide("hey, how are you?")
-        self.assertFalse(decision.run)
-        self.assertEqual(decision.reason, "no_signal")
-
     def test_multiple_families_join_in_reason(self) -> None:
-        decision = _decide("search the files for my notes")
+        decision = _decide("what time is it, and how's the weather?")
         self.assertTrue(decision.run)
-        # "search" -> web, "files"/"notes" -> files.
-        self.assertIn("files", decision.matched)
-        self.assertIn("web", decision.matched)
+        # "what time"/"time is it" -> time, "weather" -> weather.
+        self.assertIn("time", decision.matched)
+        self.assertIn("weather", decision.matched)
         self.assertTrue(decision.reason.startswith("signal_"))
 
     def test_generic_request_runs(self) -> None:
@@ -209,7 +197,7 @@ class FamilyGatingTests(unittest.TestCase):
 
     def test_world_phrase_skips_when_world_tools_disabled(self) -> None:
         decision = _decide(
-            "go sit by the window", tools=["get_time", "web_search"],
+            "go sit by the window", tools=["get_time", "recall"],
         )
         self.assertFalse(decision.run)
         self.assertEqual(decision.reason, "no_signal")
@@ -305,22 +293,22 @@ class SelectActiveToolNamesTests(unittest.TestCase):
             decision, _ALL_TOOLS, router_enabled=True,
         )
         assert allow is not None
-        # Core = time/recall/world. No files/goals/tasks/web tools.
+        # Core = time/recall/world. No goals/tasks/weather tools.
         self.assertIn("get_time", allow)
         self.assertIn("recall", allow)
         self.assertIn("consume_item", allow)  # world is core
-        self.assertNotIn("list_file_roots", allow)
+        self.assertNotIn("get_weather", allow)
         self.assertNotIn("add_goal", allow)
         self.assertNotIn("start_workflow", allow)
 
-    def test_files_signal_includes_files_plus_core(self) -> None:
-        decision = self._decide("read the notes from yesterday please")
+    def test_weather_signal_includes_weather_plus_core(self) -> None:
+        decision = self._decide("what's the forecast for tomorrow?")
         allow = select_active_tool_names(
             decision, _ALL_TOOLS, router_enabled=True,
         )
         assert allow is not None
-        self.assertIn("start_file_read", allow)  # files family matched
-        # World is always-on core even though this is a files turn.
+        self.assertIn("get_weather", allow)  # weather family matched
+        # World is always-on core even though this is a weather turn.
         self.assertIn("consume_item", allow)
         self.assertIn("recall", allow)
         # Goals are not relevant -> excluded.
@@ -348,6 +336,77 @@ class SelectActiveToolNamesTests(unittest.TestCase):
 
     def test_default_core_is_time_recall_world(self) -> None:
         self.assertEqual(BRAIN_CORE_FAMILIES, frozenset({"time", "recall", "world"}))
+
+
+class PluginExtraFamiliesTests(unittest.TestCase):
+    """Plugin-contributed fast tools gate via extra_families / extra_patterns.
+
+    A plugin fast tool (e.g. the bundled ``calculator``) supplies a family
+    name + regexes at runtime; ``TurnRunner`` threads them through as
+    ``extra_families`` / ``extra_patterns`` so the tool gates / narrows like
+    a builtin — without the gate module hardcoding the tool.
+    """
+
+    def setUp(self) -> None:
+        # Mirror what the calculator plugin registers.
+        self._families = {"calculate": "math"}
+        self._patterns = {
+            "math": _compile([
+                r"calculate", r"percent", r"how much is",
+                r"\d+\s*[-+*/x^]\s*\d+",
+            ])
+        }
+
+    def _decide(self, text: str) -> GateDecision:
+        return should_run_tool_pass(
+            text,
+            ["get_time", "calculate"],
+            context=_NO_CONTEXT,
+            extra_families=self._families,
+            extra_patterns=self._patterns,
+        )
+
+    def test_plugin_tool_with_family_is_not_unknown(self) -> None:
+        # With a family + patterns supplied, pure banter skips (no_signal),
+        # not the always-run ``unknown_tool`` degrade.
+        decision = self._decide("hey, how are you?")
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, "no_signal")
+
+    def test_plugin_family_keyword_signal(self) -> None:
+        decision = self._decide("can you calculate the compound interest?")
+        self.assertTrue(decision.run)
+        self.assertIn("math", decision.matched)
+
+    def test_plugin_family_numeric_operator_signal(self) -> None:
+        decision = self._decide("what's 2340 * 0.185")
+        self.assertTrue(decision.run)
+        self.assertIn("math", decision.matched)
+
+    def test_plugin_tool_without_family_degrades_to_unknown(self) -> None:
+        # No extra_families for the plugin tool -> the gate can't map it and
+        # falls back to always-run (safe), naming the unmapped tool.
+        decision = should_run_tool_pass(
+            "hey, how are you?",
+            ["get_time", "calculate"],
+            context=_NO_CONTEXT,
+        )
+        self.assertTrue(decision.run)
+        self.assertEqual(decision.reason, "unknown_tool")
+        self.assertIn("calculate", decision.matched)
+
+    def test_router_narrows_to_plugin_family(self) -> None:
+        decision = self._decide("what's 2340 * 0.185")
+        allow = select_active_tool_names(
+            decision,
+            ["get_time", "calculate"],
+            core_families={"time"},
+            router_enabled=True,
+            extra_families=self._families,
+        )
+        assert allow is not None
+        self.assertIn("calculate", allow)  # matched math family
+        self.assertIn("get_time", allow)  # core
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 
 # ── tool-result middleware contract ───────────────────────────────────
@@ -139,6 +139,28 @@ class _InlineSkill:
     body: str
 
 
+@dataclass(slots=True)
+class _FastToolSpec:
+    """A brain-lane fast tool a plugin contributes.
+
+    ``handler`` is the plugin's own callable, invoked **synchronously** on
+    the conversational turn thread (it must be quick — it blocks the reply).
+    ``parameters`` is a JSON-Schema object describing the call arguments.
+
+    ``family`` + ``gate_patterns`` feed the P14 tool-pass gate / brain skill
+    router (see :mod:`app.core.session.tool_pass_gate`): a tool with a family
+    keeps the gate's skip/narrow optimization; a family-less tool degrades
+    the gate to always-run (safe, just un-optimized).
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: Callable[[dict[str, Any]], str]
+    family: str | None = None
+    gate_patterns: tuple[str, ...] = ()
+
+
 # ── the api handed to define_plugin ───────────────────────────────────
 
 
@@ -168,6 +190,7 @@ class PluginApi:
         self._skill_dirs: list[str] = []
         self._inline_skills: list[_InlineSkill] = []
         self._middlewares: list[Any] = []
+        self._fast_tools: list[_FastToolSpec] = []
 
     # ── accessors ────────────────────────────────────────────────────
 
@@ -297,6 +320,58 @@ class PluginApi:
             )
         self._middlewares.append(middleware)
 
+    def register_fast_tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Callable[[dict[str, Any]], str],
+        family: str | None = None,
+        gate_patterns: Sequence[str] | None = None,
+    ) -> None:
+        """Register a brain-lane fast tool (synchronous, called inline).
+
+        The chat model calls it in-turn like a builtin; ``handler(args)``
+        runs on the turn thread and must return a ``str`` (or raise) — keep
+        it quick, it blocks the reply. Call this any number of times to ship
+        a whole family of tools from one plugin.
+
+        ``family`` + ``gate_patterns`` are optional but recommended: they
+        wire the tool into the P14 tool-pass gate / brain skill router so
+        the gate can skip / narrow when the turn has no matching signal. A
+        tool with no ``family`` still works, but forces the gate to always
+        run (``reason="unknown_tool"``).
+        """
+        tool_name = str(name or "").strip()
+        if not tool_name:
+            self._log.warning(
+                "plugin %s register_fast_tool: empty name, ignored",
+                self._plugin_id,
+            )
+            return
+        if not callable(handler):
+            self._log.warning(
+                "plugin %s register_fast_tool %s: handler not callable, ignored",
+                self._plugin_id,
+                tool_name,
+            )
+            return
+        patterns = tuple(
+            str(p).strip() for p in (gate_patterns or ()) if str(p).strip()
+        )
+        fam = str(family).strip() if family else None
+        self._fast_tools.append(
+            _FastToolSpec(
+                name=tool_name,
+                description=str(description or "").strip(),
+                parameters=dict(parameters or {}),
+                handler=handler,
+                family=fam or None,
+                gate_patterns=patterns,
+            )
+        )
+
     # ── read-back for the runtime ─────────────────────────────────────
 
     @property
@@ -314,6 +389,10 @@ class PluginApi:
     @property
     def middlewares(self) -> list[Any]:
         return list(self._middlewares)
+
+    @property
+    def fast_tools(self) -> list[_FastToolSpec]:
+        return list(self._fast_tools)
 
 
 __all__ = [

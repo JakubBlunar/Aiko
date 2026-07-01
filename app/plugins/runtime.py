@@ -53,6 +53,7 @@ class ActivatedPlugin:
     server: Any | None = None  # ExternalMcpServer | None
     group_guidance: dict[str, str] = field(default_factory=dict)
     middlewares: list[Any] = field(default_factory=list)
+    fast_tools: list[Any] = field(default_factory=list)  # sdk._FastToolSpec
     skill_count: int = 0
     deps_status: str = "none"  # none | cached | installed | failed
     reason: str = ""
@@ -257,19 +258,26 @@ def activate_plugin(
         group_guidance[f"mcp:{stub.id}"] = guidance
 
     middlewares = api.middlewares
+    fast_tools = api.fast_tools
     skill_count = len(api.skill_dirs) + len(api.inline_skills)
 
-    if server is None and not group_guidance and not middlewares:
+    if (
+        server is None
+        and not group_guidance
+        and not middlewares
+        and not fast_tools
+    ):
         return ActivatedPlugin(
             **base, status="invalid", deps_status=deps_status,
             reason="plugin registered no capabilities", warnings=warnings,
         )
 
     log.info(
-        "plugin %s active: server=%s middlewares=%d guidance=%s",
+        "plugin %s active: server=%s middlewares=%d fast_tools=%d guidance=%s",
         stub.id,
         server.id if server is not None else None,
         len(middlewares),
+        len(fast_tools),
         bool(group_guidance),
     )
     return ActivatedPlugin(
@@ -278,6 +286,7 @@ def activate_plugin(
         server=server,
         group_guidance=group_guidance,
         middlewares=middlewares,
+        fast_tools=fast_tools,
         skill_count=skill_count,
         deps_status=deps_status,
         warnings=warnings,

@@ -89,6 +89,61 @@ class MiddlewareTests(unittest.TestCase):
         self.assertIsInstance(_Mw(), ToolResultMiddleware)
 
 
+class RegisterFastToolTests(unittest.TestCase):
+    def test_spec_captured(self) -> None:
+        api = _api()
+        api.register_fast_tool(
+            name="calculate",
+            description="do math",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args: "42",
+            family="math",
+            gate_patterns=["calculate", r"\d+\s*\+\s*\d+"],
+        )
+        tools = api.fast_tools
+        self.assertEqual(len(tools), 1)
+        spec = tools[0]
+        self.assertEqual(spec.name, "calculate")
+        self.assertEqual(spec.family, "math")
+        self.assertEqual(spec.gate_patterns, ("calculate", r"\d+\s*\+\s*\d+"))
+        self.assertEqual(spec.handler({}), "42")
+
+    def test_multiple_tools_per_plugin(self) -> None:
+        api = _api()
+        api.register_fast_tool(
+            name="a", description="", parameters={}, handler=lambda a: "a"
+        )
+        api.register_fast_tool(
+            name="b", description="", parameters={}, handler=lambda a: "b"
+        )
+        self.assertEqual([t.name for t in api.fast_tools], ["a", "b"])
+
+    def test_empty_name_ignored(self) -> None:
+        api = _api()
+        api.register_fast_tool(
+            name="  ", description="", parameters={}, handler=lambda a: "x"
+        )
+        self.assertEqual(api.fast_tools, [])
+
+    def test_non_callable_handler_ignored(self) -> None:
+        api = _api()
+        api.register_fast_tool(
+            name="t", description="", parameters={}, handler="not callable",
+        )
+        self.assertEqual(api.fast_tools, [])
+
+    def test_family_without_patterns_kept(self) -> None:
+        # A family with no patterns is allowed; the wiring layer decides it
+        # can't gate on it (degrades to always-run).
+        api = _api()
+        api.register_fast_tool(
+            name="t", description="", parameters={}, handler=lambda a: "x",
+            family="custom",
+        )
+        self.assertEqual(api.fast_tools[0].family, "custom")
+        self.assertEqual(api.fast_tools[0].gate_patterns, ())
+
+
 class GatingHelperTests(unittest.TestCase):
     def test_require_config_missing_raises(self) -> None:
         api = _api({})

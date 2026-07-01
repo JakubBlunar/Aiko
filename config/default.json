@@ -447,7 +447,6 @@
     "web_search": true,
     "world": true,
     "goals": true,
-    "calculate": true,
     "weather": true
   },
   "search": {

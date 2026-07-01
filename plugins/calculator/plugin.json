@@ -1,0 +1,6 @@
+{
+  "plugin_api_version": 1,
+  "id": "calculator",
+  "name": "Calculator",
+  "enabled": true
+}

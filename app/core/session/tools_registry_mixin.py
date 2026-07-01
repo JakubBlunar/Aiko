@@ -65,18 +65,9 @@ class ToolsRegistryMixin:
             # register regardless).
             if getattr(tools_cfg, "recall_topic", True) and getattr(self, "_rag_retriever", None) is not None:
                 registry.register(RecallTopicTool(self._rag_retriever))
-            # Synchronous exact-arithmetic tool. No external deps, no
-            # store — safe to register whenever the switch is on so Aiko
-            # never has to guess a number.
-            if getattr(tools_cfg, "calculate", True):
-                try:
-                    from app.llm.tools.calc import CalculateTool
-
-                    registry.register(CalculateTool())
-                except Exception:
-                    log.warning(
-                        "calculate tool failed to register", exc_info=True
-                    )
+            # ``calculate`` moved to the bundled ``calculator`` plugin
+            # (see ``plugins/calculator/``) — it now registers via the
+            # ToolPlugin SDK fast-tool path below, not as a core builtin.
             # H11 weather tools (get_weather / get_forecast). Synchronous
             # single-GET tools — safe on the brain lane. Independent of the
             # passive ambient feed (agent.weather_sync_enabled): the tools
@@ -157,9 +148,27 @@ class ToolsRegistryMixin:
                     log.warning(
                         "workflow tools failed to register", exc_info=True
                     )
+            # Brain-lane fast tools contributed by code plugins (SDK
+            # ``register_fast_tool``). Registered last; their P14 gate
+            # families / patterns are pushed to the TurnRunner below.
+            for spec in getattr(self, "_plugin_fast_tools", []) or []:
+                try:
+                    from app.llm.tools.plugin_tool import PluginFastTool
+
+                    registry.register(PluginFastTool(spec))
+                except Exception:
+                    log.warning(
+                        "plugin fast tool failed to register: %s",
+                        getattr(spec, "name", "?"),
+                        exc_info=True,
+                    )
         except Exception:
             log.warning("tool registry build failed", exc_info=True)
         self._tool_registry = registry
         if hasattr(self, "_turn_runner"):
             self._turn_runner.set_tool_registry(registry)
+            self._turn_runner.set_plugin_tool_gate(
+                getattr(self, "_plugin_tool_families", {}),
+                getattr(self, "_plugin_family_patterns", {}),
+            )
         log.info("tool registry rebuilt: %s", registry.names())

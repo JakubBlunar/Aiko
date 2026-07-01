@@ -234,6 +234,11 @@ class TurnRunner:
         self._max_prompt_tokens_pct = max(0.3, min(0.95, float(max_prompt_tokens_pct)))
         self._on_memory_added = on_memory_added
         self._tool_registry = tool_registry
+        # Plugin-contributed brain fast-tool gate maps (set via
+        # ``set_plugin_tool_gate`` once code plugins are activated). Empty
+        # until then -- the built-in gate tables cover the builtins.
+        self._plugin_tool_families: dict[str, str] = {}
+        self._plugin_family_patterns: dict[str, Any] = {}
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
         self._stop = threading.Event()
@@ -295,6 +300,21 @@ class TurnRunner:
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
+
+    def set_plugin_tool_gate(
+        self,
+        families: "dict[str, str] | None",
+        patterns: "dict[str, Any] | None",
+    ) -> None:
+        """Install plugin-contributed brain fast-tool gate maps.
+
+        ``families`` maps a plugin tool name to its P14 family; ``patterns``
+        maps a family to a compiled regex. Both overlay the built-in gate
+        tables so plugin fast tools gate / narrow like builtins. Called by
+        ``rebuild_tool_registry`` after code plugins are activated.
+        """
+        self._plugin_tool_families = dict(families or {})
+        self._plugin_family_patterns = dict(patterns or {})
 
     def set_memory(
         self,
@@ -638,6 +658,7 @@ class TurnRunner:
                     self._tool_registry.names(),
                     core_families=self._brain_core_families,
                     router_enabled=self._skill_router_enabled,
+                    extra_families=self._plugin_tool_families,
                 )
                 try:
                     tool_usage = self._maybe_run_tool_pass(
@@ -1143,6 +1164,8 @@ class TurnRunner:
                     tasks_active=tasks_active,
                     force=force,
                 ),
+                extra_families=self._plugin_tool_families,
+                extra_patterns=self._plugin_family_patterns,
             )
         except Exception:
             log.exception("tool-pass gate raised; defaulting to run")

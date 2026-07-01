@@ -101,6 +101,9 @@ The runtime constructs a [`PluginApi`](../app/plugins/sdk.py), calls
     `api.register_skill(name, description, body)` — planner guidance.
   - `api.register_tool_result_middleware(mw, *, server_id=None, tool_names=None)`
     — see below.
+  - `api.register_fast_tool(*, name, description, parameters, handler,
+    family=None, gate_patterns=None)` — a **brain-lane fast tool** (see
+    below). Call it any number of times to ship a family of tools.
 
 Zero-import basic plugins work because `api` is injected — a plugin needs no
 imports to register a server / skills. The SDK's public surface is deliberately
@@ -127,6 +130,49 @@ tool result, the **first** middleware that `claims()` AND returns a non-`None`
 This is exactly how the bundled **browser** plugin registers `BrowserPerception`
 to reshape `browser_snapshot` output — the parity piece a declarative manifest
 could not express.
+
+## Fast tools (brain lane)
+
+Where MCP servers + skills + middleware live on the **background/worker** lane
+(the workflow planner spawns tasks), a **fast tool** runs **inline on the
+conversational turn** — the chat model calls it like a builtin and reads the
+result back in the same reply. Register one with:
+
+```python
+def define_plugin(api):
+    api.register_fast_tool(
+        name="calculate",
+        description="Evaluate an arithmetic expression and return the EXACT result. ...",
+        parameters={"type": "object",
+                    "properties": {"expression": {"type": "string"}},
+                    "required": ["expression"]},
+        handler=_calculate,          # (args: dict) -> str, runs SYNCHRONOUSLY
+        family="math",               # optional: P14 gate / skill-router family
+        gate_patterns=[r"calculate", r"percent", r"\d+\s*[-+*/x^]\s*\d+"],
+    )
+```
+
+Key points:
+
+- **The schema is the skill.** On the brain lane there is no separate
+  `SKILL.md`; the `description` (and `parameters`) is what tells Aiko how and
+  when to call the tool. Write the usage guidance there.
+- **Synchronous + fast.** `handler(args)` runs on the turn thread and must
+  return a `str` (or raise) — it blocks the reply, so keep it quick. Raising
+  surfaces a clean error string to the model.
+- **Gating (optional but recommended).** `family` + `gate_patterns` wire the
+  tool into the P14 tool-pass gate / brain skill router
+  ([`tool_pass_gate`](../app/core/session/tool_pass_gate.py)): the gate can
+  then skip the decision pass on turns with no matching signal, and (with
+  `agent.skill_router_enabled`) narrow the disclosed schema set to matching
+  families. A tool with **no** family still works but forces the gate to
+  always run (`reason="unknown_tool"`).
+- **Multiple tools per plugin.** Call `register_fast_tool` as many times as you
+  like; each becomes its own tool in the brain `ToolRegistry`.
+
+The bundled **calculator** plugin (`plugins/calculator/`) is the reference: it
+moves the old core `calculate` builtin into a plugin, shipping its evaluator in
+a plugin-local `aiko_calc` package and its family patterns via `gate_patterns`.
 
 ## Plugin-local config
 

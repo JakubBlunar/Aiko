@@ -143,13 +143,17 @@ future, opt-in addition (see the backlog).
 
 ## 3. `calculate`
 
-Synchronous, in-turn tool (`tools.calculate`, default on). Evaluates an
-arithmetic expression through `app.core.calc.safe_eval` — an AST
+Synchronous, in-turn fast tool. **Moved out of core** into the bundled
+`calculator` plugin (`plugins/calculator/`) — it registers via the
+ToolPlugin SDK (`api.register_fast_tool`) instead of a `tools.*` flag;
+toggle it by enabling/disabling the plugin. Evaluates an arithmetic
+expression through the plugin-local `aiko_calc.safe_eval` — an AST
 whitelist (numeric literals, `+ - * / // % **`, unary signs,
 parentheses, an allow-list of `math` functions + `abs`/`round`/`min`/
 `max`, and `pi`/`e`/`tau`). No `eval`, no names, no attribute access,
 no collections; exponentiation is bounded. The cure for "what's 18.5%
-of 2,340?" being a hallucinated number.
+of 2,340?" being a hallucinated number. See [`docs/plugins.md`](plugins.md)
+(fast tools) for the plugin capability.
 
 ---
 
