@@ -94,6 +94,8 @@ class ConceptSynthesisWorker:
         kv_set: Callable[[str, str], None],
         clock: Callable[[], datetime] | None = None,
         notify_concept_added: Callable[[dict[str, Any]], None] | None = None,
+        user_display_name_provider: Callable[[], str] | None = None,
+        assistant_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._concept_store = concept_store
         self._topic_graph = topic_graph
@@ -108,7 +110,23 @@ class ConceptSynthesisWorker:
         self._kv_set = kv_set
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._notify_concept_added = notify_concept_added
+        self._user_name_provider = user_display_name_provider
+        self._assistant_name_provider = assistant_display_name_provider
         self._llm_calls = 0
+
+    @staticmethod
+    def _resolve_name(
+        provider: Callable[[], str] | None, fallback: str
+    ) -> str:
+        """Best-effort display-name lookup; keeps synthesis running with a
+        generic fallback if the provider errors or returns blank."""
+        if provider is None:
+            return fallback
+        try:
+            name = (provider() or "").strip()
+        except Exception:
+            return fallback
+        return name or fallback
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -188,7 +206,13 @@ class ConceptSynthesisWorker:
 
         self._llm_calls = 0
         started = time.monotonic()
-        ctx = ProposerContext(call_llm=self._call_llm)
+        ctx = ProposerContext(
+            call_llm=self._call_llm,
+            user_name=self._resolve_name(self._user_name_provider, "the user"),
+            assistant_name=self._resolve_name(
+                self._assistant_name_provider, "Aiko"
+            ),
+        )
 
         stats: dict[str, Any] = {
             "added": 0,

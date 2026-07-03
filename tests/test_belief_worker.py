@@ -82,6 +82,7 @@ class _StubAgent:
     belief_interest_bias_enabled: bool = True
     belief_worker_per_hour_cap: int = 10
     belief_worker_per_day_cap: int = 50
+    belief_worker_scrub_transcript: bool = False
 
 
 @dataclass
@@ -221,18 +222,49 @@ class RateLimitTests(unittest.TestCase):
 
 
 class PrivacyScrubTests(unittest.TestCase):
-    def test_url_only_message_blocks_extraction(self) -> None:
-        # Single user message that's basically just a URL/email -> the
-        # privacy scrubber should bail and the worker should never
-        # call the LLM.
+    def test_url_only_message_blocks_extraction_when_scrub_enabled(self) -> None:
+        # With scrubbing opted in, a message that's basically just a
+        # URL/email -> the privacy scrubber bails and the worker never
+        # calls the LLM.
         worker, _, ollama, _ = _build_world(
             user_messages=["https://example.com/dashboard?token=abcdef123"],
             responses=["[]"],
+            agent=_StubAgent(belief_worker_scrub_transcript=True),
         )
         result = worker.run()
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "privacy_blocked")
         self.assertEqual(len(ollama.chat_calls), 0)
+
+    def test_scrub_off_by_default_keeps_pronouns_and_names(self) -> None:
+        # Default (no scrub): the local extractor must SEE the deictic
+        # signal -- the user's name prefix and first/second person.
+        worker, _, ollama, _ = _build_world(
+            user_messages=["I really think you nailed my Tokyo plan."],
+            responses=["[]"],
+        )
+        result = worker.run()
+        self.assertNotEqual(result.get("reason"), "privacy_blocked")
+        self.assertEqual(len(ollama.chat_calls), 1)
+        prompt = ollama.chat_calls[0]["messages"][-1]["content"]
+        # User turns are attributed by name and pronouns survive.
+        self.assertIn("Jacob:", prompt)
+        self.assertIn("you", prompt)
+        self.assertIn("my", prompt)
+
+    def test_scrub_on_strips_pronouns_and_names(self) -> None:
+        # Opt-in scrub removes the name prefix + first/second person, as
+        # the outbound web-search gate is designed to.
+        worker, _, ollama, _ = _build_world(
+            user_messages=["I really think you nailed my Tokyo plan today."],
+            responses=["[]"],
+            agent=_StubAgent(belief_worker_scrub_transcript=True),
+        )
+        worker.run()
+        self.assertEqual(len(ollama.chat_calls), 1)
+        prompt = ollama.chat_calls[0]["messages"][-1]["content"]
+        self.assertNotIn("Jacob:", prompt)
+        self.assertNotIn("today", prompt)
 
 
 class LookbackTests(unittest.TestCase):

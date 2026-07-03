@@ -160,6 +160,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             belief_worker_per_day_cap=max(
                 0, int(agent_raw.get("belief_worker_per_day_cap", 40)),
             ),
+            belief_worker_scrub_transcript=bool(
+                agent_raw.get("belief_worker_scrub_transcript", False),
+            ),
             promise_worker_enabled=bool(
                 agent_raw.get("promise_worker_enabled", True),
             ),
@@ -235,6 +238,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_digest_min_cluster_size=max(
                 2,
                 int(agent_raw.get("topic_digest_min_cluster_size", 6)),
+            ),
+            topic_digest_reap_orphans=bool(
+                agent_raw.get("topic_digest_reap_orphans", True),
             ),
             topic_digest_surface_in_rag=bool(
                 agent_raw.get("topic_digest_surface_in_rag", True),

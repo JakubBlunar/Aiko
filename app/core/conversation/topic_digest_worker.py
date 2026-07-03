@@ -57,6 +57,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -72,18 +73,37 @@ log = logging.getLogger("app.topic_digest_worker")
 _KV_PREFIX = "aiko.topic_digest."
 _KV_MAP_KEY = "aiko.topic_digest_map"
 
-_SYSTEM_PROMPT = (
-    "You write a short digest of what an AI companion knows about ONE "
-    "topic, given a set of memory snippets that were grouped together "
-    "because they are about the same thing. Write 2-4 plain sentences "
-    "that compress what these memories collectively say -- the gist, the "
-    "specifics that matter, and any throughline. Refer to the user by "
-    "name if a name appears. Be concrete; do NOT add facts that are not "
-    "in the snippets, do NOT use the words 'memories', 'cluster', "
-    "'topic', or 'snippets', and do NOT add a preamble. Reply with ONE "
-    'JSON object on a single line and nothing else: {"digest": "<2-4 '
-    'sentences>"}.'
-)
+def _build_system_prompt(
+    user_display_name: str = "the user",
+    assistant_name: str = "Aiko",
+) -> str:
+    """System prompt for the digest worker, name-templated at run time.
+
+    Resolved per run so a rename via onboarding propagates without
+    re-creating the worker. Naming both parties keeps digests personal
+    ("Jacob …" / "Aiko …") instead of drifting into "the user" / "the AI
+    companion" when a snippet happens to be phrased impersonally.
+    """
+    name = user_display_name or "the user"
+    aiko = assistant_name or "Aiko"
+    return (
+        f"You write a short digest of what the AI companion {aiko} knows "
+        "about ONE topic, given a set of memory snippets that were grouped "
+        "together because they are about the same thing. Write 2-4 plain "
+        "sentences that compress what these memories collectively say -- "
+        "the gist, the specifics that matter, and any throughline. Refer "
+        f"to the user as {name} and to the companion as {aiko} by name -- "
+        "never 'the user' or 'the AI companion'. Be concrete; do NOT add "
+        "facts that are not in the snippets, do NOT use the words "
+        "'memories', 'cluster', 'topic', or 'snippets', and do NOT add a "
+        'preamble. Reply with ONE JSON object on a single line and nothing '
+        'else: {"digest": "<2-4 sentences>"}.'
+    )
+
+
+# Back-compat for importers/tests that referenced the module-level prompt.
+# New code should call ``_build_system_prompt(name)`` per run.
+_SYSTEM_PROMPT = _build_system_prompt()
 
 _USER_TEMPLATE = "MEMORY SNIPPETS:\n{snippets}\n\nReturn the digest JSON now."
 
@@ -131,6 +151,8 @@ class TopicDigestWorker:
         notify_memory_added: Callable[[dict], None] | None = None,
         notify_memory_updated: Callable[[dict], None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        user_display_name_provider: Callable[[], str] | None = None,
+        assistant_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._topic_graph = topic_graph
         self._memory_store = memory_store
@@ -144,6 +166,10 @@ class TopicDigestWorker:
         self._notify_memory_added = notify_memory_added
         self._notify_memory_updated = notify_memory_updated
         self._clock = clock or _utcnow
+        # Identity providers evaluated per run so a rename propagates
+        # without re-creating the worker (mirrors MemoryExtractor).
+        self._user_display_name_provider = user_display_name_provider
+        self._assistant_display_name_provider = assistant_display_name_provider
         # {cluster_id: digest_memory_id}; rebuilt every run, read by the
         # RAG retriever through an injected provider. Warm-loaded from kv.
         self.cluster_digest_map: dict[int, int] = self._load_map()
@@ -232,6 +258,19 @@ class TopicDigestWorker:
 
         self._publish_map(new_map)
 
+        # Reap orphaned digests: rows whose cluster was reassigned/dropped
+        # on a past refit and no longer map to anything live. Protect the
+        # freshly-mapped digests AND those still queued for regeneration
+        # this tick (their existing row is about to be refreshed, not
+        # abandoned). Only the derived digest is deleted -- member memories
+        # are untouched and re-cluster into a new digest later.
+        pending_ids = {
+            int(mid) for _cluster, mid in todo[max_per_run:] if mid is not None
+        }
+        reaped = self._reap_orphans(
+            protected=set(new_map.values()) | pending_ids
+        )
+
         if written or reused:
             log.info(
                 "topic_digest run done: dense=%d written=%d reused=%d pending=%d",
@@ -247,7 +286,45 @@ class TopicDigestWorker:
             "reused": reused,
             "pending": max(0, len(todo) - written),
             "mapped": len(new_map),
+            "reaped": reaped,
         }
+
+    def _reap_orphans(self, *, protected: set[int]) -> int:
+        """Delete ``topic_digest`` rows not tied to a live cluster.
+
+        No-op unless ``topic_digest_reap_orphans`` is enabled. Pinned
+        digests are always kept. Deletion routes through
+        :meth:`MemoryStore.delete` so SQLite, the in-process mirror, and
+        the LanceDB vector stay in sync.
+        """
+        if not bool(
+            getattr(self._agent_settings, "topic_digest_reap_orphans", True)
+        ):
+            return 0
+        try:
+            digests = self._memory_store.iter_by_kind("topic_digest")
+        except Exception:
+            log.debug("topic_digest: iter_by_kind failed", exc_info=True)
+            return 0
+        reaped = 0
+        for mem in digests:
+            try:
+                mid = int(mem.id)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if mid in protected or bool(getattr(mem, "pinned", False)):
+                continue
+            try:
+                if self._memory_store.delete(mid):
+                    reaped += 1
+            except Exception:
+                log.debug(
+                    "topic_digest: reap delete failed (id=%s)", mid,
+                    exc_info=True,
+                )
+        if reaped:
+            log.info("topic_digest reaped %d orphaned digest(s)", reaped)
+        return reaped
 
     # ── cluster→digest map ─────────────────────────────────────────────
 
@@ -421,12 +498,23 @@ class TopicDigestWorker:
                 lines.append(f"- {snippet}")
         return "\n".join(lines)
 
+    def _resolve_user_name(self) -> str:
+        return resolve_user_name(self._user_display_name_provider)
+
+    def _resolve_assistant_name(self) -> str:
+        return resolve_user_name(
+            self._assistant_display_name_provider, fallback="Aiko"
+        )
+
     def _call_llm(self, snippets: str) -> str:
         max_tokens = max(
             32, int(getattr(self._agent_settings, "topic_digest_max_tokens", 256))
         )
+        system_prompt = _build_system_prompt(
+            self._resolve_user_name(), self._resolve_assistant_name()
+        )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": _USER_TEMPLATE.format(snippets=snippets)},
         ]
         t0 = time.monotonic()

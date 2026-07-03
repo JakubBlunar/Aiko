@@ -10,10 +10,13 @@ Pipeline (one tick = one ``run`` call):
 
 1. Snapshot the last ``belief_worker_lookback_turns`` (default 12)
    user messages from the active session via
-   :meth:`ChatDatabase.get_messages`.
-2. Privacy-scrub the lookback transcript via
-   :func:`fact_check_privacy.scrub_claim_for_search` so any PII /
-   private tokens never reach the LLM prompt. Mirrors F1 / G3.
+   :meth:`ChatDatabase.get_messages`, each prefixed with the user's
+   name so the extractor knows whose "I"/"you" it's reading.
+2. Optionally privacy-scrub the lookback transcript via
+   :func:`fact_check_privacy.scrub_claim_for_search` (only when
+   ``belief_worker_scrub_transcript`` is on -- off by default because
+   the extractor runs on the trusted LOCAL model and the scrubber would
+   strip the pronouns/names the theory-of-mind pass depends on).
 3. Spend one LLM call through the dedicated
    :class:`FactCheckRateLimiter`
    (``state_key='belief_worker.rate_state'``) asking for a JSON
@@ -317,27 +320,34 @@ class BeliefInferenceWorker:
             )
             return {"skipped": True, "reason": "rate_limited"}
 
-        # Privacy scrub the joined transcript. If the scrubber blocks
-        # the whole thing (only PII), we bail without spending the LLM
-        # call -- but the rate-limit token has been consumed, which is
-        # fine and mirrors the F1 fact-checker contract.
         user_names = self._user_names_provider() if self._user_names_provider else None
         assistant_name = (
             self._assistant_name_provider() if self._assistant_name_provider else None
         )
-        scrubbed = scrub_claim_for_search(
-            transcript,
-            user_names=user_names,
-            assistant_name=assistant_name,
-        )
-        if not scrubbed:
-            log.info(
-                "belief-worker skip: privacy-blocked transcript session=%s "
-                "raw_chars=%d",
-                session_id,
-                len(transcript),
+        # The belief extractor runs on the LOCAL maintenance model, which
+        # the privacy threat model treats as trusted. Scrubbing the
+        # transcript with the outbound web-search PII gate would strip the
+        # first/second-person pronouns + names the theory-of-mind pass
+        # relies on, so it's off by default. Opt in only when the worker
+        # model is routed to an untrusted endpoint.
+        if bool(
+            getattr(self._agent_settings, "belief_worker_scrub_transcript", False)
+        ):
+            scrubbed = scrub_claim_for_search(
+                transcript,
+                user_names=user_names,
+                assistant_name=assistant_name,
             )
-            return {"skipped": True, "reason": "privacy_blocked"}
+            if not scrubbed:
+                log.info(
+                    "belief-worker skip: privacy-blocked transcript session=%s "
+                    "raw_chars=%d",
+                    session_id,
+                    len(transcript),
+                )
+                return {"skipped": True, "reason": "privacy_blocked"}
+        else:
+            scrubbed = transcript
 
         log.info(
             "belief-worker start: session=%s lookback_turns=%d "
@@ -587,23 +597,38 @@ class BeliefInferenceWorker:
 
     # ── transcript snapshot ──────────────────────────────────────────
 
+    def _resolve_user_name(self) -> str:
+        """First configured user name, or ``"the user"`` fallback."""
+        names = (
+            self._user_names_provider() if self._user_names_provider else None
+        )
+        if names:
+            first = (str(names[0]) or "").strip()
+            if first:
+                return first
+        return "the user"
+
     def _snapshot_transcript(
         self,
         *,
         session_id: str,
         lookback_turns: int,
     ) -> str:
-        """Join the last N user messages into one prompt block.
+        """Join the last N user messages into one speaker-attributed block.
 
         Assistant turns are intentionally omitted: the worker mines
-        user beliefs, not Aiko's own speech. We cap each user message
-        at 600 chars so a long rant can't blow the budget.
+        user beliefs, not Aiko's own speech. Each line is prefixed with
+        the user's name so the extractor knows first-person "I"/"me" is
+        the user and "you" addresses Aiko -- the deictic anchor that
+        makes "what does the user believe" resolvable. We cap each user
+        message at 600 chars so a long rant can't blow the budget.
         """
         rows = self._chat_db.get_messages(session_id, limit=lookback_turns * 2)
         user_msgs = [r for r in rows if r.role == "user"]
         if not user_msgs:
             return ""
         user_msgs = user_msgs[-lookback_turns:]
+        user_name = self._resolve_user_name()
         chunks: list[str] = []
         for row in user_msgs:
             text = (row.content or "").strip()
@@ -611,7 +636,7 @@ class BeliefInferenceWorker:
                 continue
             if len(text) > 600:
                 text = text[:597] + "\u2026"
-            chunks.append("- " + text)
+            chunks.append(f"{user_name}: {text}")
         return "\n".join(chunks)
 
     # ── LLM extractor ────────────────────────────────────────────────
