@@ -983,6 +983,29 @@ export interface ConceptsSnapshot {
   concepts: ConceptRow[];
 }
 
+// One entry in Aiko's concept discovery timeline -- an "aha!" moment.
+export interface ConceptEvent {
+  id: number;
+  concept_id: number | null; // soft ref; may be null if concept deleted
+  event_type: string; // "discovered" (v1) | "reinforced" | "promoted" | ...
+  kind: string;
+  subject: string; // "user" | "aiko" | "relationship"
+  label: string; // snapshot of the concept label at event time
+  confidence: number;
+  novelty: number; // 1 - cosine to nearest prior concept (1.0 = first)
+  evidence_count: number;
+  distinct_source_count: number;
+  source_kinds: string; // comma-joined, e.g. "cluster" / "memory"
+  reason: string; // generated, factual one-liner
+  created_at: string;
+}
+
+export interface ConceptTimeline {
+  enabled: boolean;
+  total: number;
+  events: ConceptEvent[];
+}
+
 // ── K10 persona regression (golden-turn drift eval) ─────────────────
 
 export interface PersonaRegressionResult {

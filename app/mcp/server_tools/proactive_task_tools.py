@@ -2124,11 +2124,13 @@ def register(mcp, session: "SessionController") -> None:
     def force_concept_synthesis() -> str:
         """L2 — force one concept-synthesis run and return its stats.
 
-        Bypasses the worker's ~30-min interval so you can trigger a pass
-        on demand while debugging. Runs the same incremental logic as the
-        idle scheduler would: it processes only *dirty* clusters /
-        aiko-memories (bounded per run), so a clean corpus returns
-        ``{"added": 0, ...}`` with ``llm_calls: 0``. Requires
+        Forces a full pass (``force=True``): bypasses both the worker's
+        ~30-min interval AND the incremental dirty-tracking, so it
+        proposes even when nothing drifted (e.g. right after concepts were
+        manually deleted, when the source-memory signatures are
+        unchanged). Still bounded per run (``_max_clusters_per_run`` /
+        ``_max_aiko_memories``), and existing concepts are passed to the
+        proposer so it reinforces rather than duplicates. Requires
         ``agent.concepts_enabled`` + ``agent.concept_synthesis_enabled``.
         Pair with ``get_concepts_state`` to see what it proposed.
         """
@@ -2140,7 +2142,7 @@ def register(mcp, session: "SessionController") -> None:
                      "(concepts_enabled / concept_synthesis_enabled off?)"},
                     indent=2,
                 )
-            return json.dumps(worker.run(), indent=2)
+            return json.dumps(worker.run(force=True), indent=2)
         except Exception as exc:
             return f"force_concept_synthesis raised: {exc}"
 

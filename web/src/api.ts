@@ -43,6 +43,7 @@ import type {
   TogetherSummary,
   TopicGraphSnapshot,
   ConceptsSnapshot,
+  ConceptTimeline,
   UploadDocumentResponse,
   WorldItem,
   WorldItemPayload,
@@ -461,6 +462,20 @@ export const api = {
     jsonFetch<{ deleted: number }>(`/api/concepts/${conceptId}`, {
       method: "DELETE",
     }),
+  getConceptTimeline: (params?: {
+    limit?: number;
+    subject?: string;
+    beforeId?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    if (params?.subject) q.set("subject", params.subject);
+    if (params?.beforeId != null) q.set("before_id", String(params.beforeId));
+    const qs = q.toString();
+    return jsonFetch<ConceptTimeline>(
+      `/api/concepts/timeline${qs ? `?${qs}` : ""}`,
+    );
+  },
   // ── Persona regression (K10) ─────────────────────────────────────
   getPersonaDrift: () =>
     jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift"),

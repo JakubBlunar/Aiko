@@ -84,6 +84,63 @@ class ConceptsRunTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
 
 
+_TIMELINE = {
+    "enabled": True,
+    "total": 2,
+    "events": [
+        {
+            "id": 2,
+            "concept_id": 7,
+            "event_type": "discovered",
+            "kind": "identity",
+            "subject": "aiko",
+            "label": "I value being direct",
+            "confidence": 0.8,
+            "novelty": 1.0,
+            "evidence_count": 2,
+            "distinct_source_count": 2,
+            "source_kinds": "memory",
+            "reason": "First self-concept linking 2 reflection/diary memories.",
+            "created_at": "2026-07-03T21:18:00+00:00",
+        },
+    ],
+}
+
+
+class ConceptsTimelineTests(unittest.TestCase):
+    def test_returns_timeline(self) -> None:
+        client, session = _client()
+        session.concept_timeline.return_value = _TIMELINE
+        resp = client.get("/api/concepts/timeline")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["total"], 2)
+        self.assertEqual(body["events"][0]["event_type"], "discovered")
+
+    def test_forwards_query_params(self) -> None:
+        client, session = _client()
+        session.concept_timeline.return_value = _TIMELINE
+        resp = client.get(
+            "/api/concepts/timeline?limit=50&subject=aiko&before_id=9"
+        )
+        self.assertEqual(resp.status_code, 200)
+        session.concept_timeline.assert_called_once_with(
+            limit=50, subject="aiko", event_type=None, before_id=9
+        )
+
+    def test_disabled_shape(self) -> None:
+        client, session = _client()
+        session.concept_timeline.return_value = {
+            "enabled": False,
+            "total": 0,
+            "events": [],
+        }
+        resp = client.get("/api/concepts/timeline")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["enabled"])
+
+
 class ConceptsDeleteTests(unittest.TestCase):
     def test_delete_ok(self) -> None:
         client, session = _client()

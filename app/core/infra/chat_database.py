@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 21
+_SCHEMA_VERSION = 22
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -411,6 +411,37 @@ CREATE TABLE IF NOT EXISTS concept_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_edges_src ON concept_edges(src_type, src_id);
 CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_id);
+
+-- Schema v22: concept discovery timeline. An APPEND-ONLY log of the
+-- moments Aiko forms (or, later, reinforces / promotes / retires) a
+-- higher-order concept -- her "aha!" moments, scrollable years later to
+-- watch her understanding of herself and the user evolve. Deliberately
+-- DECOUPLED from the concept lifecycle: ``concept_id`` is a soft
+-- reference, never cascade-deleted, and ``label`` snapshots the concept
+-- text at event time, so deleting or relabelling a concept still leaves
+-- its history standing. ``novelty`` is ``1 - cosine`` to the nearest
+-- existing concept of the same subject/kind at synthesis time (1.0 for a
+-- first-of-its-kind); ``source_kinds`` records what the concept rests on
+-- (``cluster`` / ``memory``); ``reason`` is a generated, factual
+-- one-liner. ``event_type`` is an open enum (``discovered`` for v1) so
+-- reinforcement / promotion events are a value, not a migration.
+CREATE TABLE IF NOT EXISTS concept_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    concept_id INTEGER,
+    event_type TEXT NOT NULL DEFAULT 'discovered',
+    kind TEXT NOT NULL DEFAULT 'identity',
+    subject TEXT NOT NULL DEFAULT 'user',
+    label TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    novelty REAL NOT NULL DEFAULT 0.0,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    distinct_source_count INTEGER NOT NULL DEFAULT 0,
+    source_kinds TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_concept_events_created ON concept_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_concept_events_concept ON concept_events(concept_id);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced
@@ -1065,6 +1096,37 @@ class ChatDatabase:
         # idempotent ``executescript`` at the top of ``_init_schema``
         # already created them on upgrade -- there is nothing to ALTER,
         # only the version bump below records the migration.
+        #
+        # v21 -> v22: concept discovery timeline (``concept_events``). The
+        # table itself is created by the idempotent script above; here we
+        # backfill one ``discovered`` row per already-existing concept so
+        # the timeline is populated on first upgrade instead of starting
+        # empty. Guarded on an empty ``concept_events`` so re-running the
+        # migration (or booting an already-backfilled db) is a no-op and
+        # never double-counts. ``novelty`` is unknown for historical rows
+        # (recorded as 0.0), and ``created_at`` uses the concept's own
+        # first-evidence / creation time so the backfilled events land on
+        # the right day.
+        try:
+            already = conn.execute(
+                "SELECT 1 FROM concept_events LIMIT 1"
+            ).fetchone()
+            if already is None:
+                conn.execute(
+                    "INSERT INTO concept_events "
+                    "(concept_id, event_type, kind, subject, label, "
+                    " confidence, novelty, evidence_count, "
+                    " distinct_source_count, source_kinds, reason, "
+                    " created_at) "
+                    "SELECT id, 'discovered', kind, subject, label, "
+                    " confidence, 0.0, evidence_count, "
+                    " distinct_source_count, '', "
+                    " 'backfilled from existing concept', "
+                    " COALESCE(first_evidence_at, created_at) "
+                    "FROM concepts"
+                )
+        except sqlite3.OperationalError:
+            pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

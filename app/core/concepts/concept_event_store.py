@@ -1,0 +1,186 @@
+"""Append-only discovery timeline for the higher-order concept layer.
+
+A **concept event** records a moment in a concept's life -- for v1, the
+moment Aiko first *discovers* (synthesises) it. The point is a
+scrollable, years-long timeline of her "aha!" moments: watching her
+understanding of herself and the user form and evolve.
+
+Two deliberate design choices, both mirrored in the ``concept_events``
+DDL (see :mod:`app.core.infra.chat_database`):
+
+- **Append-only.** Events are only ever inserted, never mutated. The
+  store exposes ``add`` + read helpers, no ``update`` / ``delete``.
+- **Decoupled from the concept lifecycle.** ``concept_id`` is a soft
+  reference that is *not* cascade-deleted, and ``label`` snapshots the
+  concept text at event time, so deleting or relabelling a concept
+  still leaves its discovery standing in the timeline.
+
+Unlike :class:`app.core.concepts.concept_store.ConceptStore` there is no
+in-process cosine mirror: events are never searched by similarity, only
+read back in reverse-chronological order for the debug timeline, so this
+talks to SQLite directly and orders by ``created_at``.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.core.infra.chat_database import ChatDatabase
+
+
+log = logging.getLogger("app.concept_event_store")
+
+_EVENT_COLS = (
+    "id, concept_id, event_type, kind, subject, label, confidence, "
+    "novelty, evidence_count, distinct_source_count, source_kinds, "
+    "reason, created_at"
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(slots=True)
+class ConceptEvent:
+    """One row in the concept discovery timeline.
+
+    ``event_type`` is an open enum (``discovered`` for v1; ``reinforced``
+    / ``promoted`` / ``contradicted`` reserved for later). ``novelty`` is
+    ``1 - cosine`` to the nearest existing concept of the same
+    subject/kind at synthesis time (``1.0`` for a first-of-its-kind, and
+    ``0.0`` for historical rows backfilled from pre-timeline concepts).
+    """
+
+    event_type: str = "discovered"
+    kind: str = "identity"
+    subject: str = "user"
+    label: str = ""
+    confidence: float = 0.0
+    novelty: float = 0.0
+    evidence_count: int = 0
+    distinct_source_count: int = 0
+    source_kinds: str = ""
+    reason: str = ""
+    concept_id: int | None = None
+    created_at: str = ""
+    event_id: int = 0
+
+
+class ConceptEventStore:
+    """Append-only CRUD for the ``concept_events`` timeline table."""
+
+    def __init__(self, db: "ChatDatabase") -> None:
+        self._db = db
+
+    # ── writes (append-only) ──────────────────────────────────────────
+
+    def add(self, event: ConceptEvent) -> int:
+        """Insert one timeline event, populate its ``event_id``, return it."""
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        event.created_at = event.created_at or _now_iso()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO concept_events "
+                "(concept_id, event_type, kind, subject, label, confidence, "
+                " novelty, evidence_count, distinct_source_count, "
+                " source_kinds, reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (int(event.concept_id)
+                     if event.concept_id is not None else None),
+                    str(event.event_type),
+                    str(event.kind),
+                    str(event.subject),
+                    str(event.label or ""),
+                    float(event.confidence),
+                    float(event.novelty),
+                    int(event.evidence_count),
+                    int(event.distinct_source_count),
+                    str(event.source_kinds or ""),
+                    str(event.reason or ""),
+                    event.created_at,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            log.warning("concept event insert failed", exc_info=True)
+            return 0
+        event.event_id = int(cursor.lastrowid or 0)
+        return event.event_id
+
+    # ── reads ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_event(r: tuple) -> ConceptEvent:
+        return ConceptEvent(
+            event_id=int(r[0]),
+            concept_id=(int(r[1]) if r[1] is not None else None),
+            event_type=str(r[2] or "discovered"),
+            kind=str(r[3] or "identity"),
+            subject=str(r[4] or "user"),
+            label=str(r[5] or ""),
+            confidence=float(r[6] or 0.0),
+            novelty=float(r[7] or 0.0),
+            evidence_count=int(r[8] or 0),
+            distinct_source_count=int(r[9] or 0),
+            source_kinds=str(r[10] or ""),
+            reason=str(r[11] or ""),
+            created_at=str(r[12] or ""),
+        )
+
+    def list(
+        self,
+        *,
+        limit: int = 200,
+        subject: str | None = None,
+        event_type: str | None = None,
+        before_id: int | None = None,
+    ) -> list[ConceptEvent]:
+        """Return timeline events newest-first.
+
+        ``before_id`` pages backwards through history (pass the smallest
+        ``event_id`` from the previous page to fetch the next older
+        batch), so the UI can "scroll through the years" without loading
+        everything at once. ``subject`` / ``event_type`` narrow the feed.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        where: list[str] = []
+        params: list[object] = []
+        if subject:
+            where.append("subject = ?")
+            params.append(str(subject))
+        if event_type:
+            where.append("event_type = ?")
+            params.append(str(event_type))
+        if before_id is not None:
+            where.append("id < ?")
+            params.append(int(before_id))
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        try:
+            rows = conn.execute(
+                f"SELECT {_EVENT_COLS} FROM concept_events "
+                f"{clause} ORDER BY created_at DESC, id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        except Exception:
+            log.warning("concept event list failed", exc_info=True)
+            return []
+        return [self._row_to_event(r) for r in rows]
+
+    def count(self) -> int:
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM concept_events"
+            ).fetchone()
+        except Exception:
+            return 0
+        return int(row[0]) if row else 0
+
+
+__all__ = ["ConceptEvent", "ConceptEventStore"]

@@ -367,7 +367,11 @@ class GoalWorker:
         llm_ms = (time.monotonic() - t0) * 1000.0
         if self._cancel_event.is_set():
             return {"cancelled": True, "branch": "reflection"}
-        cleaned = _trim(note, max_chars=_MAX_NOTE_CHARS)
+        # Collapse whitespace but DON'T truncate here: GoalStore.add_progress
+        # keeps the whole note (word-boundary trimmed with an ellipsis past
+        # its own cap), so pre-trimming would only cut the reflection short
+        # mid-word before it ever reaches storage.
+        cleaned = " ".join((note or "").split())
         if not cleaned:
             log.info(
                 "goal_worker reflection: empty note parsed (goal_id=%s llm_ms=%.0f)",
