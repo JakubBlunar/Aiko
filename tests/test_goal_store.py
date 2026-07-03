@@ -187,6 +187,48 @@ class TestGoalStoreWrites(unittest.TestCase):
             goals.add_progress(goal_id=9999, note="this goal does not exist")
         )
 
+    def test_long_note_kept_full_in_memory_short_in_mirror(self) -> None:
+        """A long reflection must survive whole in the goal_progress row
+        (no mid-word 200-char DB trim), while the goal's prompt mirror is
+        clamped for economy."""
+        _, _, goals = _store_factory()
+        goal = goals.add_goal(summary="practice listening to jazz harmonies")
+        assert goal is not None
+        note = (
+            "I'm noticing that when I stop measuring a memory's weight, its "
+            "texture just settles into the moment without effort, and my "
+            "curiosity is turning toward how your quiet shifts tell me "
+            "whether to let a thread rest or gently pull it back into the "
+            "light where we can look at it together for a little while."
+        )
+        self.assertGreater(len(note), 200)
+        self.assertLessEqual(len(note), 500)
+        progress = goals.add_progress(
+            goal_id=int(goal.id), note=note, source="worker"
+        )
+        assert progress is not None
+        # Full note preserved in the memory content -- not cut at 200.
+        self.assertEqual(progress.content, note)
+        self.assertGreater(len(progress.content), 200)
+        self.assertFalse(progress.content.endswith("\u2026"))
+        # Prompt mirror is clamped to the summary budget.
+        gmeta = goals.list_active()[0].metadata or {}
+        mirror = gmeta.get("last_progress_note") or ""
+        self.assertLessEqual(len(mirror), 201)  # 200 body + ellipsis
+        self.assertTrue(mirror.endswith("\u2026"))
+
+    def test_overlong_note_trims_on_word_boundary_with_ellipsis(self) -> None:
+        _, _, goals = _store_factory()
+        goal = goals.add_goal(summary="practice listening to jazz harmonies")
+        assert goal is not None
+        note = "word " * 200  # 1000 chars, far past the 500 note cap
+        progress = goals.add_progress(goal_id=int(goal.id), note=note.strip())
+        assert progress is not None
+        self.assertLessEqual(len(progress.content), 500)
+        self.assertTrue(progress.content.endswith("\u2026"))
+        # Word-boundary trim: no partial "wor" fragment before the ellipsis.
+        self.assertFalse(progress.content[:-1].rstrip().endswith("wor"))
+
     def test_archive_and_unarchive(self) -> None:
         _, mem_store, goals = _store_factory()
         goal = goals.add_goal(summary="explore woodworking next quarter")

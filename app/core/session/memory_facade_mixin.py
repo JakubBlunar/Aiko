@@ -886,6 +886,59 @@ class MemoryFacadeMixin:
         store.delete(int(concept_id))
         return 1
 
+    def concept_timeline(
+        self,
+        *,
+        limit: int = 200,
+        subject: str | None = None,
+        event_type: str | None = None,
+        before_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Serialise the concept discovery timeline for the browser.
+
+        Backs ``GET /api/concepts/timeline`` -- an append-only feed of
+        Aiko's "aha!" moments (see
+        :class:`app.core.concepts.concept_event_store.ConceptEventStore`),
+        newest first, paged backwards via ``before_id``. Returns an empty
+        ``enabled=False`` shape when the event store is absent so callers
+        never special-case the disabled path; best-effort otherwise.
+        """
+        store = getattr(self, "_concept_event_store", None)
+        if store is None:
+            return {"enabled": False, "total": 0, "events": []}
+        try:
+            events = store.list(
+                limit=limit,
+                subject=subject,
+                event_type=event_type,
+                before_id=before_id,
+            )
+            return {
+                "enabled": True,
+                "total": store.count(),
+                "events": [
+                    {
+                        "id": e.event_id,
+                        "concept_id": e.concept_id,
+                        "event_type": e.event_type,
+                        "kind": e.kind,
+                        "subject": e.subject,
+                        "label": e.label,
+                        "confidence": float(e.confidence),
+                        "novelty": float(e.novelty),
+                        "evidence_count": int(e.evidence_count),
+                        "distinct_source_count": int(e.distinct_source_count),
+                        "source_kinds": e.source_kinds,
+                        "reason": e.reason,
+                        "created_at": e.created_at,
+                    }
+                    for e in events
+                ],
+            }
+        except Exception:
+            log.debug("concept timeline failed", exc_info=True)
+            return {"enabled": False, "total": 0, "events": []}
+
     # ── F10l: cluster management (user agency over the topic graph) ──────
 
     def _resolve_cluster(self, cluster_id: int) -> Any | None:

@@ -352,10 +352,34 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if worker is None:
             raise HTTPException(503, "concept synthesis worker unavailable")
         try:
-            result = worker.run()
+            # Manual trigger: force a full pass so a tester gets output even
+            # when nothing drifted (e.g. right after deleting concepts, the
+            # source-memory signatures are unchanged).
+            result = worker.run(force=True)
         except Exception as exc:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
         return JSONResponse({"result": result or {}})
+
+    @app.get("/api/concepts/timeline")
+    def get_concept_timeline(
+        limit: int = 200,
+        subject: str | None = None,
+        event_type: str | None = None,
+        before_id: int | None = None,
+    ) -> JSONResponse:
+        """Append-only discovery timeline of Aiko's concept "aha!" moments,
+        newest first. ``before_id`` pages backwards through history;
+        ``subject`` / ``event_type`` narrow the feed. Empty
+        ``enabled=False`` shape when the concept layer is disabled.
+        """
+        return JSONResponse(
+            session.concept_timeline(
+                limit=limit,
+                subject=subject,
+                event_type=event_type,
+                before_id=before_id,
+            )
+        )
 
     @app.delete("/api/concepts/{concept_id}")
     def delete_concept(concept_id: int) -> JSONResponse:

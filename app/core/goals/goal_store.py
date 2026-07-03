@@ -76,6 +76,13 @@ log = logging.getLogger("app.goal_store")
 
 _MIN_SUMMARY_CHARS = 4
 _MAX_SUMMARY_CHARS = 200
+# Progress notes are full reflections, not the short ``[[goal:...]]``
+# summary tag, so they get their own (generous) budget: the stored
+# memory content + its embedding keep the whole note (word-boundary
+# trimmed with an ellipsis past this), while only the goal's
+# ``last_progress_note`` prompt mirror is clamped back to
+# ``_MAX_SUMMARY_CHARS`` for prompt economy.
+_MAX_NOTE_CHARS = 500
 _DEFAULT_MAX_ACTIVE = 5
 _DEFAULT_MAX_PROGRESS_PER_GOAL = 12
 _DEFAULT_SIMILARITY_THRESHOLD = 0.5
@@ -104,6 +111,27 @@ def _clean_summary(summary: str) -> str | None:
     if len(text) > _MAX_SUMMARY_CHARS:
         text = text[:_MAX_SUMMARY_CHARS].rstrip()
     return text
+
+
+def _clean_note(note: str | None, *, max_chars: int = _MAX_NOTE_CHARS) -> str | None:
+    """Normalise a goal-progress note.
+
+    Like :func:`_clean_summary` this collapses whitespace and rejects
+    too-short bodies (returns ``None``), but it is meant for full
+    reflections rather than the short goal-tag summary: it keeps up to
+    ``max_chars`` and, when it must trim, backs up to the last word
+    boundary and appends an ellipsis instead of hard-cutting mid-word.
+    """
+    flat = " ".join((note or "").split())
+    if len(flat) < _MIN_SUMMARY_CHARS:
+        return None
+    if len(flat) <= max_chars:
+        return flat
+    cut = flat[: max_chars - 1]
+    boundary = cut.rfind(" ")
+    if boundary >= max_chars // 2:
+        cut = cut[:boundary]
+    return cut.rstrip(",;:. ") + "\u2026"
 
 
 def _is_archived(memory: "Memory") -> bool:
@@ -232,7 +260,10 @@ class GoalStore:
         goal = self._memory_store.get(int(goal_id))
         if goal is None or goal.kind != "goal":
             return None
-        cleaned = _clean_summary(note)
+        # Full reflection: kept whole (up to _MAX_NOTE_CHARS, word-boundary
+        # trimmed) for the stored memory + its embedding. The prompt mirror
+        # on the goal row is clamped separately below.
+        cleaned = _clean_note(note)
         if cleaned is None:
             return None
         if self._embedder is None:
@@ -273,10 +304,16 @@ class GoalStore:
             prior_count = int(existing_meta.get("reflection_count", 0) or 0)
         except (TypeError, ValueError):
             prior_count = 0
+        # Prompt-economy mirror: the K1 goal block wants a cheap one-liner,
+        # so clamp the note back to the summary budget here (word-boundary
+        # + ellipsis) even though the memory row keeps the full text.
+        mirror_note = (
+            _clean_note(cleaned, max_chars=_MAX_SUMMARY_CHARS) or cleaned
+        )
         merge_meta: dict[str, Any] = {
             "last_reflected_at": meta["noted_at"],
             "last_reflection_id": int(progress.id),
-            "last_progress_note": cleaned,
+            "last_progress_note": mirror_note,
             "reflection_count": prior_count + 1,
         }
         try:

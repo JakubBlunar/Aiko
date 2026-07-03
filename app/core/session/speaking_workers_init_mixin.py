@@ -1266,6 +1266,7 @@ class SpeakingWorkersInitMixin:
                 # write. Opt-in via ``agent.concepts_enabled`` (default
                 # off); the tables exist regardless. Non-fatal on failure.
                 self._concept_store = None
+                self._concept_event_store = None
                 if (
                     self._chat_db is not None
                     and bool(getattr(settings.agent, "concepts_enabled", False))
@@ -1281,6 +1282,21 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_store = None
+                    try:
+                        from app.core.concepts.concept_event_store import (
+                            ConceptEventStore,
+                        )
+
+                        self._concept_event_store = ConceptEventStore(
+                            self._chat_db
+                        )
+                    except Exception:
+                        log.warning(
+                            "ConceptEventStore init failed; concept "
+                            "discovery timeline disabled",
+                            exc_info=True,
+                        )
+                        self._concept_event_store = None
 
                 # K9: TopicGraph + CuriositySeedWorker. The graph is a
                 # zero-cost wrapper around the in-process memory mirror;
@@ -1651,6 +1667,7 @@ class SpeakingWorkersInitMixin:
                                 lambda: self._fact_check_assistant_name()
                                 or "Aiko"
                             ),
+                            concept_event_store=self._concept_event_store,
                         )
                         self._idle_scheduler.register(
                             self._concept_synthesis_worker,

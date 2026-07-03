@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.core.concepts.concept_event_store import ConceptEventStore
 from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
 from app.core.infra.chat_database import ChatDatabase
@@ -144,6 +145,7 @@ class WorkerHarness:
         self.path = Path(tmp) / "test.db"
         self.db = ChatDatabase(self.path)
         self.store = ConceptStore(self.db)
+        self.events = ConceptEventStore(self.db)
         self.topic = TopicGraphStub(
             clusters if clusters is not None else _user_clusters()
         )
@@ -164,6 +166,7 @@ class WorkerHarness:
             kv_get=self.db.kv_get,
             kv_set=self.db.kv_set,
             clock=lambda: datetime.now(timezone.utc),
+            concept_event_store=self.events,
             user_display_name_provider=(
                 (lambda: user_name) if user_name is not None else None
             ),
@@ -290,6 +293,61 @@ class ReinforceTests(unittest.TestCase):
         self.assertEqual(stats["by_subject"]["user"].get("added", 0), 0)
         self.assertNotEqual(again[0].last_reinforced_at, first_reinforced_at)
         self.assertEqual(len(h.store.evidence_of(again[0].concept_id)), 2)
+
+
+class DiscoveryEventTests(unittest.TestCase):
+    """The discovery timeline: a ``discovered`` event per NEW concept,
+    with novelty derived from the dedupe nearest-neighbour cosine, and
+    NO event for a reinforcement/dup."""
+
+    def test_new_concepts_emit_discovered_events(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        events = h.events.list(limit=100)
+        self.assertEqual(len(events), 2, "one event per new concept")
+        self.assertTrue(all(e.event_type == "discovered" for e in events))
+        subjects = {e.subject for e in events}
+        self.assertEqual(subjects, {"user", "aiko"})
+
+    def test_event_count_matches_store(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        self.assertEqual(h.events.count(), 2)
+
+    def test_first_concept_of_kind_is_maximally_novel(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        # No prior concepts of either (subject, kind) -> nearest empty ->
+        # novelty 1.0 for both.
+        for e in h.events.list(limit=100):
+            self.assertEqual(e.novelty, 1.0)
+
+    def test_source_kinds_and_reason_recorded(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        by_subject = {e.subject: e for e in h.events.list(limit=100)}
+        self.assertEqual(by_subject["user"].source_kinds, "cluster")
+        self.assertEqual(by_subject["aiko"].source_kinds, "memory")
+        self.assertIn("cluster", by_subject["user"].reason)
+        self.assertTrue(by_subject["aiko"].reason)
+
+    def test_reinforcement_emits_no_event(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        self.assertEqual(h.events.count(), 2)
+        # Second dirty run reinforces (dedupe hit) -> no new events.
+        for c in h.topic._clusters:
+            c.size += 5
+        h.worker.run()
+        self.assertEqual(h.events.count(), 2, "reinforce adds no event")
+
+    def test_no_event_store_is_safe_noop(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker._concept_event_store = None
+        stats = h.worker.run()
+        # Concepts still created; just no timeline rows.
+        self.assertEqual(stats["added"], 2)
+        self.assertEqual(h.events.count(), 0)
 
 
 class ExistingAwarenessTests(unittest.TestCase):
@@ -473,6 +531,21 @@ class IncrementalTests(unittest.TestCase):
         r2 = h.worker.run()
         self.assertFalse(r2["aiko_dirty"])
 
+    def test_force_bypasses_dirty_tracking(self) -> None:
+        # Reproduces the "can't regenerate after deleting concepts" bug:
+        # once the baseline is processed, an incremental run is a no-op,
+        # but a forced run must re-propose from a clean corpus.
+        h = WorkerHarness(_both_responder)
+        h.worker.run()  # baseline: everything processed, sigs saved
+        incremental = h.worker.run()
+        self.assertEqual(incremental["llm_calls"], 0)
+        self.assertFalse(incremental["aiko_dirty"])
+
+        forced = h.worker.run(force=True)
+        self.assertTrue(forced["aiko_dirty"])
+        self.assertGreater(forced["user_dirty_total"], 0)
+        self.assertGreater(forced["llm_calls"], 0)
+
 
 class DominanceTests(unittest.TestCase):
     def test_aiko_dominant_clusters_excluded_from_user_pass(self) -> None:
@@ -522,6 +595,56 @@ class GatingTests(unittest.TestCase):
         out = h.worker.run()
         self.assertTrue(out.get("skipped"))
         self.assertEqual(h.store.count(), 0)
+
+
+class SalvageParseTests(unittest.TestCase):
+    """Truncated proposer responses must not drop the whole batch."""
+
+    def test_salvage_recovers_complete_objects_from_truncated_array(
+        self,
+    ) -> None:
+        from app.core.concepts.concept_synthesis_worker import (
+            ConceptSynthesisWorker,
+        )
+
+        # Two full concepts then a third object clipped mid-string, exactly
+        # how the aiko pass looked in the logs when it hit num_predict.
+        truncated = (
+            '{ "concepts": [ '
+            '{ "label": "I value tactile objects", '
+            '"evidence_memory_ids": [994, 1001], '
+            '"rationale": "physical books", "confidence": 0.9 }, '
+            '{ "label": "I keep small rituals", '
+            '"evidence_memory_ids": [436, 476], '
+            '"rationale": "garden and weather", "confidence": 0.85 }, '
+            '{ "label": "I modulate my tone", '
+            '"evidence_memory_ids": [966, 982], '
+            '"rationale": "when Jacob needs ground'
+        )
+        out = ConceptSynthesisWorker._parse(truncated)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["label"], "I value tactile objects")
+        self.assertEqual(out[1]["evidence_memory_ids"], [436, 476])
+
+    def test_parse_prefers_well_formed_json(self) -> None:
+        from app.core.concepts.concept_synthesis_worker import (
+            ConceptSynthesisWorker,
+        )
+
+        good = (
+            '{ "concepts": [ { "label": "a", '
+            '"evidence_memory_ids": [1, 2], "confidence": 0.5 } ] }'
+        )
+        out = ConceptSynthesisWorker._parse(good)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["label"], "a")
+
+    def test_parse_returns_empty_without_array(self) -> None:
+        from app.core.concepts.concept_synthesis_worker import (
+            ConceptSynthesisWorker,
+        )
+
+        self.assertEqual(ConceptSynthesisWorker._parse("no json here"), [])
 
 
 if __name__ == "__main__":

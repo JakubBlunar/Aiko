@@ -721,6 +721,12 @@ class MemorySettings:
     concept_synthesis_max_clusters_per_run: int = 5
     concept_synthesis_max_aiko_memories: int = 40
     concept_synthesis_dirty_size_delta: int = 3
+    # Answer-token budget per proposer LLM call. The aiko-identity pass
+    # emits several first-person concepts with full rationales in one JSON
+    # object, so a low cap truncates the array mid-object and the whole
+    # batch fails to parse (the salvage pass recovers complete objects,
+    # but a roomy budget avoids losing the tail in the first place).
+    concept_synthesis_max_tokens: int = 1600
     # K11: pre-thought / counterfactual worker cadence. A tick is one
     # question-generation LLM call plus up to ``pre_thought_max_per_run``
     # in-persona draft calls, so an hour between successful runs is
@@ -2090,6 +2096,10 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_synthesis_dirty_size_delta=max(
                 1,
                 int(memory_raw.get("concept_synthesis_dirty_size_delta", 3)),
+            ),
+            concept_synthesis_max_tokens=max(
+                256,
+                int(memory_raw.get("concept_synthesis_max_tokens", 1600)),
             ),
             pre_thought_interval_seconds=max(
                 60,

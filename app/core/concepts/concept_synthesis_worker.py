@@ -45,10 +45,12 @@ from app.core.concepts.proposers import (
     ProposerContext,
     ProposerSpec,
 )
+from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_event_store import ConceptEventStore
     from app.core.concepts.concept_store import ConceptStore
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.infra.agent_settings import AgentSettings
@@ -61,7 +63,7 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 # Cosine threshold above which a fresh proposal is treated as the same
 # candidate as an existing concept (dedupe -> reinforce instead of add).
 _DEDUPE_COS = 0.9
-_MAX_TOKENS = 900
+_MAX_TOKENS = 1600
 _TEMPERATURE = 0.6
 
 _KV_CLUSTER_SIGS = "concept_synth.cluster_sigs"
@@ -71,6 +73,60 @@ _TOPIC_DIGEST_PREFIX = "aiko.topic_digest."
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _salvage_concepts(text: str) -> list[dict[str, Any]]:
+    """Recover complete concept objects from a truncated JSON response.
+
+    When the proposer hits its ``num_predict`` cap the ``"concepts": [...]``
+    array is cut off inside the last object, so :func:`json.loads` on the
+    whole blob fails. This walks the characters after the array's opening
+    ``[``, tracks brace depth (string-/escape-aware), and parses each
+    fully-closed ``{...}`` object on its own. The trailing incomplete
+    object is dropped; everything before it is preserved.
+    """
+    if not text:
+        return []
+    key_pos = text.find('"concepts"')
+    bracket = text.find("[", key_pos if key_pos >= 0 else 0)
+    if bracket < 0:
+        return []
+    out: list[dict[str, Any]] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i in range(bracket + 1, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                fragment = text[start : i + 1]
+                try:
+                    obj = json.loads(fragment)
+                    if isinstance(obj, dict):
+                        out.append(obj)
+                except Exception:
+                    pass
+                start = -1
+        elif ch == "]" and depth == 0:
+            break
+    return out
 
 
 class ConceptSynthesisWorker:
@@ -96,8 +152,10 @@ class ConceptSynthesisWorker:
         notify_concept_added: Callable[[dict[str, Any]], None] | None = None,
         user_display_name_provider: Callable[[], str] | None = None,
         assistant_display_name_provider: Callable[[], str] | None = None,
+        concept_event_store: "ConceptEventStore | None" = None,
     ) -> None:
         self._concept_store = concept_store
+        self._concept_event_store = concept_event_store
         self._topic_graph = topic_graph
         self._memory_store = memory_store
         self._embedder = embedder
@@ -196,9 +254,31 @@ class ConceptSynthesisWorker:
             ),
         )
 
+    @property
+    def _max_tokens(self) -> int:
+        return max(
+            256,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_tokens",
+                    _MAX_TOKENS,
+                )
+            ),
+        )
+
     # ── run ────────────────────────────────────────────────────────────
 
-    def run(self) -> dict[str, Any]:
+    def run(self, *, force: bool = False) -> dict[str, Any]:
+        """Run one synthesis pass.
+
+        ``force=True`` (manual "Run synthesis" button / MCP tool) ignores
+        the incremental dirty-tracking so a pass is guaranteed even when
+        nothing changed -- e.g. after concepts were manually deleted, the
+        source-memory signatures are unchanged, so an incremental run
+        would otherwise short-circuit and propose nothing. Scheduled idle
+        runs leave ``force=False`` and stay incremental.
+        """
         if not bool(getattr(self._agent_settings, "concepts_enabled", False)):
             return {"skipped": True, "reason": "disabled"}
         if self._cancel_event.is_set():
@@ -229,9 +309,9 @@ class ConceptSynthesisWorker:
                 break
             try:
                 if spec.population == "clusters":
-                    proposals = self._run_cluster_pass(ctx, spec, stats)
+                    proposals = self._run_cluster_pass(ctx, spec, stats, force)
                 elif spec.population == "aiko_memories":
-                    proposals = self._run_aiko_pass(ctx, spec, stats)
+                    proposals = self._run_aiko_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -254,6 +334,7 @@ class ConceptSynthesisWorker:
         ctx: ProposerContext,
         spec: ProposerSpec,
         stats: dict[str, Any],
+        force: bool = False,
     ) -> list[CandidateProposal]:
         clusters = self._user_dominant_clusters()
         if not clusters:
@@ -273,7 +354,7 @@ class ConceptSynthesisWorker:
             prev_size = int(prev.get("size", 0))
             prev_label = str(prev.get("label", ""))
             drift = abs(size - prev_size)
-            if prev_label != label or drift >= delta:
+            if force or prev_label != label or drift >= delta:
                 dirty.append((rep, label, size, drift, False))
 
         stats["user_dirty_total"] = len(dirty)
@@ -325,6 +406,7 @@ class ConceptSynthesisWorker:
         ctx: ProposerContext,
         spec: ProposerSpec,
         stats: dict[str, Any],
+        force: bool = False,
     ) -> list[CandidateProposal]:
         pop = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
         count = len(pop)
@@ -334,7 +416,7 @@ class ConceptSynthesisWorker:
         prev = self._load_sigs(_KV_AIKO_SIG)
         delta = self._dirty_size_delta
         prev_count = int(prev.get("count", 0)) if prev else 0
-        is_dirty = (not prev) or abs(count - prev_count) >= delta
+        is_dirty = force or (not prev) or abs(count - prev_count) >= delta
         stats["aiko_dirty"] = bool(is_dirty)
         if not is_dirty:
             return []
@@ -389,8 +471,10 @@ class ConceptSynthesisWorker:
             return
 
         # Embedding safety net: catches paraphrase dupes the LLM missed
-        # despite seeing the existing list.
-        match = self._find_duplicate(proposal, vec)
+        # despite seeing the existing list. ``top_sim`` is the cosine to
+        # the nearest existing concept of this (subject, kind) -- reused
+        # below as ``novelty = 1 - top_sim`` for the discovery event.
+        match, top_sim = self._find_duplicate(proposal, vec)
         if match is not None:
             self._reinforce(match, proposal)
             stats["reinforced"] += 1
@@ -417,6 +501,7 @@ class ConceptSynthesisWorker:
         self._add_evidence_edges(cid, proposal.evidence)
         stats["added"] += 1
         self._bump_subject(stats, proposal.subject, "added")
+        self._record_discovery(concept, proposal, top_sim, now)
         if self._notify_concept_added is not None:
             try:
                 self._notify_concept_added(
@@ -432,7 +517,14 @@ class ConceptSynthesisWorker:
 
     def _find_duplicate(
         self, proposal: CandidateProposal, vec: Any
-    ) -> Concept | None:
+    ) -> tuple[Concept | None, float]:
+        """Return ``(duplicate_or_none, top_cosine)``.
+
+        The top cosine to the nearest existing concept of this
+        (subject, kind) is surfaced even when it is below the dedupe
+        threshold, so the caller can derive the discovery ``novelty``
+        from the same nearest-neighbour lookup (no extra embed / query).
+        """
         try:
             hits = self._concept_store.nearest(
                 vec,
@@ -443,10 +535,86 @@ class ConceptSynthesisWorker:
             )
         except Exception:
             log.debug("concept nearest failed", exc_info=True)
-            return None
-        if hits and hits[0][1] >= _DEDUPE_COS:
-            return hits[0][0]
-        return None
+            return None, 0.0
+        if not hits:
+            return None, 0.0
+        top_sim = float(hits[0][1])
+        if top_sim >= _DEDUPE_COS:
+            return hits[0][0], top_sim
+        return None, top_sim
+
+    def _record_discovery(
+        self,
+        concept: Concept,
+        proposal: CandidateProposal,
+        top_sim: float,
+        created_at: str,
+    ) -> None:
+        """Append a ``discovered`` event to the timeline (best-effort).
+
+        Never fatal: a logging failure must not lose the concept that was
+        just persisted. ``novelty`` is ``1 - top_sim`` (1.0 for the first
+        concept of its subject/kind, where the nearest lookup was empty).
+        """
+        store = self._concept_event_store
+        if store is None:
+            return
+        source_kinds = sorted({t for t, _ in proposal.evidence})
+        distinct = int(concept.distinct_source_count)
+        novelty = round(max(0.0, min(1.0, 1.0 - top_sim)), 4)
+        try:
+            store.add(
+                ConceptEvent(
+                    concept_id=concept.concept_id or None,
+                    event_type="discovered",
+                    kind=concept.kind,
+                    subject=concept.subject,
+                    label=concept.label,
+                    confidence=float(concept.confidence),
+                    novelty=novelty,
+                    evidence_count=int(concept.evidence_count),
+                    distinct_source_count=distinct,
+                    source_kinds=",".join(source_kinds),
+                    reason=self._discovery_reason(
+                        concept.subject, source_kinds, distinct, novelty
+                    ),
+                    created_at=created_at,
+                )
+            )
+        except Exception:
+            log.debug("record discovery event failed", exc_info=True)
+
+    @staticmethod
+    def _discovery_reason(
+        subject: str,
+        source_kinds: list[str],
+        distinct: int,
+        novelty: float,
+    ) -> str:
+        """Generated, factual one-liner describing the discovery."""
+        first = "First " if novelty >= 0.6 else ""
+        if source_kinds == ["cluster"]:
+            noun = "topic cluster" if distinct == 1 else "topic clusters"
+            verb = "abstraction connecting" if first else "connects"
+            lead = f"{first}{verb}" if first else "Connects"
+            return f"{lead} {distinct} {noun}."
+        if source_kinds == ["memory"]:
+            noun = "memory" if distinct == 1 else "memories"
+            src = (
+                "reflection/diary memories"
+                if subject == "aiko" and distinct != 1
+                else noun
+            )
+            if first:
+                kind_word = (
+                    "self-concept" if subject == "aiko" else "concept"
+                )
+                return f"First {kind_word} linking {distinct} {src}."
+            return f"Links {distinct} {src}."
+        # Mixed / other source kinds: stay generic but still factual.
+        joined = " + ".join(source_kinds) if source_kinds else "sources"
+        lead = "First abstraction over" if first else "Draws on"
+        return f"{lead} {distinct} sources ({joined})."
 
     def _reinforce(
         self, concept: Concept, proposal: CandidateProposal
@@ -563,7 +731,7 @@ class ConceptSynthesisWorker:
             stream = self._ollama.chat_stream(
                 messages,
                 options={
-                    "num_predict": _MAX_TOKENS,
+                    "num_predict": self._max_tokens,
                     "temperature": _TEMPERATURE,
                 },
                 model=self._chat_model,
@@ -581,16 +749,28 @@ class ConceptSynthesisWorker:
     @staticmethod
     def _parse(raw: str) -> list[dict[str, Any]]:
         match = _JSON_OBJECT_RE.search(raw or "")
-        if match is None:
-            return []
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(parsed, dict):
-            return []
-        concepts = parsed.get("concepts")
-        return concepts if isinstance(concepts, list) else []
+        if match is not None:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, dict):
+                    concepts = parsed.get("concepts")
+                    if isinstance(concepts, list):
+                        return concepts
+            except json.JSONDecodeError:
+                pass
+        # Truncated response: the aiko-identity pass emits several
+        # concepts with full rationales in one object, so hitting the
+        # token cap cuts the "concepts": [...] array mid-object and the
+        # whole blob fails to parse. Recover the complete leading objects
+        # instead of dropping the entire batch.
+        salvaged = _salvage_concepts(raw or "")
+        if salvaged:
+            log.info(
+                "concept synthesis: salvaged %d complete concept(s) from a "
+                "truncated/invalid response",
+                len(salvaged),
+            )
+        return salvaged
 
 
 __all__ = ["ConceptSynthesisWorker"]
