@@ -181,6 +181,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_graph_enabled=bool(
                 agent_raw.get("topic_graph_enabled", True),
             ),
+            concepts_enabled=bool(
+                agent_raw.get("concepts_enabled", False),
+            ),
+            concept_synthesis_enabled=bool(
+                agent_raw.get("concept_synthesis_enabled", True),
+            ),
             topic_graph_persistent_enabled=bool(
                 agent_raw.get("topic_graph_persistent_enabled", True),
             ),

@@ -568,3 +568,47 @@ firing (the same audit-before-splitting caution as P16)?
 **Effort.** Small (a, measurement tool) → Medium (b/c, per-block
 trim + lazy-render, one block family at a time) → the persona
 diff is a focused afternoon.
+
+---
+
+## P32. Concept layer — worker budget + unbounded graph growth
+
+**Motivation.** The concept layer (see
+[`concepts.md`](concepts.md), L-series) adds standing cost the P-series
+should size up front rather than discover in production. Three lines:
+(a) the **synthesis proposer** (L2) is another worker-LLM job competing
+for idle windows on the `IdleWorkerScheduler`; (b) the **lifecycle
+engine** (L3, incl. the L15/L16/L17 passes) walks the `concept_edges`
+graph every cycle — O(edges) work that grows as concepts accrue; (c)
+**snapshots** (L17/L19) and edges grow **without bound** by design (the
+autobiography is meant to be permanent), so storage + scan cost climb
+forever if left unmanaged.
+
+**Key files.**
+[`idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
+(where the proposer + lifecycle engine register + their cadence),
+the L1 `ConceptStore` (`concepts` + `concept_edges` + snapshot tables),
+`app/mcp/server.py` (the L26 trace is also the perf-observability hook).
+
+**Sketched approach.** (a) **Cadence + budget** — run the proposer on a
+low, change-triggered cadence (weekly / on material cluster change, per
+L2), never every idle tick, and count it against the same idle-window
+budget as the other LLM workers (P8 queue visibility applies). (b) **Bounded
+graph walks** — the lifecycle engine should walk only *dirty* subgraphs
+(concepts whose evidence changed this cycle) rather than the whole graph;
+index `concept_edges` by both endpoints so cascade/revision walks are
+O(affected), not O(all). (c) **Snapshot thinning** — keep recent
+self-snapshots dense and **thin older ones** (monthly → quarterly →
+yearly) so L19 stays traversable without linear growth; retired concepts
+archive rather than delete (L19 durability) but drop out of the hot scan
+set. (d) **Hot-path guarantee** — nothing here runs on the turn stream;
+the only per-turn concept cost is L23 selection over the small `active`
+set, which reuses the P15 shared user-text embed.
+
+**Open questions.** Snapshot thinning schedule? A cap on `active` concepts
+(soft-merge via L20 when it's exceeded) to bound per-turn selection? Does
+the lifecycle engine share an idle slot with the memory decay/promotion
+workers or contend with them?
+
+**Effort.** Small-Medium (mostly cadence + indexing + a thinning sweep;
+cheap if designed in, expensive to retrofit once the graph is large).

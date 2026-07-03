@@ -1259,6 +1259,29 @@ class SpeakingWorkersInitMixin:
                         )
                         self._idle_gap_resolver = None
 
+                # L1: higher-order concept store. Substrate only -- with
+                # no proposer (L2) or lifecycle engine (L3) yet, this just
+                # constructs the ConceptStore and warm-starts its cosine
+                # mirror from SQLite so later L-entries have somewhere to
+                # write. Opt-in via ``agent.concepts_enabled`` (default
+                # off); the tables exist regardless. Non-fatal on failure.
+                self._concept_store = None
+                if (
+                    self._chat_db is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                ):
+                    try:
+                        from app.core.concepts.concept_store import ConceptStore
+
+                        self._concept_store = ConceptStore(self._chat_db)
+                        self._concept_store.load_all()
+                    except Exception:
+                        log.warning(
+                            "ConceptStore init failed; concept layer disabled",
+                            exc_info=True,
+                        )
+                        self._concept_store = None
+
                 # K9: TopicGraph + CuriositySeedWorker. The graph is a
                 # zero-cost wrapper around the in-process memory mirror;
                 # the worker registers as an idle tick that proposes
@@ -1570,6 +1593,58 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._curiosity_seed_worker = None
+
+                # L2: ConceptSynthesisWorker. Regular, incremental idle
+                # worker that mines topic clusters (user identity) + Aiko's
+                # own self/reflection/diary memories (aiko identity) for
+                # candidate concepts, a small bounded batch per run. Needs
+                # the L1 ConceptStore (built earlier) + the topic graph
+                # (built just above). Opt-in via ``concepts_enabled`` AND
+                # ``concept_synthesis_enabled``. Non-fatal on failure.
+                self._concept_synthesis_worker = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and self._topic_graph is not None
+                    and self._memory_store is not None
+                    and self._embedder is not None
+                    and self._fact_check_cancel is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            settings.agent, "concept_synthesis_enabled", True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_synthesis_worker import (
+                            ConceptSynthesisWorker,
+                        )
+
+                        self._concept_synthesis_worker = ConceptSynthesisWorker(
+                            concept_store=self._concept_store,
+                            topic_graph=self._topic_graph,
+                            memory_store=self._memory_store,
+                            embedder=self._embedder,
+                            # Idle-scheduler worker → maintenance tier.
+                            ollama=self._maintenance_client,
+                            chat_model=self._effective_worker_model,
+                            cancel_event=self._fact_check_cancel,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            notify_concept_added=None,
+                        )
+                        self._idle_scheduler.register(
+                            self._concept_synthesis_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "ConceptSynthesisWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._concept_synthesis_worker = None
 
                 # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
                 # likely upcoming questions during idle windows so the

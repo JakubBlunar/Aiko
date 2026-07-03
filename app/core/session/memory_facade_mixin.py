@@ -839,6 +839,53 @@ class MemoryFacadeMixin:
                 "clusters": [],
             }
 
+    # ── concepts (L1/L2 debug surface) ───────────────────────────────────
+
+    def concepts_snapshot(self) -> dict[str, Any]:
+        """Serialise the higher-order concept layer for the browser.
+
+        Backs ``GET /api/concepts`` (and mirrors the data the
+        ``get_concepts_state`` MCP tool exposes). Delegates to the pure
+        :func:`app.core.concepts.concept_snapshot.build_concepts_snapshot`
+        helper, which returns an empty ``enabled=False`` shape when the
+        concept store is absent (``agent.concepts_enabled`` off or init
+        failed). Best-effort: any failure collapses to that same disabled
+        shape rather than raising into the request handler.
+        """
+        store = getattr(self, "_concept_store", None)
+        memory_store = getattr(self, "_memory_store", None)
+        topic_graph = getattr(self, "_topic_graph", None)
+        try:
+            from app.core.concepts.concept_snapshot import (
+                build_concepts_snapshot,
+            )
+
+            return build_concepts_snapshot(store, memory_store, topic_graph)
+        except Exception:
+            log.debug("concepts snapshot failed", exc_info=True)
+            return {
+                "enabled": False,
+                "total": 0,
+                "counts": {"by_status": {}, "by_subject": {}},
+                "concepts": [],
+            }
+
+    def delete_concept(self, concept_id: int) -> int:
+        """Delete a single concept (and its edges) -- never any memories.
+
+        Delegates to :meth:`ConceptStore.delete`, which removes only the
+        ``concepts`` row + the ``concept_edges`` touching it. Evidence
+        edges are ``memory -> concept``, so the memory is left untouched.
+        Returns 1 if the concept existed, else 0.
+        """
+        store = getattr(self, "_concept_store", None)
+        if store is None:
+            return 0
+        if store.get(int(concept_id)) is None:
+            return 0
+        store.delete(int(concept_id))
+        return 1
+
     # ── F10l: cluster management (user agency over the topic graph) ──────
 
     def _resolve_cluster(self, cluster_id: int) -> Any | None:

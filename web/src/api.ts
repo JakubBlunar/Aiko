@@ -42,6 +42,7 @@ import type {
   SharedMomentsResponse,
   TogetherSummary,
   TopicGraphSnapshot,
+  ConceptsSnapshot,
   UploadDocumentResponse,
   WorldItem,
   WorldItemPayload,
@@ -450,6 +451,16 @@ export const api = {
       `/api/topic-graph/clusters/${clusterId}/forget`,
       { method: "POST" },
     ),
+  // ── Higher-order concepts (L1/L2 debug) ──────────────────────────
+  getConcepts: () => jsonFetch<ConceptsSnapshot>("/api/concepts"),
+  runConceptSynthesis: () =>
+    jsonFetch<{ result: Record<string, unknown> }>("/api/concepts/run", {
+      method: "POST",
+    }),
+  deleteConcept: (conceptId: number) =>
+    jsonFetch<{ deleted: number }>(`/api/concepts/${conceptId}`, {
+      method: "DELETE",
+    }),
   // ── Persona regression (K10) ─────────────────────────────────────
   getPersonaDrift: () =>
     jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift"),
