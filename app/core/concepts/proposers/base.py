@@ -84,6 +84,10 @@ class ProposerContext:
     call_llm: Callable[[str, str], list[dict[str, Any]]]
     min_sources: int = MIN_SOURCES
     clock: Callable[[], datetime] | None = None
+    # Personalisation: concepts read better (and age better) when they
+    # name the people involved instead of "the user" / "the AI companion".
+    user_name: str = "the user"
+    assistant_name: str = "Aiko"
 
 
 @dataclass(frozen=True, slots=True)

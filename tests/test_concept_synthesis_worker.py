@@ -137,6 +137,8 @@ class WorkerHarness:
         self_memories=None,
         agent=None,
         mem_settings=None,
+        user_name=None,
+        assistant_name=None,
     ):
         tmp = tempfile.mkdtemp()
         self.path = Path(tmp) / "test.db"
@@ -162,6 +164,14 @@ class WorkerHarness:
             kv_get=self.db.kv_get,
             kv_set=self.db.kv_set,
             clock=lambda: datetime.now(timezone.utc),
+            user_display_name_provider=(
+                (lambda: user_name) if user_name is not None else None
+            ),
+            assistant_display_name_provider=(
+                (lambda: assistant_name)
+                if assistant_name is not None
+                else None
+            ),
         )
 
 
@@ -308,6 +318,40 @@ class ExistingAwarenessTests(unittest.TestCase):
         h.worker.run()
         self.assertIn("Systems thinker", captured["user"])
         self.assertIn(f"[{cid}]", captured["user"])
+
+    def test_display_names_injected_into_prompts(self) -> None:
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []},
+            user_name="Jacob",
+            assistant_name="Aiko",
+        )
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            captured["aiko" if "HERSELF" in system else "user"] = system
+            return {"concepts": []}
+
+        h.ollama._responder = responder
+        h.worker.run()
+        # User proposer must name the user, not say "the user".
+        self.assertIn("Jacob", captured["user"])
+        self.assertNotIn("about a person", captured["user"])
+        # Aiko proposer names both parties.
+        self.assertIn("Aiko", captured["aiko"])
+        self.assertIn("Jacob", captured["aiko"])
+
+    def test_missing_name_provider_falls_back(self) -> None:
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            if "HERSELF" not in system:
+                captured["user"] = system
+            return {"concepts": []}
+
+        h.ollama._responder = responder
+        h.worker.run()
+        self.assertIn("the user", captured["user"])
 
     def test_reinforce_by_id_attaches_evidence_no_duplicate(self) -> None:
         h = WorkerHarness(lambda s, u: {"concepts": []})

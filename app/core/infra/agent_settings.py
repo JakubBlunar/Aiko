@@ -385,6 +385,15 @@ class AgentSettings:
     # ``state_key='belief_worker.rate_state'``.
     belief_worker_per_hour_cap: int = 8
     belief_worker_per_day_cap: int = 40
+    # When True, run the outbound web-search PII scrubber
+    # (:func:`fact_check_privacy.scrub_claim_for_search`) over the belief
+    # worker's transcript before the LLM call. Default False: the belief
+    # extractor runs on the LOCAL maintenance model (trusted per the
+    # privacy threat model), and scrubbing strips first/second-person
+    # pronouns + names + time words -- the exact "who does this refer to"
+    # signal the theory-of-mind extraction needs. Enable only if the
+    # worker model is routed to an untrusted (cloud) endpoint.
+    belief_worker_scrub_transcript: bool = False
     # ── Phase 3c (reworked): context-aware promise extraction worker ──
     # Master switch for
     # :class:`app.core.memory.promise_worker.PromiseExtractionWorker`,
@@ -499,6 +508,12 @@ class AgentSettings:
     # A cluster needs at least this many members before it earns a stored
     # digest (small clusters are cheap to read raw). Floor 2.
     topic_digest_min_cluster_size: int = 6
+    # When True, each run deletes ``topic_digest`` rows that no longer map
+    # to any live cluster (orphans left behind when clusters are reassigned
+    # on refit). Only the derived digest is removed -- never the member
+    # memories, which re-cluster and earn a fresh digest later. Digests
+    # pending regeneration this tick and pinned digests are protected.
+    topic_digest_reap_orphans: bool = True
     # When True, the F10c expansion path surfaces a cluster's digest as the
     # coarse "what I know about X" line and caps raw sibling enumeration to
     # ``rag_digest_sibling_cap`` (keeps a 40-member cluster from dumping 40

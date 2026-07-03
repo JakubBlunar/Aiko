@@ -22,33 +22,41 @@ from app.core.concepts.proposers.base import (
     snippet,
 )
 
-_SYSTEM = (
-    "You find higher-order IDENTITY concepts about a person by connecting "
-    "topics that look separate but reflect the same underlying trait, "
-    "interest, or way of being. You are given a map of their topic "
-    "clusters (labels + sizes), a few focus clusters in detail, and the "
-    "identity concepts already known. Propose concepts that link a FOCUS "
-    "cluster to at least one other cluster in the map.\n\n"
-    "Hard rules:\n"
-    "- Each NEW concept MUST span at least two distinct clusters (by rep "
-    "id).\n"
-    "- Be SPECIFIC and FALSIFIABLE. No horoscope traits like 'is curious' "
-    "or 'is intelligent' that are true of everyone and disprovable by "
-    "no one. Say something the raw cluster labels do not already say.\n"
-    "- Do NOT re-propose an ALREADY-KNOWN concept or a trivial rewording "
-    "of one. If a focus cluster instead adds fresh support for a known "
-    "concept, REINFORCE it: emit an item with its id in 'reinforces_id' "
-    "and the supporting rep ids (no new label).\n"
-    "- Only cite rep ids present in the provided map, and only reinforce "
-    "ids present in the known list.\n"
-    "- If nothing genuine connects the focus clusters to others, return "
-    "an empty list. Do not invent.\n\n"
-    'Return JSON only: {"concepts": [ '
-    '{"label": str, "evidence_cluster_reps": [int, ...], "rationale": '
-    'str, "confidence": number 0..1}  '
-    'OR  {"reinforces_id": int, "evidence_cluster_reps": [int, ...], '
-    '"rationale": str} ]}'
-)
+def _system(user_name: str, assistant_name: str) -> str:
+    return (
+        f"You find higher-order IDENTITY concepts about {user_name} by "
+        "connecting topics that look separate but reflect the same "
+        f"underlying trait, interest, or way of being. You are given a map "
+        f"of {user_name}'s topic clusters (labels + sizes), a few focus "
+        "clusters in detail, and the identity concepts already known. "
+        "Propose concepts that link a FOCUS cluster to at least one other "
+        "cluster in the map.\n\n"
+        "Hard rules:\n"
+        f"- Write every concept ABOUT {user_name}, naming them as "
+        f"'{user_name}' -- never 'the user', 'the person', or a bare "
+        f"pronoun. Phrase each label as a statement about them, e.g. "
+        f"'{user_name} values ...' / '{user_name} approaches ... by ...'. "
+        f"Refer to the AI companion as '{assistant_name}'.\n"
+        "- Each NEW concept MUST span at least two distinct clusters (by "
+        "rep id).\n"
+        "- Be SPECIFIC and FALSIFIABLE. No horoscope traits like 'is "
+        "curious' or 'is intelligent' that are true of everyone and "
+        "disprovable by no one. Say something the raw cluster labels do "
+        "not already say.\n"
+        "- Do NOT re-propose an ALREADY-KNOWN concept or a trivial "
+        "rewording of one. If a focus cluster instead adds fresh support "
+        "for a known concept, REINFORCE it: emit an item with its id in "
+        "'reinforces_id' and the supporting rep ids (no new label).\n"
+        "- Only cite rep ids present in the provided map, and only "
+        "reinforce ids present in the known list.\n"
+        "- If nothing genuine connects the focus clusters to others, "
+        "return an empty list. Do not invent.\n\n"
+        'Return JSON only: {"concepts": [ '
+        '{"label": str, "evidence_cluster_reps": [int, ...], "rationale": '
+        'str, "confidence": number 0..1}  '
+        'OR  {"reinforces_id": int, "evidence_cluster_reps": [int, ...], '
+        '"rationale": str} ]}'
+    )
 
 
 def propose_identity_user(
@@ -84,11 +92,12 @@ def propose_identity_user(
         + "\n\n".join(focus_lines)
         + "\n\nALREADY-KNOWN USER IDENTITY CONCEPTS:\n"
         + format_existing(existing)
-        + "\n\nPropose NEW identity concepts connecting these focus "
-        "clusters to others, or reinforce a known one by id."
+        + f"\n\nPropose NEW identity concepts about {ctx.user_name} "
+        "connecting these focus clusters to others, or reinforce a known "
+        "one by id."
     )
 
-    raw = ctx.call_llm(_SYSTEM, user)
+    raw = ctx.call_llm(_system(ctx.user_name, ctx.assistant_name), user)
     proposals: list[CandidateProposal] = []
     for item in raw:
         if not isinstance(item, dict):

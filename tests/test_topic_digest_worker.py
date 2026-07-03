@@ -33,6 +33,7 @@ class _StubMemory:
     embedding: np.ndarray
     kind: str = "fact"
     salience: float = 0.5
+    pinned: bool = False
     use_count: int = 0
     created_at: str = "2026-01-01T00:00:00+00:00"
     last_used_at: str | None = None
@@ -61,6 +62,14 @@ class _StubMemoryStore:
     def get(self, memory_id: int) -> _StubMemory | None:
         with self._lock:
             return self._mirror.get(int(memory_id))
+
+    def iter_by_kind(self, kind: str) -> list[_StubMemory]:
+        with self._lock:
+            return [m for m in self._mirror.values() if m.kind == kind]
+
+    def delete(self, memory_id: int) -> bool:
+        with self._lock:
+            return self._mirror.pop(int(memory_id), None) is not None
 
     def add(
         self,
@@ -137,6 +146,7 @@ class _FakeOllama:
     def __init__(self, digest: str = "Cats and naps come up a lot.") -> None:
         self.digest = digest
         self.calls = 0
+        self.last_system = ""
 
     def chat_stream(
         self,
@@ -149,6 +159,9 @@ class _FakeOllama:
         surface=None,
     ):
         self.calls += 1
+        for msg in messages:
+            if msg.get("role") == "system":
+                self.last_system = msg.get("content", "")
         yield json.dumps({"digest": self.digest})
 
 
@@ -159,6 +172,7 @@ def _agent_settings(**over: Any) -> SimpleNamespace:
         topic_digest_max_per_run=3,
         topic_digest_max_tokens=256,
         topic_digest_min_cluster_size=3,
+        topic_digest_reap_orphans=True,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -177,7 +191,9 @@ def _persistent_graph(mem_store) -> tuple[ChatDatabase, TopicGraph]:
     return db, graph
 
 
-def _worker(db, g, mem, fake, settings=None) -> TopicDigestWorker:
+def _worker(
+    db, g, mem, fake, settings=None, *, user_name=None, assistant_name=None
+) -> TopicDigestWorker:
     return TopicDigestWorker(
         topic_graph=g,
         memory_store=mem,
@@ -188,6 +204,12 @@ def _worker(db, g, mem, fake, settings=None) -> TopicDigestWorker:
         agent_settings=settings or _agent_settings(),
         kv_get=db.kv_get,
         kv_set=db.kv_set,
+        user_display_name_provider=(
+            (lambda: user_name) if user_name is not None else None
+        ),
+        assistant_display_name_provider=(
+            (lambda: assistant_name) if assistant_name is not None else None
+        ),
     )
 
 
@@ -299,6 +321,76 @@ class TopicDigestWorkerTests(unittest.TestCase):
         db = ChatDatabase(Path(tmp) / "t.db")
         worker = _worker(db, g, mem, _FakeOllama())
         self.assertTrue(worker.run().get("skipped"))
+
+    def test_display_names_injected_into_prompt(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        fake = _FakeOllama("Cats and naps.")
+        worker = _worker(
+            db, g, mem, fake, user_name="Jacob", assistant_name="Aiko"
+        )
+        worker.run()
+        self.assertIn("Jacob", fake.last_system)
+        self.assertIn("Aiko", fake.last_system)
+        # The hard rule that forbids the generic labels must be present.
+        self.assertIn("never 'the user'", fake.last_system)
+
+    def test_prompt_falls_back_without_providers(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        fake = _FakeOllama("Cats and naps.")
+        worker = _worker(db, g, mem, fake)
+        worker.run()
+        self.assertIn("the user", fake.last_system)
+        self.assertIn("Aiko", fake.last_system)
+
+    def test_reaps_orphaned_digests(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        # Seed two stale digests that map to no live cluster.
+        mem.seed(_StubMemory(5001, "old digest A", _vec([0.0, 0.0, 1.0, 0.0]),
+                             kind="topic_digest"))
+        mem.seed(_StubMemory(5002, "old digest B", _vec([0.0, 0.0, 0.0, 1.0]),
+                             kind="topic_digest"))
+        worker = _worker(db, g, mem, _FakeOllama())
+        result = worker.run()
+        self.assertEqual(result["reaped"], 2)
+        self.assertIsNone(mem.get(5001))
+        self.assertIsNone(mem.get(5002))
+        # The freshly written live digest survives.
+        live_id = next(iter(worker.cluster_digest_map.values()))
+        self.assertIsNotNone(mem.get(live_id))
+
+    def test_reap_preserves_pinned_and_member_memories(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        mem.seed(_StubMemory(5003, "pinned stale digest",
+                             _vec([0.0, 1.0, 0.0, 0.0]),
+                             kind="topic_digest", pinned=True))
+        worker = _worker(db, g, mem, _FakeOllama())
+        worker.run()
+        # Pinned digest kept; member fact memories (ids 1..5) untouched.
+        self.assertIsNotNone(mem.get(5003))
+        for mid in range(1, 6):
+            self.assertIsNotNone(mem.get(mid))
+
+    def test_reap_disabled_by_flag(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        mem.seed(_StubMemory(5004, "orphan", _vec([0.0, 0.0, 1.0, 0.0]),
+                             kind="topic_digest"))
+        worker = _worker(
+            db, g, mem, _FakeOllama(),
+            settings=_agent_settings(topic_digest_reap_orphans=False),
+        )
+        result = worker.run()
+        self.assertEqual(result["reaped"], 0)
+        self.assertIsNotNone(mem.get(5004))
 
     def test_map_persisted_and_loaded(self) -> None:
         mem = _dense_store(5)

@@ -22,33 +22,37 @@ from app.core.concepts.proposers.base import (
     snippet,
 )
 
-_SYSTEM = (
-    "You are helping an AI companion named Aiko notice higher-order "
-    "concepts about HERSELF -- her own stance, tastes, values-in-action, "
-    "and ways of being -- by connecting her own first-person memories "
-    "(self notes, reflections, diary entries). Each numbered line is one "
-    "of Aiko's memories with its id. You are also given the concepts she "
-    "already holds about herself.\n\n"
-    "Hard rules:\n"
-    "- Write each NEW concept in FIRST PERSON ('I ...'), as Aiko about "
-    "herself.\n"
-    "- Each NEW concept MUST be backed by at least two distinct memory "
-    "ids.\n"
-    "- Be SPECIFIC and FALSIFIABLE. No generic self-flattery true of any "
-    "assistant. Say something these memories actually show.\n"
-    "- Do NOT re-propose an ALREADY-KNOWN concept or a trivial rewording "
-    "of one. If a memory instead adds fresh support for a known concept, "
-    "REINFORCE it: emit an item with its id in 'reinforces_id' and the "
-    "supporting memory ids (no new label).\n"
-    "- Only cite memory ids present in the list, and only reinforce ids "
-    "present in the known list. If nothing genuine recurs, return an "
-    "empty list. Do not invent.\n\n"
-    'Return JSON only: {"concepts": [ '
-    '{"label": str, "evidence_memory_ids": [int, ...], "rationale": str, '
-    '"confidence": number 0..1}  '
-    'OR  {"reinforces_id": int, "evidence_memory_ids": [int, ...], '
-    '"rationale": str} ]}'
-)
+def _system(user_name: str, assistant_name: str) -> str:
+    return (
+        f"You are helping an AI companion named {assistant_name} notice "
+        "higher-order concepts about HERSELF -- her own stance, tastes, "
+        "values-in-action, and ways of being -- by connecting her own "
+        "first-person memories (self notes, reflections, diary entries). "
+        f"Each numbered line is one of {assistant_name}'s memories with "
+        "its id. You are also given the concepts she already holds about "
+        "herself.\n\n"
+        "Hard rules:\n"
+        f"- Write each NEW concept in FIRST PERSON ('I ...'), as "
+        f"{assistant_name} about herself. When a concept involves the "
+        f"person she is with, name him as '{user_name}' -- never 'the "
+        "user'.\n"
+        "- Each NEW concept MUST be backed by at least two distinct memory "
+        "ids.\n"
+        "- Be SPECIFIC and FALSIFIABLE. No generic self-flattery true of "
+        "any assistant. Say something these memories actually show.\n"
+        "- Do NOT re-propose an ALREADY-KNOWN concept or a trivial "
+        "rewording of one. If a memory instead adds fresh support for a "
+        "known concept, REINFORCE it: emit an item with its id in "
+        "'reinforces_id' and the supporting memory ids (no new label).\n"
+        "- Only cite memory ids present in the list, and only reinforce "
+        "ids present in the known list. If nothing genuine recurs, return "
+        "an empty list. Do not invent.\n\n"
+        'Return JSON only: {"concepts": [ '
+        '{"label": str, "evidence_memory_ids": [int, ...], "rationale": '
+        'str, "confidence": number 0..1}  '
+        'OR  {"reinforces_id": int, "evidence_memory_ids": [int, ...], '
+        '"rationale": str} ]}'
+    )
 
 
 def propose_identity_aiko(
@@ -77,11 +81,11 @@ def propose_identity_aiko(
         + "\n".join(lines)
         + "\n\nALREADY-KNOWN AIKO IDENTITY CONCEPTS:\n"
         + format_existing(existing)
-        + "\n\nPropose NEW first-person identity concepts about Aiko "
-        "herself, or reinforce a known one by id."
+        + f"\n\nPropose NEW first-person identity concepts about "
+        f"{ctx.assistant_name} herself, or reinforce a known one by id."
     )
 
-    raw = ctx.call_llm(_SYSTEM, user)
+    raw = ctx.call_llm(_system(ctx.user_name, ctx.assistant_name), user)
     proposals: list[CandidateProposal] = []
     for item in raw:
         if not isinstance(item, dict):

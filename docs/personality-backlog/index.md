@@ -359,6 +359,27 @@ P12 bulk memory-mirror on startup, P13 route-driven worker
 model + context, and P14 heuristic tool-pass gate have shipped —
 see [`shipped.md`](shipped.md).)
 
+### T. Testing + evaluation — [`testing.md`](testing.md)
+
+How we keep the behavioural system regression-safe as the concept work
+(L-series) piles on. Organising idea: **bracket the LLM** — test the
+deterministic prompt-build (before) and tag-parse / post-turn (after)
+halves with a scripted LLM double; treat model *content quality* as a
+separate eval track, never a red/green unit gate. The offline pytest
+counterpart to the live DT-series debug tooling.
+
+- **T1.** Shared `FakeChatClient` + `BehaviorHarness` (the missing seam;
+  kills per-file stub duplication; unblocks T2/T3).
+- **T2.** End-to-end behavioural chain tests (worker -> cue -> prompt ->
+  reply -> post-turn -> state delta).
+- **T3.** Worker registry conformance + smoke + LLM fault injection
+  (parametrized over all ~51 workers).
+- **T4.** Prompt-build + tag-parse contract (golden) tests (pins the
+  T0->T6 cache ladder + the inline-tag grammar).
+- **T5.** LLM behavioural eval suite — a scoreboard, not a CI gate
+  (umbrella over K10 persona regression + L22 concept eval).
+- **T6.** Determinism seams (`Clock` + seeded RNG; shared with DT1).
+
 ---
 
 ## How to pick one up

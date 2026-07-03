@@ -90,6 +90,7 @@
     "belief_interest_bias_enabled": true,
     "belief_worker_per_hour_cap": 10,
     "belief_worker_per_day_cap": 40,
+    "belief_worker_scrub_transcript": false,
     "promise_worker_enabled": true,
     "promise_worker_per_hour_cap": 12,
     "promise_worker_per_day_cap": 80,
@@ -108,6 +109,7 @@
     "topic_digest_max_per_run": 3,
     "topic_digest_max_tokens": 256,
     "topic_digest_min_cluster_size": 6,
+    "topic_digest_reap_orphans": true,
     "topic_digest_surface_in_rag": true,
     "rag_cluster_diversity_enabled": true,
     "rag_max_per_cluster": 3,
@@ -262,7 +264,8 @@
     "confidence_time_decay_enabled": true,
     "callback_detector_enabled": true,
     "calibration_detection_enabled": true,
-    "sensory_anchor_enabled": true
+    "sensory_anchor_enabled": true,
+    "concepts_enabled": false
   },
   "audio": {
     "sample_rate": 16000,

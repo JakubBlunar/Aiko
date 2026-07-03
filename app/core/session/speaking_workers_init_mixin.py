@@ -1496,6 +1496,13 @@ class SpeakingWorkersInitMixin:
                                             kv_set=self._chat_db.kv_set,
                                             notify_memory_added=self._notify_memory_added,
                                             notify_memory_updated=self._notify_memory_updated,
+                                            user_display_name_provider=(
+                                                lambda: self.user_display_name
+                                            ),
+                                            assistant_display_name_provider=(
+                                                lambda: self._fact_check_assistant_name()
+                                                or "Aiko"
+                                            ),
                                         )
                                         self._idle_scheduler.register(
                                             self._topic_digest_worker
@@ -1635,6 +1642,15 @@ class SpeakingWorkersInitMixin:
                             kv_get=self._chat_db.kv_get,
                             kv_set=self._chat_db.kv_set,
                             notify_concept_added=None,
+                            # Personalise concept labels/rationales with the
+                            # real names instead of "the user" / "Aiko".
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            assistant_display_name_provider=(
+                                lambda: self._fact_check_assistant_name()
+                                or "Aiko"
+                            ),
                         )
                         self._idle_scheduler.register(
                             self._concept_synthesis_worker,

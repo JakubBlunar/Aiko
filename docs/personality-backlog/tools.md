@@ -275,7 +275,10 @@ makes the K/F/J features regression-testable end-to-end. Build on DT1
 `send_message(skip_tts=true)` MCP path + `get_last_response_detail` (per-turn
 prompt + `provider_ms`). Key files: a new `scripts/scenario_runner.py`,
 the MCP message path, `get_last_response_detail`. **Effort.** Medium
-(largely unlocked once DT1 + DT2 exist).
+(largely unlocked once DT1 + DT2 exist). This is the *live-app* face of
+the offline [`testing.md`](testing.md) T2 chain-test harness — same idea,
+one drives the running instance, the other runs in pytest with a fake
+LLM; they should share the "which blocks fired" assertion vocabulary.
 
 ---
 
