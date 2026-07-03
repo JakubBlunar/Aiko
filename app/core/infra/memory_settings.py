@@ -707,6 +707,20 @@ class MemorySettings:
     # store is at ``curiosity_seed_max_active`` so the cadence is a
     # ceiling, not a floor.
     curiosity_seed_interval_seconds: int = 3600
+    # L2 concept synthesis worker. Runs regularly (default 30 min) but
+    # does a small bounded batch per run using kv_meta dirty-tracking, so
+    # it triggers reliably under intermittent uptime and never does one
+    # long pass when data has accumulated. Steady-state runs are near
+    # no-ops (0 LLM calls) when nothing is dirty. ``max_clusters_per_run``
+    # bounds how many dirty topic clusters get full-content synthesis each
+    # run (the rest of the map is included as cheap labels for
+    # cross-cluster reasoning); ``max_aiko_memories`` caps the aiko-self
+    # input; ``dirty_size_delta`` is the min cluster/population size drift
+    # that re-marks something dirty (avoids churn on +/-1 wobble).
+    concept_synthesis_interval_seconds: int = 1800
+    concept_synthesis_max_clusters_per_run: int = 5
+    concept_synthesis_max_aiko_memories: int = 40
+    concept_synthesis_dirty_size_delta: int = 3
     # K11: pre-thought / counterfactual worker cadence. A tick is one
     # question-generation LLM call plus up to ``pre_thought_max_per_run``
     # in-persona draft calls, so an hour between successful runs is
@@ -2058,6 +2072,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             curiosity_seed_interval_seconds=max(
                 60,
                 int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
+            ),
+            concept_synthesis_interval_seconds=max(
+                60,
+                int(memory_raw.get("concept_synthesis_interval_seconds", 1800)),
+            ),
+            concept_synthesis_max_clusters_per_run=max(
+                1,
+                int(
+                    memory_raw.get("concept_synthesis_max_clusters_per_run", 5)
+                ),
+            ),
+            concept_synthesis_max_aiko_memories=max(
+                1,
+                int(memory_raw.get("concept_synthesis_max_aiko_memories", 40)),
+            ),
+            concept_synthesis_dirty_size_delta=max(
+                1,
+                int(memory_raw.get("concept_synthesis_dirty_size_delta", 3)),
             ),
             pre_thought_interval_seconds=max(
                 60,

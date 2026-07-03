@@ -939,6 +939,50 @@ export interface TopicGraphSnapshot {
   clusters: TopicGraphCluster[];
 }
 
+// ── Higher-order concepts (L1/L2 debug surface) ─────────────────────
+
+export interface ConceptEvidence {
+  src_type: string; // "memory" | "cluster" | "concept"
+  src_id: string;
+  relation: string;
+  polarity: number;
+  strength: number;
+  ordinal: number | null;
+  // Resolved, full-text label (memory content / cluster summary / concept
+  // label). Empty when the target row is gone. Never truncated.
+  label: string;
+}
+
+export interface ConceptRow {
+  id: number;
+  label: string;
+  kind: string;
+  subject: string; // "user" | "aiko" | "relationship"
+  evidence_model: string;
+  status: string; // "candidate" | "active" | "dormant" | "retired" | ...
+  confidence: number;
+  plasticity: number;
+  evidence_count: number;
+  distinct_source_count: number;
+  rationale: string;
+  created_at: string;
+  first_evidence_at: string | null;
+  last_reinforced_at: string | null;
+  promoted_at: string | null;
+  dim: number;
+  evidence: ConceptEvidence[];
+}
+
+export interface ConceptsSnapshot {
+  enabled: boolean;
+  total: number;
+  counts: {
+    by_status: Record<string, number>;
+    by_subject: Record<string, number>;
+  };
+  concepts: ConceptRow[];
+}
+
 // ── K10 persona regression (golden-turn drift eval) ─────────────────
 
 export interface PersonaRegressionResult {

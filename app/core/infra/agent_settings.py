@@ -434,6 +434,21 @@ class AgentSettings:
     # functioning unchanged. Cheap on its own (rebuilds from the
     # existing in-memory mirror; no embedding work).
     topic_graph_enabled: bool = True
+    # ── L1 higher-order concept layer ─────────────────────────────────
+    # Master switch for the concept substrate (schema v21: ``concepts`` +
+    # ``concept_edges`` and the in-process ConceptStore mirror). Defaults
+    # OFF: L1 only builds the data layer + store, so with no proposer
+    # (L2) or lifecycle engine (L3) yet there is nothing to run -- the
+    # flag just constructs and warm-starts the store so later L-entries
+    # have somewhere to write. The tables exist regardless of the flag.
+    concepts_enabled: bool = False
+    # L2 concept synthesis proposer. When enabled (and ``concepts_enabled``
+    # is on), a regular, incremental idle worker mines topic clusters +
+    # Aiko's own self-memories for candidate identity concepts, processing
+    # a small bounded batch per run (kv_meta dirty-tracking) so it stays
+    # cheap and never does one giant pass. Off has no effect unless
+    # ``concepts_enabled`` is also on.
+    concept_synthesis_enabled: bool = True
     # Schema v20: persist the topic graph (clusters + centroids +
     # assignments) and maintain it incrementally instead of recomputing
     # the whole O(n^2) clustering on every read. When ``True`` (default)

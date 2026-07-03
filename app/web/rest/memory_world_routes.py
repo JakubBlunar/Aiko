@@ -328,6 +328,50 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(404, "cluster not found (or topic graph off)")
         return JSONResponse(result)
 
+    # ── REST: higher-order concepts (L1/L2 debug) ────────────────────
+
+    @app.get("/api/concepts")
+    def get_concepts() -> JSONResponse:
+        """Read-only snapshot of the concept layer (evidence resolved to
+        readable labels). Empty ``enabled=False`` shape when concepts are
+        disabled. The Memory-tab Concepts panel fetches on open + refresh.
+        """
+        return JSONResponse(session.concepts_snapshot())
+
+    @app.post("/api/concepts/run")
+    def run_concept_synthesis() -> JSONResponse:
+        """Force one ``ConceptSynthesisWorker.run()`` and return its stats.
+
+        Lets a tester trigger a synthesis pass on demand instead of
+        waiting for the ~30-min idle cadence. Synchronous handler, so
+        FastAPI runs it in the threadpool and the blocking worker-LLM
+        calls stay off the event loop (same shape as
+        ``/api/persona-drift/run``).
+        """
+        worker = getattr(session, "_concept_synthesis_worker", None)
+        if worker is None:
+            raise HTTPException(503, "concept synthesis worker unavailable")
+        try:
+            result = worker.run()
+        except Exception as exc:
+            raise HTTPException(500, f"worker run failed: {exc}") from exc
+        return JSONResponse({"result": result or {}})
+
+    @app.delete("/api/concepts/{concept_id}")
+    def delete_concept(concept_id: int) -> JSONResponse:
+        """Delete a single concept (and its edges) -- never any memories.
+
+        Concept-only cleanup for junk candidates while experimenting;
+        the underlying memories / clusters are left intact.
+        """
+        try:
+            deleted = session.delete_concept(int(concept_id))
+        except Exception as exc:
+            raise HTTPException(500, f"delete failed: {exc}") from exc
+        if not deleted:
+            raise HTTPException(404, "concept not found (or concepts off)")
+        return JSONResponse({"deleted": deleted})
+
     @app.get("/api/persona-drift")
     def get_persona_drift() -> JSONResponse:
         """K10: last persona-regression snapshot (``{}`` until first run).

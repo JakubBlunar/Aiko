@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 20
+_SCHEMA_VERSION = 21
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -330,6 +330,87 @@ CREATE TABLE IF NOT EXISTS memory_topic_assignments (
 
 CREATE INDEX IF NOT EXISTS idx_topic_assign_cluster
     ON memory_topic_assignments(cluster_id);
+
+-- Schema v21: L1 higher-order concept layer -- a cross-cluster
+-- abstraction that sits *above* topic clusters (see
+-- ``docs/personality-backlog/concepts.md``). A concept is a
+-- first-class, long-lived entity with a lifecycle, evidence, and
+-- confidence -- not an atomic fact -- so it gets its own tables rather
+-- than living in ``memories``. Two kind-agnostic tables back it:
+--
+-- ``concepts`` -- one row per concept. Deliberately kind-parameterized
+-- from day one (``kind`` is an open enum, ``identity`` for v1) so
+-- adding value / narrative / tension / self concepts later is a
+-- registry entry, not a migration. ``subject`` (user / aiko /
+-- relationship) is orthogonal to ``kind``. ``evidence_model`` is the
+-- *structure* of the evidence (``set`` / ``sequence`` / ``recurring`` /
+-- ``meta``), NOT a node type -- the node type of each piece of evidence
+-- (memory / cluster / concept) lives per-edge on
+-- ``concept_edges.src_type`` and is freely mixable, so a ``set`` concept
+-- may draw on both clusters and memories at once. ``embedding`` is the
+-- label embedding (raw float32 bytes + ``dim``, same encoding as
+-- ``topic_clusters.centroid``); it is the source of truth for the
+-- in-process cosine mirror the store keeps (no LanceDB -- concept
+-- cardinality stays small by design, so nearest-concept is a tiny
+-- in-memory matmul like nearest-centroid, not an ANN search).
+-- ``plasticity`` is the per-concept learning rate; only the L3
+-- lifecycle engine ever mutates ``confidence`` / ``plasticity`` /
+-- ``status``.
+--
+-- ``concept_edges`` -- ONE typed, directed, signed influence graph
+-- (not a per-feature link table). Nodes are ``concept`` / ``cluster`` /
+-- ``memory``; an edge always points from the supporting node toward the
+-- node that depends on it, so evidence (memory|cluster -> concept),
+-- meta-reference (concept -> concept), belief-revision contradiction,
+-- and cross-concept influence are all just ``relation`` values on this
+-- one table. ``cluster`` refs key off the cluster's stable
+-- representative-member id (not the churny ``cluster_id``), resolved to
+-- a live cluster at read time. Like ``memory_conflicts`` /
+-- ``topic_clusters``, cascade cleanup is done in Python by
+-- ``ConceptStore`` rather than via SQL foreign keys, because
+-- ``memories`` / ``concepts`` rows are owned by in-process mirrors that
+-- would drift if SQL deleted rows behind their back.
+CREATE TABLE IF NOT EXISTS concepts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'identity',
+    subject TEXT NOT NULL DEFAULT 'user',
+    user_id TEXT,
+    evidence_model TEXT NOT NULL DEFAULT 'set',
+    status TEXT NOT NULL DEFAULT 'candidate',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    plasticity REAL NOT NULL DEFAULT 0.5,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    distinct_source_count INTEGER NOT NULL DEFAULT 0,
+    rationale TEXT,
+    embedding BLOB,
+    dim INTEGER NOT NULL DEFAULT 0,
+    origin_session TEXT,
+    first_evidence_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_reinforced_at TEXT,
+    promoted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_concepts_status ON concepts(status);
+CREATE INDEX IF NOT EXISTS idx_concepts_subject_kind ON concepts(subject, kind);
+CREATE INDEX IF NOT EXISTS idx_concepts_user ON concepts(user_id);
+
+CREATE TABLE IF NOT EXISTS concept_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_type TEXT NOT NULL,
+    src_id TEXT NOT NULL,
+    dst_type TEXT NOT NULL,
+    dst_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    polarity INTEGER NOT NULL DEFAULT 1,
+    strength REAL NOT NULL DEFAULT 1.0,
+    ordinal INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE(src_type, src_id, dst_type, dst_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_edges_src ON concept_edges(src_type, src_id);
+CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_id);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced
@@ -978,6 +1059,12 @@ class ChatDatabase:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        # v20 -> v21: L1 higher-order concept layer (``concepts`` +
+        # ``concept_edges``). Both are brand-new tables whose every column
+        # and index lives in the ``_CREATE_TABLES`` block above, so the
+        # idempotent ``executescript`` at the top of ``_init_schema``
+        # already created them on upgrade -- there is nothing to ALTER,
+        # only the version bump below records the migration.
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

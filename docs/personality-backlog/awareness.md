@@ -116,6 +116,65 @@ source so a user can disable any of them.
 
 **Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration).
 
+**Builds up into concepts (L-series).** The cross-cluster **concept** layer in
+[`concepts.md`](concepts.md) sits directly on top of this topic graph: it links
+semantically-distant clusters into higher-order abstractions ("Maker Mode", "he
+enjoys understanding systems") that proximity clustering can't produce. The
+concept synthesis worker consumes F10's `interest_map` + `topic_digest` +
+cluster representatives, and L4 adds the missing per-session **cluster
+co-activation** signal alongside `cluster_activity`.
+
+---
+
+## F11. Relevance-driven memory resurrection (latent recall from the archive)
+
+**Motivation.** Today "revival" is **citation-driven and passive**:
+`revival_score` (schema v8) is bumped post-turn only for memories Aiko actually
+cited (`_mark_revived_memories` in
+[`post_turn_helpers_mixin.py`](../../app/core/session/post_turn_helpers_mixin.py)),
+and `MemoryStore.decay()` gives a small rebate proportional to it so cited rows
+resist fading. Nothing *proactively* reaches into the `archive` tier when a
+dormant topic comes back to life. The payoff callback — "this might be
+completely out of date, but I vaguely remember you once mentioning macro
+photography two years ago; are you getting back into it?" — is exactly what
+makes someone feel genuinely remembered, and it's driven by **latent
+relevance**, not age. The thing to avoid is resurrecting a memory just because
+it's old.
+
+**Key files.**
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) (archive-tier scoring
++ the `(distant)` / `(faded)` K25 hedges already live here),
+[`memory_decay_worker.py`](../../app/core/memory/memory_decay_worker.py) /
+[`memory_promotion_worker.py`](../../app/core/memory/memory_promotion_worker.py)
+(tier transitions into/out of `archive`),
+[`topic_graph.py`](../../app/core/conversation/topic_graph.py) (the
+re-engagement trigger — K6 "return-to-known" / cluster reactivation),
+[`long_arc_callback.py`](../../app/core/conversation/long_arc_callback.py) +
+[`callback_detector.py`](../../app/core/conversation/callback_detector.py)
+(existing aged-callback lanes to build on, not duplicate).
+
+**Sketched approach.** Trigger on **topic re-engagement**: when the live user
+text re-activates a cluster that has been quiet for a long stretch (reuse the
+K6 return-to-known signal + F10 cluster recency), run a scoped semantic search
+of the `archive` tier for that cluster/topic. Surface a hit only when latent
+relevance clears a bar (strong cosine to the current topic AND meaningfully
+stale) and hand it up as a **hedged** callback cue — phrased with the K25
+"(distant)" register and an explicit "may be out of date, treat as a soft
+question" guard — rather than a confident statement. Standard anti-nag
+signature + cooldown so a re-opened topic doesn't dredge the archive every turn.
+
+**Relation to existing work.** This *reweights* revival toward relevance; it
+doesn't replace the citation-driven `revival_score` rebate (that stays as the
+"kept alive because we keep using it" signal). Pairs with the concept layer:
+an `active` concept or cluster coming back into focus (L4 / L5) is a natural
+resurrection trigger too.
+
+**Open questions.** Latent-relevance threshold (cosine floor + minimum
+staleness)? Proactive nudge (via `prepared_nudge`) vs. a passive RAG boost that
+only fires when the topic is already live? Cap on resurrections per session?
+
+**Effort.** Medium.
+
 ---
 
 # Temporal awareness (K-time family)

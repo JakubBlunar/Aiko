@@ -2121,6 +2121,74 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_topic_graph_rebuild raised: {exc}"
 
     @mcp.tool()
+    def force_concept_synthesis() -> str:
+        """L2 — force one concept-synthesis run and return its stats.
+
+        Bypasses the worker's ~30-min interval so you can trigger a pass
+        on demand while debugging. Runs the same incremental logic as the
+        idle scheduler would: it processes only *dirty* clusters /
+        aiko-memories (bounded per run), so a clean corpus returns
+        ``{"added": 0, ...}`` with ``llm_calls: 0``. Requires
+        ``agent.concepts_enabled`` + ``agent.concept_synthesis_enabled``.
+        Pair with ``get_concepts_state`` to see what it proposed.
+        """
+        try:
+            worker = getattr(session, "_concept_synthesis_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "concept synthesis worker not registered "
+                     "(concepts_enabled / concept_synthesis_enabled off?)"},
+                    indent=2,
+                )
+            return json.dumps(worker.run(), indent=2)
+        except Exception as exc:
+            return f"force_concept_synthesis raised: {exc}"
+
+    @mcp.tool()
+    def get_concepts_state() -> str:
+        """L1/L2 — dump the current concept layer for inspection.
+
+        Lists every concept in the in-process ``ConceptStore`` mirror with
+        its ``label`` / ``subject`` / ``kind`` / ``status`` / ``confidence``
+        / ``evidence_count`` and its evidence edges (``src_type:src_id``),
+        grouped by status. This is the pre-UI debug read for eyeballing
+        what the proposer (L2) has generated.
+        """
+        try:
+            store = getattr(session, "_concept_store", None)
+            if store is None:
+                return json.dumps(
+                    {"error": "concept store not registered "
+                     "(concepts_enabled off?)"},
+                    indent=2,
+                )
+            concepts = store.all()
+            by_status: dict[str, list[dict[str, Any]]] = {}
+            for c in concepts:
+                evidence = [
+                    f"{e.src_type}:{e.src_id}"
+                    for e in store.evidence_of(c.concept_id)
+                ]
+                by_status.setdefault(c.status, []).append(
+                    {
+                        "id": c.concept_id,
+                        "label": c.label,
+                        "subject": c.subject,
+                        "kind": c.kind,
+                        "evidence_model": c.evidence_model,
+                        "confidence": round(float(c.confidence), 3),
+                        "evidence_count": c.evidence_count,
+                        "evidence": evidence,
+                        "rationale": c.rationale,
+                    }
+                )
+            return json.dumps(
+                {"total": len(concepts), "by_status": by_status}, indent=2
+            )
+        except Exception as exc:
+            return f"get_concepts_state raised: {exc}"
+
+    @mcp.tool()
     def rename_topic_cluster(cluster_id: int, label: str) -> str:
         """F10l — override a cluster's label (sticky across batch refits).
 

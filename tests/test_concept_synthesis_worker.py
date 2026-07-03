@@ -1,0 +1,484 @@
+"""Tests for the L2 :class:`ConceptSynthesisWorker` + proposers.
+
+Covers the two identity proposers (user / aiko), candidate creation,
+evidence-edge shape, single-source rejection, dedupe -> reinforce, the
+``candidate``-only status, and -- the reason the worker is incremental --
+kv_meta dirty-tracking: bounded batches that drain across runs, size-delta
+thresholds, and clean-run no-ops with zero LLM calls.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+import threading
+import types
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+from app.core.concepts.concept_store import Concept, ConceptStore
+from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
+from app.core.infra.chat_database import ChatDatabase
+
+
+# ── stubs ──────────────────────────────────────────────────────────────
+
+
+class FakeEmbedder:
+    """Deterministic per-text unit-ish vectors: identical text -> identical
+    vector (cos 1.0, dedupe hit); distinct text -> ~orthogonal (cos ~0)."""
+
+    def embed(self, text: str) -> np.ndarray:
+        seed = int(hashlib.md5((text or "").encode()).hexdigest()[:8], 16)
+        rng = np.random.RandomState(seed)
+        return rng.randn(16).astype(np.float32)
+
+
+class ClusterStub:
+    def __init__(self, rep: int, summary: str, size: int, kinds):
+        self.representative_id = rep
+        self.summary = summary
+        self.size = size
+        self.member_ids = list(range(size))
+        self.member_kinds = tuple(kinds)
+
+
+class TopicGraphStub:
+    def __init__(self, clusters):
+        self.persistent = True
+        self._clusters = clusters
+
+    def topic_clusters(self):
+        return list(self._clusters)
+
+
+class MemStub:
+    def __init__(self, mid: int, content: str, kind: str, salience: float):
+        self.id = mid
+        self.content = content
+        self.kind = kind
+        self.salience = salience
+
+
+class MemoryStoreStub:
+    def __init__(self, self_memories):
+        self._self = self_memories
+        self._by_id = {m.id: m for m in self_memories}
+
+    def get(self, mid: int):
+        return self._by_id.get(int(mid))
+
+    def iter_by_kinds(self, kinds):
+        ks = set(kinds)
+        return [m for m in self._self if m.kind in ks]
+
+
+class FakeOllama:
+    """``chat_stream`` yields a single JSON blob produced by ``responder``
+    (branching on system/user text so user vs aiko passes can differ)."""
+
+    def __init__(self, responder):
+        self._responder = responder
+        self.calls = 0
+
+    def chat_stream(self, messages, **kw):
+        self.calls += 1
+        system = messages[0]["content"]
+        user = messages[1]["content"]
+        yield json.dumps(self._responder(system, user))
+
+
+def _agent(*, concepts=True, synth=True):
+    return types.SimpleNamespace(
+        concepts_enabled=concepts,
+        concept_synthesis_enabled=synth,
+    )
+
+
+def _mem_settings(*, cap_clusters=10, cap_aiko=40, delta=3, interval=1800):
+    return types.SimpleNamespace(
+        concept_synthesis_interval_seconds=interval,
+        concept_synthesis_max_clusters_per_run=cap_clusters,
+        concept_synthesis_max_aiko_memories=cap_aiko,
+        concept_synthesis_dirty_size_delta=delta,
+    )
+
+
+def _user_clusters(n: int = 6):
+    return [
+        ClusterStub(
+            rep=100 + i,
+            summary=f"topic {i}",
+            size=20 - i,  # descending sizes -> deterministic focus order
+            kinds=("fact", "preference", "event"),
+        )
+        for i in range(n)
+    ]
+
+
+def _self_memories():
+    return [
+        MemStub(1, "I felt proud helping debug the CPU issue.", "self", 0.9),
+        MemStub(2, "Reflecting: I prefer being direct over hedging.", "reflection", 0.8),
+        MemStub(3, "Diary: today I stayed calm under pressure.", "diary", 0.7),
+        MemStub(4, "I noticed I enjoy explaining systems.", "self", 0.6),
+    ]
+
+
+class WorkerHarness:
+    def __init__(
+        self,
+        responder,
+        *,
+        clusters=None,
+        self_memories=None,
+        agent=None,
+        mem_settings=None,
+    ):
+        tmp = tempfile.mkdtemp()
+        self.path = Path(tmp) / "test.db"
+        self.db = ChatDatabase(self.path)
+        self.store = ConceptStore(self.db)
+        self.topic = TopicGraphStub(
+            clusters if clusters is not None else _user_clusters()
+        )
+        self.mem = MemoryStoreStub(
+            self_memories if self_memories is not None else _self_memories()
+        )
+        self.ollama = FakeOllama(responder)
+        self.worker = ConceptSynthesisWorker(
+            concept_store=self.store,
+            topic_graph=self.topic,
+            memory_store=self.mem,
+            embedder=FakeEmbedder(),
+            ollama=self.ollama,
+            chat_model="test-model",
+            cancel_event=threading.Event(),
+            agent_settings=agent or _agent(),
+            memory_settings=mem_settings or _mem_settings(),
+            kv_get=self.db.kv_get,
+            kv_set=self.db.kv_set,
+            clock=lambda: datetime.now(timezone.utc),
+        )
+
+
+def _both_responder(system, user):
+    """Realistic responder: a user identity concept (spans 2 clusters) and
+    an aiko identity concept (spans 2 self memories)."""
+    if "HERSELF" in system:
+        return {
+            "concepts": [
+                {
+                    "label": "I value being direct",
+                    "evidence_memory_ids": [1, 2],
+                    "rationale": "shows up across self + reflection",
+                    "confidence": 0.8,
+                }
+            ]
+        }
+    return {
+        "concepts": [
+            {
+                "label": "Systems thinker",
+                "evidence_cluster_reps": [100, 101],
+                "rationale": "links two technical clusters",
+                "confidence": 0.7,
+            }
+        ]
+    }
+
+
+# ── tests ────────────────────────────────────────────────────────────────
+
+
+class ProposalTests(unittest.TestCase):
+    def test_user_pass_creates_candidate_with_cluster_edges(self) -> None:
+        h = WorkerHarness(_both_responder)
+        stats = h.worker.run()
+        users = h.store.list_by(subject="user", kind="identity")
+        self.assertEqual(len(users), 1)
+        c = users[0]
+        self.assertEqual(c.label, "Systems thinker")
+        self.assertEqual(c.status, "candidate")
+        self.assertEqual(c.subject, "user")
+        self.assertEqual(c.evidence_model, "set")
+        ev = h.store.evidence_of(c.concept_id)
+        self.assertEqual(len(ev), 2)
+        self.assertTrue(all(e.src_type == "cluster" for e in ev))
+        self.assertEqual({e.src_id for e in ev}, {"100", "101"})
+        self.assertEqual(stats["by_subject"]["user"]["added"], 1)
+
+    def test_aiko_pass_creates_candidate_with_memory_edges(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        aiko = h.store.list_by(subject="aiko", kind="identity")
+        self.assertEqual(len(aiko), 1)
+        c = aiko[0]
+        self.assertEqual(c.label, "I value being direct")
+        self.assertEqual(c.subject, "aiko")
+        ev = h.store.evidence_of(c.concept_id)
+        self.assertEqual(len(ev), 2)
+        self.assertTrue(all(e.src_type == "memory" for e in ev))
+        self.assertEqual({e.src_id for e in ev}, {"1", "2"})
+
+    def test_single_source_proposal_is_dropped(self) -> None:
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": [
+                    {"label": "lonely trait", "evidence_memory_ids": [1],
+                     "confidence": 0.9}
+                ]}
+            return {"concepts": [
+                {"label": "one cluster only", "evidence_cluster_reps": [100],
+                 "confidence": 0.9}
+            ]}
+
+        h = WorkerHarness(responder)
+        stats = h.worker.run()
+        self.assertEqual(h.store.count(), 0)
+        self.assertEqual(stats["added"], 0)
+
+    def test_unknown_evidence_ids_are_filtered(self) -> None:
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": []}
+            # one valid rep + junk -> only 1 valid -> dropped
+            return {"concepts": [
+                {"label": "ghost", "evidence_cluster_reps": [100, 99999],
+                 "confidence": 0.9}
+            ]}
+
+        h = WorkerHarness(responder)
+        h.worker.run()
+        self.assertEqual(h.store.count(), 0)
+
+    def test_all_created_concepts_are_candidate(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        self.assertTrue(all(c.status == "candidate" for c in h.store.all()))
+
+
+class ReinforceTests(unittest.TestCase):
+    def test_second_dirty_run_reinforces_not_duplicates(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        users = h.store.list_by(subject="user", kind="identity")
+        self.assertEqual(len(users), 1)
+        first_reinforced_at = users[0].last_reinforced_at
+
+        # Make every cluster dirty again (size drift >= delta) and re-run.
+        for c in h.topic._clusters:
+            c.size += 5
+        stats = h.worker.run()
+
+        again = h.store.list_by(subject="user", kind="identity")
+        self.assertEqual(len(again), 1, "no duplicate concept row")
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+        self.assertEqual(stats["by_subject"]["user"].get("added", 0), 0)
+        self.assertNotEqual(again[0].last_reinforced_at, first_reinforced_at)
+        self.assertEqual(len(h.store.evidence_of(again[0].concept_id)), 2)
+
+
+class ExistingAwarenessTests(unittest.TestCase):
+    def _seed_user_concept(self, store, label="Systems thinker"):
+        return store.add(
+            Concept(
+                label=label,
+                kind="identity",
+                subject="user",
+                embedding=FakeEmbedder().embed(label),
+                status="candidate",
+            )
+        )
+
+    def test_existing_concepts_injected_into_prompt(self) -> None:
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        cid = self._seed_user_concept(h.store)
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            if "HERSELF" not in system:
+                captured["user"] = user
+            return {"concepts": []}
+
+        h.ollama._responder = responder
+        h.worker.run()
+        self.assertIn("Systems thinker", captured["user"])
+        self.assertIn(f"[{cid}]", captured["user"])
+
+    def test_reinforce_by_id_attaches_evidence_no_duplicate(self) -> None:
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        cid = self._seed_user_concept(h.store)
+
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": []}
+            return {"concepts": [
+                {"reinforces_id": cid, "evidence_cluster_reps": [100, 101],
+                 "rationale": "focus cluster adds support"}
+            ]}
+
+        h.ollama._responder = responder
+        stats = h.worker.run()
+
+        users = h.store.list_by(subject="user", kind="identity")
+        self.assertEqual(len(users), 1, "reinforcement must not duplicate")
+        ev = h.store.evidence_of(cid)
+        self.assertEqual({e.src_id for e in ev}, {"100", "101"})
+        self.assertTrue(all(e.src_type == "cluster" for e in ev))
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+        self.assertEqual(stats["added"], 0)
+        self.assertIsNotNone(h.store.get(cid).last_reinforced_at)
+
+    def test_reinforce_needs_only_one_source(self) -> None:
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        cid = self._seed_user_concept(h.store)
+
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": []}
+            # single source: rejected for a NEW concept, allowed to reinforce.
+            return {"concepts": [
+                {"reinforces_id": cid, "evidence_cluster_reps": [100],
+                 "rationale": "one new cluster"}
+            ]}
+
+        h.ollama._responder = responder
+        stats = h.worker.run()
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+        self.assertEqual({e.src_id for e in h.store.evidence_of(cid)}, {"100"})
+
+    def test_unknown_reinforces_id_is_ignored(self) -> None:
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": []}
+            return {"concepts": [
+                {"reinforces_id": 99999, "evidence_cluster_reps": [100, 101],
+                 "rationale": "hallucinated id"}
+            ]}
+
+        h = WorkerHarness(responder)
+        h.worker.run()
+        # No matching existing id + no label -> dropped, nothing created.
+        self.assertEqual(h.store.list_by(subject="user", kind="identity"), [])
+        self.assertEqual(h.store.count(), 0)
+
+
+class IncrementalTests(unittest.TestCase):
+    def test_bounded_batches_drain_across_runs(self) -> None:
+        # 6 dirty clusters, cap 2 -> drains 2/run over 3 runs, then clean.
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []},
+            mem_settings=_mem_settings(cap_clusters=2),
+        )
+        r1 = h.worker.run()
+        self.assertEqual(r1["user_dirty_total"], 6)
+        self.assertEqual(r1["user_processed"], 2)
+        self.assertEqual(r1["user_dirty_remaining"], 4)
+
+        r2 = h.worker.run()
+        self.assertEqual(r2["user_dirty_total"], 4)
+        self.assertEqual(r2["user_processed"], 2)
+        self.assertEqual(r2["user_dirty_remaining"], 2)
+
+        r3 = h.worker.run()
+        self.assertEqual(r3["user_dirty_total"], 2)
+        self.assertEqual(r3["user_processed"], 2)
+        self.assertEqual(r3["user_dirty_remaining"], 0)
+
+        r4 = h.worker.run()
+        self.assertEqual(r4["user_dirty_total"], 0)
+        self.assertEqual(r4["user_processed"], 0)
+
+    def test_clean_run_is_noop_with_zero_llm_calls(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.worker.run()  # first pass processes everything
+        calls_after_first = h.ollama.calls
+        self.assertGreater(calls_after_first, 0)
+
+        stats = h.worker.run()  # nothing dirty now
+        self.assertEqual(stats["added"], 0)
+        self.assertEqual(stats["reinforced"], 0)
+        self.assertEqual(stats["llm_calls"], 0)
+        self.assertEqual(h.ollama.calls, calls_after_first)
+
+    def test_size_drift_below_delta_not_reprocessed(self) -> None:
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []},
+            mem_settings=_mem_settings(delta=3),
+        )
+        h.worker.run()  # clean baseline
+
+        # +2 (< delta 3) on one cluster -> still clean.
+        h.topic._clusters[0].size += 2
+        r = h.worker.run()
+        self.assertEqual(r["user_dirty_total"], 0)
+
+        # +1 more (now +3 total >= delta) -> dirty.
+        h.topic._clusters[0].size += 1
+        r2 = h.worker.run()
+        self.assertEqual(r2["user_dirty_total"], 1)
+
+    def test_aiko_dirty_tracking(self) -> None:
+        h = WorkerHarness(_both_responder)
+        r1 = h.worker.run()
+        self.assertTrue(r1["aiko_dirty"])
+        r2 = h.worker.run()
+        self.assertFalse(r2["aiko_dirty"])
+
+
+class DominanceTests(unittest.TestCase):
+    def test_aiko_dominant_clusters_excluded_from_user_pass(self) -> None:
+        clusters = _user_clusters(2) + [
+            ClusterStub(
+                rep=900, summary="aiko musings", size=10,
+                kinds=("self", "reflection", "self", "diary"),
+            )
+        ]
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []}, clusters=clusters
+        )
+        r = h.worker.run()
+        # only the 2 user-dominant clusters are dirty; rep 900 skipped.
+        self.assertEqual(r["user_dirty_total"], 2)
+
+
+class GatingTests(unittest.TestCase):
+    def _worker(self, agent):
+        h = WorkerHarness(_both_responder, agent=agent)
+        return h.worker
+
+    def test_is_ready_requires_flags_and_persistence(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.assertTrue(
+            self._worker(_agent()).is_ready(now=now, last_run_at=None)
+        )
+        self.assertFalse(
+            self._worker(_agent(concepts=False)).is_ready(
+                now=now, last_run_at=None
+            )
+        )
+        self.assertFalse(
+            self._worker(_agent(synth=False)).is_ready(
+                now=now, last_run_at=None
+            )
+        )
+
+    def test_is_ready_false_when_graph_not_persistent(self) -> None:
+        h = WorkerHarness(_both_responder)
+        h.topic.persistent = False
+        now = datetime.now(timezone.utc)
+        self.assertFalse(h.worker.is_ready(now=now, last_run_at=None))
+
+    def test_run_skips_when_disabled(self) -> None:
+        h = WorkerHarness(_both_responder, agent=_agent(concepts=False))
+        out = h.worker.run()
+        self.assertTrue(out.get("skipped"))
+        self.assertEqual(h.store.count(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
