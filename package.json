@@ -8,7 +8,8 @@
     "dev:api": "python -m app.web",
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
-    "desktop": "concurrently --kill-others-on-fail --names api,web,tauri --prefix-colors magenta,cyan,green \"python -m app.web\" \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\""
+    "desktop": "concurrently --kill-others-on-fail --names api,web,tauri --prefix-colors magenta,cyan,green \"python -m app.web\" \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\"",
+    "tauri": "concurrently --kill-others-on-fail --names web,tauri --prefix-colors cyan,green \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\""
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

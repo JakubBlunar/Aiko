@@ -518,6 +518,14 @@ class PromptTelemetry:
     # went into the prompt rather than a fresh recompute.
     concepts_surfaced: dict[str, Any] = field(default_factory=dict)
     coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
+    # The fully assembled system-prompt string that went into ``messages[0]``
+    # this turn (empty on the idle frame / when no system block was built).
+    # Deliberately kept OUT of ``as_dict()`` — it can be several KB, and the
+    # metrics dict is broadcast over WS on every turn. The session copies it
+    # into a dedicated on-demand attribute (``get_last_system_prompt``)
+    # instead, exposed via ``GET /api/debug/last-prompt`` for the Diagnostics
+    # panel + the MCP ``get_last_response_detail`` debug tool.
+    system_prompt: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {

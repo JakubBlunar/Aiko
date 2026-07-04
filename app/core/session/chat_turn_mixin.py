@@ -305,6 +305,16 @@ class ChatTurnMixin:
                 "concepts_surfaced": tdict["concepts_surfaced"],
                 "coactivation_surfaced": tdict["coactivation_surfaced"],
             })
+            # Stash the assembled system prompt out-of-band (not in the
+            # broadcast metrics — it can be several KB). Fetched on demand
+            # via ``get_last_system_prompt`` for the Diagnostics panel / MCP.
+            self._last_system_prompt = {
+                "prompt": str(getattr(telemetry, "system_prompt", "") or ""),
+                "system_tokens": int(tdict["system_tokens"]),
+                "context_tokens": int(context_tokens),
+                "mode": mode,
+                "captured_at": time.time(),
+            }
         self._set_last_metrics(metrics)
 
         # Arm the typed-silence timer so a long quiet period after this

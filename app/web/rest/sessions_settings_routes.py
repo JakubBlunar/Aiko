@@ -1321,6 +1321,17 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             },
         })
 
+    @app.get("/api/debug/last-prompt")
+    def last_prompt() -> JSONResponse:
+        """Return the fully assembled system prompt from the last turn.
+
+        On-demand snapshot (not a live feed): the frontend Diagnostics
+        panel fetches this to verify what actually went into
+        ``messages[0]`` — persona, memory blocks, inner-life surfaces,
+        tool context, etc. ``prompt`` is empty before the first turn.
+        """
+        return JSONResponse(session.get_last_system_prompt())
+
     # ── REST: long-term memories ────────────────────────────────────
 
 

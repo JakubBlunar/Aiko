@@ -3138,6 +3138,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 "slice_cache_event": slice_event,
                 "aggressive": bool(aggressive),
             },
+            # Carry the assembled system block through so the session can
+            # expose the last turn's prompt on demand (Diagnostics panel /
+            # MCP debug). Not serialised into the broadcast metrics dict.
+            system_prompt=system_prompt,
         )
 
         # Per plan: tweaking-only headline for the prompt build. Stays
