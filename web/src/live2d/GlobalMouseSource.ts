@@ -103,6 +103,10 @@ export class GlobalMouseSource implements MouseSource {
   private _geometryReady = false;
   private _rafHandle: number | null = null;
   private _disposed = false;
+  /** When ``true`` the per-frame poll loop is parked (window hidden).
+   * The cursor cache is left as-is so the gaze resumes from the last
+   * known position without a snap. */
+  private _paused = false;
   private _unlistenMoved: (() => void) | null = null;
   private _unlistenScale: (() => void) | null = null;
 
@@ -189,14 +193,7 @@ export class GlobalMouseSource implements MouseSource {
     // teardown function below cancels the next pending frame and
     // flips ``_disposed`` so any in-flight async work no-ops on
     // resolution.
-    const tick = () => {
-      if (this._disposed) {
-        return;
-      }
-      void this._pollOnce();
-      this._rafHandle = this._scheduleFrame(tick);
-    };
-    this._rafHandle = this._scheduleFrame(tick);
+    this._startLoop();
 
     return () => {
       this._disposed = true;
@@ -215,7 +212,47 @@ export class GlobalMouseSource implements MouseSource {
     };
   }
 
+  /** Park the per-frame cursor poll while the window is hidden. The
+   * ~60 IPC-per-second cursor query is the source's whole cost, so
+   * stopping it drops a tray-hidden webview's contribution to zero.
+   * Idempotent and safe before ``subscribe`` / after dispose. */
+  pause(): void {
+    if (this._paused) {
+      return;
+    }
+    this._paused = true;
+    if (this._rafHandle != null) {
+      this._cancelFrame(this._rafHandle);
+      this._rafHandle = null;
+    }
+  }
+
+  /** Restart a previously :meth:`pause`d poll loop. No-op if disposed,
+   * never subscribed, or not currently paused. */
+  resume(): void {
+    if (!this._paused || this._disposed) {
+      this._paused = false;
+      return;
+    }
+    this._paused = false;
+    this._startLoop();
+  }
+
   // ── internals ────────────────────────────────────────────────────
+
+  private _startLoop(): void {
+    if (this._disposed || this._paused || this._rafHandle != null) {
+      return;
+    }
+    const tick = () => {
+      if (this._disposed || this._paused) {
+        return;
+      }
+      void this._pollOnce();
+      this._rafHandle = this._scheduleFrame(tick);
+    };
+    this._rafHandle = this._scheduleFrame(tick);
+  }
 
   private async _refreshGeometry(): Promise<void> {
     const next = await this._cursorApi.getCurrentWindowGeometry();

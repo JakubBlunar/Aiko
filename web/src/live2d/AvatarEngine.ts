@@ -79,6 +79,13 @@ export interface MouseSource {
   /** Subscribe so the source can keep its internal state up-to-date.
    * Returns an unsubscribe function. The engine calls this once. */
   subscribe(): () => void;
+  /** Optional: pause any internal polling loop while the window is
+   * hidden. Sources that are purely event-driven (``WindowMouseSource``)
+   * don't implement this; the polling ``GlobalMouseSource`` does so its
+   * per-frame cursor IPC stops burning CPU in a tray-hidden webview. */
+  pause?(): void;
+  /** Optional: resume a previously :meth:`pause`d polling loop. */
+  resume?(): void;
 }
 
 const noopMouseSource: MouseSource = {
@@ -105,6 +112,7 @@ export class AvatarEngine {
   private _gazeHandle: number | null = null;
   private _lastTier3Time = 0;
   private _lastGazeTime = 0;
+  private _paused = false;
   private _detachPreUpdate: (() => void) | null = null;
   private _detachMouse: (() => void) | null = null;
 
@@ -231,6 +239,46 @@ export class AvatarEngine {
     this._started = false;
   }
 
+  /** Park the two RAF loops (tier-3 body language + gaze) and the
+   * mouse source's own polling while the window is hidden. The engine
+   * stays fully wired — channels keep their state — so :meth:`resume`
+   * picks up exactly where it left off. Store-event dispatch still
+   * works while paused (a reaction that lands in the tray applies on
+   * the next resumed frame). Idempotent; a no-op before ``start`` or
+   * after ``stop``. */
+  pause(): void {
+    if (this._paused || !this._started || this._disposed) {
+      return;
+    }
+    this._paused = true;
+    if (this._tier3Handle !== null) {
+      this._cancelFrame(this._tier3Handle);
+      this._tier3Handle = null;
+    }
+    if (this._gazeHandle !== null) {
+      this._cancelFrame(this._gazeHandle);
+      this._gazeHandle = null;
+    }
+    this._mouseSource.pause?.();
+  }
+
+  /** Resume the RAF loops after a :meth:`pause`. Resets the per-loop
+   * clocks to "now" so the first resumed frame doesn't see a huge
+   * ``dt`` (which would make body language / gaze jump). No-op if not
+   * paused, not started, or disposed. */
+  resume(): void {
+    if (!this._paused || !this._started || this._disposed) {
+      this._paused = false;
+      return;
+    }
+    this._paused = false;
+    this._mouseSource.resume?.();
+    this._lastTier3Time = this._now();
+    this._lastGazeTime = this._lastTier3Time;
+    this._tier3Handle = this._scheduleFrame(this._runTier3);
+    this._gazeHandle = this._scheduleFrame(this._runGaze);
+  }
+
   // ── store-event dispatch (called by Live2DAvatar.tsx subscriptions) ──
 
   dispatchReaction(reaction: string): void {
@@ -323,7 +371,7 @@ export class AvatarEngine {
   // ── internals ────────────────────────────────────────────────────
 
   private _runTier3 = (): void => {
-    if (this._disposed || !this._started) {
+    if (this._disposed || !this._started || this._paused) {
       return;
     }
     const now = this._now();
@@ -355,7 +403,7 @@ export class AvatarEngine {
   };
 
   private _runGaze = (): void => {
-    if (this._disposed || !this._started) {
+    if (this._disposed || !this._started || this._paused) {
       return;
     }
     const now = this._now();

@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 import { backendBase, isTauri } from "@/desktop/runtime";
+import { useWindowVisible } from "@/hooks/useWindowVisible";
 import { useAssistantStore } from "@/store";
 import type { AvatarProfile, VoiceMode } from "@/types";
 import {
@@ -73,6 +74,40 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
   // ``beforeModelUpdate`` listener detach races a destroyed emitter).
   const engineRef = useRef<AvatarEngine | null>(null);
   const engineBridgeRef = useRef<StoreBridge | null>(null);
+
+  // Whether this webview window is currently visible. When it's closed
+  // to the tray (or minimised) we suspend every per-frame cost — the
+  // Pixi render loop, the Live2D model update, the AvatarEngine RAF
+  // loops, and the global cursor poll — because a hidden-but-alive
+  // WebView2 keeps running them at full frame-rate otherwise (see
+  // ``useWindowVisible`` / ``src-tauri/src/lib.rs``).
+  const active = useWindowVisible();
+  // Mirrored on a ref so the async model-load ``.then`` can apply the
+  // current state once the engine exists (it may finish loading while
+  // the window is already hidden — e.g. the persona window boots
+  // hidden and only renders once popped out).
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  // Suspend / resume all avatar work. Reads refs only so it's stable
+  // across renders and reusable from both the ``active`` effect and the
+  // model-load completion path.
+  const applyAvatarActive = useCallback((next: boolean) => {
+    const app = appRef.current;
+    const model = modelRef.current;
+    const engine = engineRef.current;
+    if (next) {
+      // Order: restart the model update + RAF loops first, then the
+      // renderer, so the first rendered frame already has fresh params.
+      if (model) model.autoUpdate = true;
+      engine?.resume();
+      app?.ticker.start();
+    } else {
+      app?.ticker.stop();
+      engine?.pause();
+      if (model) model.autoUpdate = false;
+    }
+  }, []);
 
   // ── 1. Boot Pixi + load the Live2D model. Reruns when persona changes. ──
   useEffect(() => {
@@ -214,6 +249,11 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
         bridge.start();
         engineRef.current = engine;
         engineBridgeRef.current = bridge;
+        // The model may have finished loading while the window is
+        // hidden (persona boots hidden; either window can be closed to
+        // the tray mid-load). Apply the current visibility so we don't
+        // start a render loop nobody can see.
+        applyAvatarActive(activeRef.current);
       })
       .catch((err) => {
         console.error("Live2D model failed to load", url, err);
@@ -289,6 +329,13 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
     };
   }, [manifest.entry_filename, manifest.cubism_version]);
 
+  // ── 1a. Suspend/resume the render + update loops on visibility change.
+  //    Cheap and idempotent, so we just re-apply on every ``active``
+  //    flip; the model-load path applies the initial state itself.
+  useEffect(() => {
+    applyAvatarActive(active);
+  }, [active, applyAvatarActive]);
+
   // ── 1b. React to scale_multiplier changes without rebuilding the model.
   //    The user can drag a slider in Avatar settings; refit live so the
   //    canvas stays smooth instead of remounting (which flashes).
@@ -318,7 +365,11 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
         const state = useAssistantStore.getState();
         // Don't intrude on speaking, listening (user mid-utterance),
         // or thinking — the body language for those is handled below.
+        // Also skip while the window is hidden: the ticker is stopped
+        // so the motion wouldn't render anyway, and firing it just
+        // queues needless work in a tray-hidden webview.
         const blocked =
+          !activeRef.current ||
           state.ttsState === "speaking" ||
           state.voiceMode === "listening" ||
           state.voiceMode === "transcribing" ||
