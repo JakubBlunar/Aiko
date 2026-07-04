@@ -769,6 +769,25 @@ class MemorySettings:
     concept_retire_confidence_floor: float = 0.15
     concept_candidate_ttl_days: float = 21.0
     concept_identity_plasticity: float = 0.3
+    # L21 cold-start / anti-premature guard. Nothing is proposed or
+    # surfaced while the topic graph is too sparse to support an
+    # abstraction: synthesis is skipped (a manual ``force`` run still
+    # works) and the lifecycle engine promotes candidates against a
+    # *stricter* bar until the graph matures. ``min_clusters`` is the
+    # cluster-count floor; ``min_history_days`` is how much calendar
+    # history must exist first (belt-and-braces with the cluster floor).
+    # ``promote_young_*`` are the tightened promotion thresholds applied
+    # only while immature.
+    concept_min_clusters: int = 6
+    concept_min_history_days: float = 3.0
+    concept_promote_young_min_sources: int = 3
+    concept_promote_young_min_confidence: float = 0.72
+    # L5 surfacing. The T1 concept_block renders at most
+    # ``surface_max_items`` active user-identity concepts, and only those
+    # whose confidence clears ``surface_min_confidence`` (kept above the
+    # lifecycle dormant floor so nothing shaky is ever asserted).
+    concept_surface_max_items: int = 3
+    concept_surface_min_confidence: float = 0.55
     # K11: pre-thought / counterfactual worker cadence. A tick is one
     # question-generation LLM call plus up to ``pre_thought_max_per_run``
     # in-persona draft calls, so an hour between successful runs is
@@ -2209,6 +2228,42 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 max(
                     0.0,
                     float(memory_raw.get("concept_identity_plasticity", 0.3)),
+                ),
+            ),
+            concept_min_clusters=max(
+                0,
+                int(memory_raw.get("concept_min_clusters", 6)),
+            ),
+            concept_min_history_days=max(
+                0.0,
+                float(memory_raw.get("concept_min_history_days", 3.0)),
+            ),
+            concept_promote_young_min_sources=max(
+                1,
+                int(memory_raw.get("concept_promote_young_min_sources", 3)),
+            ),
+            concept_promote_young_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_promote_young_min_confidence", 0.72
+                        )
+                    ),
+                ),
+            ),
+            concept_surface_max_items=max(
+                0,
+                int(memory_raw.get("concept_surface_max_items", 3)),
+            ),
+            concept_surface_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_surface_min_confidence", 0.55)
+                    ),
                 ),
             ),
             pre_thought_interval_seconds=max(

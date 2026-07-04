@@ -621,6 +621,7 @@ class SpeakingWorkersInitMixin:
             agenda=self._render_agenda_block,
             goals=self._render_goals_block,
             interest_map=self._render_interest_map_block,
+            concept=self._render_concept_block,
             arc=self._render_arc_block,
             narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,
@@ -1319,6 +1320,25 @@ class SpeakingWorkersInitMixin:
                         )
                         self._concept_event_store = None
 
+                    # L5: wire the concept store into the retriever so the
+                    # ``recall_concept`` tool can resolve concepts + their
+                    # evidence bundle. Second-pass setter (mirrors
+                    # set_topic_graph); no-op when the retriever is absent.
+                    if (
+                        self._concept_store is not None
+                        and getattr(self, "_rag_retriever", None) is not None
+                        and hasattr(self._rag_retriever, "set_concept_store")
+                    ):
+                        try:
+                            self._rag_retriever.set_concept_store(
+                                self._concept_store,
+                            )
+                        except Exception:
+                            log.debug(
+                                "RagRetriever set_concept_store failed",
+                                exc_info=True,
+                            )
+
                 # K9: TopicGraph + CuriositySeedWorker. The graph is a
                 # zero-cost wrapper around the in-process memory mirror;
                 # the worker registers as an idle tick that proposes
@@ -1724,10 +1744,33 @@ class SpeakingWorkersInitMixin:
                             ConceptLifecycleWorker,
                         )
 
+                        def _graph_mature() -> bool:
+                            # L21: promotion uses the stricter young-graph
+                            # bar until the graph clears the cluster floor.
+                            # No graph wired => treat as mature so lean
+                            # deployments keep the normal bar.
+                            graph = getattr(self, "_topic_graph", None)
+                            if graph is None:
+                                return True
+                            min_clusters = int(
+                                getattr(
+                                    self._memory_settings,
+                                    "concept_min_clusters",
+                                    6,
+                                )
+                            )
+                            try:
+                                return bool(
+                                    graph.mature(min_clusters=min_clusters)
+                                )
+                            except Exception:
+                                return True
+
                         self._concept_lifecycle_worker = ConceptLifecycleWorker(
                             concept_store=self._concept_store,
                             concept_event_store=self._concept_event_store,
                             engagement_clock=self._engagement_clock,
+                            graph_mature_provider=_graph_mature,
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

@@ -2142,6 +2142,69 @@ class InterestMapProviderTests(unittest.TestCase):
         )
 
 
+class ConceptBlockProviderTests(unittest.TestCase):
+    """L5 concept_block lands in the system prompt (T1, right after the
+    interest map), is silent when empty, and is dropped under
+    ``aggressive=True``."""
+
+    _CUE = "Things you've come to understand about Jacob"
+
+    def test_concept_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="cb1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                concept=lambda: (
+                    f"{self._CUE}:\n- You're fairly sure enjoys systems"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "cb1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_concept_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="cb2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(concept=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "cb2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_concept_block_dropped_under_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="cb3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                concept=lambda: f"{self._CUE}:\n- x",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "cb3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t1_after_interest_map(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
+        self.assertIn("concept_block", t1)
+        self.assertEqual(
+            t1.index("concept_block"), t1.index("interest_map_block") + 1,
+        )
+
+
 class NoveltyBlockProviderTests(unittest.TestCase):
     """K6 novelty provider lands in the system prompt, is dropped under
     ``aggressive=True``, and receives the current ``user_text``."""

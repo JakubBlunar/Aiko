@@ -447,6 +447,7 @@
     "get_time": true,
     "recall": true,
     "recall_topic": true,
+    "recall_concept": true,
     "web_search": true,
     "world": true,
     "goals": true,

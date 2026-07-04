@@ -466,6 +466,23 @@ gone quiet" contrast line.
 
 ## L5. Concept prompt surfacing + recall
 
+**Status: BUILT (user slice).** The `user`/`identity` slice shipped with the
+L21 guard. Delivered: a T1 `concept_block`
+([`_render_concept_block`](../../app/core/session/inner_life_part1.py), right
+after `interest_map_block`) that renders active user-identity concepts as
+confidence-scaled, offered-not-asserted impressions (silent when empty /
+immature), gated by `agent.concept_block_enabled`; and a `recall_concept` tool
+([`RecallConceptTool`](../../app/llm/tools/builtins.py) →
+`RagRetriever.recall_concept`) that returns a **self-contained bundle** —
+concept + capped evidence memories + supporting cluster labels — in one call,
+with an `all_evidence` flag for the full set (no nested tools). Deferred: the
+**Aiko-self** surfacing slice (T0 `self_image` routing) to **L11**;
+context-aware *which*-concept selection to **L23**; concept-aware memory
+extraction to **L24** (which must carry an anti-self-reinforcement guard: a
+concept-shaped memory must never count as fresh distinct evidence for the
+concept that shaped it). The bias checkpoint below is satisfied for the user
+slice (confidence-scaled hedging + cap, active-only, maturity gate).
+
 **Motivation.** An `active` concept is only worth synthesizing if Aiko can
 *use* it — proactively ("you've been in Maker Mode a lot this week") and on
 demand ("what do you actually get me on?").
@@ -1041,6 +1058,18 @@ abstraction level is what a self-narrative reaches for.
 ---
 
 ## L21. Cold-start + anti-premature-proposal guard
+
+**Status: BUILT.** `TopicGraph.topic_graph_maturity()` / `mature()` provide the
+cluster-count (+ member) signal; `MemoryStore.earliest_created_at()` provides
+the calendar-history signal. The L2 `ConceptSynthesisWorker` gates both
+`is_ready()` and `run()` on maturity (`concept_min_clusters` +
+`concept_min_history_days`) while a manual `force` run bypasses it; the L3
+`ConceptLifecycleWorker` promotes against a **stricter young-graph bar**
+(`concept_promote_young_min_sources` / `concept_promote_young_min_confidence`)
+via an injected `graph_mature_provider` until the graph clears the floor; the L5
+`concept_block` stays silent while immature and `recall_concept` returns empty
+when the store is sparse. All consumers degrade gracefully rather than
+confabulate.
 
 **Motivation.** The concept layer only lights up after months of accumulated
 memories and clusters. Two failure modes to design against up front: (1) Aiko

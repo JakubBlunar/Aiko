@@ -90,6 +90,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "get_time": "time",
     "recall": "recall",
     "recall_topic": "recall",
+    "recall_concept": "recall",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",

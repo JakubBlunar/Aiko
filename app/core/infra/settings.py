@@ -562,6 +562,12 @@ class ToolsSettings:
     # cluster of the memory graph rather than the few closest snippets.
     # Needs the topic graph wired (no-ops to an empty result otherwise).
     recall_topic: bool = True
+    # L5 concept recall (``recall_concept``): pull up one higher-order
+    # concept Aiko has abstracted about the user, bundled with its
+    # supporting evidence memories + topic-cluster labels in a single
+    # call. Needs the concept store wired into the retriever (no-ops to
+    # an empty result otherwise).
+    recall_concept: bool = True
     web_search: bool = True
     # Aiko's room: small set of tools that let her look around / move /
     # consume cookies. See :mod:`app.llm.tools.world`.
@@ -1744,6 +1750,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             get_time=bool(tools_raw.get("get_time", True)),
             recall=bool(tools_raw.get("recall", True)),
             recall_topic=bool(tools_raw.get("recall_topic", True)),
+            recall_concept=bool(tools_raw.get("recall_concept", True)),
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),

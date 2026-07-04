@@ -54,7 +54,12 @@ class ToolsRegistryMixin:
 
         registry = ToolRegistry()
         try:
-            from app.llm.tools.builtins import GetTimeTool, RecallTool, RecallTopicTool
+            from app.llm.tools.builtins import (
+                GetTimeTool,
+                RecallConceptTool,
+                RecallTool,
+                RecallTopicTool,
+            )
             if getattr(tools_cfg, "get_time", True):
                 registry.register(GetTimeTool())
             if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
@@ -65,6 +70,11 @@ class ToolsRegistryMixin:
             # register regardless).
             if getattr(tools_cfg, "recall_topic", True) and getattr(self, "_rag_retriever", None) is not None:
                 registry.register(RecallTopicTool(self._rag_retriever))
+            # L5 concept recall. Same retriever; useful once the concept
+            # store is wired (empty result otherwise, so safe to register
+            # regardless).
+            if getattr(tools_cfg, "recall_concept", True) and getattr(self, "_rag_retriever", None) is not None:
+                registry.register(RecallConceptTool(self._rag_retriever))
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the
             # ToolPlugin SDK fast-tool path below, not as a core builtin.

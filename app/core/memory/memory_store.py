@@ -1675,3 +1675,18 @@ class MemoryStore:
     def count(self) -> int:
         with self._lock:
             return len(self._mirror)
+
+    def earliest_created_at(self) -> str | None:
+        """ISO timestamp of the oldest memory (``None`` when empty).
+
+        A cheap "how much history exists" signal for cold-start gates
+        (L21). Scans the in-process mirror, so it costs O(n) but only
+        gets called on slow idle paths, never the per-turn hot path.
+        """
+        with self._lock:
+            if not self._mirror:
+                return None
+            return min(
+                (m.created_at for m in self._mirror.values() if m.created_at),
+                default=None,
+            )

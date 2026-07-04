@@ -458,6 +458,12 @@ class AgentSettings:
     # cheap and never does one giant pass. Off has no effect unless
     # ``concepts_enabled`` is also on.
     concept_synthesis_enabled: bool = True
+    # L5 surfacing. When on (and ``concepts_enabled`` is on), the T1
+    # ``concept_block`` renders a few high-confidence active user-identity
+    # concepts into the system prompt as hedged, offered-not-asserted
+    # impressions so Aiko can actually *use* what she has abstracted. Off
+    # has no effect unless ``concepts_enabled`` is also on.
+    concept_block_enabled: bool = True
     # Schema v20: persist the topic graph (clusters + centroids +
     # assignments) and maintain it incrementally instead of recomputing
     # the whole O(n^2) clustering on every read. When ``True`` (default)

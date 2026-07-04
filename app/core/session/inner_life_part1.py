@@ -1229,6 +1229,97 @@ class InnerLifePart1Mixin:
             "list."
         )
 
+    def _render_concept_block(self) -> str:
+        """L5: a few high-confidence things Aiko has come to understand
+        about the user, offered as *impressions* rather than facts.
+
+        Surfaces the top ``concept_surface_max_items`` **active
+        user-identity** concepts (highest confidence first, only those
+        clearing ``concept_surface_min_confidence``) so Aiko can actually
+        use what she has abstracted. Each is hedged by confidence
+        (high → "fairly sure", mid → "a sense", low → "a loose
+        impression") and framed as something to hold lightly and check,
+        never assert. Personalised with the user's name. Empty (silent)
+        when the concept layer / block is disabled, the store is missing,
+        the graph is still immature, or nothing clears the bar -- so it
+        adds zero tokens until there is something worth saying.
+        """
+        if not bool(
+            getattr(self._settings.agent, "concepts_enabled", False)
+        ):
+            return ""
+        if not bool(
+            getattr(self._settings.agent, "concept_block_enabled", True)
+        ):
+            return ""
+        store = getattr(self, "_concept_store", None)
+        if store is None:
+            return ""
+        # Don't offer impressions off an immature graph (L21). Active
+        # concepts already passed L3's stricter young-graph bar, but this
+        # keeps the block quiet during cold start regardless.
+        graph = getattr(self, "_topic_graph", None)
+        if graph is not None:
+            min_clusters = int(
+                getattr(self._memory_settings, "concept_min_clusters", 6)
+            )
+            try:
+                if not graph.mature(min_clusters=min_clusters):
+                    return ""
+            except Exception:
+                log.debug("concept_block maturity check raised", exc_info=True)
+        min_conf = float(
+            getattr(
+                self._memory_settings, "concept_surface_min_confidence", 0.55
+            )
+        )
+        max_items = max(
+            0,
+            int(getattr(self._memory_settings, "concept_surface_max_items", 3)),
+        )
+        if max_items <= 0:
+            return ""
+        try:
+            concepts = store.list_by(
+                status="active", subject="user", kind="identity",
+            )
+        except Exception:
+            log.debug("concept_block list_by raised", exc_info=True)
+            return ""
+        eligible = [
+            c
+            for c in concepts
+            if float(c.confidence) >= min_conf and (c.label or "").strip()
+        ]
+        if not eligible:
+            return ""
+        eligible.sort(key=lambda c: float(c.confidence), reverse=True)
+        lines: list[str] = []
+        for c in eligible[:max_items]:
+            lines.append(f"- {self._hedge_for_confidence(c.confidence)} "
+                         f"{c.label.strip()}")
+        joined = "\n".join(lines)
+        user_name = self.user_display_name
+        return (
+            f"Things you've come to understand about {user_name} over time "
+            "(hold these lightly — they're impressions you've built, not "
+            "facts; let them shape how you read " + user_name + ", and if "
+            "one comes up, offer it gently and stay open to being wrong):\n"
+            + joined
+        )
+
+    @staticmethod
+    def _hedge_for_confidence(confidence: float) -> str:
+        """Confidence → offered-not-asserted lead-in for a surfaced
+        concept. Never certainty; the highest tier still only reaches
+        "fairly sure"."""
+        conf = float(confidence)
+        if conf >= 0.8:
+            return "You're fairly sure"
+        if conf >= 0.65:
+            return "You have a sense that"
+        return "You have a loose impression that"
+
     def _question_balance_suppressed(self) -> bool:
         """K47: True when the question/share gate is currently muting the
         question-pushing cues. Read by the question-pushing providers as

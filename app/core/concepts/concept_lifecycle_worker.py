@@ -85,11 +85,13 @@ class ConceptLifecycleWorker:
         agent_settings: Any,
         concept_event_store: "ConceptEventStore | None" = None,
         engagement_clock: "EngagementClock | None" = None,
+        graph_mature_provider: Callable[[], bool] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
         self._events = concept_event_store
         self._engagement_clock = engagement_clock
+        self._graph_mature_provider = graph_mature_provider
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -261,16 +263,45 @@ class ConceptLifecycleWorker:
     def _gate(self, concept: "Concept", now: datetime, conf: float) -> bool:
         kind = get_kind(concept.kind)
         gate = getattr(kind, "promotion_gate", None) or set_evidence_gate
+        # L21: until the topic graph matures, promote against a stricter
+        # bar (more distinct sources + higher confidence) so early,
+        # thinly-evidenced candidates don't lock in as beliefs. Age is
+        # left untouched (it only ever delays). When no provider is wired,
+        # treat the graph as mature (normal thresholds).
+        mature = self._graph_mature()
+        min_sources = self._i("concept_promote_min_sources", 2)
+        min_confidence = self._f("concept_promote_min_confidence", 0.6)
+        if not mature:
+            min_sources = max(
+                min_sources, self._i("concept_promote_young_min_sources", 3)
+            )
+            min_confidence = max(
+                min_confidence,
+                self._f("concept_promote_young_min_confidence", 0.72),
+            )
         return bool(
             gate(
                 distinct_source_count=concept.distinct_source_count,
                 age_days=self._age_days(concept, now),
                 confidence=conf,
-                min_sources=self._i("concept_promote_min_sources", 2),
+                min_sources=min_sources,
                 min_age_days=self._f("concept_promote_min_age_days", 2.0),
-                min_confidence=self._f("concept_promote_min_confidence", 0.6),
+                min_confidence=min_confidence,
             )
         )
+
+    def _graph_mature(self) -> bool:
+        """Whether the topic graph has cleared the L21 maturity floor.
+        Defaults to ``True`` when no provider is wired so lean / test
+        deployments keep the normal promotion bar."""
+        provider = self._graph_mature_provider
+        if provider is None:
+            return True
+        try:
+            return bool(provider())
+        except Exception:
+            log.debug("graph_mature_provider raised", exc_info=True)
+            return True
 
     def _is_stale_candidate(self, concept: "Concept", now: datetime) -> bool:
         ttl = self._f("concept_candidate_ttl_days", 21.0)
