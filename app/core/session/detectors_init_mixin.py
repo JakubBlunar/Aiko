@@ -777,6 +777,11 @@ class DetectorsInitMixin:
         # ── Metrics ──────────────────────────────────────────────────────
         self._last_metrics: dict[str, Any] = self._zero_metrics()
         self._metrics_history: deque[dict[str, Any]] = deque(maxlen=10)
+        # On-demand snapshot of the last turn's assembled system prompt.
+        # Kept separate from ``_last_metrics`` (which rides every WS
+        # broadcast) because the prompt can be several KB; surfaced via
+        # ``get_last_system_prompt`` for the Diagnostics panel + MCP.
+        self._last_system_prompt: dict[str, Any] = self._zero_system_prompt()
         self._compactions_total = 0
         # TTS timing: the moment chat_once_streaming finishes the LLM stream
         # is the natural "TTS may begin" mark; ``_tts_turn_start_at`` captures

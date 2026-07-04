@@ -328,7 +328,7 @@
     "dedupe_threshold": 0.92,
     "extractor_enabled": true,
     "memory_extractor_think": true,
-    "memory_extractor_max_tokens": 1024,
+    "memory_extractor_max_tokens": 4096,
     "self_tagged_salience": 0.7,
     "tiers_enabled": true,
     "decay_rate_scratchpad": 0.05,

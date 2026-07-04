@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
+import { api } from "../../api";
 import { debugLog } from "../../log";
 import { useAssistantStore } from "../../store";
-import type { MetricsResponse, MetricsSnapshot } from "../../types";
+import type {
+  LastSystemPromptResponse,
+  MetricsResponse,
+  MetricsSnapshot,
+} from "../../types";
 import { fmtMs } from "@/lib/time";
 import { MeterBar } from "@/components/MeterBar";
 import { PersonaRegressionPanel } from "./PersonaRegressionPanel";
@@ -183,6 +188,8 @@ export function DiagnosticsSection({
         </div>
       </div>
 
+      <LastPromptBlock />
+
       <PersonaRegressionPanel />
 
       <DebugLoggingBlock onApplyPatch={onApplyPatch} busy={busy} />
@@ -289,6 +296,122 @@ function DebugLoggingBlock({ onApplyPatch, busy }: DebugLoggingBlockProps) {
           {size.toLocaleString()} entries · last flush {lastFlushLabel}
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Last-turn system prompt inspector.
+ *
+ * Fetches ``GET /api/debug/last-prompt`` on demand (not a live feed —
+ * the prompt can be several KB, so it never rides the metrics WS
+ * broadcast). Lets the user confirm exactly what went into
+ * ``messages[0]`` last turn: persona, memory blocks, inner-life
+ * surfaces, tool context, etc.
+ */
+function LastPromptBlock() {
+  const [snapshot, setSnapshot] = useState<LastSystemPromptResponse | null>(
+    null,
+  );
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.getLastSystemPrompt();
+      setSnapshot(data);
+      setOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load prompt");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!snapshot?.prompt) return;
+    try {
+      await navigator.clipboard.writeText(snapshot.prompt);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard can be blocked (insecure origin / permissions); the
+      // prompt is still visible for manual selection, so swallow.
+    }
+  };
+
+  const capturedLabel =
+    snapshot?.captured_at != null
+      ? `${Math.max(0, Math.round(Date.now() / 1000 - snapshot.captured_at))}s ago`
+      : "—";
+  const hasPrompt = !!snapshot?.prompt;
+
+  return (
+    <div className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-3">
+      <div className="mb-2 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-ink-100/60">
+        <span>Last-turn system prompt</span>
+        <span className="text-[10px] font-normal normal-case text-ink-100/40">
+          on demand
+        </span>
+      </div>
+      <p className="mb-3 text-[11px] leading-snug text-ink-100/55">
+        Fetches the fully assembled system block sent as{" "}
+        <code className="font-mono text-ink-100/70">messages[0]</code> on the
+        last turn — persona, memory, inner-life surfaces, tool context. Use it
+        to verify everything is passed through correctly.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          className="rounded border border-white/10 bg-white/5 px-2 py-1 text-ink-100/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loading ? "Loading…" : snapshot ? "Refresh" : "Fetch"}
+        </button>
+        {snapshot ? (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="rounded border border-white/10 bg-white/5 px-2 py-1 text-ink-100/80 transition hover:bg-white/10"
+          >
+            {open ? "Hide" : "Show"}
+          </button>
+        ) : null}
+        {hasPrompt ? (
+          <button
+            type="button"
+            onClick={() => void copy()}
+            className="rounded border border-white/10 bg-white/5 px-2 py-1 text-ink-100/80 transition hover:bg-white/10"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+        ) : null}
+        {snapshot ? (
+          <span className="ml-auto text-ink-100/50 tabular-nums">
+            {snapshot.system_tokens.toLocaleString()} tok · {snapshot.mode} ·{" "}
+            {capturedLabel}
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="mt-2 text-[11px] text-rose-300/80">{error}</p>
+      ) : null}
+      {open && snapshot ? (
+        hasPrompt ? (
+          <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] leading-snug text-ink-100/75">
+            {snapshot.prompt}
+          </pre>
+        ) : (
+          <p className="mt-2 text-[11px] text-ink-100/50">
+            No prompt captured yet — send a message first.
+          </p>
+        )
+      ) : null}
     </div>
   );
 }

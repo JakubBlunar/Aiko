@@ -220,8 +220,30 @@ class ListenersMetricsMixin:
             "coactivation_surfaced": {},
         }
 
+    @staticmethod
+    def _zero_system_prompt() -> dict[str, Any]:
+        return {
+            "prompt": "",
+            "system_tokens": 0,
+            "context_tokens": 0,
+            "mode": "idle",
+            "captured_at": None,
+        }
+
     def get_last_metrics(self) -> dict[str, Any]:
         return dict(self._last_metrics)
+
+    def get_last_system_prompt(self) -> dict[str, Any]:
+        """The system prompt assembled for the most recent turn.
+
+        On-demand only (not broadcast): the prompt string can be several
+        KB, so it lives outside ``_last_metrics``. Returns a copy with the
+        prompt text plus its token cost, the turn ``mode``, and a
+        ``captured_at`` epoch-seconds stamp (``None`` before the first
+        turn). Used by ``GET /api/debug/last-prompt`` and the MCP
+        ``get_last_response_detail`` debug tool.
+        """
+        return dict(self._last_system_prompt)
 
     def get_average_metrics(self) -> dict[str, float | str | int]:
         if not self._metrics_history:
@@ -253,3 +275,4 @@ class ListenersMetricsMixin:
     def reset_latency_metrics(self) -> None:
         self._last_metrics = self._zero_metrics()
         self._metrics_history.clear()
+        self._last_system_prompt = self._zero_system_prompt()

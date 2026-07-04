@@ -1398,6 +1398,17 @@ export interface MetricsResponse {
   config: MetricsConfig;
 }
 
+/** On-demand snapshot of the last turn's assembled system prompt
+ * (``GET /api/debug/last-prompt``). ``prompt`` is empty before the
+ * first turn; ``captured_at`` is epoch seconds (or ``null``). */
+export interface LastSystemPromptResponse {
+  prompt: string;
+  system_tokens: number;
+  context_tokens: number;
+  mode: string;
+  captured_at: number | null;
+}
+
 // ── WebSocket message envelopes ──────────────────────────────────────
 
 /** Phase 2b: mood_state — a continuous valence/arousal/named-mood snapshot. */

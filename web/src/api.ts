@@ -35,6 +35,7 @@ import type {
   MemoryOrder,
   MemoryUpdatePatch,
   MetricsResponse,
+  LastSystemPromptResponse,
   PersonaRegressionSnapshot,
   RagDocument,
   SessionRow,
@@ -788,6 +789,8 @@ export const api = {
       },
     ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
+  getLastSystemPrompt: () =>
+    jsonFetch<LastSystemPromptResponse>("/api/debug/last-prompt"),
   // Identity (first-run onboarding). The frontend reads ``needs_onboarding``
   // from the WS hello on connect; this REST pair is used by the modal
   // submit handler and any "change name" surface in Settings.

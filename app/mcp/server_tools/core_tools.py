@@ -63,8 +63,17 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def get_last_response_detail() -> str:
-        """Return the last turn's full timing + token usage as JSON."""
-        return json.dumps(session.get_last_metrics(), indent=2, default=str)
+        """Return the last turn's full timing + token usage as JSON.
+
+        Includes ``system_prompt``: the fully assembled system block that
+        went into ``messages[0]`` this turn, so ``force_*`` repros can grep
+        it to confirm a surface (away-activity line, heads-up correction,
+        etc.) actually landed in the prompt.
+        """
+        detail = session.get_last_metrics()
+        snapshot = session.get_last_system_prompt()
+        detail["system_prompt"] = snapshot.get("prompt", "")
+        return json.dumps(detail, indent=2, default=str)
 
     @mcp.tool()
     def get_compaction_state() -> str:
