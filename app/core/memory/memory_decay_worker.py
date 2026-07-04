@@ -35,6 +35,7 @@ from app.core.proactive.idle_worker import default_is_ready
 if TYPE_CHECKING:
     from app.core.memory.memory_store import MemoryStore
     from app.core.infra.settings import MemorySettings
+    from app.core.infra.engagement_clock import EngagementClock
 
 
 log = logging.getLogger("app.memory_decay_worker")
@@ -62,12 +63,20 @@ class MemoryDecayWorker:
 
     name = "memory_decay"
 
+    # kv_meta anchor for the engagement-clock elapsed accounting: the
+    # ``clock.total()`` value at the last successful decay run. Parallel
+    # to the store's own wall-clock ``memory.last_decay_run_at`` anchor.
+    _KV_LAST_DECAY_ENGAGEMENT = "memory.last_decay_engagement"
+
     def __init__(
         self,
         store: "MemoryStore",
         settings: "MemorySettings",
         *,
         knowledge_gap_store: "Any | None" = None,
+        engagement_clock: "EngagementClock | None" = None,
+        kv_get: "Any | None" = None,
+        kv_set: "Any | None" = None,
     ) -> None:
         self._store = store
         self._settings = settings
@@ -76,6 +85,14 @@ class MemoryDecayWorker:
         # 90-day expiry pass on the journal. ``None`` keeps tests and
         # lean deployments running without the extra hook.
         self._knowledge_gap_store = knowledge_gap_store
+        # Shared engagement clock + kv_meta accessors for its anchor. When
+        # all three are present (and ``memory_decay_use_engagement_clock``
+        # is on) decay is driven by active-conversation time rather than
+        # wall-clock, so absence / quiet stretches don't fade memories.
+        # Missing any of them => today's wall-clock path.
+        self._engagement_clock = engagement_clock
+        self._kv_get = kv_get
+        self._kv_set = kv_set
 
     @property
     def interval_seconds(self) -> float:
@@ -101,16 +118,32 @@ class MemoryDecayWorker:
             "long_term": float(self._settings.decay_rate_long_term),
             "archive": float(self._settings.decay_rate_archive),
         }
+        max_catchup = float(self._settings.decay_max_catchup_days)
+        # When the engagement clock is wired + enabled, drive elapsed_days
+        # from active-conversation time (clamped by the same catch-up cap)
+        # and pass it explicitly so ``decay()`` skips its wall-clock
+        # anchor. Otherwise ``elapsed_days=None`` keeps the exact
+        # wall-clock behaviour. Computed *before* decay so we only advance
+        # our engagement anchor once decay actually applied.
+        engaged_days, engaged_now = self._engaged_elapsed(max_catchup)
         try:
             stats = self._store.decay(
+                elapsed_days=engaged_days,
                 decay_rates=rates,
                 revival_coefficient=float(self._settings.revival_coefficient),
                 revival_decay_per_day=float(self._settings.revival_decay_per_day),
-                max_catchup_days=float(self._settings.decay_max_catchup_days),
+                max_catchup_days=max_catchup,
             )
         except Exception:
             log.warning("memory decay failed", exc_info=True)
             raise
+        # Advance the engagement anchor after a successful engagement-driven
+        # sweep so the next run measures only the newly-accrued active time.
+        if engaged_now is not None and self._kv_set is not None:
+            try:
+                self._kv_set(self._KV_LAST_DECAY_ENGAGEMENT, repr(engaged_now))
+            except Exception:
+                log.debug("engagement decay anchor write failed", exc_info=True)
         log.info("memory_decay sweep: %s", stats)
         # F2: piggyback gap expiry. Best-effort — if it fails, the
         # decay sweep result still counts as a successful tick.
@@ -136,6 +169,51 @@ class MemoryDecayWorker:
             stats_temporal = {}
         out.update(stats_temporal)
         return out
+
+    # ── engagement-clock elapsed accounting ──────────────────────────
+
+    def _engaged_elapsed(
+        self, max_catchup_days: float
+    ) -> tuple[float | None, float | None]:
+        """Return ``(elapsed_days, engaged_now)`` for the engagement path.
+
+        ``elapsed_days is None`` means "use the wall-clock path" (clock
+        disabled / not wired / setting off). Otherwise it's the active
+        time elapsed since our anchor, clamped to ``max_catchup_days``;
+        ``engaged_now`` is the current ``clock.total()`` to persist as the
+        new anchor after a successful sweep (``None`` on the first run,
+        whose baseline this method has already written).
+        """
+        clock = self._engagement_clock
+        if (
+            clock is None
+            or self._kv_get is None
+            or self._kv_set is None
+            or not getattr(clock, "enabled", False)
+            or not bool(
+                getattr(self._settings, "memory_decay_use_engagement_clock", True)
+            )
+        ):
+            return None, None
+        try:
+            raw = self._kv_get(self._KV_LAST_DECAY_ENGAGEMENT)
+        except Exception:
+            return None, None
+        now_units = clock.total()
+        if raw is None:
+            # First engagement-driven run: store the baseline, apply no
+            # decay this pass (mirrors decay()'s wall-clock first-run guard).
+            try:
+                self._kv_set(self._KV_LAST_DECAY_ENGAGEMENT, repr(now_units))
+            except Exception:
+                log.debug("engagement decay baseline write failed", exc_info=True)
+            return 0.0, None
+        try:
+            anchor = float(raw)
+        except (TypeError, ValueError):
+            anchor = now_units
+        elapsed = clock.engaged_days_since(anchor, clamp_days=max_catchup_days)
+        return elapsed, now_units
 
     # ── v10 temporal passes ──────────────────────────────────────────
 

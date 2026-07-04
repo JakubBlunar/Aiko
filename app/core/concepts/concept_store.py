@@ -68,7 +68,8 @@ _CONCEPT_COLS = (
     "id, label, kind, subject, user_id, evidence_model, status, "
     "confidence, plasticity, evidence_count, distinct_source_count, "
     "rationale, embedding, dim, origin_session, first_evidence_at, "
-    "created_at, updated_at, last_reinforced_at, promoted_at"
+    "created_at, updated_at, last_reinforced_at, promoted_at, "
+    "last_lifecycle_at, last_lifecycle_engagement"
 )
 
 
@@ -139,6 +140,10 @@ class Concept:
     updated_at: str = ""
     last_reinforced_at: str | None = None
     promoted_at: str | None = None
+    # L3 per-concept engagement anchor (written only by the lifecycle
+    # worker). ``last_lifecycle_at`` NULL => never evaluated.
+    last_lifecycle_at: str | None = None
+    last_lifecycle_engagement: float | None = None
     concept_id: int = 0
 
 
@@ -298,6 +303,10 @@ class ConceptStore:
             updated_at=str(r[17] or ""),
             last_reinforced_at=(str(r[18]) if r[18] is not None else None),
             promoted_at=(str(r[19]) if r[19] is not None else None),
+            last_lifecycle_at=(str(r[20]) if r[20] is not None else None),
+            last_lifecycle_engagement=(
+                float(r[21]) if r[21] is not None else None
+            ),
         )
 
     # ── concept reads ─────────────────────────────────────────────────
@@ -327,6 +336,27 @@ class ConceptStore:
 
     def count(self) -> int:
         return len(self._concepts)
+
+    def list_stalest(self, limit: int) -> list[Concept]:
+        """Return up to ``limit`` concepts ordered by ``last_lifecycle_at``
+        ascending, NULLs first -- i.e. never-evaluated / most-overdue
+        concepts first. This is the L3 rolling round-robin fetch: over
+        successive ticks it sweeps the whole (small, mirrored) set without
+        a persisted cursor. Ties broken by ``concept_id`` for determinism.
+        """
+        if limit <= 0:
+            return []
+        concepts = list(self._concepts.values())
+        # NULL last_lifecycle_at sorts before any timestamp; then oldest
+        # timestamp; then by id.
+        concepts.sort(
+            key=lambda c: (
+                0 if not c.last_lifecycle_at else 1,
+                c.last_lifecycle_at or "",
+                c.concept_id,
+            )
+        )
+        return concepts[: int(limit)]
 
     def nearest(
         self,
@@ -392,8 +422,10 @@ class ConceptStore:
             "(label, kind, subject, user_id, evidence_model, status, "
             " confidence, plasticity, evidence_count, distinct_source_count, "
             " rationale, embedding, dim, origin_session, first_evidence_at, "
-            " created_at, updated_at, last_reinforced_at, promoted_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, updated_at, last_reinforced_at, promoted_at, "
+            " last_lifecycle_at, last_lifecycle_engagement) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?)",
             (
                 str(concept.label),
                 str(concept.kind),
@@ -414,6 +446,12 @@ class ConceptStore:
                 concept.updated_at,
                 concept.last_reinforced_at,
                 concept.promoted_at,
+                concept.last_lifecycle_at,
+                (
+                    float(concept.last_lifecycle_engagement)
+                    if concept.last_lifecycle_engagement is not None
+                    else None
+                ),
             ),
         )
         conn.commit()
@@ -437,7 +475,8 @@ class ConceptStore:
                 "  plasticity = ?, evidence_count = ?, "
                 "  distinct_source_count = ?, rationale = ?, embedding = ?, "
                 "  dim = ?, origin_session = ?, first_evidence_at = ?, "
-                "  updated_at = ?, last_reinforced_at = ?, promoted_at = ? "
+                "  updated_at = ?, last_reinforced_at = ?, promoted_at = ?, "
+                "  last_lifecycle_at = ?, last_lifecycle_engagement = ? "
                 "WHERE id = ?",
                 (
                     str(concept.label),
@@ -458,6 +497,12 @@ class ConceptStore:
                     concept.updated_at,
                     concept.last_reinforced_at,
                     concept.promoted_at,
+                    concept.last_lifecycle_at,
+                    (
+                        float(concept.last_lifecycle_engagement)
+                        if concept.last_lifecycle_engagement is not None
+                        else None
+                    ),
                     int(concept.concept_id),
                 ),
             )

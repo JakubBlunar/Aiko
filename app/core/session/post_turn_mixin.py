@@ -1352,6 +1352,18 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("engagement tracker raised", exc_info=True)
 
+        # Shared engagement clock: credit this completed turn's active
+        # time (bounded per turn). Independent of the K14 tracker above --
+        # a plain monotonic "time spent engaging" counter that the memory
+        # decay worker + L3 concept lifecycle drive their decay off, so
+        # absence/quiet stretches don't crater confidence. Best-effort.
+        engagement_clock = getattr(self, "_engagement_clock", None)
+        if engagement_clock is not None:
+            try:
+                engagement_clock.record_turn()
+            except Exception:
+                log.debug("engagement clock record_turn raised", exc_info=True)
+
         # J11 — affection-style learning. Two passes, both cheap + pure:
         #   1. Attribute the engagement we just observed (K14
         #      last_result: how the user responded *this* turn) back to

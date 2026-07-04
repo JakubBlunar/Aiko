@@ -770,6 +770,24 @@ class SpeakingWorkersInitMixin:
         # :meth:`_is_user_idle`). New workers (memory promotion,
         # wall-clock decay, future F1/G2/G3) register here.
         self._last_user_activity_at: float = time.monotonic()
+        # Shared engagement clock: a monotonic "active-conversation time"
+        # counter (kv_meta-backed) that the memory decay worker + L3
+        # concept lifecycle engine drive their decay off, so absence /
+        # quiet stretches don't crater confidence. Built early so the
+        # post-turn hook can credit turns; ``None`` when there's no db.
+        self._engagement_clock = None
+        if self._chat_db is not None:
+            try:
+                from app.core.infra.engagement_clock import EngagementClock
+
+                self._engagement_clock = EngagementClock(
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    settings=self._memory_settings,
+                )
+            except Exception:
+                log.warning("EngagementClock init failed", exc_info=True)
+                self._engagement_clock = None
         self._idle_scheduler: "IdleWorkerScheduler | None" = None
         if self._memory_store is not None and self._memory_settings.tiers_enabled:
             try:
@@ -797,6 +815,9 @@ class SpeakingWorkersInitMixin:
                         knowledge_gap_store=getattr(
                             self, "_knowledge_gap_store", None
                         ),
+                        engagement_clock=self._engagement_clock,
+                        kv_get=self._chat_db.kv_get,
+                        kv_set=self._chat_db.kv_set,
                     )
                 )
                 # K27 — daily personality colour roll. Cheap (hourly
@@ -1678,6 +1699,47 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_synthesis_worker = None
+
+                # L3: ConceptLifecycleWorker. The single writer of concept
+                # confidence / plasticity / status. Cheap (no LLM), runs a
+                # small rolling batch per tick so a growing concept set
+                # never blocks the scheduler; decay is engagement-driven.
+                # Opt-in via ``concepts_enabled`` AND
+                # ``concept_lifecycle_enabled``. Non-fatal on failure.
+                self._concept_lifecycle_worker = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            self._memory_settings,
+                            "concept_lifecycle_enabled",
+                            True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_lifecycle_worker import (
+                            ConceptLifecycleWorker,
+                        )
+
+                        self._concept_lifecycle_worker = ConceptLifecycleWorker(
+                            concept_store=self._concept_store,
+                            concept_event_store=self._concept_event_store,
+                            engagement_clock=self._engagement_clock,
+                            memory_settings=self._memory_settings,
+                            agent_settings=settings.agent,
+                        )
+                        self._idle_scheduler.register(
+                            self._concept_lifecycle_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "ConceptLifecycleWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._concept_lifecycle_worker = None
 
                 # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
                 # likely upcoming questions during idle windows so the

@@ -38,6 +38,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from app.core.concepts.concept_lifecycle import set_evidence_gate
+
 # Recognised values for the orthogonal axes. Kept as plain tuples (not
 # enums) so callers can validate without importing heavy machinery, and
 # so the ``kind`` axis stays an *open* enum -- unknown kinds are allowed,
@@ -95,6 +97,10 @@ register_kind(
         name="identity",
         subject="user",
         evidence_model="set",
+        # L3: identity uses the set-evidence promotion gate (distinct
+        # sources + age-stability + confidence). The worker falls back to
+        # this same gate for any kind that doesn't supply its own.
+        promotion_gate=set_evidence_gate,
         surfacing_target="profile_block",
     )
 )

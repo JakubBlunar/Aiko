@@ -727,6 +727,48 @@ class MemorySettings:
     # batch fails to parse (the salvage pass recovers complete objects,
     # but a roomy budget avoids losing the tail in the first place).
     concept_synthesis_max_tokens: int = 1600
+    # Shared engagement clock (app/core/infra/engagement_clock.py): a
+    # monotonic "active-conversation time" counter so decay tracks time
+    # actually spent engaging, not calendar time (away/quiet stretches
+    # cost ~nothing). ``seconds_per_day`` is the calibration -- how much
+    # active conversation equals one "decay-day" in the existing per-day
+    # rate domains (default gentle: ~1 active hour = 1 decay-day).
+    # ``idle_cap_seconds`` bounds the credit for one turn (so returning
+    # from a long absence adds only one capped turn's worth);
+    # ``min_turn_seconds`` is the floor credited per completed turn.
+    engagement_clock_enabled: bool = True
+    engagement_seconds_per_day: float = 3600.0
+    engagement_idle_cap_seconds: float = 300.0
+    engagement_min_turn_seconds: float = 15.0
+    # When on, the memory decay worker drives ``elapsed_days`` from the
+    # engagement clock instead of wall-clock (with the same
+    # ``decay_max_catchup_days`` clamp as a safety net). Off => today's
+    # wall-clock behaviour exactly.
+    memory_decay_use_engagement_clock: bool = True
+    # L3 concept lifecycle engine. The single writer of a concept's
+    # confidence / plasticity / status. Runs often + cheap (no LLM) in a
+    # rolling round-robin batch (``batch_size`` stalest concepts per tick)
+    # so a growing concept set never blocks the idle scheduler. Also gated
+    # by ``agent.concepts_enabled``. Decay is engagement-driven (via the
+    # shared clock), keyed off the per-concept ``last_lifecycle_engagement``
+    # anchor, and status transitions read confidence (not wall-clock idle):
+    # ``active -> dormant`` below ``dormant_confidence_floor``,
+    # ``dormant -> retired`` below ``retire_confidence_floor``. Promotion
+    # needs distinct sources + a minimum calendar age (stability) +
+    # confidence over the promote threshold. Half-life is in *engaged*
+    # days; ``decay_max_catchup_days`` clamps engaged-days per tick.
+    concept_lifecycle_enabled: bool = True
+    concept_lifecycle_interval_seconds: int = 300
+    concept_lifecycle_batch_size: int = 100
+    concept_promote_min_sources: int = 2
+    concept_promote_min_age_days: float = 2.0
+    concept_promote_min_confidence: float = 0.6
+    concept_confidence_halflife_days: float = 45.0
+    concept_decay_max_catchup_days: float = 3.0
+    concept_dormant_confidence_floor: float = 0.35
+    concept_retire_confidence_floor: float = 0.15
+    concept_candidate_ttl_days: float = 21.0
+    concept_identity_plasticity: float = 0.3
     # K11: pre-thought / counterfactual worker cadence. A tick is one
     # question-generation LLM call plus up to ``pre_thought_max_per_run``
     # in-persona draft calls, so an hour between successful runs is
@@ -2100,6 +2142,74 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_synthesis_max_tokens=max(
                 256,
                 int(memory_raw.get("concept_synthesis_max_tokens", 1600)),
+            ),
+            engagement_clock_enabled=bool(
+                memory_raw.get("engagement_clock_enabled", True)
+            ),
+            engagement_seconds_per_day=max(
+                1.0,
+                float(memory_raw.get("engagement_seconds_per_day", 3600.0)),
+            ),
+            engagement_idle_cap_seconds=max(
+                1.0,
+                float(memory_raw.get("engagement_idle_cap_seconds", 300.0)),
+            ),
+            engagement_min_turn_seconds=max(
+                0.0,
+                float(memory_raw.get("engagement_min_turn_seconds", 15.0)),
+            ),
+            memory_decay_use_engagement_clock=bool(
+                memory_raw.get("memory_decay_use_engagement_clock", True)
+            ),
+            concept_lifecycle_enabled=bool(
+                memory_raw.get("concept_lifecycle_enabled", True)
+            ),
+            concept_lifecycle_interval_seconds=max(
+                30,
+                int(memory_raw.get("concept_lifecycle_interval_seconds", 300)),
+            ),
+            concept_lifecycle_batch_size=max(
+                1,
+                int(memory_raw.get("concept_lifecycle_batch_size", 100)),
+            ),
+            concept_promote_min_sources=max(
+                1,
+                int(memory_raw.get("concept_promote_min_sources", 2)),
+            ),
+            concept_promote_min_age_days=max(
+                0.0,
+                float(memory_raw.get("concept_promote_min_age_days", 2.0)),
+            ),
+            concept_promote_min_confidence=max(
+                0.0,
+                float(memory_raw.get("concept_promote_min_confidence", 0.6)),
+            ),
+            concept_confidence_halflife_days=max(
+                0.1,
+                float(memory_raw.get("concept_confidence_halflife_days", 45.0)),
+            ),
+            concept_decay_max_catchup_days=max(
+                0.1,
+                float(memory_raw.get("concept_decay_max_catchup_days", 3.0)),
+            ),
+            concept_dormant_confidence_floor=max(
+                0.0,
+                float(memory_raw.get("concept_dormant_confidence_floor", 0.35)),
+            ),
+            concept_retire_confidence_floor=max(
+                0.0,
+                float(memory_raw.get("concept_retire_confidence_floor", 0.15)),
+            ),
+            concept_candidate_ttl_days=max(
+                0.0,
+                float(memory_raw.get("concept_candidate_ttl_days", 21.0)),
+            ),
+            concept_identity_plasticity=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_identity_plasticity", 0.3)),
+                ),
             ),
             pre_thought_interval_seconds=max(
                 60,

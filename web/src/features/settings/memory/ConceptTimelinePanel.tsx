@@ -126,7 +126,9 @@ const EVENT_TONE: Record<string, string> = {
   discovered: "border-sky-400/30 bg-sky-500/5",
   reinforced: "border-emerald-400/30 bg-emerald-500/5",
   promoted: "border-violet-400/30 bg-violet-500/5",
+  revived: "border-amber-400/30 bg-amber-500/5",
   contradicted: "border-rose-400/30 bg-rose-500/5",
+  dormant: "border-white/10 bg-white/[0.02] opacity-80",
   retired: "border-white/10 bg-white/[0.02] opacity-70",
 };
 
