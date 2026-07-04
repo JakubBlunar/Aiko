@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -730,30 +731,29 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-# Cache signature is ``(st_mtime_ns, st_size)``: nanosecond mtime
-# resolution plus a size discriminator. The old float-seconds
-# ``st_mtime`` key collided whenever the same path was rewritten
-# within one coarse mtime tick (notably in tests that rewrite a temp
-# config repeatedly), returning a stale parse. ``st_mtime_ns`` gives
-# far finer granularity and ``st_size`` catches the residual
-# same-tick-different-content case (distinct config values almost
-# always change the serialised byte length).
-_config_cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+# Cache signature is a content hash of the file bytes. Earlier keys
+# (``st_mtime`` then ``(st_mtime_ns, st_size)``) both collided when the
+# same path was rewritten with the *same size* inside one coarse mtime
+# tick -- e.g. round-trip tests that swap between equal-length values
+# (``ollama`` / ``gemini`` / ``openai`` are all 6 chars), which on
+# Windows share a last-write-time because NTFS updates it lazily. The
+# stale parse then leaked through. Hashing the raw bytes is portable and
+# collision-free for our purposes, and still lets us skip the more
+# expensive JSON parse on a genuine cache hit (config files are small,
+# so the read+hash is cheap relative to ``json.loads``).
+_config_cache: dict[str, tuple[bytes, dict[str, Any]]] = {}
 
 
 def _read_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     key = str(path)
-    try:
-        st = path.stat()
-        sig = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        sig = (0, 0)
+    data = path.read_bytes()
+    sig = hashlib.blake2b(data, digest_size=16).digest()
     cached = _config_cache.get(key)
     if cached is not None and cached[0] == sig:
         return cached[1]
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(data.decode("utf-8"))
     result = raw if isinstance(raw, dict) else {}
     _config_cache[key] = (sig, result)
     return result
