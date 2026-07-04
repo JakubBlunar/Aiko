@@ -14,7 +14,7 @@ import tempfile
 import threading
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -65,9 +65,10 @@ class MemStub:
 
 
 class MemoryStoreStub:
-    def __init__(self, self_memories):
+    def __init__(self, self_memories, earliest=None):
         self._self = self_memories
         self._by_id = {m.id: m for m in self_memories}
+        self._earliest = earliest
 
     def get(self, mid: int):
         return self._by_id.get(int(mid))
@@ -75,6 +76,9 @@ class MemoryStoreStub:
     def iter_by_kinds(self, kinds):
         ks = set(kinds)
         return [m for m in self._self if m.kind in ks]
+
+    def earliest_created_at(self):
+        return self._earliest
 
 
 class FakeOllama:
@@ -99,12 +103,25 @@ def _agent(*, concepts=True, synth=True):
     )
 
 
-def _mem_settings(*, cap_clusters=10, cap_aiko=40, delta=3, interval=1800):
+def _mem_settings(
+    *,
+    cap_clusters=10,
+    cap_aiko=40,
+    delta=3,
+    interval=1800,
+    min_clusters=0,
+    min_history_days=0.0,
+):
+    # L21 maturity gate is disabled by default here (min_clusters=0,
+    # min_history_days=0) so the proposer/dirty-tracking tests exercise
+    # their own logic; the dedicated maturity tests set thresholds.
     return types.SimpleNamespace(
         concept_synthesis_interval_seconds=interval,
         concept_synthesis_max_clusters_per_run=cap_clusters,
         concept_synthesis_max_aiko_memories=cap_aiko,
         concept_synthesis_dirty_size_delta=delta,
+        concept_min_clusters=min_clusters,
+        concept_min_history_days=min_history_days,
     )
 
 
@@ -140,6 +157,7 @@ class WorkerHarness:
         mem_settings=None,
         user_name=None,
         assistant_name=None,
+        earliest=None,
     ):
         tmp = tempfile.mkdtemp()
         self.path = Path(tmp) / "test.db"
@@ -150,7 +168,8 @@ class WorkerHarness:
             clusters if clusters is not None else _user_clusters()
         )
         self.mem = MemoryStoreStub(
-            self_memories if self_memories is not None else _self_memories()
+            self_memories if self_memories is not None else _self_memories(),
+            earliest=earliest,
         )
         self.ollama = FakeOllama(responder)
         self.worker = ConceptSynthesisWorker(
@@ -595,6 +614,70 @@ class GatingTests(unittest.TestCase):
         out = h.worker.run()
         self.assertTrue(out.get("skipped"))
         self.assertEqual(h.store.count(), 0)
+
+
+class MaturityGateTests(unittest.TestCase):
+    """L21 cold-start guard: nothing is proposed while the topic graph is
+    too sparse / too young, but a manual ``force`` run always bypasses."""
+
+    def test_immature_cluster_count_blocks_is_ready_and_run(self) -> None:
+        # 6 clusters but the floor is 8 -> immature.
+        h = WorkerHarness(
+            _both_responder,
+            clusters=_user_clusters(6),
+            mem_settings=_mem_settings(min_clusters=8),
+        )
+        now = datetime.now(timezone.utc)
+        self.assertFalse(h.worker.is_ready(now=now, last_run_at=None))
+        out = h.worker.run()
+        self.assertEqual(out.get("reason"), "immature_graph")
+        self.assertEqual(h.store.count(), 0)
+
+    def test_force_bypasses_immature_gate(self) -> None:
+        h = WorkerHarness(
+            _both_responder,
+            clusters=_user_clusters(6),
+            mem_settings=_mem_settings(min_clusters=8),
+        )
+        out = h.worker.run(force=True)
+        self.assertFalse(out.get("skipped"))
+        self.assertGreater(h.store.count(), 0)
+
+    def test_mature_graph_runs_normally(self) -> None:
+        h = WorkerHarness(
+            _both_responder,
+            clusters=_user_clusters(8),
+            mem_settings=_mem_settings(min_clusters=8),
+        )
+        now = datetime.now(timezone.utc)
+        self.assertTrue(h.worker.is_ready(now=now, last_run_at=None))
+        out = h.worker.run()
+        self.assertFalse(out.get("skipped"))
+        self.assertGreater(h.store.count(), 0)
+
+    def test_history_floor_blocks_until_enough_calendar_age(self) -> None:
+        # Enough clusters, but the oldest memory is only ~1 day old and the
+        # history floor is 3 days -> still immature.
+        recent = (
+            datetime.now(timezone.utc) - timedelta(days=1)
+        ).isoformat()
+        h = WorkerHarness(
+            _both_responder,
+            clusters=_user_clusters(8),
+            mem_settings=_mem_settings(min_clusters=8, min_history_days=3.0),
+            earliest=recent,
+        )
+        now = datetime.now(timezone.utc)
+        self.assertFalse(h.worker.is_ready(now=now, last_run_at=None))
+        # Old enough history clears the floor.
+        old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        h2 = WorkerHarness(
+            _both_responder,
+            clusters=_user_clusters(8),
+            mem_settings=_mem_settings(min_clusters=8, min_history_days=3.0),
+            earliest=old,
+        )
+        self.assertTrue(h2.worker.is_ready(now=now, last_run_at=None))
 
 
 class SalvageParseTests(unittest.TestCase):

@@ -42,6 +42,8 @@ def _settings(**over) -> SimpleNamespace:
         concept_dormant_confidence_floor=0.35,
         concept_retire_confidence_floor=0.15,
         concept_candidate_ttl_days=21.0,
+        concept_promote_young_min_sources=3,
+        concept_promote_young_min_confidence=0.72,
         # engagement clock knobs (for the shared clock instance)
         engagement_clock_enabled=True,
         engagement_seconds_per_day=3600.0,
@@ -63,7 +65,13 @@ class _KV:
         self.store[key] = str(value)
 
 
-def _harness(settings=None, *, with_clock=True, concepts_enabled=True):
+def _harness(
+    settings=None,
+    *,
+    with_clock=True,
+    concepts_enabled=True,
+    graph_mature=None,
+):
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "test.db")
     store = ConceptStore(db)
@@ -82,6 +90,7 @@ def _harness(settings=None, *, with_clock=True, concepts_enabled=True):
         concept_store=store,
         concept_event_store=events,
         engagement_clock=clock,
+        graph_mature_provider=graph_mature,
         memory_settings=settings,
         agent_settings=SimpleNamespace(concepts_enabled=concepts_enabled),
         clock=lambda: _NOW,
@@ -326,6 +335,40 @@ class GateUnitTests(unittest.TestCase):
         self.assertFalse(
             set_evidence_gate(distinct_source_count=2, age_days=3, confidence=0.5, **kw)
         )
+
+
+class YoungGraphGateTests(unittest.TestCase):
+    """L21: promotion uses a stricter bar until the topic graph matures."""
+
+    def test_immature_graph_blocks_promotion(self) -> None:
+        # 2 distinct sources clears the normal bar but not the young bar
+        # (which needs 3). The provider reports the graph as immature.
+        h = _harness(graph_mature=lambda: False)
+        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "candidate")
+
+    def test_mature_graph_allows_promotion(self) -> None:
+        h = _harness(graph_mature=lambda: True)
+        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "active")
+
+    def test_no_provider_uses_normal_bar(self) -> None:
+        # Default (no provider) treats the graph as mature.
+        h = _harness()
+        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_immature_graph_still_promotes_with_enough_sources(self) -> None:
+        # 3 distinct sources clears even the stricter young bar.
+        h = _harness(graph_mature=lambda: False)
+        c = _add(h.store, distinct_source_count=3, first_evidence_at=_iso(3))
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
 
 
 if __name__ == "__main__":

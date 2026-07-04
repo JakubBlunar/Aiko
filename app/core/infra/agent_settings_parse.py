@@ -190,6 +190,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),
+            concept_block_enabled=bool(
+                agent_raw.get("concept_block_enabled", True),
+            ),
             topic_graph_persistent_enabled=bool(
                 agent_raw.get("topic_graph_persistent_enabled", True),
             ),

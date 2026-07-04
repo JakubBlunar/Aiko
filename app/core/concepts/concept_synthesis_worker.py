@@ -209,9 +209,56 @@ class ConceptSynthesisWorker:
             return False
         if not bool(getattr(self._topic_graph, "persistent", False)):
             return False
+        # L21 cold-start guard: don't propose abstractions from a graph
+        # too sparse / too young to support them. A manual ``force`` run
+        # (button / MCP) still bypasses this by calling ``run`` directly.
+        if not self._graph_mature(now=now):
+            return False
         return default_is_ready(
             self.interval_seconds, now=now, last_run_at=last_run_at
         )
+
+    def _graph_mature(self, *, now: datetime | None = None) -> bool:
+        """L21 maturity predicate: enough distinct clusters AND enough
+        calendar history before any concept is proposed. A
+        ``concept_min_clusters`` of 0 disables the cluster floor; a
+        ``concept_min_history_days`` of 0 disables the history floor.
+        Computed straight off ``topic_clusters()`` so it works uniformly
+        against the real graph and lean stubs."""
+        min_clusters = int(
+            getattr(self._memory_settings, "concept_min_clusters", 6)
+        )
+        if min_clusters > 0:
+            try:
+                cluster_count = len(self._topic_graph.topic_clusters())
+            except Exception:
+                log.debug("graph maturity check failed", exc_info=True)
+                return False
+            if cluster_count < min_clusters:
+                return False
+        min_history_days = float(
+            getattr(self._memory_settings, "concept_min_history_days", 3.0)
+        )
+        if min_history_days <= 0.0:
+            return True
+        return self._history_days() >= min_history_days
+
+    def _history_days(self) -> float:
+        """Calendar days since the oldest memory (0.0 when unknown)."""
+        try:
+            earliest = self._memory_store.earliest_created_at()
+        except Exception:
+            return 0.0
+        if not earliest:
+            return 0.0
+        try:
+            first = datetime.fromisoformat(earliest)
+        except (TypeError, ValueError):
+            return 0.0
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=timezone.utc)
+        now = self._clock()
+        return max(0.0, (now - first).total_seconds() / 86_400.0)
 
     # ── config knobs ──────────────────────────────────────────────────
 
@@ -283,6 +330,12 @@ class ConceptSynthesisWorker:
             return {"skipped": True, "reason": "disabled"}
         if self._cancel_event.is_set():
             return {"skipped": True, "reason": "cancelled_before_start"}
+        # L21 cold-start guard. Scheduled runs are already gated by
+        # ``is_ready``; this belt-and-braces check keeps an immature graph
+        # from proposing even if ``run`` is called directly. ``force``
+        # (manual button / MCP) always bypasses.
+        if not force and not self._graph_mature():
+            return {"skipped": True, "reason": "immature_graph"}
 
         self._llm_calls = 0
         started = time.monotonic()

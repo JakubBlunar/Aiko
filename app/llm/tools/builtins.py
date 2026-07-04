@@ -206,6 +206,99 @@ class RecallTopicTool:
         )
 
 
+# ── recall_concept ───────────────────────────────────────────────────────────
+
+
+class RecallConceptTool:
+    """Look up one higher-order thing Aiko has come to understand about the
+    user, bundled with the evidence behind it.
+
+    Where :class:`RecallTopicTool` gathers the raw notes in a topic
+    cluster, this L5 tool pulls up a *concept* -- an abstraction Aiko has
+    synthesised across many clusters (e.g. "enjoys understanding
+    systems") -- together with its confidence, the memories that support
+    it, and the topic areas it draws on, all in one call. Use it when the
+    user asks what Aiko thinks/understands about them ("what have you
+    figured out about me?", "what do you think I'm like?"), not for a raw
+    fact lookup. Set ``all_evidence`` when the full supporting set is
+    wanted rather than a few representative notes.
+    """
+
+    def __init__(self, rag_retriever: Any) -> None:
+        self._rag = rag_retriever
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="recall_concept",
+            description=(
+                "Pull up one higher-order concept Aiko has formed about the "
+                "user -- an abstraction across many topics (e.g. a trait, "
+                "value, or pattern) -- with its confidence, the memories "
+                "that support it, and the topic areas it spans, in a single "
+                "call. Use when the user asks what Aiko understands / thinks "
+                "about them, not for a one-off fact lookup. Set "
+                "'all_evidence' true to get the full supporting set instead "
+                "of a few representative notes."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to look up a concept about (e.g. 'how I "
+                            "approach problems', 'my values')."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Max supporting notes to return (1-15). "
+                            "Defaults to 8. Ignored when all_evidence is set."
+                        ),
+                        "minimum": 1,
+                        "maximum": 15,
+                    },
+                    "all_evidence": {
+                        "type": "boolean",
+                        "description": (
+                            "Return every supporting memory for the concept "
+                            "instead of a capped sample. Defaults to false."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        query = (arguments.get("query") or "").strip()
+        if not query:
+            raise ToolError(
+                "recall_concept: 'query' is required and must be non-empty"
+            )
+        try:
+            limit = int(arguments.get("limit", 8))
+        except (TypeError, ValueError):
+            limit = 8
+        limit = max(1, min(15, limit))
+        all_evidence = bool(arguments.get("all_evidence", False))
+        if self._rag is None or not hasattr(self._rag, "recall_concept"):
+            raise ToolError("recall_concept: retrieval store is not available")
+        try:
+            bundle = self._rag.recall_concept(
+                query, limit=limit, all_evidence=all_evidence
+            )
+        except Exception as exc:
+            raise ToolError(f"recall_concept failed: {exc}") from exc
+        if not bundle:
+            return json.dumps(
+                {"concept": None, "note": "no matching concept"},
+                ensure_ascii=False,
+            )
+        return json.dumps(bundle, ensure_ascii=False)
+
+
 # ── web_search ──────────────────────────────────────────────────────────────
 
 

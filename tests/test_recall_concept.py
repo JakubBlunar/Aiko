@@ -1,0 +1,261 @@
+"""L5 concept recall: ``RagRetriever.recall_concept`` + ``RecallConceptTool``.
+
+Covers the self-contained bundle shape (concept + capped evidence
+memories + supporting cluster labels), the ``all_evidence`` cap lift,
+empty-when-sparse behaviour, the tool JSON contract, and the
+tool-pass-gate family membership.
+"""
+from __future__ import annotations
+
+import json
+import unittest
+from types import SimpleNamespace
+from typing import Any
+
+import numpy as np
+
+from app.core.rag.rag_retriever import RagRetriever
+from app.llm.tools.base import ToolError
+from app.llm.tools.builtins import RecallConceptTool
+
+
+def _e0(dim: int = 4) -> np.ndarray:
+    v = np.zeros(dim, dtype=np.float32)
+    v[0] = 1.0
+    return v
+
+
+class _Embedder:
+    def embed(self, text: str) -> np.ndarray:
+        return _e0()
+
+
+class _Edge:
+    def __init__(self, src_type: str, src_id: Any, relation: str = "evidence") -> None:
+        self.src_type = src_type
+        self.src_id = str(src_id)
+        self.relation = relation
+        self.ordinal = None
+
+
+class _ConceptStore:
+    def __init__(self, matches, edges) -> None:
+        self._matches = matches
+        self._edges = edges
+        self.nearest_calls: list[dict] = []
+
+    def nearest(self, q, *, subject=None, status=None, k=8, **_kw):
+        self.nearest_calls.append(
+            {"subject": subject, "status": status, "k": k}
+        )
+        return list(self._matches)
+
+    def evidence_of(self, concept_id):
+        return list(self._edges)
+
+
+class _Cluster:
+    def __init__(self, rep: int, summary: str, member_ids) -> None:
+        self.representative_id = rep
+        self.summary = summary
+        self.member_ids = tuple(member_ids)
+
+    @property
+    def size(self) -> int:
+        return len(self.member_ids)
+
+
+class _Graph:
+    persistent = True
+
+    def __init__(self, clusters) -> None:
+        self._clusters = clusters
+
+    def topic_clusters(self):
+        return list(self._clusters)
+
+
+class _Mem:
+    def __init__(self, mid: int, content: str) -> None:
+        self.id = mid
+        self.content = content
+
+
+class _MemoryStore:
+    def __init__(self, mems: dict[int, _Mem]) -> None:
+        self._mems = mems
+
+    def get(self, mid: int):
+        return self._mems.get(int(mid))
+
+
+class _StubStore:
+    def search_memories(self, *_a: Any, **_k: Any):
+        return []
+
+    def search_messages(self, *_a: Any, **_k: Any):
+        return []
+
+    def search_documents(self, *_a: Any, **_k: Any):
+        return []
+
+
+def _concept(cid=1, label="Jacob enjoys understanding systems", confidence=0.82):
+    return SimpleNamespace(
+        concept_id=cid,
+        label=label,
+        kind="identity",
+        subject="user",
+        status="active",
+        confidence=confidence,
+        rationale="links several technical clusters",
+    )
+
+
+def _build(*, matches, edges, clusters, mems):
+    retriever = RagRetriever(
+        _StubStore(),  # type: ignore[arg-type]
+        _Embedder(),  # type: ignore[arg-type]
+        top_k=4,
+        score_threshold=0.0,
+        include_messages=False,
+        include_documents=False,
+        memory_store=_MemoryStore(mems),  # type: ignore[arg-type]
+        cluster_diversity_enabled=False,
+        topic_expansion_enabled=False,
+    )
+    retriever.set_topic_graph(_Graph(clusters))  # type: ignore[arg-type]
+    retriever.set_concept_store(_ConceptStore(matches, edges))  # type: ignore[arg-type]
+    return retriever
+
+
+class RecallConceptRetrieverTests(unittest.TestCase):
+    def test_bundle_shape(self) -> None:
+        c = _concept()
+        edges = [_Edge("cluster", 100)]
+        clusters = [_Cluster(100, "distributed systems", [1, 2, 3])]
+        mems = {
+            1: _Mem(1, "debugging the CPU scheduler"),
+            2: _Mem(2, "self-hosting the whole stack"),
+            3: _Mem(3, "reverse-engineering a protocol"),
+        }
+        r = _build(matches=[(c, 0.7)], edges=edges, clusters=clusters, mems=mems)
+        out = r.recall_concept("how I approach problems")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["concept"]["label"], c.label)
+        self.assertEqual(out["concept"]["subject"], "user")
+        self.assertEqual(out["clusters"], ["distributed systems"])
+        self.assertEqual(len(out["evidence"]), 3)
+        self.assertIn("text", out["evidence"][0])
+
+    def test_queries_active_user_concepts(self) -> None:
+        c = _concept()
+        r = _build(matches=[(c, 0.7)], edges=[], clusters=[], mems={})
+        r.recall_concept("x")
+        call = r._concept_store.nearest_calls[0]  # type: ignore[attr-defined]
+        self.assertEqual(call["subject"], "user")
+        self.assertEqual(call["status"], "active")
+
+    def test_cap_and_all_evidence(self) -> None:
+        c = _concept()
+        edges = [_Edge("cluster", 100)]
+        member_ids = list(range(1, 11))  # 10 members
+        clusters = [_Cluster(100, "systems", member_ids)]
+        mems = {i: _Mem(i, f"memory {i}") for i in member_ids}
+        r = _build(matches=[(c, 0.7)], edges=edges, clusters=clusters, mems=mems)
+        capped = r.recall_concept("x", limit=3)
+        self.assertEqual(len(capped["evidence"]), 3)
+        full = r.recall_concept("x", limit=3, all_evidence=True)
+        self.assertEqual(len(full["evidence"]), 10)
+
+    def test_direct_memory_edges(self) -> None:
+        c = _concept()
+        edges = [_Edge("memory", 5), _Edge("memory", 6)]
+        mems = {5: _Mem(5, "note five"), 6: _Mem(6, "note six")}
+        r = _build(matches=[(c, 0.7)], edges=edges, clusters=[], mems=mems)
+        out = r.recall_concept("x")
+        texts = {e["text"] for e in out["evidence"]}
+        self.assertEqual(texts, {"note five", "note six"})
+        self.assertEqual(out["clusters"], [])
+
+    def test_none_when_no_match(self) -> None:
+        r = _build(matches=[], edges=[], clusters=[], mems={})
+        self.assertIsNone(r.recall_concept("x"))
+
+    def test_none_when_below_similarity_floor(self) -> None:
+        c = _concept()
+        r = _build(matches=[(c, 0.05)], edges=[], clusters=[], mems={})
+        self.assertIsNone(r.recall_concept("x", min_concept_sim=0.20))
+
+    def test_none_when_store_not_wired(self) -> None:
+        retriever = RagRetriever(
+            _StubStore(),  # type: ignore[arg-type]
+            _Embedder(),  # type: ignore[arg-type]
+            top_k=4,
+            score_threshold=0.0,
+            include_messages=False,
+            include_documents=False,
+        )
+        self.assertIsNone(retriever.recall_concept("x"))
+
+
+class _FakeRag:
+    def __init__(self, bundle) -> None:
+        self._bundle = bundle
+        self.calls: list[dict] = []
+
+    def recall_concept(self, query, *, limit=8, all_evidence=False):
+        self.calls.append(
+            {"query": query, "limit": limit, "all_evidence": all_evidence}
+        )
+        return self._bundle
+
+
+class RecallConceptToolTests(unittest.TestCase):
+    def test_returns_bundle_json(self) -> None:
+        bundle = {
+            "concept": {"label": "systems thinker", "confidence": 0.8},
+            "evidence": [{"text": "a"}],
+            "clusters": ["systems"],
+        }
+        tool = RecallConceptTool(_FakeRag(bundle))
+        out = json.loads(tool.run({"query": "what do you think of me"}))
+        self.assertEqual(out["concept"]["label"], "systems thinker")
+
+    def test_passes_all_evidence_and_limit(self) -> None:
+        rag = _FakeRag({"concept": {}, "evidence": [], "clusters": []})
+        tool = RecallConceptTool(rag)
+        tool.run({"query": "q", "limit": 20, "all_evidence": True})
+        # limit clamped to 15; all_evidence forwarded.
+        self.assertEqual(rag.calls[0]["limit"], 15)
+        self.assertTrue(rag.calls[0]["all_evidence"])
+
+    def test_empty_when_no_concept(self) -> None:
+        tool = RecallConceptTool(_FakeRag(None))
+        out = json.loads(tool.run({"query": "q"}))
+        self.assertIsNone(out["concept"])
+        self.assertIn("note", out)
+
+    def test_requires_query(self) -> None:
+        tool = RecallConceptTool(_FakeRag(None))
+        with self.assertRaises(ToolError):
+            tool.run({"query": "   "})
+
+    def test_schema_advertises_params(self) -> None:
+        schema = RecallConceptTool(_FakeRag(None)).schema()
+        self.assertEqual(schema.name, "recall_concept")
+        props = schema.parameters["properties"]
+        self.assertIn("query", props)
+        self.assertIn("all_evidence", props)
+        self.assertEqual(schema.parameters["required"], ["query"])
+
+
+class ToolFamilyTests(unittest.TestCase):
+    def test_recall_concept_in_recall_family(self) -> None:
+        from app.core.session.tool_pass_gate import _TOOL_FAMILY
+
+        self.assertEqual(_TOOL_FAMILY.get("recall_concept"), "recall")
+
+
+if __name__ == "__main__":
+    unittest.main()

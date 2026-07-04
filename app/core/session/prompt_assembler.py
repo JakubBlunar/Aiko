@@ -109,6 +109,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "agenda_block",
         "goals_block",
         "interest_map_block",
+        "concept_block",
         "day_color_block",
         "anniversary_block",
         "milestone_block",
@@ -641,6 +642,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # dropped in aggressive mode alongside them. Empty until the F10a
         # label worker has named at least one dense cluster.
         self._interest_map_provider: Callable[[], str] | None = None
+        # L5 concept surfacing: a few high-confidence active user-identity
+        # concepts, rendered as hedged offered-not-asserted impressions.
+        # Sits with ``interest_map_block`` in the T1 group (both are
+        # slow-moving, session-stable views of "who the user is"); dropped
+        # in aggressive mode alongside it. Empty until L2/L3 have promoted
+        # at least one concept over the surface threshold.
+        self._concept_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -1043,6 +1051,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         agenda_block = slices.agenda_block
         goals_block = slices.goals_block
         interest_map_block = slices.interest_map_block
+        concept_block = slices.concept_block
 
         memory_block = ""
         rag_prefetch_event = "skip"
@@ -2457,6 +2466,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # mode alongside agenda / goals; empty until the F10a label
             # worker has named at least one dense cluster.
             system_parts.append(interest_map_block)
+        if concept_block:
+            # L5: higher-order concepts Aiko has abstracted about the
+            # user, surfaced as hedged, offered-not-asserted impressions.
+            # Lands right after the interest map so the "who the user is"
+            # cluster reads interests -> the understandings drawn from
+            # them. Dropped in aggressive mode alongside interest_map;
+            # empty until L2/L3 promote a concept over the surface bar.
+            system_parts.append(concept_block)
         if day_color_block:
             # K27 -- daily personality colour. Trend/phase block (slow
             # daily under-current), not a situational block, so it

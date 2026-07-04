@@ -672,6 +672,39 @@ class TopicGraph:
         with self._lock:
             return self._live_to_topic_clusters_locked()
 
+    def topic_graph_maturity(self) -> tuple[int, int]:
+        """L21 cold-start signal: ``(cluster_count, total_members)``.
+
+        A cheap structural read of how much the graph has to reason over
+        yet. Consumers (the concept synthesis + lifecycle gates) treat a
+        graph below a cluster floor as "too sparse to abstract from" and
+        hold off proposing / relax nothing / promote against a stricter
+        bar. Counts every cluster regardless of subject; the proposer
+        does its own user-vs-aiko split downstream.
+        """
+        try:
+            clusters = self.topic_clusters()
+        except Exception:
+            log.debug("topic_graph_maturity: topic_clusters failed", exc_info=True)
+            return 0, 0
+        total_members = sum(int(c.size) for c in clusters)
+        return len(clusters), total_members
+
+    def mature(self, *, min_clusters: int, min_members: int = 0) -> bool:
+        """True when the graph clears the L21 maturity floor.
+
+        ``min_clusters`` is the primary signal (distinct themes to draw a
+        cross-cluster abstraction from); ``min_members`` is an optional
+        secondary floor on total clustered volume. A ``min_clusters`` of
+        0 disables the gate (always mature).
+        """
+        if int(min_clusters) <= 0:
+            return True
+        cluster_count, total_members = self.topic_graph_maturity()
+        return cluster_count >= int(min_clusters) and total_members >= int(
+            min_members
+        )
+
     def interest_map(
         self, *, top_n: int = 5, min_size: int | None = None,
     ) -> list[InterestEntry]:

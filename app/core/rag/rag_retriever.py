@@ -40,6 +40,7 @@ from app.core.rag.rag_store import MessageRecord, RagHit
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
+    from app.core.concepts.concept_store import ConceptStore
     from app.core.conversation.conversation_arc import ArcState
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.goals.goal_store import GoalStore
@@ -575,6 +576,12 @@ class RagRetriever:
         # / non-persistent mode) cleanly disables the re-rank: behaviour is
         # then byte-identical to the plain score-sorted top-k cut.
         self._topic_graph = topic_graph
+        # L5 — optional :class:`ConceptStore` handle, wired after
+        # construction via :meth:`set_concept_store` (mirrors the topic
+        # graph). Powers the ``recall_concept`` tool, which pulls the
+        # nearest active user-identity concept plus its evidence bundle.
+        # ``None`` cleanly disables ``recall_concept`` (empty result).
+        self._concept_store: "ConceptStore | None" = None
         self._cluster_diversity_enabled = bool(cluster_diversity_enabled)
         self._max_per_cluster = max(1, int(max_per_cluster))
         # F10c — topic multi-hop expansion. When a turn's strongest memory
@@ -659,6 +666,16 @@ class RagRetriever:
         the plain score-sorted top-k cut.
         """
         self._topic_graph = graph
+
+    def set_concept_store(self, store: "ConceptStore | None") -> None:
+        """Attach (or detach) the L5 :class:`ConceptStore` after construction.
+
+        SessionController builds the retriever before the concept store
+        exists, so the ``recall_concept`` dependency is wired in a second
+        pass (mirroring :meth:`set_topic_graph`). Passing ``None`` cleanly
+        disables ``recall_concept`` (it then returns an empty bundle).
+        """
+        self._concept_store = store
 
     def set_topic_digest_provider(
         self, provider: "Callable[[int], int | None] | None"
@@ -1370,6 +1387,125 @@ class RagRetriever:
             for sim, mem in scored[:cap]
         ]
         return label, hits
+
+    def recall_concept(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        all_evidence: bool = False,
+        min_concept_sim: float = 0.20,
+    ) -> dict[str, Any] | None:
+        """Nearest active user concept, bundled with its evidence.
+
+        L5 concept recall, surfaced as the ``recall_concept`` tool. Embeds
+        ``query``, finds the single nearest **active user** concept by
+        label cosine (:meth:`ConceptStore.nearest`), then hydrates that
+        concept's own evidence graph (:meth:`ConceptStore.evidence_of`) in
+        one shot -- its supporting memories and topic-cluster labels -- so
+        the model never has to nest ``recall_topic`` / ``recall`` calls.
+        User-identity evidence is cluster-typed, so each evidence cluster
+        is expanded into its member memories; direct memory edges are
+        included too. ``limit`` caps the returned memory snippets;
+        ``all_evidence=True`` lifts that cap for the full picture (still
+        bounded by the concept's own evidence, not a global search).
+        Returns ``None`` when the store isn't wired or nothing clears
+        ``min_concept_sim``.
+        """
+        text = (query or "").strip()
+        if not text or self._concept_store is None:
+            return None
+        try:
+            embedding = self._embedder.embed(text)
+        except Exception:
+            log.debug("recall_concept: embed failed", exc_info=True)
+            return None
+        q = np.asarray(embedding, dtype=np.float32).ravel()
+        if q.size == 0 or float(np.linalg.norm(q)) == 0.0:
+            return None
+        try:
+            matches = self._concept_store.nearest(
+                q, subject="user", status="active", k=1,
+            )
+        except Exception:
+            log.debug("recall_concept: nearest failed", exc_info=True)
+            return None
+        if not matches:
+            return None
+        concept, sim = matches[0]
+        if sim < float(min_concept_sim):
+            return None
+        cap = max(1, int(limit))
+
+        # Split the concept's evidence into memory ids + cluster reps.
+        try:
+            edges = self._concept_store.evidence_of(concept.concept_id)
+        except Exception:
+            edges = []
+        memory_ids: list[int] = []
+        cluster_reps: list[int] = []
+        for e in edges:
+            try:
+                node_id = int(e.src_id)
+            except (TypeError, ValueError):
+                continue
+            if e.src_type == "memory":
+                memory_ids.append(node_id)
+            elif e.src_type == "cluster":
+                cluster_reps.append(node_id)
+
+        # Resolve cluster labels + expand each evidence cluster into its
+        # member memories (user-identity evidence is cluster-typed).
+        cluster_labels: list[str] = []
+        if cluster_reps and self._topic_graph is not None:
+            try:
+                rep_map = {
+                    c.representative_id: c
+                    for c in self._topic_graph.topic_clusters()
+                }
+            except Exception:
+                rep_map = {}
+            for rep in cluster_reps:
+                cluster = rep_map.get(rep)
+                if cluster is None:
+                    continue
+                label = (cluster.summary or "").strip()
+                if label and label not in cluster_labels:
+                    cluster_labels.append(label)
+                memory_ids.extend(int(m) for m in cluster.member_ids)
+
+        # Hydrate memory snippets (dedup, cap unless all_evidence).
+        evidence: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for mid in memory_ids:
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            if not all_evidence and len(evidence) >= cap:
+                break
+            mem = None
+            if self._memory_store is not None:
+                try:
+                    mem = self._memory_store.get(mid)
+                except Exception:
+                    mem = None
+            if mem is None:
+                continue
+            evidence.append({"text": (mem.content or "")[:280]})
+
+        return {
+            "concept": {
+                "label": concept.label,
+                "kind": concept.kind,
+                "subject": concept.subject,
+                "status": concept.status,
+                "confidence": round(float(concept.confidence), 3),
+                "rationale": (concept.rationale or "")[:280],
+            },
+            "score": round(float(sim), 3),
+            "evidence": evidence,
+            "clusters": cluster_labels,
+        }
 
     # ── aged callback lane (K63) ────────────────────────────────────────
 
