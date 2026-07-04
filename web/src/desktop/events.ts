@@ -10,6 +10,7 @@
 import { isTauri } from "./runtime";
 
 export const PERSONA_VISIBILITY_EVENT = "persona-visibility";
+export const WINDOW_VISIBILITY_EVENT = "window-visibility";
 
 type Unlisten = () => void;
 
@@ -43,5 +44,62 @@ export async function listenPersonaVisibility(
       err,
     );
     return () => {};
+  }
+}
+
+/**
+ * Subscribe to the ``window-visibility`` Tauri event for *this* webview
+ * window. The Rust side emits it (via ``emit_to(label, ...)``) whenever
+ * the current window is shown or hidden through any of the tray /
+ * top-bar / close-button paths, so a webview that has been closed to
+ * the tray can pause its avatar render loops. ``true`` = now visible.
+ *
+ * Delivered through the global ``listen`` channel because ``emit_to``
+ * routes by window label — only the targeted window's JS context sees
+ * the event (mirrors the ``presence-hide`` wiring in
+ * ``usePresenceReporter``). Returns a no-op teardown outside Tauri.
+ */
+export async function listenWindowVisibility(
+  handler: (visible: boolean) => void,
+): Promise<Unlisten> {
+  if (!isTauri()) {
+    return () => {};
+  }
+  try {
+    const mod = await import("@tauri-apps/api/event");
+    const unlisten = await mod.listen<boolean>(
+      WINDOW_VISIBILITY_EVENT,
+      (event) => {
+        handler(Boolean(event.payload));
+      },
+    );
+    return unlisten;
+  } catch (err) {
+    console.warn(
+      `[desktop] failed to subscribe to ${WINDOW_VISIBILITY_EVENT}`,
+      err,
+    );
+    return () => {};
+  }
+}
+
+/**
+ * Best-effort synchronous-ish probe of the current webview window's
+ * visibility, used to seed the initial render-active state before the
+ * first ``window-visibility`` event lands (e.g. the persona window
+ * boots hidden and must start suspended). Resolves ``true`` outside
+ * Tauri and on any failure so the browser path always renders.
+ */
+export async function getCurrentWindowVisible(): Promise<boolean> {
+  if (!isTauri()) {
+    return true;
+  }
+  try {
+    const mod = await import("@tauri-apps/api/webviewWindow");
+    const win = mod.getCurrentWebviewWindow();
+    return Boolean(await win.isVisible());
+  } catch (err) {
+    console.warn("[desktop] failed to probe window visibility", err);
+    return true;
   }
 }

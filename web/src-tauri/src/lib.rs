@@ -65,7 +65,29 @@ const PERSONA_VISIBILITY_EVENT: &str = "persona-visibility";
 /// harmless.
 const PRESENCE_HIDE_EVENT: &str = "presence-hide";
 
+/// Event fired to a *specific* window whenever we show or hide it via
+/// any of the tray / top-bar / close-button paths. Payload is a single
+/// ``bool`` (``true`` = the window is now visible). The React side
+/// (see ``useWindowVisible.ts``) uses this to suspend the avatar's
+/// per-frame work — the Pixi render loop, the Live2D model update, the
+/// AvatarEngine RAF loops, and the global cursor poll — while the
+/// window sits hidden in the tray. Without it those loops keep burning
+/// CPU/GPU in the still-alive (but invisible) webview, because a
+/// Windows ``ShowWindow(SW_HIDE)`` doesn't reliably transition the
+/// WebView2 page to the throttled "hidden" visibility state the way an
+/// OS minimise / occlusion does.
+const WINDOW_VISIBILITY_EVENT: &str = "window-visibility";
+
 // ── Internal helpers ────────────────────────────────────────────────────
+
+/// Emit the per-window visibility event to a single window label. Kept
+/// as a one-liner helper so every show/hide site funnels through the
+/// same call and can't forget to notify the webview.
+fn emit_window_visibility(app: &AppHandle, label: &str, visible: bool) {
+    if let Err(err) = app.emit_to(label, WINDOW_VISIBILITY_EVENT, visible) {
+        eprintln!("[aiko] failed to emit window-visibility to {label}: {err}");
+    }
+}
 
 /// Show + focus the persona window AND emit the visibility event so the
 /// main window (or any other listener) can react. Centralised so the
@@ -76,6 +98,7 @@ fn show_persona_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         let _ = app.emit(PERSONA_VISIBILITY_EVENT, true);
+        emit_window_visibility(app, PERSONA_LABEL, true);
     }
 }
 
@@ -87,6 +110,7 @@ fn hide_persona_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(PERSONA_LABEL) {
         let _ = window.hide();
         let _ = app.emit(PERSONA_VISIBILITY_EVENT, false);
+        emit_window_visibility(app, PERSONA_LABEL, false);
     }
 }
 
@@ -408,6 +432,7 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window(MAIN_LABEL) {
                     let _ = window.show();
                     let _ = window.set_focus();
+                    emit_window_visibility(app, MAIN_LABEL, true);
                 }
             }
             "show_persona" => {
@@ -430,12 +455,15 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                if let Some(window) = tray.app_handle().get_webview_window(MAIN_LABEL) {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window(MAIN_LABEL) {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
+                        emit_window_visibility(app, MAIN_LABEL, false);
                     } else {
                         let _ = window.show();
                         let _ = window.set_focus();
+                        emit_window_visibility(app, MAIN_LABEL, true);
                     }
                 }
             }
@@ -493,6 +521,7 @@ fn wire_main_close_to_hide(app: &AppHandle) {
                     eprintln!("[aiko] failed to emit presence-hide: {err}");
                 }
                 let _ = main_clone.hide();
+                emit_window_visibility(&app_clone, MAIN_LABEL, false);
             }
         });
     }
