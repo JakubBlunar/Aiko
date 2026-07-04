@@ -8,6 +8,7 @@ distinct clusters including at least one focus cluster.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from app.core.concepts.proposers.base import (
     CandidateProposal,
@@ -21,6 +22,10 @@ from app.core.concepts.proposers.base import (
     resolve_reinforces,
     snippet,
 )
+
+if TYPE_CHECKING:
+    from app.core.conversation.topic_graph import CoactivationMode
+
 
 def _system(user_name: str, assistant_name: str) -> str:
     return (
@@ -59,12 +64,31 @@ def _system(user_name: str, assistant_name: str) -> str:
     )
 
 
+def _coactivation_lines(
+    coactivation: "Sequence[CoactivationMode]",
+    valid_reps: set[int],
+) -> list[str]:
+    """Render the L4 "TOPIC MODES" hint: clusters that keep lighting up in
+    the same conversations, as ``[rep, rep, ...]`` groups. Only reps present
+    in the current map survive (a mode built off a since-refit cluster is
+    dropped). Returns ``[]`` when nothing usable, so the caller can omit the
+    whole section."""
+    lines: list[str] = []
+    for mode in coactivation:
+        reps = [int(r) for r in getattr(mode, "reps", ()) if int(r) in valid_reps]
+        if len(reps) < 2:
+            continue
+        lines.append("- [" + ", ".join(str(r) for r in reps) + "]")
+    return lines
+
+
 def propose_identity_user(
     ctx: ProposerContext,
     *,
     focus_clusters: Sequence[FocusCluster],
     cluster_index: Sequence[tuple[int, str, int]],
     existing: Sequence[ExistingConcept] = (),
+    coactivation: "Sequence[CoactivationMode]" = (),
 ) -> list[CandidateProposal]:
     if not focus_clusters or not cluster_index:
         return []
@@ -76,6 +100,7 @@ def propose_identity_user(
         f"- [{rep}] {label} (size {size})"
         for rep, label, size in cluster_index
     ]
+    mode_lines = _coactivation_lines(coactivation, valid_reps)
     focus_lines = []
     for fc in focus_clusters:
         parts = [f"[{fc.rep}] {fc.label} (size {fc.size})"]
@@ -85,9 +110,21 @@ def propose_identity_user(
             parts.append(f"  digest: {snippet(fc.digest)}")
         focus_lines.append("\n".join(parts))
 
+    modes_section = ""
+    if mode_lines:
+        modes_section = (
+            "\n\nTOPIC MODES (clusters that tend to light up together in the "
+            "same conversations -- a soft hint, not a rule):\n"
+            + "\n".join(mode_lines)
+            + "\n(Prefer connecting clusters that co-fire here when a genuine "
+            "shared trait explains why -- but only if it is real; never force "
+            "a link just because two clusters appear together.)"
+        )
+
     user = (
         "FULL TOPIC MAP (all clusters, by size):\n"
         + "\n".join(map_lines)
+        + modes_section
         + "\n\nFOCUS CLUSTERS (detail):\n"
         + "\n\n".join(focus_lines)
         + "\n\nALREADY-KNOWN USER IDENTITY CONCEPTS:\n"

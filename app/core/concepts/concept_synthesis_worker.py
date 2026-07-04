@@ -437,6 +437,7 @@ class ConceptSynthesisWorker:
             focus_clusters=focus_clusters,
             cluster_index=cluster_index,
             existing=self._existing_for(spec),
+            coactivation=self._coactivation_modes(),
         )
 
         # Persist signatures: keep entries for current reps only (bounds
@@ -451,6 +452,37 @@ class ConceptSynthesisWorker:
                 new_sigs[str(rep)] = sigs[str(rep)]
         self._save_sigs(_KV_CLUSTER_SIGS, new_sigs)
         return proposals
+
+    def _coactivation_modes(self) -> list[Any]:
+        """L4 grouping hint for the user-identity proposer: the co-activation
+        modes (clusters that co-fire in the same sessions), computed once per
+        run off the topic graph. Empty (and cheap) when the graph doesn't
+        expose the signal or raises -- the proposer treats an empty hint as
+        "no bias", so this never blocks synthesis."""
+        graph = self._topic_graph
+        fn = getattr(graph, "cluster_coactivation", None)
+        if not callable(fn):
+            return []
+        ms = self._memory_settings
+        try:
+            return list(
+                fn(
+                    bucket_by="session",
+                    min_pair_support=int(
+                        getattr(ms, "coactivation_min_pair_support", 2)
+                    ),
+                    min_strength=float(
+                        getattr(ms, "coactivation_min_strength", 0.25)
+                    ),
+                    max_modes=int(getattr(ms, "coactivation_max_modes", 4)),
+                    max_reps_per_mode=int(
+                        getattr(ms, "coactivation_max_reps_per_mode", 4)
+                    ),
+                )
+            )
+        except Exception:
+            log.debug("coactivation modes unavailable", exc_info=True)
+            return []
 
     # ── aiko pass ──────────────────────────────────────────────────────
 

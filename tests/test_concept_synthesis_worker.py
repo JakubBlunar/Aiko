@@ -730,5 +730,65 @@ class SalvageParseTests(unittest.TestCase):
         self.assertEqual(ConceptSynthesisWorker._parse("no json here"), [])
 
 
+class _ModeStub:
+    def __init__(self, reps, labels, strength=0.9, bucket_by="session"):
+        self.reps = tuple(reps)
+        self.labels = tuple(labels)
+        self.strength = strength
+        self.bucket_by = bucket_by
+
+
+class CoactivationHintTests(unittest.TestCase):
+    """L4: the user proposer receives the co-activation modes and renders
+    the TOPIC MODES hint; an empty/absent signal is a silent no-op."""
+
+    def _capture_harness(self, responder):
+        seen: dict[str, str] = {}
+
+        def _wrap(system, user):
+            if "HERSELF" not in system:
+                seen["user"] = user
+            return responder(system, user)
+
+        h = WorkerHarness(_wrap)
+        return h, seen
+
+    def test_modes_section_rendered_in_user_prompt(self) -> None:
+        h, seen = self._capture_harness(_both_responder)
+        h.topic.cluster_coactivation = lambda **kw: [
+            _ModeStub(reps=(100, 101), labels=("topic 0", "topic 1")),
+        ]
+        h.worker.run()
+        prompt = seen.get("user", "")
+        self.assertIn("TOPIC MODES", prompt)
+        self.assertIn("[100, 101]", prompt)
+
+    def test_empty_modes_omits_section(self) -> None:
+        h, seen = self._capture_harness(_both_responder)
+        h.topic.cluster_coactivation = lambda **kw: []
+        stats = h.worker.run()
+        self.assertNotIn("TOPIC MODES", seen.get("user", ""))
+        # Synthesis still succeeds normally without the hint.
+        self.assertEqual(stats["by_subject"]["user"]["added"], 1)
+
+    def test_missing_coactivation_method_is_safe(self) -> None:
+        # The default TopicGraphStub has no cluster_coactivation; the worker
+        # must treat that as "no hint" and still run.
+        h = WorkerHarness(_both_responder)
+        self.assertFalse(hasattr(h.topic, "cluster_coactivation"))
+        stats = h.worker.run()
+        self.assertEqual(stats["by_subject"]["user"]["added"], 1)
+
+    def test_coactivation_failure_is_swallowed(self) -> None:
+        def _boom(**kw):
+            raise RuntimeError("nope")
+
+        h, seen = self._capture_harness(_both_responder)
+        h.topic.cluster_coactivation = _boom
+        stats = h.worker.run()
+        self.assertNotIn("TOPIC MODES", seen.get("user", ""))
+        self.assertEqual(stats["by_subject"]["user"]["added"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

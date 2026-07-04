@@ -591,6 +591,17 @@ class AgentSettings:
     # worth surfacing. Raised to the topic graph's own min_cluster_size if
     # set lower; floor of 1 in the parser.
     interest_map_min_size: int = 4
+    # L4 co-activation surfacing. When on (and the topic graph is
+    # persistent + mature), the T1 ``coactivation_block`` renders one
+    # hedged "you've been circling X / Y / Z together lately, meanwhile W
+    # has gone quiet" line from the cluster co-activation signal (which
+    # topics light up in the same conversations). Sibling of the interest
+    # map; dropped under aggressive pressure, silent while immature.
+    coactivation_block_enabled: bool = True
+    # How many co-activation "modes" (groups of clusters that fire
+    # together) the block may draw on; only the strongest is rendered, but
+    # this bounds the underlying compute. Floor of 1 in the parser.
+    coactivation_block_max_modes: int = 4
     # Master switch for
     # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`.
     # When ``False`` the worker never registers its idle tick and

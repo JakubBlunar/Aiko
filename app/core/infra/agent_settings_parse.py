@@ -290,6 +290,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1,
                 int(agent_raw.get("interest_map_min_size", 4)),
             ),
+            coactivation_block_enabled=bool(
+                agent_raw.get("coactivation_block_enabled", True),
+            ),
+            coactivation_block_max_modes=max(
+                1,
+                int(agent_raw.get("coactivation_block_max_modes", 4)),
+            ),
             curiosity_seed_enabled=bool(
                 agent_raw.get("curiosity_seed_enabled", True),
             ),

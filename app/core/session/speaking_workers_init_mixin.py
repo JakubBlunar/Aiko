@@ -622,6 +622,7 @@ class SpeakingWorkersInitMixin:
             goals=self._render_goals_block,
             interest_map=self._render_interest_map_block,
             concept=self._render_concept_block,
+            coactivation=self._render_coactivation_block,
             arc=self._render_arc_block,
             narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,

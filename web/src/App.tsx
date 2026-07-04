@@ -158,8 +158,12 @@ export default function App() {
   // as a single boolean so the typed-mode proactive timer can pause
   // while the user is heads-down in another app. Wired in the main
   // window only — the persona-window route renders its own component
-  // tree and doesn't need to double-report.
-  usePresenceReporter({ send });
+  // tree (``PersonaWindow`` mounts its own reporter). Without the
+  // ``enabled`` gate the persona webview would run TWO reporters (this
+  // one, which runs before the ``route === "persona"`` early return,
+  // plus ``PersonaWindow``'s), racing each other's debounce timers and
+  // churning the audio-owner election.
+  usePresenceReporter({ send, enabled: route !== "persona" });
 
   // Activity awareness (desktop opt-in, default off). Polls the Tauri
   // shell for the foreground app name when the toggle is on; complete

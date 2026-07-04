@@ -112,6 +112,7 @@ class PromptAssemblerHelpersMixin:
         goals: Callable[[], str] | None = None,
         interest_map: Callable[[], str] | None = None,
         concept: Callable[[], str] | None = None,
+        coactivation: Callable[[], str] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
@@ -223,6 +224,8 @@ class PromptAssemblerHelpersMixin:
             self._interest_map_provider = interest_map
         if concept is not None:
             self._concept_provider = concept
+        if coactivation is not None:
+            self._coactivation_provider = coactivation
         if vocal_tone is not None:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
@@ -518,6 +521,9 @@ class PromptAssemblerHelpersMixin:
         concept_block = (
             "" if aggressive else _safe_provider(self._concept_provider)
         )
+        coactivation_block = (
+            "" if aggressive else _safe_provider(self._coactivation_provider)
+        )
         cache_key = self._compute_static_cache_key(
             session_key, history_msgs, recent_window, aggressive,
         )
@@ -541,6 +547,7 @@ class PromptAssemblerHelpersMixin:
             goals_block=goals_block,
             interest_map_block=interest_map_block,
             concept_block=concept_block,
+            coactivation_block=coactivation_block,
             built_at=time.monotonic(),
         )
 
