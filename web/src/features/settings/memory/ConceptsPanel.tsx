@@ -231,6 +231,15 @@ function ConceptCard({
 }: ConceptCardProps) {
   const tone =
     STATUS_TONE[concept.status] ?? "border-white/10 bg-white/[0.02]";
+  // L9: a compact "what this belief rests on" line, from the first few
+  // resolved evidence labels already in the payload (never truncated in
+  // the expanded view -- this collapsed summary just trims for density).
+  const supportingSummary = concept.evidence
+    .map((e) => e.label.trim())
+    .filter((l) => l.length > 0)
+    .slice(0, 3)
+    .map((l) => (l.length > 40 ? `${l.slice(0, 39)}\u2026` : l))
+    .join(" · ");
   return (
     <li className={`rounded border p-2 text-[11px] ${tone}`}>
       <div className="flex items-start justify-between gap-2">
@@ -245,9 +254,22 @@ function ConceptCard({
             <span>·</span>
             <span>{concept.kind}</span>
             <span>·</span>
-            <span>{concept.status}</span>
+            {concept.status === "contradicted" ? (
+              <span
+                className="rounded bg-rose-500/20 px-1 text-rose-100"
+                title="Actively disproven by counter-evidence (L9). Revivable if it re-reinforces."
+              >
+                contradicted
+              </span>
+            ) : (
+              <span>{concept.status}</span>
+            )}
             <span>·</span>
             <span>conf {concept.confidence.toFixed(2)}</span>
+            <span>·</span>
+            <span title="Plasticity: how readily this belief moves. Low = sticky (resists decay and disproof).">
+              plast {concept.plasticity.toFixed(2)}
+            </span>
             <span>·</span>
             <span>
               {concept.evidence_count} evidence
@@ -266,6 +288,12 @@ function ConceptCard({
           <div className="whitespace-pre-wrap break-words font-medium text-ink-100/85">
             {concept.label}
           </div>
+          {supportingSummary ? (
+            <div className="mt-0.5 break-words text-[10px] text-ink-100/45">
+              <span className="text-ink-100/30">supporting: </span>
+              {supportingSummary}
+            </div>
+          ) : null}
         </button>
         <button
           type="button"

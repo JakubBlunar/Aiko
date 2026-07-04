@@ -33,6 +33,14 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 | `get_last_response_detail` | — | JSON timing breakdown for the last turn (`llm_ms`, `tts_ms`, etc.). |
 | `clear_history` | — | Clears the active session in `chat_sessions.db`. |
 
+Beyond this core set, the tool surface is grouped by domain under `app/mcp/server_tools/*.py` (each a `register(mcp, session)` module). Concept-layer observability (L26), in `server_tools/proactive_task_tools.py`:
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `get_last_concept_trace` | — | JSON: which concepts entered the LAST turn's prompt — the L5 `concept_block` surfaced set (`concept_id`/`label`/`confidence`/`plasticity`/`hedge`) or a `reason`, and the L4 `coactivation_block` mode + quiet cluster. Tagged with `slice_cache_event` + `aggressive`. |
+| `get_concept_graph` | — | JSON: the live concept graph (`session.concepts_snapshot()`) — every concept with status/confidence/plasticity/rationale + resolved evidence edges + counts. Richer than `get_concepts_state`. |
+| `get_concept_transitions` | `limit: int = 50` | JSON: recent lifecycle transitions (`promoted`/`dormant`/`retired`/`revived`), newest-first, dropping `discovered` births. |
+
 ### Resources
 
 | URI | Content |

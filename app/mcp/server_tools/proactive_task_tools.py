@@ -2191,6 +2191,97 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_concepts_state raised: {exc}"
 
     @mcp.tool()
+    def get_concept_graph() -> str:
+        """L26 — dump the live concept graph ("how Aiko is thinking").
+
+        Richer than ``get_concepts_state``: the same JSON that backs
+        ``GET /api/concepts`` and the Memory-tab Concepts panel — every
+        concept with ``status`` / ``confidence`` / ``plasticity`` /
+        ``rationale`` / timestamps and its resolved evidence edges (with
+        memory / cluster labels), plus ``counts.by_status`` and
+        ``counts.by_subject``. ``enabled=False`` when the concept layer
+        is off (``agent.concepts_enabled``). Pair with
+        ``get_concept_transitions`` for what changed recently and
+        ``get_last_concept_trace`` for what actually entered the last
+        prompt.
+        """
+        try:
+            return json.dumps(
+                session.concepts_snapshot(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_graph raised: {exc}"
+
+    @mcp.tool()
+    def get_concept_transitions(limit: int = 50) -> str:
+        """L26 — recent concept lifecycle transitions ("what changed").
+
+        Filters the concept discovery timeline (L3 ``ConceptEventStore``)
+        to lifecycle events — ``promoted`` / ``dormant`` / ``retired`` /
+        ``revived`` — newest first, dropping the ``discovered`` births
+        that ``get_concept_graph`` already covers. Each entry: ``id``,
+        ``concept_id``, ``event_type``, ``label``, ``confidence``,
+        ``reason``, ``created_at``. ``enabled=False`` when the concept
+        layer is off.
+        """
+        try:
+            n = max(1, int(limit))
+            lifecycle = ("promoted", "dormant", "retired", "revived")
+            collected: dict[int, dict[str, Any]] = {}
+            for event_type in lifecycle:
+                snap = session.concept_timeline(limit=n, event_type=event_type)
+                if not snap.get("enabled", False):
+                    return json.dumps(snap, indent=2, default=str)
+                for event in snap.get("events", []):
+                    collected[int(event["id"])] = event
+            events = sorted(
+                collected.values(),
+                key=lambda e: int(e["id"]),
+                reverse=True,
+            )[:n]
+            return json.dumps(
+                {"enabled": True, "total": len(events), "events": events},
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_transitions raised: {exc}"
+
+    @mcp.tool()
+    def get_last_concept_trace() -> str:
+        """L26 — which concepts entered the LAST turn's prompt.
+
+        Reads the per-turn trace stamped onto ``_last_metrics`` from
+        ``PromptTelemetry`` (so it reflects the slice-cached block text,
+        not a fresh recompute):
+
+        - ``concepts`` (L5 ``concept_block``): ``surfaced`` list of
+          ``{concept_id, label, confidence, plasticity, kind, subject,
+          hedge}`` — or a ``reason`` when empty (``disabled`` /
+          ``immature`` / ``no_eligible`` / ``aggressive`` / ...). Join
+          ``concept_id`` to ``get_concept_graph`` for the evidence.
+        - ``coactivation`` (L4 ``coactivation_block``): the chosen
+          ``mode`` (reps / labels / strength / bucket) + ``quiet``
+          cluster, or a ``reason``.
+
+        Both carry ``slice_cache_event`` + ``aggressive`` so you can tell
+        cached vs freshly built vs dropped under context pressure.
+        """
+        try:
+            metrics = session.get_last_metrics()
+            return json.dumps(
+                {
+                    "mode": metrics.get("mode"),
+                    "concepts": metrics.get("concepts_surfaced", {}),
+                    "coactivation": metrics.get("coactivation_surfaced", {}),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_last_concept_trace raised: {exc}"
+
+    @mcp.tool()
     def rename_topic_cluster(cluster_id: int, label: str) -> str:
         """F10l — override a cluster's label (sticky across batch refits).
 

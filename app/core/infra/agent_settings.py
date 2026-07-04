@@ -332,6 +332,17 @@ class AgentSettings:
     # versa).
     conflict_detector_per_hour_cap: int = 6
     conflict_detector_per_day_cap: int = 30
+    # ── L9 concept layer: identity-belief contradiction detector ─────
+    # Hourly + daily caps on the LLM verification calls the L3 lifecycle
+    # worker's read-only ``ConceptContradictionDetector`` may issue for
+    # *borderline* concept-vs-memory pairs (definite heuristic hits skip
+    # the LLM). Persisted to ``kv_meta`` via a dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='concept_contradiction.rate_state'`` so it never shares
+    # a budget with the F5 memory-conflict detector. The master switch +
+    # heuristic band live on ``MemorySettings.concept_contradiction_*``.
+    concept_contradiction_per_hour_cap: int = 6
+    concept_contradiction_per_day_cap: int = 30
     # ── K35 personality backlog: memory consolidation worker ─────────
     # Master switch for
     # :class:`app.core.memory.memory_consolidation_worker.MemoryConsolidationWorker`.

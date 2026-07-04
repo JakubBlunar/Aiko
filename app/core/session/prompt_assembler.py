@@ -656,6 +656,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # dropped under aggressive pressure; silent until a clear mode
         # exists off a mature graph.
         self._coactivation_provider: Callable[[], str] | None = None
+        # L26 concept trace: optional structured-trace siblings of the
+        # concept / coactivation providers. Called immediately after the
+        # matching text provider inside ``_build_static_slices_with_history``
+        # so the dict they return (set as a side effect of the text render
+        # on the owning controller) is captured onto ``_StaticSlices`` and
+        # rides the slice cache. Return ``{"surfaced": [...], "reason": ...}``
+        # / ``{"mode": ..., "quiet": ..., "reason": ...}``.
+        self._concept_trace_provider: Callable[[], dict] | None = None
+        self._coactivation_trace_provider: Callable[[], dict] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -3114,6 +3123,21 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # the embedder's per-turn counters; we leave them at the
             # default 0 here so a stand-alone assemble call (e.g. tests
             # without a turn boundary) still produces a valid telemetry.
+            #
+            # L26: carry the (possibly slice-cached) concept / co-activation
+            # block trace straight through to metrics, tagged with the
+            # slice-cache event + aggressive flag so a reader can tell
+            # "cached vs freshly built vs dropped under pressure".
+            concepts_surfaced={
+                **dict(slices.concept_trace or {}),
+                "slice_cache_event": slice_event,
+                "aggressive": bool(aggressive),
+            },
+            coactivation_surfaced={
+                **dict(slices.coactivation_trace or {}),
+                "slice_cache_event": slice_event,
+                "aggressive": bool(aggressive),
+            },
         )
 
         # Per plan: tweaking-only headline for the prompt build. Stays

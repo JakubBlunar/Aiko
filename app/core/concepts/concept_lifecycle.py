@@ -80,6 +80,31 @@ def next_confidence(
     return min(cap, max(0.0, decayed))
 
 
+def apply_contradiction_penalty(
+    current: float,
+    *,
+    penalty: float,
+    plasticity: float,
+    floor: float = 0.0,
+    cap: float = CONFIDENCE_CAP,
+) -> float:
+    """One downward confidence step from confirmed counter-evidence (L9).
+
+    Sibling to :func:`next_confidence`, but for *disproof* rather than
+    decay: a memory that contradicts the belief knocks its confidence
+    down by a plasticity-damped ``penalty``. Sticky (low-plasticity)
+    beliefs resist -- the effective drop scales with plasticity so even a
+    firm identity belief still moves, just slower. Plasticity in [0, 1]
+    maps to a [0.5x .. 1x] multiplier on ``penalty``. Clamped to
+    ``[floor, cap]``; the lifecycle worker keys the ``contradicted``
+    transition off the resulting confidence, not off this function.
+    """
+    p = min(1.0, max(0.0, float(plasticity)))
+    effective = max(0.0, float(penalty)) * (0.5 + 0.5 * p)
+    stepped = float(current) - effective
+    return min(cap, max(float(floor), stepped))
+
+
 def set_evidence_gate(
     *,
     distinct_source_count: int,
@@ -109,5 +134,6 @@ __all__ = [
     "confidence_target",
     "effective_halflife",
     "next_confidence",
+    "apply_contradiction_penalty",
     "set_evidence_gate",
 ]

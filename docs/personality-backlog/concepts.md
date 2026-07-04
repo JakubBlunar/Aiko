@@ -642,6 +642,24 @@ span >= 2 clusters?". Deferred — most divergent from the L1 data model.
 
 ## L9. Identity concepts as living, confidence-bearing beliefs
 
+**Status: BUILT.** Counter-evidence now lowers an active identity
+concept's confidence and can flip it into a revivable `contradicted`
+status; the L5 block reads a belief as living (confidence hedge +
+supporting grounding), and the debug UI shows the `contradicted` badge,
+plasticity, and a supporting summary. Implementation:
+[`concept_contradiction.py`](../../app/core/concepts/concept_contradiction.py)
+(read-only detector, reuses the F5 three-tier gate),
+[`apply_contradiction_penalty`](../../app/core/concepts/concept_lifecycle.py)
+(plasticity-damped downward step), the L3 worker
+([`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py))
+as the single writer, and the state machine in
+[`concept-lifecycle.md`](../concept-lifecycle.md). Detection is batched
+like L2/L3 (rides `list_stalest`, `concept_contradiction_batch_size`
+checks/tick); LLM spend has its own hour/day caps. **Decisions taken:** a
+real `contradicted` status (not `active -> candidate`); heuristic + LLM
+detection; the "strong concept biases RAG/self-image" stretch (item 3
+below) deferred to L24's integration contract. Original plan below.
+
 (Near-term, not deferred — a framing + surfacing layer on top of L1-L5, not a
 new concept kind.)
 
@@ -1252,33 +1270,43 @@ discipline: only the lifecycle engine reconciles counts.
 
 ## L26. Concept trace + "how Aiko is thinking" observability
 
-**Motivation.** The most practically urgent one: **if you can't see what she's
-thinking, none of this is verifiable.** Even today it's hard to validate why
-Aiko said something; with an emergent concept layer feeding the prompt, "why did
-she bring that up?" becomes opaque unless we build the window in from the start.
-This is the dev-facing counterpart to L6 (which is user-facing) and L22 (which
-is aggregate quality) — here the unit is *one turn*.
+**Status: BUILT.** The dev-facing window into the layer: per-turn "what concepts
+entered this prompt" plus MCP dumps of the live graph and recent lifecycle
+transitions. Unit is *one turn* (vs. L6 user-facing / L22 aggregate quality).
 
-**Key files.** Extends the embedded MCP debug server
-([`app/mcp/server.py`](../../app/mcp/server.py)) and the existing
-`get_last_response_detail` path; relates to DT2 (relationship inspector) and DT4
-(replay harness) in [`workers.md`](workers.md) / the DT-series.
+**Delivered — per-turn trace.** The L5 `concept_block` and L4 `coactivation_block`
+renderers
+([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) stamp a
+structured trace at selection time onto `self._concept_block_trace` /
+`self._coactivation_block_trace`: the surfaced concepts (`concept_id`, `label`,
+`confidence`, `plasticity`, `kind`, `subject`, `hedge`) or a `reason` when empty
+(`disabled` / `block_disabled` / `store_missing` / `immature` / `no_eligible` /
+`aggressive` / ...); and the chosen co-activation `mode` (`reps` / `labels` /
+`strength` / `bucket_by`) + `quiet` cluster. Because the blocks are **slice-cached**
+(`_StaticSlices`; the renderers don't re-run on a cache hit), the trace is
+captured *at build time* through paired `concept_trace` / `coactivation_trace`
+providers (`set_inner_life_providers`) into
+`_StaticSlices.concept_trace` / `.coactivation_trace`, then forwarded by
+`assemble_with_budget` to `PromptTelemetry.concepts_surfaced` /
+`coactivation_surfaced` (tagged with `slice_cache_event` + `aggressive` so you
+can tell cached vs. freshly built vs. dropped under pressure). That flows through
+the existing `PromptTelemetry.as_dict()` → `_last_metrics` path, so it is visible
+via `get_last_response_detail`. No edge walk on the hot path — the trace links by
+`concept_id`; join to the graph dump for evidence.
 
-**Sketched approach.** Two windows:
+**Delivered — introspection (MCP).** Three tools in
+[`proactive_task_tools.py`](../../app/mcp/server_tools/proactive_task_tools.py):
+`get_last_concept_trace` (the per-turn trace above), `get_concept_graph`
+(wraps `session.concepts_snapshot()` — every concept with status / confidence /
+plasticity / rationale + resolved evidence edges + counts; richer than the older
+`get_concepts_state`), and `get_concept_transitions` (wraps
+`session.concept_timeline()` filtered to lifecycle events — `promoted` /
+`dormant` / `retired` / `revived`, newest-first, dropping `discovered` births).
 
-- **Per-turn concept trace.** Record, for each turn, exactly which concepts the
-  L23 selector surfaced into the prompt, their confidence/plasticity, and the
-  edges walked to get there — retrievable via an MCP tool
-  (`get_last_concepts` / extend `get_last_response_detail`) so "what concepts
-  were in this request?" has a precise answer. This is the concept-layer analog
-  of being able to read the assembled prompt.
-- **Thinking introspection.** A snapshot/dump of the live concept graph (nodes,
-  edges, status, confidence, provenance) plus recent lifecycle transitions
-  ("what promoted / decayed / got contradicted this week"), so you can watch
-  Aiko's worldview evolve instead of guessing. Pairs with the L6 UI for a
-  human-readable view and the L22 harness for the automated one.
+**Design notes.** Only `relation="evidence"` edges exist in v1, so
+`concepts_snapshot()` is a complete graph dump — no new `ConceptStore.all_edges()`
+needed. The trace is empty-with-`reason` (never absent) when the layer is
+off / immature / aggressive. Trace snapshots are copied (not live-read) so a
+cache-hit reports exactly what was in the prompt.
 
-Build a thin version of the per-turn trace **early** (alongside L2/L3), not at
-the end — it's the tool we'll use to validate every other L-entry.
-
-**Effort.** Medium (and high leverage — it pays for itself validating the rest).
+**Effort.** Medium (high leverage — validates every other L-entry).

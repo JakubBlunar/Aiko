@@ -71,6 +71,36 @@ def _resolve_label(
     return ""
 
 
+def resolve_evidence_labels(
+    store: "ConceptStore",
+    memory_store: "MemoryStore | None",
+    topic_graph: "TopicGraph | None",
+    concept_id: int,
+    *,
+    limit: int | None = None,
+) -> list[str]:
+    """Human-readable, non-empty labels for a concept's evidence edges.
+
+    The shared seam used by both the debug snapshot and the L5 concept
+    block (living-belief "supporting grounding") so evidence-node
+    resolution -- memory content / cluster summary / concept label -- has
+    a single implementation. Ordered by ``evidence_of`` (ordinal), blanks
+    dropped, capped at ``limit`` when given.
+    """
+    cluster_labels = _cluster_label_map(topic_graph)
+    out: list[str] = []
+    for edge in store.evidence_of(int(concept_id)):
+        label = (
+            _resolve_label(edge, memory_store, cluster_labels, store) or ""
+        ).strip()
+        if not label:
+            continue
+        out.append(label)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
+
+
 def build_concepts_snapshot(
     store: "ConceptStore | None",
     memory_store: "MemoryStore | None",
@@ -142,4 +172,4 @@ def build_concepts_snapshot(
     }
 
 
-__all__ = ["build_concepts_snapshot"]
+__all__ = ["build_concepts_snapshot", "resolve_evidence_labels"]

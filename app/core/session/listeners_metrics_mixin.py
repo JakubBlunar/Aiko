@@ -214,6 +214,10 @@ class ListenersMetricsMixin:
             "provider_ms": {},
             "rag_lookup_ms": 0.0,
             "assemble_ms": 0.0,
+            # L26: per-turn concept trace (populated from PromptTelemetry
+            # after a real turn; empty on the idle frame).
+            "concepts_surfaced": {},
+            "coactivation_surfaced": {},
         }
 
     def get_last_metrics(self) -> dict[str, Any]:

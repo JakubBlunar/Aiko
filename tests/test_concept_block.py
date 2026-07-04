@@ -14,17 +14,39 @@ from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 
 class _Concept:
     def __init__(self, label: str, confidence: float, *, status="active",
-                 subject="user", kind="identity") -> None:
+                 subject="user", kind="identity", concept_id=1,
+                 plasticity=0.5, last_reinforced_at=None) -> None:
         self.label = label
         self.confidence = confidence
         self.status = status
         self.subject = subject
         self.kind = kind
+        self.concept_id = concept_id
+        self.plasticity = plasticity
+        self.last_reinforced_at = last_reinforced_at
+
+
+class _Edge:
+    def __init__(self, src_type: str, src_id: str) -> None:
+        self.src_type = src_type
+        self.src_id = src_id
+        self.relation = "evidence"
+        self.ordinal = 0
+
+
+class _MemoryStore:
+    def __init__(self, memories: dict[int, str]) -> None:
+        self._memories = memories
+
+    def get(self, memory_id: int):
+        content = self._memories.get(int(memory_id))
+        return SimpleNamespace(content=content) if content is not None else None
 
 
 class _ConceptStore:
-    def __init__(self, concepts) -> None:
+    def __init__(self, concepts, evidence=None) -> None:
         self._concepts = concepts
+        self._evidence = evidence or {}
 
     def list_by(self, *, status=None, subject=None, kind=None, **_kw):
         return [
@@ -34,6 +56,9 @@ class _ConceptStore:
             and (subject is None or c.subject == subject)
             and (kind is None or c.kind == kind)
         ]
+
+    def evidence_of(self, concept_id: int):
+        return list(self._evidence.get(int(concept_id), []))
 
 
 class _Graph:
@@ -49,7 +74,8 @@ class _Host(InnerLifePart1Mixin):
 
     def __init__(self, *, concepts=None, graph=None, concepts_enabled=True,
                  block_enabled=True, max_items=3, min_conf=0.55,
-                 min_clusters=6, user_name="Jacob") -> None:
+                 min_clusters=6, user_name="Jacob", evidence=None,
+                 memories=None) -> None:
         self._settings = SimpleNamespace(
             agent=SimpleNamespace(
                 concepts_enabled=concepts_enabled,
@@ -62,9 +88,14 @@ class _Host(InnerLifePart1Mixin):
             concept_min_clusters=min_clusters,
         )
         self._concept_store = (
-            _ConceptStore(concepts) if concepts is not None else None
+            _ConceptStore(concepts, evidence)
+            if concepts is not None
+            else None
         )
         self._topic_graph = graph
+        self._memory_store = (
+            _MemoryStore(memories) if memories is not None else None
+        )
         self._user_name = user_name
 
     @property
@@ -170,6 +201,34 @@ class ConceptBlockRenderTests(unittest.TestCase):
             max_items=0,
         )
         self.assertEqual(host._render_concept_block(), "")
+
+    def test_supporting_grounding_appended(self) -> None:
+        # L9: a surfaced concept gets a trailing "it keeps surfacing
+        # around X and Y" clause resolved from its evidence memories.
+        host = _Host(
+            concepts=[_Concept("enjoys systems", 0.9, concept_id=5)],
+            graph=_Graph(True),
+            evidence={5: [_Edge("memory", "1"), _Edge("memory", "2")]},
+            memories={1: "CPU debugging", 2: "reverse engineering"},
+        )
+        out = host._render_concept_block()
+        self.assertIn("it keeps surfacing around", out)
+        self.assertIn("CPU debugging", out)
+        self.assertIn("reverse engineering", out)
+        # And the trace records the supporting labels + reinforced slot.
+        trace = host._concept_block_trace["surfaced"][0]
+        self.assertEqual(trace["supporting"], ["CPU debugging", "reverse engineering"])
+        self.assertIn("last_reinforced_at", trace)
+
+    def test_no_grounding_when_no_evidence(self) -> None:
+        # Without evidence the concept still renders, just terse.
+        host = _Host(
+            concepts=[_Concept("enjoys systems", 0.9, concept_id=5)],
+            graph=_Graph(True),
+        )
+        out = host._render_concept_block()
+        self.assertIn("enjoys systems", out)
+        self.assertNotIn("it keeps surfacing around", out)
 
 
 class HedgeHelperTests(unittest.TestCase):
