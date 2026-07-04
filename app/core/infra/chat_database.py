@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 22
+_SCHEMA_VERSION = 23
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -390,7 +390,15 @@ CREATE TABLE IF NOT EXISTS concepts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_reinforced_at TEXT,
-    promoted_at TEXT
+    promoted_at TEXT,
+    -- Schema v23 (L3): per-concept engagement anchor owned by the
+    -- lifecycle worker. ``last_lifecycle_at`` is the wall-clock of the
+    -- last lifecycle evaluation (NULL => never evaluated, sorted first
+    -- for the rolling round-robin); ``last_lifecycle_engagement`` is the
+    -- engagement-clock ``total()`` at that moment, so decay is measured
+    -- per-concept from its own anchor (batch-order independent).
+    last_lifecycle_at TEXT,
+    last_lifecycle_engagement REAL
 );
 CREATE INDEX IF NOT EXISTS idx_concepts_status ON concepts(status);
 CREATE INDEX IF NOT EXISTS idx_concepts_subject_kind ON concepts(subject, kind);
@@ -1127,6 +1135,19 @@ class ChatDatabase:
                 )
         except sqlite3.OperationalError:
             pass
+        # v22 -> v23: L3 concept lifecycle engine per-concept engagement
+        # anchor. Two nullable columns on ``concepts`` (fresh DBs get them
+        # from the CREATE above; existing DBs need the ALTERs). NULL means
+        # "never evaluated by L3", which sorts first in the rolling
+        # round-robin so new/backlogged concepts are picked up promptly.
+        for stmt in (
+            "ALTER TABLE concepts ADD COLUMN last_lifecycle_at TEXT",
+            "ALTER TABLE concepts ADD COLUMN last_lifecycle_engagement REAL",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

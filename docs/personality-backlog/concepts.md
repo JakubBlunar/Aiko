@@ -386,6 +386,12 @@ feed the proposer once it exists?
 
 ## L3. The lifecycle engine — accrual, promotion, and the single writer
 
+> **Built (v1).** The canonical state-machine + ownership reference now
+> lives in [`docs/concept-lifecycle.md`](../concept-lifecycle.md): status
+> vocabulary, transition triggers + governing settings, the
+> engagement-driven confidence model, the event mapping, and the
+> invariants. The notes below are the original design sketch.
+
 **Motivation.** The core of the "don't jump to conclusions" guard, and — per
 "One graph + one engine" above — the **single writer** of every concept's
 `confidence` / `plasticity` / `status`. A single LLM hunch shouldn't become part
@@ -500,6 +506,19 @@ someone who pays attention. The `concept_block` should surface concepts as
 concept hedges harder than a 0.95 one) — never as declared facts about the user.
 This is a persona/prompt instruction on the block, sibling to the K25
 memory-hedging register.
+
+**Bias checkpoint (carry-forward from L3).** Surfacing is where a biased
+self-image would actually leak into replies, so when this lands it must:
+(a) scale a concept's influence on prompts/RAG by its `confidence` **and
+cap it**, so no single concept dominates Aiko's self-image or the profile
+block; (b) surface **only `active` concepts** — `dormant` / `retired` /
+`contradicted` never leak; (c) hedge low-confidence concepts as
+"impressions I could be wrong about" (the `confidence`-scaled register
+above); (d) re-run the **L22 eval** for Barnum-statement rate + precision
+once concepts start shaping replies. The structural anti-bias guards
+(saturating `target`, decay of the unreinforced, distinct-source gating,
+plasticity damping) live in L3 / [`docs/concept-lifecycle.md`](../concept-lifecycle.md);
+this checkpoint is the surfacing-side complement.
 
 **Open questions.** T1 block vs. folding into the existing `interest_map_block`?
 How aggressively should the "mode X is hot, Y went quiet" contrast fire
