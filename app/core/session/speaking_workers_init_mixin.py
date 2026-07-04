@@ -623,6 +623,13 @@ class SpeakingWorkersInitMixin:
             interest_map=self._render_interest_map_block,
             concept=self._render_concept_block,
             coactivation=self._render_coactivation_block,
+            # L26: structured-trace siblings. Read the slot the matching
+            # renderer stamped this build so the assembler can capture what
+            # actually entered the prompt onto the (cacheable) slices.
+            concept_trace=lambda: getattr(self, "_concept_block_trace", None),
+            coactivation_trace=(
+                lambda: getattr(self, "_coactivation_block_trace", None)
+            ),
             arc=self._render_arc_block,
             narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,
@@ -744,6 +751,91 @@ class SpeakingWorkersInitMixin:
             except Exception:
                 log.warning("memory extractor failed to initialise", exc_info=True)
                 self._memory_extractor = None
+
+    def _build_concept_contradiction_detector(self, settings):
+        """L9: build the read-only ``ConceptContradictionDetector`` for the
+        L3 lifecycle worker, or ``None`` when disabled / missing deps.
+
+        Uses its own :class:`FactCheckRateLimiter`
+        (``state_key='concept_contradiction.rate_state'``) so its LLM
+        budget never shares with F5, and the maintenance-tier LLM client
+        like every other idle worker. Non-fatal: any failure returns
+        ``None`` and the worker degrades to pure lifecycle math.
+        """
+        self._concept_contradiction_rate_limiter = None
+        if not bool(
+            getattr(
+                self._memory_settings, "concept_contradiction_enabled", True
+            )
+        ):
+            return None
+        if (
+            getattr(self, "_memory_store", None) is None
+            or getattr(self, "_maintenance_client", None) is None
+            or getattr(self, "_chat_db", None) is None
+        ):
+            return None
+        try:
+            from app.core.concepts.concept_contradiction import (
+                ConceptContradictionDetector,
+            )
+            from app.core.memory.fact_check_rate_limiter import (
+                FactCheckRateLimiter,
+            )
+
+            self._concept_contradiction_rate_limiter = FactCheckRateLimiter(
+                self._chat_db,
+                per_hour_cap=int(
+                    getattr(
+                        settings.agent,
+                        "concept_contradiction_per_hour_cap",
+                        6,
+                    )
+                ),
+                per_day_cap=int(
+                    getattr(
+                        settings.agent,
+                        "concept_contradiction_per_day_cap",
+                        30,
+                    )
+                ),
+                state_key="concept_contradiction.rate_state",
+            )
+            return ConceptContradictionDetector(
+                memory_store=self._memory_store,
+                # Idle-scheduler worker → maintenance tier.
+                ollama=self._maintenance_client,
+                chat_model=self._effective_worker_model,
+                rate_limiter=self._concept_contradiction_rate_limiter,
+                cancel_event=self._fact_check_cancel,
+                similarity_min=float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_contradiction_similarity_min",
+                        0.6,
+                    )
+                ),
+                similarity_max=float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_contradiction_similarity_max",
+                        0.95,
+                    )
+                ),
+                max_candidates=int(
+                    getattr(
+                        self._memory_settings,
+                        "concept_contradiction_max_candidates",
+                        6,
+                    )
+                ),
+            )
+        except Exception:
+            log.warning(
+                "ConceptContradictionDetector boot failed", exc_info=True
+            )
+            self._concept_contradiction_rate_limiter = None
+            return None
 
     def _init_speaking_window(self, settings: AppSettings) -> None:
         self._scheduler = SpeakingWindowScheduler(
@@ -1745,6 +1837,17 @@ class SpeakingWorkersInitMixin:
                             ConceptLifecycleWorker,
                         )
 
+                        # L9: optional read-only contradiction detector.
+                        # Built only when enabled and the deps it needs
+                        # (memory mirror + maintenance LLM + chat db) are
+                        # present; the worker stays the single writer and
+                        # degrades to pure lifecycle math when it's None.
+                        contradiction_detector = (
+                            self._build_concept_contradiction_detector(
+                                settings
+                            )
+                        )
+
                         def _graph_mature() -> bool:
                             # L21: promotion uses the stricter young-graph
                             # bar until the graph clears the cluster floor.
@@ -1772,6 +1875,7 @@ class SpeakingWorkersInitMixin:
                             concept_event_store=self._concept_event_store,
                             engagement_clock=self._engagement_clock,
                             graph_mature_provider=_graph_mature,
+                            contradiction_detector=contradiction_detector,
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

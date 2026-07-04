@@ -300,6 +300,10 @@ class ChatTurnMixin:
                 # P14: tool-pass gate decision + pass cost.
                 "tool_gate_event": tdict["tool_gate_event"],
                 "tool_pass_ms": tdict["tool_pass_ms"],
+                # L26: per-turn concept trace (what the L5/L4 blocks
+                # surfaced into this turn's prompt).
+                "concepts_surfaced": tdict["concepts_surfaced"],
+                "coactivation_surfaced": tdict["coactivation_surfaced"],
             })
         self._set_last_metrics(metrics)
 

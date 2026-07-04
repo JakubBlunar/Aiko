@@ -113,6 +113,8 @@ class PromptAssemblerHelpersMixin:
         interest_map: Callable[[], str] | None = None,
         concept: Callable[[], str] | None = None,
         coactivation: Callable[[], str] | None = None,
+        concept_trace: Callable[[], dict] | None = None,
+        coactivation_trace: Callable[[], dict] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
@@ -226,6 +228,10 @@ class PromptAssemblerHelpersMixin:
             self._concept_provider = concept
         if coactivation is not None:
             self._coactivation_provider = coactivation
+        if concept_trace is not None:
+            self._concept_trace_provider = concept_trace
+        if coactivation_trace is not None:
+            self._coactivation_trace_provider = coactivation_trace
         if vocal_tone is not None:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
@@ -452,6 +458,26 @@ class PromptAssemblerHelpersMixin:
         self._slice_cache[session_key] = slices
         return slices
 
+    @staticmethod
+    def _safe_trace(
+        provider: Callable[[], dict] | None, default: dict,
+    ) -> dict:
+        """Run an L26 trace provider, swallowing failures.
+
+        Returns a fresh copy of the provider's dict (so a later block
+        render mutating its controller slot can't retro-edit a cached
+        slice), or ``default`` when the provider is unwired / raised /
+        returned nothing.
+        """
+        if provider is None:
+            return dict(default)
+        try:
+            value = provider()
+        except Exception:
+            log.debug("concept trace provider raised", exc_info=True)
+            return dict(default)
+        return dict(value) if isinstance(value, dict) else dict(default)
+
     def _build_static_slices(
         self, session_key: str, *, aggressive: bool,
     ) -> _StaticSlices:
@@ -518,12 +544,30 @@ class PromptAssemblerHelpersMixin:
         interest_map_block = (
             "" if aggressive else _safe_provider(self._interest_map_provider)
         )
-        concept_block = (
-            "" if aggressive else _safe_provider(self._concept_provider)
-        )
-        coactivation_block = (
-            "" if aggressive else _safe_provider(self._coactivation_provider)
-        )
+        if aggressive:
+            concept_block = ""
+            concept_trace = {"surfaced": [], "reason": "aggressive"}
+            coactivation_block = ""
+            coactivation_trace = {
+                "mode": None, "quiet": None, "reason": "aggressive",
+            }
+        else:
+            # L26: the text render stamps its structured trace onto the
+            # owning controller as a side effect; the paired trace provider
+            # (wired alongside the text one) reads that slot back. Call the
+            # trace provider immediately after the matching text provider so
+            # the dict is consistent with the text we just built, then
+            # snapshot it onto the slices so it rides the cache.
+            concept_block = _safe_provider(self._concept_provider)
+            concept_trace = self._safe_trace(
+                self._concept_trace_provider,
+                {"surfaced": [], "reason": "unknown"},
+            )
+            coactivation_block = _safe_provider(self._coactivation_provider)
+            coactivation_trace = self._safe_trace(
+                self._coactivation_trace_provider,
+                {"mode": None, "quiet": None, "reason": "unknown"},
+            )
         cache_key = self._compute_static_cache_key(
             session_key, history_msgs, recent_window, aggressive,
         )
@@ -548,6 +592,8 @@ class PromptAssemblerHelpersMixin:
             interest_map_block=interest_map_block,
             concept_block=concept_block,
             coactivation_block=coactivation_block,
+            concept_trace=concept_trace,
+            coactivation_trace=coactivation_trace,
             built_at=time.monotonic(),
         )
 

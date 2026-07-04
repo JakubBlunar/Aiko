@@ -136,6 +136,14 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             conflict_detector_per_day_cap=max(
                 0, int(agent_raw.get("conflict_detector_per_day_cap", 30)),
             ),
+            concept_contradiction_per_hour_cap=max(
+                0,
+                int(agent_raw.get("concept_contradiction_per_hour_cap", 6)),
+            ),
+            concept_contradiction_per_day_cap=max(
+                0,
+                int(agent_raw.get("concept_contradiction_per_day_cap", 30)),
+            ),
             memory_consolidation_enabled=bool(
                 agent_raw.get("memory_consolidation_enabled", True),
             ),

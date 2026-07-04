@@ -85,6 +85,8 @@
     "conflict_detector_enabled": true,
     "conflict_detector_per_hour_cap": 10,
     "conflict_detector_per_day_cap": 60,
+    "concept_contradiction_per_hour_cap": 6,
+    "concept_contradiction_per_day_cap": 30,
     "belief_tracking_enabled": true,
     "belief_worker_enabled": true,
     "belief_interest_bias_enabled": true,

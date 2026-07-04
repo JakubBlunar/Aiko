@@ -509,6 +509,15 @@ class PromptTelemetry:
     # (0.0 when gated off or skipped).
     tool_gate_event: str = "-"
     tool_pass_ms: float = 0.0
+    # L26: per-turn concept trace. ``concepts_surfaced`` mirrors
+    # ``_StaticSlices.concept_trace`` (the active user-identity concepts
+    # the L5 block put in the prompt this turn, or a ``reason`` when
+    # empty); ``coactivation_surfaced`` mirrors the L4 block's chosen mode
+    # + quiet cluster. Populated by ``assemble_with_budget`` from the
+    # (possibly slice-cached) block trace, so it reflects what actually
+    # went into the prompt rather than a fresh recompute.
+    concepts_surfaced: dict[str, Any] = field(default_factory=dict)
+    coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -555,6 +564,9 @@ class PromptTelemetry:
             # P14: tool-pass gate decision + pass cost.
             "tool_gate_event": str(self.tool_gate_event),
             "tool_pass_ms": round(float(self.tool_pass_ms), 2),
+            # L26: per-turn concept trace.
+            "concepts_surfaced": dict(self.concepts_surfaced),
+            "coactivation_surfaced": dict(self.coactivation_surfaced),
         }
 
 @dataclass(slots=True)
@@ -594,5 +606,12 @@ class _StaticSlices:
     interest_map_block: str
     concept_block: str
     coactivation_block: str
+    # L26: per-turn trace captured alongside the block text at build
+    # time, so a slice-cache hit still reports exactly which concepts /
+    # co-activation mode went into the prompt (the renderers don't re-run
+    # on a hit). ``{"surfaced": [...], "reason": ...}`` /
+    # ``{"mode": {...}|None, "quiet": {...}|None, "reason": ...}``.
+    concept_trace: dict
+    coactivation_trace: dict
     built_at: float
 

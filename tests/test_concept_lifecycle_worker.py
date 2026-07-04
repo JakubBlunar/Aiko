@@ -71,6 +71,7 @@ def _harness(
     with_clock=True,
     concepts_enabled=True,
     graph_mature=None,
+    detector=None,
 ):
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "test.db")
@@ -91,6 +92,7 @@ def _harness(
         concept_event_store=events,
         engagement_clock=clock,
         graph_mature_provider=graph_mature,
+        contradiction_detector=detector,
         memory_settings=settings,
         agent_settings=SimpleNamespace(concepts_enabled=concepts_enabled),
         clock=lambda: _NOW,
@@ -318,6 +320,129 @@ class BatchingTests(unittest.TestCase):
         hb.worker.run()
         conf_b = hb.store.get(b.concept_id).confidence
         self.assertAlmostEqual(conf_a, conf_b, places=6)
+
+
+class _FakeDetector:
+    """Stand-in for :class:`ConceptContradictionDetector`. Fires for the
+    given concept ids (or all when ``target_ids`` is None), counting how
+    many times it was consulted so batch bounding can be asserted."""
+
+    def __init__(self, *, target_ids=None) -> None:
+        self._target_ids = target_ids
+        self.calls = 0
+
+    def detect(self, concept):
+        from app.core.concepts.concept_contradiction import (
+            ContradictionVerdict,
+        )
+
+        self.calls += 1
+        if (
+            self._target_ids is not None
+            and concept.concept_id not in self._target_ids
+        ):
+            return None
+        return ContradictionVerdict(
+            memory_id=99,
+            similarity=0.8,
+            heuristic_label="definite",
+            llm_verdict=None,
+            reason="loves/hates",
+            snippet="Jacob no longer cares about systems",
+        )
+
+
+class ContradictionTests(unittest.TestCase):
+    def test_active_to_contradicted_when_penalty_crosses_floor(self) -> None:
+        h = _harness(detector=_FakeDetector())
+        c = _add(
+            h.store, status="active", confidence=0.5, plasticity=0.5,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")  # no decay; conf stays 0.5
+        stats = h.worker.run()
+        got = h.store.get(c.concept_id)
+        # 0.5 - 0.25*(0.5+0.5*0.5) = 0.3125 < contradicted_floor (0.4).
+        self.assertEqual(got.status, "contradicted")
+        self.assertAlmostEqual(got.confidence, 0.3125, places=4)
+        types = [e.event_type for e in h.events.list()]
+        self.assertIn("contradicted", types)
+        self.assertEqual(stats["contradiction_hits"], 1)
+
+    def test_high_confidence_belief_only_weakens(self) -> None:
+        h = _harness(detector=_FakeDetector())
+        c = _add(
+            h.store, status="active", confidence=0.9, plasticity=0.5,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        # 0.9 - 0.1875 = 0.7125 -> still active, but a disproof event fires.
+        self.assertEqual(got.status, "active")
+        self.assertAlmostEqual(got.confidence, 0.7125, places=4)
+        self.assertIn(
+            "contradicted", [e.event_type for e in h.events.list()]
+        )
+
+    def test_contradicted_revives_on_fresh_evidence(self) -> None:
+        h = _harness(with_clock=False, detector=_FakeDetector())
+        c = _add(
+            h.store, status="contradicted", confidence=0.2,
+            distinct_source_count=4, first_evidence_at=_iso(20),
+            last_lifecycle_at=_iso(2), last_reinforced_at=_iso(1),
+            promoted_at=_iso(15),
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "active")
+        self.assertIn("revived", [e.event_type for e in h.events.list()])
+
+    def test_contradicted_retires_on_decay(self) -> None:
+        h = _harness(detector=_FakeDetector())
+        c = _add(
+            h.store, status="contradicted", confidence=0.10,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "retired")
+
+    def test_detector_not_consulted_for_non_active(self) -> None:
+        det = _FakeDetector()
+        h = _harness(detector=det)
+        _add(
+            h.store, status="dormant", confidence=0.5, distinct_source_count=1,
+            last_lifecycle_at=_iso(1), last_lifecycle_engagement=0.0,
+            last_reinforced_at=_iso(5), promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        self.assertEqual(det.calls, 0)
+
+    def test_batch_cap_bounds_checks_per_tick(self) -> None:
+        det = _FakeDetector()
+        h = _harness(
+            _settings(concept_contradiction_batch_size=1),
+            detector=det,
+        )
+        for i in range(3):
+            _add(
+                h.store, status="active", confidence=0.9,
+                distinct_source_count=1, label=f"c{i}",
+                last_lifecycle_at=_iso(1), last_lifecycle_engagement=0.0,
+                last_reinforced_at=_iso(5), promoted_at=_iso(9),
+            )
+        h.kv.set("engagement.total_units", "0.0")
+        stats = h.worker.run()
+        self.assertEqual(stats["contradiction_checks"], 1)
+        self.assertEqual(det.calls, 1)
 
 
 class GateUnitTests(unittest.TestCase):

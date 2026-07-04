@@ -1243,17 +1243,27 @@ class InnerLifePart1Mixin:
         when the concept layer / block is disabled, the store is missing,
         the graph is still immature, or nothing clears the bar -- so it
         adds zero tokens until there is something worth saying.
+
+        L26: records the surfaced set (concept ids + confidence, or a
+        ``reason`` when empty) on ``self._concept_block_trace`` at
+        selection time so the per-turn concept trace reflects exactly what
+        went into the prompt (captured into ``_StaticSlices`` by the slice
+        builder, so it survives the slice cache).
         """
+        self._concept_block_trace = {"surfaced": [], "reason": "no_eligible"}
         if not bool(
             getattr(self._settings.agent, "concepts_enabled", False)
         ):
+            self._concept_block_trace["reason"] = "disabled"
             return ""
         if not bool(
             getattr(self._settings.agent, "concept_block_enabled", True)
         ):
+            self._concept_block_trace["reason"] = "block_disabled"
             return ""
         store = getattr(self, "_concept_store", None)
         if store is None:
+            self._concept_block_trace["reason"] = "store_missing"
             return ""
         # Don't offer impressions off an immature graph (L21). Active
         # concepts already passed L3's stricter young-graph bar, but this
@@ -1265,6 +1275,7 @@ class InnerLifePart1Mixin:
             )
             try:
                 if not graph.mature(min_clusters=min_clusters):
+                    self._concept_block_trace["reason"] = "immature"
                     return ""
             except Exception:
                 log.debug("concept_block maturity check raised", exc_info=True)
@@ -1278,6 +1289,7 @@ class InnerLifePart1Mixin:
             int(getattr(self._memory_settings, "concept_surface_max_items", 3)),
         )
         if max_items <= 0:
+            self._concept_block_trace["reason"] = "max_items_zero"
             return ""
         try:
             concepts = store.list_by(
@@ -1285,6 +1297,7 @@ class InnerLifePart1Mixin:
             )
         except Exception:
             log.debug("concept_block list_by raised", exc_info=True)
+            self._concept_block_trace["reason"] = "list_error"
             return ""
         eligible = [
             c
@@ -1292,12 +1305,34 @@ class InnerLifePart1Mixin:
             if float(c.confidence) >= min_conf and (c.label or "").strip()
         ]
         if not eligible:
+            self._concept_block_trace["reason"] = "no_eligible"
             return ""
         eligible.sort(key=lambda c: float(c.confidence), reverse=True)
+        surfaced = eligible[:max_items]
+        surfaced_trace: list[dict] = []
         lines: list[str] = []
-        for c in eligible[:max_items]:
-            lines.append(f"- {self._hedge_for_confidence(c.confidence)} "
-                         f"{c.label.strip()}")
+        for c in surfaced:
+            hedge = self._hedge_for_confidence(c.confidence)
+            support = self._concept_supporting_labels(c.concept_id)
+            grounding = self._concept_grounding_phrase(support)
+            lines.append(f"- {hedge} {c.label.strip()}{grounding}")
+            surfaced_trace.append({
+                "concept_id": int(c.concept_id),
+                "label": c.label.strip(),
+                "confidence": round(float(c.confidence), 4),
+                "plasticity": round(float(c.plasticity), 4),
+                "kind": c.kind,
+                "subject": c.subject,
+                "hedge": hedge,
+                # L9: living-belief metadata for the per-turn trace (not
+                # spoken -- "last reinforced" is human-facing).
+                "last_reinforced_at": c.last_reinforced_at,
+                "supporting": support,
+            })
+        self._concept_block_trace = {
+            "surfaced": surfaced_trace,
+            "reason": "surfaced",
+        }
         joined = "\n".join(lines)
         user_name = self.user_display_name
         return (
@@ -1320,6 +1355,63 @@ class InnerLifePart1Mixin:
             return "You have a sense that"
         return "You have a loose impression that"
 
+    def _concept_supporting_labels(self, concept_id: int) -> list[str]:
+        """L9: up to two short evidence labels grounding a surfaced
+        concept (the topics / memories it keeps resting on), resolved via
+        the shared ``concept_snapshot`` helper. Empty on any error so the
+        block never fails to render for want of grounding."""
+        store = getattr(self, "_concept_store", None)
+        if store is None:
+            return []
+        try:
+            from app.core.concepts.concept_snapshot import (
+                resolve_evidence_labels,
+            )
+
+            labels = resolve_evidence_labels(
+                store,
+                getattr(self, "_memory_store", None),
+                getattr(self, "_topic_graph", None),
+                int(concept_id),
+                limit=2,
+            )
+        except Exception:
+            log.debug("concept supporting labels raised", exc_info=True)
+            return []
+        out: list[str] = []
+        for label in labels:
+            short = self._short_evidence_label(label)
+            if short:
+                out.append(short)
+        return out
+
+    @staticmethod
+    def _short_evidence_label(label: str) -> str:
+        """Trim an evidence label to a compact phrase for the prompt
+        (token lean): first sentence-ish, capped at ~48 chars."""
+        text = " ".join((label or "").split())
+        if not text:
+            return ""
+        for sep in (". ", " — ", " - ", "; "):
+            idx = text.find(sep)
+            if 0 < idx <= 48:
+                text = text[:idx]
+                break
+        if len(text) > 48:
+            text = text[:47].rstrip() + "\u2026"
+        return text
+
+    @staticmethod
+    def _concept_grounding_phrase(labels: list[str]) -> str:
+        """Render the supporting labels as a trailing, hedged clause. Empty
+        when there is nothing to ground on, so short concepts stay terse."""
+        clean = [l for l in labels if l]
+        if not clean:
+            return ""
+        if len(clean) == 1:
+            return f" — it keeps surfacing around {clean[0]}"
+        return f" — it keeps surfacing around {clean[0]} and {clean[1]}"
+
     def _render_coactivation_block(self) -> str:
         """L4: the topics that keep lighting up together right now, plus one
         that's gone quiet, offered as a *noticed pattern* rather than a fact.
@@ -1335,13 +1427,23 @@ class InnerLifePart1Mixin:
         the feature is disabled, the graph is missing / non-persistent / still
         immature (L21), or no clear mode exists -- so it adds zero tokens
         until there is a real pattern to name.
+
+        L26: records the chosen mode (reps / labels / strength / bucket)
+        and the quiet cluster (or a ``reason`` when silent) on
+        ``self._coactivation_block_trace`` so the per-turn trace reflects
+        the pattern that actually went into the prompt.
         """
+        self._coactivation_block_trace = {
+            "mode": None, "quiet": None, "reason": "no_mode",
+        }
         if not bool(
             getattr(self._settings.agent, "coactivation_block_enabled", True)
         ):
+            self._coactivation_block_trace["reason"] = "disabled"
             return ""
         graph = getattr(self, "_topic_graph", None)
         if graph is None or not bool(getattr(graph, "persistent", False)):
+            self._coactivation_block_trace["reason"] = "no_graph"
             return ""
         # Cold-start guard: no pattern-noticing off an immature graph (L21).
         min_clusters = int(
@@ -1349,6 +1451,7 @@ class InnerLifePart1Mixin:
         )
         try:
             if not graph.mature(min_clusters=min_clusters):
+                self._coactivation_block_trace["reason"] = "immature"
                 return ""
         except Exception:
             log.debug("coactivation_block maturity check raised", exc_info=True)
@@ -1371,14 +1474,18 @@ class InnerLifePart1Mixin:
             )
         except Exception:
             log.debug("coactivation_block cluster_coactivation raised", exc_info=True)
+            self._coactivation_block_trace["reason"] = "coactivation_error"
             return ""
         hot_labels: list[str] = []
+        hot_mode = None
         for mode in modes or ():
             labels = [str(x).strip() for x in getattr(mode, "labels", ()) if str(x).strip()]
             if len(labels) >= 2:
                 hot_labels = labels
+                hot_mode = mode
                 break
         if not hot_labels:
+            self._coactivation_block_trace["reason"] = "no_mode"
             return ""
 
         # Quietest labelled cluster as an optional "meanwhile" contrast; skip
@@ -1401,9 +1508,25 @@ class InnerLifePart1Mixin:
             and (a.label or "").strip()
             and (a.label or "").strip().lower() not in hot_set
         ]
+        quiet_trace: dict | None = None
         if stale:
             stale.sort(key=lambda a: float(a.days_since or 0.0), reverse=True)
             quiet_label = stale[0].label.strip()
+            quiet_trace = {
+                "label": quiet_label,
+                "days_since": round(float(stale[0].days_since or 0.0), 2),
+            }
+
+        self._coactivation_block_trace = {
+            "mode": {
+                "reps": [int(r) for r in getattr(hot_mode, "reps", ())],
+                "labels": list(hot_labels),
+                "strength": round(float(getattr(hot_mode, "strength", 0.0)), 4),
+                "bucket_by": str(getattr(hot_mode, "bucket_by", "")),
+            },
+            "quiet": quiet_trace,
+            "reason": "surfaced",
+        }
 
         user_name = self.user_display_name
         hot_join = self._join_labels(hot_labels)

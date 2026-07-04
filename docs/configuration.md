@@ -499,6 +499,19 @@ F9 is the `idle_knowledge` worker: on an idle tick it reads the K9 topic graph, 
 - `agent.conflict_detector_per_hour_cap` *(int, `6`, min `0`)* — hourly cap on LLM verification calls.
 - `agent.conflict_detector_per_day_cap` *(int, `30`, min `0`)* — daily cap.
 
+### L9 — concept contradiction detector (living beliefs)
+
+Counter-evidence that lowers an *active* identity concept's confidence and can step it into a revivable `contradicted` status (see [`concept-lifecycle.md`](concept-lifecycle.md)). The L3 lifecycle worker stays the single writer; the detector is a read-only input that reuses the F5 three-tier gate (cosine band → `classify_pair` → LLM YES/NO for borderline). Checks ride L3's rolling batch, so they inherit its round-robin cadence.
+
+- `memory.concept_contradiction_enabled` *(bool, `true`)* — master switch. Off → L3 runs exactly as before (no detector, no `contradicted` transitions).
+- `memory.concept_contradiction_batch_size` *(int, `20`, min `1`)* — max **active** concepts contradiction-checked per lifecycle tick; rotates across ticks via `last_lifecycle_at` so a large active set never blocks a tick.
+- `memory.concept_contradiction_max_candidates` *(int, `6`, min `1`)* — near memories pulled per concept as counter-evidence candidates.
+- `memory.concept_contradiction_similarity_min` / `_max` *(float, `0.6` / `0.95`, clamped `[0, 1]`)* — cosine band a candidate memory must fall in to be considered. Wider than F5's memory↔memory band because the concept side is an abstract label; the band is only a filter — agree-vs-contradict is decided by `classify_pair` / the LLM.
+- `memory.concept_contradiction_penalty` *(float, `0.25`, clamped `[0, 1]`)* — confidence dropped per confirmed contradiction, plasticity-damped (a sticky / low-plasticity belief resists disproof).
+- `memory.concept_contradicted_confidence_floor` *(float, `0.4`, clamped `[0, 1]`)* — once a contradicted belief's confidence falls below this it flips `active → contradicted` (kept above the dormant floor so "disproven" reads distinctly from "faded"); otherwise it stays active but weakened.
+- `agent.concept_contradiction_per_hour_cap` *(int, `6`, min `0`)* — hourly cap on LLM verification calls for *borderline* pairs (definite heuristic hits skip the LLM). Uses its own `FactCheckRateLimiter` (`state_key='concept_contradiction.rate_state'`) so it never shares a budget with F5.
+- `agent.concept_contradiction_per_day_cap` *(int, `30`, min `0`)* — daily cap.
+
 ### K2 — theory-of-mind / belief tracking
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.

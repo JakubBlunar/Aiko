@@ -29,6 +29,20 @@ retired`` (stale), ``active -> dormant`` / ``dormant -> retired``
 (confidence floors), and revival of a ``dormant`` / ``retired`` concept
 when fresh evidence lifts confidence back up. ``retired`` is revivable,
 not terminal.
+
+**L9 living beliefs.** When a :class:`ConceptContradictionDetector` is
+injected, each tick also checks a bounded rolling sub-batch of *active*
+concepts for counter-evidence (a memory that disproves the belief). A
+confirmed contradiction applies a plasticity-damped confidence penalty
+(:func:`~app.core.concepts.concept_lifecycle.apply_contradiction_penalty`)
+and, once confidence falls below ``concept_contradicted_confidence_floor``,
+steps the concept ``active -> contradicted`` (a revivable "actively
+disproven" status, distinct from a faded ``dormant``). A disproof moment
+always emits a ``contradicted`` event, even when the belief only
+weakened. Detection rides the same ``list_stalest`` round-robin (capped
+at ``concept_contradiction_batch_size`` checks per tick), so the LLM /
+memory-search cost never sweeps the whole active set in one tick. The
+detector only *reads*; L3 remains the single writer.
 """
 from __future__ import annotations
 
@@ -38,6 +52,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.concepts.concept_kinds import get_kind
 from app.core.concepts.concept_lifecycle import (
+    apply_contradiction_penalty,
     confidence_target,
     next_confidence,
     set_evidence_gate,
@@ -46,6 +61,10 @@ from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_contradiction import (
+        ConceptContradictionDetector,
+        ContradictionVerdict,
+    )
     from app.core.concepts.concept_event_store import ConceptEventStore
     from app.core.concepts.concept_store import Concept, ConceptStore
     from app.core.infra.engagement_clock import EngagementClock
@@ -65,12 +84,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     return ts
 
 
-# Kind-default plasticity applied on a concept's first lifecycle
-# evaluation. Only identity is known today (sticky); other kinds keep
-# whatever L2 seeded until their own default is registered here.
-_KIND_PLASTICITY: dict[str, float] = {}
-
-
 class ConceptLifecycleWorker:
     """IdleWorker: single writer of concept confidence / plasticity /
     status, processed one rolling batch per tick."""
@@ -86,12 +99,14 @@ class ConceptLifecycleWorker:
         concept_event_store: "ConceptEventStore | None" = None,
         engagement_clock: "EngagementClock | None" = None,
         graph_mature_provider: Callable[[], bool] | None = None,
+        contradiction_detector: "ConceptContradictionDetector | None" = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
         self._events = concept_event_store
         self._engagement_clock = engagement_clock
         self._graph_mature_provider = graph_mature_provider
+        self._contradiction_detector = contradiction_detector
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -148,6 +163,11 @@ class ConceptLifecycleWorker:
             "dormant": 0,
             "retired": 0,
             "revived": 0,
+            "contradicted": 0,
+            # L9: work bounding -- how many active concepts got a
+            # contradiction check this tick, and how many actually fired.
+            "contradiction_checks": 0,
+            "contradiction_hits": 0,
             "events": 0,
         }
         for concept in batch:
@@ -190,10 +210,26 @@ class ConceptLifecycleWorker:
             if kind_plast is not None:
                 concept.plasticity = kind_plast
 
+        # L9: counter-evidence probe (active concepts only, bounded per
+        # tick). A confirmed contradiction knocks confidence down by a
+        # plasticity-damped penalty *after* accrual/decay, so fresh
+        # disproof can undo a reinforcement in the same pass.
+        verdict = self._maybe_detect_contradiction(concept, stats)
+        if verdict is not None:
+            new_conf = apply_contradiction_penalty(
+                concept.confidence,
+                penalty=self._f("concept_contradiction_penalty", 0.25),
+                plasticity=concept.plasticity,
+            )
+            concept.confidence = new_conf
+
         # 2-5. Status transition (confidence-driven; age only gates/ delays).
         old_status = concept.status
-        new_status, event_type = self._transition(concept, now, new_conf)
-        if new_status != old_status:
+        new_status, event_type = self._transition(
+            concept, now, new_conf, contradicted=verdict is not None
+        )
+        status_changed = new_status != old_status
+        if status_changed:
             concept.status = new_status
             if new_status == "active" and not concept.promoted_at:
                 concept.promoted_at = now.isoformat()
@@ -207,22 +243,84 @@ class ConceptLifecycleWorker:
             )
         self._store.update(concept)
 
-        # 7. Emit a lifecycle event + cascade to dependents on a change.
-        if new_status != old_status:
+        # 7. Emit a lifecycle event + cascade to dependents. A confirmed
+        # contradiction always hits the timeline (disproof is worth
+        # recording even when the belief only weakened, status unchanged);
+        # otherwise emit only on a status change.
+        if verdict is not None:
+            self._emit(
+                concept, "contradicted", new_conf, now,
+                reason_override=self._contradiction_reason(verdict, new_conf),
+            )
+            stats["events"] += 1
+            if status_changed:
+                self._mark_dependents_stale(concept)
+        elif status_changed:
             self._emit(concept, event_type, new_conf, now)
             stats["events"] += 1
             self._mark_dependents_stale(concept)
 
+    # ── L9 contradiction probe ─────────────────────────────────────────
+
+    def _maybe_detect_contradiction(
+        self, concept: "Concept", stats: dict[str, Any]
+    ) -> "ContradictionVerdict | None":
+        """Run the read-only detector for one active concept, bounded by
+        the per-tick contradiction batch. Counts every *check* (a memory
+        search, the real work unit) toward the batch so a single tick
+        never sweeps the whole active set; the ``list_stalest`` ordering
+        rotates which concepts are checked across ticks."""
+        if self._contradiction_detector is None:
+            return None
+        if concept.status != "active":
+            return None
+        batch = max(0, self._i("concept_contradiction_batch_size", 20))
+        if stats["contradiction_checks"] >= batch:
+            return None
+        stats["contradiction_checks"] += 1
+        try:
+            verdict = self._contradiction_detector.detect(concept)
+        except Exception:
+            log.debug(
+                "contradiction detect failed (id=%s)",
+                getattr(concept, "concept_id", "?"),
+                exc_info=True,
+            )
+            return None
+        if verdict is not None:
+            stats["contradiction_hits"] += 1
+        return verdict
+
+    def _contradiction_reason(
+        self, verdict: "ContradictionVerdict", conf: float
+    ) -> str:
+        snippet = (getattr(verdict, "snippet", "") or "").strip()
+        base = f"Counter-evidence lowered confidence to {conf:.2f}"
+        if snippet:
+            if len(snippet) > 120:
+                snippet = snippet[:119] + "\u2026"
+            return f'{base}: "{snippet}".'
+        return base + "."
+
     # ── transition logic ───────────────────────────────────────────────
 
     def _transition(
-        self, concept: "Concept", now: datetime, conf: float
+        self,
+        concept: "Concept",
+        now: datetime,
+        conf: float,
+        *,
+        contradicted: bool = False,
     ) -> tuple[str, str]:
         """Return ``(new_status, event_type)``. ``event_type`` is only
-        meaningful when the status actually changes."""
+        meaningful when the status actually changes. ``contradicted`` is
+        set when the detector confirmed counter-evidence this tick."""
         status = concept.status
         dormant_floor = self._f("concept_dormant_confidence_floor", 0.35)
         retire_floor = self._f("concept_retire_confidence_floor", 0.15)
+        contradicted_floor = self._f(
+            "concept_contradicted_confidence_floor", 0.4
+        )
 
         if status == "candidate":
             if self._gate(concept, now, conf):
@@ -232,9 +330,29 @@ class ConceptLifecycleWorker:
             return "candidate", ""
 
         if status == "active":
+            # L9: confirmed disproof that drove confidence below the
+            # contradicted floor flips to the "actively disproven" status
+            # (distinct from a faded dormant). A contradiction that only
+            # dented confidence leaves it active-but-weakened.
+            if contradicted and conf < contradicted_floor:
+                return "contradicted", "contradicted"
             if conf < dormant_floor:
                 return "dormant", "dormant"
             return "active", ""
+
+        if status == "contradicted":
+            # Revivable: fresh reinforcing evidence that clears the
+            # promote bar brings the belief back; sustained decay retires
+            # it. Otherwise it stays disproven and quiet (never surfaced).
+            promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
+            if (
+                self._reinforced_since_last(concept, False)
+                and conf >= promote_min_conf
+            ):
+                return "active", "revived"
+            if conf < retire_floor:
+                return "retired", "retired"
+            return "contradicted", ""
 
         if status == "dormant":
             promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
@@ -361,9 +479,14 @@ class ConceptLifecycleWorker:
             and bool(getattr(self._engagement_clock, "enabled", False))
         )
 
-    @staticmethod
-    def _kind_plasticity(kind: str) -> float | None:
-        return _KIND_PLASTICITY.get(kind)
+    def _kind_plasticity(self, kind: str) -> float | None:
+        """Kind-default plasticity applied on a concept's first lifecycle
+        evaluation. Identity is sticky (low plasticity => stickier decay
+        and stronger resistance to L9 disproof); other kinds keep
+        whatever L2 seeded until their own default is registered here."""
+        if kind == "identity":
+            return self._f("concept_identity_plasticity", 0.3)
+        return None
 
     def _mark_dependents_stale(self, concept: "Concept") -> None:
         """Meta cascade: when a base concept changes status, mark its
@@ -400,6 +523,8 @@ class ConceptLifecycleWorker:
             stats["retired"] += 1
         elif event_type == "revived":
             stats["revived"] += 1
+        elif event_type == "contradicted":
+            stats["contradicted"] += 1
 
     def _emit(
         self,
@@ -407,10 +532,16 @@ class ConceptLifecycleWorker:
         event_type: str,
         conf: float,
         now: datetime,
+        *,
+        reason_override: str | None = None,
     ) -> None:
         if self._events is None or not event_type:
             return
-        reason = self._reason(concept, event_type, conf, now)
+        reason = (
+            reason_override
+            if reason_override is not None
+            else self._reason(concept, event_type, conf, now)
+        )
         try:
             self._events.add(
                 ConceptEvent(
@@ -463,6 +594,13 @@ class ConceptLifecycleWorker:
         if event_type == "revived":
             return (
                 f"Revived: fresh evidence lifted confidence to {conf:.2f}."
+            )
+        if event_type == "contradicted":
+            # Normally supplied via reason_override with the disproving
+            # snippet; this is the bare fallback.
+            return (
+                f"Contradicted: counter-evidence lowered confidence to "
+                f"{conf:.2f}."
             )
         return ""
 

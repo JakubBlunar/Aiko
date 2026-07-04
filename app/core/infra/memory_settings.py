@@ -788,6 +788,28 @@ class MemorySettings:
     # lifecycle dormant floor so nothing shaky is ever asserted).
     concept_surface_max_items: int = 3
     concept_surface_min_confidence: float = 0.55
+    # L9 living beliefs. Counter-evidence lowers an active identity
+    # concept's confidence and can step it into a revivable
+    # ``contradicted`` status (distinct from a faded ``dormant``). The L3
+    # lifecycle worker stays the single writer; a read-only
+    # ``ConceptContradictionDetector`` reuses the F5 three-tier gate
+    # (cosine band -> ``classify_pair`` -> LLM YES/NO for borderline) to
+    # find memories that disprove a belief. Checks ride L3's rolling
+    # batch: at most ``contradiction_batch_size`` *active* concepts are
+    # checked per tick (rotating via ``last_lifecycle_at``), each pulling
+    # up to ``max_candidates`` near memories inside the
+    # ``[similarity_min, similarity_max)`` cosine band. A confirmed
+    # contradiction applies a plasticity-damped ``penalty``; once
+    # confidence falls below ``contradicted_confidence_floor`` the concept
+    # flips to ``contradicted``. LLM spend is bounded separately by the
+    # agent-side ``concept_contradiction_per_hour/day_cap`` limiter.
+    concept_contradiction_enabled: bool = True
+    concept_contradiction_similarity_min: float = 0.6
+    concept_contradiction_similarity_max: float = 0.95
+    concept_contradiction_penalty: float = 0.25
+    concept_contradicted_confidence_floor: float = 0.4
+    concept_contradiction_batch_size: int = 20
+    concept_contradiction_max_candidates: int = 6
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -2278,6 +2300,57 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         memory_raw.get("concept_surface_min_confidence", 0.55)
                     ),
                 ),
+            ),
+            concept_contradiction_enabled=bool(
+                memory_raw.get("concept_contradiction_enabled", True)
+            ),
+            concept_contradiction_similarity_min=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_contradiction_similarity_min", 0.6
+                        )
+                    ),
+                ),
+            ),
+            concept_contradiction_similarity_max=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_contradiction_similarity_max", 0.95
+                        )
+                    ),
+                ),
+            ),
+            concept_contradiction_penalty=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_contradiction_penalty", 0.25)),
+                ),
+            ),
+            concept_contradicted_confidence_floor=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_contradicted_confidence_floor", 0.4
+                        )
+                    ),
+                ),
+            ),
+            concept_contradiction_batch_size=max(
+                1,
+                int(memory_raw.get("concept_contradiction_batch_size", 20)),
+            ),
+            concept_contradiction_max_candidates=max(
+                1,
+                int(memory_raw.get("concept_contradiction_max_candidates", 6)),
             ),
             coactivation_min_pair_support=max(
                 1,
