@@ -788,6 +788,19 @@ class MemorySettings:
     # lifecycle dormant floor so nothing shaky is ever asserted).
     concept_surface_max_items: int = 3
     concept_surface_min_confidence: float = 0.55
+    # L4 cluster co-activation. Which topic clusters "light up together"
+    # (share a conversation session, by default). ``min_pair_support`` is
+    # how many buckets two clusters must co-occur in before the pair
+    # counts; ``min_strength`` is the Jaccard floor (co-occurrence /
+    # union) that keeps a pair; ``max_modes`` / ``max_reps_per_mode`` cap
+    # the returned connected-component groups; ``quiet_min_days`` is how
+    # stale a cluster must be to be offered as the "meanwhile Y has gone
+    # quiet" contrast in the L5 block.
+    coactivation_min_pair_support: int = 2
+    coactivation_min_strength: float = 0.25
+    coactivation_max_modes: int = 4
+    coactivation_max_reps_per_mode: int = 4
+    coactivation_quiet_min_days: float = 10.0
     # K11: pre-thought / counterfactual worker cadence. A tick is one
     # question-generation LLM call plus up to ``pre_thought_max_per_run``
     # in-persona draft calls, so an hour between successful runs is
@@ -2265,6 +2278,29 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         memory_raw.get("concept_surface_min_confidence", 0.55)
                     ),
                 ),
+            ),
+            coactivation_min_pair_support=max(
+                1,
+                int(memory_raw.get("coactivation_min_pair_support", 2)),
+            ),
+            coactivation_min_strength=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("coactivation_min_strength", 0.25)),
+                ),
+            ),
+            coactivation_max_modes=max(
+                1,
+                int(memory_raw.get("coactivation_max_modes", 4)),
+            ),
+            coactivation_max_reps_per_mode=max(
+                2,
+                int(memory_raw.get("coactivation_max_reps_per_mode", 4)),
+            ),
+            coactivation_quiet_min_days=max(
+                0.0,
+                float(memory_raw.get("coactivation_quiet_min_days", 10.0)),
             ),
             pre_thought_interval_seconds=max(
                 60,

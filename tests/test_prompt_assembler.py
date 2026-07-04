@@ -2205,6 +2205,69 @@ class ConceptBlockProviderTests(unittest.TestCase):
         )
 
 
+class CoactivationBlockProviderTests(unittest.TestCase):
+    """L4 coactivation_block lands in the system prompt (T1, right after the
+    concept block), is silent when empty, and is dropped under
+    ``aggressive=True``."""
+
+    _CUE = "Lately you and Jacob keep circling"
+
+    def test_coactivation_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="co1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                coactivation=lambda: (
+                    f"{self._CUE} A and B together in the same conversations."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "co1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_coactivation_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="co2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(coactivation=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "co2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_coactivation_block_dropped_under_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="co3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                coactivation=lambda: f"{self._CUE} A and B.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "co3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t1_after_concept_block(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
+        self.assertIn("coactivation_block", t1)
+        self.assertEqual(
+            t1.index("coactivation_block"), t1.index("concept_block") + 1,
+        )
+
+
 class NoveltyBlockProviderTests(unittest.TestCase):
     """K6 novelty provider lands in the system prompt, is dropped under
     ``aggressive=True``, and receives the current ``user_text``."""

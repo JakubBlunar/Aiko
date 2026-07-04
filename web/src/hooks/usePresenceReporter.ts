@@ -25,6 +25,10 @@
  */
 import { useEffect, useRef } from "react";
 import { isTauri } from "../desktop/runtime";
+import {
+  getCurrentWindowVisible,
+  listenWindowVisibility,
+} from "../desktop/events";
 import type { WsClientCommand } from "../types";
 
 const DEBOUNCE_MS = 500;
@@ -61,6 +65,26 @@ export function computeBrowserPresent(
 
 const browserPresent = (): boolean => computeBrowserPresent();
 
+/**
+ * Pure helper: fold the three presence signals into the boolean sent
+ * over the WS. Outside Tauri only the browser signal matters. Inside
+ * Tauri the window must be BOTH focused AND actually shown (not
+ * ``hide()``-d to the tray) — folding window-visibility here is what
+ * keeps a hidden persona window out of the audio-owner "visible" pool.
+ * Exported for unit tests; the hook uses it via ``compute`` below.
+ */
+export function foldPresence(signals: {
+  isTauri: boolean;
+  tauriFocused: boolean;
+  tauriWindowVisible: boolean;
+  browserPresent: boolean;
+}): boolean {
+  const tauriOk = signals.isTauri
+    ? signals.tauriFocused && signals.tauriWindowVisible
+    : true;
+  return tauriOk && signals.browserPresent;
+}
+
 export function usePresenceReporter(options: UsePresenceReporterOptions): void {
   const { send, enabled = true } = options;
 
@@ -78,6 +102,19 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
   // default and keeps a brand-new typed turn from being silently
   // gated out before the first event lands).
   const tauriFocusedRef = useRef<boolean>(true);
+  // Track the authoritative OS window shown/hidden state (the same
+  // ``window-visibility`` signal ``useWindowVisible`` uses to suspend
+  // render loops). Focus + ``document.visibilityState`` alone are NOT
+  // reliable for a webview that was ``hide()``-d to the tray: a Windows
+  // ``ShowWindow(SW_HIDE)`` doesn't dependably flip WebView2 to the
+  // throttled/hidden document state, so a hidden window (notably the
+  // persona window, which boots hidden and lives for the whole session)
+  // would otherwise keep reporting ``visible: true`` and stay in the
+  // audio-owner election's "visible" pool — stealing TTS playback to a
+  // window that can't actually play it. Folding this in makes a hidden
+  // window report ``visible: false`` so audio follows the shown window.
+  // Defaults to ``true`` (shown) until the seed/event corrects it.
+  const tauriWindowVisibleRef = useRef<boolean>(true);
   // Last value we sent over the WS so we can dedupe. Initialised to
   // ``null`` (rather than ``true``) so the first computed value is
   // always pushed — that's the "send once on connect" requirement.
@@ -87,10 +124,13 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
   useEffect(() => {
     if (!enabled) return;
 
-    const compute = (): boolean => {
-      const tauriOk = isTauri() ? tauriFocusedRef.current : true;
-      return tauriOk && browserPresent();
-    };
+    const compute = (): boolean =>
+      foldPresence({
+        isTauri: isTauri(),
+        tauriFocused: tauriFocusedRef.current,
+        tauriWindowVisible: tauriWindowVisibleRef.current,
+        browserPresent: browserPresent(),
+      });
 
     const flush = () => {
       debounceTimerRef.current = null;
@@ -123,6 +163,7 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
     let tauriUnlistenFocus: (() => void) | null = null;
     let tauriUnlistenBlur: (() => void) | null = null;
     let tauriUnlistenHide: (() => void) | null = null;
+    let tauriUnlistenVisibility: (() => void) | null = null;
     let cancelled = false;
 
     /**
@@ -149,6 +190,28 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
     };
 
     if (isTauri()) {
+      // Fold in the authoritative OS window shown/hidden state. Seed
+      // from the current value (a webview that booted hidden — the
+      // persona window — must start ``visible: false`` rather than
+      // riding the ``true`` default), then track the ``window-visibility``
+      // event the Rust shell emits per-window on every tray / top-bar /
+      // X-close-to-tray transition.
+      void getCurrentWindowVisible().then((visible) => {
+        if (cancelled) return;
+        tauriWindowVisibleRef.current = Boolean(visible);
+        schedule();
+      });
+      void listenWindowVisibility((visible) => {
+        tauriWindowVisibleRef.current = Boolean(visible);
+        schedule();
+      }).then((teardown) => {
+        if (cancelled) {
+          teardown();
+        } else {
+          tauriUnlistenVisibility = teardown;
+        }
+      });
+
       // Dynamic import keeps the @tauri-apps/api module out of the
       // browser bundle's hot path. The mirror in commands.ts /
       // events.ts uses the same trick.
@@ -225,6 +288,7 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
       if (tauriUnlistenFocus) tauriUnlistenFocus();
       if (tauriUnlistenBlur) tauriUnlistenBlur();
       if (tauriUnlistenHide) tauriUnlistenHide();
+      if (tauriUnlistenVisibility) tauriUnlistenVisibility();
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;

@@ -110,6 +110,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "goals_block",
         "interest_map_block",
         "concept_block",
+        "coactivation_block",
         "day_color_block",
         "anniversary_block",
         "milestone_block",
@@ -649,6 +650,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # in aggressive mode alongside it. Empty until L2/L3 have promoted
         # at least one concept over the surface threshold.
         self._concept_provider: Callable[[], str] | None = None
+        # L4 co-activation: one hedged line naming the topics that keep
+        # lighting up together in the same conversations (+ one gone quiet).
+        # Sibling of ``interest_map_block`` / ``concept_block`` in T1;
+        # dropped under aggressive pressure; silent until a clear mode
+        # exists off a mature graph.
+        self._coactivation_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -1052,6 +1059,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         goals_block = slices.goals_block
         interest_map_block = slices.interest_map_block
         concept_block = slices.concept_block
+        coactivation_block = slices.coactivation_block
 
         memory_block = ""
         rag_prefetch_event = "skip"
@@ -2474,6 +2482,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # them. Dropped in aggressive mode alongside interest_map;
             # empty until L2/L3 promote a concept over the surface bar.
             system_parts.append(concept_block)
+        if coactivation_block:
+            # L4: the topics that keep co-firing in the same conversations
+            # (+ one gone quiet), a hedged "current mode" read. Lands right
+            # after the concept block so the "who the user is" cluster reads
+            # interests -> abstracted understandings -> what's live together
+            # right now. Dropped in aggressive mode alongside its siblings;
+            # empty until a clear co-activation mode exists off a mature
+            # graph.
+            system_parts.append(coactivation_block)
         if day_color_block:
             # K27 -- daily personality colour. Trend/phase block (slow
             # daily under-current), not a situational block, so it

@@ -1320,6 +1320,117 @@ class InnerLifePart1Mixin:
             return "You have a sense that"
         return "You have a loose impression that"
 
+    def _render_coactivation_block(self) -> str:
+        """L4: the topics that keep lighting up together right now, plus one
+        that's gone quiet, offered as a *noticed pattern* rather than a fact.
+
+        Takes the strongest co-activation mode (clusters that co-fire in the
+        same conversations, from
+        :meth:`~app.core.conversation.topic_graph.TopicGraph.cluster_coactivation`)
+        as the "circling together" set, and the quietest labelled cluster
+        (largest ``days_since`` from ``cluster_activity`` that clears
+        ``coactivation_quiet_min_days``) as an optional contrast. Renders one
+        hedged line personalised with ``{user_name}`` so Aiko can carry a
+        sense of the user's current "mode" without asserting it. Silent when
+        the feature is disabled, the graph is missing / non-persistent / still
+        immature (L21), or no clear mode exists -- so it adds zero tokens
+        until there is a real pattern to name.
+        """
+        if not bool(
+            getattr(self._settings.agent, "coactivation_block_enabled", True)
+        ):
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        if graph is None or not bool(getattr(graph, "persistent", False)):
+            return ""
+        # Cold-start guard: no pattern-noticing off an immature graph (L21).
+        min_clusters = int(
+            getattr(self._memory_settings, "concept_min_clusters", 6)
+        )
+        try:
+            if not graph.mature(min_clusters=min_clusters):
+                return ""
+        except Exception:
+            log.debug("coactivation_block maturity check raised", exc_info=True)
+        ms = self._memory_settings
+        try:
+            modes = graph.cluster_coactivation(
+                bucket_by="session",
+                min_pair_support=int(
+                    getattr(ms, "coactivation_min_pair_support", 2)
+                ),
+                min_strength=float(getattr(ms, "coactivation_min_strength", 0.25)),
+                max_modes=int(
+                    getattr(
+                        self._settings.agent, "coactivation_block_max_modes", 4
+                    )
+                ),
+                max_reps_per_mode=int(
+                    getattr(ms, "coactivation_max_reps_per_mode", 4)
+                ),
+            )
+        except Exception:
+            log.debug("coactivation_block cluster_coactivation raised", exc_info=True)
+            return ""
+        hot_labels: list[str] = []
+        for mode in modes or ():
+            labels = [str(x).strip() for x in getattr(mode, "labels", ()) if str(x).strip()]
+            if len(labels) >= 2:
+                hot_labels = labels
+                break
+        if not hot_labels:
+            return ""
+
+        # Quietest labelled cluster as an optional "meanwhile" contrast; skip
+        # any cluster that's part of the hot set so the line doesn't
+        # contradict itself.
+        quiet_label = ""
+        quiet_min_days = float(
+            getattr(ms, "coactivation_quiet_min_days", 10.0)
+        )
+        try:
+            activity = graph.cluster_activity(top_n=64)
+        except Exception:
+            activity = []
+        hot_set = {label_.lower() for label_ in hot_labels}
+        stale = [
+            a
+            for a in activity
+            if a.days_since is not None
+            and float(a.days_since) >= quiet_min_days
+            and (a.label or "").strip()
+            and (a.label or "").strip().lower() not in hot_set
+        ]
+        if stale:
+            stale.sort(key=lambda a: float(a.days_since or 0.0), reverse=True)
+            quiet_label = stale[0].label.strip()
+
+        user_name = self.user_display_name
+        hot_join = self._join_labels(hot_labels)
+        line = (
+            f"Lately you and {user_name} keep circling {hot_join} together "
+            "in the same conversations"
+        )
+        if quiet_label:
+            line += f", while {quiet_label} has gone quiet"
+        line += (
+            ". Hold this lightly — it's a pattern you've noticed, not a rule; "
+            "let it colour what you notice or bring up, don't announce it."
+        )
+        return line
+
+    @staticmethod
+    def _join_labels(labels: list[str]) -> str:
+        """Human "a, b and c" join for a short label list."""
+        clean = [x for x in labels if x]
+        if not clean:
+            return ""
+        if len(clean) == 1:
+            return clean[0]
+        if len(clean) == 2:
+            return f"{clean[0]} and {clean[1]}"
+        return ", ".join(clean[:-1]) + f" and {clean[-1]}"
+
     def _question_balance_suppressed(self) -> bool:
         """K47: True when the question/share gate is currently muting the
         question-pushing cues. Read by the question-pushing providers as

@@ -439,26 +439,50 @@ confirmation (L6) hard-promote regardless of counts?
 
 ## L4. Cluster co-activation signal
 
-**Motivation.** The primitive behind "Maker Mode" and "you've been in Maker
-Mode a lot this week — I don't think you've taken one of your long walks
-recently." The topic graph knows cluster *recency*
-(`TopicGraph.cluster_activity`) but not which clusters **light up together**.
-Co-activation is what lets the synthesizer see that Programming + Home Lab + AI
-are one mode, and its inverse lets Aiko notice a normally-hot cluster that has
-gone quiet.
+**Status: BUILT (session bucket).** The primitive behind "Maker Mode" and
+"you've been in Maker Mode a lot this week — I don't think you've taken one of
+your long walks recently." The topic graph knew cluster *recency*
+(`TopicGraph.cluster_activity`) but not which clusters **light up together**;
+now it does.
 
-**Key files.**
-[`topic_graph.py`](../../app/core/conversation/topic_graph.py) (new method
-alongside `cluster_activity`), consuming `memory_topic_assignments` +
-`created_at`; paired at surfacing time with
-[`dormant_interest_worker.py`](../../app/core/proactive/dormant_interest_worker.py).
+**Delivered.**
+[`TopicGraph.cluster_coactivation`](../../app/core/conversation/topic_graph.py)
+(alongside `cluster_activity`): one bulk mirror snapshot → per-bucket co-firing
+rep sets → pairwise Jaccard (kept above `coactivation_min_pair_support` /
+`coactivation_min_strength`) → connected-component **modes**
+(`CoactivationMode`: `reps` + `labels` + `strength` + `bucket_by`), capped by
+`coactivation_max_modes` / `coactivation_max_reps_per_mode`, coarsely cached,
+empty in the non-persistent mode. Two consumers wired: **L2** — the
+`identity_user` proposer takes a `coactivation=` kwarg and renders a soft
+"TOPIC MODES (clusters that tend to light up together)" grouping hint (no hard
+gating; still falsifiable, still ≥ `min_sources`), computed once per run in
+`ConceptSynthesisWorker._coactivation_modes`. **L5** — a T1 `coactivation_block`
+([`_render_coactivation_block`](../../app/core/session/inner_life_part1.py),
+right after `concept_block`) renders one hedged "lately you and {user} keep
+circling X / Y / Z together, meanwhile W has gone quiet" line (quiet side from
+`cluster_activity` ≥ `coactivation_quiet_min_days`), gated by
+`agent.coactivation_block_enabled`, silent when disabled / immature (L21 guard)
+/ no clear mode, dropped under aggressive pressure.
 
-**Sketched approach.** Derive per-session (or per-time-window) cluster
-co-occurrence: clusters whose members were created close together in time
-co-fire. Expose a `cluster_coactivation(...)` read (bulk mirror snapshot, daily
-/ worker path, not hot-path) returning co-firing cluster sets + strength. Feed
-it into L2 as evidence and into L5 for the "you've been in X mode but Y has
-gone quiet" contrast line.
+**Pluggable bucket keys.** The bucket axis is a **strategy registry**
+(`_BUCKET_STRATEGIES: {name → (_CoactMember) → str | None}`) over an extensible
+`_CoactMember` snapshot; the accumulator is strategy-agnostic (it consumes
+`(rep, bucket_key)` pairs), so a new axis = one pure function + (only if it
+needs more data) one snapshot field with a default. Only **`session`** ships.
+Roadmap axes, captured for later:
+
+- *Cheap follow-ups (derive from fields already on the snapshot):* `day`
+  (calendar-day truncation), `window` (fixed-width time bucket), `circadian`
+  (`(day, morning/afternoon/evening/night)` — the "programming at night →
+  night activities" case), `weekday`/`week` (weekly rhythm), `gap_session`
+  (re-sessionize by inter-memory gap).
+- *Join-gated (wait on upstream data):* `mood` (affect band at creation),
+  `arc`/`dialogue_act` (via `source_message_id` → chat_db tags),
+  `world_context` (Aiko's room / activity, once persisted per memory).
+
+Semantic cluster similarity is **deliberately excluded** — clustering already
+merges similar memories; co-activation's value is the non-obvious *behavioral*
+pairings.
 
 **Effort.** Medium.
 
