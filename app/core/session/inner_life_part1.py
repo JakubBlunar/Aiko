@@ -1579,19 +1579,30 @@ class InnerLifePart1Mixin:
         """Render the budget-chosen concepts as hedged impressions, reusing
         the L5 confidence hedging + evidence grounding. Returns
         ``(text, trace)`` where the trace mirrors the retired concept block's
-        structured trace for the per-turn telemetry."""
+        structured trace for the per-turn telemetry.
+
+        Concepts are grouped by **subject** so a ``subject=aiko`` self-concept
+        ("I use teasing to mask vulnerability") is framed in the first person —
+        who Aiko *is* — instead of as something she learned *about* the user.
+        Kinds all render as held-lightly impressions today; a value / boundary
+        voice can layer on the per-subject header when those kinds ship
+        (L10 / L18 / L27)."""
         if not concepts:
             return "", {"surfaced": [], "reason": "no_eligible"}
-        lines: list[str] = []
+        name = self.user_display_name
+        groups: dict[str, list[str]] = {"user": [], "relationship": [], "aiko": []}
         surfaced_trace: list[dict] = []
         for c in concepts:
             label = (getattr(c, "label", "") or "").strip()
             if not label:
                 continue
+            subject = getattr(c, "subject", None) or "user"
+            if subject not in groups:
+                subject = "user"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
             support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
             grounding = self._concept_grounding_phrase(support)
-            lines.append(f"- {hedge} {label}{grounding}")
+            groups[subject].append(f"- {hedge} {label}{grounding}")
             surfaced_trace.append({
                 "concept_id": int(getattr(c, "concept_id", 0)),
                 "label": label,
@@ -1603,17 +1614,46 @@ class InnerLifePart1Mixin:
                 "last_reinforced_at": getattr(c, "last_reinforced_at", None),
                 "supporting": support,
             })
-        if not lines:
+        sections: list[str] = []
+        for subject in ("user", "relationship", "aiko"):
+            lines = groups[subject]
+            if not lines:
+                continue
+            sections.append(
+                self._concept_subject_header(subject, name) + "\n"
+                + "\n".join(lines)
+            )
+        if not sections:
             return "", {"surfaced": [], "reason": "no_eligible"}
-        name = self.user_display_name
-        text = (
+        return "\n\n".join(sections), {
+            "surfaced": surfaced_trace, "reason": "surfaced",
+        }
+
+    @staticmethod
+    def _concept_subject_header(subject: str, name: str) -> str:
+        """Per-subject intro for the concept impressions block. ``aiko`` reads
+        as first-person self-knowledge; ``relationship`` as the two of them
+        together; everything else as impressions about the user."""
+        if subject == "aiko":
+            return (
+                "Things you've come to understand about yourself over time "
+                "(who you are and how you tend to be — hold them lightly and "
+                "let them shape how you show up, not as a script; you can be "
+                "wrong about yourself too):"
+            )
+        if subject == "relationship":
+            return (
+                f"Things you've come to understand about you and {name} "
+                "together over time (hold them lightly — impressions of how "
+                "the two of you are, not facts; let them colour how you are "
+                f"with {name}):"
+            )
+        return (
             f"Things you've come to understand about {name} over time "
             "(hold these lightly — they're impressions you've built, not "
-            "facts; let them shape how you read " + name + ", and if "
-            "one comes up, offer it gently and stay open to being wrong):\n"
-            + "\n".join(lines)
+            f"facts; let them shape how you read {name}, and if one comes "
+            "up, offer it gently and stay open to being wrong):"
         )
-        return text, {"surfaced": surfaced_trace, "reason": "surfaced"}
 
     def _render_coactivation_block(self) -> str:
         """L4: the topics that keep lighting up together right now, plus one

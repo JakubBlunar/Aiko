@@ -148,13 +148,30 @@ class RecallConceptRetrieverTests(unittest.TestCase):
         self.assertEqual(len(out["evidence"]), 3)
         self.assertIn("text", out["evidence"][0])
 
-    def test_queries_active_user_concepts(self) -> None:
+    def test_queries_active_concepts_across_subjects(self) -> None:
+        # Broadened from user-only so self-directed questions can reach
+        # subject=aiko self-concepts; subject is left unfiltered (None).
         c = _concept()
         r = _build(matches=[(c, 0.7)], edges=[], clusters=[], mems={})
         r.recall_concept("x")
         call = r._concept_store.nearest_calls[0]  # type: ignore[attr-defined]
-        self.assertEqual(call["subject"], "user")
+        self.assertIsNone(call["subject"])
         self.assertEqual(call["status"], "active")
+
+    def test_surfaces_aiko_self_concept(self) -> None:
+        # A first-person self-concept (subject=aiko, memory-typed evidence)
+        # is recalled and reported as hers.
+        c = _concept(
+            label="I deflect with teasing when I feel exposed",
+        )
+        c.subject = "aiko"
+        edges = [_Edge("memory", 5)]
+        mems = {5: _Mem(5, "kept up the act of indifference")}
+        r = _build(matches=[(c, 0.7)], edges=edges, clusters=[], mems=mems)
+        out = r.recall_concept("what are you like")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["concept"]["subject"], "aiko")
+        self.assertEqual(out["evidence"][0]["text"], "kept up the act of indifference")
 
     def test_cap_and_all_evidence(self) -> None:
         c = _concept()

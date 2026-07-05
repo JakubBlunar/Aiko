@@ -210,18 +210,20 @@ class RecallTopicTool:
 
 
 class RecallConceptTool:
-    """Look up one higher-order thing Aiko has come to understand about the
-    user, bundled with the evidence behind it.
+    """Look up one higher-order thing Aiko has come to understand -- about
+    the user *or* about herself -- bundled with the evidence behind it.
 
     Where :class:`RecallTopicTool` gathers the raw notes in a topic
     cluster, this L5 tool pulls up a *concept* -- an abstraction Aiko has
-    synthesised across many clusters (e.g. "enjoys understanding
-    systems") -- together with its confidence, the memories that support
-    it, and the topic areas it draws on, all in one call. Use it when the
-    user asks what Aiko thinks/understands about them ("what have you
-    figured out about me?", "what do you think I'm like?"), not for a raw
-    fact lookup. Set ``all_evidence`` when the full supporting set is
-    wanted rather than a few representative notes.
+    synthesised across many clusters/memories (e.g. "enjoys understanding
+    systems", or her own "I tend to deflect with teasing when I feel
+    exposed") -- together with its confidence, the memories that support
+    it, and the topic areas it draws on, all in one call. It searches
+    across subjects, so it answers both "what have you figured out about
+    me?" and self-directed "what are you like? / what do you value? / have
+    you changed?" questions; the returned bundle says whose concept it is.
+    Not for a raw fact lookup. Set ``all_evidence`` when the full
+    supporting set is wanted rather than a few representative notes.
     """
 
     def __init__(self, rag_retriever: Any) -> None:
@@ -231,12 +233,16 @@ class RecallConceptTool:
         return ToolSchema(
             name="recall_concept",
             description=(
-                "Pull up one higher-order concept Aiko has formed about the "
-                "user -- an abstraction across many topics (e.g. a trait, "
-                "value, or pattern) -- with its confidence, the memories "
-                "that support it, and the topic areas it spans, in a single "
-                "call. Use when the user asks what Aiko understands / thinks "
-                "about them, not for a one-off fact lookup. Set "
+                "Pull up one higher-order concept Aiko has formed -- an "
+                "abstraction across many topics/memories (a trait, value, or "
+                "pattern) -- with its confidence, the memories that support "
+                "it, and the topic areas it spans, in a single call. Works "
+                "for concepts about the USER ('what have you figured out "
+                "about me?', 'what do I value?') AND concepts about HERSELF "
+                "('what are you like?', 'what do you value?', 'have you "
+                "changed?'); the result says whose it is. Prefer this over "
+                "recall / recall_topic when the question is about a settled "
+                "understanding or self-image rather than a one-off fact. Set "
                 "'all_evidence' true to get the full supporting set instead "
                 "of a few representative notes."
             ),
@@ -246,8 +252,10 @@ class RecallConceptTool:
                     "query": {
                         "type": "string",
                         "description": (
-                            "What to look up a concept about (e.g. 'how I "
-                            "approach problems', 'my values')."
+                            "What to look up a concept about -- about the "
+                            "user (e.g. 'how I approach problems', 'my "
+                            "values') or about Aiko herself (e.g. 'what I'm "
+                            "like', 'what I value', 'how I've changed')."
                         ),
                     },
                     "limit": {

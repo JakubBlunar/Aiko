@@ -1483,21 +1483,25 @@ class RagRetriever:
         all_evidence: bool = False,
         min_concept_sim: float = 0.20,
     ) -> dict[str, Any] | None:
-        """Nearest active user concept, bundled with its evidence.
+        """Nearest active concept, bundled with its evidence.
 
         L5 concept recall, surfaced as the ``recall_concept`` tool. Embeds
-        ``query``, finds the single nearest **active user** concept by
-        label cosine (:meth:`ConceptStore.nearest`), then hydrates that
-        concept's own evidence graph (:meth:`ConceptStore.evidence_of`) in
-        one shot -- its supporting memories and topic-cluster labels -- so
-        the model never has to nest ``recall_topic`` / ``recall`` calls.
-        User-identity evidence is cluster-typed, so each evidence cluster
-        is expanded into its member memories; direct memory edges are
-        included too. ``limit`` caps the returned memory snippets;
-        ``all_evidence=True`` lifts that cap for the full picture (still
-        bounded by the concept's own evidence, not a global search).
-        Returns ``None`` when the store isn't wired or nothing clears
-        ``min_concept_sim``.
+        ``query``, finds the single nearest **active** concept by label
+        cosine (:meth:`ConceptStore.nearest`) — across **all subjects**, so
+        this answers both "what do you understand about *me*?" (a
+        ``subject=user`` concept) and "what are *you* like / what do you
+        value?" (a first-person ``subject=aiko`` self-concept); the query
+        text disambiguates and the returned bundle carries ``subject`` so the
+        caller knows whose concept it is. It then hydrates that concept's own
+        evidence graph (:meth:`ConceptStore.evidence_of`) in one shot -- its
+        supporting memories and topic-cluster labels -- so the model never has
+        to nest ``recall_topic`` / ``recall`` calls. User-identity evidence is
+        cluster-typed (each evidence cluster is expanded into its member
+        memories); aiko-identity evidence is memory-typed (included directly).
+        ``limit`` caps the returned memory snippets; ``all_evidence=True``
+        lifts that cap for the full picture (still bounded by the concept's
+        own evidence, not a global search). Returns ``None`` when the store
+        isn't wired or nothing clears ``min_concept_sim``.
         """
         text = (query or "").strip()
         if not text or self._concept_store is None:
@@ -1512,7 +1516,7 @@ class RagRetriever:
             return None
         try:
             matches = self._concept_store.nearest(
-                q, subject="user", status="active", k=1,
+                q, status="active", k=1,
             )
         except Exception:
             log.debug("recall_concept: nearest failed", exc_info=True)
