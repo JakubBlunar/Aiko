@@ -72,6 +72,7 @@ def _harness(
     concepts_enabled=True,
     graph_mature=None,
     detector=None,
+    belief_reviser=None,
 ):
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "test.db")
@@ -93,6 +94,7 @@ def _harness(
         engagement_clock=clock,
         graph_mature_provider=graph_mature,
         contradiction_detector=detector,
+        belief_reviser=belief_reviser,
         memory_settings=settings,
         agent_settings=SimpleNamespace(concepts_enabled=concepts_enabled),
         clock=lambda: _NOW,
@@ -155,6 +157,73 @@ class PromotionTests(unittest.TestCase):
         c = _add(h.store, distinct_source_count=50, first_evidence_at=_iso(9))
         h.worker.run()
         self.assertLessEqual(h.store.get(c.concept_id).confidence, 0.97)
+
+
+class EngagementAgeTests(unittest.TestCase):
+    """Promotion / TTL age is engaged (active-conversation) time, not
+    wall-clock, when the shared clock is on (via ``first_evidence_engagement``).
+    ``engagement_seconds_per_day=3600`` => 1 engaged day == 3600 units."""
+
+    def test_engaged_age_promotes_despite_young_wallclock(self) -> None:
+        # Anchored at clock start; the clock shows 3 engaged days even
+        # though the concept is only ~2.4h old on the calendar. Engaged
+        # age (3) clears the 2-day floor -> promotes.
+        h = _harness()
+        h.kv.set("engagement.total_units", str(3 * 3600.0))
+        c = _add(
+            h.store,
+            distinct_source_count=2,
+            first_evidence_at=_iso(0.1),
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_wallclock_age_ignored_when_engaged_age_too_low(self) -> None:
+        # 30 calendar days old, but only 1 engaged day accrued. The old
+        # wall-clock gate would have promoted long ago; the engaged gate
+        # (1 < 2) holds it as a candidate.
+        h = _harness()
+        h.kv.set("engagement.total_units", str(1 * 3600.0))
+        c = _add(
+            h.store,
+            distinct_source_count=2,
+            first_evidence_at=_iso(30),
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+        self.assertEqual(h.events.count(), 0)
+
+    def test_new_concept_anchors_on_first_eval(self) -> None:
+        # Un-anchored (brand-new): the gate falls back to wall-clock this
+        # tick (young -> no promote), and the worker stamps the engagement
+        # anchor so age accrues in engaged time from here on.
+        h = _harness()
+        h.kv.set("engagement.total_units", str(5 * 3600.0))
+        c = _add(
+            h.store,
+            distinct_source_count=2,
+            first_evidence_at=_iso(0.1),
+            first_evidence_engagement=None,
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "candidate")
+        self.assertAlmostEqual(got.first_evidence_engagement, 5 * 3600.0)
+
+    def test_wallclock_fallback_when_clock_disabled(self) -> None:
+        # Clock unwired -> age is wall-clock regardless of the anchor, so a
+        # 3-day-old candidate promotes exactly as before.
+        h = _harness(with_clock=False)
+        c = _add(
+            h.store,
+            distinct_source_count=2,
+            first_evidence_at=_iso(3),
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
 
 
 class DecayTests(unittest.TestCase):
@@ -443,6 +512,86 @@ class ContradictionTests(unittest.TestCase):
         stats = h.worker.run()
         self.assertEqual(stats["contradiction_checks"], 1)
         self.assertEqual(det.calls, 1)
+
+
+class _FakeReviser:
+    """Stand-in for :class:`ConceptBeliefReviser`. Records every concept
+    it was asked to revise so the L3 trigger + batch cap can be asserted."""
+
+    def __init__(self) -> None:
+        self.revised: list[int] = []
+
+    def revise(self, concept, verdict, *, now=None):
+        self.revised.append(concept.concept_id)
+        return SimpleNamespace(lowered=1, superseded=0)
+
+
+class BeliefRevisionTriggerTests(unittest.TestCase):
+    def test_edge_persisted_on_confirmed_contradiction(self) -> None:
+        h = _harness(detector=_FakeDetector())
+        c = _add(
+            h.store, status="active", confidence=0.9, plasticity=0.5,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        edges = h.store.edges_from("concept", c.concept_id)
+        contradicts = [e for e in edges if e.relation == "contradicts"]
+        self.assertEqual(len(contradicts), 1)
+        self.assertEqual(contradicts[0].dst_type, "memory")
+        self.assertEqual(contradicts[0].dst_id, "99")
+        self.assertEqual(contradicts[0].polarity, -1)
+
+    def test_reviser_invoked_on_flip_to_contradicted(self) -> None:
+        rev = _FakeReviser()
+        h = _harness(detector=_FakeDetector(), belief_reviser=rev)
+        c = _add(
+            h.store, status="active", confidence=0.5, plasticity=0.5,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        stats = h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "contradicted")
+        self.assertEqual(rev.revised, [c.concept_id])
+        self.assertEqual(stats["belief_revisions"], 1)
+        self.assertEqual(stats["memories_lowered"], 1)
+
+    def test_reviser_not_invoked_when_only_weakened(self) -> None:
+        rev = _FakeReviser()
+        h = _harness(detector=_FakeDetector(), belief_reviser=rev)
+        _add(
+            h.store, status="active", confidence=0.9, plasticity=0.5,
+            distinct_source_count=1, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, last_reinforced_at=_iso(5),
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        # Confidence only dented (0.7125) -> stays active -> no revision.
+        self.assertEqual(rev.revised, [])
+
+    def test_batch_cap_bounds_revisions_per_tick(self) -> None:
+        rev = _FakeReviser()
+        h = _harness(
+            _settings(concept_belief_revision_batch_size=1),
+            detector=_FakeDetector(),
+            belief_reviser=rev,
+        )
+        for i in range(3):
+            _add(
+                h.store, status="active", confidence=0.5, plasticity=0.5,
+                distinct_source_count=1, label=f"c{i}",
+                last_lifecycle_at=_iso(1), last_lifecycle_engagement=0.0,
+                last_reinforced_at=_iso(5), promoted_at=_iso(9),
+            )
+        h.kv.set("engagement.total_units", "0.0")
+        stats = h.worker.run()
+        self.assertEqual(stats["belief_revisions"], 1)
+        self.assertEqual(len(rev.revised), 1)
 
 
 class GateUnitTests(unittest.TestCase):

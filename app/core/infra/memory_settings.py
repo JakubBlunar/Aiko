@@ -754,14 +754,28 @@ class MemorySettings:
     # anchor, and status transitions read confidence (not wall-clock idle):
     # ``active -> dormant`` below ``dormant_confidence_floor``,
     # ``dormant -> retired`` below ``retire_confidence_floor``. Promotion
-    # needs distinct sources + a minimum calendar age (stability) +
-    # confidence over the promote threshold. Half-life is in *engaged*
-    # days; ``decay_max_catchup_days`` clamps engaged-days per tick.
+    # is gated by distinct sources + confidence over the promote threshold;
+    # the stability-age floor (``promote_min_age_days``) defaults to 0 (off)
+    # since those are the meaningful signals. When *age* is used (a non-zero
+    # ``promote_min_age_days``, or the ``candidate_ttl_days`` cleanup) it is
+    # measured in *engaged* days -- via the per-concept
+    # ``first_evidence_engagement`` anchor -- so a concept matures with real
+    # interaction, not wall-clock idling (wall-clock fallback when the
+    # engagement clock is off). Half-life is in *engaged* days;
+    # ``decay_max_catchup_days`` clamps decay's engaged-days per tick (age
+    # itself is unclamped -- it only gates).
     concept_lifecycle_enabled: bool = True
     concept_lifecycle_interval_seconds: int = 300
     concept_lifecycle_batch_size: int = 100
     concept_promote_min_sources: int = 2
-    concept_promote_min_age_days: float = 2.0
+    # Stability *delay* before a candidate may promote, in *engaged*
+    # (active-conversation) days when the engagement clock is on (wall-clock
+    # fallback otherwise). Defaults to 0.0 => **off**: promotion is gated by
+    # distinct sources + confidence alone, which are the meaningful signals
+    # (a concept that's well-evidenced and confident shouldn't have to wait,
+    # and post-promotion evidence only refines its confidence). Raise it
+    # (e.g. 2.0 ~= 2h of active convo) to re-introduce a maturation delay.
+    concept_promote_min_age_days: float = 0.0
     concept_promote_min_confidence: float = 0.6
     concept_confidence_halflife_days: float = 45.0
     concept_decay_max_catchup_days: float = 3.0
@@ -810,6 +824,27 @@ class MemorySettings:
     concept_contradicted_confidence_floor: float = 0.4
     concept_contradiction_batch_size: int = 20
     concept_contradiction_max_candidates: int = 6
+    # L15 belief revision. When a belief flips to ``contradicted`` (L9),
+    # the doubt flows back down to the memories that supported it: the L3
+    # worker runs the read-mostly ``ConceptBeliefReviser`` over the
+    # concept's ``evidence`` memories and arbitrates, per memory, one of
+    # (a) inaccurate -> lower confidence, (b) superseded -> reclassify to
+    # ``past_event`` + a fresh ``relevance_until``, (c) fine -> no write.
+    # The cheap ``classify_pair`` gate keeps the LLM off compatible
+    # memories; the 3-way arbitration is bounded per tick
+    # (``batch_size`` concepts x ``max_evidence`` memories) and by the
+    # agent-side ``concept_belief_revision_per_hour/day_cap`` LLM limiter.
+    # ``confidence_penalty`` is the damped (a) step, floored at
+    # ``confidence_floor`` (a concept never zeroes an observation);
+    # ``superseded_relevance_days`` is the (b) grace window before the
+    # stale fact slides out of normal RAG. L3 stays the single writer of
+    # concept state; the reviser only writes memory state (like F1 / F5).
+    concept_belief_revision_enabled: bool = True
+    concept_belief_revision_batch_size: int = 5
+    concept_belief_revision_max_evidence: int = 6
+    concept_belief_revision_confidence_penalty: float = 0.2
+    concept_belief_revision_confidence_floor: float = 0.2
+    concept_belief_revision_superseded_relevance_days: float = 7.0
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -2232,7 +2267,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             concept_promote_min_age_days=max(
                 0.0,
-                float(memory_raw.get("concept_promote_min_age_days", 2.0)),
+                float(memory_raw.get("concept_promote_min_age_days", 0.0)),
             ),
             concept_promote_min_confidence=max(
                 0.0,
@@ -2351,6 +2386,48 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_contradiction_max_candidates=max(
                 1,
                 int(memory_raw.get("concept_contradiction_max_candidates", 6)),
+            ),
+            concept_belief_revision_enabled=bool(
+                memory_raw.get("concept_belief_revision_enabled", True)
+            ),
+            concept_belief_revision_batch_size=max(
+                1,
+                int(memory_raw.get("concept_belief_revision_batch_size", 5)),
+            ),
+            concept_belief_revision_max_evidence=max(
+                1,
+                int(memory_raw.get("concept_belief_revision_max_evidence", 6)),
+            ),
+            concept_belief_revision_confidence_penalty=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_belief_revision_confidence_penalty", 0.2
+                        )
+                    ),
+                ),
+            ),
+            concept_belief_revision_confidence_floor=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_belief_revision_confidence_floor", 0.2
+                        )
+                    ),
+                ),
+            ),
+            concept_belief_revision_superseded_relevance_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_belief_revision_superseded_relevance_days",
+                        7.0,
+                    )
+                ),
             ),
             coactivation_min_pair_support=max(
                 1,

@@ -343,6 +343,18 @@ class AgentSettings:
     # heuristic band live on ``MemorySettings.concept_contradiction_*``.
     concept_contradiction_per_hour_cap: int = 6
     concept_contradiction_per_day_cap: int = 30
+    # ── L15 concept layer: belief-revision arbiter ───────────────────
+    # Hourly + daily caps on the LLM arbitration calls the L3 lifecycle
+    # worker's ``ConceptBeliefReviser`` may issue when re-examining a
+    # just-``contradicted`` concept's supporting memories (the cheap
+    # ``classify_pair`` gate runs first, so only genuine conflicts reach
+    # the LLM). Persisted to ``kv_meta`` via a dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='concept_belief_revision.rate_state'`` so it never
+    # shares a budget with L9 / F5. The master switch + arbitration knobs
+    # live on ``MemorySettings.concept_belief_revision_*``.
+    concept_belief_revision_per_hour_cap: int = 6
+    concept_belief_revision_per_day_cap: int = 30
     # ── K35 personality backlog: memory consolidation worker ─────────
     # Master switch for
     # :class:`app.core.memory.memory_consolidation_worker.MemoryConsolidationWorker`.

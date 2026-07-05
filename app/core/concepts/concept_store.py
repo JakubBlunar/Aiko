@@ -69,7 +69,7 @@ _CONCEPT_COLS = (
     "confidence, plasticity, evidence_count, distinct_source_count, "
     "rationale, embedding, dim, origin_session, first_evidence_at, "
     "created_at, updated_at, last_reinforced_at, promoted_at, "
-    "last_lifecycle_at, last_lifecycle_engagement"
+    "last_lifecycle_at, last_lifecycle_engagement, first_evidence_engagement"
 )
 
 
@@ -144,6 +144,12 @@ class Concept:
     # worker). ``last_lifecycle_at`` NULL => never evaluated.
     last_lifecycle_at: str | None = None
     last_lifecycle_engagement: float | None = None
+    # L3 engagement anchor for *age*: the engagement-clock ``total()`` at
+    # first evidence, so promotion / candidate-TTL age is measured in
+    # engaged (active-conversation) time, symmetric with decay. NULL =>
+    # not yet anchored (the lifecycle worker stamps it on first eval;
+    # ``_age_days`` falls back to wall-clock until then).
+    first_evidence_engagement: float | None = None
     concept_id: int = 0
 
 
@@ -307,6 +313,9 @@ class ConceptStore:
             last_lifecycle_engagement=(
                 float(r[21]) if r[21] is not None else None
             ),
+            first_evidence_engagement=(
+                float(r[22]) if r[22] is not None else None
+            ),
         )
 
     # ── concept reads ─────────────────────────────────────────────────
@@ -423,9 +432,10 @@ class ConceptStore:
             " confidence, plasticity, evidence_count, distinct_source_count, "
             " rationale, embedding, dim, origin_session, first_evidence_at, "
             " created_at, updated_at, last_reinforced_at, promoted_at, "
-            " last_lifecycle_at, last_lifecycle_engagement) "
+            " last_lifecycle_at, last_lifecycle_engagement, "
+            " first_evidence_engagement) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?)",
+            "?, ?, ?)",
             (
                 str(concept.label),
                 str(concept.kind),
@@ -452,6 +462,11 @@ class ConceptStore:
                     if concept.last_lifecycle_engagement is not None
                     else None
                 ),
+                (
+                    float(concept.first_evidence_engagement)
+                    if concept.first_evidence_engagement is not None
+                    else None
+                ),
             ),
         )
         conn.commit()
@@ -476,7 +491,8 @@ class ConceptStore:
                 "  distinct_source_count = ?, rationale = ?, embedding = ?, "
                 "  dim = ?, origin_session = ?, first_evidence_at = ?, "
                 "  updated_at = ?, last_reinforced_at = ?, promoted_at = ?, "
-                "  last_lifecycle_at = ?, last_lifecycle_engagement = ? "
+                "  last_lifecycle_at = ?, last_lifecycle_engagement = ?, "
+                "  first_evidence_engagement = ? "
                 "WHERE id = ?",
                 (
                     str(concept.label),
@@ -501,6 +517,11 @@ class ConceptStore:
                     (
                         float(concept.last_lifecycle_engagement)
                         if concept.last_lifecycle_engagement is not None
+                        else None
+                    ),
+                    (
+                        float(concept.first_evidence_engagement)
+                        if concept.first_evidence_engagement is not None
                         else None
                     ),
                     int(concept.concept_id),
