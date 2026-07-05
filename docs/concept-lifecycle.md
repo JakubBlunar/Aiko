@@ -113,6 +113,8 @@ The one rule that keeps a second writer from ever creeping in:
 | **L2 synthesis worker** | creates `candidate` rows + `evidence` edges; reinforces existing concepts of *any* status (`evidence_count`, `distinct_source_count`, `last_reinforced_at`) | `confidence` / `plasticity` / `status` / `promoted_at` / `last_lifecycle_*` / `first_evidence_engagement` |
 | **L3 lifecycle worker** | **single writer** of `confidence` / `plasticity` / `status` / `promoted_at` + the `last_lifecycle_at` / `last_lifecycle_engagement` / `first_evidence_engagement` anchors; emits lifecycle events | edges / evidence counts / memories |
 | **L9 `ConceptContradictionDetector`** | nothing — **read-only** input. Reads the concept + nearby memories and returns a verdict; L3 applies the penalty / transition. | `confidence` / `status` / anything (it is not a writer) |
+| **L25 `ConceptEdgeReconciler`** | drops / repoints edges when their target memory is deleted or merged, and recomputes the affected concepts' *edge-derived* `evidence_count` / `distinct_source_count` (same recompute L2 does) | `confidence` / `plasticity` / `status` / memories |
+| **L25 `ConceptEdgeIntegrityWorker`** | idle sweep — asks the reconciler to GC orphaned memory edges left by listener-bypassing `prune()` | anything directly (delegates to the reconciler) |
 | **L6 (future)** | manual confirm (hard-promote) / reject (→ terminal `suppressed`), *through* L3's rules — the only other actor allowed to drive a status change | — |
 | **L5** | nothing — read-only consumer that surfaces `active` concepts (with L9 supporting-grounding) | any mutation |
 
@@ -313,11 +315,39 @@ The frontend
 renders any `event_type` with a per-type tone, so these surface
 automatically.
 
+## Edge referential integrity (L25)
+
+Concepts point at memories through `concept_edges` (`evidence`:
+`memory → concept`; `contradicts`: `concept → memory`), but memories are
+not permanent — they're deleted, pruned, merged, archived, and
+reclassified. L25 keeps the edge graph honest so a concept never silently
+keeps dangling support or loses the evidence it was promoted on. The policy
+is decided **per lifecycle event** and enforced by the
+[`ConceptEdgeReconciler`](../app/core/concepts/concept_edge_reconciler.py):
+
+| Memory event | Edge policy | How |
+| --- | --- | --- |
+| **hard delete** (`MemoryStore.delete`) | drop every edge touching the memory, recompute affected concepts' counts | `reconciler.on_memory_deleted` registered as a `MemoryStore` **delete listener** |
+| **prune** (`MemoryStore.prune`, cap enforcement) | GC the orphaned edges it leaves | `prune()` **bypasses** delete listeners, so the idle [`ConceptEdgeIntegrityWorker`](../app/core/concepts/concept_edge_integrity_worker.py) sweep catches them (`orphaned_memory_edges` → drop → recount) |
+| **destructive merge** (legacy Phase 4b consolidator hard-deletes the victim) | **repoint** the victim's edges onto the survivor, then delete | `MemoryConsolidator` calls the injected `repoint_memory_edges` hook (`reconciler.repoint`) *before* deleting each victim (rule b) |
+| **K35 consolidation / archive / reclassify** (row stays alive) | **keep** the edge — archived memories are still historical evidence (rule c) | no action; the row (and its id) survives |
+
+Two robustness properties: edge reads already **tolerate a missing target**
+(consumers skip a vanished memory rather than crash), and counts are
+treated as **edge-derived** — `evidence_count` / `distinct_source_count`
+are recomputed from the live edge table by whichever path mutated the edges
+(L2's reinforce does the same recompute), so a dropped edge can naturally
+weaken/demote a concept via L3 on its next tick. The reconciler **never**
+writes `confidence` / `plasticity` / `status`; that stays L3's alone.
+
 ## Invariants
 
 - **Single writer.** Only L3 mutates `confidence` / `plasticity` /
   `status` / `promoted_at` / `last_lifecycle_*`. L2 only creates +
-  reinforces evidence; L5 only reads.
+  reinforces evidence; L5 only reads. `evidence_count` /
+  `distinct_source_count` are **edge-derived** and recomputed by any
+  edge-mutating path (L2 reinforce, the L25 reconciler) — never a second
+  writer of *confidence* state.
 - **`retired` is revivable; `suppressed` (future) is terminal.**
 - **Meta-confidence bounded by `min(bases)`.** A meta concept's
   confidence is clamped to the minimum of its base concepts', and a base
@@ -330,8 +360,10 @@ automatically.
   that never mutate concept state themselves: the **L9 contradiction
   detector** (read-only, rate-limited, per-tick-bounded), the **L15
   belief reviser** (writes only *memory* state — confidence / temporal
-  fields — bounded + rate-limited), and the `contradicts` disproof edge
-  written alongside a confirmed contradiction.
+  fields — bounded + rate-limited), the `contradicts` disproof edge
+  written alongside a confirmed contradiction, and the **L25 edge
+  reconciler** (drops / repoints memory edges and recomputes edge-derived
+  counts — never concept confidence / status).
 
 ## Shared engagement clock
 

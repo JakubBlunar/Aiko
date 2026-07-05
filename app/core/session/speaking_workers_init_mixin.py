@@ -332,6 +332,7 @@ class SpeakingWorkersInitMixin:
                     min_hours_between=settings.agent.consolidator_min_hours_between,
                     use_llm_merge=settings.agent.consolidator_use_llm_merge,
                     user_display_name_provider=lambda: self.user_display_name,
+                    repoint_memory_edges=self._repoint_concept_memory_edges,
                 )
             except Exception:
                 log.warning("MemoryConsolidator init failed", exc_info=True)
@@ -836,6 +837,21 @@ class SpeakingWorkersInitMixin:
             )
             self._concept_contradiction_rate_limiter = None
             return None
+
+    def _repoint_concept_memory_edges(self, old_id: int, new_id: int) -> int:
+        """L25: repoint hook passed to the ``MemoryConsolidator``. Resolves
+        the edge reconciler lazily (it's built later in init than the
+        consolidator) and moves a hard-deleted victim's concept edges onto
+        the surviving memory. A no-op (returns 0) when the concept layer
+        isn't wired."""
+        reconciler = getattr(self, "_concept_edge_reconciler", None)
+        if reconciler is None:
+            return 0
+        try:
+            return int(reconciler.repoint(int(old_id), int(new_id)))
+        except Exception:
+            log.debug("concept edge repoint hook failed", exc_info=True)
+            return 0
 
     def _build_concept_belief_reviser(self, settings):
         """L15: build the ``ConceptBeliefReviser`` for the L3 lifecycle
@@ -1997,6 +2013,52 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_lifecycle_worker = None
+
+                # L25: concept<->memory edge referential integrity. Wire the
+                # reconciler as a MemoryStore delete listener (drop a deleted
+                # memory's edges + recompute the affected concepts' evidence
+                # counts) and register the idle integrity sweep that GCs
+                # orphans left by ``prune()`` (which bypasses delete
+                # listeners). Independent of the lifecycle worker so edges
+                # stay honest even if L3 is disabled. Non-fatal on failure.
+                self._concept_edge_reconciler = None
+                self._concept_edge_integrity_worker = None
+                if (
+                    getattr(self, "_concept_store", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                ):
+                    try:
+                        from app.core.concepts.concept_edge_reconciler import (
+                            ConceptEdgeReconciler,
+                        )
+
+                        reconciler = ConceptEdgeReconciler(self._concept_store)
+                        self._concept_edge_reconciler = reconciler
+                        if self._memory_store is not None:
+                            self._memory_store.add_delete_listener(
+                                reconciler.on_memory_deleted
+                            )
+                        if self._idle_scheduler is not None:
+                            from app.core.concepts.concept_edge_integrity_worker import (  # noqa: E501
+                                ConceptEdgeIntegrityWorker,
+                            )
+
+                            self._concept_edge_integrity_worker = (
+                                ConceptEdgeIntegrityWorker(
+                                    reconciler=reconciler,
+                                    memory_settings=self._memory_settings,
+                                    agent_settings=settings.agent,
+                                )
+                            )
+                            self._idle_scheduler.register(
+                                self._concept_edge_integrity_worker
+                            )
+                    except Exception:
+                        log.warning(
+                            "ConceptEdgeReconciler boot failed", exc_info=True
+                        )
+                        self._concept_edge_reconciler = None
+                        self._concept_edge_integrity_worker = None
 
                 # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
                 # likely upcoming questions during idle windows so the

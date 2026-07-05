@@ -104,12 +104,18 @@ class MemoryConsolidator:
         use_llm_merge: bool = True,
         max_llm_tokens: int = 80,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        repoint_memory_edges: "Callable[[int, int], int] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._mem = memory_store
         self._db = chat_db
         self._model = model
         self._user_display_name_provider = user_display_name_provider
+        # L25: optional hook to repoint concept edges from a hard-deleted
+        # victim onto the surviving memory *before* the victim is deleted,
+        # so a destructively-merged evidence memory keeps supporting its
+        # concept. ``None`` => no concept layer wired (a plain no-op).
+        self._repoint_memory_edges = repoint_memory_edges
         self._chunk_size = max(8, int(chunk_size))
         self._sim = max(0.5, min(0.99, float(similarity_threshold)))
         self._min_cluster = max(2, int(min_cluster_size))
@@ -356,7 +362,15 @@ class MemoryConsolidator:
         except Exception:
             log.debug("consolidator use_count bump failed", exc_info=True)
         # Delete the victims (which also detaches them from the RAG mirror).
+        # L25: repoint any concept edges onto the survivor first, so the
+        # merge preserves concept support instead of the delete listener
+        # dropping it.
         for victim in victims:
+            if self._repoint_memory_edges is not None:
+                try:
+                    self._repoint_memory_edges(int(victim.id), int(survivor.id))
+                except Exception:
+                    log.debug("victim edge repoint failed", exc_info=True)
             try:
                 self._mem.delete(int(victim.id))
             except Exception:

@@ -532,6 +532,14 @@ When L9 flips a belief to `contradicted`, the doubt flows **back down** to the m
 - `memory.concept_identity_plasticity` *(float, `0.3`, clamped `[0, 1]`)* — the `identity` kind's default band (low = sticky). Applied on first eval; also damps decay + L9 disproof + L15 revision for identity concepts.
 - `memory.concept_default_plasticity` *(float, `0.5`, clamped `[0, 1]`)* — fallback band for any kind that registers no `plasticity_default` on the `ConceptKind` registry.
 
+### L25 — concept edge referential integrity
+
+Concept edges (`evidence` / `contradicts`) point at memory rows that get deleted, pruned, and merged. Most deletes are reconciled synchronously by the `ConceptEdgeReconciler` (registered as a `MemoryStore` delete listener: it drops the memory's edges and recomputes the affected concepts' edge-derived `evidence_count` / `distinct_source_count`). But `MemoryStore.prune` batch-deletes rows **without** firing delete listeners, so an idle sweep worker garbage-collects any orphaned edges it leaves. Destructive merges repoint the victim's edges onto the survivor first (rule b); archived rows keep their edges (rule c). L3 stays the single writer of `confidence` / `plasticity` / `status`. See [`concept-lifecycle.md`](concept-lifecycle.md).
+
+- `memory.concept_edge_integrity_enabled` *(bool, `true`)* — master switch for the idle integrity sweep worker. The synchronous delete-listener reconciliation is always active when the concept layer is wired.
+- `memory.concept_edge_integrity_interval_seconds` *(float, `3600.0`, min `1`)* — how often the sweep runs. It's a defence-in-depth safety net (deletes are already handled live), so an hour is plenty.
+- `memory.concept_edge_integrity_batch_size` *(int, `200`, min `1`)* — max orphaned edges reconciled per sweep, keeping it a small rolling job.
+
 ### K2 — theory-of-mind / belief tracking
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.

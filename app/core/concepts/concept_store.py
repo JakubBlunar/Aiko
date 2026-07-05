@@ -699,11 +699,84 @@ class ConceptStore:
             )
 
     def delete_for_memory(self, memory_id: int) -> None:
-        """Cascade hook for ``MemoryStore.delete`` -- drop evidence edges
-        that pointed at a now-deleted memory. The concept's
-        ``evidence_count`` reconciliation is the L3 engine's job (L25),
-        not done here."""
+        """Cascade hook for ``MemoryStore.delete`` -- drop every edge that
+        touched a now-deleted memory (``evidence`` edges pointing *from* it
+        and ``contradicts`` edges pointing *at* it). Reconciling the
+        affected concepts' evidence counts is the L25
+        :class:`~app.core.concepts.concept_edge_reconciler.ConceptEdgeReconciler`'s
+        job, not done here (the store stays mechanism-only)."""
         self.delete_edges_for_node("memory", int(memory_id))
+
+    def affected_concepts_for_memory(self, memory_id: int) -> set[int]:
+        """Concept ids with any edge touching this memory, on either side:
+        ``evidence`` edges (memory -> concept) and ``contradicts`` edges
+        (concept -> memory). Used to recompute evidence counts after the
+        memory's edges are dropped or repointed (L25)."""
+        out: set[int] = set()
+        for e in self.edges_from("memory", memory_id):
+            if e.dst_type == "concept":
+                try:
+                    out.add(int(e.dst_id))
+                except (TypeError, ValueError):
+                    continue
+        for e in self.edges_into("memory", memory_id):
+            if e.src_type == "concept":
+                try:
+                    out.add(int(e.src_id))
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    def repoint_memory_edges(self, old_id: int, new_id: int) -> int:
+        """Move every edge touching ``memory:old_id`` onto ``memory:new_id``
+        (L25 rule (b): a destructively-merged evidence memory keeps
+        supporting its concept via the survivor). Re-adds each edge at the
+        new endpoint -- ``add_edge`` upserts on the unique key, so a
+        collision with an edge the survivor already owns merges rather than
+        duplicates -- then drops the old endpoint's edges. Returns the
+        number of edges moved."""
+        old = int(old_id)
+        new = int(new_id)
+        if old == new:
+            return 0
+        new_s = str(new)
+        moved = 0
+        for e in self.edges_from("memory", old):
+            e.src_id = new_s
+            e.edge_id = 0
+            self.add_edge(e)
+            moved += 1
+        for e in self.edges_into("memory", old):
+            e.dst_id = new_s
+            e.edge_id = 0
+            self.add_edge(e)
+            moved += 1
+        if moved:
+            self.delete_edges_for_node("memory", old)
+        return moved
+
+    def orphaned_memory_edges(self, limit: int = 200) -> list[ConceptEdge]:
+        """Edges whose ``memory`` endpoint no longer has a surviving row in
+        ``memories`` -- the defence-in-depth catch for deletes that skip the
+        delete-listener path (notably ``MemoryStore.prune`` batch deletes).
+        Bounded by ``limit`` so the L25 integrity sweep stays a small,
+        rolling job."""
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT id, src_type, src_id, dst_type, dst_id, relation, "
+                "polarity, strength, ordinal, created_at FROM concept_edges "
+                "WHERE (src_type = 'memory' AND CAST(src_id AS INTEGER) "
+                "       NOT IN (SELECT id FROM memories)) "
+                "   OR (dst_type = 'memory' AND CAST(dst_id AS INTEGER) "
+                "       NOT IN (SELECT id FROM memories)) "
+                "LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        except Exception:
+            log.warning("orphaned_memory_edges query failed", exc_info=True)
+            return []
+        return [self._row_to_edge(r) for r in rows]
 
 
 __all__ = ["Concept", "ConceptEdge", "ConceptStore"]
