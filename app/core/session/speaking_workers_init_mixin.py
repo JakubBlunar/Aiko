@@ -837,6 +837,104 @@ class SpeakingWorkersInitMixin:
             self._concept_contradiction_rate_limiter = None
             return None
 
+    def _build_concept_belief_reviser(self, settings):
+        """L15: build the ``ConceptBeliefReviser`` for the L3 lifecycle
+        worker, or ``None`` when disabled / missing deps.
+
+        Uses its own :class:`FactCheckRateLimiter`
+        (``state_key='concept_belief_revision.rate_state'``) so its LLM
+        budget never shares with L9 / F5, and the maintenance-tier LLM
+        client like every other idle worker. Writes *memory* state only;
+        non-fatal on any failure (returns ``None``, and the L3 worker
+        degrades to the L9-only path).
+        """
+        self._concept_belief_revision_rate_limiter = None
+        if not bool(
+            getattr(
+                self._memory_settings,
+                "concept_belief_revision_enabled",
+                True,
+            )
+        ):
+            return None
+        if (
+            getattr(self, "_memory_store", None) is None
+            or getattr(self, "_concept_store", None) is None
+            or getattr(self, "_maintenance_client", None) is None
+            or getattr(self, "_chat_db", None) is None
+        ):
+            return None
+        try:
+            from app.core.concepts.concept_belief_reviser import (
+                ConceptBeliefReviser,
+            )
+            from app.core.memory.fact_check_rate_limiter import (
+                FactCheckRateLimiter,
+            )
+
+            self._concept_belief_revision_rate_limiter = FactCheckRateLimiter(
+                self._chat_db,
+                per_hour_cap=int(
+                    getattr(
+                        settings.agent,
+                        "concept_belief_revision_per_hour_cap",
+                        6,
+                    )
+                ),
+                per_day_cap=int(
+                    getattr(
+                        settings.agent,
+                        "concept_belief_revision_per_day_cap",
+                        30,
+                    )
+                ),
+                state_key="concept_belief_revision.rate_state",
+            )
+            return ConceptBeliefReviser(
+                concept_store=self._concept_store,
+                memory_store=self._memory_store,
+                # Idle-scheduler worker → maintenance tier.
+                ollama=self._maintenance_client,
+                chat_model=self._effective_worker_model,
+                rate_limiter=self._concept_belief_revision_rate_limiter,
+                cancel_event=self._fact_check_cancel,
+                max_evidence=int(
+                    getattr(
+                        self._memory_settings,
+                        "concept_belief_revision_max_evidence",
+                        6,
+                    )
+                ),
+                confidence_penalty=float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_belief_revision_confidence_penalty",
+                        0.2,
+                    )
+                ),
+                confidence_floor=float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_belief_revision_confidence_floor",
+                        0.2,
+                    )
+                ),
+                superseded_relevance_days=float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_belief_revision_superseded_relevance_days",
+                        7.0,
+                    )
+                ),
+                notify_memory_updated=self._notify_memory_updated,
+            )
+        except Exception:
+            log.warning(
+                "ConceptBeliefReviser boot failed", exc_info=True
+            )
+            self._concept_belief_revision_rate_limiter = None
+            return None
+
     def _init_speaking_window(self, settings: AppSettings) -> None:
         self._scheduler = SpeakingWindowScheduler(
             speaking_window_grace_ms=settings.agent.scheduler_speaking_window_grace_ms,
@@ -1848,6 +1946,16 @@ class SpeakingWorkersInitMixin:
                             )
                         )
 
+                        # L15: optional belief reviser. Re-examines a
+                        # just-``contradicted`` concept's supporting
+                        # memories and applies per-memory resolutions
+                        # (inaccurate / superseded / keep). Writes only
+                        # memory state; None => the worker degrades to
+                        # the L9-only path.
+                        belief_reviser = (
+                            self._build_concept_belief_reviser(settings)
+                        )
+
                         def _graph_mature() -> bool:
                             # L21: promotion uses the stricter young-graph
                             # bar until the graph clears the cluster floor.
@@ -1876,6 +1984,7 @@ class SpeakingWorkersInitMixin:
                             engagement_clock=self._engagement_clock,
                             graph_mature_provider=_graph_mature,
                             contradiction_detector=contradiction_detector,
+                            belief_reviser=belief_reviser,
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

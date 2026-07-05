@@ -861,6 +861,28 @@ months. Surfaces as momentum callbacks rather than a static label.
 
 ## L15. Bidirectional confidence / belief revision (concept -> evidence re-check)
 
+**Status: BUILT.** A confirmed contradiction (L9) now persists a
+`concept --contradicts--> memory` edge, and the tick that flips a concept
+to `contradicted` hands it to the read-mostly
+[`ConceptBeliefReviser`](../../app/core/concepts/concept_belief_reviser.py),
+which walks the concept's `evidence` memories and arbitrates — per memory
+— one of the three resolutions below: **(a) inaccurate** -> damped/floored
+confidence cut, **(b) superseded** -> `past_event` reclassify with a fresh
+`relevance_until` (confidence untouched), **(c) keep** -> no memory write.
+A cheap `classify_pair` gate keeps the LLM off compatible memories; the
+3-way arbiter is bounded per tick (`concept_belief_revision_batch_size`
+concepts x `_max_evidence` memories) and rate-limited
+(`state_key='concept_belief_revision.rate_state'`); pinned observations
+are never touched. L3 stays the single writer of *concept* state — the
+reviser writes only *memory* state, like F1 / F5. Driven from
+[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py);
+config on `MemorySettings.concept_belief_revision_*` +
+`AgentSettings.concept_belief_revision_per_hour/day_cap` (see
+[`concept-lifecycle.md`](../concept-lifecycle.md) and
+[`configuration.md`](../configuration.md)). The optional cheap *direct
+nudge* below was deliberately **not** built — arbitration is the safe
+path.
+
 **Motivation.** Today the pipeline is one-way: memories -> clusters -> concepts.
 But higher-order structure can catch errors atomic facts can't. If a concept
 that a set of strong memories supports becomes contradicted (L9), that doubt

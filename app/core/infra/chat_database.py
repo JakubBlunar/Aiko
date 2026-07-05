@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 23
+_SCHEMA_VERSION = 24
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -398,7 +398,14 @@ CREATE TABLE IF NOT EXISTS concepts (
     -- engagement-clock ``total()`` at that moment, so decay is measured
     -- per-concept from its own anchor (batch-order independent).
     last_lifecycle_at TEXT,
-    last_lifecycle_engagement REAL
+    last_lifecycle_engagement REAL,
+    -- Schema v24 (L3): engagement-clock ``total()`` captured at the
+    -- concept's first evidence, so promotion / candidate-TTL *age* is
+    -- measured in engaged (active-conversation) time -- symmetric with
+    -- the engagement-driven decay -- rather than wall-clock days. NULL
+    -- => not yet anchored (brand-new concept before its first lifecycle
+    -- eval); ``_age_days`` falls back to wall-clock in that case.
+    first_evidence_engagement REAL
 );
 CREATE INDEX IF NOT EXISTS idx_concepts_status ON concepts(status);
 CREATE INDEX IF NOT EXISTS idx_concepts_subject_kind ON concepts(subject, kind);
@@ -1146,6 +1153,32 @@ class ChatDatabase:
         ):
             try:
                 conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # v23 -> v24: engagement-driven concept *age*. Promotion + the
+        # candidate TTL now measure age in engaged (active-conversation)
+        # time -- symmetric with the engagement-driven confidence decay --
+        # via ``first_evidence_engagement`` (the engagement-clock ``total()``
+        # at first evidence). Fresh DBs get the column from the CREATE above;
+        # existing DBs need the ALTER. Pre-existing concepts are backfilled
+        # to 0.0 (= "anchored at clock start"), which credits them the full
+        # engaged time accrued so far so an already-well-evidenced candidate
+        # promotes on the next tick instead of being reset to age 0 and made
+        # to wait all over again. Age only *gates* promotion (never drives
+        # decay), and the source-count + confidence gates still apply, so
+        # this can only let genuinely evidence-ready candidates through.
+        try:
+            conn.execute(
+                "ALTER TABLE concepts ADD COLUMN first_evidence_engagement REAL"
+            )
+        except sqlite3.OperationalError:
+            pass
+        else:
+            try:
+                conn.execute(
+                    "UPDATE concepts SET first_evidence_engagement = 0.0 "
+                    "WHERE first_evidence_engagement IS NULL"
+                )
             except sqlite3.OperationalError:
                 pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))

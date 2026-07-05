@@ -76,10 +76,32 @@ over the dormant check when both would trigger the same tick. A
 `status="active"`), and the detector only ever runs on `active` concepts,
 so a disproven belief stays quiet until it is genuinely re-reinforced.
 
-Age (`age_days`, from `first_evidence_at`) is used **only** for the
-promotion stability check and the candidate TTL. Both only ever *delay*
-an action — being offline makes promotion/retirement wait, never fire
-early — so intermittent uptime is harmless.
+Age (`age_days`) is used **only** for the promotion stability check and
+the candidate TTL. Both only ever *delay* an action — being offline makes
+promotion/retirement wait, never fire early — so intermittent uptime is
+harmless.
+
+**The promotion age floor defaults to off** (`concept_promote_min_age_days
+= 0.0`). Distinct sources + confidence are the meaningful promotion
+signals — a well-evidenced, confident concept shouldn't have to wait, and
+any evidence that arrives after promotion only refines its confidence — so
+by default a candidate promotes as soon as it clears the source + confidence
+bar. Raise the knob (e.g. `2.0`) to re-introduce a maturation delay.
+
+**When age *is* used, it's engaged time, not wall-clock** (schema v24). A
+non-zero `concept_promote_min_age_days` and the `concept_candidate_ttl_days`
+cleanup are measured in *engaged* (active-conversation) days via a
+per-concept anchor `first_evidence_engagement` (the `EngagementClock.total()`
+captured on the concept's first lifecycle evaluation): `age_days =
+engaged_days_since(first_evidence_engagement)`, **unclamped** (age must
+accumulate without bound; only decay's per-tick catch-up is clamped). So a
+maturation delay is spent on real interaction — at the default
+`engagement_seconds_per_day=3600`, `2.0` ≈ 2 hours of active conversation —
+rather than idling to maturity on the calendar. Un-anchored concepts
+(brand-new, before their first stamp) and clock-disabled deployments fall
+back to wall-clock age from `first_evidence_at`. Existing concepts are
+backfilled to anchor `0.0` on the v24 upgrade so an already-evidenced
+candidate promotes on the next tick instead of restarting its age clock.
 
 ## Ownership / responsibility table
 
@@ -88,8 +110,8 @@ The one rule that keeps a second writer from ever creeping in:
 | Actor | Writes | Never writes |
 | --- | --- | --- |
 | **L1 `ConceptStore`** | mechanism only — CRUD + edges + cosine mirror | enforces no policy; schedules no mutation |
-| **L2 synthesis worker** | creates `candidate` rows + `evidence` edges; reinforces existing concepts of *any* status (`evidence_count`, `distinct_source_count`, `last_reinforced_at`) | `confidence` / `plasticity` / `status` / `promoted_at` / `last_lifecycle_*` |
-| **L3 lifecycle worker** | **single writer** of `confidence` / `plasticity` / `status` / `promoted_at` + the `last_lifecycle_at` / `last_lifecycle_engagement` anchor; emits lifecycle events | edges / evidence counts / memories |
+| **L2 synthesis worker** | creates `candidate` rows + `evidence` edges; reinforces existing concepts of *any* status (`evidence_count`, `distinct_source_count`, `last_reinforced_at`) | `confidence` / `plasticity` / `status` / `promoted_at` / `last_lifecycle_*` / `first_evidence_engagement` |
+| **L3 lifecycle worker** | **single writer** of `confidence` / `plasticity` / `status` / `promoted_at` + the `last_lifecycle_at` / `last_lifecycle_engagement` / `first_evidence_engagement` anchors; emits lifecycle events | edges / evidence counts / memories |
 | **L9 `ConceptContradictionDetector`** | nothing — **read-only** input. Reads the concept + nearby memories and returns a verdict; L3 applies the penalty / transition. | `confidence` / `status` / anything (it is not a writer) |
 | **L6 (future)** | manual confirm (hard-promote) / reject (→ terminal `suppressed`), *through* L3's rules — the only other actor allowed to drive a status change | — |
 | **L5** | nothing — read-only consumer that surfaces `active` concepts (with L9 supporting-grounding) | any mutation |
@@ -197,6 +219,56 @@ defer). L3 stays the single writer throughout; the detector only reads.
 > beliefs are sticky for both decay *and* L9 disproof from the moment L3
 > first touches them.
 
+## Belief revision — doubt flows back down (L15)
+
+L9 lowers the *concept*. L15 closes the loop: when a belief tips into
+`contradicted`, the doubt flows **back down** to the memories that
+supported it. Two pieces:
+
+1. **The disproof edge.** Every confirmed contradiction upserts a
+   `concept --contradicts--> memory` edge (polarity `-1`,
+   `strength = similarity`) into `concept_edges`, so the disproof
+   relation is a first-class part of the graph (idempotent on repeat
+   hits).
+2. **The reviser.** On the tick that flips a concept `-> contradicted`,
+   L3 hands it to the read-mostly
+   [`ConceptBeliefReviser`](../app/core/concepts/concept_belief_reviser.py),
+   which walks the concept's `evidence` memories and arbitrates, **per
+   memory**, one of three resolutions:
+
+| Resolution | Meaning | Write |
+| --- | --- | --- |
+| **(a) inaccurate** | the memory was wrong (misremembered / bad extraction) | lower its `confidence` by `concept_belief_revision_confidence_penalty`, floored at `concept_belief_revision_confidence_floor` |
+| **(b) superseded** | true when recorded, stale now (the person changed) | `reclassify` to `past_event` with `relevance_until = now + concept_belief_revision_superseded_relevance_days`; **confidence untouched** — the fact still happened |
+| **(c) keep** | the memory is fine; the belief was an over-reach | no memory write (the concept was already penalised by L9) |
+
+**Why arbitration, not a direct back-edge.** A concept's confidence must
+never directly overwrite a memory's: memory confidence *feeds* concept
+confidence (L3), so a raw back-edge is an undamped loop that oscillates
+or collapses; and an inference silently rewriting an observation is
+backwards. So the propagation is a **trigger, not a write** — each memory
+is judged on its own against the counter-evidence.
+
+**The cheap gate + the LLM.** For each supporting memory the reviser runs
+`classify_pair(memory, counter_evidence)` first: a `no` verdict (the
+memory is compatible with the disproof) leaves it alone, so only genuine
+conflicts reach the 3-way LLM arbiter. That arbiter is gated by its own
+[`FactCheckRateLimiter`](../app/core/memory/fact_check_rate_limiter.py)
+(`state_key='concept_belief_revision.rate_state'`, hour/day caps on
+`AgentSettings`), and a conflict is *deferred* (no write) when the budget
+is spent.
+
+**Guardrails.** Pinned memories are never touched (user-curated
+observations outrank inferences); the (a) cut is damped + floored; the
+pass is one-directional (only ever lowers / marks stale, never raises).
+
+**Batched like the rest.** L3 caps the pass at
+`concept_belief_revision_batch_size` concepts per tick, each up to
+`concept_belief_revision_max_evidence` memories — so a big active set
+never blocks the scheduler in one chunk. L3 stays the single writer of
+*concept* state; the reviser only writes *memory* state (confidence /
+temporal fields), exactly like F1 / F5.
+
 ## Event mapping — the discovery timeline
 
 Every transition appends one `ConceptEvent`
@@ -230,11 +302,14 @@ automatically.
   status change marks its dependents stale (their `last_lifecycle_at` is
   reset) so the next tick re-evaluates them — a batch-safe cascade. No-op
   today (only `set`/identity concepts exist), wired for later meta kinds.
-- **No edges, no memory writes** in the lifecycle pass. The confidence /
-  status math is pure arithmetic over a bounded row set; the one LLM
-  touchpoint is the **L9 contradiction detector**, a read-only,
-  rate-limited, per-tick-bounded input that never writes concept state
-  itself.
+- **Pure arithmetic over concept state.** The confidence / status math is
+  arithmetic over a bounded row set; L3 is the only writer of *concept*
+  state. The LLM / write touchpoints are all **inputs / side-channels**
+  that never mutate concept state themselves: the **L9 contradiction
+  detector** (read-only, rate-limited, per-tick-bounded), the **L15
+  belief reviser** (writes only *memory* state — confidence / temporal
+  fields — bounded + rate-limited), and the `contradicts` disproof edge
+  written alongside a confirmed contradiction.
 
 ## Shared engagement clock
 

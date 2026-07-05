@@ -16,12 +16,18 @@ engagement anchor**: each concept's decay is measured from *its own*
 order it's visited -- it always accounts exactly the engaged time since
 it was last stamped.
 
-**Engagement-driven decay.** Elapsed time is active-conversation time
-from the shared :class:`EngagementClock` (falling back to wall-clock when
-the clock is absent/disabled), so being away or quiet doesn't crater
-confidence. Status keys off the (engagement-robust) confidence rather
-than raw idle days; the only wall-clock reads are the promotion
-*stability* age and the candidate TTL, which merely *delay* actions.
+**Engagement-driven decay *and* age.** Elapsed time is active-conversation
+time from the shared :class:`EngagementClock` (falling back to wall-clock
+when the clock is absent/disabled), so being away or quiet doesn't crater
+confidence. The same clock now drives *age*: promotion's stability floor
+(``concept_promote_min_age_days``) and the candidate TTL
+(``concept_candidate_ttl_days``) are measured in *engaged* days via the
+per-concept ``first_evidence_engagement`` anchor, not wall-clock calendar
+days -- so a concept matures with real interaction (~1h active convo per
+"day" at the default ``engagement_seconds_per_day``) instead of idling to
+maturity on the calendar. Age only ever *gates*; confidence still drives
+every status floor. Un-anchored concepts (brand-new, pre-first-stamp) and
+clock-disabled deployments fall back to wall-clock age.
 
 Transitions (each emits one :class:`ConceptEvent` to the discovery
 timeline): ``candidate -> active`` (promotion gate), ``candidate ->
@@ -43,6 +49,23 @@ weakened. Detection rides the same ``list_stalest`` round-robin (capped
 at ``concept_contradiction_batch_size`` checks per tick), so the LLM /
 memory-search cost never sweeps the whole active set in one tick. The
 detector only *reads*; L3 remains the single writer.
+
+**L15 belief revision.** Every confirmed contradiction also persists a
+``concept --contradicts--> memory`` edge (polarity -1) so the disproof
+relation lives in the graph. When a
+:class:`~app.core.concepts.concept_belief_reviser.ConceptBeliefReviser`
+is injected, the tick that flips a concept ``-> contradicted`` also lets
+the doubt flow *back down*: the reviser walks the concept's ``evidence``
+memories and arbitrates, per memory, one of three resolutions --
+(a) inaccurate -> lower its confidence; (b) superseded -> reclassify to
+a ``past_event`` with a fresh ``relevance_until``; (c) fine (the concept
+was a bad inference) -> no memory write. This is a **trigger, not a blind
+write**: a concept's confidence never directly overwrites a memory's, and
+pinned observations are never touched. Revision rides the same rolling
+batch (at most ``concept_belief_revision_batch_size`` concepts per tick,
+each up to ``concept_belief_revision_max_evidence`` memories), with its
+own rate-limited maintenance-LLM budget. L3 stays the single writer of
+*concept* state; the reviser only writes *memory* state, like F1 / F5.
 """
 from __future__ import annotations
 
@@ -58,9 +81,11 @@ from app.core.concepts.concept_lifecycle import (
     set_evidence_gate,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.concepts.concept_store import ConceptEdge
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_belief_reviser import ConceptBeliefReviser
     from app.core.concepts.concept_contradiction import (
         ConceptContradictionDetector,
         ContradictionVerdict,
@@ -100,6 +125,7 @@ class ConceptLifecycleWorker:
         engagement_clock: "EngagementClock | None" = None,
         graph_mature_provider: Callable[[], bool] | None = None,
         contradiction_detector: "ConceptContradictionDetector | None" = None,
+        belief_reviser: "ConceptBeliefReviser | None" = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
@@ -107,6 +133,7 @@ class ConceptLifecycleWorker:
         self._engagement_clock = engagement_clock
         self._graph_mature_provider = graph_mature_provider
         self._contradiction_detector = contradiction_detector
+        self._belief_reviser = belief_reviser
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -168,6 +195,11 @@ class ConceptLifecycleWorker:
             # contradiction check this tick, and how many actually fired.
             "contradiction_checks": 0,
             "contradiction_hits": 0,
+            # L15 belief revision: concepts whose supporting memories got
+            # re-examined this tick, and the resolutions applied.
+            "belief_revisions": 0,
+            "memories_lowered": 0,
+            "memories_superseded": 0,
             "events": 0,
         }
         for concept in batch:
@@ -222,6 +254,10 @@ class ConceptLifecycleWorker:
                 plasticity=concept.plasticity,
             )
             concept.confidence = new_conf
+            # L15: record the disproof relation in the graph so belief
+            # revision (and later graph consumers) can walk it. Upsert is
+            # idempotent, so a repeated hit on the same memory is a no-op.
+            self._persist_contradiction_edge(concept, verdict)
 
         # 2-5. Status transition (confidence-driven; age only gates/ delays).
         old_status = concept.status
@@ -235,12 +271,29 @@ class ConceptLifecycleWorker:
                 concept.promoted_at = now.isoformat()
             self._tally(stats, event_type)
 
-        # 6. Stamp the per-concept engagement anchor + persist.
+        # L15: when a belief tips into ``contradicted``, let the doubt
+        # flow back down to its supporting memories (bounded per tick).
+        # Runs before the persist so a same-tick memory write and the
+        # concept write land together; the reviser only writes *memory*
+        # state, never concept state.
+        if status_changed and new_status == "contradicted":
+            self._maybe_revise_beliefs(concept, verdict, now, stats)
+
+        # 6. Stamp the per-concept engagement anchors + persist.
         concept.last_lifecycle_at = now.isoformat()
         if self._clock_active():
-            concept.last_lifecycle_engagement = float(
+            total = float(
                 self._engagement_clock.total()  # type: ignore[union-attr]
             )
+            concept.last_lifecycle_engagement = total
+            # Anchor *age* to engaged time on first evaluation. A brand-new
+            # concept is seconds old here, so this ~= its creation engagement
+            # total; from now on promotion / candidate-TTL age accrues in
+            # engaged (active-conversation) time, symmetric with decay. Only
+            # set when unanchored so existing concepts (backfilled to 0.0 by
+            # the v24 migration) keep their accrued engaged age.
+            if concept.first_evidence_engagement is None:
+                concept.first_evidence_engagement = total
         self._store.update(concept)
 
         # 7. Emit a lifecycle event + cascade to dependents. A confirmed
@@ -290,6 +343,69 @@ class ConceptLifecycleWorker:
         if verdict is not None:
             stats["contradiction_hits"] += 1
         return verdict
+
+    def _persist_contradiction_edge(
+        self, concept: "Concept", verdict: "ContradictionVerdict"
+    ) -> None:
+        """L15: upsert the ``concept --contradicts--> memory`` edge
+        (polarity -1) for a confirmed disproof. Best-effort: a failure
+        here must never break the lifecycle pass (edge-only bookkeeping).
+        """
+        memory_id = int(getattr(verdict, "memory_id", 0) or 0)
+        if memory_id <= 0:
+            return
+        try:
+            self._store.add_edge(
+                ConceptEdge(
+                    src_type="concept",
+                    src_id=str(concept.concept_id),
+                    dst_type="memory",
+                    dst_id=str(memory_id),
+                    relation="contradicts",
+                    polarity=-1,
+                    strength=float(getattr(verdict, "similarity", 1.0) or 1.0),
+                )
+            )
+        except Exception:
+            log.debug(
+                "contradicts edge upsert failed (concept_id=%s mem_id=%s)",
+                getattr(concept, "concept_id", "?"),
+                memory_id,
+                exc_info=True,
+            )
+
+    # ── L15 belief revision ─────────────────────────────────────────────
+
+    def _maybe_revise_beliefs(
+        self,
+        concept: "Concept",
+        verdict: "ContradictionVerdict | None",
+        now: datetime,
+        stats: dict[str, Any],
+    ) -> None:
+        """Run the belief reviser for one just-``contradicted`` concept,
+        bounded by the per-tick revision batch. The reviser re-examines
+        the concept's supporting memories (a memory search / LLM per
+        borderline pair, the real work unit) so the count is capped like
+        the L9 detector; ``list_stalest`` rotates which concepts get
+        revised across ticks. The reviser writes only *memory* state."""
+        if self._belief_reviser is None or verdict is None:
+            return
+        batch = max(0, self._i("concept_belief_revision_batch_size", 5))
+        if stats["belief_revisions"] >= batch:
+            return
+        stats["belief_revisions"] += 1
+        try:
+            outcome = self._belief_reviser.revise(concept, verdict, now=now)
+        except Exception:
+            log.debug(
+                "belief revision failed (id=%s)",
+                getattr(concept, "concept_id", "?"),
+                exc_info=True,
+            )
+            return
+        stats["memories_lowered"] += int(getattr(outcome, "lowered", 0))
+        stats["memories_superseded"] += int(getattr(outcome, "superseded", 0))
 
     def _contradiction_reason(
         self, verdict: "ContradictionVerdict", conf: float
@@ -383,8 +499,9 @@ class ConceptLifecycleWorker:
         gate = getattr(kind, "promotion_gate", None) or set_evidence_gate
         # L21: until the topic graph matures, promote against a stricter
         # bar (more distinct sources + higher confidence) so early,
-        # thinly-evidenced candidates don't lock in as beliefs. Age is
-        # left untouched (it only ever delays). When no provider is wired,
+        # thinly-evidenced candidates don't lock in as beliefs. The age
+        # floor is left untouched (it only ever delays) and is now measured
+        # in engaged days (see ``_age_days``). When no provider is wired,
         # treat the graph as mature (normal thresholds).
         mature = self._graph_mature()
         min_sources = self._i("concept_promote_min_sources", 2)
@@ -466,12 +583,27 @@ class ConceptLifecycleWorker:
         return last_reinforced > last_eval
 
     def _age_days(self, concept: "Concept", now: datetime) -> float:
-        anchor = _parse_iso(concept.first_evidence_at) or _parse_iso(
+        """Concept age in *engaged* (active-conversation) days when the
+        shared clock is active and the concept has been anchored --
+        symmetric with the engagement-driven decay -- so promotion and the
+        candidate TTL advance with real interaction rather than wall-clock
+        calendar days. Falls back to wall-clock for un-anchored concepts
+        (brand-new, before their first lifecycle stamp) and whenever the
+        engagement clock is disabled / unwired. Unlike ``_engaged_days``
+        this is intentionally *not* catch-up-clamped: age must accumulate
+        without bound, it only ever gates promotion."""
+        if self._clock_active():
+            anchor = concept.first_evidence_engagement
+            if anchor is not None:
+                return self._engagement_clock.engaged_days_since(  # type: ignore[union-attr]
+                    float(anchor)
+                )
+        wall_anchor = _parse_iso(concept.first_evidence_at) or _parse_iso(
             concept.created_at
         )
-        if anchor is None:
+        if wall_anchor is None:
             return 0.0
-        return max(0.0, (now - anchor).total_seconds() / 86400.0)
+        return max(0.0, (now - wall_anchor).total_seconds() / 86400.0)
 
     def _clock_active(self) -> bool:
         return (

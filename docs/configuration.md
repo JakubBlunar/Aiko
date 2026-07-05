@@ -512,6 +512,19 @@ Counter-evidence that lowers an *active* identity concept's confidence and can s
 - `agent.concept_contradiction_per_hour_cap` *(int, `6`, min `0`)* — hourly cap on LLM verification calls for *borderline* pairs (definite heuristic hits skip the LLM). Uses its own `FactCheckRateLimiter` (`state_key='concept_contradiction.rate_state'`) so it never shares a budget with F5.
 - `agent.concept_contradiction_per_day_cap` *(int, `30`, min `0`)* — daily cap.
 
+### L15 — concept belief revision (concept → supporting-memory re-check)
+
+When L9 flips a belief to `contradicted`, the doubt flows **back down** to the memories that supported it. L3 persists a `concept --contradicts--> memory` edge and hands the concept to the read-mostly [`ConceptBeliefReviser`](../app/core/concepts/concept_belief_reviser.py), which arbitrates — per supporting memory — one of three resolutions: **(a) inaccurate** → lower its confidence; **(b) superseded** → reclassify to `past_event` with a fresh `relevance_until` (confidence untouched); **(c) keep** → no memory write. A cheap `classify_pair` gate keeps the LLM off memories that don't conflict; pinned memories are never touched. L3 stays the single writer of *concept* state — the reviser writes only *memory* state, like F1 / F5. See [`concept-lifecycle.md`](concept-lifecycle.md).
+
+- `memory.concept_belief_revision_enabled` *(bool, `true`)* — master switch. Off → L3 still writes the `contradicts` edge but never re-examines supporting memories.
+- `memory.concept_belief_revision_batch_size` *(int, `5`, min `1`)* — max concepts whose supporting memories are re-examined per lifecycle tick (rotates via `last_lifecycle_at`), so a burst of contradictions never blocks a tick.
+- `memory.concept_belief_revision_max_evidence` *(int, `6`, min `1`)* — max supporting memories re-examined per concept.
+- `memory.concept_belief_revision_confidence_penalty` *(float, `0.2`, clamped `[0, 1]`)* — confidence dropped from a memory judged **inaccurate** (resolution a).
+- `memory.concept_belief_revision_confidence_floor` *(float, `0.2`, clamped `[0, 1]`)* — the (a) cut never takes a memory below this floor (a concept never zeroes an observation).
+- `memory.concept_belief_revision_superseded_relevance_days` *(float, `7.0`, min `0`)* — grace window for a **superseded** memory (resolution b): `relevance_until = now + this` before the stale-but-true fact slides out of normal RAG.
+- `agent.concept_belief_revision_per_hour_cap` *(int, `6`, min `0`)* — hourly cap on the 3-way arbitration LLM calls (the `classify_pair` gate runs first, so only genuine conflicts spend budget). Uses its own `FactCheckRateLimiter` (`state_key='concept_belief_revision.rate_state'`) so it never shares a budget with L9 / F5.
+- `agent.concept_belief_revision_per_day_cap` *(int, `30`, min `0`)* — daily cap.
+
 ### K2 — theory-of-mind / belief tracking
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.
