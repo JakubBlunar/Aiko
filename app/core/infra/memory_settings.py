@@ -783,6 +783,15 @@ class MemorySettings:
     concept_retire_confidence_floor: float = 0.15
     concept_candidate_ttl_days: float = 21.0
     concept_identity_plasticity: float = 0.3
+    # L16 plasticity governor. Plasticity is the per-concept learning rate
+    # the L3 engine damps *every* confidence move by (accrual, decay, L9
+    # disproof, L15 revision), so a sticky core trait resists change in
+    # both directions. Per-kind defaults live on the ``ConceptKind``
+    # registry (identity uses ``concept_identity_plasticity`` above);
+    # ``concept_default_plasticity`` is the fallback band for any kind
+    # that registers no default. Relationship modulation (trust/duration
+    # loosening a boundary's plasticity) is deferred.
+    concept_default_plasticity: float = 0.5
     # L21 cold-start / anti-premature guard. Nothing is proposed or
     # surfaced while the topic graph is too sparse to support an
     # abstraction: synthesis is skipped (a manual ``force`` run still
@@ -2298,6 +2307,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 max(
                     0.0,
                     float(memory_raw.get("concept_identity_plasticity", 0.3)),
+                ),
+            ),
+            concept_default_plasticity=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_default_plasticity", 0.5)),
                 ),
             ),
             concept_min_clusters=max(

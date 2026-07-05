@@ -7,13 +7,20 @@ handful of things that actually differ between kinds. Adding a new kind
 schema migration or an ``if/elif`` ladder in the store/worker/prompt
 layers -- those all dispatch through this registry.
 
-Each kind declares four things:
+Each kind declares:
 
 - ``subject`` -- the *typical* subject the kind is about (``user`` /
   ``aiko`` / ``relationship``). Subject is orthogonal to kind: most
   kinds exist for more than one subject, so this is a default, not a
   constraint -- the per-row ``concepts.subject`` column is what actually
   varies.
+- ``plasticity_default`` -- the kind's default *inertia band* (L16), the
+  per-concept learning rate the L3 engine reads to damp confidence
+  movement in both directions (accrual, decay, disproof, revision).
+  Low = sticky / core (identity, value); high = fluid (taste,
+  affective); medium (boundary). ``None`` => the worker falls back to
+  the ``concept_default_plasticity`` setting. The L3 worker stamps this
+  onto a concept on its first evaluation.
 - ``evidence_model`` -- the *structure* of a concept's evidence, NOT a
   node type: ``set`` (unordered set of sources) / ``sequence`` (ordered
   chain) / ``recurring`` (periodic pattern) / ``meta`` (references other
@@ -68,6 +75,9 @@ class ConceptKind:
     name: str
     subject: str = "user"
     evidence_model: str = "set"
+    # L16: default plasticity band for the kind (the L3 learning rate).
+    # ``None`` => fall back to the ``concept_default_plasticity`` setting.
+    plasticity_default: float | None = None
     proposer: Callable[..., object] | None = None
     promotion_gate: Callable[..., object] | None = None
     surfacing_target: str | None = None
@@ -97,6 +107,10 @@ register_kind(
         name="identity",
         subject="user",
         evidence_model="set",
+        # L16: identity is a *core* trait band -> low plasticity (sticky
+        # for decay, disproof, *and* accrual). The ``concept_identity_plasticity``
+        # setting still overrides this in the worker for back-compat/tuning.
+        plasticity_default=0.3,
         # L3: identity uses the set-evidence promotion gate (distinct
         # sources + age-stability + confidence). The worker falls back to
         # this same gate for any kind that doesn't supply its own.

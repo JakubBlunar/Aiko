@@ -10,8 +10,10 @@ these are the stateless pieces:
   so repetition alone can't run confidence away -- the anti-bias core).
 - :func:`next_confidence` -- one incremental step: decay the stored
   confidence over the *engaged* time elapsed (damped by plasticity),
-  then, only if the concept was reinforced since we last looked, snap it
-  up to the evidence-deserved target.
+  then, only if the concept was reinforced since we last looked, move it
+  *up toward* the evidence-deserved target by a plasticity-damped step
+  (:func:`accrual_alpha`) -- so plasticity governs movement symmetrically
+  in both directions (L16).
 - :func:`set_evidence_gate` -- the ``set``-evidence promotion predicate
   (distinct sources + calendar-age stability + confidence), attached to
   the ``identity`` kind's ``promotion_gate`` slot.
@@ -55,6 +57,22 @@ def effective_halflife(halflife_days: float, plasticity: float) -> float:
     return max(1e-6, float(halflife_days) * (2.0 - p))
 
 
+def accrual_alpha(plasticity: float) -> float:
+    """Plasticity-damped accrual step: the fraction of the gap to the
+    evidence target a *reinforced* concept closes in one evaluation.
+
+    The upward sibling of :func:`effective_halflife`'s decay damping, so
+    plasticity governs confidence movement symmetrically in *both*
+    directions (L16). ``plasticity`` in [0, 1] maps to ``0.5 + 0.5*p``:
+    ``p=1`` => ``1.0`` (a full snap straight to target -- the pre-L16
+    behaviour, so high-plasticity kinds are unchanged), ``p=0`` => ``0.5``
+    (a half-step -- a sticky core trait needs several reinforced evals to
+    build up, i.e. "needs more evidence to promote").
+    """
+    p = min(1.0, max(0.0, float(plasticity)))
+    return 0.5 + 0.5 * p
+
+
 def next_confidence(
     current: float,
     *,
@@ -71,12 +89,17 @@ def next_confidence(
     last evaluated (already clamped by the caller). Decay is
     ``confidence * 0.5 ** (engaged_days / effective_halflife)``; if the
     concept gained fresh evidence since we last looked, confidence then
-    snaps *up* to ``target`` (never below what the evidence deserves).
+    moves *up toward* ``target`` by a plasticity-damped step
+    (:func:`accrual_alpha`) -- a full snap for high-plasticity kinds, a
+    partial approach for sticky (low-plasticity) ones. ``max`` guards the
+    up-move so reinforcement can only raise confidence (never drag a
+    concept already above its evidence target back down).
     """
     hl = effective_halflife(halflife_days, plasticity)
     decayed = float(current) * (0.5 ** (max(0.0, float(engaged_days)) / hl))
     if reinforced:
-        decayed = max(decayed, float(target))
+        up = decayed + (float(target) - decayed) * accrual_alpha(plasticity)
+        decayed = max(decayed, up)
     return min(cap, max(0.0, decayed))
 
 
@@ -133,6 +156,7 @@ __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
     "effective_halflife",
+    "accrual_alpha",
     "next_confidence",
     "apply_contradiction_penalty",
     "set_evidence_gate",

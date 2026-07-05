@@ -128,9 +128,9 @@ class _Ollama:
         yield self._json
 
 
-def _concept():
+def _concept(plasticity: float = 0.5):
     return SimpleNamespace(
-        concept_id=1, label=_BELIEF, rationale="",
+        concept_id=1, label=_BELIEF, rationale="", plasticity=plasticity,
     )
 
 
@@ -180,7 +180,8 @@ class ArbitrationTests(unittest.TestCase):
         out = rv.revise(_concept(), _verdict(), now=_NOW)
         self.assertEqual(out.lowered, 1)
         self.assertEqual(out.superseded, 0)
-        self.assertAlmostEqual(mem.confidence, 0.5, places=6)  # 0.7 - 0.2
+        # L16: plasticity-damped cut. p=0.5 -> 0.75x penalty: 0.7 - 0.2*0.75.
+        self.assertAlmostEqual(mem.confidence, 0.55, places=6)
         self.assertEqual(mem.metadata.get("belief_revision"), "inaccurate")
         self.assertEqual(mem.metadata.get("belief_revised_by"), 1)
         self.assertEqual(len(ms.reclassify_calls), 0)
@@ -190,11 +191,32 @@ class ArbitrationTests(unittest.TestCase):
         ms = _MemoryStore([mem])
         cs = _ConceptStore([_Edge("memory", "11")])
         ollama = _Ollama('{"resolution": "INACCURATE"}')
-        # penalty 0.2 would take 0.3 -> 0.1, but floor 0.25 clamps to 0.25.
+        # penalty 0.2 (p=0.5 -> 0.15 effective) takes 0.3 -> 0.15, but the
+        # 0.25 floor clamps it.
         rv = _reviser(cs, ms, ollama=ollama, confidence_floor=0.25)
         out = rv.revise(_concept(), _verdict(), now=_NOW)
         self.assertEqual(out.lowered, 1)
         self.assertAlmostEqual(mem.confidence, 0.25, places=6)
+
+    def test_cut_scales_with_concept_plasticity(self) -> None:
+        # L16: same base penalty, a sticky (low-plasticity) belief cuts its
+        # supporting memory less than a fluid (high-plasticity) one.
+        sticky_mem = _Mem(11, _BELIEF, confidence=0.7)
+        ms1 = _MemoryStore([sticky_mem])
+        cs1 = _ConceptStore([_Edge("memory", "11")])
+        rv1 = _reviser(cs1, ms1, ollama=_Ollama('{"resolution": "INACCURATE"}'))
+        rv1.revise(_concept(plasticity=0.0), _verdict(), now=_NOW)
+
+        plastic_mem = _Mem(11, _BELIEF, confidence=0.7)
+        ms2 = _MemoryStore([plastic_mem])
+        cs2 = _ConceptStore([_Edge("memory", "11")])
+        rv2 = _reviser(cs2, ms2, ollama=_Ollama('{"resolution": "INACCURATE"}'))
+        rv2.revise(_concept(plasticity=1.0), _verdict(), now=_NOW)
+
+        self.assertGreater(sticky_mem.confidence, plastic_mem.confidence)
+        # p=0 -> 0.5x penalty: 0.7 - 0.1 = 0.6; p=1 -> 1x: 0.7 - 0.2 = 0.5.
+        self.assertAlmostEqual(sticky_mem.confidence, 0.6, places=6)
+        self.assertAlmostEqual(plastic_mem.confidence, 0.5, places=6)
 
     def test_superseded_reclassifies_without_confidence_cut(self) -> None:
         mem = _Mem(11, _BELIEF, confidence=0.7)

@@ -130,7 +130,8 @@ target       = logistic(distinct_source_count)              # saturates, cap 0.9
 halflife     = concept_confidence_halflife_days * (2 - plasticity)   # low plasticity => stickier
 confidence  *= 0.5 ** (engaged_days / halflife)             # decay only over ENGAGED time
 if last_reinforced_at > concept.last_lifecycle_at:          # L2 attached new evidence since we last looked
-    confidence = max(confidence, target)                    # accrual: snap up to what the evidence deserves
+    alpha = 0.5 + 0.5 * plasticity                          # L16: plasticity-damped accrual step
+    confidence = max(confidence, confidence + (target - confidence) * alpha)  # approach the target (never lowers)
 confidence   = clamp(confidence, 0, 0.97)
 # then stamp concept.last_lifecycle_engagement = clock.total(); concept.last_lifecycle_at = now
 ```
@@ -152,13 +153,34 @@ Three things make this robust and anti-bias:
 - **Saturating target + distinct-source gating.** `target` is a logistic
   of the *distinct* source count (diversity, not raw repetition) capped at
   0.97, so repeating the same evidence can't run confidence away, and
-  anything without fresh distinct evidence erodes. Plasticity damps the
-  decay rate (identity defaults to `concept_identity_plasticity = 0.3`, so
-  identity is sticky).
+  anything without fresh distinct evidence erodes.
 
 **Status keys off confidence, not idle-days** — because confidence is now
 the engagement-robust signal, the dormant/retire transitions read it
 directly.
+
+### Plasticity — the movement governor (L16)
+
+`plasticity` (`[0, 1]`, per concept) is the single **learning rate** the
+engine damps *every* confidence move by, so movement is symmetric in both
+directions — a sticky core trait resists change whether it is being built,
+faded, disproven, or having its evidence re-examined:
+
+| Move | Damping | Effect of low plasticity |
+| --- | --- | --- |
+| **Decay** | `halflife *= (2 - p)` | slower fade (stickier) |
+| **Accrual** | `alpha = 0.5 + 0.5*p` (`accrual_alpha`) | partial step toward target — needs more reinforced evals to promote |
+| **L9 disproof** | `apply_contradiction_penalty` (× `0.5 + 0.5*p`) | resists a contradiction, drops less |
+| **L15 revision** | supporting-memory cut × concept `0.5 + 0.5*p` | a sticky belief revises its own evidence gently |
+
+`p=1` reproduces the pre-L16 behaviour exactly (full snap-to-target on
+accrual, full penalty on disproof), so only sub-1 kinds slow down.
+Plasticity is stamped **once, on a concept's first lifecycle eval**, from
+the per-kind default: the `ConceptKind.plasticity_default` band (identity
+= low, tuned by `concept_identity_plasticity = 0.3`), falling back to
+`concept_default_plasticity` (`0.5`) for kinds with no registered band.
+Plasticity does not itself drift, and relationship modulation (trust /
+duration loosening a boundary) is deferred (see the L16 backlog entry).
 
 ### Batched + incremental
 
