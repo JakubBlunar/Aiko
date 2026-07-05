@@ -25,19 +25,6 @@ from app.core.session.prompt_assembler import PromptAssembler, PromptTelemetry
 # ── shared fakes ──────────────────────────────────────────────────────
 
 
-def _concept(concept_id: int, label: str, confidence: float) -> SimpleNamespace:
-    return SimpleNamespace(
-        concept_id=concept_id,
-        label=label,
-        confidence=confidence,
-        plasticity=0.5,
-        kind="identity",
-        subject="user",
-        status="active",
-        last_reinforced_at=None,
-    )
-
-
 class _StoreStub:
     def __init__(self, concepts: list[SimpleNamespace]) -> None:
         self._concepts = concepts
@@ -110,41 +97,6 @@ def _concept_stub(
 
 
 # ── renderer-level trace capture ──────────────────────────────────────
-
-
-class ConceptBlockTraceTests(unittest.TestCase):
-    def test_surfaced_concepts_recorded(self) -> None:
-        stub = _concept_stub(
-            concepts=[
-                _concept(7, "understanding systems", 0.9),
-                _concept(3, "self-hosting", 0.7),
-                _concept(9, "too low", 0.2),
-            ],
-        )
-        text = InnerLifePart1Mixin._render_concept_block(stub)
-        self.assertIn("understanding systems", text)
-        trace = stub._concept_block_trace
-        self.assertEqual(trace["reason"], "surfaced")
-        ids = [row["concept_id"] for row in trace["surfaced"]]
-        self.assertEqual(ids, [7, 3])  # sorted by confidence desc, low dropped
-        self.assertIn("hedge", trace["surfaced"][0])
-        self.assertEqual(trace["surfaced"][0]["confidence"], 0.9)
-
-    def test_no_eligible_reason(self) -> None:
-        stub = _concept_stub(concepts=[_concept(1, "weak", 0.1)])
-        self.assertEqual(InnerLifePart1Mixin._render_concept_block(stub), "")
-        self.assertEqual(stub._concept_block_trace["reason"], "no_eligible")
-        self.assertEqual(stub._concept_block_trace["surfaced"], [])
-
-    def test_disabled_reason(self) -> None:
-        stub = _concept_stub(concepts=[], concepts_enabled=False)
-        self.assertEqual(InnerLifePart1Mixin._render_concept_block(stub), "")
-        self.assertEqual(stub._concept_block_trace["reason"], "disabled")
-
-    def test_block_disabled_reason(self) -> None:
-        stub = _concept_stub(concepts=[], block_enabled=False)
-        self.assertEqual(InnerLifePart1Mixin._render_concept_block(stub), "")
-        self.assertEqual(stub._concept_block_trace["reason"], "block_disabled")
 
 
 class CoactivationBlockTraceTests(unittest.TestCase):
@@ -224,16 +176,27 @@ _TRACE = {
 
 
 class ConceptTraceTelemetryTests(unittest.TestCase):
+    """The concept trace now flows from the T3 relevant_context region
+    (built fresh each turn, turn-relevance scored) rather than the retired
+    slice-cached concept block."""
+
+    def _region(self, trace: dict):
+        from app.core.session.context_budget_selector import RelevantContext
+
+        def _provider(**_kw: object) -> RelevantContext:
+            return RelevantContext(
+                text="Things:\n- x", concept_trace=dict(trace),
+            )
+
+        return _provider
+
     def test_trace_flows_to_telemetry_tagged(self) -> None:
         with _TempDb() as db:
             assembler = _make_assembler(db)
             db.add_message(
                 session_id="s1", role="user", content="hi", token_count=2,
             )
-            assembler.set_inner_life_providers(
-                concept=lambda: "Things:\n- x",
-                concept_trace=lambda: dict(_TRACE),
-            )
+            assembler.set_relevant_context_provider(self._region(_TRACE))
             _, telem = assembler.assemble_with_budget(
                 "s1", "x", context_window=4096, response_budget=256,
             )
@@ -241,49 +204,26 @@ class ConceptTraceTelemetryTests(unittest.TestCase):
             surfaced = telem.concepts_surfaced
             self.assertEqual(surfaced["reason"], "surfaced")
             self.assertEqual(surfaced["surfaced"][0]["concept_id"], 7)
-            self.assertIn("slice_cache_event", surfaced)
             self.assertFalse(surfaced["aggressive"])
             # Rides the serialised telemetry too (get_last_response_detail).
             self.assertIn("concepts_surfaced", telem.as_dict())
 
-    def test_aggressive_drops_trace_with_reason(self) -> None:
+    def test_aggressive_tags_trace(self) -> None:
+        # Under the unified budget the concept trace is reserved (floors),
+        # not dropped; it is tagged aggressive for the reader.
         with _TempDb() as db:
             assembler = _make_assembler(db)
             db.add_message(
                 session_id="s2", role="user", content="hi", token_count=2,
             )
-            assembler.set_inner_life_providers(
-                concept=lambda: "Things:\n- x",
-                concept_trace=lambda: dict(_TRACE),
-            )
+            assembler.set_relevant_context_provider(self._region(_TRACE))
             _, telem = assembler.assemble_with_budget(
                 "s2", "x", context_window=4096, response_budget=256,
                 aggressive=True,
             )
-            self.assertEqual(telem.concepts_surfaced["reason"], "aggressive")
-            self.assertEqual(telem.concepts_surfaced["surfaced"], [])
             self.assertTrue(telem.concepts_surfaced["aggressive"])
-
-    def test_trace_snapshot_rides_slice_cache(self) -> None:
-        # The captured trace is a snapshot, not a live read: mutating what
-        # the provider returns after a build must not retro-edit a cached
-        # slice (the property that makes a cache-hit report the truth).
-        with _TempDb() as db:
-            assembler = _make_assembler(db)
-            db.add_message(
-                session_id="s3", role="user", content="hi", token_count=2,
-            )
-            live = {"surfaced": [], "reason": "surfaced"}
-            assembler.set_inner_life_providers(
-                concept=lambda: "Things:\n- x",
-                concept_trace=lambda: dict(live),
-            )
-            slices = assembler.prebuild_static_slices("s3")
-            self.assertEqual(slices.concept_trace["reason"], "surfaced")
-            live["reason"] = "changed"
             self.assertEqual(
-                assembler._slice_cache["s3"].concept_trace["reason"],
-                "surfaced",
+                telem.context_budget.get("degrade_level"), 2,
             )
 
 

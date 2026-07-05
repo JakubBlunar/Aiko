@@ -7,10 +7,19 @@ on the hot path, this module starts a background fetch as soon as we have
 a partial that's long enough to be meaningful, and stashes the result in a
 small TTL cache.
 
-When the final transcript arrives, :class:`PromptAssembler` consults the
-cache before falling back to a fresh fetch. Because partials are *prefixes*
-of the final transcript, prefix-similarity is a very effective lookup
-metric — the user almost never re-types from scratch mid-utterance.
+When the final transcript arrives, the ``relevant_context`` region builder
+(:meth:`SessionController.build_relevant_context`) consults the cache via
+:meth:`lookup_pool` before falling back to a fresh embed + retrieval.
+Because partials are *prefixes* of the final transcript, prefix-similarity
+is a very effective lookup metric — the user almost never re-types from
+scratch mid-utterance.
+
+What is cached is the **shared turn embedding** plus the scored *candidate
+pool* (``RagRetriever.candidates`` — a wider pool than the surfacing cap,
+gathered **without** marking anything used). The unified context budget
+selector picks the budgeted subset from that pool on the hot path and only
+then stamps the chosen memories used, so speculative pre-fetches never
+pollute ``use_count`` / ``last_used_at`` for memories that never surface.
 
 Design constraints:
   - Must never raise on the hot path. Everything is exception-swallowed.
@@ -26,17 +35,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Iterable
-
-from app.core.rag.rag_retriever import (
-    _CONFIDENCE_DECAY_DEFAULT_FLOOR,
-    _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
-    _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
-    _FADED_DEFAULT_IDLE_DAYS,
-    _FADED_DEFAULT_SALIENCE_THRESHOLD,
-)
+from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from app.core.rag.rag_retriever import RagRetriever
     from app.core.rag.rag_store import RagHit
 
@@ -49,7 +52,7 @@ class _CachedFetch:
     query_norm: str
     query_raw: str
     hits: list["RagHit"]
-    block: str
+    embedding: "np.ndarray | None"
     fetched_at: float
     pending: bool = False
     waiters: list[threading.Event] = field(default_factory=list)
@@ -90,9 +93,10 @@ class RagPrefetcher:
     Intended lifecycle:
       - ``submit(partial_text)`` is called from ``feed_stt_partial`` (every
         ~200ms) and is debounced + length-gated.
-      - ``lookup(final_text)`` is called by ``PromptAssembler`` right
-        before the prompt build; on a cache hit, it returns the formatted
-        prompt block and the prompt build skips the live retrieval.
+      - ``lookup_pool(final_text)`` is called by the ``relevant_context``
+        region builder right before the prompt build; on a cache hit it
+        returns the shared turn embedding + scored candidate pool so the
+        hot path skips the live embed + retrieval.
       - ``shutdown()`` is called from :class:`SessionController.shutdown`.
     """
 
@@ -100,18 +104,17 @@ class RagPrefetcher:
         self,
         retriever: "RagRetriever",
         *,
+        pool_k: int = 18,
         ttl_seconds: float = 30.0,
         debounce_ms: int = 400,
         min_partial_chars: int = 8,
         similarity_threshold: float = 0.55,
         max_cached: int = 12,
-        user_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._retriever = retriever
-        # First-run identity: optional callable, evaluated per-fetch so a
-        # mid-session rename takes effect on the next pre-warm without a
-        # restart. None falls back to the formatter's generic placeholder.
-        self._user_display_name_provider = user_display_name_provider
+        # Candidate-pool size for the unified context budget: wider than the
+        # surfacing cap so the selector has room to pick a budgeted subset.
+        self._pool_k = max(1, int(pool_k))
         self._ttl = float(ttl_seconds)
         self._debounce_s = max(0.0, debounce_ms / 1000.0)
         self._min_partial_chars = max(1, int(min_partial_chars))
@@ -176,7 +179,7 @@ class RagPrefetcher:
                 query_norm=norm,
                 query_raw=text,
                 hits=[],
-                block="",
+                embedding=None,
                 fetched_at=now,
                 pending=True,
             )
@@ -205,53 +208,25 @@ class RagPrefetcher:
         recent_turns: tuple[str, ...] | None,
         exclude_session_id: str | None,
     ) -> None:
+        turns = list(recent_turns) if recent_turns else None
         try:
-            hits = self._retriever.retrieve(
+            # Embed the turn once (the expensive part we're pre-paying for)
+            # and thread that shared vector into the candidate gather so the
+            # hot path can reuse both the embedding and the pool.
+            embedding = None
+            try:
+                built = self._retriever._build_query(query, turns)
+                if built:
+                    embedding = self._retriever._embedder.embed(built)
+            except Exception:
+                log.debug("rag prefetch embed failed", exc_info=True)
+                embedding = None
+            hits = self._retriever.candidates(
                 query,
-                recent_turns=list(recent_turns) if recent_turns else None,
+                recent_turns=turns,
                 exclude_session_id=exclude_session_id,
-            )
-            name = "the user"
-            provider = self._user_display_name_provider
-            if provider is not None:
-                try:
-                    name = (provider() or "").strip() or "the user"
-                except Exception:
-                    name = "the user"
-            block = self._retriever.format_block(
-                hits,
-                user_display_name=name,
-                fade_hedge_enabled=getattr(
-                    self._retriever, "_fade_hedge_enabled", True,
-                ),
-                faded_salience_threshold=getattr(
-                    self._retriever,
-                    "_faded_salience_threshold",
-                    _FADED_DEFAULT_SALIENCE_THRESHOLD,
-                ),
-                faded_idle_days=getattr(
-                    self._retriever, "_faded_idle_days", _FADED_DEFAULT_IDLE_DAYS,
-                ),
-                confidence_time_decay_enabled=getattr(
-                    self._retriever,
-                    "_confidence_time_decay_enabled",
-                    True,
-                ),
-                confidence_decay_horizon_days=getattr(
-                    self._retriever,
-                    "_confidence_decay_horizon_days",
-                    _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
-                ),
-                confidence_decay_floor=getattr(
-                    self._retriever,
-                    "_confidence_decay_floor",
-                    _CONFIDENCE_DECAY_DEFAULT_FLOOR,
-                ),
-                confidence_decay_distant_threshold=getattr(
-                    self._retriever,
-                    "_confidence_decay_distant_threshold",
-                    _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
-                ),
+                pool_k=self._pool_k,
+                embedding=embedding,
             )
         except Exception:
             log.debug("rag prefetch retrieval failed", exc_info=True)
@@ -272,14 +247,14 @@ class RagPrefetcher:
                     query_norm=norm,
                     query_raw=query,
                     hits=hits,
-                    block=block,
+                    embedding=embedding,
                     fetched_at=time.monotonic(),
                     pending=False,
                 )
                 self._cache[norm] = entry
             else:
                 entry.hits = hits
-                entry.block = block
+                entry.embedding = embedding
                 entry.fetched_at = time.monotonic()
                 entry.pending = False
                 for ev in entry.waiters:
@@ -289,18 +264,18 @@ class RagPrefetcher:
 
     # ── lookup ──────────────────────────────────────────────────────────
 
-    def lookup(
+    def lookup_pool(
         self,
         final_text: str,
         *,
         wait_pending_seconds: float = 0.0,
-    ) -> str | None:
-        """Return a cached RAG block for ``final_text`` if recent enough.
+    ) -> "tuple[np.ndarray | None, list[RagHit]] | None":
+        """Return a cached ``(embedding, candidate_hits)`` for ``final_text``.
 
-        ``wait_pending_seconds > 0`` lets the prompt builder briefly block
+        ``wait_pending_seconds > 0`` lets the region builder briefly block
         on an in-flight fetch if no completed entry is similar enough yet.
-        Returns ``None`` on miss; the caller should then run the live
-        retriever as usual.
+        Returns ``None`` on miss; the caller should then embed + gather
+        candidates live as usual.
         """
         if self._closed:
             return None
@@ -329,7 +304,7 @@ class RagPrefetcher:
         entry, _sim = _pick_best()
         if entry is not None:
             self._stats["lookup_hit"] += 1
-            return entry.block
+            return (entry.embedding, entry.hits)
 
         if wait_pending_seconds > 0.0:
             # Find any pending entry that *could* match and wait briefly.
@@ -349,7 +324,7 @@ class RagPrefetcher:
                 entry, _sim = _pick_best()
                 if entry is not None:
                     self._stats["lookup_hit"] += 1
-                    return entry.block
+                    return (entry.embedding, entry.hits)
 
         self._stats["lookup_miss"] += 1
         return None

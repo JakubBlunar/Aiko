@@ -55,13 +55,80 @@ class PromptAssemblerHelpersMixin:
     def set_rag_retriever(self, retriever: "RagRetriever | None") -> None:
         self._rag_retriever = retriever
 
-    def set_rag_prefetch_lookup(
-        self,
-        lookup: Callable[[str], str | None] | None,
+    def set_relevant_context_provider(
+        self, provider: "Callable[..., Any] | None",
     ) -> None:
-        """Optional Phase-1b cache: if it returns a non-empty block, we'll
-        skip the live retrieval and reuse the speculative pre-fetch."""
-        self._rag_prefetch_lookup = lookup
+        """Wire the unified context-budget region builder.
+
+        The provider is called during ``assemble_with_budget`` with keyword
+        args ``user_text``, ``recent_turns``, ``session_key``,
+        ``budget_tokens`` (the reserved surfacing budget) and
+        ``degrade_level``; it returns a ``RelevantContext`` (``.text`` +
+        ``.selection`` + ``.concept_trace``). ``None`` disables the region
+        (memories / clusters / concepts simply don't surface).
+        """
+        self._relevant_context_provider = provider
+
+    def set_context_budget_sizing(
+        self,
+        *,
+        enabled: bool = True,
+        fraction: float = 0.15,
+        max_tokens: int = 4096,
+        min_tokens: int = 256,
+        history_floor_tokens: int = 1024,
+    ) -> None:
+        """Configure the surfacing-budget sizing (from memory settings).
+
+        ``fraction`` * context_window, capped at ``max_tokens``, floored at
+        ``min_tokens`` when there is room, and clamped so it never eats the
+        ``history_floor_tokens`` protected history slice.
+        """
+        self._context_budget_enabled = bool(enabled)
+        self._context_budget_fraction = max(0.0, min(0.8, float(fraction)))
+        self._context_budget_max_tokens = max(0, int(max_tokens))
+        self._context_budget_min_tokens = max(0, int(min_tokens))
+        self._context_budget_history_floor_tokens = max(
+            0, int(history_floor_tokens),
+        )
+
+    def _size_context_budget(
+        self,
+        *,
+        context_window: int,
+        budget_tokens: int,
+        system_base_tokens: int,
+        user_tokens: int,
+        aggressive: bool,
+    ) -> tuple[int, int]:
+        """Reserve the surfacing budget *before* history, and pick the
+        degradation level.
+
+        Returns ``(surfacing_budget, degrade_level)``:
+        - ``surfacing_budget`` = ``min(fraction*ctx, max_tokens)`` clamped to
+          ``[0, avail - history_floor]``, then floored at ``min_tokens`` when
+          that fits -- so it auto-scales with the window and never starves the
+          protected history slice.
+        - ``degrade_level`` 0 normal, 1 when the history floor forced the
+          budget below its target (shrink surfacing / drop weakest), 2 under
+          ``aggressive`` (floors only; history is squished harder instead).
+        """
+        if not getattr(self, "_context_budget_enabled", True):
+            return 0, 2 if aggressive else 0
+        avail = max(0, int(budget_tokens) - int(system_base_tokens) - int(user_tokens))
+        target = min(
+            int(self._context_budget_fraction * int(context_window)),
+            int(self._context_budget_max_tokens),
+        )
+        hi = max(0, avail - int(self._context_budget_history_floor_tokens))
+        surfacing = min(target, hi)
+        if hi >= int(self._context_budget_min_tokens):
+            surfacing = max(surfacing, int(self._context_budget_min_tokens))
+        surfacing = max(0, min(surfacing, hi))
+        if aggressive:
+            return surfacing, 2
+        degrade = 1 if surfacing < target else 0
+        return surfacing, degrade
 
     def set_user_display_name_provider(
         self,
@@ -110,10 +177,7 @@ class PromptAssemblerHelpersMixin:
         narrative: Callable[[], str] | None = None,
         agenda: Callable[[], str] | None = None,
         goals: Callable[[], str] | None = None,
-        interest_map: Callable[[], str] | None = None,
-        concept: Callable[[], str] | None = None,
         coactivation: Callable[[], str] | None = None,
-        concept_trace: Callable[[], dict] | None = None,
         coactivation_trace: Callable[[], dict] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
@@ -222,14 +286,8 @@ class PromptAssemblerHelpersMixin:
             self._agenda_provider = agenda
         if goals is not None:
             self._goals_provider = goals
-        if interest_map is not None:
-            self._interest_map_provider = interest_map
-        if concept is not None:
-            self._concept_provider = concept
         if coactivation is not None:
             self._coactivation_provider = coactivation
-        if concept_trace is not None:
-            self._concept_trace_provider = concept_trace
         if coactivation_trace is not None:
             self._coactivation_trace_provider = coactivation_trace
         if vocal_tone is not None:
@@ -541,12 +599,10 @@ class PromptAssemblerHelpersMixin:
         arc_block = _safe_provider(self._arc_provider)
         agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
         goals_block = "" if aggressive else _safe_provider(self._goals_provider)
-        interest_map_block = (
-            "" if aggressive else _safe_provider(self._interest_map_provider)
-        )
+        # interest_map + concept now flow through the T3 relevant_context
+        # region (built per turn in ``assemble_with_budget``), so they are no
+        # longer cached here. Only the L4 co-activation block stays.
         if aggressive:
-            concept_block = ""
-            concept_trace = {"surfaced": [], "reason": "aggressive"}
             coactivation_block = ""
             coactivation_trace = {
                 "mode": None, "quiet": None, "reason": "aggressive",
@@ -558,11 +614,6 @@ class PromptAssemblerHelpersMixin:
             # trace provider immediately after the matching text provider so
             # the dict is consistent with the text we just built, then
             # snapshot it onto the slices so it rides the cache.
-            concept_block = _safe_provider(self._concept_provider)
-            concept_trace = self._safe_trace(
-                self._concept_trace_provider,
-                {"surfaced": [], "reason": "unknown"},
-            )
             coactivation_block = _safe_provider(self._coactivation_provider)
             coactivation_trace = self._safe_trace(
                 self._coactivation_trace_provider,
@@ -589,10 +640,7 @@ class PromptAssemblerHelpersMixin:
             arc_block=arc_block,
             agenda_block=agenda_block,
             goals_block=goals_block,
-            interest_map_block=interest_map_block,
-            concept_block=concept_block,
             coactivation_block=coactivation_block,
-            concept_trace=concept_trace,
             coactivation_trace=coactivation_trace,
             built_at=time.monotonic(),
         )

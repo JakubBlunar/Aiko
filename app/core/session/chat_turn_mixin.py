@@ -590,22 +590,6 @@ class ChatTurnMixin:
         except Exception:
             log.debug("resume opener submit failed", exc_info=True)
 
-    def _lookup_prefetched_rag_block(self, user_text: str) -> str | None:
-        """Phase 1b: PromptAssembler hook into the speculative pre-fetcher.
-
-        Returns ``None`` on a miss so the assembler falls through to the
-        live retriever. Allows up to ~250ms of waiting on an in-flight
-        fetch to soak up the embedding latency that the partial just paid.
-        """
-        prefetcher = getattr(self, "_rag_prefetcher", None)
-        if prefetcher is None:
-            return None
-        try:
-            return prefetcher.lookup(user_text, wait_pending_seconds=0.25)
-        except Exception:
-            log.debug("rag prefetch lookup raised", exc_info=True)
-            return None
-
     def _recent_turn_texts(self, *, limit: int = 3) -> list[str]:
         """Return the last ``limit`` non-empty message texts for query expansion.
 

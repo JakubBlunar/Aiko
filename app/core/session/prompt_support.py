@@ -509,15 +509,23 @@ class PromptTelemetry:
     # (0.0 when gated off or skipped).
     tool_gate_event: str = "-"
     tool_pass_ms: float = 0.0
-    # L26: per-turn concept trace. ``concepts_surfaced`` mirrors
-    # ``_StaticSlices.concept_trace`` (the active user-identity concepts
-    # the L5 block put in the prompt this turn, or a ``reason`` when
-    # empty); ``coactivation_surfaced`` mirrors the L4 block's chosen mode
-    # + quiet cluster. Populated by ``assemble_with_budget`` from the
-    # (possibly slice-cached) block trace, so it reflects what actually
-    # went into the prompt rather than a fresh recompute.
+    # L26: per-turn concept trace. ``concepts_surfaced`` carries the
+    # concepts the T3 ``relevant_context`` region put in the prompt this
+    # turn (or a ``reason`` when empty), forwarded from the region result;
+    # ``coactivation_surfaced`` mirrors the L4 block's chosen mode + quiet
+    # cluster, captured from the (possibly slice-cached) block trace. Both
+    # reflect what actually went into the prompt rather than a fresh
+    # recompute.
     concepts_surfaced: dict[str, Any] = field(default_factory=dict)
     coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
+    # Unified context budget breakdown (the T3 ``relevant_context`` region):
+    # ``reserved`` / ``used_tokens`` (budget vs spend), ``degrade_level``,
+    # ``history_trimmed`` (did the reservation squish history), and a
+    # per-source ``sources`` map (chosen / tokens / top_relevance /
+    # dropped_for_*). Populated by ``assemble_with_budget`` from the
+    # selection so the last-prompt / system-prompt browser + MCP debug show
+    # exactly what surfaced and why. Empty on the no-provider path.
+    context_budget: dict[str, Any] = field(default_factory=dict)
     # The fully assembled system-prompt string that went into ``messages[0]``
     # this turn (empty on the idle frame / when no system block was built).
     # Deliberately kept OUT of ``as_dict()`` — it can be several KB, and the
@@ -575,6 +583,8 @@ class PromptTelemetry:
             # L26: per-turn concept trace.
             "concepts_surfaced": dict(self.concepts_surfaced),
             "coactivation_surfaced": dict(self.coactivation_surfaced),
+            # Unified context-budget breakdown.
+            "context_budget": dict(self.context_budget),
         }
 
 @dataclass(slots=True)
@@ -611,15 +621,15 @@ class _StaticSlices:
     arc_block: str
     agenda_block: str
     goals_block: str
-    interest_map_block: str
-    concept_block: str
+    # interest_map_block + concept_block moved to the T3 relevant_context
+    # region (turn-relevance scored + unified budget); only coactivation
+    # stays cached in the static slices this pass.
     coactivation_block: str
-    # L26: per-turn trace captured alongside the block text at build
-    # time, so a slice-cache hit still reports exactly which concepts /
-    # co-activation mode went into the prompt (the renderers don't re-run
-    # on a hit). ``{"surfaced": [...], "reason": ...}`` /
-    # ``{"mode": {...}|None, "quiet": {...}|None, "reason": ...}``.
-    concept_trace: dict
+    # L26: per-turn trace captured alongside the block text at build time,
+    # so a slice-cache hit still reports exactly which co-activation mode
+    # went into the prompt (the renderer doesn't re-run on a hit).
+    # ``{"mode": {...}|None, "quiet": {...}|None, "reason": ...}``. The
+    # concept trace now rides the relevant_context region telemetry instead.
     coactivation_trace: dict
     built_at: float
 

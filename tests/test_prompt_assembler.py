@@ -187,39 +187,40 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
                 telem.compaction_triggered or telem.history_messages_dropped > 0,
             )
 
-    def test_aggressive_mode_drops_rag_block(self) -> None:
-        """Aggressive mode skips the RAG retriever entirely."""
+    def test_aggressive_mode_reserves_floors_not_blank(self) -> None:
+        """Under the unified budget, aggressive mode keeps the reserved
+        relevant_context region (degrade_level 2, floors only) rather than
+        blanking it -- history is squished first instead."""
+        from app.core.session.context_budget_selector import RelevantContext
 
-        class _StubRag:
-            def block_for(self, *_args: object, **_kwargs: object) -> str:
-                return "Memory block: she likes sushi."
+        seen: dict[str, int] = {}
+
+        def _provider(**kw: object) -> RelevantContext:
+            seen["degrade_level"] = int(kw.get("degrade_level", -1))  # type: ignore[arg-type]
+            return RelevantContext(text="Relevant context: she likes sushi.")
 
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
-            assembler.set_rag_retriever(_StubRag())  # type: ignore[arg-type]
+            assembler.set_relevant_context_provider(_provider)
             db.add_message(
-                session_id="s4",
-                role="user",
-                content="prior",
-                token_count=2,
+                session_id="s4", role="user", content="prior", token_count=2,
             )
 
             _, telem_normal = assembler.assemble_with_budget(
-                "s4",
-                "hello",
-                context_window=4096,
-                response_budget=256,
+                "s4", "hello", context_window=4096, response_budget=256,
                 aggressive=False,
             )
-            _, telem_aggressive = assembler.assemble_with_budget(
-                "s4",
-                "hello",
-                context_window=4096,
-                response_budget=256,
+            self.assertGreater(telem_normal.rag_tokens, 0)
+            self.assertEqual(seen["degrade_level"], 0)
+
+            msgs_aggr, telem_aggr = assembler.assemble_with_budget(
+                "s4", "hello", context_window=4096, response_budget=256,
                 aggressive=True,
             )
-            self.assertGreater(telem_normal.rag_tokens, 0)
-            self.assertEqual(telem_aggressive.rag_tokens, 0)
+            # Region is still reserved (not blanked) but at floors-only.
+            self.assertGreater(telem_aggr.rag_tokens, 0)
+            self.assertEqual(seen["degrade_level"], 2)
+            self.assertIn("she likes sushi", msgs_aggr[0]["content"])
 
 
 class HardeningClipTests(unittest.TestCase):
@@ -2075,134 +2076,77 @@ class GoalsProviderTests(unittest.TestCase):
             )
 
 
-class InterestMapProviderTests(unittest.TestCase):
-    """F10e ``interest_map`` provider: lands in the system prompt next to
-    goals, silent when empty, dropped under ``aggressive=True`` (like its
-    sibling goals/agenda blocks), and registered in the T1 tier table."""
+class RelevantContextRegionTests(unittest.TestCase):
+    """Unified T3 ``relevant_context`` region (memories + clusters +
+    concepts under one budget): lands in the prompt, is silent when empty,
+    is reserved (not blanked) under ``aggressive`` at degrade_level 2, and
+    is registered as the sole T3 block."""
 
-    _CUE = "Topics you and Jacob keep coming back to:"
+    _CUE = "Relevant context sentinel"
 
-    def test_interest_map_block_lands_in_system_prompt(self) -> None:
+    def _region(self, text: str):
+        from app.core.session.context_budget_selector import RelevantContext
+
+        def _provider(**_kw: object) -> RelevantContext:
+            return RelevantContext(text=text)
+
+        return _provider
+
+    def test_region_lands_in_system_prompt(self) -> None:
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
             db.add_message(
-                session_id="im1", role="user", content="hi", token_count=2,
+                session_id="rc1", role="user", content="hi", token_count=2,
             )
-            assembler.set_inner_life_providers(
-                interest_map=lambda: (
-                    f"{self._CUE} weekend hiking, jazz piano. "
-                    "don't recite the list."
-                ),
+            assembler.set_relevant_context_provider(
+                self._region(f"{self._CUE}: she likes sushi.")
             )
-            messages, _ = assembler.assemble_with_budget(
-                "im1", "x", context_window=4096, response_budget=256,
+            messages, telem = assembler.assemble_with_budget(
+                "rc1", "x", context_window=4096, response_budget=256,
             )
             self.assertIn(self._CUE, messages[0]["content"])
-            self.assertIn("weekend hiking", messages[0]["content"])
+            self.assertGreater(telem.rag_tokens, 0)
 
-    def test_interest_map_silent_when_empty(self) -> None:
+    def test_region_silent_when_empty(self) -> None:
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
             db.add_message(
-                session_id="im2", role="user", content="hi", token_count=2,
+                session_id="rc2", role="user", content="hi", token_count=2,
             )
-            assembler.set_inner_life_providers(interest_map=lambda: "")
+            assembler.set_relevant_context_provider(self._region(""))
             messages, _ = assembler.assemble_with_budget(
-                "im2", "x", context_window=4096, response_budget=256,
+                "rc2", "x", context_window=4096, response_budget=256,
             )
             self.assertNotIn(self._CUE, messages[0]["content"])
 
-    def test_interest_map_dropped_under_aggressive_mode(self) -> None:
+    def test_region_reserved_under_aggressive(self) -> None:
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
             db.add_message(
-                session_id="im3", role="user", content="hi", token_count=2,
+                session_id="rc3", role="user", content="hi", token_count=2,
             )
-            assembler.set_inner_life_providers(
-                interest_map=lambda: f"{self._CUE} weekend hiking.",
+            assembler.set_relevant_context_provider(
+                self._region(f"{self._CUE}: kept.")
             )
-            messages, _ = assembler.assemble_with_budget(
-                "im3",
-                "x",
-                context_window=4096,
-                response_budget=256,
+            messages, telem = assembler.assemble_with_budget(
+                "rc3", "x", context_window=4096, response_budget=256,
                 aggressive=True,
-            )
-            self.assertNotIn(self._CUE, messages[0]["content"])
-
-    def test_registered_in_t1_tier_table(self) -> None:
-        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
-
-        t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
-        self.assertIn("interest_map_block", t1)
-        # Pinned ordering: right after the goals slot — both are
-        # "things Aiko is carrying" T1 cues.
-        self.assertEqual(
-            t1.index("interest_map_block"), t1.index("goals_block") + 1,
-        )
-
-
-class ConceptBlockProviderTests(unittest.TestCase):
-    """L5 concept_block lands in the system prompt (T1, right after the
-    interest map), is silent when empty, and is dropped under
-    ``aggressive=True``."""
-
-    _CUE = "Things you've come to understand about Jacob"
-
-    def test_concept_block_lands_in_system_prompt(self) -> None:
-        with _TempDb() as db:
-            assembler = _make_assembler(db, persona_text="P")
-            db.add_message(
-                session_id="cb1", role="user", content="hi", token_count=2,
-            )
-            assembler.set_inner_life_providers(
-                concept=lambda: (
-                    f"{self._CUE}:\n- You're fairly sure enjoys systems"
-                ),
-            )
-            messages, _ = assembler.assemble_with_budget(
-                "cb1", "x", context_window=4096, response_budget=256,
             )
             self.assertIn(self._CUE, messages[0]["content"])
+            self.assertEqual(
+                telem.context_budget.get("degrade_level"), 2,
+            )
 
-    def test_concept_block_silent_when_empty(self) -> None:
-        with _TempDb() as db:
-            assembler = _make_assembler(db, persona_text="P")
-            db.add_message(
-                session_id="cb2", role="user", content="hi", token_count=2,
-            )
-            assembler.set_inner_life_providers(concept=lambda: "")
-            messages, _ = assembler.assemble_with_budget(
-                "cb2", "x", context_window=4096, response_budget=256,
-            )
-            self.assertNotIn(self._CUE, messages[0]["content"])
-
-    def test_concept_block_dropped_under_aggressive_mode(self) -> None:
-        with _TempDb() as db:
-            assembler = _make_assembler(db, persona_text="P")
-            db.add_message(
-                session_id="cb3", role="user", content="hi", token_count=2,
-            )
-            assembler.set_inner_life_providers(
-                concept=lambda: f"{self._CUE}:\n- x",
-            )
-            messages, _ = assembler.assemble_with_budget(
-                "cb3",
-                "x",
-                context_window=4096,
-                response_budget=256,
-                aggressive=True,
-            )
-            self.assertNotIn(self._CUE, messages[0]["content"])
-
-    def test_registered_in_t1_after_interest_map(self) -> None:
+    def test_registered_as_sole_t3_block(self) -> None:
         from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
 
-        t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
-        self.assertIn("concept_block", t1)
-        self.assertEqual(
-            t1.index("concept_block"), t1.index("interest_map_block") + 1,
-        )
+        t3 = _PROMPT_BLOCK_TIERS["T3_rag"]
+        self.assertIn("relevant_context", t3)
+        # The retired blocks are gone from every tier.
+        for tier in _PROMPT_BLOCK_TIERS.values():
+            self.assertNotIn("interest_map_block", tier)
+            self.assertNotIn("concept_block", tier)
+            self.assertNotIn("memory_block", tier)
 
 
 class CoactivationBlockProviderTests(unittest.TestCase):
@@ -2258,13 +2202,16 @@ class CoactivationBlockProviderTests(unittest.TestCase):
             )
             self.assertNotIn(self._CUE, messages[0]["content"])
 
-    def test_registered_in_t1_after_concept_block(self) -> None:
+    def test_registered_in_t1_after_goals_block(self) -> None:
         from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
 
+        # interest_map_block + concept_block moved to the T3
+        # relevant_context region, so coactivation now follows goals_block
+        # directly in T1.
         t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
         self.assertIn("coactivation_block", t1)
         self.assertEqual(
-            t1.index("coactivation_block"), t1.index("concept_block") + 1,
+            t1.index("coactivation_block"), t1.index("goals_block") + 1,
         )
 
 
@@ -4927,8 +4874,14 @@ class PromptCachePrefixOrderingTests(unittest.TestCase):
                 content="hi", token_count=2,
             )
             if memory_block is not None:
-                assembler.set_memory_retriever(
-                    _StubMemoryRetriever(memory_block),  # type: ignore[arg-type]
+                # The T3 memory_block is now the unified relevant_context
+                # region; inject the sentinel text via the region provider so
+                # the prefix-ladder tests still exercise the T3 slot.
+                from app.core.session.context_budget_selector import (
+                    RelevantContext,
+                )
+                assembler.set_relevant_context_provider(
+                    lambda _mb=memory_block, **_kw: RelevantContext(text=_mb)
                 )
             if providers:
                 assembler.set_inner_life_providers(**providers)  # type: ignore[arg-type]

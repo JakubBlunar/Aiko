@@ -55,12 +55,6 @@ from app.core.session.prompt_assembler_helpers_mixin import (
 
 log = logging.getLogger("app.prompt_assembler")
 
-# Hardening: cap the RAG memory block at this fraction of the usable context
-# (context_window - response_budget) so a large retrieval can never crowd out
-# the persona / summary / recent history. The retriever orders hits by score,
-# so a clip drops the weakest tail first.
-_RAG_BLOCK_MAX_FRACTION = 0.30
-
 
 # ── Prompt-cache prefix-stability ladder ─────────────────────────────
 #
@@ -108,8 +102,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "arc_block",
         "agenda_block",
         "goals_block",
-        "interest_map_block",
-        "concept_block",
         "coactivation_block",
         "day_color_block",
         "anniversary_block",
@@ -121,10 +113,12 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "summary_text",
         "thread_note_text",
     ),
-    # T3 — per-turn but topic-stable. Same memories often surface on
-    # consecutive turns on the same thread.
+    # T3 — per-turn but topic-stable. The unified relevant_context region
+    # (memories + topic clusters + concepts under one turn-relevance budget,
+    # reserved before history). Same items often surface on consecutive turns
+    # on the same thread, so it still caches well in practice.
     "T3_rag": (
-        "memory_block",
+        "relevant_context",
     ),
     # T4 — ambient awareness. Hourly to per-turn changes.
     "T4_ambient": (
@@ -635,36 +629,36 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # under tight contexts. Empty until the worker bootstrap (or a
         # user / self-tag write) lands the first goal.
         self._goals_provider: Callable[[], str] | None = None
-        # F10e: "interest map" -- terse T1 line listing the top few
-        # labelled topic clusters ("the things we keep coming back to").
-        # Derived from the topic graph's live cluster map (label + size),
-        # no per-turn LLM cost. Clusters with ``goals_block`` /
-        # ``agenda_block`` in the "things Aiko is carrying" T1 group;
-        # dropped in aggressive mode alongside them. Empty until the F10a
-        # label worker has named at least one dense cluster.
-        self._interest_map_provider: Callable[[], str] | None = None
-        # L5 concept surfacing: a few high-confidence active user-identity
-        # concepts, rendered as hedged offered-not-asserted impressions.
-        # Sits with ``interest_map_block`` in the T1 group (both are
-        # slow-moving, session-stable views of "who the user is"); dropped
-        # in aggressive mode alongside it. Empty until L2/L3 have promoted
-        # at least one concept over the surface threshold.
-        self._concept_provider: Callable[[], str] | None = None
         # L4 co-activation: one hedged line naming the topics that keep
         # lighting up together in the same conversations (+ one gone quiet).
-        # Sibling of ``interest_map_block`` / ``concept_block`` in T1;
-        # dropped under aggressive pressure; silent until a clear mode
-        # exists off a mature graph.
+        # Lives in the T1 group after the goals block; dropped under
+        # aggressive pressure; silent until a clear mode exists off a mature
+        # graph. (F10e interest_map + L5 concept surfacing were folded into
+        # the T3 ``relevant_context`` region — see build_relevant_context.)
         self._coactivation_provider: Callable[[], str] | None = None
-        # L26 concept trace: optional structured-trace siblings of the
-        # concept / coactivation providers. Called immediately after the
-        # matching text provider inside ``_build_static_slices_with_history``
-        # so the dict they return (set as a side effect of the text render
-        # on the owning controller) is captured onto ``_StaticSlices`` and
-        # rides the slice cache. Return ``{"surfaced": [...], "reason": ...}``
-        # / ``{"mode": ..., "quiet": ..., "reason": ...}``.
-        self._concept_trace_provider: Callable[[], dict] | None = None
+        # L26 co-activation trace: optional structured-trace sibling of the
+        # coactivation provider. Called immediately after the text provider
+        # inside ``_build_static_slices_with_history`` so the dict it returns
+        # (set as a side effect of the text render on the owning controller)
+        # is captured onto ``_StaticSlices`` and rides the slice cache.
+        # Return ``{"mode": ..., "quiet": ..., "reason": ...}``. (The concept
+        # trace now rides back on the ``relevant_context`` region result.)
         self._coactivation_trace_provider: Callable[[], dict] | None = None
+        # Unified context budget: the T3 ``relevant_context`` region builder
+        # (owned by the session controller, which has the stores + hedging
+        # helpers) plus the sizing knobs. The provider is called during the
+        # budget math with the reserved ``budget_tokens`` + a ``degrade_level``
+        # so surfacing is reserved *before* history is packed. Sizing defaults
+        # here keep a stand-alone assemble (tests / lean wiring) functional;
+        # ``set_context_budget_sizing`` overrides from memory settings.
+        self._relevant_context_provider: (
+            Callable[..., Any] | None
+        ) = None
+        self._context_budget_enabled: bool = True
+        self._context_budget_fraction: float = 0.15
+        self._context_budget_max_tokens: int = 4096
+        self._context_budget_min_tokens: int = 256
+        self._context_budget_history_floor_tokens: int = 1024
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -875,10 +869,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             Path(self_image_path) if self_image_path is not None else None
         )
         self._self_image_cache: tuple[float, str] | None = None
-        # Phase 1b: optional cache lookup that returns a pre-fetched RAG
-        # block (formatted) for the current ``user_text``. Wired by
-        # SessionController.
-        self._rag_prefetch_lookup: Callable[[str], str | None] | None = None
         # Phase 2d: optional callable -> list[str] of top self-memories,
         # rendered as bullets after the prose self-image block.
         self._pinned_self_memories_provider: (
@@ -1066,79 +1056,21 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         arc_block = slices.arc_block
         agenda_block = slices.agenda_block
         goals_block = slices.goals_block
-        interest_map_block = slices.interest_map_block
-        concept_block = slices.concept_block
         coactivation_block = slices.coactivation_block
 
-        memory_block = ""
+        # T3 ``relevant_context`` (memories + topic clusters + concepts under
+        # a single turn-relevance token budget) is built *after* the rest of
+        # the system base is known -- see the budget block below -- so its
+        # budget can be *reserved before* history is packed. It subsumes the
+        # retired memory_block (30% clip), interest_map_block (top-N by size),
+        # and concept_block (top-N by confidence). ``relevant_context`` /
+        # ``context_budget`` fields are populated there; kept here so the
+        # telemetry references stay valid on the no-provider path.
+        relevant_context_block = ""
+        context_budget_telemetry: dict[str, Any] = {}
+        region_concept_trace: dict = {"surfaced": [], "reason": "no_provider"}
         rag_prefetch_event = "skip"
-        rag_phase_start = time.perf_counter()
-        if not aggressive:
-            # Phase 1b: try the speculative pre-fetch cache first. On a hit
-            # we skip the embed + multi-source retrieval entirely, saving
-            # ~80-300ms on the hot path. Misses fall through to live
-            # retrieval below.
-            if self._rag_prefetch_lookup is not None:
-                try:
-                    cached_block = self._rag_prefetch_lookup(user_text)
-                except Exception:
-                    log.debug("rag prefetch lookup raised", exc_info=True)
-                    cached_block = None
-                if cached_block:
-                    memory_block = cached_block
-                    rag_prefetch_event = "hit"
-                else:
-                    rag_prefetch_event = "miss"
-            # Prefer RAG (memories + messages + documents merged) when available.
-            # Falls back to legacy single-source MemoryRetriever otherwise so we
-            # stay functional on environments without LanceDB (probe failure).
-            if not memory_block and self._rag_retriever is not None:
-                try:
-                    recent_turns = [
-                        (row.content or "").strip()
-                        for row in history_msgs[-3:]
-                        if (row.content or "").strip()
-                    ]
-                    memory_block = self._rag_retriever.block_for(
-                        user_text,
-                        recent_turns=recent_turns,
-                        exclude_session_id=session_key,
-                        user_display_name=self._resolve_user_display_name(),
-                    )
-                except Exception:
-                    log.debug("rag retrieval failed", exc_info=True)
-                    memory_block = ""
-            if not memory_block and self._memory_retriever is not None:
-                try:
-                    memory_block = self._memory_retriever.block_for(
-                        user_text,
-                        user_display_name=self._resolve_user_display_name(),
-                    )
-                except Exception:
-                    log.debug("memory retrieval failed", exc_info=True)
-                    memory_block = ""
-        # P2: capture wall time of the RAG phase (prefetch lookup + live
-        # retrieval + legacy fallback). On ``aggressive=True`` builds the
-        # whole block is skipped, so ``rag_lookup_ms`` reads ~0.
-        rag_lookup_ms = (time.perf_counter() - rag_phase_start) * 1000.0
-
-        # Hardening: token-budget the RAG block so an unusually large retrieval
-        # (many long memories / document chunks) can never crowd out the
-        # persona, summary, and recent history. Cap it at a fraction of the
-        # usable context; the retriever already orders by score so the head
-        # (highest-scoring hits) is what survives a clip.
-        if memory_block:
-            rag_cap_tokens = max(
-                256,
-                int((int(context_window) - int(response_budget)) * _RAG_BLOCK_MAX_FRACTION),
-            )
-            clipped_block = clip_text_to_tokens(memory_block, rag_cap_tokens)
-            if len(clipped_block) < len(memory_block):
-                log.info(
-                    "clipped oversized RAG block: %d -> %d chars (cap=%d tokens)",
-                    len(memory_block), len(clipped_block), rag_cap_tokens,
-                )
-                memory_block = clipped_block
+        rag_lookup_ms = 0.0
 
         summary_text = ""
         if summary and summary.summary.strip():
@@ -2474,29 +2406,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # bootstrap or a manual write seeds the ring; dropped
             # in aggressive mode alongside agenda.
             system_parts.append(goals_block)
-        if interest_map_block:
-            # F10e: "interest map" -- the topic threads Aiko and the user
-            # keep returning to, derived from the topic graph's labelled
-            # clusters (no per-turn LLM cost). Lands right after goals so
-            # the "what she's carrying" cluster reads agenda -> goals ->
-            # the broader interests that frame them. Dropped in aggressive
-            # mode alongside agenda / goals; empty until the F10a label
-            # worker has named at least one dense cluster.
-            system_parts.append(interest_map_block)
-        if concept_block:
-            # L5: higher-order concepts Aiko has abstracted about the
-            # user, surfaced as hedged, offered-not-asserted impressions.
-            # Lands right after the interest map so the "who the user is"
-            # cluster reads interests -> the understandings drawn from
-            # them. Dropped in aggressive mode alongside interest_map;
-            # empty until L2/L3 promote a concept over the surface bar.
-            system_parts.append(concept_block)
+        # F10e interest_map_block + L5 concept_block used to land here (T1);
+        # both are now folded into the T3 ``relevant_context`` region so they
+        # are turn-relevance scored and share the unified budget. Removing
+        # them from T1 also makes the T0-T2 cache prefix more stable.
         if coactivation_block:
             # L4: the topics that keep co-firing in the same conversations
             # (+ one gone quiet), a hedged "current mode" read. Lands right
-            # after the concept block so the "who the user is" cluster reads
-            # interests -> abstracted understandings -> what's live together
-            # right now. Dropped in aggressive mode alongside its siblings;
+            # after the goals block (the F10e interest_map / L5 concept blocks
+            # that used to sit here moved to the T3 relevant_context region).
+            # Dropped in aggressive mode alongside its siblings;
             # empty until a clear co-activation mode exists off a mature
             # graph.
             system_parts.append(coactivation_block)
@@ -2516,13 +2435,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if thread_note_text:
             system_parts.append(thread_note_text)
 
-        # ── T3: RAG MEMORY ────────────────────────────────────────────
-        # Per-turn retrieval but topic-stable: the same surfaced
-        # memories often repeat on consecutive turns within one
-        # thread, so this layer caches well in practice even though
-        # it's nominally "rebuilt each turn".
-        if memory_block:
-            system_parts.append(memory_block)
+        # ── T3: RELEVANT CONTEXT (unified budget) ─────────────────────
+        # Per-turn retrieval but topic-stable: the same surfaced memories /
+        # clusters / concepts often repeat on consecutive turns within one
+        # thread, so this layer caches well in practice. The region text is
+        # built + inserted at THIS index in the budget block below, once the
+        # rest of the system base is known (so its budget is reserved before
+        # history).
+        t3_insert_index = len(system_parts)
 
         # ── T4: AMBIENT AWARENESS ────────────────────────────────────
         # Hourly to per-turn changes (clock, posture, foreground app).
@@ -2997,15 +2917,101 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # of the topic-graph-derived surfaces.
             system_parts.append(curiosity_gradient_block)
 
+        # ── T3 relevant_context: reserve the surfacing budget BEFORE
+        #    history is packed. Join the system BASE (everything except the
+        #    not-yet-built region) to size it, then reserve a
+        #    context-window-relative slice for the region; history gets the
+        #    remainder. On overflow history is the pressure valve (squished
+        #    first); the region only degrades as a last resort.
+        system_base = "\n\n---\n\n".join(p for p in system_parts if p)
+        system_base_tokens = (
+            estimate_tokens(system_base) + (_MESSAGE_OVERHEAD if system_base else 0)
+        )
+
+        # Budget for history = context_window - response_budget - safety -
+        # everything we already commit to (system block + region + user).
+        budget_tokens = max(
+            512,
+            int(context_window) - int(response_budget) - _SAFETY_TOKENS,
+        )
+
+        cleaned_user = (user_text or "").strip()
+        # Hardening: a single pathological user message (a pasted log / file
+        # dump) can be larger than the whole budget. Clip it to what the
+        # budget can afford after the system base, keeping a floor so a
+        # normal message is never touched.
+        if cleaned_user:
+            user_cap_tokens = max(
+                2048, budget_tokens - system_base_tokens - 512,
+            )
+            clipped_user = clip_text_to_tokens(cleaned_user, user_cap_tokens)
+            if clipped_user is not cleaned_user and len(clipped_user) < len(cleaned_user):
+                log.info(
+                    "clipped oversized user message: %d -> %d chars (cap=%d tokens)",
+                    len(cleaned_user), len(clipped_user), user_cap_tokens,
+                )
+                cleaned_user = clipped_user
+        user_tokens = (
+            estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD if cleaned_user else 0
+        )
+
+        surfacing_budget, region_degrade = self._size_context_budget(
+            context_window=int(context_window),
+            budget_tokens=budget_tokens,
+            system_base_tokens=system_base_tokens,
+            user_tokens=user_tokens,
+            aggressive=aggressive,
+        )
+        region_reserved = surfacing_budget
+        if surfacing_budget > 0 and self._relevant_context_provider is not None:
+            recent_turns = [
+                (row.content or "").strip()
+                for row in history_msgs[-3:]
+                if (row.content or "").strip()
+            ]
+            region_started = time.perf_counter()
+            try:
+                region = self._relevant_context_provider(
+                    user_text=user_text,
+                    recent_turns=recent_turns,
+                    session_key=session_key,
+                    budget_tokens=surfacing_budget,
+                    degrade_level=region_degrade,
+                )
+            except Exception:
+                log.debug("relevant_context provider raised", exc_info=True)
+                region = None
+            rag_lookup_ms = (time.perf_counter() - region_started) * 1000.0
+            if region is not None:
+                relevant_context_block = getattr(region, "text", "") or ""
+                sel = getattr(region, "selection", None)
+                if sel is not None:
+                    try:
+                        context_budget_telemetry = sel.as_dict()
+                    except Exception:
+                        context_budget_telemetry = {}
+                region_concept_trace = getattr(
+                    region, "concept_trace", region_concept_trace,
+                )
+                # The region builder owns the speculative RAG pre-fetch reuse
+                # now (memory retrieval moved out of the assembler), so the
+                # hit/miss/skip event rides back on the region object.
+                rag_prefetch_event = getattr(region, "prefetch_event", "skip")
+        if relevant_context_block:
+            system_parts.insert(t3_insert_index, relevant_context_block)
+
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 
         # Pre-build per-block telemetry. Per-block estimates use the same
         # heuristic as ``estimate_tokens`` so the sum is internally consistent
-        # with ``prompt_tokens_estimate``.
+        # with ``prompt_tokens_estimate``. ``rag_tokens`` now measures the
+        # unified relevant_context region.
         persona_tokens = estimate_tokens(persona) if persona else 0
         ambient_tokens = estimate_tokens(ambient) if ambient else 0
         mood_tokens = estimate_tokens(mood_hint) if mood_hint else 0
-        rag_tokens = estimate_tokens(memory_block) if memory_block else 0
+        rag_tokens = (
+            estimate_tokens(relevant_context_block) if relevant_context_block else 0
+        )
         summary_tokens = estimate_tokens(summary_text) if summary_text else 0
         affect_tokens = estimate_tokens(affect_block) if affect_block else 0
         circadian_tokens = estimate_tokens(circadian_block) if circadian_block else 0
@@ -3019,34 +3025,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self_image_tokens = estimate_tokens(self_image_block) if self_image_block else 0
         system_tokens = estimate_tokens(system_prompt) + (_MESSAGE_OVERHEAD if system_prompt else 0)
 
-        # Budget for history = context_window - response_budget - safety -
-        # everything we already commit to (system block + the user message).
-        budget_tokens = max(
-            512,
-            int(context_window) - int(response_budget) - _SAFETY_TOKENS,
-        )
-
-        cleaned_user = (user_text or "").strip()
-        # Hardening: a single pathological user message (a pasted log / file
-        # dump) can be larger than the whole budget, which would leave zero
-        # room for the system prompt + history and force the model to truncate
-        # server-side. Clip it to whatever the budget can afford after the
-        # system block, keeping a floor so a normal message is never touched.
-        if cleaned_user:
-            user_cap_tokens = max(
-                2048, budget_tokens - system_tokens - 512,
-            )
-            clipped_user = clip_text_to_tokens(cleaned_user, user_cap_tokens)
-            if clipped_user is not cleaned_user and len(clipped_user) < len(cleaned_user):
-                log.info(
-                    "clipped oversized user message: %d -> %d chars (cap=%d tokens)",
-                    len(cleaned_user), len(clipped_user), user_cap_tokens,
-                )
-                cleaned_user = clipped_user
-        user_tokens = (
-            estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD if cleaned_user else 0
-        )
-
         history_budget = max(
             128, budget_tokens - system_tokens - user_tokens,
         )
@@ -3055,6 +3033,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             history_budget,
             prefix_enabled=self._history_age_prefix_enabled,
         )
+
+        # Record the surfacing reservation + whether history was squished to
+        # make room (so the drawer can show "reserved N, history trimmed").
+        if context_budget_telemetry or region_reserved:
+            context_budget_telemetry = {
+                **context_budget_telemetry,
+                "reserved": int(region_reserved),
+                "degrade_level": int(region_degrade),
+                "history_trimmed": bool(dropped_count),
+            }
 
         # In aggressive mode every block has been shrunk; if we still don't
         # fit, drop more from the head of history until we do.
@@ -3128,9 +3116,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # block trace straight through to metrics, tagged with the
             # slice-cache event + aggressive flag so a reader can tell
             # "cached vs freshly built vs dropped under pressure".
+            # L26 + unified budget: the concept trace now comes from the T3
+            # relevant_context region (built fresh each turn, turn-relevance
+            # scored) rather than the retired slice-cached concept block.
             concepts_surfaced={
-                **dict(slices.concept_trace or {}),
-                "slice_cache_event": slice_event,
+                **dict(region_concept_trace or {}),
                 "aggressive": bool(aggressive),
             },
             coactivation_surfaced={
@@ -3138,6 +3128,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 "slice_cache_event": slice_event,
                 "aggressive": bool(aggressive),
             },
+            # Unified context budget: reserved vs used tokens, per-source
+            # counts / top scores / dropped-for-budget, degrade level, and
+            # whether history was squished to make room.
+            context_budget=dict(context_budget_telemetry),
             # Carry the assembled system block through so the session can
             # expose the last turn's prompt on demand (Diagnostics panel /
             # MCP debug). Not serialised into the broadcast metrics dict.

@@ -1230,6 +1230,33 @@ history behind DT4 replay)? Precision/recall target to gate a release?
 
 ## L23. Surfacing salience + selection budget
 
+> **Subsumed (shipped) by the unified context budget.** The variable-K,
+> turn-relevance-scored selection this item describes now lives in the
+> `ContextBudgetSelector` + `relevant_context` region: concepts (alongside
+> memories and topic clusters) are scored against the shared per-turn embed
+> and selected to fill a shared, context-window-relative token budget,
+> reserved before history. Per-source floors/caps/weights/min-relevance are
+> the `memory.context_budget_*` knobs. See
+> [`docs/context-budget.md`](../../docs/context-budget.md). What remains
+> genuinely open from the sketch below (deferred): the per-concept
+> **novelty/anti-nag cooldown**, **confidence×plasticity-stability** and
+> **recency-of-reinforcement** terms in the relevance blend, and the
+> **tension/drift priority override** — the current selector scores on
+> turn-relevance cosine + per-source weight only. The **always-on core
+> concept lane** (surface high-confidence concepts regardless of turn
+> relevance) has a v0 shipped — an *identity-only* pinned lane
+> (`context_budget_identity_cap` / `_min_confidence`) — and is generalised
+> to be **kind-aware** in **L27**.
+
+> **Follow-on — self-authored *style* concepts (future).** The budget is the
+> delivery vehicle for the north star: progressively lighten the fixed
+> persona prompt so Aiko is more model-agnostic and driven by remembered
+> context. The next pass is a new concept *kind* for **communication style**
+> — how detailed her replies should be, when to lead vs. follow, how much to
+> hedge — mined from the conversation and surfaced through the same
+> `relevant_context` region so it conforms to the user over time instead of
+> being hard-coded in the persona file.
+
 **Motivation.** L5 caps *how many* concepts surface but not *which*. Once the
 population grows to dozens of active concepts, "show a few" needs to mean "show
 the few that matter **for this moment**", inside a fixed prompt-token budget —
@@ -1386,3 +1413,71 @@ off / immature / aggressive. Trace snapshots are copied (not live-read) so a
 cache-hit reports exactly what was in the prompt.
 
 **Effort.** Medium (high leverage — validates every other L-entry).
+
+---
+
+## L27. Kind-aware always-on core-concept selection (generalise the identity lane)
+
+**Status: v0 shipped (identity-only), generalisation deferred.** The unified
+context budget ships an *always-on* concept lane: `build_relevant_context`
+pins up to `context_budget_identity_cap` active **`kind="identity"`** concepts
+whose confidence clears `context_budget_identity_min_confidence`, so they reach
+the brain every turn regardless of cosine to the live turn (the
+`ContextBudgetSelector` admits `pinned` candidates ahead of the relevance passes,
+exempt from the concept cap + `min_relevance`). See
+[`docs/context-budget.md`](../../docs/context-budget.md#identity-always-on-lane).
+That v0 is deliberately narrow — one kind, one flat confidence threshold. This
+entry is the generalisation.
+
+**Motivation.** Aiko's thinking and behaviour should be driven by a *balanced
+core* of high-confidence concepts across **kinds**, not just identity: who the
+user is (identity), what they and she **value** (L10), the **relationship**'s
+rituals (L7), living **beliefs** (L9), and behaviour-gating **boundaries**
+(L18). Today only identity concepts surface regardless of relevance; every other
+kind is either turn-relevance-gated or not yet mined. A *single* confidence
+threshold across all kinds is also too blunt — a 0.75 taste concept shouldn't
+be pinned as readily as a 0.75 boundary or value, which are far more
+behaviour-load-bearing. The result should feel like Aiko carries a stable sense
+of *who you both are and how she wants to behave* into every turn, then layers
+the turn-relevant recall on top.
+
+**Key files.**
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+(the `pinned` lane — extend to carry a kind/subject and per-kind balance),
+`build_relevant_context`
+([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py); today's
+identity fetch is where the kind-aware fetch replaces it),
+[`ConceptStore.list_by` / `nearest`](../../app/core/concepts/concept_store.py)
+(kind + subject filters already exist), the `ConceptKind` registry
+([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py); per-kind
+plasticity bands are the natural source of per-kind confidence bars), and the
+`memory.context_budget_*` knobs.
+
+**Sketched approach.** Generalise the pinned lane into a **kind-aware core
+selector** run before the relevance fill: (1) turn-relevant concepts win their
+slots first (as today); (2) fill the remaining concept budget with the
+highest-confidence concepts *across kinds*, not just identity; (3) **balance by
+kind and subject** so no one kind (usually identity, which is the only kind mined
+in v1) crowds out relationship / value / belief / boundary, and so both the
+user-model and Aiko's **self-model** (`subject=aiko`, L11) reach the brain —
+per-kind sub-caps / weights and a **per-kind min-confidence** (values +
+boundaries a higher bar, tastes lower), keyed off the L16 plasticity bands.
+Prefer the most abstract confidently-held concept per area (L20) so one strong
+line beats five sub-interests. Add a per-concept **anti-nag cooldown** (the
+signature/cooldown pattern) so the same core concept isn't pinned every single
+turn. Optionally let a live **tension** (L12) or fresh **drift** (L17) take
+priority (the deferred L23 override).
+
+**Depends on.** Naturally scoped by which kinds actually exist — it is identity
++ belief (L9, built) only until relationship (L7), value (L10), boundary (L18)
+and the `subject=aiko` enablement (L11) ship, at which point each new kind just
+opts into the core lane via its registry entry + a per-kind confidence bar.
+
+**Open questions.** Per-kind sub-caps + weights vs. one concept budget with a
+kind-diversity *constraint*? How to weight raw confidence against turn-relevance
+in the fill (a very-relevant taste vs. a core-but-off-topic value)? Cooldown
+horizon before a pinned core concept may re-pin? Should the per-kind
+min-confidence be a setting per kind or derived from the plasticity band?
+
+**Effort.** Medium (extends the shipped selector + region builder; grows with
+each kind that ships).

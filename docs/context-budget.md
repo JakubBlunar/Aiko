@@ -1,0 +1,212 @@
+# Unified context budget (`relevant_context`)
+
+One turn-relevance-scored selector decides what reaches Aiko's brain from her
+long-term stores each turn. It replaces three independent, mostly-not-turn-aware
+caps — memory `top_k`, the interest-map "top-N clusters by size" block, and the
+concept "top-N by confidence" block — with a single **`relevant_context`**
+region (prompt tier **T3**) that scores **memories + topic clusters + concepts**
+against one shared per-turn embedding and fills a shared token budget with a
+variable mix of all three.
+
+The budget is a **fraction of the context window** (absolute-capped), so it
+auto-scales from a 64k local model up to a large cloud window, and it is
+**reserved before history is packed**. On overflow, history is squished first
+while surfacing degrades gracefully and last.
+
+Design source: the shipped [`unified context budget`](../.cursor/plans/) plan.
+North-star context: this is the delivery vehicle for progressively lightening
+the fixed persona prompt so Aiko is more model-agnostic and driven by remembered
+context (see [Concept backlog L23](personality-backlog/concepts.md) and the
+"future style concepts" follow-on).
+
+## Data flow
+
+```mermaid
+flowchart TD
+    CTX["context_window (chat_llm / route override)"] --> SIZE["_size_context_budget: surfacing_budget = clamp(min(fraction*ctx, cap), min, avail - history_floor)"]
+    UT["user_text + recent turns"] --> PF{"RagPrefetcher warm?"}
+    PF -->|"hit: reuse embed + pool"| EMB["shared turn embedding"]
+    PF -->|"miss: embed once now"| EMB
+    EMB --> MEM["RagRetriever.candidates (pool_k, scored, not marked used)"]
+    EMB --> CL["TopicGraph.best_clusters_for (centroid cosine)"]
+    EMB --> CO["ConceptStore.nearest (active, cosine)"]
+    MEM --> SEL[ContextBudgetSelector]
+    CL --> SEL
+    CO --> SEL
+    SIZE --> SEL
+    SEL -->|"floors + weighted relevance, fits surfacing_budget"| REGION["relevant_context region (T3, reserved)"]
+    SEL --> TEL["PromptTelemetry.context_budget"]
+    REGION --> MARK["mark_surfaced(chosen memories only)"]
+    REGION --> PACK["history packed into leftover; overflow -> squish history"]
+```
+
+## Where it lives
+
+- Region builder: `SessionController.build_relevant_context`
+  ([`app/core/session/inner_life_part1.py`](../app/core/session/inner_life_part1.py))
+  — owns the stores + hedging helpers, embeds the turn once (or reuses the
+  prefetch), gathers candidates, runs the selector, renders the chosen subset,
+  and marks only the budgeted memory subset used.
+- Selector + dataclasses:
+  [`app/core/session/context_budget_selector.py`](../app/core/session/context_budget_selector.py)
+  (`ContextBudgetSelector`, `SourceBudget`, `ContextCandidate`,
+  `ContextSelection`, `RelevantContext`).
+- Sizing + integration:
+  [`app/core/session/prompt_assembler_helpers_mixin.py`](../app/core/session/prompt_assembler_helpers_mixin.py)
+  (`_size_context_budget`, `set_context_budget_sizing`,
+  `set_relevant_context_provider`) and
+  [`prompt_assembler.py`](../app/core/session/prompt_assembler.py)
+  (`assemble_with_budget` reserves the region before history).
+- Knobs: `memory.context_budget_*` in
+  [`memory_settings.py`](../app/core/infra/memory_settings.py); see
+  [`configuration.md`](configuration.md).
+
+## Sizing math (reserved before history)
+
+The assembler builds the whole system prompt **except** the region first
+(`system_base`), measures its tokens, then reserves the surfacing budget so the
+conversation is never starved by surfacing. With
+`budget_tokens = context_window - response_budget - _SAFETY_TOKENS`:
+
+```
+avail   = max(0, budget_tokens - system_base_tokens - user_tokens)
+target  = min(int(context_budget_fraction * context_window),
+              context_budget_max_tokens)
+hi      = max(0, avail - context_budget_history_floor_tokens)
+surfacing = min(target, hi)
+if hi >= context_budget_min_tokens:
+    surfacing = max(surfacing, context_budget_min_tokens)
+surfacing = clamp(surfacing, 0, hi)
+history_budget = avail - surfacing        # packed by the existing _fit_history
+```
+
+- **`target`** = the fraction of the window, hard-capped so a 200k model does
+  not try to surface "200k of memories".
+- **`hi`** = what is left after protecting the history floor — this term is what
+  guarantees the conversation never gets crowded out.
+- **`min_tokens`** floors surfacing on small windows, but only when the history
+  floor still fits (it never overrides `hi`).
+
+The region text is also **hard-clipped** to `surfacing_budget` as a final safety
+net after rendering, so per-item token estimation error can never let the region
+exceed its reservation.
+
+## Degradation ladder (overflow -> squish history first)
+
+`_size_context_budget` returns `(surfacing_budget, degrade_level)`. This inverts
+the old `aggressive` path, which blanked RAG/concepts *first*:
+
+1. **`degrade_level=0` (normal).** Reserve `target`; history shrinks to fit. When
+   history is trimmed to make room, the background summariser catches up on later
+   turns (synchronous compaction was removed in P20 — this turn just packs less
+   raw history while the T2 summary absorbs the tail).
+2. **`degrade_level=1` (history floor bit).** `avail - history_floor < target`, so
+   surfacing is clamped down toward `min_tokens`; the selector drops the
+   lowest-weighted-relevance survivors first, floors survive.
+3. **`degrade_level=2` (`aggressive`).** Keep the region at **per-source floors
+   only**, blank the ambient/detector blocks (as before), and trim history
+   harder — but do **not** fully blank `relevant_context` unless even the floors
+   don't fit. Only when `avail <= 0` (or the budget is disabled) does the region
+   render empty.
+
+## The selector
+
+`ContextBudgetSelector.select(candidates_by_source, budget_tokens, degrade_level)`:
+
+0. **Pinned always-on lane** — admit any `ContextCandidate.pinned` items first,
+   in native order, **exempt from `min_relevance` and the source `cap`** (still
+   budget-clipped). This is how the identity lane (below) enriches every turn
+   without competing for the relevance slots.
+1. **Filter** each source's non-pinned candidates by its `min_relevance`
+   (turn-relevance cosine floor) and normalise relevance to `[0,1]`.
+2. **Floors** — reserve each source's `floor` items (highest-relevance first,
+   above `min_relevance`) until its floor token cost is met, so every source gets
+   a guaranteed toehold.
+3. **Weighted greedy fill** — merge the remainder, sort by
+   `relevance * weight`, and greedily add while it fits under `budget_tokens` and
+   the per-source `cap` (the cap counts only the non-pinned relevance picks).
+4. **Degrade** — at `degrade_level >= 1` shrink the effective budget and drop the
+   lowest-weighted survivors; at `degrade_level == 2` keep floors only (pinned
+   items still survive).
+
+### Identity always-on lane
+
+Some concepts are core rather than topical — high-confidence **identity**
+concepts describing who the user is and *how Aiko wants to behave*. These rarely
+score high in cosine to a given turn, so a pure relevance selector would almost
+never surface them. `build_relevant_context` fetches up to
+`context_budget_identity_cap` active `kind="identity"` concepts whose confidence
+clears `context_budget_identity_min_confidence` (highest confidence first),
+marks them `pinned`, and dedupes them against the turn-relevant concept pool by
+`concept_id`. The selector then guarantees them (budget permitting) on top of the
+relevance picks. Set `context_budget_identity_cap = 0` to disable the lane.
+
+It returns a `ContextSelection` (chosen items per source + scores + token usage +
+dropped counts) used for rendering and telemetry. Per-source `weight` biases the
+mix — concepts default slightly above memories (`1.1` vs `1.0`) so a
+strongly-matching learned belief can win a slot, clusters slightly below (`0.9`).
+
+**Quality floors that still live below the selector** (not replaced by
+`min_relevance`, which is an *additional* turn-relevance gate): the cluster
+**min-size** gate (`TopicGraph._min_cluster_size`) and the concept **confidence /
+status** gate (only `status="active"` concepts are candidates). Clusters and
+concepts are also cold-start gated by `TopicGraph.mature()` (L21).
+
+## Speculative pre-fetch reuse
+
+The embed is the expensive part of the turn. While the user is still talking, the
+[`RagPrefetcher`](../app/core/rag/rag_prefetcher.py) embeds growing STT partials
+once and gathers the scored candidate **pool** via `RagRetriever.candidates`
+(`pool_k`, **without** marking anything used), caching the embedding + hits under
+a TTL keyed by normalised prefix.
+
+`build_relevant_context` consults it via `lookup_pool(user_text)` before doing any
+work: on a warm prefix match it reuses both the embedding and the pool (skipping
+the synchronous embed + retrieval); otherwise it embeds and gathers live. The
+memory subset that actually makes the budget is stamped used via `mark_surfaced`,
+so speculative pre-fetches never pollute `use_count` / `last_used_at` for
+memories that never surface. The hit/miss/skip outcome rides back on
+`RelevantContext.prefetch_event` into `PromptTelemetry.rag_prefetch_event`.
+
+## Observability
+
+`PromptTelemetry.context_budget` (surfaced on the last-prompt / system-prompt
+browser and MCP `get_last_response_detail`) records the resolved
+`surfacing_budget` (reserved) vs used tokens, per-source counts / tokens / top
+scores, dropped-for-budget counts, and `degrade_level`. `concepts_surfaced` and
+`rag_prefetch_event` are populated from the same region result.
+
+## Knobs
+
+All under `memory.` — full descriptions + defaults in
+[`configuration.md`](configuration.md#unified-context-budget-relevant_context-region):
+
+| Knob | Default | What |
+|---|---|---|
+| `context_budget_enabled` | `true` | master switch for the region |
+| `context_budget_fraction` | `0.15` | share of context window reserved (clamped `[0, 0.8]`) |
+| `context_budget_max_tokens` | `4096` | absolute ceiling regardless of window |
+| `context_budget_min_tokens` | `256` | floor so surfacing never vanishes on small windows |
+| `context_budget_history_floor_tokens` | `1024` | protected history slice |
+| `context_budget_memory_pool_k` | `18` | candidate pool size — now also widens the retriever's per-source fan-out so the pool genuinely honours this many (also the prefetch pool) |
+| `context_budget_{memory,cluster,concept}_floor` | `1` / `0` / `0` | guaranteed-minimum items |
+| `context_budget_{memory,cluster,concept}_cap` | `8` / `3` / `3` | hard-maximum relevance items (excludes pinned identity concepts) |
+| `context_budget_{memory,cluster,concept}_weight` | `1.0` / `0.9` / `1.1` | relevance multiplier |
+| `context_budget_{memory,cluster,concept}_min_relevance` | `0.0` / `0.30` / `0.30` | turn-relevance floor |
+| `context_budget_identity_cap` | `2` | max pinned always-on identity concepts (`0` disables the lane) |
+| `context_budget_identity_min_confidence` | `0.75` | confidence an identity concept must clear to be pinned |
+
+**Tuning for small local models.** On a 64k window the defaults reserve roughly
+`min(0.15*64k, 4096) = 4096` tokens for surfacing (minus the history-floor clamp).
+Lower `context_budget_fraction` / `context_budget_max_tokens` to leave more room
+for history + tools; raise them on a large cloud window if you want Aiko leaning
+harder on remembered context.
+
+## Retired knobs
+
+Subsumed by the above and removed (leftover keys in `config/user.json` are
+silently ignored — no migration): `agent.interest_map_enabled`,
+`agent.interest_map_max_clusters`, `agent.interest_map_min_size`,
+`agent.concept_block_enabled`, `memory.concept_surface_max_items`,
+`memory.concept_surface_min_confidence`, and the `_RAG_BLOCK_MAX_FRACTION` 30%
+memory-block clip.

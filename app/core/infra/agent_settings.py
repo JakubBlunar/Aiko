@@ -481,12 +481,10 @@ class AgentSettings:
     # cheap and never does one giant pass. Off has no effect unless
     # ``concepts_enabled`` is also on.
     concept_synthesis_enabled: bool = True
-    # L5 surfacing. When on (and ``concepts_enabled`` is on), the T1
-    # ``concept_block`` renders a few high-confidence active user-identity
-    # concepts into the system prompt as hedged, offered-not-asserted
-    # impressions so Aiko can actually *use* what she has abstracted. Off
-    # has no effect unless ``concepts_enabled`` is also on.
-    concept_block_enabled: bool = True
+    # L5 surfacing now flows through the unified T3 relevant_context region
+    # (memory.context_budget_concept_*), which is turn-relevance scored and
+    # shares the surfacing budget -- the old always-on ``concept_block``
+    # (top-N by confidence) is retired.
     # Schema v20: persist the topic graph (clusters + centroids +
     # assignments) and maintain it incrementally instead of recomputing
     # the whole O(n^2) clustering on every read. When ``True`` (default)
@@ -597,23 +595,10 @@ class AgentSettings:
     # per turn (floor 0 = disabled).
     rag_direct_recall_enabled: bool = True
     rag_direct_recall_max_messages: int = 6
-    # F10e: "interest map" prompt block. A terse T1 (semi-stable) inner-
-    # life line listing the top few labelled topic clusters by size --
-    # "the things you and the user keep coming back to" -- so Aiko carries
-    # a sense of her recurring threads without any per-turn LLM cost. Built
-    # from the live topic-graph cluster map (label + member count only, no
-    # mirror join). Each topic shows the F10a clean label once the label
-    # worker has named it, falling back to the heuristic representative
-    # summary otherwise. No-op in the non-persistent topic-graph mode.
-    # Dropped under aggressive context pressure.
-    interest_map_enabled: bool = True
-    # How many topic clusters the interest-map block lists (largest first).
-    # Clamped to a floor of 1 in the parser.
-    interest_map_max_clusters: int = 5
-    # Minimum cluster size for a topic to count as a recurring "interest"
-    # worth surfacing. Raised to the topic graph's own min_cluster_size if
-    # set lower; floor of 1 in the parser.
-    interest_map_min_size: int = 4
+    # F10e: the "interest map" prompt block (top clusters by size) is
+    # retired -- topic clusters now surface through the unified T3
+    # relevant_context region (memory.context_budget_cluster_*), ranked by
+    # turn relevance rather than raw size, under the shared budget.
     # L4 co-activation surfacing. When on (and the topic graph is
     # persistent + mature), the T1 ``coactivation_block`` renders one
     # hedged "you've been circling X / Y / Z together lately, meanwhile W
