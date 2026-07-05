@@ -556,24 +556,39 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             result.memory.vitality_rhythm_exception_chance, 1.0,
         )
 
-    def test_interest_map_settings_round_trip(self) -> None:
+    def test_context_budget_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())
-        self.assertTrue(result.agent.interest_map_enabled)
-        self.assertEqual(result.agent.interest_map_max_clusters, 5)
-        self.assertEqual(result.agent.interest_map_min_size, 4)
-        # Overrides + floors.
+        self.assertTrue(result.memory.context_budget_enabled)
+        self.assertAlmostEqual(result.memory.context_budget_fraction, 0.15)
+        self.assertEqual(result.memory.context_budget_max_tokens, 4096)
+        self.assertEqual(result.memory.context_budget_memory_cap, 8)
+        self.assertEqual(result.memory.context_budget_identity_cap, 2)
+        self.assertAlmostEqual(
+            result.memory.context_budget_identity_min_confidence, 0.75,
+        )
+        # Overrides + clamps (fraction capped at 0.8, weights floored at 0).
         path = self._write_config(
-            agent_extra={
-                "interest_map_enabled": False,
-                "interest_map_max_clusters": 0,  # below min 1
-                "interest_map_min_size": 0,      # below min 1
+            memory_extra={
+                "context_budget_enabled": False,
+                "context_budget_fraction": 5.0,      # clamped to 0.8
+                "context_budget_concept_min_relevance": -1.0,  # clamped to 0
+                "context_budget_memory_cap": 3,
+                "context_budget_identity_cap": 5,
+                "context_budget_identity_min_confidence": 2.0,  # clamped to 1
             },
         )
         result = load_settings(config_path=path)
-        self.assertFalse(result.agent.interest_map_enabled)
-        self.assertEqual(result.agent.interest_map_max_clusters, 1)
-        self.assertEqual(result.agent.interest_map_min_size, 1)
+        self.assertFalse(result.memory.context_budget_enabled)
+        self.assertAlmostEqual(result.memory.context_budget_fraction, 0.8)
+        self.assertAlmostEqual(
+            result.memory.context_budget_concept_min_relevance, 0.0,
+        )
+        self.assertEqual(result.memory.context_budget_memory_cap, 3)
+        self.assertEqual(result.memory.context_budget_identity_cap, 5)
+        self.assertAlmostEqual(
+            result.memory.context_budget_identity_min_confidence, 1.0,
+        )
 
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(

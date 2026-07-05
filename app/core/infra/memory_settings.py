@@ -809,8 +809,45 @@ class MemorySettings:
     # ``surface_max_items`` active user-identity concepts, and only those
     # whose confidence clears ``surface_min_confidence`` (kept above the
     # lifecycle dormant floor so nothing shaky is ever asserted).
-    concept_surface_max_items: int = 3
-    concept_surface_min_confidence: float = 0.55
+    # L5 concept surfacing moved to the unified context budget below
+    # (``context_budget_concept_*``): turn-relevance scored + budgeted,
+    # replacing the old top-N-by-confidence ``concept_surface_*`` knobs.
+    # ── Unified context budget (the T3 ``relevant_context`` region) ─────
+    # One turn-relevance-scored region that surfaces a variable mix of
+    # memories + topic clusters + concepts under a single shared token
+    # budget, reserved *before* history is packed. The budget is a fraction
+    # of the context window, absolute-capped, and clamped so it never eats
+    # the protected history floor -- so it auto-scales from a 64k local
+    # model up to a big cloud window. Per-source floors/caps/weights/
+    # min-relevance tune the mix. Replaces the old memory_block (30% clip),
+    # interest_map_block (top-5-by-size), and concept_block
+    # (top-3-by-confidence). See ``docs/context-budget.md``.
+    context_budget_enabled: bool = True
+    context_budget_fraction: float = 0.15
+    context_budget_max_tokens: int = 4096
+    context_budget_min_tokens: int = 256
+    context_budget_history_floor_tokens: int = 1024
+    context_budget_memory_pool_k: int = 18
+    context_budget_memory_floor: int = 1
+    context_budget_memory_cap: int = 8
+    context_budget_memory_weight: float = 1.0
+    context_budget_memory_min_relevance: float = 0.0
+    context_budget_cluster_floor: int = 0
+    context_budget_cluster_cap: int = 3
+    context_budget_cluster_weight: float = 0.9
+    context_budget_cluster_min_relevance: float = 0.30
+    context_budget_concept_floor: int = 0
+    context_budget_concept_cap: int = 3
+    context_budget_concept_weight: float = 1.1
+    context_budget_concept_min_relevance: float = 0.30
+    # Identity always-on lane: up to ``identity_cap`` active *identity*
+    # concepts whose confidence clears ``identity_min_confidence`` are pinned
+    # into the region every turn regardless of turn relevance (who the user
+    # is / how Aiko wants to behave). They bypass the concept cap +
+    # min-relevance, so they enrich on top of the turn-relevant picks. Set
+    # ``identity_cap = 0`` to disable the lane.
+    context_budget_identity_cap: int = 2
+    context_budget_identity_min_confidence: float = 0.75
     # L9 living beliefs. Counter-evidence lowers an active identity
     # concept's confidence and can step it into a revivable
     # ``contradicted`` status (distinct from a faded ``dormant``). The L3
@@ -2351,16 +2388,95 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     ),
                 ),
             ),
-            concept_surface_max_items=max(
-                0,
-                int(memory_raw.get("concept_surface_max_items", 3)),
+            context_budget_enabled=bool(
+                memory_raw.get("context_budget_enabled", True)
             ),
-            concept_surface_min_confidence=min(
+            context_budget_fraction=min(
+                0.8,
+                max(0.0, float(memory_raw.get("context_budget_fraction", 0.15))),
+            ),
+            context_budget_max_tokens=max(
+                0, int(memory_raw.get("context_budget_max_tokens", 4096))
+            ),
+            context_budget_min_tokens=max(
+                0, int(memory_raw.get("context_budget_min_tokens", 256))
+            ),
+            context_budget_history_floor_tokens=max(
+                0,
+                int(memory_raw.get("context_budget_history_floor_tokens", 1024)),
+            ),
+            context_budget_memory_pool_k=max(
+                0, int(memory_raw.get("context_budget_memory_pool_k", 18))
+            ),
+            context_budget_memory_floor=max(
+                0, int(memory_raw.get("context_budget_memory_floor", 1))
+            ),
+            context_budget_memory_cap=max(
+                0, int(memory_raw.get("context_budget_memory_cap", 8))
+            ),
+            context_budget_memory_weight=max(
+                0.0, float(memory_raw.get("context_budget_memory_weight", 1.0))
+            ),
+            context_budget_memory_min_relevance=min(
                 1.0,
                 max(
                     0.0,
                     float(
-                        memory_raw.get("concept_surface_min_confidence", 0.55)
+                        memory_raw.get("context_budget_memory_min_relevance", 0.0)
+                    ),
+                ),
+            ),
+            context_budget_cluster_floor=max(
+                0, int(memory_raw.get("context_budget_cluster_floor", 0))
+            ),
+            context_budget_cluster_cap=max(
+                0, int(memory_raw.get("context_budget_cluster_cap", 3))
+            ),
+            context_budget_cluster_weight=max(
+                0.0, float(memory_raw.get("context_budget_cluster_weight", 0.9))
+            ),
+            context_budget_cluster_min_relevance=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "context_budget_cluster_min_relevance", 0.30
+                        )
+                    ),
+                ),
+            ),
+            context_budget_concept_floor=max(
+                0, int(memory_raw.get("context_budget_concept_floor", 0))
+            ),
+            context_budget_concept_cap=max(
+                0, int(memory_raw.get("context_budget_concept_cap", 3))
+            ),
+            context_budget_concept_weight=max(
+                0.0, float(memory_raw.get("context_budget_concept_weight", 1.1))
+            ),
+            context_budget_concept_min_relevance=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "context_budget_concept_min_relevance", 0.30
+                        )
+                    ),
+                ),
+            ),
+            context_budget_identity_cap=max(
+                0, int(memory_raw.get("context_budget_identity_cap", 2))
+            ),
+            context_budget_identity_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "context_budget_identity_min_confidence", 0.75
+                        )
                     ),
                 ),
             ),

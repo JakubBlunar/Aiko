@@ -25,41 +25,50 @@ class PrefixSimilarityTests(unittest.TestCase):
         self.assertEqual(_prefix_similarity("anything", ""), 0.0)
 
 
+class _FakeEmbedder:
+    def embed(self, text: str):
+        return f"emb:{text}"
+
+
 class _FakeRetriever:
-    """Stand-in for RagRetriever that just records calls."""
+    """Stand-in for RagRetriever that just records calls.
+
+    The prefetcher now embeds the turn once (``_build_query`` +
+    ``_embedder.embed``) and gathers a scored candidate pool via
+    ``candidates`` (never marking anything used), caching the embedding +
+    hits for the hot-path region builder to reuse.
+    """
 
     def __init__(self, *, latency: float = 0.0, fail: bool = False) -> None:
         self.latency = latency
         self.fail = fail
         self.calls: list[str] = []
+        self.pool_ks: list[int] = []
         self.gate = threading.Event()
         self.gate.set()
+        self._embedder = _FakeEmbedder()
 
-    def retrieve(
+    @staticmethod
+    def _build_query(query_text: str, recent_turns=None) -> str:
+        return query_text
+
+    def candidates(
         self,
         query_text: str,
         *,
         recent_turns=None,
         exclude_session_id=None,
+        pool_k: int,
+        embedding=None,
     ):
         self.calls.append(query_text)
+        self.pool_ks.append(pool_k)
         if self.latency:
             time.sleep(self.latency)
         self.gate.wait()
         if self.fail:
             raise RuntimeError("simulated retrieval failure")
-        # Return any object — the prefetcher only forwards it to format_block.
         return [f"hit-for:{query_text}"]
-
-    @staticmethod
-    def format_block(
-        hits, *, user_display_name: str = "the user", **_kwargs,
-    ) -> str:
-        # K7: tolerate the new fade-hedge kwargs the prefetcher now
-        # threads through; the stub doesn't care about them.
-        if not hits:
-            return ""
-        return "BLOCK:" + "|".join(str(h) for h in hits)
 
 
 class RagPrefetcherTests(unittest.TestCase):
@@ -71,17 +80,22 @@ class RagPrefetcherTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail(f"prefetcher did not complete {expected} fetch(es) within {timeout}s")
 
-    def test_submit_caches_block(self) -> None:
+    def test_submit_caches_pool(self) -> None:
         retriever = _FakeRetriever()
         prefetcher = RagPrefetcher(
-            retriever, ttl_seconds=10, debounce_ms=0, min_partial_chars=4,
+            retriever, pool_k=15, ttl_seconds=10, debounce_ms=0,
+            min_partial_chars=4,
         )
         try:
             self.assertTrue(prefetcher.submit("tell me about my project"))
             self._wait_completed(prefetcher, 1)
-            block = prefetcher.lookup("tell me about my project deadline")
-            self.assertIsNotNone(block)
-            self.assertIn("BLOCK:hit-for:tell me about my project", block or "")
+            cached = prefetcher.lookup_pool("tell me about my project deadline")
+            self.assertIsNotNone(cached)
+            embedding, hits = cached  # type: ignore[misc]
+            self.assertEqual(embedding, "emb:tell me about my project")
+            self.assertIn("hit-for:tell me about my project", hits)
+            # The configured pool_k is threaded into candidates().
+            self.assertEqual(retriever.pool_ks, [15])
         finally:
             prefetcher.shutdown()
 
@@ -137,7 +151,7 @@ class RagPrefetcherTests(unittest.TestCase):
             prefetcher.submit("a query about astronomy")
             self._wait_completed(prefetcher, 1)
             # Different topic entirely.
-            self.assertIsNone(prefetcher.lookup("a question about cooking"))
+            self.assertIsNone(prefetcher.lookup_pool("a question about cooking"))
             self.assertGreaterEqual(prefetcher.stats()["lookup_miss"], 1)
         finally:
             prefetcher.shutdown()
@@ -151,7 +165,7 @@ class RagPrefetcherTests(unittest.TestCase):
             prefetcher.submit("expiring query content")
             self._wait_completed(prefetcher, 1)
             time.sleep(0.2)
-            self.assertIsNone(prefetcher.lookup("expiring query content"))
+            self.assertIsNone(prefetcher.lookup_pool("expiring query content"))
         finally:
             prefetcher.shutdown()
 
@@ -169,7 +183,7 @@ class RagPrefetcherTests(unittest.TestCase):
                     break
                 time.sleep(0.01)
             self.assertGreaterEqual(prefetcher.stats()["failed"], 1)
-            self.assertIsNone(prefetcher.lookup("query that fails"))
+            self.assertIsNone(prefetcher.lookup_pool("query that fails"))
         finally:
             prefetcher.shutdown()
 
@@ -181,11 +195,11 @@ class RagPrefetcherTests(unittest.TestCase):
         try:
             prefetcher.submit("waiting partial query")
             # Lookup is allowed to wait briefly for the in-flight fetch.
-            block = prefetcher.lookup(
+            cached = prefetcher.lookup_pool(
                 "waiting partial query and more",
                 wait_pending_seconds=0.5,
             )
-            self.assertIsNotNone(block)
+            self.assertIsNotNone(cached)
         finally:
             prefetcher.shutdown()
 
@@ -198,7 +212,7 @@ class RagPrefetcherTests(unittest.TestCase):
         self._wait_completed(prefetcher, 1)
         prefetcher.shutdown()
         # Subsequent lookups always miss.
-        self.assertIsNone(prefetcher.lookup("any partial text here"))
+        self.assertIsNone(prefetcher.lookup_pool("any partial text here"))
 
 
 if __name__ == "__main__":

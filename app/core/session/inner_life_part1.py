@@ -1180,169 +1180,6 @@ class InnerLifePart1Mixin:
             return ""
         return "\n".join(lines)
 
-    def _render_interest_map_block(self) -> str:
-        """F10e: "interest map" — the topic threads we keep coming back to.
-
-        Lists the top ``agent.interest_map_max_clusters`` labelled topic
-        clusters (largest first) as a single terse line so Aiko carries a
-        sense of her recurring threads with the user. Built from the topic
-        graph's live cluster map (label + member count only — no join back
-        to the memory mirror), so render cost is negligible even with a
-        large corpus, and it is owned by the assembler's ``_StaticSlices``
-        cache so it is paid once per listening window.
-
-        Each topic shows the F10a clean label once the
-        :class:`~app.core.conversation.topic_label_worker.ClusterLabelWorker`
-        has named it, falling back to the heuristic representative summary
-        otherwise (the densest clusters -- the ones shown -- are labelled
-        first, so the line converges on clean names quickly). Empty when
-        the feature is disabled, the topic graph is missing / non-
-        persistent, or no cluster clears the size floor.
-        """
-        if not bool(
-            getattr(self._settings.agent, "interest_map_enabled", True)
-        ):
-            return ""
-        graph = getattr(self, "_topic_graph", None)
-        if graph is None:
-            return ""
-        top_n = max(
-            1,
-            int(getattr(self._settings.agent, "interest_map_max_clusters", 5)),
-        )
-        min_size = max(
-            1,
-            int(getattr(self._settings.agent, "interest_map_min_size", 4)),
-        )
-        try:
-            entries = graph.interest_map(top_n=top_n, min_size=min_size)
-        except Exception:
-            log.debug("interest_map raised", exc_info=True)
-            return ""
-        if not entries:
-            return ""
-        labels = ", ".join(e.label for e in entries)
-        return (
-            f"Topics you and {self.user_display_name} keep coming back to: "
-            f"{labels}. These are the threads of your time together — let "
-            "them colour what you notice or bring up, but don't recite the "
-            "list."
-        )
-
-    def _render_concept_block(self) -> str:
-        """L5: a few high-confidence things Aiko has come to understand
-        about the user, offered as *impressions* rather than facts.
-
-        Surfaces the top ``concept_surface_max_items`` **active
-        user-identity** concepts (highest confidence first, only those
-        clearing ``concept_surface_min_confidence``) so Aiko can actually
-        use what she has abstracted. Each is hedged by confidence
-        (high → "fairly sure", mid → "a sense", low → "a loose
-        impression") and framed as something to hold lightly and check,
-        never assert. Personalised with the user's name. Empty (silent)
-        when the concept layer / block is disabled, the store is missing,
-        the graph is still immature, or nothing clears the bar -- so it
-        adds zero tokens until there is something worth saying.
-
-        L26: records the surfaced set (concept ids + confidence, or a
-        ``reason`` when empty) on ``self._concept_block_trace`` at
-        selection time so the per-turn concept trace reflects exactly what
-        went into the prompt (captured into ``_StaticSlices`` by the slice
-        builder, so it survives the slice cache).
-        """
-        self._concept_block_trace = {"surfaced": [], "reason": "no_eligible"}
-        if not bool(
-            getattr(self._settings.agent, "concepts_enabled", False)
-        ):
-            self._concept_block_trace["reason"] = "disabled"
-            return ""
-        if not bool(
-            getattr(self._settings.agent, "concept_block_enabled", True)
-        ):
-            self._concept_block_trace["reason"] = "block_disabled"
-            return ""
-        store = getattr(self, "_concept_store", None)
-        if store is None:
-            self._concept_block_trace["reason"] = "store_missing"
-            return ""
-        # Don't offer impressions off an immature graph (L21). Active
-        # concepts already passed L3's stricter young-graph bar, but this
-        # keeps the block quiet during cold start regardless.
-        graph = getattr(self, "_topic_graph", None)
-        if graph is not None:
-            min_clusters = int(
-                getattr(self._memory_settings, "concept_min_clusters", 6)
-            )
-            try:
-                if not graph.mature(min_clusters=min_clusters):
-                    self._concept_block_trace["reason"] = "immature"
-                    return ""
-            except Exception:
-                log.debug("concept_block maturity check raised", exc_info=True)
-        min_conf = float(
-            getattr(
-                self._memory_settings, "concept_surface_min_confidence", 0.55
-            )
-        )
-        max_items = max(
-            0,
-            int(getattr(self._memory_settings, "concept_surface_max_items", 3)),
-        )
-        if max_items <= 0:
-            self._concept_block_trace["reason"] = "max_items_zero"
-            return ""
-        try:
-            concepts = store.list_by(
-                status="active", subject="user", kind="identity",
-            )
-        except Exception:
-            log.debug("concept_block list_by raised", exc_info=True)
-            self._concept_block_trace["reason"] = "list_error"
-            return ""
-        eligible = [
-            c
-            for c in concepts
-            if float(c.confidence) >= min_conf and (c.label or "").strip()
-        ]
-        if not eligible:
-            self._concept_block_trace["reason"] = "no_eligible"
-            return ""
-        eligible.sort(key=lambda c: float(c.confidence), reverse=True)
-        surfaced = eligible[:max_items]
-        surfaced_trace: list[dict] = []
-        lines: list[str] = []
-        for c in surfaced:
-            hedge = self._hedge_for_confidence(c.confidence)
-            support = self._concept_supporting_labels(c.concept_id)
-            grounding = self._concept_grounding_phrase(support)
-            lines.append(f"- {hedge} {c.label.strip()}{grounding}")
-            surfaced_trace.append({
-                "concept_id": int(c.concept_id),
-                "label": c.label.strip(),
-                "confidence": round(float(c.confidence), 4),
-                "plasticity": round(float(c.plasticity), 4),
-                "kind": c.kind,
-                "subject": c.subject,
-                "hedge": hedge,
-                # L9: living-belief metadata for the per-turn trace (not
-                # spoken -- "last reinforced" is human-facing).
-                "last_reinforced_at": c.last_reinforced_at,
-                "supporting": support,
-            })
-        self._concept_block_trace = {
-            "surfaced": surfaced_trace,
-            "reason": "surfaced",
-        }
-        joined = "\n".join(lines)
-        user_name = self.user_display_name
-        return (
-            f"Things you've come to understand about {user_name} over time "
-            "(hold these lightly — they're impressions you've built, not "
-            "facts; let them shape how you read " + user_name + ", and if "
-            "one comes up, offer it gently and stay open to being wrong):\n"
-            + joined
-        )
-
     @staticmethod
     def _hedge_for_confidence(confidence: float) -> str:
         """Confidence → offered-not-asserted lead-in for a surfaced
@@ -1411,6 +1248,372 @@ class InnerLifePart1Mixin:
         if len(clean) == 1:
             return f" — it keeps surfacing around {clean[0]}"
         return f" — it keeps surfacing around {clean[0]} and {clean[1]}"
+
+    # ── Unified context budget (T3 relevant_context region) ────────────
+
+    def build_relevant_context(
+        self,
+        *,
+        user_text: str,
+        recent_turns: list[str] | None,
+        session_key: str,
+        budget_tokens: int,
+        degrade_level: int = 0,
+    ) -> "RelevantContext":
+        """Build the single turn-relevance-scored ``relevant_context`` region.
+
+        Embeds the turn once, gathers candidate memories / topic clusters /
+        concepts against that shared vector, runs the
+        :class:`ContextBudgetSelector` under the reserved ``budget_tokens``
+        (with ``degrade_level`` for the overflow ladder), then renders the
+        chosen subset through the existing memory / concept / cluster
+        renderers. Marks only the *chosen* memory subset used. The composed
+        text is hard-clipped to ``budget_tokens`` as a final safety net so
+        the region can never exceed its reservation regardless of per-item
+        estimation error.
+        """
+        from app.core.session.context_budget_selector import (
+            ContextBudgetSelector,
+            ContextCandidate,
+            RelevantContext,
+            SourceBudget,
+        )
+        from app.llm.token_utils import estimate_tokens
+        from app.core.session.prompt_support import clip_text_to_tokens
+
+        ms = self._memory_settings
+        if not bool(getattr(ms, "context_budget_enabled", True)):
+            return RelevantContext(reason="disabled")
+        budget_tokens = max(0, int(budget_tokens))
+        if budget_tokens <= 0:
+            return RelevantContext(reason="no_budget")
+
+        rag = getattr(self, "_rag_retriever", None)
+        embedder = getattr(self, "_embedder", None)
+        name = self.user_display_name
+
+        # Speculative pre-fetch reuse (Phase 1b): while the user was still
+        # talking the RagPrefetcher may have already embedded this turn and
+        # gathered its candidate pool. On a warm prefix match we reuse both
+        # and skip the synchronous embed + retrieval on the hot path.
+        prefetcher = getattr(self, "_rag_prefetcher", None)
+        prefetch_event = "skip"
+        embedding = None
+        pooled_hits: list | None = None
+        if prefetcher is not None:
+            try:
+                cached = prefetcher.lookup_pool(user_text, wait_pending_seconds=0.25)
+            except Exception:
+                log.debug("relevant_context: prefetch lookup raised", exc_info=True)
+                cached = None
+            if cached is not None:
+                prefetch_event = "hit"
+                embedding, pooled_hits = cached
+            else:
+                prefetch_event = "miss"
+
+        # Shared turn embedding (embed once, thread to all three sources).
+        # Reused from the prefetch on a hit; otherwise computed here.
+        if embedding is None and embedder is not None and rag is not None:
+            try:
+                query = rag._build_query(user_text, recent_turns)
+                if query:
+                    embedding = embedder.embed(query)
+            except Exception:
+                log.debug("relevant_context: shared embed failed", exc_info=True)
+                embedding = None
+
+        # ── candidate gathering ─────────────────────────────────────────
+        mem_cands: list[ContextCandidate] = []
+        mem_hit_by_id: dict[int, object] = {}
+        if rag is not None:
+            if pooled_hits is not None:
+                hits = pooled_hits
+            else:
+                try:
+                    pool_k = max(0, int(getattr(ms, "context_budget_memory_pool_k", 18)))
+                    hits = rag.candidates(
+                        user_text,
+                        recent_turns=recent_turns,
+                        exclude_session_id=session_key,
+                        pool_k=pool_k,
+                        embedding=embedding,
+                    )
+                except Exception:
+                    log.debug("relevant_context: memory candidates failed", exc_info=True)
+                    hits = []
+            for i, hit in enumerate(hits):
+                text = (getattr(hit, "text", "") or "").strip()
+                if not text:
+                    continue
+                cost = estimate_tokens(text[:240]) + 3
+                rel = min(1.0, max(0.0, float(getattr(hit, "score", 0.0))))
+                cand = ContextCandidate(
+                    source="memory", relevance=rel, tokens=cost,
+                    order=i, payload=hit, key=f"m{i}",
+                )
+                mem_hit_by_id[id(cand)] = hit
+                mem_cands.append(cand)
+
+        # Clusters + concepts are cold-start gated by graph maturity (L21),
+        # matching the retired interest_map / concept blocks.
+        cluster_cands: list[ContextCandidate] = []
+        concept_cands: list[ContextCandidate] = []
+        graph = getattr(self, "_topic_graph", None)
+        store = getattr(self, "_concept_store", None)
+        mature = True
+        if graph is not None:
+            min_clusters = int(getattr(ms, "concept_min_clusters", 6))
+            try:
+                mature = bool(graph.mature(min_clusters=min_clusters))
+            except Exception:
+                log.debug("relevant_context: maturity check raised", exc_info=True)
+                mature = True
+
+        if embedding is not None and mature and graph is not None:
+            cap = max(0, int(getattr(ms, "context_budget_cluster_cap", 3)))
+            try:
+                rows = graph.best_clusters_for(
+                    embedding, top_n=max(cap * 2, 4), min_sim=0.0,
+                )
+            except Exception:
+                log.debug("relevant_context: cluster candidates failed", exc_info=True)
+                rows = []
+            for i, (cid, label, sim) in enumerate(rows):
+                label = (label or "").strip()
+                if not label:
+                    continue
+                cost = estimate_tokens(label) + 2
+                cluster_cands.append(ContextCandidate(
+                    source="cluster", relevance=float(sim), tokens=cost,
+                    order=i, payload=(int(cid), label, float(sim)),
+                    key=f"c{cid}",
+                ))
+
+        # Identity always-on lane: high-confidence *identity* concepts (who
+        # the user is / how Aiko wants to behave) are pinned so they enrich
+        # every turn regardless of cosine to the live query. They bypass the
+        # relevance floor + concept cap in the selector and are rendered
+        # first. Deduped against the turn-relevant pool below by concept_id.
+        pinned_ids: set[int] = set()
+        if mature and store is not None:
+            id_cap = max(0, int(getattr(ms, "context_budget_identity_cap", 2)))
+            id_min = float(
+                getattr(ms, "context_budget_identity_min_confidence", 0.75)
+            )
+            if id_cap > 0:
+                try:
+                    identity = store.list_by(status="active", kind="identity")
+                except Exception:
+                    log.debug(
+                        "relevant_context: identity fetch failed", exc_info=True
+                    )
+                    identity = []
+                identity = [
+                    c for c in identity
+                    if float(getattr(c, "confidence", 0.0)) >= id_min
+                ]
+                identity.sort(
+                    key=lambda c: float(getattr(c, "confidence", 0.0)),
+                    reverse=True,
+                )
+                for i, concept in enumerate(identity[:id_cap]):
+                    label = (getattr(concept, "label", "") or "").strip()
+                    if not label:
+                        continue
+                    cid = int(getattr(concept, "concept_id", 0))
+                    pinned_ids.add(cid)
+                    cost = estimate_tokens(label) + 16
+                    concept_cands.append(ContextCandidate(
+                        source="concept",
+                        relevance=float(getattr(concept, "confidence", 0.0)),
+                        tokens=cost, order=i, payload=concept,
+                        key=f"k{cid}", pinned=True,
+                    ))
+
+        if embedding is not None and mature and store is not None:
+            cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
+            try:
+                pairs = store.nearest(
+                    embedding, status="active", k=max(cap * 2, 6),
+                )
+            except Exception:
+                log.debug("relevant_context: concept candidates failed", exc_info=True)
+                pairs = []
+            for i, (concept, cos) in enumerate(pairs):
+                cid = int(getattr(concept, "concept_id", 0))
+                if cid in pinned_ids:
+                    continue
+                label = (getattr(concept, "label", "") or "").strip()
+                if not label:
+                    continue
+                cost = estimate_tokens(label) + 16
+                concept_cands.append(ContextCandidate(
+                    source="concept", relevance=float(cos), tokens=cost,
+                    order=1000 + i, payload=concept,
+                    key=f"k{cid or i}",
+                ))
+
+        # ── budgeted selection ──────────────────────────────────────────
+        selector = ContextBudgetSelector({
+            "memory": SourceBudget(
+                floor=int(getattr(ms, "context_budget_memory_floor", 1)),
+                cap=int(getattr(ms, "context_budget_memory_cap", 8)),
+                weight=float(getattr(ms, "context_budget_memory_weight", 1.0)),
+                min_relevance=float(
+                    getattr(ms, "context_budget_memory_min_relevance", 0.0)
+                ),
+            ),
+            "cluster": SourceBudget(
+                floor=int(getattr(ms, "context_budget_cluster_floor", 0)),
+                cap=int(getattr(ms, "context_budget_cluster_cap", 3)),
+                weight=float(getattr(ms, "context_budget_cluster_weight", 0.9)),
+                min_relevance=float(
+                    getattr(ms, "context_budget_cluster_min_relevance", 0.30)
+                ),
+            ),
+            "concept": SourceBudget(
+                floor=int(getattr(ms, "context_budget_concept_floor", 0)),
+                cap=int(getattr(ms, "context_budget_concept_cap", 3)),
+                weight=float(getattr(ms, "context_budget_concept_weight", 1.1)),
+                min_relevance=float(
+                    getattr(ms, "context_budget_concept_min_relevance", 0.30)
+                ),
+            ),
+        })
+        selection = selector.select(
+            {
+                "memory": mem_cands,
+                "cluster": cluster_cands,
+                "concept": concept_cands,
+            },
+            budget_tokens=budget_tokens,
+            degrade_level=degrade_level,
+        )
+
+        # ── rendering ────────────────────────────────────────────────────
+        sections: list[str] = []
+
+        chosen_mem = sorted(
+            selection.source("memory").chosen, key=lambda c: c.order,
+        )
+        chosen_hits = [c.payload for c in chosen_mem]
+        if chosen_hits and rag is not None:
+            try:
+                mem_block = rag.format_hits(chosen_hits, user_display_name=name)
+            except Exception:
+                log.debug("relevant_context: format_hits raised", exc_info=True)
+                mem_block = ""
+            if mem_block:
+                sections.append(mem_block)
+
+        concept_pairs = [c.payload for c in sorted(
+            selection.source("concept").chosen, key=lambda c: c.order,
+        )]
+        concept_block, concept_trace = self._render_relevant_concepts(concept_pairs)
+        if concept_block:
+            sections.append(concept_block)
+
+        cluster_rows = [c.payload for c in sorted(
+            selection.source("cluster").chosen, key=lambda c: c.order,
+        )]
+        cluster_block = self._render_relevant_clusters(cluster_rows)
+        if cluster_block:
+            sections.append(cluster_block)
+
+        text = "\n\n".join(s for s in sections if s)
+
+        # K-time2 anti-confabulation guard for an empty retrospective window
+        # (candidates() stamps the parsed window even without mark_used).
+        if rag is not None:
+            try:
+                note = rag.time_window_guard_note()
+            except Exception:
+                note = None
+            if note:
+                text = f"{text}\n{note}".strip() if text else note
+
+        # Hard ceiling: never exceed the reservation, whatever the per-item
+        # estimates said.
+        if text:
+            text = clip_text_to_tokens(text, budget_tokens)
+
+        # Mark only the budgeted memory subset used (recency / revival).
+        if rag is not None and chosen_hits:
+            try:
+                rag.mark_surfaced(chosen_hits)
+            except Exception:
+                log.debug("relevant_context: mark_surfaced raised", exc_info=True)
+
+        return RelevantContext(
+            text=text,
+            selection=selection,
+            concept_trace=concept_trace,
+            reason="ok" if text else "empty",
+            prefetch_event=prefetch_event,
+        )
+
+    def _render_relevant_clusters(
+        self, rows: list[tuple[int, str, float]],
+    ) -> str:
+        """Render the budget-chosen topic clusters as one hedged line.
+
+        Turn-relevant (nearest the live query by centroid cosine), unlike the
+        retired interest_map block which surfaced the largest clusters
+        regardless of the turn.
+        """
+        labels = [label for (_cid, label, _sim) in rows if (label or "").strip()]
+        if not labels:
+            return ""
+        joined = ", ".join(labels)
+        name = self.user_display_name
+        return (
+            f"Threads close to what you and {name} are on right now: {joined}. "
+            "Let them colour what you notice or bring up, but don't recite the "
+            "list."
+        )
+
+    def _render_relevant_concepts(
+        self, concepts: list,
+    ) -> tuple[str, dict]:
+        """Render the budget-chosen concepts as hedged impressions, reusing
+        the L5 confidence hedging + evidence grounding. Returns
+        ``(text, trace)`` where the trace mirrors the retired concept block's
+        structured trace for the per-turn telemetry."""
+        if not concepts:
+            return "", {"surfaced": [], "reason": "no_eligible"}
+        lines: list[str] = []
+        surfaced_trace: list[dict] = []
+        for c in concepts:
+            label = (getattr(c, "label", "") or "").strip()
+            if not label:
+                continue
+            hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
+            support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
+            grounding = self._concept_grounding_phrase(support)
+            lines.append(f"- {hedge} {label}{grounding}")
+            surfaced_trace.append({
+                "concept_id": int(getattr(c, "concept_id", 0)),
+                "label": label,
+                "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
+                "plasticity": round(float(getattr(c, "plasticity", 0.0)), 4),
+                "kind": getattr(c, "kind", None),
+                "subject": getattr(c, "subject", None),
+                "hedge": hedge,
+                "last_reinforced_at": getattr(c, "last_reinforced_at", None),
+                "supporting": support,
+            })
+        if not lines:
+            return "", {"surfaced": [], "reason": "no_eligible"}
+        name = self.user_display_name
+        text = (
+            f"Things you've come to understand about {name} over time "
+            "(hold these lightly — they're impressions you've built, not "
+            "facts; let them shape how you read " + name + ", and if "
+            "one comes up, offer it gently and stay open to being wrong):\n"
+            + "\n".join(lines)
+        )
+        return text, {"surfaced": surfaced_trace, "reason": "surfaced"}
 
     def _render_coactivation_block(self) -> str:
         """L4: the topics that keep lighting up together right now, plus one

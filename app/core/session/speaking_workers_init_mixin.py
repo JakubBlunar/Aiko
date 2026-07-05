@@ -621,13 +621,11 @@ class SpeakingWorkersInitMixin:
             relationship=self._render_relationship_block,
             agenda=self._render_agenda_block,
             goals=self._render_goals_block,
-            interest_map=self._render_interest_map_block,
-            concept=self._render_concept_block,
+            # interest_map + concept now flow through the T3 relevant_context
+            # region (set_relevant_context_provider), turn-relevance scored
+            # under the unified budget -- no longer wired as standalone T1
+            # blocks. Only the L4 coactivation block stays here.
             coactivation=self._render_coactivation_block,
-            # L26: structured-trace siblings. Read the slot the matching
-            # renderer stamped this build so the assembler can capture what
-            # actually entered the prompt onto the (cacheable) slices.
-            concept_trace=lambda: getattr(self, "_concept_block_trace", None),
             coactivation_trace=(
                 lambda: getattr(self, "_coactivation_block_trace", None)
             ),
@@ -713,6 +711,27 @@ class SpeakingWorkersInitMixin:
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
         )
+        # Unified context budget: wire the T3 relevant_context region builder
+        # + its sizing knobs. The builder gathers turn-relevance-scored
+        # memories / clusters / concepts and fills the reserved surfacing
+        # budget; the assembler reserves that budget before packing history.
+        try:
+            self._prompt_assembler.set_relevant_context_provider(
+                self.build_relevant_context,
+            )
+            _ms = getattr(self, "_memory_settings", None)
+            if _ms is not None:
+                self._prompt_assembler.set_context_budget_sizing(
+                    enabled=bool(getattr(_ms, "context_budget_enabled", True)),
+                    fraction=float(getattr(_ms, "context_budget_fraction", 0.15)),
+                    max_tokens=int(getattr(_ms, "context_budget_max_tokens", 4096)),
+                    min_tokens=int(getattr(_ms, "context_budget_min_tokens", 256)),
+                    history_floor_tokens=int(
+                        getattr(_ms, "context_budget_history_floor_tokens", 1024)
+                    ),
+                )
+        except Exception:
+            log.debug("relevant_context wiring failed", exc_info=True)
         # K16: register the grounding-line mode so the assembler knows
         # which granular blocks to suppress on each turn. Idempotent;
         # safe to re-call on settings reload.

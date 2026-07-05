@@ -786,7 +786,7 @@ class RagRetriever:
         return hits
 
     def _search_all_sources(
-        self, embedding: Sequence[float],
+        self, embedding: Sequence[float], *, per_source_k: int | None = None,
     ) -> tuple[list[RagHit], list[RagHit], list[RagHit]]:
         """Run the (up to) three per-source Lance searches concurrently.
 
@@ -796,8 +796,14 @@ class RagRetriever:
         enabled searches to ``_search_executor`` and joins; when the pool
         is gone (post-``close``) or only one source is active it runs
         inline so behaviour is identical minus the parallelism.
+
+        ``per_source_k`` overrides the default per-source fan-out. The
+        unified context-budget pool (:meth:`candidates`) passes its
+        ``pool_k`` here so the candidate pool genuinely widens with the
+        configured pool size instead of being silently capped at the small
+        default the plain ``retrieve`` top-k uses.
         """
-        k = self._per_source_top_k
+        k = self._per_source_top_k if per_source_k is None else max(1, int(per_source_k))
         thr = self._score_threshold
 
         def _mem() -> list[RagHit]:
@@ -839,6 +845,9 @@ class RagRetriever:
         *,
         recent_turns: Iterable[str] | None = None,
         exclude_session_id: str | None = None,
+        _limit: int | None = None,
+        _embedding: "np.ndarray | None" = None,
+        _mark_used: bool = True,
     ) -> list[RagHit]:
         """Return up to ``top_k`` merged hits across all sources.
 
@@ -846,17 +855,30 @@ class RagRetriever:
         widen the query (concatenated). This dramatically improves retrieval
         on follow-up questions that share little surface form with the prior
         turn (e.g. "what did I say earlier?").
+
+        The leading-underscore keyword args are the shared entrypoint for
+        :meth:`candidates` (the unified context-budget pool) and are not part
+        of the public contract: ``_limit`` overrides the ``top_k`` cut,
+        ``_embedding`` supplies a precomputed shared turn vector (skips the
+        embed), and ``_mark_used=False`` defers the ``mark_used`` /
+        ``last_surfaced_memory_ids`` snapshot to the caller so only the
+        *budgeted subset* (via :meth:`mark_surfaced`) is stamped, not the
+        whole pool.
         """
-        if self._top_k <= 0:
+        limit = self._top_k if _limit is None else max(0, int(_limit))
+        if limit <= 0:
             return []
-        query = self._build_query(query_text, recent_turns)
-        if not query:
-            return []
-        try:
-            embedding = self._embedder.embed(query)
-        except Exception:
-            log.debug("rag retriever: embed failed", exc_info=True)
-            return []
+        if _embedding is not None:
+            embedding = _embedding
+        else:
+            query = self._build_query(query_text, recent_turns)
+            if not query:
+                return []
+            try:
+                embedding = self._embedder.embed(query)
+            except Exception:
+                log.debug("rag retriever: embed failed", exc_info=True)
+                return []
 
         # K1 — pre-fetch active goal vectors once per retrieval call so
         # the per-hit alignment cosine check below is a cheap O(num_goals)
@@ -890,7 +912,12 @@ class RagRetriever:
         # Lance frees the GIL during the ANN query) so their latencies
         # max instead of summing. The per-source scoring below is cheap
         # CPU and stays sequential on the turn thread.
-        mem_hits, msg_hits, doc_hits = self._search_all_sources(embedding)
+        # Widen the per-source fan-out to the requested pool size so the
+        # unified budget pool (``candidates`` passes ``_limit=pool_k``) is
+        # not starved by the small plain-``retrieve`` per-source default.
+        mem_hits, msg_hits, doc_hits = self._search_all_sources(
+            embedding, per_source_k=max(self._per_source_top_k, limit),
+        )
 
         # K-time2 — parse a relative-time window from the *raw* user text
         # (not the recent-turns-expanded query, which could carry a stale
@@ -1213,7 +1240,7 @@ class RagRetriever:
         # F10b — cluster-aware diversity. Cap how many of the top-k may
         # come from one topic cluster, backfilling from the deferred
         # overflow so we never return fewer hits than the plain cut would.
-        unique = self._select_diverse(candidates)
+        unique = self._select_diverse(candidates, limit=limit)
 
         # F10c — topic multi-hop expansion. If this turn landed strongly on
         # a cluster, append a couple of its sibling members (beyond the
@@ -1262,18 +1289,78 @@ class RagRetriever:
         # SessionController can run the post-turn revival check (keyword
         # overlap between Aiko's reply and each surfaced memory) before
         # the next retrieve() clobbers the list.
-        self._last_surfaced_memory_ids = list(ids)
         # K-time2 — snapshot the parsed window + how many hits fell inside
         # it so block_for can decide whether to add the anti-confabulation
-        # guard for an empty retrospective window.
+        # guard for an empty retrospective window. Always stamped (the guard
+        # is orthogonal to which subset is finally surfaced).
         self._last_time_window = time_window
         self._last_time_window_hit_count = time_window_hits
+        # ``_mark_used=False`` (the :meth:`candidates` pool path) defers the
+        # surfaced-id snapshot + recency stamp to :meth:`mark_surfaced`, which
+        # the budget selector calls with only the chosen subset — marking the
+        # whole pool used would wrongly penalise the memories that lost the
+        # budget this turn on the very next retrieve.
+        if _mark_used:
+            self._last_surfaced_memory_ids = list(ids)
+            if self._memory_store is not None and ids:
+                try:
+                    self._memory_store.mark_used(ids)
+                except Exception:
+                    log.debug("mark_used failed", exc_info=True)
+        return unique
+
+    def candidates(
+        self,
+        query_text: str,
+        *,
+        recent_turns: Iterable[str] | None = None,
+        exclude_session_id: str | None = None,
+        pool_k: int,
+        embedding: "np.ndarray | None" = None,
+    ) -> list[RagHit]:
+        """Scored memory/message/document hits for the unified context budget.
+
+        Same rank / dedup / diversity / expansion pipeline as
+        :meth:`retrieve`, but cut to ``pool_k`` (a larger candidate pool than
+        the fixed ``top_k``) instead of the surfacing cap, and accepting a
+        precomputed shared turn ``embedding`` so the whole turn embeds once.
+        Does **not** mark hits used or snapshot ``last_surfaced_memory_ids``;
+        the selector calls :meth:`mark_surfaced` on the budgeted subset.
+        """
+        return self.retrieve(
+            query_text,
+            recent_turns=recent_turns,
+            exclude_session_id=exclude_session_id,
+            _limit=pool_k,
+            _embedding=embedding,
+            _mark_used=False,
+        )
+
+    def mark_surfaced(self, hits: "list[RagHit]") -> None:
+        """Stamp the *budgeted subset* of memory hits as surfaced.
+
+        Sets ``last_surfaced_memory_ids`` (for the post-turn revival check)
+        and bumps ``last_used_at`` / ``use_count`` via the memory store, so
+        the recency penalty only ever applies to memories that actually made
+        it into the prompt — not the wider :meth:`candidates` pool.
+        """
+        ids: list[int] = []
+        for hit in hits or []:
+            if getattr(hit, "source", None) != "memory":
+                continue
+            raw = getattr(getattr(hit, "record", None), "id", None)
+            if raw is None:
+                continue
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        self._last_surfaced_memory_ids = list(ids)
         if self._memory_store is not None and ids:
             try:
                 self._memory_store.mark_used(ids)
             except Exception:
                 log.debug("mark_used failed", exc_info=True)
-        return unique
 
     @property
     def last_surfaced_memory_ids(self) -> list[int]:
@@ -1567,7 +1654,9 @@ class RagRetriever:
 
     # ── cluster-aware diversity (F10b) ──────────────────────────────────
 
-    def _select_diverse(self, candidates: list[RagHit]) -> list[RagHit]:
+    def _select_diverse(
+        self, candidates: list[RagHit], limit: int | None = None,
+    ) -> list[RagHit]:
         """Pick the final top-k, capping hits per topic cluster.
 
         ``candidates`` is the deduped, score-descending hit list. When the
@@ -1585,17 +1674,18 @@ class RagRetriever:
         score order, so the re-rank only ever *reorders* the top-k -- it
         never shrinks it.
         """
-        if self._top_k <= 0:
+        top = self._top_k if limit is None else max(0, int(limit))
+        if top <= 0:
             return []
         if not self._cluster_diversity_enabled or self._topic_graph is None:
-            return candidates[: self._top_k]
+            return candidates[:top]
 
         selected: list[RagHit] = []
         deferred: list[RagHit] = []
         per_cluster: dict[int, int] = {}
         cap = self._max_per_cluster
         for h in candidates:
-            if len(selected) >= self._top_k:
+            if len(selected) >= top:
                 break
             cid = self._hit_cluster_id(h)
             if cid is not None:
@@ -1604,10 +1694,10 @@ class RagRetriever:
                     continue
                 per_cluster[cid] = per_cluster.get(cid, 0) + 1
             selected.append(h)
-        if len(selected) < self._top_k and deferred:
+        if len(selected) < top and deferred:
             for h in deferred:
                 selected.append(h)
-                if len(selected) >= self._top_k:
+                if len(selected) >= top:
                     break
         return selected
 
@@ -2077,6 +2167,33 @@ class RagRetriever:
                 + "\n".join(expansion_lines)
             )
         return "\n\n".join(sections)
+
+    def format_hits(
+        self,
+        hits: "list[RagHit]",
+        *,
+        user_display_name: str = "the user",
+    ) -> str:
+        """Render an already-selected hit subset with this retriever's own
+        configured hedging knobs.
+
+        The unified context-budget region picks the memory subset itself
+        (via :meth:`candidates` + the selector), so it can't go through
+        :meth:`block_for` (which retrieves + cuts to ``top_k``). This applies
+        the same ``format_block`` knobs ``block_for`` would, on the given
+        hits.
+        """
+        return self.format_block(
+            hits,
+            user_display_name=user_display_name,
+            fade_hedge_enabled=self._fade_hedge_enabled,
+            faded_salience_threshold=self._faded_salience_threshold,
+            faded_idle_days=self._faded_idle_days,
+            confidence_time_decay_enabled=self._confidence_time_decay_enabled,
+            confidence_decay_horizon_days=self._confidence_decay_horizon_days,
+            confidence_decay_floor=self._confidence_decay_floor,
+            confidence_decay_distant_threshold=self._confidence_decay_distant_threshold,
+        )
 
     def block_for(
         self,

@@ -988,17 +988,21 @@ class SessionController(
             try:
                 from app.core.rag.rag_prefetcher import RagPrefetcher
 
+                pool_k = int(getattr(
+                    getattr(self, "_memory_settings", None),
+                    "context_budget_memory_pool_k", 18,
+                ))
                 self._rag_prefetcher = RagPrefetcher(
                     self._rag_retriever,
+                    pool_k=pool_k,
                     ttl_seconds=30.0,
                     debounce_ms=400,
                     min_partial_chars=12,
                     similarity_threshold=0.55,
-                    user_display_name_provider=lambda: self.user_display_name,
                 )
-                self._prompt_assembler.set_rag_prefetch_lookup(
-                    self._lookup_prefetched_rag_block,
-                )
+                # The ``relevant_context`` region builder consults
+                # ``_rag_prefetcher`` directly (see build_relevant_context);
+                # no assembler-level lookup hook is needed.
             except Exception:
                 log.warning("RagPrefetcher init failed", exc_info=True)
                 self._rag_prefetcher = None

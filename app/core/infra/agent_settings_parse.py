@@ -206,9 +206,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),
-            concept_block_enabled=bool(
-                agent_raw.get("concept_block_enabled", True),
-            ),
             topic_graph_persistent_enabled=bool(
                 agent_raw.get("topic_graph_persistent_enabled", True),
             ),
@@ -294,17 +291,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             rag_direct_recall_max_messages=max(
                 0,
                 int(agent_raw.get("rag_direct_recall_max_messages", 6)),
-            ),
-            interest_map_enabled=bool(
-                agent_raw.get("interest_map_enabled", True),
-            ),
-            interest_map_max_clusters=max(
-                1,
-                int(agent_raw.get("interest_map_max_clusters", 5)),
-            ),
-            interest_map_min_size=max(
-                1,
-                int(agent_raw.get("interest_map_min_size", 4)),
             ),
             coactivation_block_enabled=bool(
                 agent_raw.get("coactivation_block_enabled", True),

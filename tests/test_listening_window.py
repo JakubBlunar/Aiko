@@ -61,37 +61,45 @@ class _TempDb:
             pass
 
 
+class _FakeEmbedder:
+    def embed(self, text: str):
+        return f"emb:{text}"
+
+
 class _FakeRetriever:
-    """Records ``recent_turns`` and ``exclude_session_id`` on each call."""
+    """Records ``recent_turns`` and ``exclude_session_id`` on each call.
+
+    The prefetcher now gathers a candidate pool via ``candidates`` (and
+    embeds once via ``_build_query`` + ``_embedder.embed``) rather than the
+    old ``retrieve`` + ``format_block`` path.
+    """
 
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self._embedder = _FakeEmbedder()
 
-    def retrieve(
+    @staticmethod
+    def _build_query(query_text: str, recent_turns=None) -> str:
+        return query_text
+
+    def candidates(
         self,
         query_text: str,
         *,
         recent_turns=None,
         exclude_session_id=None,
+        pool_k: int,
+        embedding=None,
     ):
         self.calls.append(
             {
                 "query": query_text,
                 "recent_turns": tuple(recent_turns) if recent_turns else None,
                 "exclude_session_id": exclude_session_id,
+                "pool_k": pool_k,
             }
         )
         return [f"hit:{query_text}"]
-
-    @staticmethod
-    def format_block(
-        hits, *, user_display_name: str = "the user", **_kwargs,
-    ) -> str:
-        # K7: tolerate the new fade-hedge kwargs the prefetcher now
-        # threads through; the stub doesn't care about them.
-        if not hits:
-            return ""
-        return "BLOCK:" + "|".join(str(h) for h in hits)
 
 
 def _wait_completed(prefetcher: RagPrefetcher, expected: int, *, timeout: float = 2.0) -> None:
@@ -426,7 +434,9 @@ class PrefetchEventTelemetryTests(unittest.TestCase):
             )
             self.assertEqual(telemetry.rag_prefetch_event, "skip")
 
-    def test_hit_when_lookup_returns_block(self) -> None:
+    def test_hit_when_region_reports_hit(self) -> None:
+        from app.core.session.context_budget_selector import RelevantContext
+
         with _TempDb() as db:
             db.add_message(self.SESSION, "user", "anchor")
             assembler = PromptAssembler(
@@ -434,7 +444,12 @@ class PrefetchEventTelemetryTests(unittest.TestCase):
                 persona_path=Path("nonexistent_persona.txt"),
                 recent_window=8,
             )
-            assembler.set_rag_prefetch_lookup(lambda _t: "BLOCK:cached-rag")
+            assembler.set_relevant_context_provider(
+                lambda **_kw: RelevantContext(
+                    text="Relevant context: cached-rag.",
+                    prefetch_event="hit",
+                )
+            )
             _, telemetry = assembler.assemble_with_budget(
                 self.SESSION, "ask",
                 context_window=4096, response_budget=256,
@@ -442,7 +457,9 @@ class PrefetchEventTelemetryTests(unittest.TestCase):
             self.assertEqual(telemetry.rag_prefetch_event, "hit")
             self.assertGreater(telemetry.rag_tokens, 0)
 
-    def test_miss_when_lookup_returns_none(self) -> None:
+    def test_miss_when_region_reports_miss(self) -> None:
+        from app.core.session.context_budget_selector import RelevantContext
+
         with _TempDb() as db:
             db.add_message(self.SESSION, "user", "anchor")
             assembler = PromptAssembler(
@@ -450,7 +467,9 @@ class PrefetchEventTelemetryTests(unittest.TestCase):
                 persona_path=Path("nonexistent_persona.txt"),
                 recent_window=8,
             )
-            assembler.set_rag_prefetch_lookup(lambda _t: None)
+            assembler.set_relevant_context_provider(
+                lambda **_kw: RelevantContext(text="", prefetch_event="miss")
+            )
             _, telemetry = assembler.assemble_with_budget(
                 self.SESSION, "ask",
                 context_window=4096, response_budget=256,
