@@ -1360,7 +1360,11 @@ class InnerLifePart1Mixin:
         cluster_cands: list[ContextCandidate] = []
         concept_cands: list[ContextCandidate] = []
         graph = getattr(self, "_topic_graph", None)
-        store = getattr(self, "_concept_store", None)
+        # L24: read concepts through the single ConceptView facade rather
+        # than the store directly (identity pin lane + turn-relevant path).
+        from app.core.concepts.concept_view import concept_view_from
+
+        view = concept_view_from(self)
         mature = True
         if graph is not None:
             min_clusters = int(getattr(ms, "concept_min_clusters", 6))
@@ -1396,28 +1400,16 @@ class InnerLifePart1Mixin:
         # relevance floor + concept cap in the selector and are rendered
         # first. Deduped against the turn-relevant pool below by concept_id.
         pinned_ids: set[int] = set()
-        if mature and store is not None:
+        if mature and view is not None:
             id_cap = max(0, int(getattr(ms, "context_budget_identity_cap", 2)))
             id_min = float(
                 getattr(ms, "context_budget_identity_min_confidence", 0.75)
             )
             if id_cap > 0:
-                try:
-                    identity = store.list_by(status="active", kind="identity")
-                except Exception:
-                    log.debug(
-                        "relevant_context: identity fetch failed", exc_info=True
-                    )
-                    identity = []
-                identity = [
-                    c for c in identity
-                    if float(getattr(c, "confidence", 0.0)) >= id_min
-                ]
-                identity.sort(
-                    key=lambda c: float(getattr(c, "confidence", 0.0)),
-                    reverse=True,
+                identity = view.core(
+                    kind="identity", min_confidence=id_min, limit=id_cap,
                 )
-                for i, concept in enumerate(identity[:id_cap]):
+                for i, concept in enumerate(identity):
                     label = (getattr(concept, "label", "") or "").strip()
                     if not label:
                         continue
@@ -1431,15 +1423,9 @@ class InnerLifePart1Mixin:
                         key=f"k{cid}", pinned=True,
                     ))
 
-        if embedding is not None and mature and store is not None:
+        if embedding is not None and mature and view is not None:
             cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
-            try:
-                pairs = store.nearest(
-                    embedding, status="active", k=max(cap * 2, 6),
-                )
-            except Exception:
-                log.debug("relevant_context: concept candidates failed", exc_info=True)
-                pairs = []
+            pairs = view.relevant(embedding, k=max(cap * 2, 6))
             for i, (concept, cos) in enumerate(pairs):
                 cid = int(getattr(concept, "concept_id", 0))
                 if cid in pinned_ids:

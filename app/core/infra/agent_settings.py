@@ -985,6 +985,17 @@ class AgentSettings:
     # Bump this if you keep seeing ``surface=self_image_worker`` truncation
     # warnings in the log.
     self_image_max_tokens: int = 320
+    # L24: source the daily self-image from her active ``subject=aiko``
+    # concepts (via the shared ConceptView) instead of re-summarising raw
+    # self/reflection memories. Concepts are the upstream source of truth;
+    # this only kicks in once the concept layer is mature enough (see
+    # ``self_image_min_concepts``), otherwise the legacy memory path runs.
+    self_image_concept_sourced_enabled: bool = True
+    # Minimum number of qualifying aiko self-concepts before the pulse
+    # narrates concepts instead of memories (the maturity / fallback gate).
+    self_image_min_concepts: int = 4
+    # Confidence an aiko self-concept must clear to feed the self-image.
+    self_image_min_concept_confidence: float = 0.6
     # Prepared-nudge job runs in late speaking windows; cap how stale a
     # prepared nudge can be before ProactiveDirector re-synthesises.
     prepared_nudge_ttl_seconds: float = 600.0

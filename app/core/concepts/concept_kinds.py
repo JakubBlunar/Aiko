@@ -33,9 +33,18 @@ Each kind declares:
   L-entries (L2 mines candidates, L3 decides promotion). They are
   ``None`` in v1: L1 is the substrate only, so nothing proposes or
   promotes yet.
-- ``surfacing_target`` -- the name of the prompt block / subsystem an
-  active concept of this kind is routed to (L5). A hint string in v1;
-  the actual provider wiring lands with L5.
+- ``surfacing_target`` -- the *default* prompt block / subsystem an
+  active concept of this kind is routed to (L5). Kept as the
+  subject-agnostic fallback.
+- ``surfacing_targets`` -- the **authoritative** (L24) per-subject
+  routing map (``subject -> target``), because the same kind can feed
+  different consumers depending on subject (e.g. ``identity`` feeds the
+  user ``profile_block`` for ``subject=user`` but the ``self_image_block``
+  for ``subject=aiko``). A ``"*"`` key is the wildcard for any other
+  subject; an empty map falls back to ``surfacing_target``. Consumers
+  don't read this directly -- they call :func:`kinds_for_target`
+  (via ``ConceptView.for_target``), so a new kind auto-flows to its
+  declared consumers with no consumer code change.
 
 v1 registers only ``identity`` end-to-end scaffolding; every other kind
 in the catalogue is a one-line ``register_kind`` call we grow into.
@@ -43,7 +52,7 @@ in the catalogue is a one-line ``register_kind`` call we grow into.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.concepts.concept_lifecycle import set_evidence_gate
 
@@ -81,6 +90,9 @@ class ConceptKind:
     proposer: Callable[..., object] | None = None
     promotion_gate: Callable[..., object] | None = None
     surfacing_target: str | None = None
+    # L24: authoritative per-subject routing (``subject -> target``); a
+    # ``"*"`` key is the wildcard. Empty => fall back to ``surfacing_target``.
+    surfacing_targets: dict[str, str] = field(default_factory=dict)
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -96,6 +108,54 @@ def register_kind(kind: ConceptKind) -> ConceptKind:
 def get_kind(name: str) -> ConceptKind | None:
     """Look up a registered kind, or ``None`` for an unknown kind."""
     return CONCEPT_KINDS.get(name)
+
+
+# ── surfacing-target routing (L24) ────────────────────────────────────
+# ``surfacing_targets`` is authoritative; ``surfacing_target`` is the
+# subject-agnostic fallback. These resolvers are the one place that logic
+# lives -- consumers ask "which kinds feed my block?" via
+# :func:`kinds_for_target`, never by branching on kind names.
+
+def target_for(kind: ConceptKind, subject: str | None = None) -> str | None:
+    """The single target a concept of this ``kind`` / ``subject`` routes
+    to: the per-subject entry, then the ``"*"`` wildcard, then the scalar
+    ``surfacing_target`` fallback."""
+    targets = kind.surfacing_targets
+    if targets:
+        if subject is not None and subject in targets:
+            return targets[subject]
+        if "*" in targets:
+            return targets["*"]
+    return kind.surfacing_target
+
+
+def targets_of(kind: ConceptKind, subject: str | None = None) -> set[str]:
+    """Every target a concept of this ``kind`` may route to. With
+    ``subject`` given this is at most one target; without it, the union of
+    all per-subject targets plus the scalar fallback."""
+    if subject is not None:
+        t = target_for(kind, subject)
+        return {t} if t else set()
+    out: set[str] = set(kind.surfacing_targets.values())
+    if kind.surfacing_target:
+        out.add(kind.surfacing_target)
+    return out
+
+
+def kinds_for_target(target: str, subject: str | None = None) -> set[str]:
+    """The set of registered kind names that route to ``target`` (for the
+    given ``subject`` when provided, else across all subjects).
+
+    The plug-in seam consumed by ``ConceptView.for_target``: a new kind
+    declares its ``surfacing_targets`` and auto-appears here for the
+    matching consumer -- no consumer code change."""
+    if not target:
+        return set()
+    return {
+        name
+        for name, kind in CONCEPT_KINDS.items()
+        if target in targets_of(kind, subject)
+    }
 
 
 # ── v1: identity end-to-end ───────────────────────────────────────────
@@ -115,7 +175,14 @@ register_kind(
         # sources + age-stability + confidence). The worker falls back to
         # this same gate for any kind that doesn't supply its own.
         promotion_gate=set_evidence_gate,
+        # L24: identity is the same kind for both subjects but feeds
+        # different consumers -- the user profile block for what *he* is
+        # like, Aiko's self-image block for what *she* is like.
         surfacing_target="profile_block",
+        surfacing_targets={
+            "user": "profile_block",
+            "aiko": "self_image_block",
+        },
     )
 )
 
@@ -126,5 +193,8 @@ __all__ = [
     "SUBJECTS",
     "ConceptKind",
     "get_kind",
+    "kinds_for_target",
     "register_kind",
+    "target_for",
+    "targets_of",
 ]

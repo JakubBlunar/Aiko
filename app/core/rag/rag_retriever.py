@@ -1514,18 +1514,18 @@ class RagRetriever:
         q = np.asarray(embedding, dtype=np.float32).ravel()
         if q.size == 0 or float(np.linalg.norm(q)) == 0.0:
             return None
-        try:
-            matches = self._concept_store.nearest(
-                q, status="active", k=1,
-            )
-        except Exception:
-            log.debug("recall_concept: nearest failed", exc_info=True)
+        # L24: nearest-concept lookup goes through the one ConceptView read
+        # path; the specialised evidence hydration below (cluster -> member
+        # expansion) stays recall's own concern.
+        from app.core.concepts.concept_view import concept_view_from
+
+        view = concept_view_from(self)
+        if view is None:
             return None
+        matches = view.relevant(q, k=1, min_sim=float(min_concept_sim))
         if not matches:
             return None
         concept, sim = matches[0]
-        if sim < float(min_concept_sim):
-            return None
         cap = max(1, int(limit))
 
         # Split the concept's evidence into memory ids + cluster reps.

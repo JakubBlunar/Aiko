@@ -1146,6 +1146,28 @@ class SelfImageInterestSeedSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.self_image_interest_seed_enabled)
 
+    def test_concept_sourced_defaults(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.self_image_concept_sourced_enabled)
+        self.assertEqual(result.agent.self_image_min_concepts, 4)
+        self.assertAlmostEqual(
+            result.agent.self_image_min_concept_confidence, 0.6,
+        )
+
+    def test_concept_sourced_override_and_clamp(self) -> None:
+        path = self._write_config(agent_extra={
+            "self_image_concept_sourced_enabled": False,
+            "self_image_min_concepts": 7,
+            # Out-of-range confidence is clamped to [0, 1].
+            "self_image_min_concept_confidence": 2.0,
+        })
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.self_image_concept_sourced_enabled)
+        self.assertEqual(result.agent.self_image_min_concepts, 7)
+        self.assertAlmostEqual(
+            result.agent.self_image_min_concept_confidence, 1.0,
+        )
+
 
 class CuriosityClusterAnchorSettingsTests(unittest.TestCase):
     """K65c: curiosity-worker cluster-anchor agent knobs default/round-trip/clamp."""

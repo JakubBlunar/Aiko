@@ -1288,6 +1288,22 @@ highest-value things to say?
 
 ## L24. Integration contract — existing derivers consume concepts
 
+**Status: SUBSTRATE SHIPPED.** The reusable contract now exists:
+[`ConceptView`](../../app/core/concepts/concept_view.py) is the **single
+read + resolution interface** every deriver/worker uses (constructed from
+`ConceptStore` + optional `topic_graph` + optional `memory_store`), and
+`ConceptKind.surfacing_targets` + `kinds_for_target()` in
+[`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) make routing
+authoritative (a kind declares where it feeds; consumers ask
+`ConceptView.for_target(...)`, never branch on kind names). The identity
+pin lane (`build_relevant_context`) and `recall_concept` are migrated onto
+the facade (behavior-preserving), and **`SelfImageWorker` is the reference
+integration**: it composes from active `subject=aiko` concepts and falls
+back to raw self/reflection memories only when the layer is sparse/immature.
+See [`docs/concept-integration.md`](../concept-integration.md) for the
+contract + direction-of-truth table. Rolling the remaining derivers onto
+the contract is tracked in **L28**.
+
 **Motivation.** Several shipped subsystems already derive overlapping views of
 the user/self, each from raw memories: `SelfImageWorker` rewrites Aiko's
 self-narrative daily from `self`/`reflection` rows (overlaps L11 + L19);
@@ -1313,12 +1329,14 @@ K2 stays the *transient* mood/opinion layer while durable trait-beliefs live as
 concepts (L9). Define, per overlapping subsystem, one direction of truth so the
 same claim isn't authored twice. Roll this out per kind as each kind ships — the
 contract is "when a concept kind lands, retire or subordinate the ad-hoc deriver
-it replaces." Derivers read through the shared `ConceptStore.nearest()` /
-`active`-concept accessors from L1 rather than re-embedding or re-deriving, so
-there is one retrieval path into the layer for every consumer.
+it replaces." Derivers read through the shared `ConceptView` facade (the one
+retrieval + resolution path into the layer) rather than re-embedding or
+re-deriving; the facade wraps the L1 `ConceptStore.nearest()` / `active`-concept
+accessors so there is exactly one idiom for every consumer.
 
 **Effort.** Medium (per-subsystem, incremental — but must be decided before L11
-ships or self-image will double up).
+ships or self-image will double up). *Substrate + one reference integration
+shipped; remaining derivers tracked in L28.*
 
 ---
 
@@ -1481,3 +1499,53 @@ min-confidence be a setting per kind or derived from the plasticity band?
 
 **Effort.** Medium (extends the shipped selector + region builder; grows with
 each kind that ships).
+
+---
+
+## L28. Roll remaining derivers/workers onto the `ConceptView` contract (deferred)
+
+**Status: deferred — depends on the L24 substrate (shipped).** L24 shipped the
+reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
+`kinds_for_target()` routing) and proved it with `SelfImageWorker` as the
+reference integration. This entry tracks migrating the *rest* of the
+concept-overlapping consumers onto the same contract so none is forgotten and no
+consumer keeps a bespoke read path into the layer.
+
+**Motivation.** The contract is only as valuable as its adoption: as long as any
+deriver still reads `ConceptStore` directly (or re-derives evidence/cluster
+labels itself), it can drift from the concept layer and re-introduce the
+"two systems, two stories" risk L24 exists to prevent. One interface for every
+background worker's resolutions (concept lookup + evidence/cluster/memory
+grounding) is the goal.
+
+**Key files (per remaining consumer -> target).**
+- [`user_profile.py`](../../app/core/infra/user_profile.py) — `UserProfileWorker`,
+  `subject=user` identity concepts -> `profile_block` (via
+  `ConceptView.for_target("profile_block", subject="user")`).
+- `interest_map` cluster annotation in
+  [`topic_graph.py`](../../app/core/conversation/topic_graph.py) — annotate
+  clusters with the concepts spanning them via `ConceptView.for_cluster(rep_id)`.
+- [`belief_store.py`](../../app/core/relationship/belief_store.py) /
+  belief inference — bias toward durable concepts (K2 stays the *transient* layer,
+  not migrated).
+- Interest-map readers: `KnowledgeMapReflectionWorker`, `InterestDriftWorker`,
+  and `ForwardCuriosityWorker` routine hints.
+- [`goal_store.py`](../../app/core/goals/goal_store.py) — overlaps L14 aspiration
+  concepts (gated on L14 shipping).
+
+**Sketched approach.** For each consumer: take a `ConceptView` (late-bound
+provider, as `SelfImageWorker` does), read via `core` / `relevant` / `for_target`
+/ `for_cluster`, declare the kind's `surfacing_targets` if it feeds a named
+block, and fall back to the legacy derivation when concepts are sparse/immature.
+Add each integration to the direction-of-truth table in
+[`docs/concept-integration.md`](../concept-integration.md).
+
+**Depends on.** L24 (shipped). Each integration should target a consumer that
+overlaps an already-shipped concept kind (`user_profile` overlaps `identity`
+today); others unblock as their kinds ship (value L10, boundary L18,
+aspiration L14).
+
+**Open questions.** Migration order? Compose-first (concepts as primary) vs.
+blend-first (concepts as an additional input) per consumer?
+
+**Effort.** Medium, incremental (one small ticket per consumer).
