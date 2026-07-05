@@ -271,6 +271,108 @@ class EdgeTests(unittest.TestCase):
         remaining = store.edges_into("concept", cid)
         self.assertEqual([e.src_type for e in remaining], ["cluster"])
 
+    def test_affected_concepts_for_memory_both_sides(self) -> None:
+        _, store, _ = _build()
+        c_ev = store.add(_c("supported"))
+        c_contra = store.add(_c("disproven"))
+        # evidence: memory 5 -> concept c_ev
+        store.add_edge(
+            ConceptEdge("memory", "5", "concept", str(c_ev), "evidence")
+        )
+        # contradicts: concept c_contra -> memory 5
+        store.add_edge(
+            ConceptEdge("concept", str(c_contra), "memory", "5", "contradicts",
+                        polarity=-1)
+        )
+        # unrelated edge on a different memory
+        store.add_edge(
+            ConceptEdge("memory", "6", "concept", str(c_ev), "evidence")
+        )
+        self.assertEqual(
+            store.affected_concepts_for_memory(5), {c_ev, c_contra}
+        )
+        self.assertEqual(store.affected_concepts_for_memory(6), {c_ev})
+        self.assertEqual(store.affected_concepts_for_memory(999), set())
+
+    def test_repoint_memory_edges_moves_and_merges(self) -> None:
+        _, store, _ = _build()
+        cid = store.add(_c("c"))
+        other = store.add(_c("other"))
+        # evidence from victim memory 10 -> cid
+        store.add_edge(
+            ConceptEdge("memory", "10", "concept", str(cid), "evidence")
+        )
+        # contradicts: other -> memory 10
+        store.add_edge(
+            ConceptEdge("concept", str(other), "memory", "10", "contradicts",
+                        polarity=-1)
+        )
+        # survivor 20 already supports cid -> repoint should merge (dedupe)
+        store.add_edge(
+            ConceptEdge("memory", "20", "concept", str(cid), "evidence")
+        )
+        moved = store.repoint_memory_edges(10, 20)
+        self.assertEqual(moved, 2)
+        # victim memory 10 no longer referenced anywhere
+        self.assertEqual(store.edges_from("memory", 10), [])
+        self.assertEqual(store.edges_into("memory", 10), [])
+        # cid still has exactly one evidence edge (merged onto survivor 20)
+        ev = store.evidence_of(cid)
+        self.assertEqual([e.src_id for e in ev], ["20"])
+        # the contradicts edge now points at survivor 20
+        contra = store.edges_into("memory", 20)
+        self.assertEqual(
+            [(e.src_id, e.relation) for e in contra],
+            [(str(other), "contradicts")],
+        )
+
+    def test_repoint_same_id_is_noop(self) -> None:
+        _, store, _ = _build()
+        cid = store.add(_c("c"))
+        store.add_edge(
+            ConceptEdge("memory", "10", "concept", str(cid), "evidence")
+        )
+        self.assertEqual(store.repoint_memory_edges(10, 10), 0)
+        self.assertEqual(len(store.evidence_of(cid)), 1)
+
+    def test_orphaned_memory_edges_finds_missing_targets(self) -> None:
+        db, store, _ = _build()
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO memories (id, content, kind, embedding, created_at) "
+            "VALUES (100, 'alive', 'fact', X'00', '2020-01-01')"
+        )
+        conn.commit()
+        cid = store.add(_c("c"))
+        # edge to a surviving memory -> not orphaned
+        store.add_edge(
+            ConceptEdge("memory", "100", "concept", str(cid), "evidence")
+        )
+        # edge to a vanished memory -> orphaned
+        store.add_edge(
+            ConceptEdge("memory", "200", "concept", str(cid), "evidence")
+        )
+        # contradicts edge to a vanished memory -> also orphaned
+        store.add_edge(
+            ConceptEdge("concept", str(cid), "memory", "300", "contradicts",
+                        polarity=-1)
+        )
+        orphans = store.orphaned_memory_edges(50)
+        orphan_mems = sorted(
+            e.src_id if e.src_type == "memory" else e.dst_id for e in orphans
+        )
+        self.assertEqual(orphan_mems, ["200", "300"])
+
+    def test_orphaned_memory_edges_respects_limit(self) -> None:
+        _, store, _ = _build()
+        cid = store.add(_c("c"))
+        for mem_id in range(500, 505):
+            store.add_edge(
+                ConceptEdge("memory", str(mem_id), "concept", str(cid),
+                            "evidence")
+            )
+        self.assertEqual(len(store.orphaned_memory_edges(3)), 3)
+
     def test_delete_concept_leaves_memories_intact(self) -> None:
         """Deleting a concept must remove only the concept + its edges,
         never the memory rows the evidence edges point at."""

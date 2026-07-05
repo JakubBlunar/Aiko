@@ -854,6 +854,18 @@ class MemorySettings:
     concept_belief_revision_confidence_penalty: float = 0.2
     concept_belief_revision_confidence_floor: float = 0.2
     concept_belief_revision_superseded_relevance_days: float = 7.0
+    # L25 edge referential integrity. Concept edges (evidence /
+    # contradicts) point at memory rows that get deleted, pruned, and
+    # merged. Most deletes are reconciled synchronously by the reconciler's
+    # delete-listener hook; ``MemoryStore.prune`` batch-deletes *without*
+    # firing listeners, so this idle worker is the defence-in-depth that
+    # garbage-collects orphaned edges (memory endpoint no longer exists)
+    # and recomputes the affected concepts' edge-derived evidence counts.
+    # It runs infrequently over a bounded batch and does no LLM work. L3
+    # stays the single writer of confidence / plasticity / status.
+    concept_edge_integrity_enabled: bool = True
+    concept_edge_integrity_interval_seconds: float = 3600.0
+    concept_edge_integrity_batch_size: int = 200
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -2444,6 +2456,21 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         7.0,
                     )
                 ),
+            ),
+            concept_edge_integrity_enabled=bool(
+                memory_raw.get("concept_edge_integrity_enabled", True)
+            ),
+            concept_edge_integrity_interval_seconds=max(
+                1.0,
+                float(
+                    memory_raw.get(
+                        "concept_edge_integrity_interval_seconds", 3600.0
+                    )
+                ),
+            ),
+            concept_edge_integrity_batch_size=max(
+                1,
+                int(memory_raw.get("concept_edge_integrity_batch_size", 200)),
             ),
             coactivation_min_pair_support=max(
                 1,

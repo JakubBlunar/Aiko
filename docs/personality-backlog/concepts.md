@@ -1297,6 +1297,25 @@ ships or self-image will double up).
 
 ## L25. Edge referential integrity across the memory lifecycle
 
+**Status: BUILT.** The
+[`ConceptEdgeReconciler`](../../app/core/concepts/concept_edge_reconciler.py)
+enforces the per-event policy below. It is registered as a `MemoryStore`
+**delete listener** (`on_memory_deleted` drops a deleted memory's edges and
+recomputes the affected concepts' edge-derived `evidence_count` /
+`distinct_source_count`); the legacy Phase 4b `MemoryConsolidator` calls its
+`repoint` hook to move a hard-deleted victim's edges onto the survivor *before*
+deletion (rule b); and because `MemoryStore.prune` batch-deletes rows **without**
+firing delete listeners, the idle
+[`ConceptEdgeIntegrityWorker`](../../app/core/concepts/concept_edge_integrity_worker.py)
+sweep GCs any orphaned edges it leaves (`ConceptStore.orphaned_memory_edges` →
+drop → recount). K35-archived rows stay alive so their edges are kept as
+historical evidence (rule c). Counts are treated as **edge-derived**
+(recomputed by any edge-mutating path, same as L2 reinforce); L3 remains the
+single writer of `confidence` / `plasticity` / `status`. Knobs:
+`memory.concept_edge_integrity_{enabled,interval_seconds,batch_size}`. See
+[`concept-lifecycle.md`](../concept-lifecycle.md) and
+[`configuration.md`](../configuration.md).
+
 **Motivation.** Concepts point at memories through `concept_edges`, but memories
 are not permanent: they're archived, consolidated/merged (K35), reclassified,
 and outright **deleted** (dead scratchpad in `MemoryPromotionWorker`). Nothing
