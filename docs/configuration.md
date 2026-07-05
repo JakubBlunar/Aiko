@@ -525,6 +525,13 @@ When L9 flips a belief to `contradicted`, the doubt flows **back down** to the m
 - `agent.concept_belief_revision_per_hour_cap` *(int, `6`, min `0`)* — hourly cap on the 3-way arbitration LLM calls (the `classify_pair` gate runs first, so only genuine conflicts spend budget). Uses its own `FactCheckRateLimiter` (`state_key='concept_belief_revision.rate_state'`) so it never shares a budget with L9 / F5.
 - `agent.concept_belief_revision_per_day_cap` *(int, `30`, min `0`)* — daily cap.
 
+### L16 — concept plasticity (movement governor)
+
+`plasticity` (`[0, 1]`, per concept) is the single learning rate the L3 engine damps *every* confidence move by — decay (`halflife *= 2 - p`), accrual (step `= 0.5 + 0.5*p` of the gap to target), L9 disproof, and the L15 revision cut — so a sticky, low-plasticity core trait resists change in both directions. `p = 1` reproduces the pre-L16 full snap / full penalty, so only sub-1 kinds slow. Plasticity is stamped once, on a concept's first lifecycle eval, from the per-kind `ConceptKind.plasticity_default` band (see [`concept-lifecycle.md`](concept-lifecycle.md)). Relationship modulation is deferred.
+
+- `memory.concept_identity_plasticity` *(float, `0.3`, clamped `[0, 1]`)* — the `identity` kind's default band (low = sticky). Applied on first eval; also damps decay + L9 disproof + L15 revision for identity concepts.
+- `memory.concept_default_plasticity` *(float, `0.5`, clamped `[0, 1]`)* — fallback band for any kind that registers no `plasticity_default` on the `ConceptKind` registry.
+
 ### K2 — theory-of-mind / belief tracking
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.

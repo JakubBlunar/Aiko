@@ -15,7 +15,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.core.concepts.concept_lifecycle import set_evidence_gate
+from app.core.concepts.concept_lifecycle import (
+    accrual_alpha,
+    next_confidence,
+    set_evidence_gate,
+)
 from app.core.concepts.concept_lifecycle_worker import ConceptLifecycleWorker
 from app.core.concepts.concept_event_store import ConceptEventStore
 from app.core.concepts.concept_store import Concept, ConceptStore
@@ -129,7 +133,13 @@ def _add(store: ConceptStore, **over) -> Concept:
 class PromotionTests(unittest.TestCase):
     def test_promotes_when_gate_clears(self) -> None:
         h = _harness()
-        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        # Seed at the confidence bar: with L16's plasticity-damped accrual
+        # a reinforced first eval keeps the seed (accrual never lowers), so
+        # this isolates the gate from the accrual ramp.
+        c = _add(
+            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
+            confidence=0.7,
+        )
         h.worker.run()
         got = h.store.get(c.concept_id)
         self.assertEqual(got.status, "active")
@@ -175,6 +185,7 @@ class EngagementAgeTests(unittest.TestCase):
             distinct_source_count=2,
             first_evidence_at=_iso(0.1),
             first_evidence_engagement=0.0,
+            confidence=0.7,
         )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
@@ -221,6 +232,7 @@ class EngagementAgeTests(unittest.TestCase):
             distinct_source_count=2,
             first_evidence_at=_iso(3),
             first_evidence_engagement=0.0,
+            confidence=0.7,
         )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
@@ -248,9 +260,12 @@ class DecayTests(unittest.TestCase):
         self.assertAlmostEqual(got.last_lifecycle_engagement, 30 * 3600.0)
 
     def test_reinforcement_snaps_confidence_up(self) -> None:
+        # High plasticity (1.0) keeps the pre-L16 full snap straight to
+        # target on reinforcement; the damped-approach case is covered in
+        # AccrualPlasticityTests.
         h = _harness()
         c = _add(
-            h.store, status="active", confidence=0.2, plasticity=0.5,
+            h.store, status="active", confidence=0.2, plasticity=1.0,
             distinct_source_count=4, last_lifecycle_at=_iso(2),
             last_lifecycle_engagement=0.0, last_reinforced_at=_iso(1),
             promoted_at=_iso(5), first_evidence_at=_iso(9),
@@ -594,6 +609,81 @@ class BeliefRevisionTriggerTests(unittest.TestCase):
         self.assertEqual(len(rev.revised), 1)
 
 
+class AccrualPlasticityTests(unittest.TestCase):
+    """L16: plasticity damps confidence *accrual* symmetrically with decay.
+    High plasticity keeps the pre-L16 full snap; low plasticity approaches
+    the evidence target in partial steps."""
+
+    def test_alpha_endpoints(self) -> None:
+        self.assertAlmostEqual(accrual_alpha(1.0), 1.0, places=6)
+        self.assertAlmostEqual(accrual_alpha(0.0), 0.5, places=6)
+        self.assertAlmostEqual(accrual_alpha(0.5), 0.75, places=6)
+
+    def test_high_plasticity_full_snap(self) -> None:
+        got = next_confidence(
+            0.2, engaged_days=0.0, halflife_days=45.0,
+            plasticity=1.0, target=0.9, reinforced=True,
+        )
+        self.assertAlmostEqual(got, 0.9, places=6)
+
+    def test_low_plasticity_partial_approach(self) -> None:
+        # p=0 -> half-step toward the target: 0.2 + (0.9-0.2)*0.5 = 0.55.
+        got = next_confidence(
+            0.2, engaged_days=0.0, halflife_days=45.0,
+            plasticity=0.0, target=0.9, reinforced=True,
+        )
+        self.assertAlmostEqual(got, 0.55, places=6)
+
+    def test_low_plasticity_builds_slower_than_high(self) -> None:
+        low = next_confidence(
+            0.2, engaged_days=0.0, halflife_days=45.0,
+            plasticity=0.2, target=0.9, reinforced=True,
+        )
+        high = next_confidence(
+            0.2, engaged_days=0.0, halflife_days=45.0,
+            plasticity=0.9, target=0.9, reinforced=True,
+        )
+        self.assertLess(low, high)
+
+    def test_reinforcement_never_lowers(self) -> None:
+        # Already above the target -> the up-move can't drag it down.
+        got = next_confidence(
+            0.8, engaged_days=0.0, halflife_days=45.0,
+            plasticity=0.0, target=0.5, reinforced=True,
+        )
+        self.assertAlmostEqual(got, 0.8, places=6)
+
+
+class KindPlasticityTests(unittest.TestCase):
+    """L16: the worker stamps a kind's default plasticity on first eval."""
+
+    def test_identity_uses_identity_setting(self) -> None:
+        h = _harness(_settings(concept_identity_plasticity=0.25))
+        c = _add(h.store, plasticity=0.9)  # seed differs from the default
+        h.worker.run()
+        self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.25)
+
+    def test_unknown_kind_falls_back_to_default_setting(self) -> None:
+        h = _harness(_settings(concept_default_plasticity=0.6))
+        c = _add(h.store, kind="taste", plasticity=0.9)
+        h.worker.run()
+        self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.6)
+
+    def test_registered_kind_default_beats_general_setting(self) -> None:
+        from app.core.concepts.concept_kinds import (
+            CONCEPT_KINDS,
+            ConceptKind,
+            register_kind,
+        )
+
+        register_kind(ConceptKind(name="l16_taste", plasticity_default=0.85))
+        self.addCleanup(lambda: CONCEPT_KINDS.pop("l16_taste", None))
+        h = _harness(_settings(concept_default_plasticity=0.6))
+        c = _add(h.store, kind="l16_taste", plasticity=0.9)
+        h.worker.run()
+        self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.85)
+
+
 class GateUnitTests(unittest.TestCase):
     def test_set_evidence_gate(self) -> None:
         kw = dict(min_sources=2, min_age_days=2.0, min_confidence=0.6)
@@ -625,7 +715,10 @@ class YoungGraphGateTests(unittest.TestCase):
 
     def test_mature_graph_allows_promotion(self) -> None:
         h = _harness(graph_mature=lambda: True)
-        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        c = _add(
+            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
+            confidence=0.7,
+        )
         h.worker.run()
         got = h.store.get(c.concept_id)
         self.assertEqual(got.status, "active")
@@ -633,14 +726,22 @@ class YoungGraphGateTests(unittest.TestCase):
     def test_no_provider_uses_normal_bar(self) -> None:
         # Default (no provider) treats the graph as mature.
         h = _harness()
-        c = _add(h.store, distinct_source_count=2, first_evidence_at=_iso(3))
+        c = _add(
+            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
+            confidence=0.7,
+        )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
 
     def test_immature_graph_still_promotes_with_enough_sources(self) -> None:
-        # 3 distinct sources clears even the stricter young bar.
+        # 3 distinct sources clears even the stricter young bar. Seeded at
+        # the young confidence bar so the plasticity-damped accrual ramp
+        # isn't the binding factor (this test is about the source count).
         h = _harness(graph_mature=lambda: False)
-        c = _add(h.store, distinct_source_count=3, first_evidence_at=_iso(3))
+        c = _add(
+            h.store, distinct_source_count=3, first_evidence_at=_iso(3),
+            confidence=0.8,
+        )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
 

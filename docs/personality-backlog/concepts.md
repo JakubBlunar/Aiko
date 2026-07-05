@@ -938,6 +938,34 @@ the concept, and how is that damped?
 
 ## L16. Concept plasticity (bounded, believable drift)
 
+**Status: BUILT (core; relationship modulation deferred).** `plasticity` is now
+the single learning rate the L3 engine damps *every* confidence move by, so
+movement is symmetric in both directions: decay (`halflife *= 2 - p`), **accrual**
+([`accrual_alpha`](../../app/core/concepts/concept_lifecycle.py), step `0.5 + 0.5*p`
+of the gap to target — a sticky trait needs more reinforced evals to promote),
+L9 disproof (`apply_contradiction_penalty`), and the L15 revision cut (scaled by
+the concept's plasticity in
+[`concept_belief_reviser.py`](../../app/core/concepts/concept_belief_reviser.py)).
+`p = 1` reproduces the pre-L16 full snap / full penalty. Per-kind default bands
+live on `ConceptKind.plasticity_default`
+([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py); identity = low,
+tuned by `concept_identity_plasticity`), falling back to `concept_default_plasticity`;
+the worker stamps the band on a concept's first eval
+([`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)).
+See [`concept-lifecycle.md`](../concept-lifecycle.md) and
+[`configuration.md`](../configuration.md).
+
+**Deferred (do not forget).** (1) **Relationship modulation** — trust / duration
+loosening a concept's plasticity (e.g. a boundary becoming renegotiable as trust
+grows) via `relation=influences` edges reading
+[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py) (trust)
++ [`relationship.py`](../../app/core/relationship/relationship.py) (duration).
+Land this alongside **L18 (boundary concepts)** and **L11 (self-model)**, which
+are its first real consumers. (2) **Plasticity-drift** — a trait becoming stickier
+with age/confidence (plasticity itself is currently fixed at the per-kind default).
+(3) Whether low plasticity should also slow the L15 re-check *trigger* (today it
+only scales the delta).
+
 **Motivation.** Concepts should change over time — but not all at the same rate,
 and not randomly. Some parts of a person (or of Aiko) are core and sticky;
 others are meant to be fluid. Encoding that as a **plasticity** attribute makes
@@ -1045,6 +1073,13 @@ suppresses or softens the relevant behaviour. Medium plasticity with
 trust-modulation (L16) means a boundary can loosen as the relationship deepens,
 but never silently — crossing or renegotiating a boundary should be a deliberate,
 trust-gated beat, not drift.
+
+> **Carries the deferred L16 piece.** L16 shipped the plasticity *governor* but
+> **not** relationship modulation. This kind is its first consumer: build the
+> trust/duration → plasticity modulation (via `relation=influences` edges reading
+> `relationship_axes` trust + `relationship` duration) here, so a boundary's
+> plasticity rises with trust. Until then boundaries use their static
+> medium-plasticity default.
 
 **Effort.** Medium (on top of L1-L5, L16).
 

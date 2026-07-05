@@ -8,7 +8,7 @@ itself conflicts with the disproving counter-evidence, arbitrates one of
 three resolutions:
 
 - **(a) memory inaccurate** (bad extraction / misremembered) -> lower its
-  ``confidence`` (damped, floored);
+  ``confidence`` (plasticity-damped by the concept's stickiness, floored);
 - **(b) memory accurate but superseded** (true then, stale now) ->
   reclassify it to a ``past_event`` with a fresh ``relevance_until``,
   **not** a confidence cut -- the fact still happened;
@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.concepts.concept_lifecycle import apply_contradiction_penalty
 from app.core.memory.conflict_heuristics import (
     HEURISTIC_NO,
     classify_pair,
@@ -273,11 +274,21 @@ class ConceptBeliefReviser:
         now: datetime,
         out: RevisionOutcome,
     ) -> None:
-        """(a) The supporting memory was wrong -> damped, floored
-        confidence cut. Never touches accurate-but-stale facts."""
+        """(a) The supporting memory was wrong -> plasticity-damped,
+        floored confidence cut. Never touches accurate-but-stale facts.
+
+        L16: the cut is scaled by the *concept's* plasticity (same
+        damping as the L9 disproof step): a sticky, low-plasticity belief
+        resists revising its own evidence, so it applies a gentler cut
+        than a fluid, high-plasticity one for the same base penalty."""
         mem_id = int(mem.id)
         current = float(getattr(mem, "confidence", 0.7))
-        new_conf = max(self._confidence_floor, current - self._confidence_penalty)
+        new_conf = apply_contradiction_penalty(
+            current,
+            penalty=self._confidence_penalty,
+            plasticity=float(getattr(concept, "plasticity", 0.5)),
+            floor=self._confidence_floor,
+        )
         if new_conf >= current:
             # Already at/under the floor -- nothing to lower.
             out.kept += 1

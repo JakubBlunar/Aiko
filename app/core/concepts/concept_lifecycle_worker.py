@@ -613,12 +613,21 @@ class ConceptLifecycleWorker:
 
     def _kind_plasticity(self, kind: str) -> float | None:
         """Kind-default plasticity applied on a concept's first lifecycle
-        evaluation. Identity is sticky (low plasticity => stickier decay
-        and stronger resistance to L9 disproof); other kinds keep
-        whatever L2 seeded until their own default is registered here."""
+        evaluation (L16). This is the per-concept learning rate the engine
+        damps every confidence move by -- accrual, decay, L9 disproof, and
+        the L15 revision delta -- so a sticky (low-plasticity) core trait
+        resists change in both directions.
+
+        Resolution order: the ``identity`` kind keeps its tunable
+        ``concept_identity_plasticity`` setting override; otherwise the
+        kind's registered ``plasticity_default`` band; otherwise the
+        general ``concept_default_plasticity`` setting."""
         if kind == "identity":
             return self._f("concept_identity_plasticity", 0.3)
-        return None
+        registered = get_kind(kind)
+        if registered is not None and registered.plasticity_default is not None:
+            return float(registered.plasticity_default)
+        return self._f("concept_default_plasticity", 0.5)
 
     def _mark_dependents_stale(self, concept: "Concept") -> None:
         """Meta cascade: when a base concept changes status, mark its
