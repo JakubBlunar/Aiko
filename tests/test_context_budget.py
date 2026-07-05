@@ -480,6 +480,57 @@ class RegionBuilderTests(unittest.TestCase):
         self.assertNotIn("enjoys systems thinking", region.text)
 
 
+class ConceptRenderSubjectTests(unittest.TestCase):
+    """Subject-aware framing: aiko self-concepts read in the first person,
+    not as things learned about the user."""
+
+    def _host(self):
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        class _Host(InnerLifePart1Mixin):
+            def __init__(self) -> None:
+                self._concept_store = None  # -> supporting labels resolve to []
+
+            @property
+            def user_display_name(self) -> str:
+                return "Jacob"
+
+        return _Host()
+
+    def test_groups_by_subject_with_distinct_headers(self) -> None:
+        host = self._host()
+        user_c = SimpleNamespace(
+            concept_id=1, label="Jacob values owning his data",
+            confidence=0.9, plasticity=0.3, kind="identity", subject="user",
+            last_reinforced_at=None,
+        )
+        aiko_c = SimpleNamespace(
+            concept_id=2, label="I deflect with teasing when I feel exposed",
+            confidence=0.9, plasticity=0.3, kind="identity", subject="aiko",
+            last_reinforced_at=None,
+        )
+        text, trace = host._render_relevant_concepts([user_c, aiko_c])
+        self.assertEqual(trace["reason"], "surfaced")
+        self.assertIn("understand about Jacob", text)
+        self.assertIn("understand about yourself", text)
+        # The self-concept sits under the "yourself" header, not Jacob's.
+        self_idx = text.index("understand about yourself")
+        jacob_idx = text.index("understand about Jacob")
+        self.assertGreater(text.index("I deflect with teasing"), self_idx)
+        self.assertGreater(self_idx, jacob_idx)
+
+    def test_aiko_only_uses_self_header(self) -> None:
+        host = self._host()
+        aiko_c = SimpleNamespace(
+            concept_id=2, label="I tend to over-explain",
+            confidence=0.8, plasticity=0.5, kind="identity", subject="aiko",
+            last_reinforced_at=None,
+        )
+        text, _ = host._render_relevant_concepts([aiko_c])
+        self.assertIn("understand about yourself", text)
+        self.assertNotIn("understand about Jacob", text)
+
+
 class RelevantContextResultTests(unittest.TestCase):
     def test_default_reason(self) -> None:
         rc = RelevantContext()
