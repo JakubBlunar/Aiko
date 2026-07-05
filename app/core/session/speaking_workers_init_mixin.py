@@ -284,6 +284,7 @@ class SpeakingWorkersInitMixin:
         self._self_image_worker = None
         if self._self_image_pulse_enabled:
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.persona.self_image_worker import SelfImageWorker
 
                 self._self_image_worker = SelfImageWorker(
@@ -305,6 +306,29 @@ class SpeakingWorkersInitMixin:
                             settings.agent,
                             "self_image_interest_seed_enabled",
                             True,
+                        )
+                    ),
+                    # L24: compose the self-image from her subject=aiko
+                    # concepts via the shared ConceptView. Late-bound: the
+                    # concept store + topic graph are built later in init,
+                    # so resolve the facade at pulse time. Returns None ->
+                    # falls back to raw self/reflection memories.
+                    concept_view_provider=lambda: concept_view_from(self),
+                    concept_sourced_enabled=bool(
+                        getattr(
+                            settings.agent,
+                            "self_image_concept_sourced_enabled",
+                            True,
+                        )
+                    ),
+                    min_concepts=int(
+                        getattr(settings.agent, "self_image_min_concepts", 4)
+                    ),
+                    min_concept_confidence=float(
+                        getattr(
+                            settings.agent,
+                            "self_image_min_concept_confidence",
+                            0.6,
                         )
                     ),
                 )

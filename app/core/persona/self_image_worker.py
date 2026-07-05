@@ -2,9 +2,17 @@
 
 Aiko maintains a short prose paragraph about how she sees herself —
 loaded by :class:`PromptAssembler` and prepended to the persona block.
-This worker rebuilds that paragraph at most once per UTC day from the
-top-salience self memories (``kind == "self"``) plus the latest reflection
-memories (``kind == "reflection"``).
+This worker rebuilds that paragraph at most once per UTC day.
+
+L24 makes concepts the upstream source of truth for the self-image: when
+enough mature ``subject=aiko`` concepts exist (read through the one
+:class:`~app.core.concepts.concept_view.ConceptView` facade), the pulse
+narrates *those* durable self-concepts rather than re-summarising raw
+memories from scratch each day. Until the concept layer matures (a new /
+sparse install), it falls back to the legacy path: top-salience self
+memories (``kind == "self"``) plus the latest reflection memories
+(``kind == "reflection"``). Either way the K9 interest seed still
+flavours the prompt.
 
 Why daily, not per-turn:
   - Self-image is a slow-moving narrative, not a per-turn artifact.
@@ -26,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_view import ConceptView
     from app.core.memory.memory_store import Memory, MemoryStore
     from app.llm.ollama_client import OllamaClient
 
@@ -77,6 +86,10 @@ class SelfImageWorker:
         interest_provider: "Callable[[], Any] | None" = None,
         interest_seed_enabled: bool = True,
         interest_top_n: int = 5,
+        concept_view_provider: "Callable[[], ConceptView | None] | None" = None,
+        concept_sourced_enabled: bool = True,
+        min_concepts: int = 4,
+        min_concept_confidence: float = 0.6,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -92,12 +105,22 @@ class SelfImageWorker:
         self._interest_provider = interest_provider
         self._interest_seed_enabled = bool(interest_seed_enabled)
         self._interest_top_n = max(0, int(interest_top_n))
+        # L24: late-bound provider of the shared ConceptView (built after
+        # the concept store + topic graph exist). When it yields enough
+        # mature subject=aiko concepts, the pulse narrates those instead of
+        # re-summarising raw memories; otherwise it falls back.
+        self._concept_view_provider = concept_view_provider
+        self._concept_sourced_enabled = bool(concept_sourced_enabled)
+        self._min_concepts = max(1, int(min_concepts))
+        self._min_concept_confidence = float(min_concept_confidence)
         self._stats = {
             "scheduled": 0,
             "skipped_recent": 0,
             "skipped_no_input": 0,
             "completed": 0,
             "failed": 0,
+            "source_concepts": 0,
+            "source_memories": 0,
         }
 
     # ── public ──────────────────────────────────────────────────────────
@@ -134,7 +157,15 @@ class SelfImageWorker:
             self._stats["skipped_recent"] += 1
             return None
         self._stats["scheduled"] += 1
-        bullets = self._collect_bullets()
+        # L24: prefer her durable self-concepts when the layer is mature
+        # enough; fall back to raw self/reflection memories otherwise.
+        concept_bullets = self._concept_bullets()
+        if len(concept_bullets) >= self._min_concepts:
+            bullets = concept_bullets
+            self._stats["source_concepts"] += 1
+        else:
+            bullets = self._collect_bullets()
+            self._stats["source_memories"] += 1
         if not bullets:
             self._stats["skipped_no_input"] += 1
             return None
@@ -224,6 +255,46 @@ class SelfImageWorker:
             out.append(text)
             if len(out) >= self._interest_top_n:
                 break
+        return out
+
+    def _concept_bullets(self) -> list[str]:
+        """Her active ``subject=aiko`` self-concepts as prompt bullets.
+
+        Read through the shared :class:`ConceptView` (kind-agnostic, so
+        future aiko value / boundary concepts auto-join), confidence-desc,
+        gated by ``min_concept_confidence`` and capped at ``max_self``.
+        Empty when the concept path is disabled / unwired / immature, which
+        triggers the memory fallback in :meth:`pulse`.
+        """
+        if not self._concept_sourced_enabled:
+            return []
+        if self._concept_view_provider is None:
+            return []
+        try:
+            view = self._concept_view_provider()
+        except Exception:
+            log.debug("self-image concept_view_provider raised", exc_info=True)
+            return []
+        if view is None:
+            return []
+        try:
+            concepts = view.core(
+                subject="aiko",
+                min_confidence=self._min_concept_confidence,
+                limit=self._max_self,
+            )
+        except Exception:
+            log.debug("self-image concept fetch raised", exc_info=True)
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for c in concepts:
+            label = (getattr(c, "label", "") or "").strip()
+            key = label.lower()
+            if not label or key in seen:
+                continue
+            seen.add(key)
+            out.append(label)
         return out
 
     def _collect_bullets(self) -> list[str]:

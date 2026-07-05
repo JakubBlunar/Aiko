@@ -276,5 +276,140 @@ class InterestSeedTests(unittest.TestCase):
             self.assertEqual(ollama.calls, [])
 
 
+class _FakeConcept:
+    def __init__(self, label: str, confidence: float = 0.8) -> None:
+        self.label = label
+        self.confidence = confidence
+        self.subject = "aiko"
+        self.kind = "identity"
+
+
+class _FakeConceptView:
+    """Stand-in for ConceptView.core used by the self-image worker."""
+
+    def __init__(self, concepts: list[_FakeConcept]) -> None:
+        self._concepts = concepts
+        self.calls: list[dict] = []
+
+    def core(self, *, subject=None, kind=None, min_confidence=0.0, limit=None):
+        self.calls.append(
+            {"subject": subject, "min_confidence": min_confidence, "limit": limit}
+        )
+        out = [
+            c for c in self._concepts
+            if c.subject == (subject or c.subject)
+            and c.confidence >= float(min_confidence)
+        ]
+        out.sort(key=lambda c: c.confidence, reverse=True)
+        return out[: limit] if limit is not None else out
+
+
+class ConceptSourcedTests(unittest.TestCase):
+    """L24: the pulse narrates subject=aiko concepts when the layer is
+    mature enough, falling back to raw memories otherwise."""
+
+    def _make(self, response, memories, **overrides):
+        ollama = _FakeOllama(response=response)
+        store = _FakeMemoryStore(memories or [])
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "self_image.txt"
+            kwargs = {
+                "ollama": ollama,
+                "memory_store": store,
+                "target_path": target,
+                "model": "m",
+                "min_hours_between": 24.0,
+            }
+            kwargs.update(overrides)
+            yield ollama, SelfImageWorker(**kwargs)
+
+    @staticmethod
+    def _user(ollama: _FakeOllama) -> str:
+        return next(
+            m for m in ollama.calls[0]["messages"] if m["role"] == "user"
+        )["content"]
+
+    def test_concept_path_used_when_mature(self) -> None:
+        concepts = [
+            _FakeConcept("I lead with curiosity", 0.9),
+            _FakeConcept("I tease to soften hard truths", 0.85),
+            _FakeConcept("I hold my ground on honesty", 0.8),
+            _FakeConcept("I run warm but wary", 0.75),
+        ]
+        view = _FakeConceptView(concepts)
+        mems = [_FakeMemory("raw self memory should be ignored", "self", 0.9)]
+        for ollama, worker in self._make(
+            "I'm curious and warm.",
+            mems,
+            concept_view_provider=lambda: view,
+            min_concepts=4,
+            min_concept_confidence=0.6,
+        ):
+            text = worker.pulse()
+            self.assertIsNotNone(text)
+            user = self._user(ollama)
+            self.assertIn("I lead with curiosity", user)
+            self.assertNotIn("raw self memory should be ignored", user)
+            self.assertEqual(worker.stats()["source_concepts"], 1)
+            self.assertEqual(worker.stats()["source_memories"], 0)
+            # Asked the facade for aiko concepts under the confidence gate.
+            self.assertEqual(view.calls[0]["subject"], "aiko")
+            self.assertEqual(view.calls[0]["min_confidence"], 0.6)
+
+    def test_falls_back_to_memories_when_too_few_concepts(self) -> None:
+        view = _FakeConceptView([_FakeConcept("only one concept", 0.9)])
+        mems = [
+            _FakeMemory("I value slow mornings", "self", 0.9),
+            _FakeMemory("reflection about patience", "reflection", 0.7),
+        ]
+        for ollama, worker in self._make(
+            "warm paragraph",
+            mems,
+            concept_view_provider=lambda: view,
+            min_concepts=4,
+        ):
+            text = worker.pulse()
+            self.assertIsNotNone(text)
+            user = self._user(ollama)
+            self.assertIn("slow mornings", user)
+            self.assertNotIn("only one concept", user)
+            self.assertEqual(worker.stats()["source_memories"], 1)
+            self.assertEqual(worker.stats()["source_concepts"], 0)
+
+    def test_flag_off_forces_memory_path(self) -> None:
+        concepts = [_FakeConcept(f"concept {i}", 0.9) for i in range(6)]
+        view = _FakeConceptView(concepts)
+        mems = [_FakeMemory("I value warmth", "self", 0.9)]
+        for ollama, worker in self._make(
+            "ok",
+            mems,
+            concept_view_provider=lambda: view,
+            concept_sourced_enabled=False,
+            min_concepts=4,
+        ):
+            worker.pulse()
+            user = self._user(ollama)
+            self.assertIn("I value warmth", user)
+            self.assertNotIn("concept 0", user)
+            self.assertEqual(view.calls, [])
+
+    def test_interest_seed_preserved_on_concept_path(self) -> None:
+        concepts = [_FakeConcept(f"self concept {i}", 0.9) for i in range(4)]
+        view = _FakeConceptView(concepts)
+        for ollama, worker in self._make(
+            "I'm drawn to rust lately.",
+            [],
+            concept_view_provider=lambda: view,
+            min_concepts=4,
+            interest_provider=lambda: [_FakeInterest("rust programming", 9)],
+        ):
+            text = worker.pulse()
+            self.assertIsNotNone(text)
+            user = self._user(ollama)
+            self.assertIn("self concept 0", user)
+            self.assertIn("Lately you've been spending time on:", user)
+            self.assertIn("rust programming", user)
+
+
 if __name__ == "__main__":
     unittest.main()
