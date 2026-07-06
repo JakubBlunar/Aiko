@@ -84,6 +84,17 @@ me** — neither branches on kind names. In
   (first-person for aiko). A narrative is a *closed* arc, not a rolling recency
   digest (that stays the conversation summary's job); relationship + meta
   narratives are deferred to backlog L29.
+- `aspiration` concepts (L14, `subject=user` **and** `aiko`) are the open-ended
+  sibling of narrative — the second **`sequence`** kind (same `ordinal` chain,
+  same relevance-only surfacing, **no** `surfacing_targets`), naming a
+  *direction* someone is moving in rather than a closed arc. Rendering routes
+  `family="aspiration"` through `_concept_aspiration_header` (momentum framing,
+  first-person for aiko). Beyond the T3 relevance path they also feed a
+  **proactive momentum ring**: [`AspirationMomentumWorker`](../app/core/proactive/aspiration_momentum_worker.py)
+  reads active aspirations through `ConceptView` (the L24 contract — never the
+  store directly), and — staleness-driven — drafts a private check-in cue into
+  the `aiko.aspiration_momentum` kv ring; `_render_aspiration_momentum_block`
+  surfaces it as a watermark-gated T6 hint the chat model phrases in-context.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —
@@ -102,7 +113,7 @@ isn't derived twice.
 | user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | deferred (L28) |
 | cluster annotation | concepts spanning a cluster | `interest_map` via `for_cluster` | deferred (L28) |
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
-| aspirations / trajectory | aspiration concepts | `goals` | deferred (L14 + L28) |
+| aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |
 
 ## Recipe for a new consumer
 

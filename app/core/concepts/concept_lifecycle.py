@@ -305,6 +305,46 @@ def narrative_evidence_gate(
     )
 
 
+# Built-in bars for an *aspiration* concept (L14). Aspiration is the
+# open-ended sibling of narrative -- an ordered chain that shows a *direction*
+# rather than a resolved arc -- so its structural floors mirror narrative's,
+# with one difference: a trajectory must be *sustained* to be believable, so
+# the age floor is higher (a direction seen only over a day or two is noise,
+# not a trajectory). ``distinct_source_count`` is again the chain length. The
+# "consistent direction" judgement itself lives upstream (the proposer only
+# emits a NEW aspiration the LLM marked ``directional``) plus a minimum
+# evidence *span* enforced by the worker; this gate is the structural floor.
+_ASPIRATION_MIN_SOURCES = 3
+_ASPIRATION_MIN_AGE_DAYS = 3.0
+_ASPIRATION_MIN_CONFIDENCE = 0.6
+
+
+def aspiration_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``aspiration`` concepts (L14).
+
+    Same shape as :func:`narrative_evidence_gate` (``distinct_source_count``
+    is the ordered chain length), but with a higher age floor so a direction
+    has to persist before it promotes. The caller's thresholds still win when
+    they are higher, via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _ASPIRATION_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _ASPIRATION_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _ASPIRATION_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -317,4 +357,5 @@ __all__ = [
     "affective_evidence_gate",
     "ritual_evidence_gate",
     "narrative_evidence_gate",
+    "aspiration_evidence_gate",
 ]

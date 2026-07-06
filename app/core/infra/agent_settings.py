@@ -501,6 +501,19 @@ class AgentSettings:
     # MemorySettings (``concept_synthesis_narrative_*`` /
     # ``concept_synthesis_max_narrative_*``).
     narrative_synthesis_enabled: bool = True
+    # L14 aspiration/trajectory synthesis (the open-ended sibling of narrative;
+    # the second ``sequence`` kind). When enabled, the synthesis worker's
+    # aspiration pass mines each subject's topic clusters for sustained
+    # *directions* (spanning real time). Off just skips that one pass.
+    # Thresholds live under MemorySettings (``concept_synthesis_aspiration_*`` /
+    # ``concept_synthesis_max_aspiration_*``).
+    aspiration_synthesis_enabled: bool = True
+    # L14 proactive momentum callbacks: the AspirationMomentumWorker drafts an
+    # occasional, staleness-driven cue so Aiko can gently check in on an active
+    # aspiration's journey (cue producer, phrased in-context -- not verbatim).
+    # Off skips the worker and its prompt block. Cadence/thresholds live under
+    # MemorySettings (``aspiration_momentum_*``).
+    aspiration_momentum_enabled: bool = True
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

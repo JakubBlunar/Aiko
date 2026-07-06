@@ -194,6 +194,12 @@ class DetectorsInitMixin:
         # ``_growth_witness_force_next`` is the MCP debug bypass.
         self._growth_witness_force_next: bool = False
         self._growth_witness_worker: Any = None
+        # L14 aspiration-momentum — watermark-gated cue-producer. The worker
+        # (set in speaking_workers_init) drafts an occasional "check in on
+        # where they're heading" cue; ``_aspiration_momentum_force_next`` is
+        # the MCP debug bypass.
+        self._aspiration_momentum_force_next: bool = False
+        self._aspiration_momentum_worker: Any = None
         # K72 wellbeing-concern producer + MCP surfacing bypass.
         self._wellbeing_concern_force_next: bool = False
         self._wellbeing_concern_worker: Any = None

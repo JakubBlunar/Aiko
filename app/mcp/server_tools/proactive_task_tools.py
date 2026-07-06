@@ -1253,6 +1253,56 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_growth_witness_surface raised: {exc}"
 
     @mcp.tool()
+    def force_aspiration_momentum_draft() -> str:
+        """L14 — run the aspiration-momentum worker once, right now.
+
+        Arms a one-shot bypass of the staleness + per-concept cooldown +
+        signature gates, then calls ``run()`` directly so a cue is drafted
+        into the ``aiko.aspiration_momentum`` ring immediately (when any
+        active ``aspiration`` concept exists). Pairs with
+        ``force_aspiration_momentum_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_aspiration_momentum_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_aspiration_momentum_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_aspiration_momentum_surface() -> str:
+        """Arm a one-shot bypass on the aspiration-momentum cue watermark.
+
+        Sets ``_aspiration_momentum_force_next`` so the next provider call
+        ignores the last-surfaced watermark. The ring still has to be
+        non-empty (run ``force_aspiration_momentum_draft`` first if it isn't).
+
+        Repro: ``force_aspiration_momentum_draft()`` ->
+        ``force_aspiration_momentum_surface()`` -> ``send_message(skip_tts=
+        true)`` -> confirm the "A direction ... has been quietly building
+        toward" line in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._aspiration_momentum_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the aspiration-momentum "
+                        "watermark; ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_aspiration_momentum_surface raised: {exc}"
+
+    @mcp.tool()
     def get_self_callback_state() -> str:
         """K71 — dump the self-callback worker + surfacing state.
 

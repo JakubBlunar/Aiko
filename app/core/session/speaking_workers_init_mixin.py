@@ -644,6 +644,7 @@ class SpeakingWorkersInitMixin:
             follow_up=self._render_follow_up_block,
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
+            aspiration_momentum=self._render_aspiration_momentum_block,
             wellbeing_concern=self._render_wellbeing_concern_block,
             shared_ritual=self._render_shared_ritual_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
@@ -2037,6 +2038,95 @@ class SpeakingWorkersInitMixin:
                         )
                         self._concept_edge_reconciler = None
                         self._concept_edge_integrity_worker = None
+
+                # L14: AspirationMomentumWorker. Occasional staleness-driven
+                # producer that drafts a private "check in on where they're
+                # heading" cue over an active ``aspiration`` concept (read via a
+                # ConceptView, per L24). Consumer side is
+                # ``_render_aspiration_momentum_block``. Needs the concept store;
+                # opt-in via ``concepts_enabled`` AND
+                # ``aspiration_momentum_enabled``. Non-fatal on failure.
+                self._aspiration_momentum_worker = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            settings.agent, "aspiration_momentum_enabled", True
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_view import (
+                            concept_view_from,
+                        )
+                        from app.core.proactive.aspiration_momentum_worker import (  # noqa: E501
+                            AspirationMomentumWorker,
+                        )
+
+                        mem = self._memory_settings
+                        self._aspiration_momentum_worker = (
+                            AspirationMomentumWorker(
+                                kv_get=self._chat_db.kv_get,
+                                kv_set=self._chat_db.kv_set,
+                                view_provider=lambda: concept_view_from(self),
+                                user_display_name_provider=(
+                                    lambda: self.user_display_name
+                                ),
+                                enabled_provider=lambda: bool(
+                                    getattr(
+                                        self._settings.agent,
+                                        "aspiration_momentum_enabled",
+                                        True,
+                                    )
+                                ),
+                                interval_seconds=float(
+                                    getattr(
+                                        mem,
+                                        "aspiration_momentum_interval_seconds",
+                                        21600.0,
+                                    )
+                                ),
+                                cooldown_days=float(
+                                    getattr(
+                                        mem,
+                                        "aspiration_momentum_cooldown_days",
+                                        10.0,
+                                    )
+                                ),
+                                min_confidence=float(
+                                    getattr(
+                                        mem,
+                                        "aspiration_momentum_min_confidence",
+                                        0.6,
+                                    )
+                                ),
+                                staleness_min_days=float(
+                                    getattr(
+                                        mem,
+                                        "aspiration_momentum_staleness_min_days",
+                                        7.0,
+                                    )
+                                ),
+                                journal_max=int(
+                                    getattr(
+                                        mem,
+                                        "aspiration_momentum_journal_max",
+                                        4,
+                                    )
+                                ),
+                            )
+                        )
+                        self._idle_scheduler.register(
+                            self._aspiration_momentum_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "AspirationMomentumWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._aspiration_momentum_worker = None
 
                 # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
                 # likely upcoming questions during idle windows so the

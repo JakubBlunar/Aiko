@@ -192,6 +192,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K71: rare "close the loop on my own past" cue (her continuity).
         # Sibling of growth_witness — watermark-gated cue-producer.
         "self_callback_block",
+        # L14: occasional staleness-driven "check in on where they're
+        # heading" cue over an active aspiration concept. Sibling
+        # cue-producer; watermark-gated one-shot drafted by
+        # AspirationMomentumWorker.
+        "aspiration_momentum_block",
         # K72: rare, hard-gated "you doing okay?" wellbeing concern.
         # Sibling cue-producer; watermark-gated one-shot, drops on deflect.
         "wellbeing_concern_block",
@@ -597,6 +602,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # intention" beat. Watermark-gated one-shot, independent of the
         # gap-return cue family (like growth_witness / follow_up).
         self._self_callback_provider: Callable[[], str] | None = None
+        # L14 aspiration-momentum cue. Consumer of the
+        # AspirationMomentumWorker ring; surfaces an occasional, private
+        # "check in on where they're heading" nudge over an active
+        # aspiration. Watermark-gated one-shot, sibling of growth_witness /
+        # self_callback.
+        self._aspiration_momentum_provider: Callable[[], str] | None = None
         # K-time3: upcoming-horizon cue. A forward sweep over future_plan
         # rows due within the horizon window, rendered with the relative
         # times pre-resolved so the model never recomputes a future date.
@@ -1715,6 +1726,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("self_callback provider raised", exc_info=True)
                     self_callback_block = ""
 
+        # L14 aspiration momentum: occasional "check in on where they're
+        # heading" cue. Built every turn (consumes a watermark) but almost
+        # always empty. Watermark-gated, sibling of growth_witness.
+        aspiration_momentum_block = ""
+        if getattr(self, "_aspiration_momentum_provider", None) is not None:
+            with _timed_phase(provider_ms, "aspiration_momentum"):
+                try:
+                    aspiration_momentum_block = (
+                        self._aspiration_momentum_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "aspiration_momentum provider raised", exc_info=True
+                    )
+                    aspiration_momentum_block = ""
+
         # K72 wellbeing concern: rare, hard-gated "you doing okay?" cue.
         # Built every turn (consumes a watermark) but almost always empty.
         wellbeing_concern_block = ""
@@ -2686,6 +2713,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # after the K70 growth-witness cue — both are watermark-gated
             # cue-producer surfaces (her continuity vs his growth).
             system_parts.append(self_callback_block)
+        if aspiration_momentum_block:
+            # L14: occasional "check in on where they're heading" cue over
+            # an active aspiration. Sits with the growth_witness /
+            # self_callback cue-producer family; watermark-gated one-shot.
+            system_parts.append(aspiration_momentum_block)
         if wellbeing_concern_block:
             # K72: rare, hard-gated "you doing okay?" concern. Sits with
             # the growth_witness / self_callback cue-producer family;

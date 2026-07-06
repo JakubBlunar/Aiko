@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 
 from app.core.concepts.concept_lifecycle import (
     affective_evidence_gate,
+    aspiration_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
@@ -310,6 +311,34 @@ register_kind(
         # L24 / L27: arcs are recalled when the live turn touches them, not
         # pinned every turn -> no ``surfacing_targets`` (relevance-only for both
         # subjects) and they do NOT join the always-on core lane.
+    )
+)
+
+
+# ── L14: aspiration (trajectory) ──────────────────────────────────────
+# The open-ended sibling of narrative: not a *closed* arc but a *direction*
+# someone is moving in ("building toward a fully self-hosted life"; for aiko,
+# first-person "growing into someone he can rely on"). Reuses the ``sequence``
+# evidence model (ordered chain on ``concept_edges.ordinal``) but promotes on a
+# consistent direction sustained over time rather than a resolution. Subject-
+# parameterized (user + aiko) exactly like narrative; the per-row ``subject``
+# varies. Distinct from Aiko's concrete K1 goals (actionable to-dos) -- an
+# aspiration is who she is *becoming*, not a task.
+register_kind(
+    ConceptKind(
+        name="aspiration",
+        subject="user",
+        evidence_model="sequence",
+        # L16: a direction is durable but *evolves* as progress happens -> a
+        # mid band, more fluid than a settled narrative arc (0.3) but stickier
+        # than affect (0.5).
+        plasticity_default=0.4,
+        # L3: the aspiration gate -- >= 3 ordered steps, a *higher* age floor
+        # than narrative (a trajectory must be sustained), moderate confidence.
+        promotion_gate=aspiration_evidence_gate,
+        # L24 / L27: aspirations surface when the live turn touches them (T3
+        # relevance) AND via the proactive momentum worker -> no
+        # ``surfacing_targets`` and NOT in the always-on core lane.
     )
 )
 

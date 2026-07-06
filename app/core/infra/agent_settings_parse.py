@@ -212,6 +212,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             narrative_synthesis_enabled=bool(
                 agent_raw.get("narrative_synthesis_enabled", True),
             ),
+            aspiration_synthesis_enabled=bool(
+                agent_raw.get("aspiration_synthesis_enabled", True),
+            ),
+            aspiration_momentum_enabled=bool(
+                agent_raw.get("aspiration_momentum_enabled", True),
+            ),
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),

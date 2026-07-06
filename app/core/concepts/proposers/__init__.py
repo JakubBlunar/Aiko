@@ -40,12 +40,21 @@ self-concept can be grounded by a theme, a memory, or a mix.
   loaded in temporal order -- and name any that form a beginning->development
   ->resolution story. Evidence is the ordered chain (``memory`` edges carrying
   ordinals). Only the voice differs (user third-person / aiko first-person).
+- ``aspiration_user`` / ``aspiration_aiko`` -- *aspiration* (an open-ended
+  direction; L14). The open-ended sibling of narrative and the second
+  ``sequence``-evidence kind: they mine the ``"aspiration"`` population (the
+  same temporally-ordered candidates, filtered to span real time) and name any
+  that show a *sustained direction* rather than a closed arc. Shares the
+  :func:`propose_ordered_concept` body with narrative (gate flag
+  ``"directional"`` vs ``"closed"``).
 """
 from __future__ import annotations
 
 from app.core.concepts.proposers import (
     affective_aiko,
     affective_user,
+    aspiration_aiko,
+    aspiration_user,
     identity_aiko,
     identity_user,
     narrative_aiko,
@@ -68,11 +77,14 @@ from app.core.concepts.proposers.base import (
     format_existing,
     propose_aiko_hybrid,
     propose_narrative,
+    propose_ordered_concept,
     resolve_reinforces,
     snippet,
 )
 from app.core.concepts.proposers.affective_aiko import propose_affective_aiko
 from app.core.concepts.proposers.affective_user import propose_affective_user
+from app.core.concepts.proposers.aspiration_aiko import propose_aspiration_aiko
+from app.core.concepts.proposers.aspiration_user import propose_aspiration_user
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
 from app.core.concepts.proposers.narrative_aiko import propose_narrative_aiko
@@ -93,6 +105,8 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     relationship_ritual.SPEC,
     narrative_user.SPEC,
     narrative_aiko.SPEC,
+    aspiration_user.SPEC,
+    aspiration_aiko.SPEC,
 )
 
 
@@ -112,11 +126,14 @@ __all__ = [
     "propose_affective_aiko",
     "propose_affective_user",
     "propose_aiko_hybrid",
+    "propose_aspiration_aiko",
+    "propose_aspiration_user",
     "propose_identity_aiko",
     "propose_identity_user",
     "propose_narrative",
     "propose_narrative_aiko",
     "propose_narrative_user",
+    "propose_ordered_concept",
     "propose_relationship_ritual",
     "propose_value_aiko",
     "propose_value_user",

@@ -1794,9 +1794,16 @@ class WellbeingConcernProviderSlotTests(unittest.TestCase):
 
         t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
         self.assertIn("wellbeing_concern_block", t6)
+        # L14 inserted aspiration_momentum_block between self_callback and
+        # wellbeing_concern (all cue-producer family siblings).
+        self.assertIn("aspiration_momentum_block", t6)
+        self.assertEqual(
+            t6.index("aspiration_momentum_block"),
+            t6.index("self_callback_block") + 1,
+        )
         self.assertEqual(
             t6.index("wellbeing_concern_block"),
-            t6.index("self_callback_block") + 1,
+            t6.index("aspiration_momentum_block") + 1,
         )
 
 

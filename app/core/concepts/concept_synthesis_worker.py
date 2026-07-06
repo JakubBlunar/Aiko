@@ -76,6 +76,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    """Best-effort ISO-8601 -> aware ``datetime`` (``None`` on junk). Used by
+    the L14 span computation to measure how much time an aspiration covers."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _salvage_concepts(text: str) -> list[dict[str, Any]]:
     """Recover complete concept objects from a truncated JSON response.
 
@@ -407,6 +426,66 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _aspiration_min_chain(self) -> int:
+        """L14: minimum ordered steps a candidate cluster must resolve to before
+        it is offered as a trajectory. Also the proposer's new-aspiration floor."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_aspiration_min_chain",
+                    3,
+                )
+            ),
+        )
+
+    @property
+    def _aspiration_min_span_days(self) -> float:
+        """L14: minimum number of days the ordered evidence must span before a
+        cluster is offered as a trajectory -- a *direction* has to persist over
+        time, not just accumulate in a single sitting."""
+        return max(
+            0.0,
+            float(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_aspiration_min_span_days",
+                    14.0,
+                )
+            ),
+        )
+
+    @property
+    def _max_aspiration_clusters_per_run(self) -> int:
+        """L14: cap on candidate trajectories offered to the aspiration proposer
+        per run (per subject) -- bounds the prompt / LLM cost."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_aspiration_clusters_per_run",
+                    3,
+                )
+            ),
+        )
+
+    @property
+    def _max_aspiration_memories(self) -> int:
+        """L14: cap on member memories loaded per candidate trajectory."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_aspiration_memories",
+                    40,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -476,6 +555,7 @@ class ConceptSynthesisWorker:
             "affect_dirty": False,
             "ritual_dirty": False,
             "narrative_dirty": False,
+            "aspiration_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -492,6 +572,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_ritual_pass(ctx, spec, stats, force)
                 elif spec.population == "narrative":
                     proposals = self._run_narrative_pass(ctx, spec, stats, force)
+                elif spec.population == "aspiration":
+                    proposals = self._run_aspiration_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -992,27 +1074,30 @@ class ConceptSynthesisWorker:
             existing=self._existing_for(spec),
         )
 
-    # ── narrative pass (L8) ─────────────────────────────────────────────
+    # ── ordered-sequence passes (L8 narrative + L14 aspiration) ─────────
 
-    def _run_narrative_pass(
+    def _ordered_candidates(
         self,
-        ctx: ProposerContext,
         spec: ProposerSpec,
         stats: dict[str, Any],
-        force: bool = False,
-    ) -> list[CandidateProposal]:
-        """L8 narrative pass: offer each subject-dominant topic cluster's member
-        memories, in temporal order, as a candidate causal arc. The proposer
-        names any that form a *closed* story and cites the ordered chain; the
-        chain order is written to ``concept_edges.ordinal`` (the first
-        ``sequence`` kind). Subject-parameterized (``spec.subject`` = user /
-        aiko) exactly like affect. Per-subject size/label dirty-tracking so a
-        settled corpus is a fast no-op."""
-        if not bool(
-            getattr(self._agent_settings, "narrative_synthesis_enabled", True)
-        ):
-            return []
+        *,
+        dirty_stat_key: str,
+        force: bool,
+        min_chain: int,
+        max_clusters: int,
+        max_memories: int,
+        min_span_days: float = 0.0,
+    ) -> list[NarrativeCandidate]:
+        """Shared candidate-builder for the ``sequence`` passes.
 
+        Offers each subject-dominant topic cluster's member memories in
+        temporal order as a :class:`NarrativeCandidate`, with per-subject
+        size/label dirty-tracking so a settled corpus is a fast no-op. L8
+        narrative calls it with ``min_span_days=0`` (closure, not span, is its
+        bar); L14 aspiration passes a span floor (a trajectory must cover
+        time). ``dirty_stat_key`` is OR-in'd True (never reset) because the two
+        subject passes share one stat, so an empty aiko pass must not clobber a
+        dirty user pass."""
         subject = spec.subject
         subject_clusters = self._dominant_clusters(subject)
         if not subject_clusters:
@@ -1020,13 +1105,13 @@ class ConceptSynthesisWorker:
         try:
             clusters = self._topic_graph.topic_clusters()
         except Exception:
-            log.debug("topic_clusters failed (narrative pass)", exc_info=True)
+            log.debug("topic_clusters failed (sequence pass)", exc_info=True)
             clusters = []
         by_rep = {int(c.representative_id): c for c in clusters}
-        min_chain = self._narrative_min_chain
 
-        # Size/label drift dirty-tracking under the subject's narrative sig.
-        sig_key = spec.sig_key or ("concept_synth.narrative_sig." + subject)
+        sig_key = spec.sig_key or (
+            "concept_synth." + spec.kind + "_sig." + subject
+        )
         sigs = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
         dirty: list[tuple[int, str, int, int, bool]] = []  # rep,label,size,drift,new
@@ -1043,13 +1128,11 @@ class ConceptSynthesisWorker:
 
         if not dirty:
             return []
-        # OR-in True (never reset): user + aiko narrative passes share this
-        # stat, so an empty aiko pass must not clobber a dirty user pass.
-        stats["narrative_dirty"] = True
+        stats[dirty_stat_key] = True
 
         # Never-processed first, then largest drift.
         dirty.sort(key=lambda d: (0 if d[4] else 1, -d[3]))
-        focus_rows = dirty[: self._max_narrative_clusters_per_run]
+        focus_rows = dirty[:max_clusters]
 
         candidates: list[NarrativeCandidate] = []
         for rep, label, _size, _drift, _new in focus_rows:
@@ -1058,19 +1141,22 @@ class ConceptSynthesisWorker:
                 continue
             mems = self._ordered_memories(cluster.member_ids)
             if len(mems) < min_chain:
-                # Too short to be a story yet -- still marked processed below so
+                # Too short to be a chain yet -- still marked processed below so
                 # it doesn't re-run until it actually grows.
+                continue
+            if min_span_days > 0 and self._span_days(mems) < min_span_days:
+                # Not enough time covered for a *sustained* direction (L14).
                 continue
             candidates.append(
                 NarrativeCandidate(
                     rep=int(rep),
                     label=label,
                     subject=subject,
-                    memories=mems[: self._max_narrative_memories],
+                    memories=mems[:max_memories],
                 )
             )
 
-        # Persist sigs: processed focus reps fresh (even the too-short ones, so
+        # Persist sigs: processed focus reps fresh (even the skipped ones, so
         # they only re-run once they grow); unprocessed dirty reps keep their
         # old signature so they drain next run (mirrors the cluster pass).
         processed = {rep for rep, _l, _s, _d, _n in focus_rows}
@@ -1082,7 +1168,34 @@ class ConceptSynthesisWorker:
             elif str(rep) in sigs:
                 new_sigs[str(rep)] = sigs[str(rep)]
         self._save_sigs(sig_key, new_sigs)
+        return candidates
 
+    def _run_narrative_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L8 narrative pass: offer each subject-dominant topic cluster's member
+        memories, in temporal order, as a candidate *closed* causal arc. The
+        chain order is written to ``concept_edges.ordinal`` (the first
+        ``sequence`` kind). Subject-parameterized (``spec.subject`` = user /
+        aiko). Per-subject size/label dirty-tracking via the shared builder."""
+        if not bool(
+            getattr(self._agent_settings, "narrative_synthesis_enabled", True)
+        ):
+            return []
+        min_chain = self._narrative_min_chain
+        candidates = self._ordered_candidates(
+            spec,
+            stats,
+            dirty_stat_key="narrative_dirty",
+            force=force,
+            min_chain=min_chain,
+            max_clusters=self._max_narrative_clusters_per_run,
+            max_memories=self._max_narrative_memories,
+        )
         if not candidates:
             return []
         return spec.propose(
@@ -1091,6 +1204,60 @@ class ConceptSynthesisWorker:
             min_chain=min_chain,
             existing=self._existing_for(spec),
         )
+
+    def _run_aspiration_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L14 aspiration pass: the open-ended sibling of narrative. Offers the
+        same temporally-ordered candidates, but with a minimum evidence *span*
+        (a trajectory must cover time) and lets the proposer name a *direction*
+        rather than a closed arc. Gated by ``agent.aspiration_synthesis_enabled``."""
+        if not bool(
+            getattr(self._agent_settings, "aspiration_synthesis_enabled", True)
+        ):
+            return []
+        min_chain = self._aspiration_min_chain
+        candidates = self._ordered_candidates(
+            spec,
+            stats,
+            dirty_stat_key="aspiration_dirty",
+            force=force,
+            min_chain=min_chain,
+            max_clusters=self._max_aspiration_clusters_per_run,
+            max_memories=self._max_aspiration_memories,
+            min_span_days=self._aspiration_min_span_days,
+        )
+        if not candidates:
+            return []
+        return spec.propose(
+            ctx,
+            candidates=candidates,
+            min_chain=min_chain,
+            existing=self._existing_for(spec),
+        )
+
+    @staticmethod
+    def _span_days(mems: list[Any]) -> float:
+        """Days between the earliest and latest member's effective timestamp
+        (``event_time`` when set, else ``created_at``). ``0`` when it can't be
+        parsed. ``mems`` is assumed already in temporal order."""
+        def _eff(m: Any) -> str:
+            et = getattr(m, "event_time", None)
+            if isinstance(et, str) and et.strip():
+                return et
+            return str(getattr(m, "created_at", "") or "")
+
+        if len(mems) < 2:
+            return 0.0
+        first = _parse_iso(_eff(mems[0]))
+        last = _parse_iso(_eff(mems[-1]))
+        if first is None or last is None:
+            return 0.0
+        return abs((last - first).total_seconds()) / 86400.0
 
     def _ordered_memories(self, member_ids: "tuple[int, ...] | list[int]") -> list[Any]:
         """Resolve ``member_ids`` to Memory rows in **temporal order** -- by

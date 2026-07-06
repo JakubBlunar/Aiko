@@ -198,6 +198,8 @@ class LifecycleMixin:
         self._growth_witness_force_next = False
         # K71 self-callback: clear the MCP force-next flag on switch.
         self._self_callback_force_next = False
+        # L14 aspiration-momentum: clear the MCP force-next flag on switch.
+        self._aspiration_momentum_force_next = False
         # K72 wellbeing-concern: clear the MCP force-next flag on switch.
         self._wellbeing_concern_force_next = False
         # K73 shared-ritual: clear the MCP force-next flag on switch.
@@ -328,6 +330,8 @@ class LifecycleMixin:
         self._growth_witness_force_next = False
         # K71 self-callback: clear the MCP force-next flag on a full wipe.
         self._self_callback_force_next = False
+        # L14 aspiration-momentum: clear the MCP force-next flag on a full wipe.
+        self._aspiration_momentum_force_next = False
         # K72 wellbeing-concern: clear the MCP force-next flag on a wipe.
         self._wellbeing_concern_force_next = False
         # K73 shared-ritual: clear the MCP force-next flag on a wipe.
