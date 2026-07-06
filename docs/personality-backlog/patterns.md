@@ -456,17 +456,13 @@ cluster-aware re-anchor, kept not retired). K65d ✅ shipped. K65e ✅ shipped.
   redundant and should be merged into the curiosity family / retired. Decide
   with a quick overlap audit before adding more curiosity surface.
 
-- **K65d. ✅ shipped.** Seed self-image from the interest map.
-  [`SelfImageWorker`](../../app/core/persona/self_image_worker.py) still
-  rebuilds `data/persona/self_image.txt` daily from top-salience `self` +
-  `reflection` memories, but now also folds the K9 `interest_map` into the
-  pulse: when `agent.self_image_interest_seed_enabled` (default on) and the
-  graph yields labelled clusters, the prompt gains a "Lately you've been
-  spending time on: X, Y, Z" line plus a system rule permitting one natural
-  "lately I've been drawn to …" phrase, so her self-narrative can reflect
-  what she's been engaging with. Cold / non-persistent graph → no interest
-  line (byte-identical legacy prompt); the interest map is a *flavour*, not
-  an input source, so an empty self/reflection set still skips the pulse.
+- **K65d. ✅ shipped, then removed.** Seed self-image from the interest map.
+  This folded the K9 `interest_map` into the daily `SelfImageWorker` pulse
+  ("Lately you've been spending time on: X, Y, Z"). **The whole
+  `SelfImageWorker` / `self_image.txt` / T0 `self_image_block` path has since
+  been removed** — Aiko's self-model is now carried entirely by `subject=aiko`
+  concepts surfacing through the T3 `relevant_context` core lane. See L24 in
+  [`concepts.md`](concepts.md).
   See [shipped doc](shipped/patterns-k31-k60.md#k65d-seed-self-image-from-the-interest-map).
 
 - **K65e. ✅ shipped.** Ground the DreamWorker in the day's hot cluster.

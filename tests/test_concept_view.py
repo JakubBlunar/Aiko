@@ -4,7 +4,8 @@ Covers the single read path (``core`` / ``relevant`` / ``for_target`` /
 ``for_cluster`` / ``evidence_labels``), subject/kind/confidence filtering,
 empty + missing-dep degradation, and the authoritative
 ``surfacing_targets`` -> ``kinds_for_target`` routing (identity feeds
-``profile_block`` for the user, ``self_image_block`` for Aiko).
+``profile_block`` for the user; ``subject=aiko`` concepts have no named
+for_target block -- they surface via the T3 relevant_context path).
 """
 from __future__ import annotations
 
@@ -178,7 +179,7 @@ class RelevantTests(unittest.TestCase):
 
 
 class ForTargetTests(unittest.TestCase):
-    def test_identity_routes_per_subject(self) -> None:
+    def test_user_identity_routes_to_profile_block(self) -> None:
         store = _FakeStore([
             _c(1, subject="user", confidence=0.8),
             _c(2, subject="aiko", confidence=0.9),
@@ -186,8 +187,15 @@ class ForTargetTests(unittest.TestCase):
         view = ConceptView(store)
         user = view.for_target("profile_block", subject="user")
         self.assertEqual([c.concept_id for c in user], [1])
-        aiko = view.for_target("self_image_block", subject="aiko")
-        self.assertEqual([c.concept_id for c in aiko], [2])
+
+    def test_aiko_has_no_for_target_block(self) -> None:
+        # subject=aiko concepts surface via the T3 relevant_context path,
+        # not a named for_target block; self_image_block was removed.
+        store = _FakeStore([_c(2, subject="aiko", confidence=0.9)])
+        self.assertEqual(
+            ConceptView(store).for_target("self_image_block", subject="aiko"),
+            [],
+        )
 
     def test_unknown_target_empty(self) -> None:
         store = _FakeStore([_c(1)])
@@ -246,13 +254,14 @@ class ValueKindTests(unittest.TestCase):
     """L10: the ``value`` kind rides the same routing + core-lane machinery
     as identity, but with a higher core-lane bar."""
 
-    def test_value_routes_per_subject_like_identity(self) -> None:
+    def test_value_routes_user_like_identity(self) -> None:
         from app.core.concepts.concept_kinds import get_kind
 
         value = get_kind("value")
         assert value is not None
         self.assertEqual(target_for(value, "user"), "profile_block")
-        self.assertEqual(target_for(value, "aiko"), "self_image_block")
+        # subject=aiko value has no dedicated for_target block anymore.
+        self.assertNotIn("aiko", value.surfacing_targets)
 
     def test_value_in_core_lane_kinds(self) -> None:
         from app.core.concepts.concept_kinds import core_lane_kinds
@@ -280,17 +289,15 @@ class KindRoutingTests(unittest.TestCase):
         identity = get_kind("identity")
         assert identity is not None
         self.assertEqual(target_for(identity, "user"), "profile_block")
-        self.assertEqual(target_for(identity, "aiko"), "self_image_block")
+        # subject=aiko identity has no dedicated for_target block anymore.
+        self.assertNotIn("aiko", identity.surfacing_targets)
 
     def test_kinds_for_target_resolves(self) -> None:
         self.assertIn(
             "identity", kinds_for_target("profile_block", subject="user"),
         )
-        self.assertIn(
-            "identity", kinds_for_target("self_image_block", subject="aiko"),
-        )
-        # Subject-agnostic query sees both targets of the kind.
-        self.assertIn("identity", kinds_for_target("self_image_block"))
+        # self_image_block was removed: no kind routes to it.
+        self.assertEqual(kinds_for_target("self_image_block"), set())
         self.assertEqual(kinds_for_target("nonexistent"), set())
 
     def test_scalar_fallback_when_no_map(self) -> None:

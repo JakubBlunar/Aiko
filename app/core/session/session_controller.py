@@ -958,14 +958,10 @@ class SessionController(
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
 
         # ── Prompt + workers + runner ────────────────────────────────────
-        self_image_path = (
-            Path(__file__).resolve().parents[3] / "data" / "persona" / "self_image.txt"
-        )
         self._prompt_assembler = PromptAssembler(
             self._chat_db,
             memory_retriever=self._memory_retriever,
             rag_retriever=getattr(self, "_rag_retriever", None),
-            self_image_path=self_image_path,
             history_age_prefix_enabled=bool(
                 getattr(self._settings.agent, "history_age_prefix_enabled", True)
             ),
@@ -1039,7 +1035,7 @@ class SessionController(
         # Phase 2c: ReflectionWorker — LLM journal that runs inside the
         # speaking window at low priority. Writes open_question / callback
         # / reflection memories that the RAG retriever surfaces later.
-        self._init_speaking_workers(settings, self_image_path)
+        self._init_speaking_workers(settings)
 
         # ── Speaking-window scheduler (Phase 2a) ─────────────────────
         # Drains LLM-driven background jobs while Aiko is mid-TTS so the
@@ -1108,7 +1104,6 @@ class SessionController(
         "_dream_worker",
         "_curiosity_worker",
         "_promise_worker",
-        "_self_image_worker",
         "_relationship_pulse",
         "_idle_fact_checker",
         "_curiosity_seed_worker",

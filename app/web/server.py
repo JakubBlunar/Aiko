@@ -148,7 +148,7 @@ import mimetypes as _mimetypes
 
 _mimetypes.add_type("application/manifest+json", ".webmanifest")
 # ``data/persona`` is unrelated to the Live2D pipeline — it stores the
-# self-image text used by the inner-life prompt. We rename the static
+# editable persona text used by the prompt. We rename the static
 # mount to ``/persona-text/`` so it doesn't collide with the new
 # ``/avatar/`` mount and so future readers don't confuse the two.
 _PERSONA_TEXT_DIR = _PROJECT_ROOT / "data" / "persona"
@@ -919,7 +919,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         name="attachment-files",
     )
 
-    # Self-image text mount (data/persona/self_image.txt). Renamed to
+    # Persona text mount (serves files under data/persona/). Named
     # ``/persona-text/`` to avoid the singular-vs-plural footgun the
     # avatar work introduced.
     if _PERSONA_TEXT_DIR.exists():

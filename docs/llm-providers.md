@@ -177,7 +177,7 @@ Inspect the live cache state from MCP with `get_client_cache_stats()`:
   `GoalWorker`, `IdleCuriosityWorker`, `ArcSmootherWorker`,
   `MomentDetector`, `NarrativeWeaver`, `PromiseExtractor`,
   `MemoryConsolidator`, `RelationshipPulseWorker`, `UserProfileWorker`,
-  `DialogueActTagger`, `AgendaWorker`, `SelfImageWorker`,
+  `DialogueActTagger`, `AgendaWorker`,
   `SummaryWorker`, and a few more). Built from `routes.worker_default`
   (currently still falls back to `chat_llm.workers_use_local` for
   back-compat — Phase 3 will route purely off `worker_default`).

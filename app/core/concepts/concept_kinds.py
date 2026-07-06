@@ -39,8 +39,10 @@ Each kind declares:
 - ``surfacing_targets`` -- the **authoritative** (L24) per-subject
   routing map (``subject -> target``), because the same kind can feed
   different consumers depending on subject (e.g. ``identity`` feeds the
-  user ``profile_block`` for ``subject=user`` but the ``self_image_block``
-  for ``subject=aiko``). A ``"*"`` key is the wildcard for any other
+  user ``profile_block`` for ``subject=user``). ``subject=aiko`` concepts
+  are *not* routed to a named for_target block -- they surface every turn
+  through the T3 ``relevant_context`` path (core lane + relevance), so
+  they have no entry here. A ``"*"`` key is the wildcard for any other
   subject; an empty map falls back to ``surfacing_target``. Consumers
   don't read this directly -- they call :func:`kinds_for_target`
   (via ``ConceptView.for_target``), so a new kind auto-flows to its
@@ -203,13 +205,12 @@ register_kind(
         # sources + age-stability + confidence). The worker falls back to
         # this same gate for any kind that doesn't supply its own.
         promotion_gate=set_evidence_gate,
-        # L24: identity is the same kind for both subjects but feeds
-        # different consumers -- the user profile block for what *he* is
-        # like, Aiko's self-image block for what *she* is like.
+        # L24: identity feeds the user profile block for what *he* is like.
+        # ``subject=aiko`` identity is not routed to a named block -- it
+        # surfaces every turn via the T3 relevant_context path instead.
         surfacing_target="profile_block",
         surfacing_targets={
             "user": "profile_block",
-            "aiko": "self_image_block",
         },
         # L27: identity is the anchor of the always-on core lane — who the
         # user is and how Aiko tends to be, carried into every turn. Its bar
@@ -239,11 +240,11 @@ register_kind(
         # higher confidence) -- values should be slow and hard-won.
         promotion_gate=value_evidence_gate,
         # L24: same per-subject routing as identity -- a user value feeds the
-        # user profile view, an Aiko value her self-image.
+        # user profile view; an Aiko value surfaces via the T3
+        # relevant_context path, not a named for_target block.
         surfacing_target="profile_block",
         surfacing_targets={
             "user": "profile_block",
-            "aiko": "self_image_block",
         },
         # L27: values join the always-on core lane (they drive how Aiko wants
         # to behave), but at a *higher* bar than identity -- only assert a

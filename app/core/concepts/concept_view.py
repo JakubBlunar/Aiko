@@ -6,8 +6,7 @@ Before L24 each consumer reached the :class:`ConceptStore` directly (via
 ``list_by`` with its own filter tuple, and separately re-resolved evidence
 labels / cluster summaries through :mod:`concept_snapshot` helpers. That
 spread the "how do I read concepts?" knowledge across the identity pin
-lane, ``recall_concept``, the self-image worker, and every future
-deriver.
+lane, ``recall_concept``, and every future deriver.
 
 ``ConceptView`` is the one documented read + resolution path. It bundles
 

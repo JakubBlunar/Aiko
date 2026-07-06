@@ -1,1 +1,1 @@
-"""Persona subsystem: Aiko's style tracker, signal, avatar profile, self-image."""
+"""Persona subsystem: Aiko's style tracker, signal, avatar profile."""

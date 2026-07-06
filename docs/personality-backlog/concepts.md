@@ -101,7 +101,7 @@ Shipping now:
   enjoys understanding systems" (CPU debugging + AI architecture + self-hosting
   + reverse-engineering + building Aiko); activity modes like "Maker Mode"
   (Programming + Home Lab + AI co-fire when deeply focused). Homed on
-  `self_image` / `user_profile`. See L1-L6, L9.
+  `user_profile` (user) / the T3 relevant_context core lane (aiko). See L1-L6, L9.
 
 Future kinds (each a deferred entry below, all reusing L1-L6):
 
@@ -159,7 +159,7 @@ never a gate. This is the
 (`active`/`confirmed`/`contradicted`/`stale`) applied one level up.
 
 Concepts should **reference, not duplicate**, the subsystems that already own
-each domain: `self_image` / `user_profile` (identity/value/self),
+each domain: `user_profile` + the T3 relevant_context core lane (identity/value/self),
 `relationship` / shared-moments (relationship), `long_arc_callback` /
 `NarrativeWeaver` (narrative), `goals` (aspiration), K2 beliefs / F5 conflicts
 (belief/tension).
@@ -715,7 +715,8 @@ the existing identity machinery. Registry entry
 0.3), `promotion_gate=value_evidence_gate` (stricter than the plain `set`
 gate — floors at ≥3 sources / ≥1.0 day / ≥0.72 confidence, and the L21
 young-graph bar still layers on top), same per-subject routing as identity
-(`profile_block` for the user, `self_image_block` for Aiko), and it joins the
+(`profile_block` for the user; `subject=aiko` values have no named block —
+they surface via the T3 `relevant_context` path), and it joins the
 L27 always-on **core lane** at a higher bar (`core_min_confidence=0.85`) so a
 value only pins into every turn once it is very settled.
 
@@ -736,10 +737,11 @@ Rendering is now kind-aware
 values group under a distinct principle-framed header per subject (user
 values / shared values / her own values) instead of the identity "things
 you've come to understand" voice, so an Aiko boundary-style principle reads
-as *hers*, not as something she learned about the user. Aiko values also
-auto-join her self-image via `SelfImageWorker` reading `view.core(subject="aiko")`
-across all kinds; the self-image was given more room for it
-(`self_image_max_tokens` 320→480, new `self_image_max_self` cap).
+as *hers*, not as something she learned about the user. Aiko values (like
+her identity concepts) surface every turn through the T3 `relevant_context`
+core lane under first-person "yourself" headers — Aiko's self-model is
+carried entirely by `subject=aiko` concepts (the daily `SelfImageWorker` /
+T0 `self_image_block` was removed).
 
 **Follow-ups still open (all deferred, tracked here):**
 
@@ -812,18 +814,18 @@ toward human-like, and the foundation the L19 autobiography stands on.
 **Key files.** The `subject=aiko` path through L1-L5: a proposer that reads
 Aiko's own `self` / `reflection` / `diary` memory population instead of user
 memories, and a self-scoped clustering population (a self topic graph, or the
-main graph filtered to her rows). Surfacing target is `SelfImageWorker` / the T0
-`self_image_block` (today rewritten daily from those same rows — this makes the
-pattern-finding explicit and durable). Overlaps K30 self-noticing (transient
+main graph filtered to her rows). `subject=aiko` concepts surface every turn
+through the T3 `relevant_context` core lane (there is no dedicated self-image
+worker/block — that was removed). Overlaps K30 self-noticing (transient
 in-session cues) — subject=aiko concepts are the *durable* version those cues
 accrete into.
 
 **Sketched approach.** Stand up the self-memory clustering population once; then
 each kind's existing proposer/gate runs over it unchanged (that's the payoff of
-subject being orthogonal to kind — no per-kind self variants). Feed active
-subject=aiko concepts into the self-image narrative so it stops being a
-from-scratch daily rewrite and becomes a stable, slowly-evolving self-model that
-L17 (drift) and L19 (autobiography) read from.
+subject being orthogonal to kind — no per-kind self variants). Active
+subject=aiko concepts surface directly through the T3 `relevant_context` core
+lane, forming a stable, slowly-evolving self-model that L17 (drift) and L19
+(autobiography) read from.
 
 **Effort.** Large (needs the self-memory clustering population; unlocks
 subject=aiko for all kinds at once).
@@ -1355,18 +1357,20 @@ read + resolution interface** every deriver/worker uses (constructed from
 `ConceptKind.surfacing_targets` + `kinds_for_target()` in
 [`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) make routing
 authoritative (a kind declares where it feeds; consumers ask
-`ConceptView.for_target(...)`, never branch on kind names). The identity
-pin lane (`build_relevant_context`) and `recall_concept` are migrated onto
-the facade (behavior-preserving), and **`SelfImageWorker` is the reference
-integration**: it composes from active `subject=aiko` concepts and falls
-back to raw self/reflection memories only when the layer is sparse/immature.
+`ConceptView.for_target(...)`, never branch on kind names). The live
+`ConceptView` consumers are `build_relevant_context` (the T3 core lane +
+relevance surfacing, including Aiko's `subject=aiko` self-model) and
+`recall_concept`, both migrated onto the facade (behavior-preserving).
+Aiko's self-model is now carried **entirely** by concepts through that T3
+path — the daily `SelfImageWorker` / T0 `self_image_block` was removed.
 See [`docs/concept-integration.md`](../concept-integration.md) for the
 contract + direction-of-truth table. Rolling the remaining derivers onto
 the contract is tracked in **L28**.
 
 **Motivation.** Several shipped subsystems already derive overlapping views of
-the user/self, each from raw memories: `SelfImageWorker` rewrites Aiko's
-self-narrative daily from `self`/`reflection` rows (overlaps L11 + L19);
+the user/self, each from raw memories: Aiko's self-model was rewritten daily
+from `self`/`reflection` rows by the now-removed `SelfImageWorker` (overlaps
+L11 + L19; concepts replaced it);
 `interest_map` labels clusters (overlaps identity concepts); K2 beliefs,
 `user_profile`, and `goals` each hold user-model fragments. If the concept layer
 runs *alongside* these, they drift and contradict — two systems telling Aiko
@@ -1374,7 +1378,6 @@ slightly different stories about who the user is. **This is an architectural
 contract, not a feature**, and it's the single biggest integration risk.
 
 **Key files.**
-[`self_image_worker.py`](../../app/core/persona/self_image_worker.py),
 `interest_map` in [`topic_graph.py`](../../app/core/conversation/topic_graph.py),
 [`belief_store.py`](../../app/core/relationship/belief_store.py),
 [`user_profile.py`](../../app/core/infra/user_profile.py),
@@ -1382,8 +1385,9 @@ contract, not a feature**, and it's the single biggest integration risk.
 
 **Sketched approach.** Make concepts the **upstream source**, not a parallel
 peer. Where a deriver overlaps a concept kind, it should *read active concepts*
-rather than independently re-derive: `SelfImageWorker` composes from active
-self-concepts (L11) instead of re-summarising raw memories each day;
+rather than independently re-derive: Aiko's self-model surfaces from active
+`subject=aiko` concepts through the T3 core lane (the daily self-image rewrite
+was retired);
 `interest_map` can annotate clusters with the identity concepts spanning them;
 K2 stays the *transient* mood/opinion layer while durable trait-beliefs live as
 concepts (L9). Define, per overlapping subsystem, one direction of truth so the
@@ -1395,8 +1399,8 @@ re-deriving; the facade wraps the L1 `ConceptStore.nearest()` / `active`-concept
 accessors so there is exactly one idiom for every consumer.
 
 **Effort.** Medium (per-subsystem, incremental — but must be decided before L11
-ships or self-image will double up). *Substrate + one reference integration
-shipped; remaining derivers tracked in L28.*
+ships or self-image will double up). *Substrate shipped; Aiko's self-model is
+concepts-only via the T3 core lane; remaining derivers tracked in L28.*
 
 ---
 
@@ -1581,10 +1585,10 @@ each kind that ships).
 
 **Status: deferred — depends on the L24 substrate (shipped).** L24 shipped the
 reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
-`kinds_for_target()` routing) and proved it with `SelfImageWorker` as the
-reference integration. This entry tracks migrating the *rest* of the
-concept-overlapping consumers onto the same contract so none is forgotten and no
-consumer keeps a bespoke read path into the layer.
+`kinds_for_target()` routing); the live consumers are `build_relevant_context`
+(T3 core lane + relevance) and `recall_concept`. This entry tracks migrating
+the *rest* of the concept-overlapping consumers onto the same contract so none
+is forgotten and no consumer keeps a bespoke read path into the layer.
 
 **Motivation.** The contract is only as valuable as its adoption: as long as any
 deriver still reads `ConceptStore` directly (or re-derives evidence/cluster
@@ -1613,7 +1617,7 @@ grounding) is the goal.
   concepts (gated on L14 shipping).
 
 **Sketched approach.** For each consumer: take a `ConceptView` (late-bound
-provider, as `SelfImageWorker` does), read via `core` / `relevant` / `for_target`
+provider via `concept_view_from(host)`), read via `core` / `relevant` / `for_target`
 / `for_cluster`, declare the kind's `surfacing_targets` if it feeds a named
 block, and fall back to the legacy derivation when concepts are sparse/immature.
 Add each integration to the direction-of-truth table in

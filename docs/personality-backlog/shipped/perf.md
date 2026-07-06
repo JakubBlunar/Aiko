@@ -110,7 +110,7 @@ returns `(max_message_id, message_count, summary_signature)` via two
 scalar aggregate queries, and the assembler stores it alongside the
 slice-cache entry (`_slice_head_sig`). On a turn the new
 [`_fast_slice_signature`](../../../app/core/session/prompt_assembler_helpers_mixin.py)
-(head + persona/self-image mtime + last reaction + window + aggressive)
+(head + persona mtime + last reaction + window + aggressive)
 is compared first; when it matches, the cache is trusted **without
 touching `get_messages` / `get_latest_summary` at all**. The signature
 is a conservative superset of the full cache key — any new/deleted

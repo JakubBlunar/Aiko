@@ -29,7 +29,6 @@ log = logging.getLogger("app.prompt_assembler")
 
 from app.core.session.prompt_support import (
     DEFAULT_PERSONA_PATH,
-    DEFAULT_SELF_IMAGE_PATH,
     _SAFETY_TOKENS,
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
@@ -46,7 +45,7 @@ from app.core.session.prompt_support import (
 
 
 class PromptAssemblerHelpersMixin:
-    """Config setters, persona/self-image loaders, slice-cache machinery,
+    """Config setters, persona loader, slice-cache machinery,
     history fitting, and the small per-turn block renderers."""
 
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
@@ -151,17 +150,6 @@ class PromptAssemblerHelpersMixin:
         except Exception:
             return "the user"
         return name or "the user"
-
-    def set_pinned_self_memories_provider(
-        self,
-        provider: Callable[[], list[str]] | None,
-    ) -> None:
-        """Phase 2d: callable returning Aiko's top self-memories as bullets.
-
-        Folded into the self-image block on every prompt build (cheap mirror
-        read; ms-level). Setting it to ``None`` disables the bullets.
-        """
-        self._pinned_self_memories_provider = provider
 
     def set_inner_life_providers(
         self,
@@ -507,8 +495,8 @@ class PromptAssemblerHelpersMixin:
 
         Safe to call from any thread. Result is stashed in a per-session
         cache; :meth:`assemble_with_budget` will reuse it if the cache key
-        still matches at commit. Cheap (5-20 ms total: persona/self-image
-        disk reads, two SQLite queries, ~8 inner-life provider callbacks)
+        still matches at commit. Cheap (5-20 ms total: persona
+        disk read, two SQLite queries, ~8 inner-life provider callbacks)
         and idempotent — calling it more than once during the same phrase
         just refreshes the cache.
         """
@@ -564,7 +552,6 @@ class PromptAssemblerHelpersMixin:
         fetch fresh.
         """
         persona = self._load_persona()
-        self_image_block = self._load_self_image()
         if summary is None and already_summarized is None:
             summary = self._db.get_latest_summary(session_key)
             already_summarized = (
@@ -625,7 +612,6 @@ class PromptAssemblerHelpersMixin:
         return _StaticSlices(
             cache_key=cache_key,
             persona=persona,
-            self_image_block=self_image_block,
             summary_row=summary,
             already_summarized=already_summarized,
             thread_note=thread_note,
@@ -655,7 +641,7 @@ class PromptAssemblerHelpersMixin:
 
         Combines the DB head signature (``MAX(id)`` / ``COUNT(*)`` /
         latest-summary watermark — two scalar queries) with the same
-        persona/self-image mtime, last-reaction, window and aggressive
+        persona mtime, last-reaction, window and aggressive
         inputs the full ``_compute_static_cache_key`` uses. A conservative
         superset: when this tuple is unchanged the full key is guaranteed
         unchanged too, so the hit path can skip ``get_messages`` +
@@ -666,19 +652,12 @@ class PromptAssemblerHelpersMixin:
             persona_mtime = self._persona_path.stat().st_mtime
         except OSError:
             persona_mtime = 0.0
-        self_image_mtime = 0.0
-        if self._self_image_path is not None:
-            try:
-                self_image_mtime = self._self_image_path.stat().st_mtime
-            except OSError:
-                self_image_mtime = 0.0
         return (
             session_key,
             head[0],
             head[1],
             head[2],
             persona_mtime,
-            self_image_mtime,
             self._last_reaction or "",
             recent_window,
             bool(aggressive),
@@ -695,12 +674,6 @@ class PromptAssemblerHelpersMixin:
             persona_mtime = self._persona_path.stat().st_mtime
         except OSError:
             persona_mtime = 0.0
-        self_image_mtime = 0.0
-        if self._self_image_path is not None:
-            try:
-                self_image_mtime = self._self_image_path.stat().st_mtime
-            except OSError:
-                self_image_mtime = 0.0
         history_max_id = 0
         if history_msgs:
             history_max_id = max(int(getattr(m, "id", 0) or 0) for m in history_msgs)
@@ -709,7 +682,6 @@ class PromptAssemblerHelpersMixin:
             history_max_id,
             len(history_msgs),
             persona_mtime,
-            self_image_mtime,
             self._last_reaction or "",
             recent_window,
             bool(aggressive),
@@ -861,64 +833,6 @@ class PromptAssemblerHelpersMixin:
                 exc_info=True,
             )
             return raw
-
-    def _load_self_image(self) -> str:
-        """Compose the self-image block (Phase 2d).
-
-        Two pieces, joined with a blank line:
-          - prose paragraph from ``data/persona/self_image.txt`` (rebuilt
-            once per UTC day by SelfImageWorker; mtime-cached here)
-          - "Self-memories you hold:" bullets from the pinned provider
-
-        Either piece may be empty; the result is empty only when both are.
-        """
-        prose = self._load_self_image_file()
-        pinned = self._render_pinned_self_memories_block()
-        parts = [p for p in (prose, pinned) if p]
-        return "\n\n".join(parts)
-
-    def _load_self_image_file(self) -> str:
-        """Read + mtime-cache the prose self-image file."""
-        path = self._self_image_path
-        if path is None:
-            return ""
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return ""
-        if self._self_image_cache is not None and self._self_image_cache[0] == mtime:
-            return self._self_image_cache[1]
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            text = ""
-        if text:
-            text = "Lately:\n" + text
-        self._self_image_cache = (mtime, text)
-        return text
-
-    def _render_pinned_self_memories_block(self) -> str:
-        """Format up to N pinned self-memories as a bulleted block."""
-        provider = self._pinned_self_memories_provider
-        if provider is None:
-            return ""
-        try:
-            items = provider() or []
-        except Exception:
-            log.debug("pinned-self-memory provider raised", exc_info=True)
-            return ""
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for item in items:
-            txt = (item or "").strip()
-            key = txt.lower()
-            if not txt or key in seen:
-                continue
-            seen.add(key)
-            cleaned.append(txt)
-        if not cleaned:
-            return ""
-        return "Self-memories you hold:\n" + "\n".join(f"- {c}" for c in cleaned)
 
     @staticmethod
     def _format_age(created_at_iso: str, now: datetime) -> str:

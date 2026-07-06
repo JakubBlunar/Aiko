@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 
 from app.core.session.prompt_support import (
     DEFAULT_PERSONA_PATH,
-    DEFAULT_SELF_IMAGE_PATH,
     _SAFETY_TOKENS,
     _MESSAGE_OVERHEAD,
     clip_text_to_tokens,
@@ -89,7 +88,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "outfit_grammar_block",
         "motion_grammar_block",
         "touch_grammar_addendum",
-        "self_image_block",
         "narrative_block",
         "profile_block",
         "petname_block",
@@ -302,7 +300,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         recent_window: int = 20,
         memory_retriever: "MemoryRetriever | None" = None,
         rag_retriever: "RagRetriever | None" = None,
-        self_image_path: Path | str | None = None,
         history_age_prefix_enabled: bool = True,
         cue_register_rotation_enabled: bool = True,
     ) -> None:
@@ -865,15 +862,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``_MOTION_GRAMMAR_DESCRIPTIONS`` registry to decide which
         # ``[[motion:X]]`` lines to advertise.
         self._motion_names_provider: Callable[[], list[str]] | None = None
-        self._self_image_path = (
-            Path(self_image_path) if self_image_path is not None else None
-        )
-        self._self_image_cache: tuple[float, str] | None = None
-        # Phase 2d: optional callable -> list[str] of top self-memories,
-        # rendered as bullets after the prose self-image block.
-        self._pinned_self_memories_provider: (
-            Callable[[], list[str]] | None
-        ) = None
         # First-run identity: callable returning the user's display name.
         # Threaded down to the RAG block formatters so the "What you know
         # about <name>" header reflects whatever the user typed into the
@@ -936,7 +924,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self._assembly_seq = (self._assembly_seq + 1) & 0x7FFFFFFF
         # Listening-window cache hit (Phase 3): if the slices we built
         # speculatively while the user was speaking still match the
-        # session's static state, skip the persona/self-image disk reads,
+        # session's static state, skip the persona disk read,
         # the two SQLite queries, and the eight inner-life providers.
         # Otherwise build fresh and stash the result for next turn.
         recent_window = (
@@ -1013,7 +1001,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self._last_slice_cache_event = slice_event
 
         persona = slices.persona
-        self_image_block = slices.self_image_block
         summary = slices.summary_row
         already_summarized = slices.already_summarized
         history_msgs = slices.history_msgs
@@ -2336,7 +2323,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         system_parts: list[str] = []
 
         # ── T0: STABLE ────────────────────────────────────────────────
-        # Persona + grammar addenda + self_image + narrative + profile +
+        # Persona + grammar addenda + narrative + profile +
         # petname + catchphrase. THIS IS THE CACHE PREFIX — adding any
         # per-turn content above this point invalidates the prefix and
         # collapses the OpenAI cache hit-rate to ~0.
@@ -2363,8 +2350,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # drop unsupported requests, so it's safe to advertise
             # every kind unconditionally.
             system_parts.append(_TOUCH_GRAMMAR_ADDENDUM)
-        if self_image_block:
-            system_parts.append(self_image_block)
         if narrative_block:
             system_parts.append(narrative_block)
         if profile_block:
@@ -3022,7 +3007,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         narrative_tokens = estimate_tokens(narrative_block) if narrative_block else 0
         agenda_tokens = estimate_tokens(agenda_block) if agenda_block else 0
         world_tokens = estimate_tokens(world_block) if world_block else 0
-        self_image_tokens = estimate_tokens(self_image_block) if self_image_block else 0
         system_tokens = estimate_tokens(system_prompt) + (_MESSAGE_OVERHEAD if system_prompt else 0)
 
         history_budget = max(
@@ -3090,7 +3074,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             narrative_tokens=narrative_tokens,
             agenda_tokens=agenda_tokens,
             world_tokens=world_tokens,
-            self_image_tokens=self_image_tokens,
             prompt_tokens_estimate=prompt_tokens_estimate,
             history_messages_kept=kept_count,
             history_messages_dropped=dropped_count,
