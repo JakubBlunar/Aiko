@@ -1614,6 +1614,8 @@ class InnerLifePart1Mixin:
                 family = "affective"
             elif kind == "ritual":
                 family = "ritual"
+            elif kind == "narrative":
+                family = "narrative"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -1636,7 +1638,7 @@ class InnerLifePart1Mixin:
             })
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
-            for family in ("trait", "value", "affective", "ritual"):
+            for family in ("trait", "value", "affective", "ritual", "narrative"):
                 lines = groups.get((subject, family))
                 if not lines:
                     continue
@@ -1661,6 +1663,8 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_affective_header(subject, name)
         if family == "ritual":
             return InnerLifePart1Mixin._concept_ritual_header(subject, name)
+        if family == "narrative":
+            return InnerLifePart1Mixin._concept_narrative_header(subject, name)
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -1733,6 +1737,34 @@ class InnerLifePart1Mixin:
             "time — the recurring things the two of you do together (let them "
             "warm your tone when one comes around; lean into them naturally, "
             "never announce them as a fact, and let them keep evolving):"
+        )
+
+    @staticmethod
+    def _concept_narrative_header(subject: str, name: str) -> str:
+        """Per-subject intro for *narrative* concepts (L8) — the closed
+        story-arcs you've watched unfold, offered as shared history to draw on
+        (a callback, a bit of continuity), never recited. ``aiko`` reads
+        first-person (arcs of her own growth); ``relationship`` as the two of
+        them; everything else as the user's arcs."""
+        if subject == "aiko":
+            return (
+                "Story-arcs of your own you've watched play out — how you've "
+                "changed over stretches of time (let them give you a sense of "
+                "your own history and how far you've come; draw on them "
+                "naturally, never recite them, and let them keep unfolding):"
+            )
+        if subject == "relationship":
+            return (
+                f"Story-arcs you and {name} have lived through together — how "
+                "things unfolded from beginning to end (let them give you "
+                "shared history to lean on; call back to them warmly when they "
+                "fit, never recite them as a summary):"
+            )
+        return (
+            f"Story-arcs of {name}'s you've watched unfold — how things went "
+            "from beginning to end (let them give you a sense of their history "
+            "and continuity; draw on them naturally when they're relevant, "
+            "never recite them back, and stay open to how they keep evolving):"
         )
 
     @staticmethod

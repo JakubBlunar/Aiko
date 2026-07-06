@@ -265,6 +265,46 @@ def ritual_evidence_gate(
     )
 
 
+# Built-in bars for a *narrative* concept (L8). A narrative is an ordered
+# causal chain of episodic memories collapsed into one named arc -- so unlike
+# the set kinds, ``distinct_source_count`` here is the *chain length*. A real
+# arc needs at least three steps (a beginning, a middle, and a resolution --
+# two memories is an anecdote, not a story), a non-instant age so a burst in one
+# session can't promote, and a moderate confidence bar. The *closed*-ness of
+# the arc is judged upstream by the proposer (it only emits a NEW arc the LLM
+# marked as resolved); this gate enforces the structural floor.
+_NARRATIVE_MIN_SOURCES = 3
+_NARRATIVE_MIN_AGE_DAYS = 1.0
+_NARRATIVE_MIN_CONFIDENCE = 0.6
+
+
+def narrative_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``narrative`` concepts (L8).
+
+    Same shape as :func:`set_evidence_gate` but read over an ordered chain:
+    ``distinct_source_count`` is the number of distinct memories in the arc, so
+    the ``>= 3`` floor means "a chain, not a pair". Age + confidence floors as
+    above. The caller's thresholds still apply when they are *higher* (e.g. the
+    L21 young-graph bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _NARRATIVE_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _NARRATIVE_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _NARRATIVE_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -276,4 +316,5 @@ __all__ = [
     "value_evidence_gate",
     "affective_evidence_gate",
     "ritual_evidence_gate",
+    "narrative_evidence_gate",
 ]

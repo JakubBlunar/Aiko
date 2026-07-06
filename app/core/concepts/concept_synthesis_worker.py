@@ -42,6 +42,7 @@ from app.core.concepts.proposers import (
     CandidateProposal,
     ExistingConcept,
     FocusCluster,
+    NarrativeCandidate,
     ProposerContext,
     ProposerSpec,
 )
@@ -360,6 +361,52 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _narrative_min_chain(self) -> int:
+        """L8: minimum ordered steps a candidate cluster must resolve to before
+        it is offered as an arc (a story needs a beginning, a middle, and an
+        end -- two beats is an anecdote). Also the proposer's new-arc floor."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_narrative_min_chain",
+                    3,
+                )
+            ),
+        )
+
+    @property
+    def _max_narrative_clusters_per_run(self) -> int:
+        """L8: cap on candidate arcs offered to the narrative proposer per run
+        (per subject) -- bounds the prompt / LLM cost."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_narrative_clusters_per_run",
+                    3,
+                )
+            ),
+        )
+
+    @property
+    def _max_narrative_memories(self) -> int:
+        """L8: cap on member memories loaded per candidate arc -- long-running
+        themes stay bounded (the proposer further elides the middle)."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_narrative_memories",
+                    40,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -428,6 +475,7 @@ class ConceptSynthesisWorker:
             "aiko_dirty": False,
             "affect_dirty": False,
             "ritual_dirty": False,
+            "narrative_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -442,6 +490,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_affect_pass(ctx, spec, stats, force)
                 elif spec.population == "shared_moments":
                     proposals = self._run_ritual_pass(ctx, spec, stats, force)
+                elif spec.population == "narrative":
+                    proposals = self._run_narrative_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -942,6 +992,122 @@ class ConceptSynthesisWorker:
             existing=self._existing_for(spec),
         )
 
+    # ── narrative pass (L8) ─────────────────────────────────────────────
+
+    def _run_narrative_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L8 narrative pass: offer each subject-dominant topic cluster's member
+        memories, in temporal order, as a candidate causal arc. The proposer
+        names any that form a *closed* story and cites the ordered chain; the
+        chain order is written to ``concept_edges.ordinal`` (the first
+        ``sequence`` kind). Subject-parameterized (``spec.subject`` = user /
+        aiko) exactly like affect. Per-subject size/label dirty-tracking so a
+        settled corpus is a fast no-op."""
+        if not bool(
+            getattr(self._agent_settings, "narrative_synthesis_enabled", True)
+        ):
+            return []
+
+        subject = spec.subject
+        subject_clusters = self._dominant_clusters(subject)
+        if not subject_clusters:
+            return []
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            log.debug("topic_clusters failed (narrative pass)", exc_info=True)
+            clusters = []
+        by_rep = {int(c.representative_id): c for c in clusters}
+        min_chain = self._narrative_min_chain
+
+        # Size/label drift dirty-tracking under the subject's narrative sig.
+        sig_key = spec.sig_key or ("concept_synth.narrative_sig." + subject)
+        sigs = self._load_sigs(sig_key)
+        delta = self._dirty_size_delta
+        dirty: list[tuple[int, str, int, int, bool]] = []  # rep,label,size,drift,new
+        for rep, label, size, _kinds in subject_clusters:
+            prev = sigs.get(str(rep))
+            if prev is None:
+                dirty.append((rep, label, size, size, True))
+                continue
+            prev_size = int(prev.get("size", 0))
+            prev_label = str(prev.get("label", ""))
+            drift = abs(size - prev_size)
+            if force or prev_label != label or drift >= delta:
+                dirty.append((rep, label, size, drift, False))
+
+        if not dirty:
+            return []
+        # OR-in True (never reset): user + aiko narrative passes share this
+        # stat, so an empty aiko pass must not clobber a dirty user pass.
+        stats["narrative_dirty"] = True
+
+        # Never-processed first, then largest drift.
+        dirty.sort(key=lambda d: (0 if d[4] else 1, -d[3]))
+        focus_rows = dirty[: self._max_narrative_clusters_per_run]
+
+        candidates: list[NarrativeCandidate] = []
+        for rep, label, _size, _drift, _new in focus_rows:
+            cluster = by_rep.get(int(rep))
+            if cluster is None:
+                continue
+            mems = self._ordered_memories(cluster.member_ids)
+            if len(mems) < min_chain:
+                # Too short to be a story yet -- still marked processed below so
+                # it doesn't re-run until it actually grows.
+                continue
+            candidates.append(
+                NarrativeCandidate(
+                    rep=int(rep),
+                    label=label,
+                    subject=subject,
+                    memories=mems[: self._max_narrative_memories],
+                )
+            )
+
+        # Persist sigs: processed focus reps fresh (even the too-short ones, so
+        # they only re-run once they grow); unprocessed dirty reps keep their
+        # old signature so they drain next run (mirrors the cluster pass).
+        processed = {rep for rep, _l, _s, _d, _n in focus_rows}
+        current = {rep: (label, size) for rep, label, size, _k in subject_clusters}
+        new_sigs: dict[str, dict[str, Any]] = {}
+        for rep, (label, size) in current.items():
+            if rep in processed:
+                new_sigs[str(rep)] = {"size": size, "label": label}
+            elif str(rep) in sigs:
+                new_sigs[str(rep)] = sigs[str(rep)]
+        self._save_sigs(sig_key, new_sigs)
+
+        if not candidates:
+            return []
+        return spec.propose(
+            ctx,
+            candidates=candidates,
+            min_chain=min_chain,
+            existing=self._existing_for(spec),
+        )
+
+    def _ordered_memories(self, member_ids: "tuple[int, ...] | list[int]") -> list[Any]:
+        """Resolve ``member_ids`` to Memory rows in **temporal order** -- by
+        ``event_time`` when set, else ``created_at`` (both ISO-8601, so string
+        order is chronological). Unresolvable ids are dropped."""
+        rows = self._memory_store.get_many([int(m) for m in member_ids])
+        mems = list(rows.values())
+
+        def _key(m: Any) -> str:
+            et = getattr(m, "event_time", None)
+            if isinstance(et, str) and et.strip():
+                return et
+            return str(getattr(m, "created_at", "") or "")
+
+        mems.sort(key=_key)
+        return mems
+
     def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:
         """Concepts already stored for this proposer's (subject, kind) --
         both candidate and active -- so the LLM can avoid re-proposing
@@ -1010,7 +1176,9 @@ class ConceptSynthesisWorker:
             last_reinforced_at=now,
         )
         cid = self._concept_store.add(concept)
-        self._add_evidence_edges(cid, proposal.evidence)
+        self._add_evidence_edges(
+            cid, proposal.evidence, evidence_model=proposal.evidence_model
+        )
         stats["added"] += 1
         self._bump_subject(stats, proposal.subject, "added")
         self._record_discovery(concept, proposal, top_sim, now)
@@ -1131,7 +1299,11 @@ class ConceptSynthesisWorker:
     def _reinforce(
         self, concept: Concept, proposal: CandidateProposal
     ) -> None:
-        self._add_evidence_edges(concept.concept_id, proposal.evidence)
+        self._add_evidence_edges(
+            concept.concept_id,
+            proposal.evidence,
+            evidence_model=concept.evidence_model,
+        )
         ev = self._concept_store.evidence_of(concept.concept_id)
         concept.evidence_count = len(ev)
         concept.distinct_source_count = len(
@@ -1142,9 +1314,18 @@ class ConceptSynthesisWorker:
         self._concept_store.update(concept)
 
     def _add_evidence_edges(
-        self, concept_id: int, evidence: list[tuple[str, str]]
+        self,
+        concept_id: int,
+        evidence: list[tuple[str, str]],
+        *,
+        evidence_model: str = "set",
     ) -> None:
-        for node_type, node_id in evidence:
+        # For a ``sequence`` concept (L8 narrative) the ``evidence`` list is the
+        # arc in chain order, so we stamp each edge's ``ordinal`` by position
+        # (``evidence_of`` returns edges ordered by ordinal). ``set`` kinds are
+        # unordered, so ordinal stays ``None``.
+        ordered = evidence_model == "sequence"
+        for i, (node_type, node_id) in enumerate(evidence):
             self._concept_store.add_edge(
                 ConceptEdge(
                     src_type=node_type,
@@ -1154,6 +1335,7 @@ class ConceptSynthesisWorker:
                     relation="evidence",
                     polarity=1,
                     strength=1.0,
+                    ordinal=(i if ordered else None),
                 )
             )
 

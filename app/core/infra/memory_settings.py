@@ -750,6 +750,15 @@ class MemorySettings:
     concept_synthesis_ritual_group_min_size: int = 3
     concept_synthesis_ritual_group_similarity: float = 0.6
     concept_synthesis_max_ritual_groups: int = 3
+    # L8 narrative arcs. The narrative pass loads each subject-dominant topic
+    # cluster's member memories in temporal order and offers up to
+    # ``max_narrative_clusters_per_run`` of them (per subject) as candidate
+    # arcs, each capped at ``max_narrative_memories`` steps. A candidate (and a
+    # NEW arc) needs at least ``narrative_min_chain`` ordered steps to count as
+    # a story rather than an anecdote.
+    concept_synthesis_narrative_min_chain: int = 3
+    concept_synthesis_max_narrative_clusters_per_run: int = 3
+    concept_synthesis_max_narrative_memories: int = 40
     # Shared engagement clock (app/core/infra/engagement_clock.py): a
     # monotonic "active-conversation time" counter so decay tracks time
     # actually spent engaging, not calendar time (away/quiet stretches
@@ -2370,6 +2379,28 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_synthesis_max_ritual_groups=max(
                 1,
                 int(memory_raw.get("concept_synthesis_max_ritual_groups", 3)),
+            ),
+            concept_synthesis_narrative_min_chain=max(
+                2,
+                int(
+                    memory_raw.get("concept_synthesis_narrative_min_chain", 3)
+                ),
+            ),
+            concept_synthesis_max_narrative_clusters_per_run=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_narrative_clusters_per_run", 3
+                    )
+                ),
+            ),
+            concept_synthesis_max_narrative_memories=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_narrative_memories", 40
+                    )
+                ),
             ),
             engagement_clock_enabled=bool(
                 memory_raw.get("engagement_clock_enabled", True)

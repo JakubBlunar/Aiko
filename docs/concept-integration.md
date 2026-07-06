@@ -73,6 +73,17 @@ me** — neither branches on kind names. In
   cosine ([`ritual_grouping`](../app/core/concepts/ritual_grouping.py)); the
   recurrence lives in the grouping, not on the edges, and rendering routes
   `family="ritual"` through `_concept_ritual_header`.
+- `narrative` concepts (L8, `subject=user` **and** `aiko`) are the same story:
+  **no** `surfacing_targets`, so they surface only via the T3 `relevant_context`
+  relevance path (an arc should be called back to when the turn touches it, not
+  pinned every turn). They are the first **`sequence`**-evidence kind — evidence
+  is an *ordered* chain of `memory` edges carrying `ordinal` (0..n, temporal
+  order), so `evidence_of` / `ConceptView` grounding returns the beats in order;
+  the chain is derived from the candidate's `event_time` ordering at synthesis
+  time. Rendering routes `family="narrative"` through `_concept_narrative_header`
+  (first-person for aiko). A narrative is a *closed* arc, not a rolling recency
+  digest (that stays the conversation summary's job); relationship + meta
+  narratives are deferred to backlog L29.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —
