@@ -1320,29 +1320,3 @@ class InnerLifePart4Mixin:
             log.debug("arc block render failed", exc_info=True)
             return ""
 
-    def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
-        """Phase 2d: hot-path provider for pinned self-memory bullets.
-
-        Reads from the ``MemoryStore`` mirror (in-memory dict) and filters
-        for ``kind == "self"``. Returns up to ``limit`` items sorted by the
-        store's salience+use_count ranking. Hot-path safe.
-        """
-        store = getattr(self, "_memory_store", None)
-        if store is None:
-            return []
-        try:
-            top = store.list_top(limit=max(8, int(limit) * 4))
-        except Exception:
-            log.debug("list_top failed in pinned self provider", exc_info=True)
-            return []
-        out: list[str] = []
-        for mem in top:
-            if (mem.kind or "").lower() != "self":
-                continue
-            content = (mem.content or "").strip()
-            if content:
-                out.append(content)
-            if len(out) >= int(limit):
-                break
-        return out
-

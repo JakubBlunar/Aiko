@@ -101,15 +101,13 @@ that count fully against `num_predict`. We strip those blocks
 post-hoc in `OllamaClient`, and the truncation warning is now
 downgraded to DEBUG when the visible answer reaches a natural
 stop, so the noise is gone — but the *budget* is still being
-spent on a trace that the operator never sees. A self-image pulse
+spent on a trace that the operator never sees. A relationship pulse
 with `max_tokens=320` may only have ~200 tokens of actual prose;
 the rest is reasoning we throw away. That eats wall-time on every
 worker run and forces us to over-provision the cap to avoid real
 truncation.
 
 **Key files.**
-[`app/core/persona/self_image_worker.py`](../../app/core/persona/self_image_worker.py)
-(`_PROMPT`),
 [`app/core/relationship/relationship_pulse.py`](../../app/core/relationship/relationship_pulse.py)
 (`_build_pulse_prompt`),
 [`app/core/proactive/curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py),
@@ -132,7 +130,7 @@ soft directive in some fine-tunes; it's a no-op on
 non-reasoning models). Compare before/after: the
 `completion_tokens` field on the MCP `get_last_response_detail`
 should drop noticeably for surfaces tagged
-`self_image_worker`, `relationship_pulse`, etc. If qwen3.5
+`relationship_pulse`, `reflection_worker`, etc. If qwen3.5
 uncensored ignores it, fall back to (a) wrapping prompts with
 `<no_think>...</no_think>` tags some templates support, or (b)
 running background workers on a non-reasoning Ollama model

@@ -639,29 +639,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             user_profile_min_turns=max(1, int(agent_raw.get("user_profile_min_turns", 6))),
             agenda_groom_every_n_turns=max(1, int(agent_raw.get("agenda_groom_every_n_turns", 8))),
             arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
-            self_image_pulse_enabled=bool(agent_raw.get("self_image_pulse_enabled", True)),
-            self_image_interest_seed_enabled=bool(
-                agent_raw.get("self_image_interest_seed_enabled", True),
-            ),
-            self_image_max_tokens=max(120, int(agent_raw.get("self_image_max_tokens", 480))),
-            self_image_concept_sourced_enabled=bool(
-                agent_raw.get("self_image_concept_sourced_enabled", True),
-            ),
-            self_image_min_concepts=max(
-                1, int(agent_raw.get("self_image_min_concepts", 4)),
-            ),
-            self_image_min_concept_confidence=min(
-                1.0,
-                max(
-                    0.0,
-                    float(
-                        agent_raw.get("self_image_min_concept_confidence", 0.6)
-                    ),
-                ),
-            ),
-            self_image_max_self=max(
-                2, int(agent_raw.get("self_image_max_self", 14)),
-            ),
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),

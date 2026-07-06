@@ -966,43 +966,6 @@ class AgentSettings:
     agenda_groom_every_n_turns: int = 8
     # Conversation-arc worker (cheap LLM, runs each turn at low priority).
     arc_update_every_n_turns: int = 1
-    # Self-image pulse: once per UTC day in the first speaking window after
-    # midnight. ``enabled=False`` skips entirely.
-    self_image_pulse_enabled: bool = True
-    # K65d: seed the self-image pulse from the K9 interest map. When on
-    # (default) the daily rewrite is handed a "lately you've been spending
-    # time on: X, Y, Z" line (the densest topic clusters) so her
-    # self-narrative can legitimately reflect what she's been engaging with
-    # ("lately I've been drawn to …"). Off → the pulse uses only her
-    # top-salience self/reflection memories as before. No effect on a cold /
-    # unlabelled store (the provider returns nothing).
-    self_image_interest_seed_enabled: bool = True
-    # ``num_predict`` ceiling for the self-image LLM call. The prompt asks
-    # for a 60–120 word paragraph (~160 tokens), but reasoning models like
-    # qwen3.x can leak chain-of-thought into the response and eat budget
-    # before the actual paragraph starts. The default leaves headroom for
-    # that without being so large that a runaway response is unbounded.
-    # Bump this if you keep seeing ``surface=self_image_worker`` truncation
-    # warnings in the log. Raised for L10: now that identity *and* value
-    # subject=aiko concepts feed the narrative, she needs more room to hold a
-    # richer picture of herself.
-    self_image_max_tokens: int = 480
-    # L24: source the daily self-image from her active ``subject=aiko``
-    # concepts (via the shared ConceptView) instead of re-summarising raw
-    # self/reflection memories. Concepts are the upstream source of truth;
-    # this only kicks in once the concept layer is mature enough (see
-    # ``self_image_min_concepts``), otherwise the legacy memory path runs.
-    self_image_concept_sourced_enabled: bool = True
-    # Minimum number of qualifying aiko self-concepts before the pulse
-    # narrates concepts instead of memories (the maturity / fallback gate).
-    self_image_min_concepts: int = 4
-    # Confidence an aiko self-concept must clear to feed the self-image.
-    self_image_min_concept_confidence: float = 0.6
-    # L10: how many aiko concepts/memories feed the self-image composition
-    # (caps both the ConceptView.core(subject=aiko) pull and the memory
-    # fallback). Raised from the old hardwired 12 so more of her identity +
-    # value concepts inform the narrative.
-    self_image_max_self: int = 14
     # Prepared-nudge job runs in late speaking windows; cap how stale a
     # prepared nudge can be before ProactiveDirector re-synthesises.
     prepared_nudge_ttl_seconds: float = 600.0

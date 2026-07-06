@@ -3,7 +3,7 @@
 Extracted from ``SessionController.__init__``. Holds the construction of
 the foreground/background workers built before the scheduler
 (``_init_speaking_workers``: reflection, dream, catchphrase, curiosity,
-relationship, agenda, promise, dialogue-act, user-profile, self-image,
+relationship, agenda, promise, dialogue-act, user-profile,
 consolidator, shared-moments, knowledge-gap, goals, fact-check,
 relationship-axes, touch) and the speaking-window scheduler + its
 registered jobs (``_init_speaking_window``). Runs in the same order it
@@ -32,7 +32,7 @@ log = logging.getLogger("app.session")
 class SpeakingWorkersInitMixin:
     """__init__ bootstrap: speaking-window workers + scheduler/jobs."""
 
-    def _init_speaking_workers(self, settings: AppSettings, self_image_path) -> None:
+    def _init_speaking_workers(self, settings: AppSettings) -> None:
         self._reflection_worker = None
         try:
             from app.core.proactive.reflection_worker import ReflectionWorker
@@ -273,71 +273,6 @@ class SpeakingWorkersInitMixin:
             self._user_profile_worker = None
             self._user_state_store = None
             self._user_state_estimator = None
-
-        # Phase 2d: daily self-image pulse + pinned top-self-memories.
-        # The pulse rebuilds data/persona/self_image.txt at most once per
-        # ~20h. Pinned bullets get folded into the prompt every turn so we
-        # don't depend on the file existing yet.
-        self._self_image_pulse_enabled = bool(
-            settings.agent.self_image_pulse_enabled
-        )
-        self._self_image_worker = None
-        if self._self_image_pulse_enabled:
-            try:
-                from app.core.concepts.concept_view import concept_view_from
-                from app.core.persona.self_image_worker import SelfImageWorker
-
-                self._self_image_worker = SelfImageWorker(
-                    ollama=self._ollama,
-                    memory_store=self._memory_store,
-                    target_path=self_image_path,
-                    model=self._effective_worker_model,
-                    max_tokens=settings.agent.self_image_max_tokens,
-                    # K65d: seed the daily self-image from the K9 interest
-                    # map. Late-bound lambda; returns [] in the cold /
-                    # non-persistent state, keeping the legacy prompt.
-                    interest_provider=lambda: (
-                        self._topic_graph.interest_map(top_n=5, min_size=3)
-                        if getattr(self, "_topic_graph", None) is not None
-                        else []
-                    ),
-                    interest_seed_enabled=bool(
-                        getattr(
-                            settings.agent,
-                            "self_image_interest_seed_enabled",
-                            True,
-                        )
-                    ),
-                    # L24: compose the self-image from her subject=aiko
-                    # concepts via the shared ConceptView. Late-bound: the
-                    # concept store + topic graph are built later in init,
-                    # so resolve the facade at pulse time. Returns None ->
-                    # falls back to raw self/reflection memories.
-                    concept_view_provider=lambda: concept_view_from(self),
-                    concept_sourced_enabled=bool(
-                        getattr(
-                            settings.agent,
-                            "self_image_concept_sourced_enabled",
-                            True,
-                        )
-                    ),
-                    min_concepts=int(
-                        getattr(settings.agent, "self_image_min_concepts", 4)
-                    ),
-                    min_concept_confidence=float(
-                        getattr(
-                            settings.agent,
-                            "self_image_min_concept_confidence",
-                            0.6,
-                        )
-                    ),
-                    max_self_memories=int(
-                        getattr(settings.agent, "self_image_max_self", 14)
-                    ),
-                )
-            except Exception:
-                log.warning("SelfImageWorker init failed", exc_info=True)
-                self._self_image_worker = None
 
         # Phase 4b: memory consolidator (cluster + merge near-cosine groups).
         self._consolidator = None
@@ -734,9 +669,6 @@ class SpeakingWorkersInitMixin:
             # B7: the touch budget cue (``touch_state``) was retired —
             # gating is gone, so there's no physical budget to surface.
             attachments=self._render_attachments_block,
-        )
-        self._prompt_assembler.set_pinned_self_memories_provider(
-            self._top_pinned_self_memories,
         )
         # Unified context budget: wire the T3 relevant_context region builder
         # + its sizing knobs. The builder gathers turn-relevance-scored

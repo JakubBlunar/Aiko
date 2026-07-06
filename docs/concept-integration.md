@@ -47,8 +47,10 @@ me** — neither branches on kind names. In
 - `ConceptKind.surfacing_targets: dict[str, str]` maps `subject -> target`
   (with a `"*"` wildcard); `surfacing_target` is the subject-agnostic
   fallback. The same kind can feed different consumers per subject — e.g.
-  `identity` (and `value`, L10) feed `profile_block` for `subject=user` but
-  `self_image_block` for `subject=aiko`.
+  `identity` (and `value`, L10) feed `profile_block` for `subject=user`.
+  `subject=aiko` concepts have **no named for_target block** — they surface
+  every turn through the T3 `relevant_context` path (core lane + relevance),
+  so they carry no `surfacing_targets` entry.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —
@@ -61,7 +63,7 @@ isn't derived twice.
 
 | view / claim | source of truth | consumer / target | status |
 | --- | --- | --- | --- |
-| Aiko's self-image (who she is + what she values) | `subject=aiko` concepts (identity + value) | `SelfImageWorker` -> `self_image_block` | **shipped (reference)** |
+| Aiko's self-model (who she is + what she values) | `subject=aiko` concepts (identity + value) | `build_relevant_context` -> T3 `relevant_context` (`yourself` headers) | **shipped (concepts-only)** |
 | always-on core lane | `core_always_on` kinds (`identity`, `value`) | `build_relevant_context` | **shipped (migrated)** |
 | concept recall tool | active concepts (any subject) | `recall_concept` | **shipped (migrated)** |
 | user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | deferred (L28) |
@@ -72,7 +74,7 @@ isn't derived twice.
 ## Recipe for a new consumer
 
 1. Take a `ConceptView` (a late-bound provider is fine — see
-   `SelfImageWorker`'s `concept_view_provider`).
+   `concept_view_from(self)`).
 2. Read via `core` / `relevant` / `for_target` / `for_cluster`; resolve
    grounding via `evidence_labels`.
 3. If the consumer feeds a named prompt block, declare the kind's
@@ -81,10 +83,9 @@ isn't derived twice.
    sparse/immature (concepts upstream, raw derivation as the floor).
 5. Add a row to the direction-of-truth table above.
 
-The reference integration ([`self_image_worker.py`](../app/core/persona/self_image_worker.py))
-shows the whole pattern end to end, including the maturity gate
-(`self_image_min_concepts` / `self_image_min_concept_confidence`) and the
-memory fallback.
+The live `ConceptView` consumers are `build_relevant_context` (the T3 core
+lane + relevance surfacing, including Aiko's `subject=aiko` self-model) and
+the `recall_concept` tool — read those for the end-to-end pattern.
 
 See also [`docs/personality-backlog/concepts.md`](personality-backlog/concepts.md)
 (L24 contract, L28 rollout) and [`rules/code-conventions.md`](../rules/code-conventions.md).

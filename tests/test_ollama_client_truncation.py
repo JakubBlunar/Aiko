@@ -410,10 +410,10 @@ class BenignTruncationSurfaceTests(unittest.TestCase):
         ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
             client.chat_with_tools(
                 [{"role": "user", "content": "hi"}],
-                surface="self_image_worker",
+                surface="reflection_worker",
             )
         msg = next((r.getMessage() for r in cap.records), "")
-        self.assertIn("surface=self_image_worker", msg)
+        self.assertIn("surface=reflection_worker", msg)
 
 
 class StripThinkingBlocksTests(unittest.TestCase):
@@ -570,7 +570,7 @@ class BenignThinkingTruncationTests(unittest.TestCase):
         ), self.assertNoLogs("app.llm.ollama_client", level="WARNING"):
             response = client.chat_with_tools(
                 [{"role": "user", "content": "hi"}],
-                surface="self_image_worker",
+                surface="reflection_worker",
             )
         # Visible answer is the post-strip content, untouched.
         self.assertEqual(
@@ -593,10 +593,10 @@ class BenignThinkingTruncationTests(unittest.TestCase):
         ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
             client.chat_with_tools(
                 [{"role": "user", "content": "hi"}],
-                surface="self_image_worker",
+                surface="reflection_worker",
             )
         msg = next((r.getMessage() for r in cap.records), "")
-        self.assertIn("surface=self_image_worker", msg)
+        self.assertIn("surface=reflection_worker", msg)
 
     def test_no_thinking_truncation_still_warns(self) -> None:
         # Plain truncation with no thinking trace at all — same loud

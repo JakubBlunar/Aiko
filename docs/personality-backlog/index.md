@@ -246,9 +246,10 @@ Shared machinery (kind-agnostic):
   guard + offline eval harness, sibling to K10; MCP graph dump).
 - **L23.** Surfacing salience / selection budget (which active concepts
   win the prompt this turn, within a token budget).
-- **L24.** Integration contract — existing derivers (self_image,
-  interest_map, beliefs, profile, goals) consume concepts instead of
-  running parallel/contradictory.
+- **L24.** Integration contract — existing derivers (interest_map,
+  beliefs, profile, goals) consume concepts instead of
+  running parallel/contradictory. (Aiko's self-model is already
+  concepts-only — the daily self-image worker was removed.)
 - **L25.** Edge referential integrity across the memory lifecycle
   (archive / consolidate / delete keep `concept_edges` consistent).
 - **L26.** Concept trace + "how Aiko is thinking" observability

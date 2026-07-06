@@ -44,7 +44,7 @@ turns.
 
 | Tier | Lifetime | Representative blocks | Cache behaviour |
 |---|---|---|---|
-| **T0 — stable** | Across sessions; flips only on persona / config edit | `persona`, speech / overlay / outfit / motion / touch grammar addenda, `self_image`, `narrative`, `profile`, `petname`, `catchphrase` | The cache prefix. ~Every turn after the first reads these for free. |
+| **T0 — stable** | Across sessions; flips only on persona / config edit | `persona`, speech / overlay / outfit / motion / touch grammar addenda, `narrative`, `profile`, `petname`, `catchphrase` | The cache prefix. ~Every turn after the first reads these for free. |
 | **T1 — semi-stable** | A few times a day | `relationship`, `anniversary`, `axes`, `arc`, `agenda`, `goals`, `day_color` | Caches across most of an arc; flips a handful of times per session. |
 | **T2 — summary (compaction-only)** | Only mutates when `SummaryWorker` compacts old history | `summary_text` | Stable between compaction events (10s of turns at a time). |
 | **T3 — RAG memory** | Per-turn retrieval, topic-stable | `memory_block` | Same retrieval often repeats turn-to-turn on a single thread. |

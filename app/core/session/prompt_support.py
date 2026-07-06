@@ -32,8 +32,6 @@ log = logging.getLogger("app.prompt_assembler")
 
 DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 
-DEFAULT_SELF_IMAGE_PATH = Path("data/persona/self_image.txt")
-
 # Phase 1c: stage-direction grammar. Folded into the system prompt
 # right after the persona so the model knows about it without us having
 # to mutate the user-customisable persona file. The trailing
@@ -468,7 +466,6 @@ class PromptTelemetry:
     narrative_tokens: int = 0
     agenda_tokens: int = 0
     world_tokens: int = 0
-    self_image_tokens: int = 0
     prompt_tokens_estimate: int = 0
     history_messages_kept: int = 0
     history_messages_dropped: int = 0
@@ -559,7 +556,6 @@ class PromptTelemetry:
             "narrative_tokens": int(self.narrative_tokens),
             "agenda_tokens": int(self.agenda_tokens),
             "world_tokens": int(self.world_tokens),
-            "self_image_tokens": int(self.self_image_tokens),
             "prompt_tokens_estimate": int(self.prompt_tokens_estimate),
             "history_messages_kept": int(self.history_messages_kept),
             "history_messages_dropped": int(self.history_messages_dropped),
@@ -594,7 +590,7 @@ class _StaticSlices:
     Produced by :meth:`PromptAssembler.prebuild_static_slices` during the
     listening window and consumed by :meth:`assemble_with_budget` at
     commit. Reuse is gated by ``cache_key`` — when any of (session, history
-    watermark, persona/self-image mtime, last reaction, recent_window) has
+    watermark, persona mtime, last reaction, recent_window) has
     moved, the cache is treated as invalid and the assembler falls through
     to the standard build path.
 
@@ -606,7 +602,6 @@ class _StaticSlices:
 
     cache_key: tuple
     persona: str
-    self_image_block: str
     summary_row: SummaryRow | None
     already_summarized: int
     thread_note: str

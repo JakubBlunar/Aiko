@@ -771,12 +771,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("reflection job submit failed", exc_info=True)
 
-        # Phase 2d: opportunistically schedule the daily self-image pulse.
-        try:
-            self._maybe_schedule_self_image_pulse()
-        except Exception:
-            log.debug("self-image schedule failed", exc_info=True)
-
         # Phase 3a: per-turn user-state heuristic (regex only, ~0.5ms).
         estimator = getattr(self, "_user_state_estimator", None)
         if estimator is not None:

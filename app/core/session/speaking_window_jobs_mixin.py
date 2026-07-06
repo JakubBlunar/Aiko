@@ -341,44 +341,6 @@ class SpeakingWindowJobsMixin:
         except Exception:
             log.debug("user profile submit failed", exc_info=True)
 
-    def _maybe_schedule_self_image_pulse(self) -> None:
-        """Phase 2d: enqueue a daily self-image rebuild during TTS playback."""
-        worker = getattr(self, "_self_image_worker", None)
-        if worker is None:
-            return
-        try:
-            if not worker.should_run():
-                return
-        except Exception:
-            log.debug("self-image should_run check failed", exc_info=True)
-            return
-
-        def _job(_stop_flag: Any) -> None:
-            if _stop_flag is not None and _stop_flag.is_set():
-                return
-            try:
-                new_text = worker.pulse()
-                if new_text:
-                    log.info(
-                        "self-image pulse wrote %d chars",
-                        len(new_text),
-                    )
-            except Exception:
-                log.debug("self-image pulse raised", exc_info=True)
-
-        try:
-            from app.core.voice.speaking_window_scheduler import ScheduledJob
-
-            self._scheduler.submit(ScheduledJob(
-                name="self_image_pulse",
-                priority=80,  # lowest — daily, not urgent
-                estimated_seconds=5.0,
-                callable=_job,
-                dedupe_key="self_image_pulse",
-            ))
-        except Exception:
-            log.debug("self-image pulse submit failed", exc_info=True)
-
     def _maybe_schedule_consolidator(self) -> None:
         """Phase 4b: enqueue the memory-consolidator pass."""
         worker = getattr(self, "_consolidator", None)
