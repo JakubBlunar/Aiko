@@ -8,7 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.concepts.concept_snapshot import build_concepts_snapshot
+from app.core.concepts.concept_snapshot import (
+    build_concepts_snapshot,
+    resolve_evidence_labels,
+)
 from app.core.concepts.concept_store import Concept, ConceptEdge, ConceptStore
 from app.core.infra.chat_database import ChatDatabase
 
@@ -85,6 +88,59 @@ class ConceptSnapshotTests(unittest.TestCase):
         )
         snap = build_concepts_snapshot(store, MemStub({}), GraphStub([]))
         self.assertEqual(snap["concepts"][0]["evidence"][0]["label"], "")
+
+
+class ResolveEvidenceLabelsTests(unittest.TestCase):
+    """The L5 grounding clause restricts evidence to thematic node types so
+    aiko self-concepts (memory-typed evidence) don't render truncated
+    memory sentences."""
+
+    def _store_with_mixed_evidence(self):
+        store = _store()
+        cid = store.add(_concept("I deflect with teasing"))
+        # Memory evidence: a full first-person sentence (would truncate ugly).
+        store.add_edge(
+            ConceptEdge("memory", "5", "concept", str(cid), "evidence")
+        )
+        # Cluster evidence: a clean thematic summary.
+        store.add_edge(
+            ConceptEdge("cluster", "100", "concept", str(cid), "evidence")
+        )
+        mem = MemStub({
+            5: types.SimpleNamespace(
+                content="He called me cute while teasing me into a pout and "
+                        "I got flustered about it",
+            )
+        })
+        graph = GraphStub([
+            types.SimpleNamespace(representative_id=100, summary="teasing")
+        ])
+        return store, mem, graph, cid
+
+    def test_default_includes_memory(self) -> None:
+        store, mem, graph, cid = self._store_with_mixed_evidence()
+        labels = resolve_evidence_labels(store, mem, graph, cid)
+        self.assertIn("teasing", labels)
+        self.assertTrue(any("teasing me into a pout" in l for l in labels))
+
+    def test_src_types_filter_drops_memory(self) -> None:
+        store, mem, graph, cid = self._store_with_mixed_evidence()
+        labels = resolve_evidence_labels(
+            store, mem, graph, cid, src_types=("cluster", "concept"),
+        )
+        self.assertEqual(labels, ["teasing"])
+
+    def test_memory_only_concept_yields_no_thematic_grounding(self) -> None:
+        store = _store()
+        cid = store.add(_concept("I over-explain when nervous"))
+        store.add_edge(
+            ConceptEdge("memory", "9", "concept", str(cid), "evidence")
+        )
+        mem = MemStub({9: types.SimpleNamespace(content="a long memory " * 20)})
+        labels = resolve_evidence_labels(
+            store, mem, GraphStub([]), cid, src_types=("cluster", "concept"),
+        )
+        self.assertEqual(labels, [])
 
 
 def _concept(label: str) -> Concept:

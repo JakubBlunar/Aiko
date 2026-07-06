@@ -78,6 +78,7 @@ def resolve_evidence_labels(
     concept_id: int,
     *,
     limit: int | None = None,
+    src_types: "tuple[str, ...] | None" = None,
 ) -> list[str]:
     """Human-readable, non-empty labels for a concept's evidence edges.
 
@@ -86,10 +87,20 @@ def resolve_evidence_labels(
     resolution -- memory content / cluster summary / concept label -- has
     a single implementation. Ordered by ``evidence_of`` (ordinal), blanks
     dropped, capped at ``limit`` when given.
+
+    ``src_types`` restricts which evidence node types contribute. The
+    L5 grounding clause passes ``("cluster", "concept")`` so a concept is
+    grounded on the *themes* it recurs around (topic clusters / related
+    concepts) rather than a raw memory sentence -- the latter is a full
+    first-person statement that reads as a truncated fragment once trimmed
+    for the prompt (notably ``subject=aiko`` self-concepts, whose evidence
+    is memory-typed). ``None`` (default) keeps every node type.
     """
     cluster_labels = _cluster_label_map(topic_graph)
     out: list[str] = []
     for edge in store.evidence_of(int(concept_id)):
+        if src_types is not None and edge.src_type not in src_types:
+            continue
         label = (
             _resolve_label(edge, memory_store, cluster_labels, store) or ""
         ).strip()
