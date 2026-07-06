@@ -378,8 +378,8 @@ def _ms() -> SimpleNamespace:
         context_budget_concept_cap=3,
         context_budget_concept_weight=1.1,
         context_budget_concept_min_relevance=0.3,
-        context_budget_identity_cap=2,
-        context_budget_identity_min_confidence=0.75,
+        context_budget_core_cap=2,
+        context_budget_core_min_confidence=0.75,
         concept_min_clusters=6,
     )
 
@@ -457,21 +457,24 @@ class RegionBuilderTests(unittest.TestCase):
         self.assertEqual(region.text, "")
         self.assertEqual(region.reason, "disabled")
 
-    def test_identity_concept_pinned_below_relevance_floor(self) -> None:
+    def test_core_concept_pinned_below_relevance_floor(self) -> None:
         # The identity concept is barely relevant to the turn (cosine 0.05,
         # under the 0.3 concept min_relevance) so the relevance path drops it,
-        # but the always-on identity lane still surfaces it.
+        # but the L27 always-on core lane still surfaces it -- and the trace
+        # records it as pinned.
         host, _ = self._host(near_score=0.05)
         region = host.build_relevant_context(
             user_text="what's the weather", recent_turns=[], session_key="s1",
             budget_tokens=2000, degrade_level=0,
         )
         self.assertIn("enjoys systems thinking", region.text)
-        self.assertEqual(region.concept_trace["surfaced"][0]["concept_id"], 7)
+        surfaced = region.concept_trace["surfaced"][0]
+        self.assertEqual(surfaced["concept_id"], 7)
+        self.assertTrue(surfaced["pinned"])
 
-    def test_identity_lane_disabled_by_cap_zero(self) -> None:
+    def test_core_lane_disabled_by_cap_zero(self) -> None:
         host, _ = self._host(near_score=0.05)
-        host._memory_settings.context_budget_identity_cap = 0
+        host._memory_settings.context_budget_core_cap = 0
         region = host.build_relevant_context(
             user_text="what's the weather", recent_turns=[], session_key="s1",
             budget_tokens=2000, degrade_level=0,

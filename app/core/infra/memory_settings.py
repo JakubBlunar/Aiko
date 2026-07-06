@@ -840,14 +840,18 @@ class MemorySettings:
     context_budget_concept_cap: int = 3
     context_budget_concept_weight: float = 1.1
     context_budget_concept_min_relevance: float = 0.30
-    # Identity always-on lane: up to ``identity_cap`` active *identity*
-    # concepts whose confidence clears ``identity_min_confidence`` are pinned
-    # into the region every turn regardless of turn relevance (who the user
-    # is / how Aiko wants to behave). They bypass the concept cap +
-    # min-relevance, so they enrich on top of the turn-relevant picks. Set
-    # ``identity_cap = 0`` to disable the lane.
-    context_budget_identity_cap: int = 2
-    context_budget_identity_min_confidence: float = 0.75
+    # L27 always-on *core* lane: up to ``core_cap`` high-confidence concepts
+    # are pinned into the region every turn regardless of turn relevance (who
+    # the user is, what they + Aiko value, how she wants to behave). Which
+    # kinds participate is declared per-kind in the ``ConceptKind`` registry
+    # (``core_always_on`` + an optional per-kind ``core_min_confidence`` bar);
+    # ``core_min_confidence`` here is the *global fallback* bar for kinds that
+    # don't set their own. The lane is balanced across kinds + subjects so no
+    # one kind crowds out the others, bypasses the concept cap + min-relevance,
+    # and enriches on top of the turn-relevant picks. Set ``core_cap = 0`` to
+    # disable it. (Legacy ``context_budget_identity_*`` keys still parse.)
+    context_budget_core_cap: int = 2
+    context_budget_core_min_confidence: float = 0.75
     # L9 living beliefs. Counter-evidence lowers an active identity
     # concept's confidence and can step it into a revivable
     # ``contradicted`` status (distinct from a faded ``dormant``). The L3
@@ -2466,16 +2470,26 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     ),
                 ),
             ),
-            context_budget_identity_cap=max(
-                0, int(memory_raw.get("context_budget_identity_cap", 2))
+            context_budget_core_cap=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "context_budget_core_cap",
+                        # Back-compat: the lane was ``identity`` pre-L27.
+                        memory_raw.get("context_budget_identity_cap", 2),
+                    )
+                ),
             ),
-            context_budget_identity_min_confidence=min(
+            context_budget_core_min_confidence=min(
                 1.0,
                 max(
                     0.0,
                     float(
                         memory_raw.get(
-                            "context_budget_identity_min_confidence", 0.75
+                            "context_budget_core_min_confidence",
+                            memory_raw.get(
+                                "context_budget_identity_min_confidence", 0.75
+                            ),
                         )
                     ),
                 ),

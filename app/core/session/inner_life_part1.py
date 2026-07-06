@@ -1401,22 +1401,25 @@ class InnerLifePart1Mixin:
                     key=f"c{cid}",
                 ))
 
-        # Identity always-on lane: high-confidence *identity* concepts (who
-        # the user is / how Aiko wants to behave) are pinned so they enrich
-        # every turn regardless of cosine to the live query. They bypass the
-        # relevance floor + concept cap in the selector and are rendered
-        # first. Deduped against the turn-relevant pool below by concept_id.
+        # L27 always-on core lane: high-confidence concepts (who the user is,
+        # what they + Aiko value, how she wants to behave) are pinned so they
+        # enrich every turn regardless of cosine to the live query. Which
+        # kinds join, and their per-kind confidence bars, are declared in the
+        # ConceptKind registry; ``core_lane`` balances the picks across kinds
+        # + subjects. They bypass the relevance floor + concept cap in the
+        # selector and are rendered first, deduped against the turn-relevant
+        # pool below by concept_id.
         pinned_ids: set[int] = set()
         if mature and view is not None:
-            id_cap = max(0, int(getattr(ms, "context_budget_identity_cap", 2)))
-            id_min = float(
-                getattr(ms, "context_budget_identity_min_confidence", 0.75)
+            core_cap = max(0, int(getattr(ms, "context_budget_core_cap", 2)))
+            core_min = float(
+                getattr(ms, "context_budget_core_min_confidence", 0.75)
             )
-            if id_cap > 0:
-                identity = view.core(
-                    kind="identity", min_confidence=id_min, limit=id_cap,
+            if core_cap > 0:
+                core_concepts = view.core_lane(
+                    limit=core_cap, default_min_confidence=core_min,
                 )
-                for i, concept in enumerate(identity):
+                for i, concept in enumerate(core_concepts):
                     label = (getattr(concept, "label", "") or "").strip()
                     if not label:
                         continue
@@ -1503,7 +1506,9 @@ class InnerLifePart1Mixin:
         concept_pairs = [c.payload for c in sorted(
             selection.source("concept").chosen, key=lambda c: c.order,
         )]
-        concept_block, concept_trace = self._render_relevant_concepts(concept_pairs)
+        concept_block, concept_trace = self._render_relevant_concepts(
+            concept_pairs, pinned_ids=pinned_ids,
+        )
         if concept_block:
             sections.append(concept_block)
 
@@ -1567,7 +1572,7 @@ class InnerLifePart1Mixin:
         )
 
     def _render_relevant_concepts(
-        self, concepts: list,
+        self, concepts: list, *, pinned_ids: "set[int] | None" = None,
     ) -> tuple[str, dict]:
         """Render the budget-chosen concepts as hedged impressions, reusing
         the L5 confidence hedging + evidence grounding. Returns
@@ -1579,9 +1584,15 @@ class InnerLifePart1Mixin:
         who Aiko *is* — instead of as something she learned *about* the user.
         Kinds all render as held-lightly impressions today; a value / boundary
         voice can layer on the per-subject header when those kinds ship
-        (L10 / L18 / L27)."""
+        (L10 / L18 / L27).
+
+        ``pinned_ids`` marks which concepts came from the L27 always-on core
+        lane (vs. the turn-relevant fill); recorded per-entry in the trace so
+        the MCP ``get_last_concept_trace`` view shows *why* each concept was
+        in the prompt. It does not affect rendering."""
         if not concepts:
             return "", {"surfaced": [], "reason": "no_eligible"}
+        pinned = pinned_ids or set()
         name = self.user_display_name
         groups: dict[str, list[str]] = {"user": [], "relationship": [], "aiko": []}
         surfaced_trace: list[dict] = []
@@ -1603,6 +1614,7 @@ class InnerLifePart1Mixin:
                 "plasticity": round(float(getattr(c, "plasticity", 0.0)), 4),
                 "kind": getattr(c, "kind", None),
                 "subject": getattr(c, "subject", None),
+                "pinned": int(getattr(c, "concept_id", 0)) in pinned,
                 "hedge": hedge,
                 "last_reinforced_at": getattr(c, "last_reinforced_at", None),
                 "supporting": support,

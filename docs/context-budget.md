@@ -129,17 +129,41 @@ the old `aggressive` path, which blanked RAG/concepts *first*:
    lowest-weighted survivors; at `degrade_level == 2` keep floors only (pinned
    items still survive).
 
-### Identity always-on lane
+### Always-on core lane (L27)
 
-Some concepts are core rather than topical — high-confidence **identity**
-concepts describing who the user is and *how Aiko wants to behave*. These rarely
-score high in cosine to a given turn, so a pure relevance selector would almost
-never surface them. `build_relevant_context` fetches up to
-`context_budget_identity_cap` active `kind="identity"` concepts whose confidence
-clears `context_budget_identity_min_confidence` (highest confidence first),
-marks them `pinned`, and dedupes them against the turn-relevant concept pool by
-`concept_id`. The selector then guarantees them (budget permitting) on top of the
-relevance picks. Set `context_budget_identity_cap = 0` to disable the lane.
+Some concepts are core rather than topical — high-confidence concepts describing
+who the user is, what they and Aiko **value**, and *how she wants to behave*.
+These rarely score high in cosine to a given turn, so a pure relevance selector
+would almost never surface them.
+
+Which kinds join this lane is **declared per-kind in the `ConceptKind`
+registry** (`core_always_on=True`, plus an optional per-kind
+`core_min_confidence` bar), not hardcoded — a new kind (value, boundary, …)
+opts in with one registry field and auto-joins. `build_relevant_context` calls
+`ConceptView.core_lane(...)`, which:
+
+- gathers each core kind's active concepts above its bar (per-kind
+  `core_min_confidence`, else the global `context_budget_core_min_confidence`),
+- **balances** them across `(kind, subject)` buckets — strongest bucket first,
+  then round-robin — so no one kind (usually `identity`, the only mined kind
+  today) crowds out the rest, and both the user-model and Aiko's self-model
+  (`subject=aiko`) reach the brain,
+- returns up to `context_budget_core_cap` concepts.
+
+Those are marked `pinned`, deduped against the turn-relevant concept pool by
+`concept_id`, and the selector guarantees them (budget permitting) on top of the
+relevance picks. Each surfaced concept's `pinned` flag is recorded in the
+per-turn concept trace (visible via the MCP `get_last_concept_trace`). Set
+`context_budget_core_cap = 0` to disable the lane. Per-kind bars key naturally
+off the L16 plasticity bands (sticky value/boundary kinds earn a higher bar
+than fluid tastes).
+
+A per-concept anti-nag cooldown (so the same core concept isn't pinned on every
+single turn) is the remaining L27 refinement; with only `identity` live today
+it's deferred to avoid hiding the self-model on alternating turns.
+
+*(Legacy `context_budget_identity_cap` / `context_budget_identity_min_confidence`
+config keys still parse into the renamed `core` knobs.)*
 
 It returns a `ContextSelection` (chosen items per source + scores + token usage +
 dropped counts) used for rendering and telemetry. Per-source `weight` biases the
@@ -193,8 +217,8 @@ All under `memory.` — full descriptions + defaults in
 | `context_budget_{memory,cluster,concept}_cap` | `8` / `3` / `3` | hard-maximum relevance items (excludes pinned identity concepts) |
 | `context_budget_{memory,cluster,concept}_weight` | `1.0` / `0.9` / `1.1` | relevance multiplier |
 | `context_budget_{memory,cluster,concept}_min_relevance` | `0.0` / `0.30` / `0.30` | turn-relevance floor |
-| `context_budget_identity_cap` | `2` | max pinned always-on identity concepts (`0` disables the lane) |
-| `context_budget_identity_min_confidence` | `0.75` | confidence an identity concept must clear to be pinned |
+| `context_budget_core_cap` | `2` | max pinned always-on core concepts across kinds/subjects (`0` disables the lane) |
+| `context_budget_core_min_confidence` | `0.75` | global fallback confidence bar for the core lane (per-kind `core_min_confidence` overrides) |
 
 **Tuning for small local models.** On a 64k window the defaults reserve roughly
 `min(0.15*64k, 4096) = 4096` tokens for surfacing (minus the history-floor clamp).

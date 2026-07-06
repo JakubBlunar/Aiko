@@ -98,6 +98,63 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(ConceptView(None).core(), [])
 
 
+class CoreLaneTests(unittest.TestCase):
+    """L27 always-on core lane: registry-driven, per-kind bars, balanced
+    round-robin across (kind, subject)."""
+
+    def test_identity_only_balances_subjects(self) -> None:
+        # Two user identity concepts + one aiko: with a tight limit the
+        # strongest bucket is drawn first, then the other subject -- so both
+        # the user-model and self-model surface instead of two user picks.
+        store = _FakeStore([
+            _c(1, subject="user", confidence=0.9),
+            _c(2, subject="user", confidence=0.85),
+            _c(3, subject="aiko", confidence=0.8),
+        ])
+        out = ConceptView(store).core_lane(limit=2, default_min_confidence=0.75)
+        self.assertEqual([c.concept_id for c in out], [1, 3])
+
+    def test_respects_default_min_confidence(self) -> None:
+        store = _FakeStore([_c(1, confidence=0.5)])
+        self.assertEqual(
+            ConceptView(store).core_lane(limit=3, default_min_confidence=0.75), [],
+        )
+
+    def test_zero_limit_and_missing_store(self) -> None:
+        store = _FakeStore([_c(1, confidence=0.9)])
+        self.assertEqual(ConceptView(store).core_lane(limit=0), [])
+        self.assertEqual(ConceptView(None).core_lane(limit=3), [])
+
+    def test_per_kind_bar_and_cross_kind_balance(self) -> None:
+        # A second kind opts into the lane with a higher bar; its weak
+        # candidate is dropped by that bar while identity's lower bar admits
+        # a 0.8 concept.
+        register_kind(
+            ConceptKind(
+                name="_clv_value", core_always_on=True, core_min_confidence=0.9,
+            )
+        )
+        try:
+            store = _FakeStore([
+                _c(1, kind="identity", subject="user", confidence=0.8),
+                _c(2, kind="_clv_value", subject="user", confidence=0.95),
+                _c(3, kind="_clv_value", subject="user", confidence=0.85),
+            ])
+            out = ConceptView(store).core_lane(
+                limit=5, default_min_confidence=0.75,
+            )
+            self.assertEqual(sorted(c.concept_id for c in out), [1, 2])
+        finally:
+            from app.core.concepts.concept_kinds import CONCEPT_KINDS
+
+            CONCEPT_KINDS.pop("_clv_value", None)
+
+    def test_core_lane_kinds_includes_identity_by_default(self) -> None:
+        from app.core.concepts.concept_kinds import core_lane_kinds
+
+        self.assertIn("identity", [k.name for k in core_lane_kinds()])
+
+
 class RelevantTests(unittest.TestCase):
     def test_wraps_nearest_active_and_applies_min_sim(self) -> None:
         store = _FakeStore([_c(1)], near_score=0.4)
