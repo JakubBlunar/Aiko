@@ -741,6 +741,15 @@ class MemorySettings:
     affect_sampler_learning_rate: float = 0.2
     cluster_affect_map_cap: int = 200
     cluster_affect_max_age_days: float = 120.0
+    # L7 relationship rituals. The ritual pass groups ``shared_moment``
+    # memories by single-link cosine (``ritual_group_similarity``) into
+    # recurring clusters of ``>= ritual_group_min_size`` members, offering up
+    # to ``max_ritual_groups`` of them to the proposer. The whole pass is
+    # skipped until at least ``ritual_min_moments`` shared moments exist.
+    concept_synthesis_ritual_min_moments: int = 6
+    concept_synthesis_ritual_group_min_size: int = 3
+    concept_synthesis_ritual_group_similarity: float = 0.6
+    concept_synthesis_max_ritual_groups: int = 3
     # Shared engagement clock (app/core/infra/engagement_clock.py): a
     # monotonic "active-conversation time" counter so decay tracks time
     # actually spent engaging, not calendar time (away/quiet stretches
@@ -2334,6 +2343,33 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             cluster_affect_max_age_days=max(
                 1.0,
                 float(memory_raw.get("cluster_affect_max_age_days", 120.0)),
+            ),
+            concept_synthesis_ritual_min_moments=max(
+                2,
+                int(memory_raw.get("concept_synthesis_ritual_min_moments", 6)),
+            ),
+            concept_synthesis_ritual_group_min_size=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_ritual_group_min_size", 3
+                    )
+                ),
+            ),
+            concept_synthesis_ritual_group_similarity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "concept_synthesis_ritual_group_similarity", 0.6
+                        )
+                    ),
+                ),
+            ),
+            concept_synthesis_max_ritual_groups=max(
+                1,
+                int(memory_raw.get("concept_synthesis_max_ritual_groups", 3)),
             ),
             engagement_clock_enabled=bool(
                 memory_raw.get("engagement_clock_enabled", True)

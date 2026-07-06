@@ -488,6 +488,12 @@ class AgentSettings:
     # cheap and never does one giant pass. Off has no effect unless
     # ``concepts_enabled`` is also on.
     concept_synthesis_enabled: bool = True
+    # L7 relationship-ritual synthesis. When enabled (and the two switches
+    # above are on), the synthesis worker's ritual pass groups recurring
+    # ``shared_moment`` memories into named relationship rituals. Off just
+    # skips that one pass; the rest of synthesis is unaffected. Thresholds
+    # live under MemorySettings (``concept_synthesis_ritual_*``).
+    ritual_synthesis_enabled: bool = True
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

@@ -65,27 +65,42 @@ class TopicGraphStub:
 class MemStub:
     def __init__(
         self, mid: int, content: str, kind: str, salience: float,
-        metadata=None,
+        metadata=None, embedding=None, created_at="",
     ):
         self.id = mid
         self.content = content
         self.kind = kind
         self.salience = salience
         self.metadata = metadata or {}
+        self.embedding = embedding
+        self.created_at = created_at
 
 
 class MemoryStoreStub:
-    def __init__(self, self_memories, earliest=None):
+    def __init__(self, self_memories, earliest=None, extra_memories=None):
         self._self = self_memories
-        self._by_id = {m.id: m for m in self_memories}
+        # ``extra_memories`` carries non-self rows (e.g. shared_moment) so the
+        # L7 ritual pass can enumerate them via ``iter_by_kind``. Kept separate
+        # (not snapshotted into one list) so tests that append to ``_self`` /
+        # ``_extra`` after construction are reflected by the iterators.
+        self._extra = list(extra_memories or [])
+        self._by_id = {
+            m.id: m for m in list(self_memories) + self._extra
+        }
         self._earliest = earliest
+
+    def _all_rows(self):
+        return list(self._self) + list(self._extra)
 
     def get(self, mid: int):
         return self._by_id.get(int(mid))
 
     def iter_by_kinds(self, kinds):
         ks = set(kinds)
-        return [m for m in self._self if m.kind in ks]
+        return [m for m in self._all_rows() if m.kind in ks]
+
+    def iter_by_kind(self, kind: str):
+        return [m for m in self._all_rows() if m.kind == kind]
 
     def earliest_created_at(self):
         return self._earliest
@@ -168,6 +183,7 @@ class WorkerHarness:
         user_name=None,
         assistant_name=None,
         earliest=None,
+        shared_moments=None,
     ):
         tmp = tempfile.mkdtemp()
         self.path = Path(tmp) / "test.db"
@@ -180,6 +196,7 @@ class WorkerHarness:
         self.mem = MemoryStoreStub(
             self_memories if self_memories is not None else _self_memories(),
             earliest=earliest,
+            extra_memories=shared_moments,
         )
         self.ollama = FakeOllama(responder)
         self.worker = ConceptSynthesisWorker(

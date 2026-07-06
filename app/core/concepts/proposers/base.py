@@ -105,7 +105,7 @@ class ProposerSpec:
     kind: str
     subject: str
     evidence_model: str
-    population: str  # "clusters" | "aiko_memories" | "affect"
+    population: str  # "clusters" | "aiko_memories" | "affect" | "shared_moments"
     propose: Callable[..., list[CandidateProposal]]
     sig_key: str = ""
 

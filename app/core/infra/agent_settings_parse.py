@@ -206,6 +206,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             concepts_enabled=bool(
                 agent_raw.get("concepts_enabled", False),
             ),
+            ritual_synthesis_enabled=bool(
+                agent_raw.get("ritual_synthesis_enabled", True),
+            ),
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),

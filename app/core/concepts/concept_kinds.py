@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 
 from app.core.concepts.concept_lifecycle import (
     affective_evidence_gate,
+    ritual_evidence_gate,
     set_evidence_gate,
     value_evidence_gate,
 )
@@ -280,6 +281,34 @@ register_kind(
         # turn. So no ``surfacing_targets`` (they route through the T3
         # relevant_context relevance path for both subjects) and they do NOT
         # join the always-on core lane.
+    )
+)
+
+
+# ── L7: ritual (relationship) ─────────────────────────────────────────
+# The recurring "this is a thing you two do" pattern -- a named relationship
+# ritual mined from shared_moment memories ("Friday debugging evenings",
+# "the pre-release nerves-and-tea"). Subject is *relationship*: it's about
+# the pair, not either person alone. Uses the ``set`` machinery (evidence =
+# the constituent shared moments) with a recurrence-flavoured gate. Distinct
+# from catchphrases (a recurring *phrase*) and from the relationship-phase
+# block (the arc, not a specific ritual). Surfaces via the T3 relevance path,
+# not a named for_target block.
+register_kind(
+    ConceptKind(
+        name="ritual",
+        subject="relationship",
+        evidence_model="set",
+        # L16: rituals are mid-band -- warmer/softer than a value, but a
+        # settled shared pattern shouldn't churn every time a moment lands.
+        plasticity_default=0.4,
+        # L3: recurrence gate (>= 3 distinct moments / non-instant age /
+        # moderate confidence) -- a one-off evening isn't a ritual.
+        promotion_gate=ritual_evidence_gate,
+        # L24 / L27: rituals are relationship colour -- they should surface
+        # when the live turn touches the shared pattern, not be pinned every
+        # turn. So no ``surfacing_targets`` (they route through the T3
+        # relevant_context relevance path) and they do NOT join the core lane.
     )
 )
 
