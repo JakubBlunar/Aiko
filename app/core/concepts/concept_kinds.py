@@ -57,6 +57,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.core.concepts.concept_lifecycle import (
+    affective_evidence_gate,
     set_evidence_gate,
     value_evidence_gate,
 )
@@ -251,6 +252,34 @@ register_kind(
         # value every turn when it is very settled.
         core_always_on=True,
         core_min_confidence=0.85,
+    )
+)
+
+
+# ── L13: affective ────────────────────────────────────────────────────
+# The durable topic->emotion mapping: what energizes vs. drains him, and
+# how certain topics move Aiko ("debugging frustrates then satisfies him";
+# "explaining systems lifts me"; "I don't like talking about X"). Same
+# ``set`` machinery, evidence mixing topic clusters (per-cluster affect map)
+# and, for aiko, her affect-stamped self-memories. Distinct from K2 mood
+# beliefs (which model *current* mood) -- these are the durable pattern.
+register_kind(
+    ConceptKind(
+        name="affective",
+        subject="user",
+        evidence_model="set",
+        # L16: affect is the *fluid* end of the plasticity spectrum -- a
+        # topic's emotional weather shifts faster than an identity trait or a
+        # value -> higher plasticity so confidence tracks change more readily.
+        plasticity_default=0.5,
+        # L3: the fluid-end gate (a lower age + confidence bar than value,
+        # but still >= 2 distinct sources).
+        promotion_gate=affective_evidence_gate,
+        # L24 / L27: affective concepts are *tone guidance* -- they should
+        # surface when the live turn's topic matches, not be pinned every
+        # turn. So no ``surfacing_targets`` (they route through the T3
+        # relevant_context relevance path for both subjects) and they do NOT
+        # join the always-on core lane.
     )
 )
 

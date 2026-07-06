@@ -632,6 +632,21 @@ class SessionController(
                     )
                 except Exception:
                     log.debug("flashbulb wiring failed", exc_info=True)
+                # L13 self-memory affect stamping — record Aiko's live
+                # (valence, arousal) on self/reflection/diary writes.
+                try:
+                    self._memory_store.set_affect_provider(
+                        self._read_full_affect,
+                        enabled=bool(
+                            getattr(
+                                self._settings.agent,
+                                "affect_sampler_enabled",
+                                True,
+                            )
+                        ),
+                    )
+                except Exception:
+                    log.debug("affect-provider wiring failed", exc_info=True)
                 # Boot RAG store (best-effort -- if probe / Lance fail, we
                 # gracefully fall back to the SQLite path).
                 try:

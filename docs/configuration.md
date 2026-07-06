@@ -529,6 +529,18 @@ When L9 flips a belief to `contradicted`, the doubt flows **back down** to the m
 - `memory.concept_identity_plasticity` *(float, `0.3`, clamped `[0, 1]`)* — the `identity` kind's default band (low = sticky). Applied on first eval; also damps decay + L9 disproof + L15 revision for identity concepts.
 - `memory.concept_default_plasticity` *(float, `0.5`, clamped `[0, 1]`)* — fallback band for any kind that registers no `plasticity_default` on the `ConceptKind` registry.
 
+### L13 — affective concepts (topic → durable affect)
+
+The `affective` concept kind (both subjects) captures the durable topic→emotion signature — what energizes/drains the user, and how topics move Aiko — surfaced as tone guidance via the T3 relevance path (never pinned, never said aloud). It is fed by a post-turn per-cluster affect sampler ([`cluster_affect`](../app/core/concepts/cluster_affect.py) EWMA maps, one per subject, keyed by topic `cluster_id`) plus `metadata.affect` stamping on Aiko's `self`/`reflection`/`diary` writes; a `"affect"` synthesis population + two proposers name the pattern. See [`personality-backlog/concepts.md` → L13](personality-backlog/concepts.md). The `affective` kind uses `plasticity_default=0.5` (the fluid band) and `affective_evidence_gate` (floors the `set` gate at ≥2 sources / ≥0.5 days / ≥0.6 confidence).
+
+- `agent.affect_sampler_enabled` *(bool, `true`)* — master switch for the per-turn affect sampler **and** the self-memory affect stamping. Off → no topic→affect signal accrues, so the affective proposers stay silent (existing concepts still surface).
+- `memory.concept_synthesis_affect_min_samples` *(int, `3`, min `1`)* — how many affect-bearing turns a cluster (or aiko self-theme) must accrue before it is offered to the affective proposers, so a one-off mood never becomes a durable claim.
+- `memory.affect_sampler_min_sim` *(float, `0.4`, clamped `[0, 1]`)* — minimum cosine to the live turn's cluster for the sampler to attribute this turn's affect to it.
+- `memory.affect_sampler_top_n` *(int, `1`, min `1`)* — how many top matching clusters a turn's affect is folded into.
+- `memory.affect_sampler_learning_rate` *(float, `0.2`, clamped `[0.01, 1]`)* — EWMA alpha for the rolling per-cluster valence/arousal.
+- `memory.cluster_affect_map_cap` *(int, `200`, min `1`)* — max clusters kept per subject's affect map (most-recently-updated win).
+- `memory.cluster_affect_max_age_days` *(float, `120.0`, min `1`)* — affect-map entries older than this are dropped on write (self-heals across topic-graph refits).
+
 ### L25 — concept edge referential integrity
 
 Concept edges (`evidence` / `contradicts`) point at memory rows that get deleted, pruned, and merged. Most deletes are reconciled synchronously by the `ConceptEdgeReconciler` (registered as a `MemoryStore` delete listener: it drops the memory's edges and recomputes the affected concepts' edge-derived `evidence_count` / `distinct_source_count`). But `MemoryStore.prune` batch-deletes rows **without** firing delete listeners, so an idle sweep worker garbage-collects any orphaned edges it leaves. Destructive merges repoint the victim's edges onto the survivor first (rule b); archived rows keep their edges (rule c). L3 stays the single writer of `confidence` / `plasticity` / `status`. See [`concept-lifecycle.md`](concept-lifecycle.md).

@@ -22,10 +22,19 @@ The two ``subject=user`` proposers mine his topic clusters; the two
 (L11) -- her aiko-dominant self-themes (clusters) AND her salient
 self-memories -- via the shared :func:`propose_aiko_hybrid` body, so a
 self-concept can be grounded by a theme, a memory, or a mix.
+
+- ``affective_user`` / ``affective_aiko`` -- *affective* (the durable
+  topic->emotion signature; L13). They mine the ``"affect"`` population:
+  topic clusters annotated with each subject's typical affect (from the
+  per-cluster affect map), plus -- for aiko -- her affect-stamped
+  self-memories. The affect *direction* is carried in the concept text, not
+  on the edges.
 """
 from __future__ import annotations
 
 from app.core.concepts.proposers import (
+    affective_aiko,
+    affective_user,
     identity_aiko,
     identity_user,
     value_aiko,
@@ -46,6 +55,8 @@ from app.core.concepts.proposers.base import (
     resolve_reinforces,
     snippet,
 )
+from app.core.concepts.proposers.affective_aiko import propose_affective_aiko
+from app.core.concepts.proposers.affective_user import propose_affective_user
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
 from app.core.concepts.proposers.value_aiko import propose_value_aiko
@@ -56,6 +67,8 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     identity_aiko.SPEC,
     value_user.SPEC,
     value_aiko.SPEC,
+    affective_user.SPEC,
+    affective_aiko.SPEC,
 )
 
 
@@ -71,6 +84,8 @@ __all__ = [
     "clamp01",
     "coerce_id_list",
     "format_existing",
+    "propose_affective_aiko",
+    "propose_affective_user",
     "propose_aiko_hybrid",
     "propose_identity_aiko",
     "propose_identity_user",

@@ -105,7 +105,7 @@ class ProposerSpec:
     kind: str
     subject: str
     evidence_model: str
-    population: str  # "clusters" | "aiko_memories"
+    population: str  # "clusters" | "aiko_memories" | "affect"
     propose: Callable[..., list[CandidateProposal]]
     sig_key: str = ""
 
@@ -177,6 +177,9 @@ def propose_aiko_hybrid(
     cluster_index: Sequence[tuple[int, str, int]],
     memories: Sequence[Any],
     existing: Sequence[ExistingConcept] = (),
+    affect_by_rep: "dict[int, str] | None" = None,
+    memory_affect: "dict[int, str] | None" = None,
+    prompt_tail: str | None = None,
 ) -> list[CandidateProposal]:
     """Shared body for the subject=aiko proposers (L11).
 
@@ -187,7 +190,14 @@ def propose_aiko_hybrid(
     mix; a NEW concept needs ``>= ctx.min_sources`` total distinct sources,
     and evidence edges carry mixed ``("cluster", rep)`` / ``("memory", id)``
     nodes (the ``set`` model allows it). When she has no aiko-dominant
-    clusters yet this degrades cleanly to memories-only (cold start)."""
+    clusters yet this degrades cleanly to memories-only (cold start).
+
+    ``affect_by_rep`` / ``memory_affect`` (L13) optionally annotate each
+    theme / memory line with its typical affect phrase, and ``prompt_tail``
+    overrides the closing instruction — the affective proposer reuses this
+    body with an affect-aware prompt."""
+    aff_reps = affect_by_rep or {}
+    aff_mems = memory_affect or {}
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
 
     valid_mem_ids: set[int] = set()
@@ -198,16 +208,27 @@ def propose_aiko_hybrid(
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
-        mem_lines.append(f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+        line = f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}"
+        if mid in aff_mems:
+            line += f"  (felt: {aff_mems[mid]})"
+        mem_lines.append(line)
 
     if not valid_reps and not valid_mem_ids:
         return []
     existing_ids = {int(e.id) for e in existing}
 
+    def _rep_line(rep: int, label: str, size: int, *, bullet: bool) -> str:
+        head = f"- [{rep}] {label} (size {size})" if bullet else (
+            f"[{rep}] {label} (size {size})"
+        )
+        if rep in aff_reps:
+            head += f"  (feels: {aff_reps[rep]})"
+        return head
+
     sections: list[str] = []
     if cluster_index:
         map_lines = [
-            f"- [{rep}] {label} (size {size})"
+            _rep_line(rep, label, size, bullet=True)
             for rep, label, size in cluster_index
         ]
         sections.append(
@@ -217,7 +238,7 @@ def propose_aiko_hybrid(
     if focus_clusters:
         focus_lines: list[str] = []
         for fc in focus_clusters:
-            parts = [f"[{fc.rep}] {fc.label} (size {fc.size})"]
+            parts = [_rep_line(fc.rep, fc.label, fc.size, bullet=False)]
             if fc.representative:
                 parts.append(f"  representative: {snippet(fc.representative)}")
             if fc.digest:
@@ -228,10 +249,14 @@ def propose_aiko_hybrid(
         sections.append("NOTABLE SELF-MEMORIES:\n" + "\n".join(mem_lines))
     sections.append(f"{known_label}:\n" + format_existing(existing))
     sections.append(
-        f"Propose NEW first-person {noun_plural} about {ctx.assistant_name} "
-        "herself, grounded in the self-themes and/or self-memories above "
-        "(cite theme rep ids in 'evidence_cluster_reps' and/or memory ids "
-        "in 'evidence_memory_ids'), or reinforce a known one by id."
+        prompt_tail
+        or (
+            f"Propose NEW first-person {noun_plural} about "
+            f"{ctx.assistant_name} herself, grounded in the self-themes "
+            "and/or self-memories above (cite theme rep ids in "
+            "'evidence_cluster_reps' and/or memory ids in "
+            "'evidence_memory_ids'), or reinforce a known one by id."
+        )
     )
     user = "\n\n".join(sections)
 

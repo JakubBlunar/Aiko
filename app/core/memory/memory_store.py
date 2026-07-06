@@ -234,6 +234,11 @@ VALID_KINDS = {
     "diary",
 }
 
+# L13 — the first-person kinds whose writes get a ``metadata.affect`` stamp
+# (Aiko's self-narrative population; mirrors the concept layer's
+# ``AIKO_SELF_KINDS``).
+_AFFECT_STAMP_KINDS = ("self", "reflection", "diary")
+
 
 @dataclass(slots=True)
 class Memory:
@@ -436,6 +441,13 @@ class MemoryStore:
         self._flashbulb_episode_weight = 0.7
         self._flashbulb_arousal_neutral = 0.4
         self._flashbulb_min_charge = 0.05
+        # L13 affect stamping — optional ``() -> (valence, arousal)`` hook.
+        # When enabled, ``self`` / ``reflection`` / ``diary`` writes stamp
+        # ``metadata.affect`` with the tone of the moment (the self-narrative
+        # signal the aiko affective pass reads). Off by default; wired by
+        # SessionController via ``set_affect_provider``.
+        self._affect_provider: Any = None
+        self._affect_provider_enabled = False
         self._reload_mirror()
 
     def add_delete_listener(self, callback: Any) -> None:
@@ -475,6 +487,18 @@ class MemoryStore:
         self._flashbulb_episode_weight = float(episode_weight)
         self._flashbulb_arousal_neutral = float(arousal_neutral)
         self._flashbulb_min_charge = float(min_charge)
+
+    def set_affect_provider(self, provider: Any, *, enabled: bool = True) -> None:
+        """Wire L13 self-memory affect stamping.
+
+        ``provider()`` must return ``(valence, arousal)`` floats (Aiko's live
+        affect at write time). When ``enabled``, every ``self`` /
+        ``reflection`` / ``diary`` ``add`` stamps ``metadata.affect`` so the
+        aiko affective pass can aggregate a self-theme's typical tone. Pass
+        ``enabled=False`` to disable without dropping the provider.
+        """
+        self._affect_provider = provider
+        self._affect_provider_enabled = bool(enabled)
 
     def add_memory_listener(self, callback: Any) -> None:
         """Register ``callback(memory: Memory)`` invoked after a new insert."""
@@ -757,6 +781,25 @@ class MemoryStore:
                     }
             except Exception:
                 log.debug("flashbulb salience hook failed", exc_info=True)
+        # L13 self-memory affect stamping — record Aiko's live (valence,
+        # arousal) on her first-person memories so the aiko affective pass
+        # can aggregate a self-theme's typical tone. Best-effort.
+        if (
+            self._affect_provider_enabled
+            and self._affect_provider is not None
+            and kind in _AFFECT_STAMP_KINDS
+        ):
+            try:
+                valence, arousal = self._affect_provider()
+                metadata = {
+                    **(metadata or {}),
+                    "affect": {
+                        "valence": round(float(valence), 3),
+                        "arousal": round(float(arousal), 3),
+                    },
+                }
+            except Exception:
+                log.debug("affect stamp hook failed", exc_info=True)
         emb = np.asarray(embedding, dtype=np.float32)
         if emb.size == 0:
             return None

@@ -1608,7 +1608,12 @@ class InnerLifePart1Mixin:
             if subject not in ("user", "relationship", "aiko"):
                 subject = "user"
             kind = getattr(c, "kind", None)
-            family = "value" if kind == "value" else "trait"
+            if kind == "value":
+                family = "value"
+            elif kind == "affective":
+                family = "affective"
+            else:
+                family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
             support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
             grounding = self._concept_grounding_phrase(support)
@@ -1629,7 +1634,7 @@ class InnerLifePart1Mixin:
             })
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
-            for family in ("trait", "value"):
+            for family in ("trait", "value", "affective"):
                 lines = groups.get((subject, family))
                 if not lines:
                     continue
@@ -1650,6 +1655,8 @@ class InnerLifePart1Mixin:
         steer behaviour; traits/identity keep the "impressions" framing."""
         if family == "value":
             return InnerLifePart1Mixin._concept_value_header(subject, name)
+        if family == "affective":
+            return InnerLifePart1Mixin._concept_affective_header(subject, name)
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -1675,6 +1682,33 @@ class InnerLifePart1Mixin:
             f"What you've come to believe {name} values — the principles under "
             "their choices (hold these lightly; they're impressions, not "
             "facts — offer them gently and stay open to being wrong):"
+        )
+
+    @staticmethod
+    def _concept_affective_header(subject: str, name: str) -> str:
+        """Per-subject intro for *affective* concepts (L13) — the durable
+        emotional weather around certain topics, offered as tone guidance
+        rather than a stated fact. ``aiko`` reads first-person (how topics
+        tend to move her); ``relationship`` as the two of them; everything
+        else as the user's."""
+        if subject == "aiko":
+            return (
+                "How certain topics tend to move you — the emotional weather "
+                "you've noticed in yourself around them (let it colour your "
+                "tone when one comes up; never announce it, and you can be "
+                "wrong about yourself too):"
+            )
+        if subject == "relationship":
+            return (
+                f"The emotional weather you've noticed around certain topics "
+                f"for you and {name} together (hold it lightly; let it steer "
+                "your tone, not as a stated fact):"
+            )
+        return (
+            f"The emotional weather you've noticed around certain topics for "
+            f"{name} — how they tend to feel about them (hold this lightly; "
+            "let it steer your tone and timing, never say it out loud, and "
+            "stay open to being wrong):"
         )
 
     @staticmethod
