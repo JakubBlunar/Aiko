@@ -728,9 +728,9 @@ over her `self`/`reflection`/`diary` memories) ask for the *underlying
 principle* rather than the activity/trait. They share the cluster /
 aiko-memory populations with identity but carry their own `ProposerSpec.sig_key`
 (`concept_synth.cluster_sigs.value` / `concept_synth.aiko_sig.value`) so their
-dirty-tracking never clobbers identity's. Aiko values reuse the exact
-`_run_aiko_pass` population identity_aiko already proves, so the "L11
-enablement" this needed was effectively already shipped.
+dirty-tracking never clobbers identity's. Aiko values run through the same
+combined `_run_aiko_pass` as identity_aiko (self-themes + self-memories,
+mixed evidence), so they inherit the shipped L11 self-model path for free.
 
 Rendering is now kind-aware
 ([`inner_life_part1._render_relevant_concepts`](../../app/core/session/inner_life_part1.py)):
@@ -777,10 +777,11 @@ discussed. Value is **subject-parameterized** — it exists for both people:
   respectfully, *disagrees*.
 
 **Key files.** Registry entry (L1) + a value-framed proposer prompt on the L2
-worker. For `subject=user`: homed near `user_profile` / `self_image`, can bias
-`opinion_injection` (K29). For `subject=aiko`: mined over Aiko's own memory
-population (the L11 enablement) and fed into `self_image` / persona so her values
-are grounded in her history, not just declared in the persona file.
+worker. For `subject=user`: homed near `user_profile`, can bias
+`opinion_injection` (K29). For `subject=aiko`: mined over Aiko's own combined
+self-model population (self-themes + self-memories; the shipped L11 enablement)
+and surfaced through the T3 `relevant_context` core lane so her values are
+grounded in her history, not just declared in the persona file.
 
 **Sketched approach.** Same cluster-set machinery as identity, but the proposer
 is asked for the *underlying principle* a group of clusters share, not the
@@ -795,7 +796,7 @@ Distinguish from identity so the two don't collapse into one label.
 
 ---
 
-## L11. Subject=aiko enablement — Aiko's self-model (deferred)
+## L11. Subject=aiko enablement — Aiko's self-model (SHIPPED)
 
 **Not a kind — a subject.** This entry does **not** add a "self" kind. It's the
 enablement that lets *every* kind (identity, value, affective, boundary,
@@ -803,32 +804,58 @@ aspiration) exist with `subject=aiko`, mined over Aiko's own memories instead of
 the user's. "Self-concepts" is just shorthand for "concepts where
 `subject=aiko`".
 
+**Status: SHIPPED.** Aiko's self-model now reaches parity with the user path. The
+single [`TopicGraph`](../../app/core/conversation/topic_graph.py) already clusters
+*all* memories, including her `self`/`reflection`/`diary` rows, so aiko-dominant
+clusters exist for free; they were just discarded. The aiko pass
+([`_run_aiko_pass`](../../app/core/concepts/concept_synthesis_worker.py)) is now a
+**combined pass** that mines BOTH her aiko-dominant self-themes (clusters) AND her
+salient individual self-memories, via the generalized
+`_dominant_clusters("aiko")` (the mirror of `_dominant_clusters("user")`, which
+keeps `aiko_share > 0.5` instead of excluding it). A single self-concept can be
+grounded by a recurring theme (`cluster` evidence), a specific memory (`memory`
+evidence), or a mix — the `set` model already allows mixed evidence nodes, so
+`min_sources` counts total distinct sources across both. When she has no
+aiko-dominant clusters yet the pass degrades cleanly to memories-only (cold
+start), and self-memories that are a shown cluster's representative are dropped
+from the memory list so a theme and its own headline memory aren't offered twice.
+Both aiko proposers
+([`identity_aiko`](../../app/core/concepts/proposers/identity_aiko.py) /
+[`value_aiko`](../../app/core/concepts/proposers/value_aiko.py)) share the
+hybrid [`propose_aiko_hybrid`](../../app/core/concepts/proposers/base.py) body, so
+every future `subject=aiko` kind inherits the same combined path. Combined
+dirty-tracking (self-memory count/max-id delta OR aiko-cluster drift) fires per
+proposer `sig_key`.
+
+**Surfacing.** `subject=aiko` concepts surface every turn through the T3
+`relevant_context` core lane under first-person "yourself" headers (there is no
+dedicated self-image worker/block — that was removed). Cluster-typed evidence
+renders real "…keeps surfacing around X/Y" grounding via
+[`resolve_evidence_labels`](../../app/core/concepts/concept_snapshot.py) + the
+`src_types=("cluster","concept")` filter in
+[`inner_life_part1`](../../app/core/session/inner_life_part1.py); memory-typed
+evidence still counts for confidence/promotion but stays out of the grounding
+clause (a full first-person memory sentence reads as a truncated fragment there).
+
 **Motivation.** Every other subject is the user or the relationship; this is the
 **symmetry** that makes Aiko feel like a person rather than a mirror. She forms
 concepts about *herself*: identity ("I tend to over-explain", "I'm curious about
 consciousness"), value ("I care about honesty over agreeableness"), affective
 ("explaining things I love lifts me"), boundary ("I won't fake agreement"). A
 self that notices its own patterns — and holds its own values — is the big step
-toward human-like, and the foundation the L19 autobiography stands on.
+toward human-like, and the foundation the L19 autobiography stands on. Overlaps
+K30 self-noticing (transient in-session cues) — subject=aiko concepts are the
+*durable* version those cues accrete into.
 
-**Key files.** The `subject=aiko` path through L1-L5: a proposer that reads
-Aiko's own `self` / `reflection` / `diary` memory population instead of user
-memories, and a self-scoped clustering population (a self topic graph, or the
-main graph filtered to her rows). `subject=aiko` concepts surface every turn
-through the T3 `relevant_context` core lane (there is no dedicated self-image
-worker/block — that was removed). Overlaps K30 self-noticing (transient
-in-session cues) — subject=aiko concepts are the *durable* version those cues
-accrete into.
-
-**Sketched approach.** Stand up the self-memory clustering population once; then
-each kind's existing proposer/gate runs over it unchanged (that's the payoff of
-subject being orthogonal to kind — no per-kind self variants). Active
-subject=aiko concepts surface directly through the T3 `relevant_context` core
-lane, forming a stable, slowly-evolving self-model that L17 (drift) and L19
+**Follow-ups still open (deferred).** No new *kinds* were added here: affective /
+boundary / aspiration `subject=aiko` concepts stay deferred, but each now
+inherits the combined cluster+memory path with no further plumbing (a new kind is
+a registry entry + proposer prompt). No separate self topic graph (we filter the
+existing one). The self-model this stands up is what L17 (drift) and L19
 (autobiography) read from.
 
-**Effort.** Large (needs the self-memory clustering population; unlocks
-subject=aiko for all kinds at once).
+**Effort.** Shipped — done on top of L1-L5/L10 with no new settings (reuses
+`concept_synthesis_max_clusters_per_run` + `concept_synthesis_max_aiko_memories`).
 
 ---
 

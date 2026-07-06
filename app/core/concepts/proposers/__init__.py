@@ -10,12 +10,18 @@ Ships ``set``-structured proposers (per the L1 structural evidence-model
 vocabulary -- node type lives on the edges, not the model). Each kind is
 mined for both subjects:
 
-- ``identity_user`` / ``identity_aiko`` -- cross-cluster / self-memory
-  *identity* (what he is into / what she is like).
-- ``value_user`` / ``value_aiko`` -- cross-cluster / self-memory *value*
-  (the principle beneath the choices; L10). Value proposers share the
-  cluster / aiko-memory populations with identity but carry their own
-  ``sig_key`` so their dirty-tracking never clobbers identity's.
+- ``identity_user`` / ``identity_aiko`` -- *identity* (what he is into /
+  what she is like).
+- ``value_user`` / ``value_aiko`` -- *value* (the principle beneath the
+  choices; L10). Value proposers share their subject's population with
+  identity but carry their own ``sig_key`` so their dirty-tracking never
+  clobbers identity's.
+
+The two ``subject=user`` proposers mine his topic clusters; the two
+``subject=aiko`` proposers mine her self-model in one *combined* pass
+(L11) -- her aiko-dominant self-themes (clusters) AND her salient
+self-memories -- via the shared :func:`propose_aiko_hybrid` body, so a
+self-concept can be grounded by a theme, a memory, or a mix.
 """
 from __future__ import annotations
 
@@ -36,6 +42,7 @@ from app.core.concepts.proposers.base import (
     clamp01,
     coerce_id_list,
     format_existing,
+    propose_aiko_hybrid,
     resolve_reinforces,
     snippet,
 )
@@ -64,6 +71,7 @@ __all__ = [
     "clamp01",
     "coerce_id_list",
     "format_existing",
+    "propose_aiko_hybrid",
     "propose_identity_aiko",
     "propose_identity_user",
     "propose_value_aiko",

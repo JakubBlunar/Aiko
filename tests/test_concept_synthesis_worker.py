@@ -588,6 +588,136 @@ class DominanceTests(unittest.TestCase):
         self.assertEqual(r["user_dirty_total"], 2)
 
 
+def _aiko_clusters():
+    """Aiko-dominant self-themes whose rep ids coincide with self-memory
+    ids (1, 2) so the representative-dedup path is exercised."""
+    return [
+        ClusterStub(
+            rep=1, summary="staying calm under pressure", size=6,
+            kinds=("self", "reflection", "diary", "self"),
+        ),
+        ClusterStub(
+            rep=2, summary="explaining systems clearly", size=5,
+            kinds=("self", "self", "reflection"),
+        ),
+    ]
+
+
+class AikoCombinedPassTests(unittest.TestCase):
+    """L11: the aiko pass mines BOTH her self-themes (aiko-dominant
+    clusters) AND her salient self-memories in one combined pass, so a
+    self-concept can be grounded by a theme, a memory, or a mix."""
+
+    def _harness(self, responder):
+        return WorkerHarness(
+            responder,
+            clusters=_user_clusters() + _aiko_clusters(),
+        )
+
+    def test_concept_can_mix_cluster_and_memory_evidence(self) -> None:
+        def responder(system, user):
+            if "HERSELF" in system:  # identity_aiko
+                return {"concepts": [{
+                    "label": "I stay grounded and explain clearly",
+                    "evidence_cluster_reps": [1],
+                    "evidence_memory_ids": [3],
+                    "confidence": 0.8,
+                }]}
+            return {"concepts": []}
+
+        h = self._harness(responder)
+        h.worker.run()
+        aiko = h.store.list_by(subject="aiko", kind="identity")
+        self.assertEqual(len(aiko), 1)
+        c = aiko[0]
+        ev = h.store.evidence_of(c.concept_id)
+        self.assertEqual(
+            {(e.src_type, e.src_id) for e in ev},
+            {("cluster", "1"), ("memory", "3")},
+        )
+        self.assertEqual(c.distinct_source_count, 2)
+
+    def test_cluster_and_memory_count_toward_min_sources(self) -> None:
+        # One cluster + one memory = 2 distinct sources -> passes the gate
+        # even though neither source type reaches 2 on its own.
+        def responder(system, user):
+            if "HERSELF" in system:
+                return {"concepts": [{
+                    "label": "I ground myself in specifics",
+                    "evidence_cluster_reps": [2],
+                    "evidence_memory_ids": [4],
+                    "confidence": 0.7,
+                }]}
+            return {"concepts": []}
+
+        h = self._harness(responder)
+        h.worker.run()
+        self.assertEqual(
+            len(h.store.list_by(subject="aiko", kind="identity")), 1
+        )
+
+    def test_cluster_representative_dropped_from_memory_list(self) -> None:
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            if "HERSELF" in system:
+                captured["aiko"] = user
+            return {"concepts": []}
+
+        h = self._harness(responder)
+        h.worker.run()
+        prompt = captured["aiko"]
+        # Themes list both reps; the memory section drops the rep memories
+        # (1, 2) so a theme + its headline memory aren't two sources.
+        self.assertIn("RECURRING SELF-THEMES", prompt)
+        mem_section = prompt.split("NOTABLE SELF-MEMORIES:")[1]
+        self.assertNotIn("[1]", mem_section)
+        self.assertNotIn("[2]", mem_section)
+        self.assertIn("[3]", mem_section)
+        self.assertIn("[4]", mem_section)
+
+    def test_cold_start_memories_only_still_proposes(self) -> None:
+        # No aiko-dominant clusters (default user-only graph) -> the pass
+        # degrades to memories-only and still creates memory-backed concepts.
+        h = WorkerHarness(_both_responder)
+        h.worker.run()
+        aiko = h.store.list_by(subject="aiko", kind="identity")
+        self.assertEqual(len(aiko), 1)
+        ev = h.store.evidence_of(aiko[0].concept_id)
+        self.assertTrue(all(e.src_type == "memory" for e in ev))
+
+    def test_cluster_drift_alone_refires_aiko_pass(self) -> None:
+        h = self._harness(lambda s, u: {"concepts": []})
+        h.worker.run()  # baseline
+        self.assertFalse(h.worker.run()["aiko_dirty"])  # clean
+
+        for c in h.topic._clusters:
+            if c.representative_id in (1, 2):
+                c.size += 5  # >= delta
+        self.assertTrue(h.worker.run()["aiko_dirty"])
+
+    def test_memory_delta_alone_refires_aiko_pass(self) -> None:
+        h = self._harness(lambda s, u: {"concepts": []})
+        h.worker.run()  # baseline
+        self.assertFalse(h.worker.run()["aiko_dirty"])  # clean
+
+        extra = [
+            MemStub(10, "I paused before reacting.", "self", 0.5),
+            MemStub(11, "Reflecting on a hard call.", "reflection", 0.5),
+            MemStub(12, "Diary: a quiet win today.", "diary", 0.5),
+        ]
+        h.mem._self.extend(extra)
+        h.mem._by_id.update({m.id: m for m in extra})
+        self.assertTrue(h.worker.run()["aiko_dirty"])
+
+    def test_user_pass_still_excludes_aiko_clusters(self) -> None:
+        h = self._harness(lambda s, u: {"concepts": []})
+        r = h.worker.run()
+        # 6 user-dominant clusters dirty; the 2 aiko-dominant reps (1, 2)
+        # are handled by the aiko pass, not the user pass.
+        self.assertEqual(r["user_dirty_total"], 6)
+
+
 class GatingTests(unittest.TestCase):
     def _worker(self, agent):
         h = WorkerHarness(_both_responder, agent=agent)
