@@ -114,6 +114,17 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("self-noticing affect-ring append failed", exc_info=True)
 
+        # L13 — per-cluster affect sampler. Fold this turn's user-affect
+        # estimate (K37) and Aiko's post-turn scalar into the active topic
+        # cluster's rolling EWMA, so affective concepts have a durable
+        # topic->emotion signal to synthesize from. Best-effort.
+        try:
+            self._sample_cluster_affect(
+                user_text=user_text, user_affect=user_affect, state=state
+            )
+        except Exception:
+            log.debug("cluster-affect sampler raised", exc_info=True)
+
         # K8 — affect rupture-and-repair detection. The cheapest
         # possible cue: subtract two valence scalars and reaction-
         # filter. Runs immediately after the AffectUpdater so we

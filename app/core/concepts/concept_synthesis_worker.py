@@ -289,6 +289,22 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _affect_min_samples(self) -> int:
+        """L13: minimum affect-bearing turns a cluster (or self-theme) must
+        accrue before it is offered to the affective proposers -- a couple of
+        readings, so a one-off mood never becomes a durable topic->affect."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_affect_min_samples",
+                    3,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -355,6 +371,7 @@ class ConceptSynthesisWorker:
             "user_processed": 0,
             "user_dirty_remaining": 0,
             "aiko_dirty": False,
+            "affect_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -365,6 +382,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_cluster_pass(ctx, spec, stats, force)
                 elif spec.population == "aiko_memories":
                     proposals = self._run_aiko_pass(ctx, spec, stats, force)
+                elif spec.population == "affect":
+                    proposals = self._run_affect_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -596,6 +615,205 @@ class ConceptSynthesisWorker:
                 "clusters": new_clusters,
             },
         )
+        return proposals
+
+    # ── affect pass (L13) ───────────────────────────────────────────────
+
+    def _run_affect_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L13 affect pass: annotate topic clusters with the subject's typical
+        affect (from the per-cluster affect map) and, for ``subject=aiko``,
+        also her self-themes + affect-stamped self-memories, so the affective
+        proposers can name durable topic->emotion patterns. Evidence is the
+        cluster reps / memory ids; the affect *direction* is carried in the
+        concept text (no edge-schema change)."""
+        from app.core.concepts import cluster_affect as _ca
+
+        subject = spec.subject
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            log.debug("topic_clusters failed (affect pass)", exc_info=True)
+            clusters = []
+        by_cid = {int(c.cluster_id): c for c in clusters}
+        min_samples = self._affect_min_samples
+
+        # rep -> (label, size, phrase, bucket, samples)
+        annotated: dict[int, tuple[str, int, str, str, int]] = {}
+
+        # (a) conversation-topic affect from the subject's per-cluster map.
+        affect_map = _ca.load_map(self._kv_get, _ca.kv_key_for(subject))
+        for cid_str, st in affect_map.items():
+            if int(st.samples) < min_samples:
+                continue
+            try:
+                cid = int(cid_str)
+            except (TypeError, ValueError):
+                continue
+            c = by_cid.get(cid)
+            if c is None:
+                continue
+            label = (c.summary or "").strip()
+            if not label:
+                continue
+            annotated[int(c.representative_id)] = (
+                label,
+                int(c.size),
+                _ca.affect_phrase(st.valence, st.arousal),
+                "%s/%s" % _ca.affect_bucket(st.valence, st.arousal),
+                int(st.samples),
+            )
+
+        # (b) aiko-only: self-themes (aggregated self-memory affect) +
+        # affect-stamped self-memory specifics.
+        memories_batch: list[Any] = []
+        memory_affect: dict[int, str] = {}
+        if subject == "aiko":
+            aiko_kinds = set(AIKO_SELF_KINDS)
+            self_mems = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
+            mem_aff: dict[int, tuple[float, float]] = {}
+            for m in self_mems:
+                aff = (getattr(m, "metadata", None) or {}).get("affect")
+                if not isinstance(aff, dict):
+                    continue
+                try:
+                    mem_aff[int(m.id)] = (
+                        float(aff["valence"]), float(aff["arousal"])
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            # Aggregate per self-theme (aiko-dominant cluster).
+            for c in clusters:
+                kinds = tuple(c.member_kinds or ())
+                if not kinds:
+                    continue
+                if sum(1 for k in kinds if k in aiko_kinds) / len(kinds) <= 0.5:
+                    continue
+                label = (c.summary or "").strip()
+                if not label:
+                    continue
+                vals = [
+                    mem_aff[int(mid)]
+                    for mid in c.member_ids
+                    if int(mid) in mem_aff
+                ]
+                if len(vals) < min_samples:
+                    continue
+                v = sum(x[0] for x in vals) / len(vals)
+                a = sum(x[1] for x in vals) / len(vals)
+                annotated.setdefault(
+                    int(c.representative_id),
+                    (
+                        label,
+                        int(c.size),
+                        _ca.affect_phrase(v, a),
+                        "%s/%s" % _ca.affect_bucket(v, a),
+                        len(vals),
+                    ),
+                )
+            # Self-memory specifics (with affect), salience desc, minus reps.
+            reps = set(annotated.keys())
+            memories_batch = [
+                m
+                for m in sorted(
+                    self_mems,
+                    key=lambda m: float(getattr(m, "salience", 0.0)),
+                    reverse=True,
+                )
+                if int(m.id) in mem_aff and int(m.id) not in reps
+            ][: self._max_aiko_memories]
+            for m in memories_batch:
+                v, a = mem_aff[int(m.id)]
+                memory_affect[int(m.id)] = _ca.affect_phrase(v, a)
+
+        if not annotated and not memory_affect:
+            stats["affect_dirty"] = False
+            return []
+
+        # Combined dirty-tracking under the subject's affect sig.
+        sig_key = spec.sig_key or ("concept_synth.affect_sig." + subject)
+        prev = self._load_sigs(sig_key)
+        prev_ann = prev.get("annotated", {}) if prev else {}
+        delta = self._dirty_size_delta
+        dirty: list[tuple[int, int, bool]] = []  # rep, samples, is_new
+        for rep, (_label, _size, _phrase, bucket, samples) in annotated.items():
+            p = prev_ann.get(str(rep))
+            if p is None:
+                dirty.append((rep, samples, True))
+                continue
+            if (
+                force
+                or str(p.get("bucket", "")) != bucket
+                or abs(samples - int(p.get("samples", 0))) >= delta
+            ):
+                dirty.append((rep, samples, False))
+        mem_dirty = False
+        if subject == "aiko":
+            prev_mc = int(prev.get("mem_affect_count", 0)) if prev else 0
+            mem_dirty = (
+                force or (not prev)
+                or abs(len(memory_affect) - prev_mc) >= delta
+            )
+
+        is_dirty = force or bool(dirty) or mem_dirty
+        stats["affect_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        cluster_index = [
+            (rep, ann[0], ann[1]) for rep, ann in annotated.items()
+        ]
+        affect_by_rep = {rep: ann[2] for rep, ann in annotated.items()}
+        dirty.sort(key=lambda d: (0 if d[2] else 1, -d[1]))
+        focus_rows = dirty[: self._max_clusters_per_run]
+        focus_reps = {rep for rep, _s, _n in focus_rows}
+        focus_clusters = [
+            FocusCluster(
+                rep=rep,
+                label=annotated[rep][0],
+                size=annotated[rep][1],
+                representative=self._memory_content(rep),
+                digest=self._digest_for_rep(rep),
+            )
+            for rep, _s, _n in focus_rows
+        ]
+
+        if subject == "aiko":
+            proposals = spec.propose(
+                ctx,
+                focus_clusters=focus_clusters,
+                cluster_index=cluster_index,
+                affect_by_rep=affect_by_rep,
+                memories=memories_batch,
+                memory_affect=memory_affect,
+                existing=self._existing_for(spec),
+            )
+        else:
+            proposals = spec.propose(
+                ctx,
+                focus_clusters=focus_clusters,
+                cluster_index=cluster_index,
+                affect_by_rep=affect_by_rep,
+                existing=self._existing_for(spec),
+            )
+
+        # Persist sig: processed focus reps fresh; unprocessed dirty reps keep
+        # their old signature so they stay dirty and drain next run.
+        new_ann: dict[str, dict[str, Any]] = {}
+        for rep, (_label, _size, _phrase, bucket, samples) in annotated.items():
+            if rep in focus_reps:
+                new_ann[str(rep)] = {"bucket": bucket, "samples": samples}
+            elif str(rep) in prev_ann:
+                new_ann[str(rep)] = prev_ann[str(rep)]
+        sig: dict[str, Any] = {"annotated": new_ann}
+        if subject == "aiko":
+            sig["mem_affect_count"] = len(memory_affect)
+        self._save_sigs(sig_key, sig)
         return proposals
 
     def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:

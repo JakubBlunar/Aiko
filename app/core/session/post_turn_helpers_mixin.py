@@ -507,6 +507,112 @@ class PostTurnHelpersMixin:
             arousal = 0.4
         return arousal, self._peak_emotion_intensity()
 
+    def _read_full_affect(self) -> tuple[float, float]:
+        """L13 hook: live Aiko ``(valence, arousal)``.
+
+        Wired as the ``MemoryStore`` affect provider so ``self`` /
+        ``reflection`` / ``diary`` writes stamp ``metadata.affect`` with the
+        tone of the moment they were written (the self-narrative half of the
+        aiko affective pass). Best-effort neutral fallback ``(0.0, 0.4)``.
+        """
+        try:
+            st = self._affect_store.get(self._user_id)
+            return float(st.valence), float(st.arousal)
+        except Exception:
+            return 0.0, 0.4
+
+    def _sample_cluster_affect(
+        self,
+        *,
+        user_text: str,
+        user_affect: "tuple[float, float] | None",
+        state: Any,
+    ) -> None:
+        """L13 per-cluster affect sampler (post-turn, cheap).
+
+        Resolves the live turn's topic cluster and folds the affect signal
+        into that cluster's rolling EWMA, once per subject:
+
+        * **user** map — the K37 ``user_affect`` estimate (skipped when the
+          turn carried no readable user-affect signal, i.e. ``None``).
+        * **aiko** map — Aiko's post-turn ``AffectState`` ``(valence,
+          arousal)`` (always available), so "topics that move her" accrue.
+
+        Keyed by ``cluster_id`` (the cheap hot-path key K75 uses); the L2
+        ``_run_affect_pass`` joins ``cluster_id -> representative_id`` at
+        synthesis time. Fully best-effort and gated by the sampler flag.
+        """
+        agent = getattr(self._settings, "agent", None)
+        if not bool(getattr(agent, "affect_sampler_enabled", True)):
+            return
+        graph = getattr(self, "_topic_graph", None)
+        embedder = getattr(self, "_embedder", None)
+        chat_db = getattr(self, "_chat_db", None)
+        if (
+            graph is None
+            or embedder is None
+            or chat_db is None
+            or not bool(getattr(graph, "persistent", False))
+        ):
+            return
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return
+
+        from datetime import datetime, timezone
+
+        from app.core.concepts import cluster_affect as _ca
+
+        mem = getattr(self, "_memory_settings", None)
+        min_sim = float(getattr(mem, "affect_sampler_min_sim", 0.4))
+        top_n = int(getattr(mem, "affect_sampler_top_n", 1))
+        lr = float(getattr(mem, "affect_sampler_learning_rate", 0.2))
+        cap = int(getattr(mem, "cluster_affect_map_cap", 200))
+        max_age = float(getattr(mem, "cluster_affect_max_age_days", 120.0))
+
+        qvec = embedder.embed(text)
+        matches = graph.best_clusters_for(qvec, top_n=top_n, min_sim=min_sim)
+        if not matches:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        # Aiko map — always (her scalar is always defined).
+        try:
+            a_val = float(getattr(state, "valence", 0.0))
+            a_ar = float(getattr(state, "arousal", 0.4))
+            key = _ca.KV_CLUSTER_AFFECT_AIKO
+            amap = _ca.load_map(chat_db.kv_get, key)
+            for cid, _label, _sim in matches:
+                ck = str(int(cid))
+                amap[ck] = _ca.update_state(
+                    amap.get(ck), a_val, a_ar,
+                    learning_rate=lr, now_iso=now_iso,
+                )
+            _ca.save_map(
+                chat_db.kv_set, key, amap, cap=cap, max_age_days=max_age
+            )
+        except Exception:
+            log.debug("cluster-affect aiko update failed", exc_info=True)
+
+        # User map — only when the turn carried a readable user-affect signal.
+        if user_affect is None:
+            return
+        try:
+            u_val, u_ar = float(user_affect[0]), float(user_affect[1])
+            key = _ca.KV_CLUSTER_AFFECT_USER
+            umap = _ca.load_map(chat_db.kv_get, key)
+            for cid, _label, _sim in matches:
+                ck = str(int(cid))
+                umap[ck] = _ca.update_state(
+                    umap.get(ck), u_val, u_ar,
+                    learning_rate=lr, now_iso=now_iso,
+                )
+            _ca.save_map(
+                chat_db.kv_set, key, umap, cap=cap, max_age_days=max_age
+            )
+        except Exception:
+            log.debug("cluster-affect user update failed", exc_info=True)
+
     def _apply_vitality_turn(self, raw_assistant_text: str) -> None:
         """K68: apply this turn's energy spend + interest boost, then broadcast.
 

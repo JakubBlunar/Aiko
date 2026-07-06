@@ -118,6 +118,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             user_expertise_enabled=bool(
                 agent_raw.get("user_expertise_enabled", True),
             ),
+            affect_sampler_enabled=bool(
+                agent_raw.get("affect_sampler_enabled", True),
+            ),
             upcoming_horizon_enabled=bool(
                 agent_raw.get("upcoming_horizon_enabled", True),
             ),

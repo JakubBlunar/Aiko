@@ -727,6 +727,20 @@ class MemorySettings:
     # batch fails to parse (the salvage pass recovers complete objects,
     # but a roomy budget avoids losing the tail in the first place).
     concept_synthesis_max_tokens: int = 1600
+    # L13 affective concepts. The post-turn per-cluster affect sampler folds
+    # this turn's affect into the live topic cluster's rolling EWMA (one map
+    # per subject). ``affect_sampler_min_sim`` / ``affect_sampler_top_n`` gate
+    # + bound the cluster match; ``affect_sampler_learning_rate`` is the EWMA
+    # alpha; the map is bounded by ``cluster_affect_map_cap`` +
+    # ``cluster_affect_max_age_days``. ``concept_synthesis_affect_min_samples``
+    # is how many affect-bearing turns a cluster (or self-theme) must accrue
+    # before it is offered to the affective proposers.
+    concept_synthesis_affect_min_samples: int = 3
+    affect_sampler_min_sim: float = 0.4
+    affect_sampler_top_n: int = 1
+    affect_sampler_learning_rate: float = 0.2
+    cluster_affect_map_cap: int = 200
+    cluster_affect_max_age_days: float = 120.0
     # Shared engagement clock (app/core/infra/engagement_clock.py): a
     # monotonic "active-conversation time" counter so decay tracks time
     # actually spent engaging, not calendar time (away/quiet stretches
@@ -2293,6 +2307,33 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_synthesis_max_tokens=max(
                 256,
                 int(memory_raw.get("concept_synthesis_max_tokens", 1600)),
+            ),
+            concept_synthesis_affect_min_samples=max(
+                1,
+                int(
+                    memory_raw.get("concept_synthesis_affect_min_samples", 3)
+                ),
+            ),
+            affect_sampler_min_sim=max(
+                0.0,
+                min(1.0, float(memory_raw.get("affect_sampler_min_sim", 0.4))),
+            ),
+            affect_sampler_top_n=max(
+                1, int(memory_raw.get("affect_sampler_top_n", 1))
+            ),
+            affect_sampler_learning_rate=max(
+                0.01,
+                min(
+                    1.0,
+                    float(memory_raw.get("affect_sampler_learning_rate", 0.2)),
+                ),
+            ),
+            cluster_affect_map_cap=max(
+                1, int(memory_raw.get("cluster_affect_map_cap", 200))
+            ),
+            cluster_affect_max_age_days=max(
+                1.0,
+                float(memory_raw.get("cluster_affect_max_age_days", 120.0)),
             ),
             engagement_clock_enabled=bool(
                 memory_raw.get("engagement_clock_enabled", True)

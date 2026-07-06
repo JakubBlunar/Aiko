@@ -191,6 +191,43 @@ def value_evidence_gate(
     )
 
 
+# Built-in bars for an *affective* concept (L13). Affect is the *fluid* end
+# of the plasticity spectrum -- a topic's emotional weather shifts faster
+# than an identity trait -- so the floors are gentler than value's: it only
+# needs a modest age (enough that a one-off mood doesn't stick) and a
+# moderate confidence, while still requiring at least two distinct sources so
+# a single beat never becomes a durable "this topic always feels X".
+_AFFECTIVE_MIN_SOURCES = 2
+_AFFECTIVE_MIN_AGE_DAYS = 0.5
+_AFFECTIVE_MIN_CONFIDENCE = 0.6
+
+
+def affective_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``affective`` concepts (L13).
+
+    Same shape as :func:`set_evidence_gate` with fluid-end floors (a lower
+    age + confidence bar than :func:`value_evidence_gate`, since a topic's
+    affect is meant to move). The caller's thresholds still apply when they
+    are *higher* (e.g. the L21 young-graph bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _AFFECTIVE_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _AFFECTIVE_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _AFFECTIVE_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -200,4 +237,5 @@ __all__ = [
     "apply_contradiction_penalty",
     "set_evidence_gate",
     "value_evidence_gate",
+    "affective_evidence_gate",
 ]

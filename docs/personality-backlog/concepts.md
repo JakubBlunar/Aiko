@@ -900,27 +900,71 @@ it"). Both ride the same `concept -> concept references` machinery above.
 
 ---
 
-## L13. Affective concepts (deferred)
+## L13. Affective concepts (SHIPPED)
 
-**Kind.** subject `user` **or** `aiko` (L11), evidence model `cluster_set`
-(topic <-> affect).
+**Kind.** `affective`, subject `user` **or** `aiko` (L11), evidence model `set`
+(topic <-> affect; the affect *direction* lives in the concept text, not on the
+edges).
 
-**Motivation.** Patterns in the user's emotional life: what energizes vs.
-drains him, and durable mood-topic associations. "Debugging frustrates him then
-satisfies him", "tea + rain = his calm state", "release weeks stress him out".
-Lets Aiko read the emotional weather behind a topic, not just its content.
+**Status: SHIPPED.** A durable topic->emotion mapping for both parties: what
+energizes vs. drains him ("technical work energizes him", "release-week pressure
+stresses him out") and how topics move Aiko ("explaining systems lifts me",
+"talking about love makes me flustered", "I don't like talking about X"). It
+surfaces as **tone guidance**, never a stated fact. Distinct from K2 mood beliefs
+(current mood) — this is the settled pattern.
 
-**Key files.** Registry entry (L1); proposer joins topic clusters with the
-affect signal already captured per turn (`AffectState` / `user_affect`,
-emotional contagion K37, engagement K14); distinct from K2 beliefs which model
-*current* mood — affective concepts are the *durable* topic->affect mapping.
+**Signal capture (the real new plumbing).** Affect was barely persisted before
+this, so L13 first stands up a durable topic->affect signal:
 
-**Sketched approach.** Cluster-set machinery where each evidence link also
-carries the typical affect valence/arousal for that topic. Surfaces as tone
-guidance ("this topic tends to lift him / weigh on him") rather than a stated
-fact.
+- **Per-cluster affect maps** — [`cluster_affect`](../../app/core/concepts/cluster_affect.py),
+  a pure kv-backed EWMA store (mirrors K75 `user_expertise`). Two maps,
+  `concept.cluster_affect.user` / `concept.cluster_affect.aiko`, keyed by topic
+  `cluster_id`, each holding `{valence, arousal, samples, updated_at}`, bounded by
+  cap + age-out.
+- **Post-turn sampler** — `_sample_cluster_affect` in
+  [`post_turn_helpers_mixin`](../../app/core/session/post_turn_helpers_mixin.py),
+  called after `apply_turn`. It embeds `user_text`, resolves the live cluster via
+  `best_clusters_for`, and EWMA-folds the K37 `user_affect` estimate into the user
+  map (when a real estimate exists) and Aiko's post-turn `AffectState` into the
+  aiko map. Gated by `agent.affect_sampler_enabled`; fully best-effort.
+- **Self-memory affect stamping** — `MemoryStore.set_affect_provider` stamps
+  `metadata.affect = {valence, arousal}` on `self`/`reflection`/`diary` writes
+  (Aiko's self-narrative tone), the aiko-only second signal.
 
-**Effort.** Medium.
+**Synthesis.** A new `"affect"` population + `_run_affect_pass(subject)` in
+[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
+it annotates topic clusters with the subject's typical affect (from the map,
+joining `cluster_id -> representative_id` at synthesis time) and, for
+`subject=aiko`, ALSO aggregates her self-themes' self-memory affect + offers her
+affect-stamped self-memories. Two proposers
+([`affective_user`](../../app/core/concepts/proposers/affective_user.py) /
+[`affective_aiko`](../../app/core/concepts/proposers/affective_aiko.py)) name the
+durable pattern in the right voice (third-person for the user, first-person for
+Aiko, the latter reusing `propose_aiko_hybrid` mixed evidence). A NEW affective
+concept needs `>= min_sources` distinct sources — for the user that means an
+emotional signature shared by 2+ topics; for Aiko a topic + her self-memories can
+suffice — so a one-off mood never becomes a durable claim (durability is also
+guarded by `concept_synthesis_affect_min_samples` on the map side). Dirty-tracking
+is per affect-bucket / sample drift under each proposer's `sig_key`.
+
+**Registry + gate.** `affective` is registered (`set` model, high plasticity
+`0.5` — the fluid band, `core_always_on=False`, **no** `surfacing_targets`) with
+`affective_evidence_gate` (fluid-end floors: `>= 2` sources, a modest age, a
+`0.6` confidence bar — gentler than value).
+
+**Surfacing.** Relevance-only (like `subject=aiko` concepts): they surface through
+the T3 `relevant_context` path when the turn's topic matches, under
+`_concept_affective_header` tone-guidance framing (first-person for aiko), never
+pinned every turn.
+
+**Motivation.** Lets Aiko read the emotional weather behind a topic, not just its
+content — and, for `subject=aiko`, notice what she herself likes / dislikes /
+gets flustered by.
+
+**Effort.** Shipped on top of L1-L5 / L10 / L11. New settings:
+`agent.affect_sampler_enabled`, `concept_synthesis_affect_min_samples`,
+`affect_sampler_{min_sim,top_n,learning_rate}`,
+`cluster_affect_{map_cap,max_age_days}`.
 
 ---
 

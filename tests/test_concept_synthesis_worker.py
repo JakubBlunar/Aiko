@@ -39,11 +39,17 @@ class FakeEmbedder:
 
 
 class ClusterStub:
-    def __init__(self, rep: int, summary: str, size: int, kinds):
+    def __init__(
+        self, rep: int, summary: str, size: int, kinds,
+        cluster_id: int | None = None, member_ids=None,
+    ):
+        self.cluster_id = rep if cluster_id is None else cluster_id
         self.representative_id = rep
         self.summary = summary
         self.size = size
-        self.member_ids = list(range(size))
+        self.member_ids = (
+            list(member_ids) if member_ids is not None else list(range(size))
+        )
         self.member_kinds = tuple(kinds)
 
 
@@ -57,11 +63,15 @@ class TopicGraphStub:
 
 
 class MemStub:
-    def __init__(self, mid: int, content: str, kind: str, salience: float):
+    def __init__(
+        self, mid: int, content: str, kind: str, salience: float,
+        metadata=None,
+    ):
         self.id = mid
         self.content = content
         self.kind = kind
         self.salience = salience
+        self.metadata = metadata or {}
 
 
 class MemoryStoreStub:

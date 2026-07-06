@@ -301,6 +301,13 @@ class AgentSettings:
     # knows). Off → no learning, no depth cue. Thresholds / cadence live
     # under MemorySettings.
     user_expertise_enabled: bool = True
+    # L13: master switch for the per-turn per-cluster affect sampler that
+    # feeds affective concepts. When on, each turn folds the user-affect
+    # estimate + Aiko's post-turn affect into the live topic cluster's
+    # rolling EWMA (one map per subject), and self/reflection/diary writes
+    # stamp ``metadata.affect``. Off → no topic->affect signal accrues (the
+    # affective proposers stay silent). Thresholds live under MemorySettings.
+    affect_sampler_enabled: bool = True
     # K-time3: master switch for the upcoming-horizon block. When on, a
     # cheap forward sweep over ``future_plan`` memories due within the
     # horizon window renders one terse "coming up" cue with the relative

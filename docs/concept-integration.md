@@ -58,6 +58,13 @@ me** — neither branches on kind names. In
   grounding filter now renders real "…keeps surfacing around X/Y" for them;
   their `memory` evidence still counts toward confidence/promotion but is
   intentionally kept out of the trimmed grounding clause.
+- `affective` concepts (L13, both subjects) are the same story: they carry
+  **no** `surfacing_targets`, so they surface only via the T3 `relevant_context`
+  relevance path (they are **not** in the always-on core lane — tone guidance
+  should appear when the turn's topic matches, not every turn). They ground on
+  `cluster` evidence (topic reps annotated with the per-cluster affect map),
+  plus — for `subject=aiko` — her affect-stamped self-memories; the affect
+  *direction* lives in the concept label/rationale, not on the edges.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —
