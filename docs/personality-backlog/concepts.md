@@ -126,7 +126,9 @@ Future kinds (each a deferred entry below, all reusing L1-L6):
   rain = calm"; or "explaining things I love lifts me"). See L13.
 - **Aspiration / trajectory** (user **or** aiko, memory-chain) — the *direction*
   someone is moving ("building toward a fully self-hosted life"; or Aiko's own
-  "I want to be someone he can rely on"). See L14.
+  "I want to be someone he can rely on"). The second `sequence`-evidence kind,
+  the open-ended sibling of L8. See L14 (SHIPPED — both subjects + momentum
+  callbacks).
 - **Boundary** (user **or** aiko, cluster-set; behaviour-gating) — constraints
   that gate behaviour ("dislikes tickling"; or Aiko's own "I won't pretend to
   agree just to please him"); the canonical medium-plasticity kind. See L18.
@@ -1038,34 +1040,78 @@ gets flustered by.
 
 ---
 
-## L14. Aspiration / trajectory concepts (deferred)
+## L14. Aspiration / trajectory concepts (SHIPPED — both subjects + momentum)
 
-**Kind.** subject `user` **or** `aiko` (L11), evidence model `sequence`
-(open-ended, directional — the *same* ordered-evidence machinery L8 shipped,
-without the "closed" gate).
+**Kind.** `aspiration`, subject `user` (default) and `aiko`, evidence model
+**`sequence`** — the second ordered-evidence kind and the open-ended sibling of
+L8 `narrative`. Same ordinal chain on `concept_edges.ordinal`, but it names a
+*direction* someone is moving in rather than a *closed* arc.
 
-**Now unblocked by L8.** L8 made the `sequence` evidence model live (ordered
-memory-id chains on `concept_edges.ordinal`, ordered by `event_time`). Aspiration
-is its open-ended sibling: reuse the ordinal wiring + temporal ordering, drop the
-"closed arc" requirement, and promote on a *consistent direction* over time
-instead of a resolution. Most of L14's plumbing now exists.
+**Status: SHIPPED.** Where the user (or Aiko) is *heading*, as a trajectory
+rather than a fixed trait: "building toward a fully self-hosted life", "moving
+from tinkering to shipping"; for Aiko, first-person "growing into someone he can
+rely on". Runs for **both subjects** over the same subject-dominant clusters L8
+uses. Distinct from Aiko's concrete K1 goals (actionable to-dos) — an aspiration
+is who she is *becoming*, not a task. Surfaces relevance-only **and** feeds a
+proactive momentum check-in.
 
-**Motivation.** Where the user is *heading*, as a direction rather than a fixed
-trait. "Building toward a fully self-hosted life", "moving from consumer to
-maker", "wants Aiko to feel truly alive". Trajectory concepts let Aiko track
-progress and momentum, not just state — the difference between "he likes
-self-hosting" and "he's on a journey to own his whole stack".
+**Reuse over new type.** `aspiration` reuses the L8 `sequence` machinery
+verbatim — the `NarrativeCandidate` ("ordered cluster of memories"), the ordinal
+wiring, and the temporal ordering by `event_time`. The shipped `propose_narrative`
+was generalized into
+[`propose_ordered_concept`](../../app/core/concepts/proposers/base.py)
+`(kind, gate_flag, block_word, …)`; `propose_narrative` is now a thin
+behavior-preserving wrapper (`gate_flag="closed"`). Aspiration's wrapper passes
+`gate_flag="directional"`. The only structural additions are a **min evidence
+span** filter (a trajectory must cover time) and the `directional` gate flag
+(vs narrative's `closed`).
 
-**Key files.** Registry entry (L1) reusing the `sequence` evidence model L8
-introduced, but *open-ended* (no "closed" gate); relates to Aiko's own `goals`
-(K1) but is about the *user's* direction; can feed `follow_up_worker` /
-`upcoming_horizon` for "how's the self-hosting journey going?".
+**Synthesis.** A new `"aspiration"` population + `_run_aspiration_pass(subject)`
+in [`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py).
+The narrative/aspiration candidate-building + dirty-tracking + sig-persistence
+was refactored into a shared `_ordered_candidates(...)` helper; narrative calls
+it with `min_span_days=0` (behavior-preserving), aspiration with a span floor
+(`_span_days` over member `event_time`/`created_at`). Proposers
+[`aspiration_user`](../../app/core/concepts/proposers/aspiration_user.py) /
+[`aspiration_aiko`](../../app/core/concepts/proposers/aspiration_aiko.py) name
+any **directional** chain (third-person / first-person voice) or reinforce a
+known one by id; non-directional or too-short chains are dropped. Per-subject
+dirty-tracking under each `sig_key`; gated by `agent.aspiration_synthesis_enabled`.
 
-**Sketched approach.** Order evidence memories by `event_time` to infer a
-direction/slope over a domain; promote when the direction is consistent over M
-months. Surfaces as momentum callbacks rather than a static label.
+**Registry + gate.** `aspiration` is registered (`sequence` model, plasticity
+`0.4` — a direction is durable but *evolves* as progress happens, between
+narrative's `0.3` and affect's `0.5`; `core_always_on=False`, **no**
+`surfacing_targets`) with
+[`aspiration_evidence_gate`](../../app/core/concepts/concept_lifecycle.py):
+`>= 3` ordered steps, a **higher age floor** than narrative (`>= 3` days — a
+trajectory must be *sustained*), a `0.6` confidence bar.
 
-**Effort.** Large.
+**Surfacing.** Relevance-only through the T3 `relevant_context` path under
+`_concept_aspiration_header` framing (first-person "where you're heading" for
+Aiko, "where they're heading" for the user), held lightly, momentum framing,
+never recited.
+
+**Proactive momentum callbacks (new for L14).** A cue-producer/consumer pair
+modeled on K70 growth-witness (deliberately a new worker, not an extension of
+`follow_up_worker` / `upcoming_horizon`, which are `future_plan`+`event_time`
+pipelines unsuited to open-ended directions):
+[`AspirationMomentumWorker`](../../app/core/proactive/aspiration_momentum_worker.py)
+reads active aspirations via a `ConceptView` (L24), and — **staleness-driven,
+not calendar-driven** — picks the stalest one worth a check-in (past
+`staleness_min_days` since last reinforcement, off its per-concept cooldown,
+above the confidence bar) and drafts ONE cue into the `aiko.aspiration_momentum`
+kv ring. The consumer `_render_aspiration_momentum_block`
+([`inner_life_part2`](../../app/core/session/inner_life_part2.py)) surfaces the
+newest unseen cue on a later turn (watermark-gated) as a private T6 hint the
+chat model phrases in-context — **cue producer, not verbatim**. MCP:
+`force_aspiration_momentum_draft` / `force_aspiration_momentum_surface`.
+
+**Effort.** Shipped on top of L1-L5 / L8 / L11. New settings:
+`agent.aspiration_synthesis_enabled`, `agent.aspiration_momentum_enabled`,
+`concept_synthesis_aspiration_min_chain` / `_min_span_days` /
+`concept_synthesis_max_aspiration_clusters_per_run` / `_max_aspiration_memories`,
+and `aspiration_momentum_*` (interval, cooldown_days, min_confidence,
+staleness_min_days, journal_max).
 
 ---
 

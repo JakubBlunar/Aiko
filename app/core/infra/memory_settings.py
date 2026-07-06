@@ -759,6 +759,27 @@ class MemorySettings:
     concept_synthesis_narrative_min_chain: int = 3
     concept_synthesis_max_narrative_clusters_per_run: int = 3
     concept_synthesis_max_narrative_memories: int = 40
+    # L14 aspiration synthesis (the open-ended sibling of narrative). Same
+    # shape as the narrative knobs, plus ``aspiration_min_span_days``: the
+    # ordered evidence of a candidate must cover at least this many days before
+    # it is offered as a *trajectory* -- a direction has to persist over time,
+    # not just accumulate in one sitting.
+    concept_synthesis_aspiration_min_chain: int = 3
+    concept_synthesis_aspiration_min_span_days: float = 14.0
+    concept_synthesis_max_aspiration_clusters_per_run: int = 3
+    concept_synthesis_max_aspiration_memories: int = 40
+    # L14 aspiration-momentum worker (the proactive check-in producer). It
+    # drafts a private cue over an active aspiration that has gone stale enough
+    # to be worth revisiting. ``interval_seconds`` is the idle cadence;
+    # ``cooldown_days`` is the per-concept cooldown that rotates check-ins
+    # across the active set; ``min_confidence`` gates which aspirations qualify;
+    # ``staleness_min_days`` is how long since last reinforcement before one is
+    # worth a check-in; ``journal_max`` bounds the cue ring.
+    aspiration_momentum_interval_seconds: float = 21600.0
+    aspiration_momentum_cooldown_days: float = 10.0
+    aspiration_momentum_min_confidence: float = 0.6
+    aspiration_momentum_staleness_min_days: float = 7.0
+    aspiration_momentum_journal_max: int = 4
     # Shared engagement clock (app/core/infra/engagement_clock.py): a
     # monotonic "active-conversation time" counter so decay tracks time
     # actually spent engaging, not calendar time (away/quiet stretches
@@ -2401,6 +2422,68 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         "concept_synthesis_max_narrative_memories", 40
                     )
                 ),
+            ),
+            concept_synthesis_aspiration_min_chain=max(
+                2,
+                int(
+                    memory_raw.get("concept_synthesis_aspiration_min_chain", 3)
+                ),
+            ),
+            concept_synthesis_aspiration_min_span_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_synthesis_aspiration_min_span_days", 14.0
+                    )
+                ),
+            ),
+            concept_synthesis_max_aspiration_clusters_per_run=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_aspiration_clusters_per_run", 3
+                    )
+                ),
+            ),
+            concept_synthesis_max_aspiration_memories=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_aspiration_memories", 40
+                    )
+                ),
+            ),
+            aspiration_momentum_interval_seconds=max(
+                60.0,
+                float(
+                    memory_raw.get(
+                        "aspiration_momentum_interval_seconds", 21600.0
+                    )
+                ),
+            ),
+            aspiration_momentum_cooldown_days=max(
+                0.0,
+                float(
+                    memory_raw.get("aspiration_momentum_cooldown_days", 10.0)
+                ),
+            ),
+            aspiration_momentum_min_confidence=max(
+                0.0,
+                float(
+                    memory_raw.get("aspiration_momentum_min_confidence", 0.6)
+                ),
+            ),
+            aspiration_momentum_staleness_min_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "aspiration_momentum_staleness_min_days", 7.0
+                    )
+                ),
+            ),
+            aspiration_momentum_journal_max=max(
+                1,
+                int(memory_raw.get("aspiration_momentum_journal_max", 4)),
             ),
             engagement_clock_enabled=bool(
                 memory_raw.get("engagement_clock_enabled", True)

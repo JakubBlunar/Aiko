@@ -123,7 +123,8 @@ class ProposerSpec:
     kind: str
     subject: str
     evidence_model: str
-    # "clusters" | "aiko_memories" | "affect" | "shared_moments" | "narrative"
+    # "clusters" | "aiko_memories" | "affect" | "shared_moments"
+    # | "narrative" | "aspiration"
     population: str
     propose: Callable[..., list[CandidateProposal]]
     sig_key: str = ""
@@ -340,14 +341,14 @@ def propose_aiko_hybrid(
     return proposals
 
 
-# Cap on how many steps of one arc we show the model -- long arcs stay bounded
-# in the prompt; the middle is elided so the beginning + end (the parts that
-# make it a *closed* story) always survive.
+# Cap on how many steps of one chain we show the model -- long chains stay
+# bounded in the prompt; the middle is elided so the beginning + end (the parts
+# that make it a *closed* story / a clear *direction*) always survive.
 _MAX_STEPS_SHOWN = 12
 
 
-def _arc_block(index: int, cand: NarrativeCandidate) -> str:
-    """Render one candidate arc as a numbered, temporally-ordered block."""
+def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str) -> str:
+    """Render one candidate chain as a numbered, temporally-ordered block."""
     mems = cand.memories
     lines: list[str] = []
     if len(mems) <= _MAX_STEPS_SHOWN:
@@ -366,49 +367,61 @@ def _arc_block(index: int, cand: NarrativeCandidate) -> str:
             continue
         mid = int(mem.id)
         lines.append(f"  {pos + 1}. [{mid}] {snippet(getattr(mem, 'content', '') or '')}")
-    return f'ARC [{index}] -- theme "{cand.label}":\n' + "\n".join(lines)
+    return f'{block_word} [{index}] -- theme "{cand.label}":\n' + "\n".join(lines)
 
 
-def propose_narrative(
+def propose_ordered_concept(
     ctx: ProposerContext,
     *,
-    candidates: Sequence[NarrativeCandidate],
+    candidates: Sequence["NarrativeCandidate"],
     subject: str,
+    kind: str,
     system: str,
     first_person: bool,
+    gate_flag: str,
+    block_word: str,
+    noun_plural: str,
+    new_requirement: str,
     min_chain: int = 3,
     existing: Sequence[ExistingConcept] = (),
 ) -> list[CandidateProposal]:
-    """Shared body for the L8 narrative proposers (user + aiko).
+    """Shared body for the ``sequence``-evidence proposers (L8 narrative +
+    L14 aspiration).
 
     Each :class:`NarrativeCandidate` is a subject-dominant cluster whose
     member memories are already in temporal order. The model names any
-    candidate that forms a genuine **closed causal arc** (a beginning, a
-    development, and a resolution) and cites the member ids that make up the
-    chain; ``first_person`` only shapes the prompt voice (aiko's arcs are
-    about herself). We re-derive the chain order from the candidate's own
-    ordering (not the LLM's id order) and emit ``sequence`` evidence so the
-    worker stamps ordinals 0..n. An *open* arc (``closed`` false) or a chain
-    shorter than ``min_chain`` is dropped; reinforcement of a known arc has
-    neither requirement (it just adds fresh support to an existing story)."""
+    candidate that clears the kind's bar -- a **closed causal arc** for
+    narrative, a **sustained direction** for aspiration -- and cites the
+    member ids that make up the chain; ``first_person`` only shapes the prompt
+    voice (Aiko's are about herself). We re-derive the chain order from the
+    candidate's own ordering (not the LLM's id order) and emit ``sequence``
+    evidence so the worker stamps ordinals 0..n.
+
+    The kind-specific bits are parameterized: ``gate_flag`` is the JSON boolean
+    a NEW concept must set true (``"closed"`` for narrative, ``"directional"``
+    for aspiration); ``block_word`` / ``noun_plural`` / ``new_requirement``
+    shape the prompt vocabulary. A NEW concept failing the flag, or a chain
+    shorter than ``min_chain``, is dropped; a reinforcement of a known concept
+    has neither requirement (it just adds fresh support)."""
     if not candidates:
         return []
     by_index = {i: c for i, c in enumerate(candidates)}
     existing_ids = {int(e.id) for e in existing}
 
     voice = (
-        f"about {ctx.assistant_name} herself (first person -- 'I ...', 'the "
-        "stretch where I ...')"
+        f"about {ctx.assistant_name} herself (first person -- 'I ...')"
         if first_person
         else f"about {ctx.user_name} (third person)"
     )
     user = (
-        "CANDIDATE ARCS (each theme's memories in time order):\n"
-        + "\n\n".join(_arc_block(i, c) for i, c in by_index.items())
-        + "\n\nALREADY-KNOWN ARCS:\n"
+        f"CANDIDATE {block_word}S (each theme's memories in time order):\n"
+        + "\n\n".join(
+            _ordered_block(i, c, block_word) for i, c in by_index.items()
+        )
+        + f"\n\nALREADY-KNOWN {block_word}S:\n"
         + format_existing(existing)
-        + f"\n\nName NEW narrative arcs {voice} -- one per genuinely closed "
-        "arc -- or reinforce a known one by id."
+        + f"\n\nName NEW {noun_plural} {voice} -- one per {new_requirement} "
+        "-- or reinforce a known one by id."
     )
 
     raw = ctx.call_llm(system, user)
@@ -445,7 +458,7 @@ def propose_narrative(
                     rationale=rationale,
                     confidence=0.0,
                     evidence=evidence,
-                    kind="narrative",
+                    kind=kind,
                     subject=subject,
                     evidence_model="sequence",
                     reinforces_id=reinforces,
@@ -453,10 +466,10 @@ def propose_narrative(
             )
             continue
 
-        # A NEW arc must be closed (resolved) and long enough to be a story.
+        # A NEW concept must clear the kind's gate flag and be long enough.
         if ai in seen_new:
             continue
-        if not bool(item.get("closed")):
+        if not bool(item.get(gate_flag)):
             continue
         label = str(item.get("label") or "").strip()
         if not label or len(ordered_ids) < max(int(min_chain), 1):
@@ -468,12 +481,40 @@ def propose_narrative(
                 rationale=rationale,
                 confidence=clamp01(item.get("confidence")),
                 evidence=evidence,
-                kind="narrative",
+                kind=kind,
                 subject=subject,
                 evidence_model="sequence",
             )
         )
     return proposals
+
+
+def propose_narrative(
+    ctx: ProposerContext,
+    *,
+    candidates: Sequence["NarrativeCandidate"],
+    subject: str,
+    system: str,
+    first_person: bool,
+    min_chain: int = 3,
+    existing: Sequence[ExistingConcept] = (),
+) -> list[CandidateProposal]:
+    """L8 narrative body -- a thin wrapper over :func:`propose_ordered_concept`
+    fixing the narrative vocabulary (a *closed* arc)."""
+    return propose_ordered_concept(
+        ctx,
+        candidates=candidates,
+        subject=subject,
+        kind="narrative",
+        system=system,
+        first_person=first_person,
+        gate_flag="closed",
+        block_word="ARC",
+        noun_plural="narrative arcs",
+        new_requirement="genuinely closed arc",
+        min_chain=min_chain,
+        existing=existing,
+    )
 
 
 __all__ = [
@@ -490,6 +531,7 @@ __all__ = [
     "format_existing",
     "propose_aiko_hybrid",
     "propose_narrative",
+    "propose_ordered_concept",
     "resolve_reinforces",
     "snippet",
 ]

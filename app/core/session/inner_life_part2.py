@@ -1397,6 +1397,80 @@ class InnerLifePart2Mixin:
         log.info("growth-witness fire: at=%s kind=%s", at, kind)
         return line
 
+    def _render_aspiration_momentum_block(self) -> str:
+        """L14: surface one occasional "check in on where they're heading" cue.
+
+        Consumer side of the :class:`AspirationMomentumWorker` producer. The
+        worker drafts a cue (an active aspiration gone stale enough to be worth
+        revisiting) into the ``aiko.aspiration_momentum`` kv ring; this provider
+        folds the newest unseen cue into the prompt as one optional, private
+        hint Aiko phrases herself — NEVER spoken verbatim, never a nudge.
+
+        Watermark-only (``aspiration_momentum.last_surfaced_at``), sibling of
+        the growth_witness / self_callback cue family. MCP debug:
+        ``force_aspiration_momentum_surface`` arms
+        ``_aspiration_momentum_force_next`` to bypass the watermark (the ring
+        still has to be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "aspiration_momentum_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_aspiration_momentum_force_next", False)
+        )
+        if force_next:
+            self._aspiration_momentum_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.proactive import aspiration_momentum as _am
+        except Exception:
+            log.debug("aspiration_momentum import failed", exc_info=True)
+            return ""
+
+        ring = _am.load_cues(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        label = str(newest.get("label") or "").strip()
+        subject = str(newest.get("subject") or "user").strip() or "user"
+        if not label:
+            return ""
+
+        watermark_key = "aspiration_momentum.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                return ""
+
+        line = _am.render_inner_life_block(
+            subject,
+            label,
+            user_display_name=self.user_display_name,
+        )
+        if not line:
+            return ""
+
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug(
+                "aspiration_momentum watermark write failed", exc_info=True
+            )
+
+        log.info("aspiration-momentum fire: at=%s subject=%s", at, subject)
+        return line
+
     def _render_self_callback_block(self) -> str:
         """K71: surface one rare "close the loop on my own past" cue.
 

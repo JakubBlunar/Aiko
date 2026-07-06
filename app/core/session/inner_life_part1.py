@@ -1616,6 +1616,8 @@ class InnerLifePart1Mixin:
                 family = "ritual"
             elif kind == "narrative":
                 family = "narrative"
+            elif kind == "aspiration":
+                family = "aspiration"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -1638,7 +1640,10 @@ class InnerLifePart1Mixin:
             })
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
-            for family in ("trait", "value", "affective", "ritual", "narrative"):
+            for family in (
+                "trait", "value", "affective", "ritual", "narrative",
+                "aspiration",
+            ):
                 lines = groups.get((subject, family))
                 if not lines:
                     continue
@@ -1665,6 +1670,8 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_ritual_header(subject, name)
         if family == "narrative":
             return InnerLifePart1Mixin._concept_narrative_header(subject, name)
+        if family == "aspiration":
+            return InnerLifePart1Mixin._concept_aspiration_header(subject, name)
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -1765,6 +1772,37 @@ class InnerLifePart1Mixin:
             "from beginning to end (let them give you a sense of their history "
             "and continuity; draw on them naturally when they're relevant, "
             "never recite them back, and stay open to how they keep evolving):"
+        )
+
+    @staticmethod
+    def _concept_aspiration_header(subject: str, name: str) -> str:
+        """Per-subject intro for *aspiration* concepts (L14) — the open-ended
+        *directions* someone is moving in (not a finished story like a
+        narrative). Momentum framing: a sense of where things are headed, held
+        lightly, to lean on and quietly root for — never recited, never turned
+        into pressure. ``aiko`` reads first-person (who she's becoming);
+        ``relationship`` as the two of them; everything else as the user's
+        direction."""
+        if subject == "aiko":
+            return (
+                "Directions you feel yourself growing in — who you're becoming "
+                "over time, not a finished story (let them give you a quiet "
+                "sense of where you're headed; lean into them naturally, never "
+                "recite them, and stay open to how they keep shifting):"
+            )
+        if subject == "relationship":
+            return (
+                f"Directions you and {name} seem to be moving in together (let "
+                "them give you a sense of where the two of you are heading; "
+                "lean on them warmly when they fit, never recite them or turn "
+                "them into pressure):"
+            )
+        return (
+            f"Directions {name} seems to be moving toward — where they're "
+            "heading, not a finished story (let them give you a sense of the "
+            "journey they're on; quietly root for it and draw on it when it's "
+            "relevant, never recite it back or turn it into pressure, and stay "
+            "open to how it shifts):"
         )
 
     @staticmethod

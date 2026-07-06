@@ -560,6 +560,25 @@ The `narrative` concept kind (`subject=user` **and** `aiko`) names a *closed cau
 - `memory.concept_synthesis_max_narrative_clusters_per_run` *(int, `3`, min `1`)* — cap on candidate arcs offered to the narrative proposer per run, per subject (bounds the prompt / LLM cost).
 - `memory.concept_synthesis_max_narrative_memories` *(int, `40`, min `2`)* — cap on member memories loaded per candidate arc (long-running themes stay bounded; the proposer further elides the middle).
 
+### L14 — aspiration / trajectory concepts (+ momentum callbacks)
+
+The `aspiration` concept kind (`subject=user` **and** `aiko`) is the open-ended sibling of L8 narrative — the **second `sequence`**-evidence kind. It names a *direction* someone is moving in ("building toward a self-hosted life"; for aiko first-person "growing into someone he can rely on") rather than a closed arc, and is distinct from Aiko's concrete K1 goals. It reuses the L8 ordinal chain machinery via the shared [`propose_ordered_concept`](../app/core/concepts/proposers/base.py) body (`gate_flag="directional"` vs narrative's `"closed"`); a `"aspiration"` synthesis population + `_run_aspiration_pass(subject)` shares a `_ordered_candidates` helper with narrative, adding a minimum evidence **span** so a trajectory covers time. `plasticity_default=0.4`, `aspiration_evidence_gate` floors at ≥3 ordered steps / **≥3 days** age (a sustained direction) / ≥0.6 confidence. Surfaces relevance-only through the T3 path **and** via a proactive momentum check-in. See [`personality-backlog/concepts.md` → L14](personality-backlog/concepts.md).
+
+- `agent.aspiration_synthesis_enabled` *(bool, `true`)* — master switch for the aspiration synthesis pass. Off → no trajectories are mined (the rest of concept synthesis is unaffected; existing aspirations still surface).
+- `memory.concept_synthesis_aspiration_min_chain` *(int, `3`, min `2`)* — minimum ordered steps a cluster must resolve to before it's offered as a candidate trajectory (and the proposer's new-aspiration floor).
+- `memory.concept_synthesis_aspiration_min_span_days` *(float, `14.0`, min `0`)* — minimum number of days the ordered evidence must span before a cluster is offered — a direction has to persist over time, not just accumulate in one sitting.
+- `memory.concept_synthesis_max_aspiration_clusters_per_run` *(int, `3`, min `1`)* — cap on candidate trajectories offered to the aspiration proposer per run, per subject.
+- `memory.concept_synthesis_max_aspiration_memories` *(int, `40`, min `2`)* — cap on member memories loaded per candidate trajectory.
+
+Proactive momentum callbacks — the `AspirationMomentumWorker` occasionally drafts a private "check in on where they're heading" cue over an active aspiration that has gone stale since it was last reinforced, and `_render_aspiration_momentum_block` surfaces it as a watermark-gated T6 hint the chat model phrases in-context (cue producer, never verbatim):
+
+- `agent.aspiration_momentum_enabled` *(bool, `true`)* — master switch for the momentum worker + its prompt block.
+- `memory.aspiration_momentum_interval_seconds` *(float, `21600.0`, min `60`)* — idle cadence for the momentum worker (the natural global spacing between check-ins).
+- `memory.aspiration_momentum_cooldown_days` *(float, `10.0`, min `0`)* — per-concept cooldown so a check-in rotates across the active aspirations instead of repeating the strongest one.
+- `memory.aspiration_momentum_min_confidence` *(float, `0.6`, min `0`)* — confidence bar an aspiration must clear to be eligible for a check-in.
+- `memory.aspiration_momentum_staleness_min_days` *(float, `7.0`, min `0`)* — how long since last reinforcement before an aspiration is worth revisiting.
+- `memory.aspiration_momentum_journal_max` *(int, `4`, min `1`)* — cap on the `aiko.aspiration_momentum` cue ring.
+
 ### L25 — concept edge referential integrity
 
 Concept edges (`evidence` / `contradicts`) point at memory rows that get deleted, pruned, and merged. Most deletes are reconciled synchronously by the `ConceptEdgeReconciler` (registered as a `MemoryStore` delete listener: it drops the memory's edges and recomputes the affected concepts' edge-derived `evidence_count` / `distinct_source_count`). But `MemoryStore.prune` batch-deletes rows **without** firing delete listeners, so an idle sweep worker garbage-collects any orphaned edges it leaves. Destructive merges repoint the victim's edges onto the survivor first (rule b); archived rows keep their edges (rule c). L3 stays the single writer of `confidence` / `plasticity` / `status`. See [`concept-lifecycle.md`](concept-lifecycle.md).
