@@ -1194,9 +1194,15 @@ class InnerLifePart1Mixin:
 
     def _concept_supporting_labels(self, concept_id: int) -> list[str]:
         """L9: up to two short evidence labels grounding a surfaced
-        concept (the topics / memories it keeps resting on), resolved via
-        the shared ``concept_snapshot`` helper. Empty on any error so the
-        block never fails to render for want of grounding."""
+        concept (the *themes* it keeps resting on), resolved via the shared
+        ``concept_snapshot`` helper. Restricted to ``cluster`` / ``concept``
+        evidence so the grounding clause names a topic area, not a raw
+        memory sentence -- the latter is a full first-person statement that
+        renders as a truncated fragment once trimmed (which made every
+        ``subject=aiko`` self-concept, whose evidence is memory-typed, look
+        cut off in the prompt). A concept grounded only on memories simply
+        renders with no trailing clause. Empty on any error so the block
+        never fails to render for want of grounding."""
         store = getattr(self, "_concept_store", None)
         if store is None:
             return []
@@ -1211,6 +1217,7 @@ class InnerLifePart1Mixin:
                 getattr(self, "_topic_graph", None),
                 int(concept_id),
                 limit=2,
+                src_types=("cluster", "concept"),
             )
         except Exception:
             log.debug("concept supporting labels raised", exc_info=True)
