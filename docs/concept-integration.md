@@ -47,7 +47,7 @@ me** — neither branches on kind names. In
 - `ConceptKind.surfacing_targets: dict[str, str]` maps `subject -> target`
   (with a `"*"` wildcard); `surfacing_target` is the subject-agnostic
   fallback. The same kind can feed different consumers per subject — e.g.
-  `identity` feeds `profile_block` for `subject=user` but
+  `identity` (and `value`, L10) feed `profile_block` for `subject=user` but
   `self_image_block` for `subject=aiko`.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
@@ -61,10 +61,10 @@ isn't derived twice.
 
 | view / claim | source of truth | consumer / target | status |
 | --- | --- | --- | --- |
-| Aiko's self-image (who she is) | `subject=aiko` concepts | `SelfImageWorker` -> `self_image_block` | **shipped (reference)** |
-| identity pin lane (always-on core) | `kind=identity` concepts | `build_relevant_context` | **shipped (migrated)** |
+| Aiko's self-image (who she is + what she values) | `subject=aiko` concepts (identity + value) | `SelfImageWorker` -> `self_image_block` | **shipped (reference)** |
+| always-on core lane | `core_always_on` kinds (`identity`, `value`) | `build_relevant_context` | **shipped (migrated)** |
 | concept recall tool | active concepts (any subject) | `recall_concept` | **shipped (migrated)** |
-| user profile (who he is) | `subject=user` identity concepts | `user_profile` -> `profile_block` | deferred (L28) |
+| user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | deferred (L28) |
 | cluster annotation | concepts spanning a cluster | `interest_map` via `for_cluster` | deferred (L28) |
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
 | aspirations / trajectory | aspiration concepts | `goals` | deferred (L14 + L28) |

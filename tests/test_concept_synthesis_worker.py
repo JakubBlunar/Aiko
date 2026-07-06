@@ -199,7 +199,11 @@ class WorkerHarness:
 
 def _both_responder(system, user):
     """Realistic responder: a user identity concept (spans 2 clusters) and
-    an aiko identity concept (spans 2 self memories)."""
+    an aiko identity concept (spans 2 self memories). Value passes (L10) are
+    a deliberate no-op here so the identity-focused tests keep their counts;
+    dedicated value coverage lives in ``ValueProposerTests``."""
+    if "VALUE concepts about" in system or "her own VALUES" in system:
+        return {"concepts": []}
     if "HERSELF" in system:
         return {
             "concepts": [
@@ -387,7 +391,9 @@ class ExistingAwarenessTests(unittest.TestCase):
         captured: dict[str, str] = {}
 
         def responder(system, user):
-            if "HERSELF" not in system:
+            # Target the user *identity* pass specifically (value + aiko
+            # passes also lack "HERSELF" now).
+            if "IDENTITY concepts about" in system:
                 captured["user"] = user
             return {"concepts": []}
 
@@ -746,7 +752,9 @@ class CoactivationHintTests(unittest.TestCase):
         seen: dict[str, str] = {}
 
         def _wrap(system, user):
-            if "HERSELF" not in system:
+            # Capture the user *identity* pass (value/aiko passes also lack
+            # "HERSELF" now that L10 value proposers are registered).
+            if "IDENTITY concepts about" in system:
                 seen["user"] = user
             return responder(system, user)
 
@@ -788,6 +796,69 @@ class CoactivationHintTests(unittest.TestCase):
         stats = h.worker.run()
         self.assertNotIn("TOPIC MODES", seen.get("user", ""))
         self.assertEqual(stats["by_subject"]["user"]["added"], 1)
+
+
+def _value_responder(system, user):
+    """Branches all four proposer passes (identity/value x user/aiko) on a
+    token unique to each system prompt, returning the evidence shape that
+    pass reads (clusters for user, memories for aiko)."""
+    if "VALUE concepts about" in system:  # value_user (cluster pass)
+        return {"concepts": [
+            {"label": "values owning his data",
+             "evidence_cluster_reps": [100, 101], "confidence": 0.7}
+        ]}
+    if "her own VALUES" in system:  # value_aiko (memory pass)
+        return {"concepts": [
+            {"label": "I value honesty over agreeableness",
+             "evidence_memory_ids": [1, 2], "confidence": 0.8}
+        ]}
+    if "HERSELF" in system:  # identity_aiko (memory pass)
+        return {"concepts": [
+            {"label": "I enjoy explaining systems",
+             "evidence_memory_ids": [1, 4], "confidence": 0.8}
+        ]}
+    return {"concepts": [  # identity_user (cluster pass)
+        {"label": "Systems thinker",
+         "evidence_cluster_reps": [100, 101], "confidence": 0.7}
+    ]}
+
+
+class ValueProposerTests(unittest.TestCase):
+    """L10: value proposers create ``kind=value`` candidates for both
+    subjects, with the right evidence edges, alongside identity."""
+
+    def test_value_passes_create_value_candidates(self) -> None:
+        h = WorkerHarness(_value_responder)
+        h.worker.run()
+        uv = h.store.list_by(subject="user", kind="value")
+        self.assertEqual(len(uv), 1)
+        self.assertEqual(uv[0].label, "values owning his data")
+        self.assertEqual(uv[0].status, "candidate")
+        self.assertEqual(uv[0].evidence_model, "set")
+        uev = h.store.evidence_of(uv[0].concept_id)
+        self.assertTrue(all(e.src_type == "cluster" for e in uev))
+
+        av = h.store.list_by(subject="aiko", kind="value")
+        self.assertEqual(len(av), 1)
+        self.assertEqual(av[0].label, "I value honesty over agreeableness")
+        aev = h.store.evidence_of(av[0].concept_id)
+        self.assertTrue(all(e.src_type == "memory" for e in aev))
+
+    def test_identity_and_value_share_populations_without_clobber(self) -> None:
+        # Both cluster proposers (identity_user + value_user) and both aiko
+        # proposers run in a single pass. Before the per-spec ``sig_key`` fix,
+        # the first cluster/aiko pass would save dirty-state under the shared
+        # key and the second would see "clean" and skip. All four must land.
+        h = WorkerHarness(_value_responder)
+        h.worker.run()
+        self.assertEqual(
+            len(h.store.list_by(subject="user", kind="identity")), 1
+        )
+        self.assertEqual(len(h.store.list_by(subject="user", kind="value")), 1)
+        self.assertEqual(
+            len(h.store.list_by(subject="aiko", kind="identity")), 1
+        )
+        self.assertEqual(len(h.store.list_by(subject="aiko", kind="value")), 1)
 
 
 if __name__ == "__main__":

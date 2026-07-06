@@ -59,6 +59,8 @@
     "self_image_concept_sourced_enabled": true,
     "self_image_min_concepts": 4,
     "self_image_min_concept_confidence": 0.6,
+    "self_image_max_tokens": 480,
+    "self_image_max_self": 14,
     "prepared_nudge_ttl_seconds": 600,
     "filler_enabled": true,
     "filler_first_token_ms": 800,

@@ -533,6 +533,49 @@ class ConceptRenderSubjectTests(unittest.TestCase):
         self.assertIn("understand about yourself", text)
         self.assertNotIn("understand about Jacob", text)
 
+    def test_value_uses_value_voice_not_identity_header(self) -> None:
+        # L10: a subject=user/kind=value concept renders under the value
+        # header (principles), not the identity "things you've come to
+        # understand" header.
+        host = self._host()
+        user_val = SimpleNamespace(
+            concept_id=3, label="Jacob values self-reliance over convenience",
+            confidence=0.9, plasticity=0.2, kind="value", subject="user",
+            last_reinforced_at=None,
+        )
+        text, _ = host._render_relevant_concepts([user_val])
+        self.assertIn("values", text)
+        self.assertIn("principles", text)
+        self.assertNotIn("understand about Jacob", text)
+
+    def test_value_and_identity_render_under_separate_headers(self) -> None:
+        host = self._host()
+        user_id = SimpleNamespace(
+            concept_id=1, label="Jacob is a systems thinker",
+            confidence=0.9, plasticity=0.3, kind="identity", subject="user",
+            last_reinforced_at=None,
+        )
+        user_val = SimpleNamespace(
+            concept_id=2, label="Jacob values owning his data",
+            confidence=0.9, plasticity=0.2, kind="value", subject="user",
+            last_reinforced_at=None,
+        )
+        aiko_val = SimpleNamespace(
+            concept_id=3, label="I value honesty over agreeableness",
+            confidence=0.9, plasticity=0.2, kind="value", subject="aiko",
+            last_reinforced_at=None,
+        )
+        text, _ = host._render_relevant_concepts([user_id, user_val, aiko_val])
+        # Identity group still present.
+        self.assertIn("understand about Jacob", text)
+        # Both value groups render in the value voice.
+        self.assertIn("Jacob values", text)
+        self.assertIn("come to value", text)  # aiko value header
+        # Identity trait renders before the user value block.
+        self.assertLess(
+            text.index("systems thinker"), text.index("owning his data"),
+        )
+
 
 class RelevantContextResultTests(unittest.TestCase):
     def test_default_reason(self) -> None:

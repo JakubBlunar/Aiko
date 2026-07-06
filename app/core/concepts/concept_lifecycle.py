@@ -152,6 +152,45 @@ def set_evidence_gate(
     )
 
 
+# Minimum bars a *value* concept must clear on top of whatever the caller
+# passes. Values are the stickiest, hardest-won concepts (L10) -- a stated
+# principle should be slow to assert -- so this floors the ``set`` gate at a
+# stricter point than identity even when the global promote settings are
+# relaxed. The L21 young-graph tightening still layers on top (the caller may
+# hand in higher values, which win via ``max``).
+_VALUE_MIN_SOURCES = 3
+_VALUE_MIN_AGE_DAYS = 1.0
+_VALUE_MIN_CONFIDENCE = 0.72
+
+
+def value_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``value`` concepts (L10).
+
+    Same shape as :func:`set_evidence_gate`, but with stricter built-in
+    floors so a value ("the principle under the choices") only promotes once
+    it is genuinely well-evidenced and settled -- more distinct sources, a
+    non-instant age, and a higher confidence than identity. The caller's
+    thresholds still apply when they are *higher* (e.g. the L21 young-graph
+    bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _VALUE_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _VALUE_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _VALUE_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -160,4 +199,5 @@ __all__ = [
     "next_confidence",
     "apply_contradiction_penalty",
     "set_evidence_gate",
+    "value_evidence_gate",
 ]

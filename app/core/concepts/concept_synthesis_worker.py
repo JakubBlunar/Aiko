@@ -395,7 +395,10 @@ class ConceptSynthesisWorker:
         cluster_index = [
             (rep, label, size) for rep, label, size, _kinds in clusters
         ]
-        sigs = self._load_sigs(_KV_CLUSTER_SIGS)
+        # Per-proposer signature key so multiple proposers over the cluster
+        # population (identity, value, ...) each track their own dirty state.
+        sig_key = spec.sig_key or _KV_CLUSTER_SIGS
+        sigs = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
 
         dirty: list[tuple[int, str, int, int, bool]] = []  # rep,label,size,drift,is_new
@@ -450,7 +453,7 @@ class ConceptSynthesisWorker:
                 new_sigs[str(rep)] = {"size": size, "label": label}
             elif str(rep) in sigs:
                 new_sigs[str(rep)] = sigs[str(rep)]
-        self._save_sigs(_KV_CLUSTER_SIGS, new_sigs)
+        self._save_sigs(sig_key, new_sigs)
         return proposals
 
     def _coactivation_modes(self) -> list[Any]:
@@ -498,7 +501,9 @@ class ConceptSynthesisWorker:
         if count == 0:
             return []
         max_id = max(int(m.id) for m in pop)
-        prev = self._load_sigs(_KV_AIKO_SIG)
+        # Per-proposer signature key (identity vs value over the aiko pop).
+        sig_key = spec.sig_key or _KV_AIKO_SIG
+        prev = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
         prev_count = int(prev.get("count", 0)) if prev else 0
         is_dirty = force or (not prev) or abs(count - prev_count) >= delta
@@ -512,7 +517,7 @@ class ConceptSynthesisWorker:
         proposals = spec.propose(
             ctx, memories=batch, existing=self._existing_for(spec)
         )
-        self._save_sigs(_KV_AIKO_SIG, {"count": count, "max_id": max_id})
+        self._save_sigs(sig_key, {"count": count, "max_id": max_id})
         return proposals
 
     def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:

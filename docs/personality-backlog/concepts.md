@@ -706,7 +706,58 @@ clusters, representative memories, or both?
 
 ---
 
-## L10. Value concepts (deferred)
+## L10. Value concepts (SHIPPED — both subjects)
+
+**Status: SHIPPED.** A `value` kind now runs end-to-end for both subjects on
+the existing identity machinery. Registry entry
+([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py)):
+`evidence_model="set"`, `plasticity_default=0.2` (stickier than identity's
+0.3), `promotion_gate=value_evidence_gate` (stricter than the plain `set`
+gate — floors at ≥3 sources / ≥1.0 day / ≥0.72 confidence, and the L21
+young-graph bar still layers on top), same per-subject routing as identity
+(`profile_block` for the user, `self_image_block` for Aiko), and it joins the
+L27 always-on **core lane** at a higher bar (`core_min_confidence=0.85`) so a
+value only pins into every turn once it is very settled.
+
+Two value-framed L2 proposers
+([`proposers/value_user.py`](../../app/core/concepts/proposers/value_user.py)
+over topic clusters,
+[`proposers/value_aiko.py`](../../app/core/concepts/proposers/value_aiko.py)
+over her `self`/`reflection`/`diary` memories) ask for the *underlying
+principle* rather than the activity/trait. They share the cluster /
+aiko-memory populations with identity but carry their own `ProposerSpec.sig_key`
+(`concept_synth.cluster_sigs.value` / `concept_synth.aiko_sig.value`) so their
+dirty-tracking never clobbers identity's. Aiko values reuse the exact
+`_run_aiko_pass` population identity_aiko already proves, so the "L11
+enablement" this needed was effectively already shipped.
+
+Rendering is now kind-aware
+([`inner_life_part1._render_relevant_concepts`](../../app/core/session/inner_life_part1.py)):
+values group under a distinct principle-framed header per subject (user
+values / shared values / her own values) instead of the identity "things
+you've come to understand" voice, so an Aiko boundary-style principle reads
+as *hers*, not as something she learned about the user. Aiko values also
+auto-join her self-image via `SelfImageWorker` reading `view.core(subject="aiko")`
+across all kinds; the self-image was given more room for it
+(`self_image_max_tokens` 320→480, new `self_image_max_self` cap).
+
+**Follow-ups still open (all deferred, tracked here):**
+
+- **L28** — route `subject=user` values into `profile_block` via a `for_target`
+  consumer (they surface via the T3 relevance region today). Comes for free
+  when `UserProfileWorker` migrates: `for_target("profile_block",
+  subject="user")` already returns identity **and** value. See L28.
+- **L12** — value-vs-value tension across subjects (a `subject=user` value vs a
+  `subject=aiko` value: shared when aligned, a relationship tension when they
+  clash) and the value-contradicted-by-behaviour case (a value concept vs a
+  contradicting activity concept). Both live in the L12 tension family. See L12.
+- **K29 (enhancement)** — bias opinion-injection with Aiko's `subject=aiko`
+  value concepts, so her stance can draw on stored values, not only `kind="self"`
+  memories. K29 itself is shipped; this is an additive follow-up.
+- **Tunable knobs** — an optional `concept_value_plasticity` (per-kind override,
+  mirroring `concept_identity_plasticity`) plus a per-kind synthesis enable
+  flag. Trivial add if wanted; today the value plasticity is the registry
+  `plasticity_default=0.2`.
 
 **Kind.** subject `user` **or** `aiko`, evidence model `cluster_set`.
 
@@ -806,6 +857,15 @@ both referenced concepts being `active` and the friction recurring. **Handle
 with the most care of any kind:** delivered as a gentle observation, never
 nagging, on a strict cooldown — this is where a companion earns trust or loses
 it.
+
+**Value tensions (L10 shipped `value` kind).** Now that `value` concepts exist
+for both subjects, two concrete tension shapes live here: (a) the
+**cross-subject value clash** — a `subject=user` value vs a `subject=aiko` value:
+aligned pairs are a *shared value* (bonding), clashing pairs are a *relationship
+tension* and exactly where a real relationship lives (never delivered as a
+grievance); and (b) **value-contradicted-by-behaviour** — a held value concept
+vs a contradicting activity/identity concept ("values rest but rarely takes
+it"). Both ride the same `concept -> concept references` machinery above.
 
 **Effort.** Large (depends on L4 + a healthy population of active concepts).
 
@@ -1536,7 +1596,11 @@ grounding) is the goal.
 **Key files (per remaining consumer -> target).**
 - [`user_profile.py`](../../app/core/infra/user_profile.py) — `UserProfileWorker`,
   `subject=user` identity concepts -> `profile_block` (via
-  `ConceptView.for_target("profile_block", subject="user")`).
+  `ConceptView.for_target("profile_block", subject="user")`). **This picks up
+  `subject=user` value concepts for free** — L10 shipped `value` with the same
+  `surfacing_targets={"user": "profile_block"}`, so `for_target` already returns
+  identity **and** value; no extra routing work, and it retires the L10 deferral
+  of user values into `profile_block` in one migration.
 - `interest_map` cluster annotation in
   [`topic_graph.py`](../../app/core/conversation/topic_graph.py) — annotate
   clusters with the concepts spanning them via `ConceptView.for_cluster(rep_id)`.

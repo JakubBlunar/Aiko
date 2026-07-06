@@ -983,8 +983,10 @@ class AgentSettings:
     # before the actual paragraph starts. The default leaves headroom for
     # that without being so large that a runaway response is unbounded.
     # Bump this if you keep seeing ``surface=self_image_worker`` truncation
-    # warnings in the log.
-    self_image_max_tokens: int = 320
+    # warnings in the log. Raised for L10: now that identity *and* value
+    # subject=aiko concepts feed the narrative, she needs more room to hold a
+    # richer picture of herself.
+    self_image_max_tokens: int = 480
     # L24: source the daily self-image from her active ``subject=aiko``
     # concepts (via the shared ConceptView) instead of re-summarising raw
     # self/reflection memories. Concepts are the upstream source of truth;
@@ -996,6 +998,11 @@ class AgentSettings:
     self_image_min_concepts: int = 4
     # Confidence an aiko self-concept must clear to feed the self-image.
     self_image_min_concept_confidence: float = 0.6
+    # L10: how many aiko concepts/memories feed the self-image composition
+    # (caps both the ConceptView.core(subject=aiko) pull and the memory
+    # fallback). Raised from the old hardwired 12 so more of her identity +
+    # value concepts inform the narrative.
+    self_image_max_self: int = 14
     # Prepared-nudge job runs in late speaking windows; cap how stale a
     # prepared nudge can be before ProactiveDirector re-synthesises.
     prepared_nudge_ttl_seconds: float = 600.0

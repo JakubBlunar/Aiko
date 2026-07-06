@@ -54,7 +54,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app.core.concepts.concept_lifecycle import set_evidence_gate
+from app.core.concepts.concept_lifecycle import (
+    set_evidence_gate,
+    value_evidence_gate,
+)
 
 # Recognised values for the orthogonal axes. Kept as plain tuples (not
 # enums) so callers can validate without importing heavy machinery, and
@@ -212,6 +215,41 @@ register_kind(
         # user is and how Aiko tends to be, carried into every turn. Its bar
         # falls back to the global ``context_budget_core_min_confidence``.
         core_always_on=True,
+    )
+)
+
+
+# ── L10: value ────────────────────────────────────────────────────────
+# The normative *why* under the choices — a shared principle a group of
+# clusters/memories reflects ("he values owning his data"; "I value honesty
+# over agreeableness"). Same ``set`` machinery as identity, but the deepest,
+# hardest-won layer: a stricter promotion gate and lower plasticity, and a
+# higher core-lane bar so a value only pins into every turn once it is very
+# settled. Subject-parameterized (user + aiko) exactly like identity.
+register_kind(
+    ConceptKind(
+        name="value",
+        subject="user",
+        evidence_model="set",
+        # L16: values are the stickiest concepts of all -> lower plasticity
+        # than identity (0.3), so confidence moves (accrual + decay + disproof)
+        # are heavily damped once one is held.
+        plasticity_default=0.2,
+        # L3: stricter than the plain set gate (more sources, non-instant age,
+        # higher confidence) -- values should be slow and hard-won.
+        promotion_gate=value_evidence_gate,
+        # L24: same per-subject routing as identity -- a user value feeds the
+        # user profile view, an Aiko value her self-image.
+        surfacing_target="profile_block",
+        surfacing_targets={
+            "user": "profile_block",
+            "aiko": "self_image_block",
+        },
+        # L27: values join the always-on core lane (they drive how Aiko wants
+        # to behave), but at a *higher* bar than identity -- only assert a
+        # value every turn when it is very settled.
+        core_always_on=True,
+        core_min_confidence=0.85,
     )
 )
 
