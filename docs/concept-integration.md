@@ -50,7 +50,14 @@ me** — neither branches on kind names. In
   `identity` (and `value`, L10) feed `profile_block` for `subject=user`.
   `subject=aiko` concepts have **no named for_target block** — they surface
   every turn through the T3 `relevant_context` path (core lane + relevance),
-  so they carry no `surfacing_targets` entry.
+  so they carry no `surfacing_targets` entry. Since L11, `subject=aiko`
+  concepts are mined in one combined pass over her aiko-dominant self-themes
+  (clusters) **and** her self-memories, so they ground on `cluster` evidence
+  like the user's concepts (`evidence_labels` resolves aiko cluster reps via
+  the shared cluster-label map) — the `src_types=("cluster","concept")`
+  grounding filter now renders real "…keeps surfacing around X/Y" for them;
+  their `memory` evidence still counts toward confidence/promotion but is
+  intentionally kept out of the trimmed grounding clause.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —

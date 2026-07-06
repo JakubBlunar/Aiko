@@ -389,7 +389,7 @@ class ConceptSynthesisWorker:
         stats: dict[str, Any],
         force: bool = False,
     ) -> list[CandidateProposal]:
-        clusters = self._user_dominant_clusters()
+        clusters = self._dominant_clusters("user")
         if not clusters:
             return []
         cluster_index = [
@@ -496,28 +496,106 @@ class ConceptSynthesisWorker:
         stats: dict[str, Any],
         force: bool = False,
     ) -> list[CandidateProposal]:
+        """L11 combined self-model pass: mine BOTH her aiko-dominant
+        self-themes (clusters the graph already produces) AND her salient
+        individual self-memories, so a self-concept can be grounded by a
+        recurring theme, a specific memory, or a mix. Degrades cleanly to
+        memories-only when she has no self-themes yet (cold start)."""
         pop = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
-        count = len(pop)
-        if count == 0:
+        mem_count = len(pop)
+        aiko_clusters = self._dominant_clusters("aiko")
+        if mem_count == 0 and not aiko_clusters:
+            stats["aiko_dirty"] = False
             return []
-        max_id = max(int(m.id) for m in pop)
+        mem_max_id = max((int(m.id) for m in pop), default=0)
+
         # Per-proposer signature key (identity vs value over the aiko pop).
         sig_key = spec.sig_key or _KV_AIKO_SIG
         prev = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
-        prev_count = int(prev.get("count", 0)) if prev else 0
-        is_dirty = force or (not prev) or abs(count - prev_count) >= delta
+
+        # Memory watermark drift (fall back to the legacy "count"/"max_id"
+        # shape so an in-flight upgrade re-proposes once, then settles).
+        prev_count = int(prev.get("mem_count", prev.get("count", 0)))
+        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+
+        # Cluster drift: new / relabelled / size-drifted aiko clusters.
+        prev_clusters = prev.get("clusters", {}) if prev else {}
+        dirty_clusters: list[tuple[int, str, int, int, bool]] = []
+        for rep, label, size, _kinds in aiko_clusters:
+            p = prev_clusters.get(str(rep))
+            if p is None:
+                dirty_clusters.append((rep, label, size, size, True))
+                continue
+            prev_size = int(p.get("size", 0))
+            prev_label = str(p.get("label", ""))
+            drift = abs(size - prev_size)
+            if force or prev_label != label or drift >= delta:
+                dirty_clusters.append((rep, label, size, drift, False))
+
+        is_dirty = force or mem_dirty or bool(dirty_clusters)
         stats["aiko_dirty"] = bool(is_dirty)
         if not is_dirty:
             return []
 
-        batch = sorted(
-            pop, key=lambda m: float(getattr(m, "salience", 0.0)), reverse=True
-        )[: self._max_aiko_memories]
+        # Themes: full index (context) + a bounded focus set (detail).
+        cluster_index = [
+            (rep, label, size) for rep, label, size, _kinds in aiko_clusters
+        ]
+        dirty_clusters.sort(key=lambda d: (0 if d[4] else 1, -d[3]))
+        focus_rows = dirty_clusters[: self._max_clusters_per_run]
+        focus_reps = {rep for rep, _l, _s, _d, _n in focus_rows}
+        focus_clusters = [
+            FocusCluster(
+                rep=rep,
+                label=label,
+                size=size,
+                representative=self._memory_content(rep),
+                digest=self._digest_for_rep(rep),
+            )
+            for rep, label, size, _drift, _new in focus_rows
+        ]
+
+        # Specifics: salience-sorted self-memories, minus any that are a
+        # cluster's representative (so a theme and its headline memory aren't
+        # offered as two separate sources), capped.
+        cluster_reps = {int(rep) for rep, _l, _s, _k in aiko_clusters}
+        batch = [
+            m
+            for m in sorted(
+                pop,
+                key=lambda m: float(getattr(m, "salience", 0.0)),
+                reverse=True,
+            )
+            if int(m.id) not in cluster_reps
+        ][: self._max_aiko_memories]
+
         proposals = spec.propose(
-            ctx, memories=batch, existing=self._existing_for(spec)
+            ctx,
+            focus_clusters=focus_clusters,
+            cluster_index=cluster_index,
+            memories=batch,
+            existing=self._existing_for(spec),
         )
-        self._save_sigs(sig_key, {"count": count, "max_id": max_id})
+
+        # Persist combined signature. Mark processed focus reps fresh; keep
+        # unprocessed dirty clusters on their old signature so they stay
+        # dirty and drain next run (mirrors the user pass).
+        current = {rep: (label, size) for rep, label, size, _k in aiko_clusters}
+        new_clusters: dict[str, dict[str, Any]] = {}
+        for rep, (label, size) in current.items():
+            if rep in focus_reps:
+                new_clusters[str(rep)] = {"size": size, "label": label}
+            elif str(rep) in prev_clusters:
+                new_clusters[str(rep)] = prev_clusters[str(rep)]
+        self._save_sigs(
+            sig_key,
+            {
+                "mem_count": mem_count,
+                "mem_max_id": mem_max_id,
+                "clusters": new_clusters,
+            },
+        )
         return proposals
 
     def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:
@@ -746,17 +824,26 @@ class ConceptSynthesisWorker:
 
     # ── topic-graph helpers ────────────────────────────────────────────
 
-    def _user_dominant_clusters(
-        self,
+    def _dominant_clusters(
+        self, subject: str
     ) -> list[tuple[int, str, int, tuple[str, ...]]]:
-        """Return ``(rep, label, size, member_kinds)`` for clusters whose
-        members are majority non-aiko-self kinds."""
+        """Return ``(rep, label, size, member_kinds)`` for the clusters that
+        belong to ``subject``.
+
+        The single topic graph clusters *all* memories together; a cluster's
+        subject is decided by whether its members are majority aiko-self
+        kinds (``self`` / ``reflection`` / ``diary``). ``subject="user"``
+        keeps clusters with ``aiko_share <= 0.5`` (including clusters with no
+        kind labels, treated as user); ``subject="aiko"`` keeps clusters with
+        ``aiko_share > 0.5``. This is what lets the user pass exclude her
+        self-themes while the aiko pass (L11) mines exactly those."""
         try:
             clusters = self._topic_graph.topic_clusters()
         except Exception:
             log.warning("topic_clusters failed", exc_info=True)
             return []
         aiko_kinds = set(AIKO_SELF_KINDS)
+        want_aiko = subject == "aiko"
         out: list[tuple[int, str, int, tuple[str, ...]]] = []
         for c in clusters:
             kinds = tuple(c.member_kinds or ())
@@ -764,8 +851,11 @@ class ConceptSynthesisWorker:
                 aiko_share = sum(1 for k in kinds if k in aiko_kinds) / len(
                     kinds
                 )
-                if aiko_share > 0.5:
-                    continue
+                is_aiko = aiko_share > 0.5
+            else:
+                is_aiko = False
+            if is_aiko != want_aiko:
+                continue
             label = (c.summary or "").strip()
             if not label:
                 continue
