@@ -239,10 +239,11 @@ LLM-driven background workers run during the gap when Aiko is speaking the previ
 - `agent.arc_update_every_n_turns` *(int, `1`, min `1`)* — conversation-arc worker cadence. `1` = every turn (it's cheap; arc tag drives expression + TTS speed).
 - `agent.self_image_pulse_enabled` *(bool, `true`)* — daily self-image worker. Off → Aiko never re-introspects how she feels about herself.
 - `agent.self_image_interest_seed_enabled` *(bool, `true`)* — **K65d.** Fold the K9 interest map into the daily self-image pulse ("Lately you've been spending time on: …") so her self-narrative can reflect what she's been engaging with. Off → the pulse uses only her top-salience self/reflection memories. No effect on a cold / unlabelled store.
-- `agent.self_image_max_tokens` *(int, `320`, min `120`)* — `num_predict` ceiling on the self-image LLM call. Bump if you see `surface=self_image_worker` truncation warnings.
+- `agent.self_image_max_tokens` *(int, `480`, min `120`)* — `num_predict` ceiling on the self-image LLM call. Raised for **L10** (identity *and* value `subject=aiko` concepts now feed the narrative, so she needs more room for a richer self-picture). Bump further if you see `surface=self_image_worker` truncation warnings.
 - `agent.self_image_concept_sourced_enabled` *(bool, `true`)* — **L24.** Source the daily self-image from her active `subject=aiko` concepts (via the shared `ConceptView`) rather than re-summarising raw self/reflection memories. Only kicks in once the concept layer is mature enough (see below); otherwise the legacy memory path runs. Off → always use the memory path.
 - `agent.self_image_min_concepts` *(int, `4`, min `1`)* — minimum number of qualifying aiko self-concepts before the pulse narrates concepts instead of memories (the maturity / fallback gate).
 - `agent.self_image_min_concept_confidence` *(float, `0.6`, clamped `[0, 1]`)* — confidence an aiko self-concept must clear to feed the self-image.
+- `agent.self_image_max_self` *(int, `14`, min `2`)* — **L10.** How many aiko concepts/memories feed the self-image composition (caps both the `ConceptView.core(subject=aiko)` pull and the memory fallback). Raised from the old hardwired `12` so more of her identity + value concepts inform the narrative.
 - `agent.prepared_nudge_ttl_seconds` *(float, `600.0`, min `30`)* — how stale a prepared proactive nudge can be before `ProactiveDirector` re-synthesises.
 
 ### Filler injection

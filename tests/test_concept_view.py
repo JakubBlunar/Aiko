@@ -242,6 +242,37 @@ class ConceptViewFromTests(unittest.TestCase):
         self.assertIsNone(concept_view_from(host))
 
 
+class ValueKindTests(unittest.TestCase):
+    """L10: the ``value`` kind rides the same routing + core-lane machinery
+    as identity, but with a higher core-lane bar."""
+
+    def test_value_routes_per_subject_like_identity(self) -> None:
+        from app.core.concepts.concept_kinds import get_kind
+
+        value = get_kind("value")
+        assert value is not None
+        self.assertEqual(target_for(value, "user"), "profile_block")
+        self.assertEqual(target_for(value, "aiko"), "self_image_block")
+
+    def test_value_in_core_lane_kinds(self) -> None:
+        from app.core.concepts.concept_kinds import core_lane_kinds
+
+        names = [k.name for k in core_lane_kinds()]
+        self.assertIn("value", names)
+
+    def test_value_honours_higher_core_bar(self) -> None:
+        # A value at 0.8 sits below its 0.85 per-kind bar and is dropped even
+        # though the global default (0.75) would admit it; an identity at 0.8
+        # (global bar) survives.
+        store = _FakeStore([
+            _c(1, kind="identity", subject="user", confidence=0.8),
+            _c(2, kind="value", subject="user", confidence=0.8),
+            _c(3, kind="value", subject="aiko", confidence=0.9),
+        ])
+        out = ConceptView(store).core_lane(limit=5, default_min_confidence=0.75)
+        self.assertEqual(sorted(c.concept_id for c in out), [1, 3])
+
+
 class KindRoutingTests(unittest.TestCase):
     def test_identity_targets_per_subject(self) -> None:
         from app.core.concepts.concept_kinds import get_kind

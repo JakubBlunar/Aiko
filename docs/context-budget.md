@@ -145,10 +145,14 @@ opts in with one registry field and auto-joins. `build_relevant_context` calls
 - gathers each core kind's active concepts above its bar (per-kind
   `core_min_confidence`, else the global `context_budget_core_min_confidence`),
 - **balances** them across `(kind, subject)` buckets — strongest bucket first,
-  then round-robin — so no one kind (usually `identity`, the only mined kind
-  today) crowds out the rest, and both the user-model and Aiko's self-model
-  (`subject=aiko`) reach the brain,
+  then round-robin — so no one kind crowds out the rest, and both the
+  user-model and Aiko's self-model (`subject=aiko`) reach the brain,
 - returns up to `context_budget_core_cap` concepts.
+
+Two kinds mine into this lane today: `identity` (bar = the global
+`context_budget_core_min_confidence`) and `value` (L10 — its own higher
+`core_min_confidence=0.85`, since a stated principle should only assert every
+turn once it's very settled).
 
 Those are marked `pinned`, deduped against the turn-relevant concept pool by
 `concept_id`, and the selector guarantees them (budget permitting) on top of the
@@ -159,8 +163,8 @@ off the L16 plasticity bands (sticky value/boundary kinds earn a higher bar
 than fluid tastes).
 
 A per-concept anti-nag cooldown (so the same core concept isn't pinned on every
-single turn) is the remaining L27 refinement; with only `identity` live today
-it's deferred to avoid hiding the self-model on alternating turns.
+single turn) is the remaining L27 refinement; it's deferred to avoid hiding the
+self-model on alternating turns.
 
 *(Legacy `context_budget_identity_cap` / `context_budget_identity_min_confidence`
 config keys still parse into the renamed `core` knobs.)*
@@ -214,7 +218,7 @@ All under `memory.` — full descriptions + defaults in
 | `context_budget_history_floor_tokens` | `1024` | protected history slice |
 | `context_budget_memory_pool_k` | `18` | candidate pool size — now also widens the retriever's per-source fan-out so the pool genuinely honours this many (also the prefetch pool) |
 | `context_budget_{memory,cluster,concept}_floor` | `1` / `0` / `0` | guaranteed-minimum items |
-| `context_budget_{memory,cluster,concept}_cap` | `8` / `3` / `3` | hard-maximum relevance items (excludes pinned identity concepts) |
+| `context_budget_{memory,cluster,concept}_cap` | `8` / `3` / `3` | hard-maximum relevance items (excludes pinned core-lane concepts) |
 | `context_budget_{memory,cluster,concept}_weight` | `1.0` / `0.9` / `1.1` | relevance multiplier |
 | `context_budget_{memory,cluster,concept}_min_relevance` | `0.0` / `0.30` / `0.30` | turn-relevance floor |
 | `context_budget_core_cap` | `2` | max pinned always-on core concepts across kinds/subjects (`0` disables the lane) |

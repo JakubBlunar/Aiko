@@ -1594,25 +1594,33 @@ class InnerLifePart1Mixin:
             return "", {"surfaced": [], "reason": "no_eligible"}
         pinned = pinned_ids or set()
         name = self.user_display_name
-        groups: dict[str, list[str]] = {"user": [], "relationship": [], "aiko": []}
+        # Group by (subject, family) so value concepts (the normative *why*,
+        # L10) render in a distinct voice from identity/trait concepts (the
+        # *what*) instead of all sharing the "things you've come to
+        # understand" header.
+        groups: dict[tuple[str, str], list[str]] = {}
         surfaced_trace: list[dict] = []
         for c in concepts:
             label = (getattr(c, "label", "") or "").strip()
             if not label:
                 continue
             subject = getattr(c, "subject", None) or "user"
-            if subject not in groups:
+            if subject not in ("user", "relationship", "aiko"):
                 subject = "user"
+            kind = getattr(c, "kind", None)
+            family = "value" if kind == "value" else "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
             support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
             grounding = self._concept_grounding_phrase(support)
-            groups[subject].append(f"- {hedge} {label}{grounding}")
+            groups.setdefault((subject, family), []).append(
+                f"- {hedge} {label}{grounding}"
+            )
             surfaced_trace.append({
                 "concept_id": int(getattr(c, "concept_id", 0)),
                 "label": label,
                 "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
                 "plasticity": round(float(getattr(c, "plasticity", 0.0)), 4),
-                "kind": getattr(c, "kind", None),
+                "kind": kind,
                 "subject": getattr(c, "subject", None),
                 "pinned": int(getattr(c, "concept_id", 0)) in pinned,
                 "hedge": hedge,
@@ -1621,18 +1629,53 @@ class InnerLifePart1Mixin:
             })
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
-            lines = groups[subject]
-            if not lines:
-                continue
-            sections.append(
-                self._concept_subject_header(subject, name) + "\n"
-                + "\n".join(lines)
-            )
+            for family in ("trait", "value"):
+                lines = groups.get((subject, family))
+                if not lines:
+                    continue
+                sections.append(
+                    self._concept_group_header(subject, family, name) + "\n"
+                    + "\n".join(lines)
+                )
         if not sections:
             return "", {"surfaced": [], "reason": "no_eligible"}
         return "\n\n".join(sections), {
             "surfaced": surfaced_trace, "reason": "surfaced",
         }
+
+    @staticmethod
+    def _concept_group_header(subject: str, family: str, name: str) -> str:
+        """Intro line for a concept group, dispatched on ``family`` (``value``
+        vs everything else) then ``subject``. Values read as principles that
+        steer behaviour; traits/identity keep the "impressions" framing."""
+        if family == "value":
+            return InnerLifePart1Mixin._concept_value_header(subject, name)
+        return InnerLifePart1Mixin._concept_subject_header(subject, name)
+
+    @staticmethod
+    def _concept_value_header(subject: str, name: str) -> str:
+        """Per-subject intro for *value* concepts (L10) — the principles under
+        the choices. ``aiko`` reads as her own values (what lets her hold a
+        gentle stance instead of just agreeing); ``relationship`` as shared
+        values; everything else as the user's values."""
+        if subject == "aiko":
+            return (
+                "What you've come to value — your own principles (hold them "
+                "lightly, but let them steer how you show up; you can hold a "
+                "gentle stance instead of just agreeing, and you can be wrong "
+                "about yourself too):"
+            )
+        if subject == "relationship":
+            return (
+                f"What you've come to see you and {name} both value over time "
+                "(shared principles you've noticed — hold lightly; let them "
+                f"colour how you are with {name}, not as facts):"
+            )
+        return (
+            f"What you've come to believe {name} values — the principles under "
+            "their choices (hold these lightly; they're impressions, not "
+            "facts — offer them gently and stay open to being wrong):"
+        )
 
     @staticmethod
     def _concept_subject_header(subject: str, name: str) -> str:

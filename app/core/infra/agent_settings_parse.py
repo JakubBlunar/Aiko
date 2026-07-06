@@ -643,7 +643,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             self_image_interest_seed_enabled=bool(
                 agent_raw.get("self_image_interest_seed_enabled", True),
             ),
-            self_image_max_tokens=max(120, int(agent_raw.get("self_image_max_tokens", 320))),
+            self_image_max_tokens=max(120, int(agent_raw.get("self_image_max_tokens", 480))),
             self_image_concept_sourced_enabled=bool(
                 agent_raw.get("self_image_concept_sourced_enabled", True),
             ),
@@ -658,6 +658,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                         agent_raw.get("self_image_min_concept_confidence", 0.6)
                     ),
                 ),
+            ),
+            self_image_max_self=max(
+                2, int(agent_raw.get("self_image_max_self", 14)),
             ),
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),

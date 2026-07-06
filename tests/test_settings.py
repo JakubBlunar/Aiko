@@ -1183,6 +1183,22 @@ class SelfImageInterestSeedSettingsTests(unittest.TestCase):
             result.agent.self_image_min_concept_confidence, 1.0,
         )
 
+    def test_self_image_sizing_defaults(self) -> None:
+        # L10: richer self-image -> larger default output + more source
+        # concepts feeding the composition.
+        result = load_settings(config_path=self._write_config())
+        self.assertEqual(result.agent.self_image_max_tokens, 480)
+        self.assertEqual(result.agent.self_image_max_self, 14)
+
+    def test_self_image_sizing_override_and_clamp(self) -> None:
+        path = self._write_config(agent_extra={
+            "self_image_max_tokens": 100,  # below the 120 floor -> clamped up
+            "self_image_max_self": 1,      # below the 2 floor -> clamped up
+        })
+        result = load_settings(config_path=path)
+        self.assertEqual(result.agent.self_image_max_tokens, 120)
+        self.assertEqual(result.agent.self_image_max_self, 2)
+
 
 class CuriosityClusterAnchorSettingsTests(unittest.TestCase):
     """K65c: curiosity-worker cluster-anchor agent knobs default/round-trip/clamp."""

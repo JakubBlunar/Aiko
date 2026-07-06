@@ -93,13 +93,21 @@ class ProposerContext:
 @dataclass(frozen=True, slots=True)
 class ProposerSpec:
     """Registry entry binding a (kind, subject) to its proposer + the
-    batch population the worker must select for it."""
+    batch population the worker must select for it.
+
+    ``sig_key`` namespaces this proposer's dirty-tracking signature in
+    ``kv_meta`` so two proposers over the *same* population (e.g. identity
+    and value both mining topic clusters) don't clobber each other's
+    "which clusters have I already synthesised?" state. Empty => the worker
+    falls back to the legacy per-population key (kept for identity so its
+    existing signature survives an upgrade)."""
 
     kind: str
     subject: str
     evidence_model: str
     population: str  # "clusters" | "aiko_memories"
     propose: Callable[..., list[CandidateProposal]]
+    sig_key: str = ""
 
 
 # ── helpers ─────────────────────────────────────────────────────────────

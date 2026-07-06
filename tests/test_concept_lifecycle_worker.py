@@ -19,6 +19,7 @@ from app.core.concepts.concept_lifecycle import (
     accrual_alpha,
     next_confidence,
     set_evidence_gate,
+    value_evidence_gate,
 )
 from app.core.concepts.concept_lifecycle_worker import ConceptLifecycleWorker
 from app.core.concepts.concept_event_store import ConceptEventStore
@@ -699,6 +700,75 @@ class GateUnitTests(unittest.TestCase):
         self.assertFalse(
             set_evidence_gate(distinct_source_count=2, age_days=3, confidence=0.5, **kw)
         )
+
+    def test_value_evidence_gate_is_stricter_than_set(self) -> None:
+        # Thresholds that pass the plain ``set`` gate (identity's world):
+        kw = dict(min_sources=2, min_age_days=0.5, min_confidence=0.6)
+        # Value floors them to >=3 sources / >=1.0 day / >=0.72 confidence.
+        self.assertTrue(
+            set_evidence_gate(
+                distinct_source_count=2, age_days=0.5, confidence=0.6, **kw
+            )
+        )
+        self.assertFalse(  # too few sources for a value
+            value_evidence_gate(
+                distinct_source_count=2, age_days=3.0, confidence=0.9, **kw
+            )
+        )
+        self.assertFalse(  # too young for a value
+            value_evidence_gate(
+                distinct_source_count=3, age_days=0.5, confidence=0.9, **kw
+            )
+        )
+        self.assertFalse(  # confidence below the value bar
+            value_evidence_gate(
+                distinct_source_count=3, age_days=3.0, confidence=0.65, **kw
+            )
+        )
+        self.assertTrue(  # clears every value floor
+            value_evidence_gate(
+                distinct_source_count=3, age_days=3.0, confidence=0.75, **kw
+            )
+        )
+
+    def test_value_gate_honours_higher_caller_thresholds(self) -> None:
+        # The caller's bar wins when it's stricter than the value floor
+        # (e.g. the L21 young-graph tightening).
+        self.assertFalse(
+            value_evidence_gate(
+                distinct_source_count=3, age_days=3.0, confidence=0.75,
+                min_sources=4, min_age_days=1.0, min_confidence=0.72,
+            )
+        )
+
+
+class ValueKindWorkerTests(unittest.TestCase):
+    """L10: a value concept uses the stricter registry gate + low plasticity
+    without any worker-side special casing."""
+
+    def test_value_does_not_promote_at_identity_thresholds(self) -> None:
+        h = _harness()
+        # 2 distinct sources + 0.7 confidence would promote an identity
+        # candidate, but the value gate needs >=3 sources.
+        c = _add(
+            h.store, kind="value", distinct_source_count=2, confidence=0.7,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+
+    def test_value_promotes_once_value_bar_clears(self) -> None:
+        h = _harness()
+        c = _add(
+            h.store, kind="value", distinct_source_count=3, confidence=0.75,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_value_stamps_low_plasticity_on_first_eval(self) -> None:
+        h = _harness()
+        c = _add(h.store, kind="value", plasticity=0.9)
+        h.worker.run()
+        self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.2)
 
 
 class YoungGraphGateTests(unittest.TestCase):

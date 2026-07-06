@@ -331,6 +331,9 @@ class SpeakingWorkersInitMixin:
                             0.6,
                         )
                     ),
+                    max_self_memories=int(
+                        getattr(settings.agent, "self_image_max_self", 14)
+                    ),
                 )
             except Exception:
                 log.warning("SelfImageWorker init failed", exc_info=True)
