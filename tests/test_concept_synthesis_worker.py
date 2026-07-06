@@ -65,7 +65,7 @@ class TopicGraphStub:
 class MemStub:
     def __init__(
         self, mid: int, content: str, kind: str, salience: float,
-        metadata=None, embedding=None, created_at="",
+        metadata=None, embedding=None, created_at="", event_time=None,
     ):
         self.id = mid
         self.content = content
@@ -74,6 +74,9 @@ class MemStub:
         self.metadata = metadata or {}
         self.embedding = embedding
         self.created_at = created_at
+        # L8 narrative pass orders member memories by ``event_time`` (falling
+        # back to ``created_at``).
+        self.event_time = event_time
 
 
 class MemoryStoreStub:
@@ -94,6 +97,18 @@ class MemoryStoreStub:
 
     def get(self, mid: int):
         return self._by_id.get(int(mid))
+
+    def get_many(self, memory_ids):
+        out = {}
+        for raw in memory_ids:
+            try:
+                mid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            mem = self._by_id.get(mid)
+            if mem is not None:
+                out[mid] = mem
+        return out
 
     def iter_by_kinds(self, kinds):
         ks = set(kinds)
@@ -147,6 +162,13 @@ def _mem_settings(
         concept_synthesis_dirty_size_delta=delta,
         concept_min_clusters=min_clusters,
         concept_min_history_days=min_history_days,
+        # L8 narrative caps mirror the cluster cap so the narrative pass drains
+        # in one run (matching the identity/value passes) instead of across
+        # several -- otherwise the "clean 2nd run" incremental tests would see
+        # leftover-dirty narrative clusters still firing.
+        concept_synthesis_narrative_min_chain=3,
+        concept_synthesis_max_narrative_clusters_per_run=cap_clusters,
+        concept_synthesis_max_narrative_memories=cap_aiko,
     )
 
 

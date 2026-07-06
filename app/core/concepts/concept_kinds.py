@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 
 from app.core.concepts.concept_lifecycle import (
     affective_evidence_gate,
+    narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
     value_evidence_gate,
@@ -281,6 +282,34 @@ register_kind(
         # turn. So no ``surfacing_targets`` (they route through the T3
         # relevant_context relevance path for both subjects) and they do NOT
         # join the always-on core lane.
+    )
+)
+
+
+# ── L8: narrative (arc) ───────────────────────────────────────────────
+# A referenceable causal arc: an ordered chain of episodic memories collapsed
+# into one named story ("The Great 13900KS Investigation"; for aiko, "the
+# stretch where I learned to hold a gentle stance"). The first *ordered*
+# (``sequence``) evidence kind -- the chain order lives on ``concept_edges.ordinal``
+# (already in the schema). Subject-parameterized (user + aiko) exactly like
+# affective; the per-row ``subject`` varies. Distinct from a rolling recency
+# digest (that's the conversation summary's job, not a concept) and from the
+# deferred L29 meta-narrative (an arc over other *concepts*).
+register_kind(
+    ConceptKind(
+        name="narrative",
+        subject="user",
+        evidence_model="sequence",
+        # L16: a *closed* story is fairly stable once told -> low-ish plasticity
+        # (same band as identity), so a settled arc resists churn but can still
+        # decay if never recalled.
+        plasticity_default=0.3,
+        # L3: the sequence gate -- >= 3 chain steps (a story, not an anecdote),
+        # a non-instant age, a moderate confidence bar.
+        promotion_gate=narrative_evidence_gate,
+        # L24 / L27: arcs are recalled when the live turn touches them, not
+        # pinned every turn -> no ``surfacing_targets`` (relevance-only for both
+        # subjects) and they do NOT join the always-on core lane.
     )
 )
 

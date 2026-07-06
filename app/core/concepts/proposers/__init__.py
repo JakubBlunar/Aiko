@@ -34,6 +34,12 @@ self-concept can be grounded by a theme, a memory, or a mix.
   ``shared_moment`` memories grouped by single-link cosine into recurring
   clusters, each named as a warm relationship ritual. Evidence is the
   constituent moments (``memory`` edges).
+- ``narrative_user`` / ``narrative_aiko`` -- *narrative* (a closed causal arc;
+  L8). The first ``sequence``-evidence proposers: they mine the
+  ``"narrative"`` population -- each subject-dominant cluster's member memories
+  loaded in temporal order -- and name any that form a beginning->development
+  ->resolution story. Evidence is the ordered chain (``memory`` edges carrying
+  ordinals). Only the voice differs (user third-person / aiko first-person).
 """
 from __future__ import annotations
 
@@ -42,6 +48,8 @@ from app.core.concepts.proposers import (
     affective_user,
     identity_aiko,
     identity_user,
+    narrative_aiko,
+    narrative_user,
     relationship_ritual,
     value_aiko,
     value_user,
@@ -52,12 +60,14 @@ from app.core.concepts.proposers.base import (
     CandidateProposal,
     ExistingConcept,
     FocusCluster,
+    NarrativeCandidate,
     ProposerContext,
     ProposerSpec,
     clamp01,
     coerce_id_list,
     format_existing,
     propose_aiko_hybrid,
+    propose_narrative,
     resolve_reinforces,
     snippet,
 )
@@ -65,6 +75,8 @@ from app.core.concepts.proposers.affective_aiko import propose_affective_aiko
 from app.core.concepts.proposers.affective_user import propose_affective_user
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
+from app.core.concepts.proposers.narrative_aiko import propose_narrative_aiko
+from app.core.concepts.proposers.narrative_user import propose_narrative_user
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
 )
@@ -79,6 +91,8 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     affective_user.SPEC,
     affective_aiko.SPEC,
     relationship_ritual.SPEC,
+    narrative_user.SPEC,
+    narrative_aiko.SPEC,
 )
 
 
@@ -89,6 +103,7 @@ __all__ = [
     "CandidateProposal",
     "ExistingConcept",
     "FocusCluster",
+    "NarrativeCandidate",
     "ProposerContext",
     "ProposerSpec",
     "clamp01",
@@ -99,6 +114,9 @@ __all__ = [
     "propose_aiko_hybrid",
     "propose_identity_aiko",
     "propose_identity_user",
+    "propose_narrative",
+    "propose_narrative_aiko",
+    "propose_narrative_user",
     "propose_relationship_ritual",
     "propose_value_aiko",
     "propose_value_user",

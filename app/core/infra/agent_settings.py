@@ -494,6 +494,13 @@ class AgentSettings:
     # skips that one pass; the rest of synthesis is unaffected. Thresholds
     # live under MemorySettings (``concept_synthesis_ritual_*``).
     ritual_synthesis_enabled: bool = True
+    # L8 narrative-arc synthesis. When enabled (and the two switches above are
+    # on), the synthesis worker's narrative pass mines each subject's
+    # topic clusters for closed causal arcs (the first ordered/``sequence``
+    # evidence kind). Off just skips that one pass. Thresholds live under
+    # MemorySettings (``concept_synthesis_narrative_*`` /
+    # ``concept_synthesis_max_narrative_*``).
+    narrative_synthesis_enabled: bool = True
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

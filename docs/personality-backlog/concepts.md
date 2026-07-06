@@ -107,8 +107,10 @@ Future kinds (each a deferred entry below, all reusing L1-L6):
 
 - **Relationship** (relationship, recurring-pattern) — "Friday Debugging
   Evenings", "Cookie Diplomacy", "Late-night Philosophy". See L7.
-- **Narrative** (user, memory-chain) — "The Great 13900KS Investigation". See
-  L8.
+- **Narrative** (user **or** aiko, memory-chain) — "The Great 13900KS
+  Investigation"; or Aiko's own "the stretch where I learned to hold a gentle
+  stance". The first ordered/`sequence`-evidence kind. See L8 (SHIPPED). The
+  "both of us" / meta variants are spun out to L29.
 - **Belief / identity-confidence** (user, cluster-set) — identity concepts as
   living, disprovable beliefs with confidence + supporting evidence. See L9.
 - **Value** (user **or** aiko, cluster-set) — the normative *why* behind
@@ -645,28 +647,66 @@ pinned every turn.
 
 ---
 
-## L8. Narrative concepts (deferred)
+## L8. Narrative concepts (SHIPPED — both subjects)
 
-**Motivation.** Humans think in stories. A causal chain of episodic memories —
-bought GPU -> installed GPU -> driver issue -> found CPU instability -> fixed
-Core 4 — collapses into one referenceable arc: "The Great 13900KS
-Investigation". Once named, the arc itself becomes something Aiko can call back
-to.
+**Kind.** `narrative`, subject `user` (default) and `aiko`, evidence model
+**`sequence`** — the first ordered-evidence kind. A concept's evidence is an
+*ordered chain of specific memory ids* (a temporal/causal arc), stored on
+`concept_edges.ordinal` (0..n) rather than as an unordered set.
 
-**Key files.** Would build on
-[`long_arc_callback.py`](../../app/core/conversation/long_arc_callback.py) and
-the `NarrativeWeaver`
-([`prepared_nudge.py`](../../app/core/proactive/prepared_nudge.py)).
+**Status: SHIPPED.** Humans think in stories. A causal chain of episodic
+memories — bought GPU -> installed GPU -> driver issue -> found CPU instability
+-> fixed Core 4 — now collapses into one referenceable arc ("The Great 13900KS
+Investigation"). Runs for **both subjects**: user arcs (third-person, over his
+topic clusters) and Aiko's own arcs (first-person, over her aiko-dominant
+self-themes — "the stretch where I learned to hold a gentle stance"). Once
+named, the arc becomes shared history Aiko can call back to.
 
-**Sketched approach.** Structurally different from identity/relationship
-concepts: evidence is an **ordered sequence of specific memory ids** (a
-temporal + causal chain), not a set of cluster links, so it needs its own
-evidence model and a **chain-detection** proposer (temporal + causal adjacency
-over related memories) rather than the cross-cluster proposer. The candidate ->
-active gate becomes "is this chain coherent and closed?" instead of "does it
-span >= 2 clusters?". Deferred — most divergent from the L1 data model.
+**Ordinal wiring (the new plumbing).** The `sequence` model reuses the existing
+`concept_edges.ordinal` column: `_add_evidence_edges` now takes an
+`evidence_model` and, for `sequence`, stamps each edge's ordinal by its position
+in the (temporally ordered) evidence list, so `evidence_of` returns the chain in
+order. `set` kinds are unchanged (ordinal stays `None`). `_persist` passes the
+proposal's model; `_reinforce` passes the existing concept's model.
 
-**Effort.** Large.
+**Synthesis.** A new `"narrative"` population + `_run_narrative_pass(subject)` in
+[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
+for each subject-dominant topic cluster it loads the member memories via
+`get_many` and orders them by `event_time` (falling back to `created_at`),
+offering up to `max_narrative_clusters_per_run` clusters (per subject) as
+[`NarrativeCandidate`](../../app/core/concepts/proposers/base.py)s (each capped
+at `max_narrative_memories` steps, min `narrative_min_chain` to count as a
+story). The shared [`propose_narrative`](../../app/core/concepts/proposers/base.py)
+body (used by [`narrative_user`](../../app/core/concepts/proposers/narrative_user.py)
+/ [`narrative_aiko`](../../app/core/concepts/proposers/narrative_aiko.py)) names
+any **closed** arc, re-derives the chain order from the candidate (not the LLM's
+id order) so ordinals are correct, and emits `sequence` evidence — or reinforces
+a known arc by id. Open (`closed: false`) or too-short chains are dropped. Per-
+subject size/label dirty-tracking under each proposer's `sig_key`; the whole
+pass is gated by `agent.narrative_synthesis_enabled`.
+
+**Registry + gate.** `narrative` is registered (`sequence` model, low-ish
+plasticity `0.3` — a settled story resists churn, same band as identity;
+`core_always_on=False`, **no** `surfacing_targets`) with
+`narrative_evidence_gate` (chain floors: `>= 3` ordered steps, a non-instant
+age, a `0.6` confidence bar — a two-beat anecdote or a single-session burst
+can't promote).
+
+**Surfacing.** Relevance-only (like `subject=aiko` / `affective` / `ritual`
+concepts): an arc surfaces through the T3 `relevant_context` path when the turn
+touches it, under `_concept_narrative_header` framing (first-person for Aiko's
+own arcs), never pinned every turn.
+
+**Explicitly *not* a recency digest.** A narrative is a *closed* arc, not a
+rolling "what have we been up to lately" summary — that never-closing recency
+question is served by the conversation summary + recent-message context, and is
+recorded as an L29 non-goal below.
+
+**Effort.** Shipped on top of L1-L5 / L10 / L11 / L13. New settings:
+`agent.narrative_synthesis_enabled`, `concept_synthesis_narrative_min_chain`,
+`concept_synthesis_max_narrative_clusters_per_run`,
+`concept_synthesis_max_narrative_memories`. The `sequence` evidence model is now
+live, which unlocks L14 (aspiration/trajectory — its open-ended sibling).
 
 ---
 
@@ -1000,8 +1040,15 @@ gets flustered by.
 
 ## L14. Aspiration / trajectory concepts (deferred)
 
-**Kind.** subject `user` **or** `aiko` (L11), evidence model `memory_chain`
-(open-ended, directional).
+**Kind.** subject `user` **or** `aiko` (L11), evidence model `sequence`
+(open-ended, directional — the *same* ordered-evidence machinery L8 shipped,
+without the "closed" gate).
+
+**Now unblocked by L8.** L8 made the `sequence` evidence model live (ordered
+memory-id chains on `concept_edges.ordinal`, ordered by `event_time`). Aspiration
+is its open-ended sibling: reuse the ordinal wiring + temporal ordering, drop the
+"closed arc" requirement, and promote on a *consistent direction* over time
+instead of a resolution. Most of L14's plumbing now exists.
 
 **Motivation.** Where the user is *heading*, as a direction rather than a fixed
 trait. "Building toward a fully self-hosted life", "moving from consumer to
@@ -1009,9 +1056,9 @@ maker", "wants Aiko to feel truly alive". Trajectory concepts let Aiko track
 progress and momentum, not just state — the difference between "he likes
 self-hosting" and "he's on a journey to own his whole stack".
 
-**Key files.** Registry entry (L1) with an ordered `memory_chain` evidence
-model like narrative but *open-ended* (no "closed" gate); relates to Aiko's own
-`goals` (K1) but is about the *user's* direction; can feed `follow_up_worker` /
+**Key files.** Registry entry (L1) reusing the `sequence` evidence model L8
+introduced, but *open-ended* (no "closed" gate); relates to Aiko's own `goals`
+(K1) but is about the *user's* direction; can feed `follow_up_worker` /
 `upcoming_horizon` for "how's the self-hosting journey going?".
 
 **Sketched approach.** Order evidence memories by `event_time` to infer a
@@ -1733,3 +1780,43 @@ aspiration L14).
 blend-first (concepts as an additional input) per consumer?
 
 **Effort.** Medium, incremental (one small ticket per consumer).
+
+---
+
+## L29. Relationship & meta narratives (deferred)
+
+**Status: deferred — spun out of L8.** L8 shipped narrative arcs for `user` and
+`aiko` (arcs over each subject's *own* memories). This entry tracks the two
+"both of us" / higher-order variants that L8 deliberately left out, plus the
+recency non-goal so it isn't re-litigated.
+
+**(a) Episodic shared arc** (`subject="relationship"`). A *closed* joint project
+compressed into one named arc — "the month we rebuilt the memory system", "our
+push to get voice mode working". Evidence is `shared_moment` (+ joint event)
+memories ordered in time. This is the **same `sequence` machinery L8 already
+ships**, just a third subject with the shared-moment stream as its source, gated
+to closed + `narrative_min_chain` + aged so it stays small. Cheap follow-up now
+that L8 has landed: a `_run_narrative_pass("relationship")` variant over
+`iter_by_kind("shared_moment")` + a `narrative_relationship` proposer, rendered
+under the (already-present) `relationship` branch of `_concept_narrative_header`.
+
+**(b) Meta-narrative over concepts.** The genuinely hard one: an arc whose nodes
+are other **concepts** rather than memories (`evidence_model="meta"` or a
+`sequence` over `concept` nodes via `relation="references"`) — "how we went from
+strangers to a comfortable rhythm" (over relationship + `ritual` concepts), "his
+value X emerged, then reshaped into Y". Needs concept-node evidence + a
+meta-proposer that reads [`ConceptView`](../../app/core/concepts/concept_view.py)
+instead of the memory store, and a healthy population of active concepts
+(L7/L10/L13) to draw on. Shares the `sequence` plumbing but not the source.
+
+**Explicit non-goal (design decision).** A rolling "what have we been up to
+lately / in the last two weeks" digest is **not** a concept — it never closes,
+would churn/decay every turn, and would bloat the store. That recency question
+is already served by the rolling conversation summary (`ThreadResummaryWorker` /
+`get_latest_summary`), recent-message context, and the `shared_moment` "Together"
+rows. Recorded here so the idea isn't re-proposed as a concept.
+
+**Depends on.** L8 (shipped) for (a); L8 + a healthy L7/L10/L13 population for
+(b). Cross-referenced from L8 and L20 (abstraction hierarchy).
+
+**Effort.** Small for (a); large for (b).

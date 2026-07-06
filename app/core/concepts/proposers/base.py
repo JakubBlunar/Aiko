@@ -76,6 +76,24 @@ class FocusCluster:
 
 
 @dataclass(slots=True)
+class NarrativeCandidate:
+    """A subject-dominant topic cluster whose member memories have been
+    loaded and put in **temporal order** (by ``event_time``, falling back to
+    ``created_at``), offered to the narrative proposer (L8) as a candidate
+    causal arc.
+
+    ``rep`` is the stable cluster representative id (used by the worker for
+    dirty-tracking); ``memories`` is the ordered chain the proposer renders
+    and, if it names a *closed* arc, cites as ordered ``sequence`` evidence.
+    ``subject`` (``user`` / ``aiko``) selects third- vs first-person framing."""
+
+    rep: int
+    label: str
+    subject: str
+    memories: list[Any]
+
+
+@dataclass(slots=True)
 class ProposerContext:
     """Shared plumbing handed to every proposer. ``call_llm`` is the
     worker's bound LLM helper ``(system, user) -> list[dict]`` (already
@@ -105,7 +123,8 @@ class ProposerSpec:
     kind: str
     subject: str
     evidence_model: str
-    population: str  # "clusters" | "aiko_memories" | "affect" | "shared_moments"
+    # "clusters" | "aiko_memories" | "affect" | "shared_moments" | "narrative"
+    population: str
     propose: Callable[..., list[CandidateProposal]]
     sig_key: str = ""
 
@@ -321,18 +340,156 @@ def propose_aiko_hybrid(
     return proposals
 
 
+# Cap on how many steps of one arc we show the model -- long arcs stay bounded
+# in the prompt; the middle is elided so the beginning + end (the parts that
+# make it a *closed* story) always survive.
+_MAX_STEPS_SHOWN = 12
+
+
+def _arc_block(index: int, cand: NarrativeCandidate) -> str:
+    """Render one candidate arc as a numbered, temporally-ordered block."""
+    mems = cand.memories
+    lines: list[str] = []
+    if len(mems) <= _MAX_STEPS_SHOWN:
+        shown = list(enumerate(mems))
+    else:
+        head = _MAX_STEPS_SHOWN // 2
+        tail = _MAX_STEPS_SHOWN - head
+        shown = list(enumerate(mems[:head]))
+        shown.append((-1, None))
+        shown += list(zip(range(len(mems) - tail, len(mems)), mems[-tail:]))
+    for pos, mem in shown:
+        if mem is None:
+            lines.append(
+                f"  ... ({len(mems) - _MAX_STEPS_SHOWN} step(s) elided) ..."
+            )
+            continue
+        mid = int(mem.id)
+        lines.append(f"  {pos + 1}. [{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+    return f'ARC [{index}] -- theme "{cand.label}":\n' + "\n".join(lines)
+
+
+def propose_narrative(
+    ctx: ProposerContext,
+    *,
+    candidates: Sequence[NarrativeCandidate],
+    subject: str,
+    system: str,
+    first_person: bool,
+    min_chain: int = 3,
+    existing: Sequence[ExistingConcept] = (),
+) -> list[CandidateProposal]:
+    """Shared body for the L8 narrative proposers (user + aiko).
+
+    Each :class:`NarrativeCandidate` is a subject-dominant cluster whose
+    member memories are already in temporal order. The model names any
+    candidate that forms a genuine **closed causal arc** (a beginning, a
+    development, and a resolution) and cites the member ids that make up the
+    chain; ``first_person`` only shapes the prompt voice (aiko's arcs are
+    about herself). We re-derive the chain order from the candidate's own
+    ordering (not the LLM's id order) and emit ``sequence`` evidence so the
+    worker stamps ordinals 0..n. An *open* arc (``closed`` false) or a chain
+    shorter than ``min_chain`` is dropped; reinforcement of a known arc has
+    neither requirement (it just adds fresh support to an existing story)."""
+    if not candidates:
+        return []
+    by_index = {i: c for i, c in enumerate(candidates)}
+    existing_ids = {int(e.id) for e in existing}
+
+    voice = (
+        f"about {ctx.assistant_name} herself (first person -- 'I ...', 'the "
+        "stretch where I ...')"
+        if first_person
+        else f"about {ctx.user_name} (third person)"
+    )
+    user = (
+        "CANDIDATE ARCS (each theme's memories in time order):\n"
+        + "\n\n".join(_arc_block(i, c) for i, c in by_index.items())
+        + "\n\nALREADY-KNOWN ARCS:\n"
+        + format_existing(existing)
+        + f"\n\nName NEW narrative arcs {voice} -- one per genuinely closed "
+        "arc -- or reinforce a known one by id."
+    )
+
+    raw = ctx.call_llm(system, user)
+    proposals: list[CandidateProposal] = []
+    seen_new: set[int] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ai = int(item.get("arc_index"))
+        except (TypeError, ValueError):
+            continue
+        cand = by_index.get(ai)
+        if cand is None:
+            continue
+        pos_of = {int(m.id): idx for idx, m in enumerate(cand.memories)}
+        cited = [
+            i for i in coerce_id_list(item.get("evidence_memory_ids"))
+            if i in pos_of
+        ]
+        # Chain order is the candidate's temporal order, not the LLM's -- so
+        # ordinals are correct even if the model lists ids out of sequence.
+        ordered_ids = sorted(dict.fromkeys(cited), key=lambda i: pos_of[i])
+        if not ordered_ids:
+            continue
+        evidence = [("memory", str(i)) for i in ordered_ids]
+        rationale = str(item.get("rationale") or "").strip()
+
+        reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
+        if reinforces is not None:
+            proposals.append(
+                CandidateProposal(
+                    label="",
+                    rationale=rationale,
+                    confidence=0.0,
+                    evidence=evidence,
+                    kind="narrative",
+                    subject=subject,
+                    evidence_model="sequence",
+                    reinforces_id=reinforces,
+                )
+            )
+            continue
+
+        # A NEW arc must be closed (resolved) and long enough to be a story.
+        if ai in seen_new:
+            continue
+        if not bool(item.get("closed")):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label or len(ordered_ids) < max(int(min_chain), 1):
+            continue
+        seen_new.add(ai)
+        proposals.append(
+            CandidateProposal(
+                label=label,
+                rationale=rationale,
+                confidence=clamp01(item.get("confidence")),
+                evidence=evidence,
+                kind="narrative",
+                subject=subject,
+                evidence_model="sequence",
+            )
+        )
+    return proposals
+
+
 __all__ = [
     "AIKO_SELF_KINDS",
     "MIN_SOURCES",
     "CandidateProposal",
     "ExistingConcept",
     "FocusCluster",
+    "NarrativeCandidate",
     "ProposerContext",
     "ProposerSpec",
     "clamp01",
     "coerce_id_list",
     "format_existing",
     "propose_aiko_hybrid",
+    "propose_narrative",
     "resolve_reinforces",
     "snippet",
 ]
