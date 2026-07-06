@@ -563,9 +563,9 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(result.memory.context_budget_fraction, 0.15)
         self.assertEqual(result.memory.context_budget_max_tokens, 4096)
         self.assertEqual(result.memory.context_budget_memory_cap, 8)
-        self.assertEqual(result.memory.context_budget_identity_cap, 2)
+        self.assertEqual(result.memory.context_budget_core_cap, 2)
         self.assertAlmostEqual(
-            result.memory.context_budget_identity_min_confidence, 0.75,
+            result.memory.context_budget_core_min_confidence, 0.75,
         )
         # Overrides + clamps (fraction capped at 0.8, weights floored at 0).
         path = self._write_config(
@@ -574,8 +574,8 @@ class CuriositySeedSettingsTests(unittest.TestCase):
                 "context_budget_fraction": 5.0,      # clamped to 0.8
                 "context_budget_concept_min_relevance": -1.0,  # clamped to 0
                 "context_budget_memory_cap": 3,
-                "context_budget_identity_cap": 5,
-                "context_budget_identity_min_confidence": 2.0,  # clamped to 1
+                "context_budget_core_cap": 5,
+                "context_budget_core_min_confidence": 2.0,  # clamped to 1
             },
         )
         result = load_settings(config_path=path)
@@ -585,9 +585,24 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             result.memory.context_budget_concept_min_relevance, 0.0,
         )
         self.assertEqual(result.memory.context_budget_memory_cap, 3)
-        self.assertEqual(result.memory.context_budget_identity_cap, 5)
+        self.assertEqual(result.memory.context_budget_core_cap, 5)
         self.assertAlmostEqual(
-            result.memory.context_budget_identity_min_confidence, 1.0,
+            result.memory.context_budget_core_min_confidence, 1.0,
+        )
+
+    def test_context_budget_core_lane_legacy_identity_keys(self) -> None:
+        # Pre-L27 configs used ``context_budget_identity_*``; they still parse
+        # into the renamed ``core`` lane so existing user.json keeps working.
+        path = self._write_config(
+            memory_extra={
+                "context_budget_identity_cap": 4,
+                "context_budget_identity_min_confidence": 0.6,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.context_budget_core_cap, 4)
+        self.assertAlmostEqual(
+            result.memory.context_budget_core_min_confidence, 0.6,
         )
 
     def test_overrides_round_trip(self) -> None:

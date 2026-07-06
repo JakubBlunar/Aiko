@@ -1436,16 +1436,31 @@ cache-hit reports exactly what was in the prompt.
 
 ## L27. Kind-aware always-on core-concept selection (generalise the identity lane)
 
-**Status: v0 shipped (identity-only), generalisation deferred.** The unified
-context budget ships an *always-on* concept lane: `build_relevant_context`
-pins up to `context_budget_identity_cap` active **`kind="identity"`** concepts
-whose confidence clears `context_budget_identity_min_confidence`, so they reach
-the brain every turn regardless of cosine to the live turn (the
-`ContextBudgetSelector` admits `pinned` candidates ahead of the relevance passes,
-exempt from the concept cap + `min_relevance`). See
-[`docs/context-budget.md`](../../docs/context-budget.md#identity-always-on-lane).
-That v0 is deliberately narrow — one kind, one flat confidence threshold. This
-entry is the generalisation.
+**Status: SHIPPED (kind-aware core lane); anti-nag cooldown deferred.** The
+always-on lane is now **registry-driven and balanced**, not identity-only.
+`build_relevant_context` calls `ConceptView.core_lane(...)`, which gathers every
+kind that opts in via `ConceptKind.core_always_on` (each gated by its own
+`core_min_confidence` bar, falling back to the global
+`context_budget_core_min_confidence`), buckets the candidates by
+`(kind, subject)`, and draws them **round-robin — strongest bucket first** — up
+to `context_budget_core_cap`. That balance keeps a prolific kind (usually
+`identity`, still the only mined kind) from crowding out value / boundary /
+relationship, and guarantees both the user-model and Aiko's self-model
+(`subject=aiko`) reach the brain. The picks are marked `pinned` (the
+`ContextBudgetSelector` admits them ahead of the relevance passes, exempt from
+the concept cap + `min_relevance`) and the `pinned` flag is recorded per-concept
+in the turn trace (MCP `get_last_concept_trace`). A new kind joins the lane with
+**one registry field** — no selector/region code change. See
+[`docs/context-budget.md`](../../docs/context-budget.md#always-on-core-lane-l27).
+
+**Remaining (deferred):** the per-concept **anti-nag cooldown** (so the same core
+concept isn't pinned on literally every turn) — held back while `identity` is the
+only live kind, since rotating a tiny identity set would just hide the self-model
+on alternating turns. The optional live **tension** (L12) / fresh **drift** (L17)
+override stays deferred with those entries. Legacy
+`context_budget_identity_cap` / `_min_confidence` config keys still parse.
+
+Original framing (retained for context):
 
 **Motivation.** Aiko's thinking and behaviour should be driven by a *balanced
 core* of high-confidence concepts across **kinds**, not just identity: who the

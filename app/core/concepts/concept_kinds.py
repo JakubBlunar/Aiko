@@ -93,6 +93,18 @@ class ConceptKind:
     # L24: authoritative per-subject routing (``subject -> target``); a
     # ``"*"`` key is the wildcard. Empty => fall back to ``surfacing_target``.
     surfacing_targets: dict[str, str] = field(default_factory=dict)
+    # L27: whether this kind participates in the *always-on core lane* — the
+    # high-confidence concepts pinned into the prompt every turn regardless
+    # of cosine to the live turn (who the user is, what they + Aiko value,
+    # how she wants to behave). Off by default: a kind opts in here so it
+    # auto-joins the balanced core selection with no selector code change.
+    core_always_on: bool = False
+    # L27: the per-kind confidence bar for the core lane. Behaviour-loaded
+    # kinds (value, boundary) should sit *higher* than tastes; this is the
+    # natural companion to the L16 ``plasticity_default`` band (sticky kinds
+    # earn a higher bar). ``None`` => fall back to the global
+    # ``context_budget_core_min_confidence`` setting.
+    core_min_confidence: float | None = None
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -142,6 +154,19 @@ def targets_of(kind: ConceptKind, subject: str | None = None) -> set[str]:
     return out
 
 
+def core_lane_kinds() -> list[ConceptKind]:
+    """Every registered kind that opts into the L27 always-on core lane.
+
+    The plug-in seam consumed by ``ConceptView.core_lane``: a new kind sets
+    ``core_always_on=True`` (plus an optional ``core_min_confidence`` bar)
+    and auto-joins the balanced core selection — no selector code change.
+    Sorted by name for deterministic bucket ordering downstream."""
+    return sorted(
+        (k for k in CONCEPT_KINDS.values() if k.core_always_on),
+        key=lambda k: k.name,
+    )
+
+
 def kinds_for_target(target: str, subject: str | None = None) -> set[str]:
     """The set of registered kind names that route to ``target`` (for the
     given ``subject`` when provided, else across all subjects).
@@ -183,6 +208,10 @@ register_kind(
             "user": "profile_block",
             "aiko": "self_image_block",
         },
+        # L27: identity is the anchor of the always-on core lane — who the
+        # user is and how Aiko tends to be, carried into every turn. Its bar
+        # falls back to the global ``context_budget_core_min_confidence``.
+        core_always_on=True,
     )
 )
 
@@ -192,6 +221,7 @@ __all__ = [
     "EVIDENCE_MODELS",
     "SUBJECTS",
     "ConceptKind",
+    "core_lane_kinds",
     "get_kind",
     "kinds_for_target",
     "register_kind",

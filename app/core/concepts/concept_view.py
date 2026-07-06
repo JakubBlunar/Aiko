@@ -109,6 +109,80 @@ class ConceptView:
             out = out[: max(0, int(limit))]
         return out
 
+    def core_lane(
+        self,
+        *,
+        limit: int,
+        default_min_confidence: float = 0.0,
+        per_kind_cap: int | None = None,
+    ) -> list["Concept"]:
+        """The L27 always-on **core lane**: up to ``limit`` high-confidence
+        concepts pinned into the prompt every turn regardless of the live
+        turn, *balanced across kinds and subjects*.
+
+        Generalises the old identity-only pin: every kind that opts in via
+        ``ConceptKind.core_always_on`` contributes, each gated by its own
+        ``core_min_confidence`` bar (falling back to
+        ``default_min_confidence``). Candidates are bucketed by
+        ``(kind, subject)`` and drawn round-robin — strongest bucket first,
+        then one from each in turn — so a prolific kind (usually identity,
+        the only one mined today) can't crowd out value / boundary /
+        relationship, and both the user-model and Aiko's self-model reach
+        the brain. ``per_kind_cap`` optionally caps how deep any single
+        bucket is drawn before the round-robin.
+
+        Turn-agnostic (no embedding); the turn-relevant fill layers on top
+        via :meth:`relevant`. Returns ``[]`` when the layer is cold/disabled
+        or no kind opts in.
+        """
+        if self._store is None or int(limit) <= 0:
+            return []
+        from app.core.concepts.concept_kinds import core_lane_kinds
+
+        kinds = core_lane_kinds()
+        if not kinds:
+            return []
+        default_bar = float(default_min_confidence)
+        # Bucket by (kind, subject); each bucket is confidence-desc because
+        # ``core`` sorts, so bucket[0] is that area's strongest concept.
+        buckets: dict[tuple[str, str], list["Concept"]] = {}
+        for kind in kinds:
+            bar = (
+                float(kind.core_min_confidence)
+                if kind.core_min_confidence is not None
+                else default_bar
+            )
+            rows = self.core(kind=kind.name, min_confidence=bar, limit=per_kind_cap)
+            for c in rows:
+                subject = str(getattr(c, "subject", "") or "user")
+                buckets.setdefault((kind.name, subject), []).append(c)
+        if not buckets:
+            return []
+
+        def _bucket_top(key: tuple[str, str]) -> float:
+            lst = buckets[key]
+            return float(getattr(lst[0], "confidence", 0.0)) if lst else 0.0
+
+        # Strongest area first at each round; name+subject breaks ties so
+        # selection is deterministic turn to turn.
+        order = sorted(buckets, key=lambda k: (-_bucket_top(k), k))
+        out: list["Concept"] = []
+        cap = int(limit)
+        rank = 0
+        while len(out) < cap:
+            progressed = False
+            for key in order:
+                lst = buckets[key]
+                if rank < len(lst):
+                    out.append(lst[rank])
+                    progressed = True
+                    if len(out) >= cap:
+                        break
+            if not progressed:
+                break
+            rank += 1
+        return out
+
     def relevant(
         self,
         embedding: "np.ndarray | None",
