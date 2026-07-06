@@ -65,6 +65,14 @@ me** — neither branches on kind names. In
   `cluster` evidence (topic reps annotated with the per-cluster affect map),
   plus — for `subject=aiko` — her affect-stamped self-memories; the affect
   *direction* lives in the concept label/rationale, not on the edges.
+- `ritual` concepts (L7, `subject=relationship`) are the same story: they carry
+  **no** `surfacing_targets`, so they surface only via the T3 `relevant_context`
+  relevance path (not the always-on core lane — a ritual should colour the turn
+  when the shared pattern is touched, not every turn). Their evidence is the
+  constituent `shared_moment` memories (`memory` edges) grouped by single-link
+  cosine ([`ritual_grouping`](../app/core/concepts/ritual_grouping.py)); the
+  recurrence lives in the grouping, not on the edges, and rendering routes
+  `family="ritual"` through `_concept_ritual_header`.
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —

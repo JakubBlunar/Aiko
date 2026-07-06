@@ -228,6 +228,43 @@ def affective_evidence_gate(
     )
 
 
+# Built-in bars for a *ritual* concept (L7). A relationship ritual ("Friday
+# debugging evenings") is only real once it has *recurred* -- so it needs
+# several distinct shared moments as evidence and a non-instant age (a couple
+# of moments in one sitting isn't a ritual yet), but a moderate confidence
+# bar, since these are warm impressions the two share, not hard-won values.
+_RITUAL_MIN_SOURCES = 3
+_RITUAL_MIN_AGE_DAYS = 1.0
+_RITUAL_MIN_CONFIDENCE = 0.65
+
+
+def ritual_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``ritual`` concepts (L7).
+
+    Same shape as :func:`set_evidence_gate` with recurrence-flavoured floors:
+    at least three distinct shared moments (a pattern, not a one-off), a
+    non-instant calendar age so a burst in a single session can't promote,
+    and a moderate confidence bar. The caller's thresholds still apply when
+    they are *higher* (e.g. the L21 young-graph bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _RITUAL_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _RITUAL_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _RITUAL_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -238,4 +275,5 @@ __all__ = [
     "set_evidence_gate",
     "value_evidence_gate",
     "affective_evidence_gate",
+    "ritual_evidence_gate",
 ]

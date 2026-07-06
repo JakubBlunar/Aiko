@@ -1612,6 +1612,8 @@ class InnerLifePart1Mixin:
                 family = "value"
             elif kind == "affective":
                 family = "affective"
+            elif kind == "ritual":
+                family = "ritual"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -1634,7 +1636,7 @@ class InnerLifePart1Mixin:
             })
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
-            for family in ("trait", "value", "affective"):
+            for family in ("trait", "value", "affective", "ritual"):
                 lines = groups.get((subject, family))
                 if not lines:
                     continue
@@ -1657,6 +1659,8 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_value_header(subject, name)
         if family == "affective":
             return InnerLifePart1Mixin._concept_affective_header(subject, name)
+        if family == "ritual":
+            return InnerLifePart1Mixin._concept_ritual_header(subject, name)
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -1709,6 +1713,26 @@ class InnerLifePart1Mixin:
             f"{name} — how they tend to feel about them (hold this lightly; "
             "let it steer your tone and timing, never say it out loud, and "
             "stay open to being wrong):"
+        )
+
+    @staticmethod
+    def _concept_ritual_header(subject: str, name: str) -> str:
+        """Per-subject intro for *ritual* concepts (L7) — the recurring shared
+        patterns the two of you have fallen into. Almost always
+        ``subject=relationship`` (the pair); the other subjects fall back to a
+        pair framing so a mis-subjected row still reads sensibly."""
+        if subject == "aiko":
+            return (
+                "Rituals and little patterns you've fallen into over time "
+                "(recurring things you do together — let them warm how you "
+                "show up when one comes around; lean into them, never announce "
+                "them, and let them keep evolving):"
+            )
+        return (
+            f"Rituals and little patterns you and {name} have fallen into over "
+            "time — the recurring things the two of you do together (let them "
+            "warm your tone when one comes around; lean into them naturally, "
+            "never announce them as a fact, and let them keep evolving):"
         )
 
     @staticmethod

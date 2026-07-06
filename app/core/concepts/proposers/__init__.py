@@ -29,6 +29,11 @@ self-concept can be grounded by a theme, a memory, or a mix.
   per-cluster affect map), plus -- for aiko -- her affect-stamped
   self-memories. The affect *direction* is carried in the concept text, not
   on the edges.
+- ``relationship_ritual`` -- *ritual* (the recurring shared pattern; L7,
+  ``subject=relationship``). It mines the ``"shared_moments"`` population:
+  ``shared_moment`` memories grouped by single-link cosine into recurring
+  clusters, each named as a warm relationship ritual. Evidence is the
+  constituent moments (``memory`` edges).
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ from app.core.concepts.proposers import (
     affective_user,
     identity_aiko,
     identity_user,
+    relationship_ritual,
     value_aiko,
     value_user,
 )
@@ -59,6 +65,9 @@ from app.core.concepts.proposers.affective_aiko import propose_affective_aiko
 from app.core.concepts.proposers.affective_user import propose_affective_user
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
+from app.core.concepts.proposers.relationship_ritual import (
+    propose_relationship_ritual,
+)
 from app.core.concepts.proposers.value_aiko import propose_value_aiko
 from app.core.concepts.proposers.value_user import propose_value_user
 
@@ -69,6 +78,7 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     value_aiko.SPEC,
     affective_user.SPEC,
     affective_aiko.SPEC,
+    relationship_ritual.SPEC,
 )
 
 
@@ -89,6 +99,7 @@ __all__ = [
     "propose_aiko_hybrid",
     "propose_identity_aiko",
     "propose_identity_user",
+    "propose_relationship_ritual",
     "propose_value_aiko",
     "propose_value_user",
     "resolve_reinforces",

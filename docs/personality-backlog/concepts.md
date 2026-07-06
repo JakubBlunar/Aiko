@@ -593,25 +593,55 @@ on the L3 schedule.
 
 ---
 
-## L7. Relationship concepts (deferred)
+## L7. Relationship concepts (SHIPPED)
 
-**Motivation.** Not about the user or Aiko individually — about the
-relationship itself. Named recurring rituals and running jokes that become part
-of the relationship's identity: "Friday Debugging Evenings", "Cookie
-Diplomacy", "Late-night Philosophy", "Our Running Joke About X".
+**Kind.** `ritual`, subject `relationship`, evidence model `set` (the evidence
+is the constituent `shared_moment` memories; the recurrence lives in the
+grouping, not on the edges).
 
-**Key files.** Would reuse the L1-L3 candidate/confidence/auto-promotion
-machinery with a relationship-scoped proposer; homed alongside
-[`relationship.py`](../../app/core/relationship/relationship.py) + the
-shared-moments subsystem; surfaces near `relationship_block`.
+**Status: SHIPPED.** Not about the user or Aiko individually — about the
+relationship itself: named recurring rituals mined from the shared-moment
+stream ("Friday late-night debugging sessions", "winding down together at the
+end of a hard day", "talking through nerves before a release"). Surfaces as
+warm relationship colour, held lightly, never announced. Distinct from
+`catchphrase` (a recurring *phrase*) and from the relationship-phase block (the
+arc, not a specific ritual).
 
-**Sketched approach.** Evidence is **recurring `shared_moment` patterns**
-(time-of-week / theme co-occurrence), not cross-cluster user topics — so the
-proposer reads the shared-moment stream rather than the topic graph. Otherwise
-the same candidate -> active lifecycle. Deferred until identity concepts (L1-L5)
-prove the machinery.
+**Grouping (the new plumbing).** `shared_moment` rows already carry a `vibe` +
+`when` in metadata and an embedding on the row; what was missing was the
+*grouping*. [`ritual_grouping`](../../app/core/concepts/ritual_grouping.py) is a
+pure single-link cosine clustering over the moment embeddings (two moments join
+when their cosine clears a threshold; a group is the connected component). Each
+surviving component (`>= group_min_size`) is annotated with a dominant `vibe`
+and an optional weekday hint parsed from `when`, plus trimmed member
+`MomentLite`s. No store / settings / LLM imports (numpy only), so it unit-tests
+in isolation; the worker builds its inputs via `moment_from_memory`.
 
-**Effort.** Medium (on top of L1-L3).
+**Synthesis.** A new `"shared_moments"` population + `_run_ritual_pass` in
+[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
+it enumerates `iter_by_kind("shared_moment")`, skips below a min-moments floor,
+groups + caps them, and offers each group to the
+[`relationship_ritual`](../../app/core/concepts/proposers/relationship_ritual.py)
+proposer, which names the recurring pattern (or reinforces a known ritual by id).
+A NEW ritual must draw on `>= min_sources` distinct moments. Count + max-id
+watermark dirty-tracking under the proposer's `sig_key` so a settled corpus is a
+fast no-op; the whole pass is gated by `agent.ritual_synthesis_enabled`.
+
+**Registry + gate.** `ritual` is registered (`set` model, mid plasticity `0.4`,
+`core_always_on=False`, **no** `surfacing_targets`) with `ritual_evidence_gate`
+(recurrence floors: `>= 3` distinct moments, a non-instant age, a `0.65`
+confidence bar — so a burst in a single session can't promote).
+
+**Surfacing.** Relevance-only (like `subject=aiko` / `affective` concepts): a
+ritual surfaces through the T3 `relevant_context` path when the turn touches the
+shared pattern, under `_concept_ritual_header` relationship framing, never
+pinned every turn.
+
+**Effort.** Shipped on top of L1-L5 / L10 / L11 / L13. New settings:
+`agent.ritual_synthesis_enabled`, `concept_synthesis_ritual_min_moments`,
+`concept_synthesis_ritual_group_min_size`,
+`concept_synthesis_ritual_group_similarity`,
+`concept_synthesis_max_ritual_groups`.
 
 ---
 

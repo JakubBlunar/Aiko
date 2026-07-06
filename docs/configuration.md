@@ -541,6 +541,16 @@ The `affective` concept kind (both subjects) captures the durable topic→emotio
 - `memory.cluster_affect_map_cap` *(int, `200`, min `1`)* — max clusters kept per subject's affect map (most-recently-updated win).
 - `memory.cluster_affect_max_age_days` *(float, `120.0`, min `1`)* — affect-map entries older than this are dropped on write (self-heals across topic-graph refits).
 
+### L7 — relationship rituals (recurring shared moments)
+
+The `ritual` concept kind (`subject=relationship`) names the recurring "thing you two do" — mined from `shared_moment` memories, not the topic graph — and surfaces as warm relationship colour via the T3 relevance path (never pinned, never announced). A pure single-link cosine grouping ([`ritual_grouping`](../app/core/concepts/ritual_grouping.py)) clusters moments into recurring groups (annotated with a dominant vibe + weekday hint); a `"shared_moments"` synthesis population + the [`relationship_ritual`](../app/core/concepts/proposers/relationship_ritual.py) proposer name each group. See [`personality-backlog/concepts.md` → L7](personality-backlog/concepts.md). The `ritual` kind uses `plasticity_default=0.4` and `ritual_evidence_gate` (floors the `set` gate at ≥3 moments / ≥1 day / ≥0.65 confidence).
+
+- `agent.ritual_synthesis_enabled` *(bool, `true`)* — master switch for the ritual synthesis pass. Off → no relationship rituals are mined (the rest of concept synthesis is unaffected; existing rituals still surface).
+- `memory.concept_synthesis_ritual_min_moments` *(int, `6`, min `2`)* — minimum `shared_moment` rows before the ritual pass runs at all (below this there aren't enough moments for a recurring pattern).
+- `memory.concept_synthesis_ritual_group_min_size` *(int, `3`, min `2`)* — minimum members a moment cluster needs to be a ritual candidate (a couple of moments isn't a recurring pattern).
+- `memory.concept_synthesis_ritual_group_similarity` *(float, `0.6`, clamped `[0, 1]`)* — single-link cosine threshold for joining two shared moments into the same ritual group.
+- `memory.concept_synthesis_max_ritual_groups` *(int, `3`, min `1`)* — cap on ritual groups offered to the proposer per run (bounds the prompt / LLM cost).
+
 ### L25 — concept edge referential integrity
 
 Concept edges (`evidence` / `contradicts`) point at memory rows that get deleted, pruned, and merged. Most deletes are reconciled synchronously by the `ConceptEdgeReconciler` (registered as a `MemoryStore` delete listener: it drops the memory's edges and recomputes the affected concepts' edge-derived `evidence_count` / `distinct_source_count`). But `MemoryStore.prune` batch-deletes rows **without** firing delete listeners, so an idle sweep worker garbage-collects any orphaned edges it leaves. Destructive merges repoint the victim's edges onto the survivor first (rule b); archived rows keep their edges (rule c). L3 stays the single writer of `confidence` / `plasticity` / `status`. See [`concept-lifecycle.md`](concept-lifecycle.md).

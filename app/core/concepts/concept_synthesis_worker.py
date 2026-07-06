@@ -305,6 +305,61 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _ritual_min_moments(self) -> int:
+        """L7: minimum ``shared_moment`` rows before the ritual pass even runs
+        -- below this there aren't enough moments for a recurring pattern to
+        exist, so grouping is skipped entirely."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_ritual_min_moments",
+                    6,
+                )
+            ),
+        )
+
+    @property
+    def _ritual_group_min_size(self) -> int:
+        """L7: minimum members a moment cluster needs to be a ritual candidate
+        (a couple of moments isn't a recurring pattern)."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings, "concept_synthesis_ritual_group_min_size", 3
+                )
+            ),
+        )
+
+    @property
+    def _ritual_group_similarity(self) -> float:
+        """L7: single-link cosine threshold for joining two shared moments
+        into the same ritual group."""
+        raw = float(
+            getattr(
+                self._memory_settings,
+                "concept_synthesis_ritual_group_similarity",
+                0.6,
+            )
+        )
+        return max(0.0, min(1.0, raw))
+
+    @property
+    def _max_ritual_groups(self) -> int:
+        """L7: cap on ritual groups offered to the proposer per run (bounds
+        the prompt / LLM cost)."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings, "concept_synthesis_max_ritual_groups", 3
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -372,6 +427,7 @@ class ConceptSynthesisWorker:
             "user_dirty_remaining": 0,
             "aiko_dirty": False,
             "affect_dirty": False,
+            "ritual_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -384,6 +440,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_aiko_pass(ctx, spec, stats, force)
                 elif spec.population == "affect":
                     proposals = self._run_affect_pass(ctx, spec, stats, force)
+                elif spec.population == "shared_moments":
+                    proposals = self._run_ritual_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -815,6 +873,74 @@ class ConceptSynthesisWorker:
             sig["mem_affect_count"] = len(memory_affect)
         self._save_sigs(sig_key, sig)
         return proposals
+
+    # ── ritual pass (L7) ────────────────────────────────────────────────
+
+    def _run_ritual_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L7 ritual pass: group recurring ``shared_moment`` memories into
+        candidate relationship rituals. Evidence is the constituent moments;
+        the recurrence itself lives in the grouping (single-link cosine), not
+        in an edge-schema change. Count + max-id watermark dirty-tracking so a
+        settled corpus is a fast no-op."""
+        if not bool(
+            getattr(self._agent_settings, "ritual_synthesis_enabled", True)
+        ):
+            stats["ritual_dirty"] = False
+            return []
+
+        from app.core.concepts import ritual_grouping as _rg
+
+        rows = self._memory_store.iter_by_kind("shared_moment")
+        count = len(rows)
+        if count < self._ritual_min_moments:
+            stats["ritual_dirty"] = False
+            return []
+        max_id = max((int(m.id) for m in rows), default=0)
+
+        sig_key = spec.sig_key or "concept_synth.ritual_sig"
+        prev = self._load_sigs(sig_key)
+        delta = self._dirty_size_delta
+        prev_count = int(prev.get("count", 0)) if prev else 0
+        prev_max = int(prev.get("max_id", 0)) if prev else 0
+        is_dirty = (
+            force
+            or (not prev)
+            or abs(count - prev_count) >= delta
+            or max_id != prev_max
+        )
+        stats["ritual_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        moments = [
+            mi
+            for mi in (_rg.moment_from_memory(m) for m in rows)
+            if mi is not None
+        ]
+        groups = _rg.group_moments(
+            moments,
+            min_size=self._ritual_group_min_size,
+            similarity=self._ritual_group_similarity,
+        )[: self._max_ritual_groups]
+
+        # Always advance the watermark, even when nothing grouped: otherwise an
+        # unchanged, ungroupable corpus would re-run (and re-call the LLM)
+        # every idle tick.
+        self._save_sigs(sig_key, {"count": count, "max_id": max_id})
+        if not groups:
+            return []
+
+        return spec.propose(
+            ctx,
+            groups=groups,
+            existing=self._existing_for(spec),
+        )
 
     def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:
         """Concepts already stored for this proposer's (subject, kind) --
