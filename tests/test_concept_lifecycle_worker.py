@@ -49,6 +49,19 @@ def _settings(**over) -> SimpleNamespace:
         concept_candidate_ttl_days=21.0,
         concept_promote_young_min_sources=3,
         concept_promote_young_min_confidence=0.72,
+        # L16 plasticity modulation / drift / re-check slowdown. Drift +
+        # slowdown default OFF in the shared stub so the existing confidence /
+        # contradiction assertions stay behaviour-neutral; the dedicated L16
+        # suite enables them explicitly. Modulation is a no-op here anyway (the
+        # harness wires no relationship_signal_provider).
+        concept_plasticity_modulation_enabled=True,
+        concept_plasticity_duration_days_full=180.0,
+        concept_plasticity_shift_event_delta=0.1,
+        concept_plasticity_drift_enabled=False,
+        concept_plasticity_drift_rate=0.05,
+        concept_plasticity_drift_floor=0.15,
+        concept_plasticity_recheck_slowdown_enabled=False,
+        concept_plasticity_recheck_stride_k=3.0,
         # engagement clock knobs (for the shared clock instance)
         engagement_clock_enabled=True,
         engagement_seconds_per_day=3600.0,
@@ -78,6 +91,7 @@ def _harness(
     graph_mature=None,
     detector=None,
     belief_reviser=None,
+    relationship_signal_provider=None,
 ):
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "test.db")
@@ -100,6 +114,7 @@ def _harness(
         graph_mature_provider=graph_mature,
         contradiction_detector=detector,
         belief_reviser=belief_reviser,
+        relationship_signal_provider=relationship_signal_provider,
         memory_settings=settings,
         agent_settings=SimpleNamespace(concepts_enabled=concepts_enabled),
         clock=lambda: _NOW,

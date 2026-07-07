@@ -21,10 +21,19 @@ these are the stateless pieces:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation-only; avoids a runtime import cycle with the registry
+    from app.core.concepts.concept_kinds import PlasticityModulation
 
 # Confidence saturates below 1.0 so a concept is never "certain"; matches
 # the memory-confidence ceiling convention.
 CONFIDENCE_CAP = 0.97
+# L16 plasticity-drift: engaged-age half-life for the saturating age factor --
+# how quickly a settled belief's age contributes its full share to the drift
+# step. At this many engaged days the age factor reaches ~0.5.
+_PLASTICITY_DRIFT_AGE_HALFLIFE_DAYS = 30.0
 # Logistic shape for target(distinct_sources): tuned so 1 source ~0.39,
 # 2 ~0.61, 3 ~0.79, 4 ~0.90, then the cap bites. Diminishing returns.
 _LOGISTIC_K = 0.9
@@ -126,6 +135,81 @@ def apply_contradiction_penalty(
     effective = max(0.0, float(penalty)) * (0.5 + 0.5 * p)
     stepped = float(current) - effective
     return min(cap, max(float(floor), stepped))
+
+
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, float(value)))
+
+
+@dataclass(frozen=True)
+class RelationshipSignal:
+    """The normalized live relationship signal the L16 modulation reads.
+
+    Both fields are in ``[0, 1]``: ``trust01`` is positive trust only
+    (``clamp(trust, 0, 1)`` -- only a *growing* bond loosens a boundary; a low
+    or negative trust leaves it at its stored base), ``duration01`` a saturating
+    measure of how long / how many sessions the relationship has run. Produced
+    by the session-side provider from
+    :class:`~app.core.relationship.relationship_axes.RelationshipAxesState` +
+    :class:`~app.core.relationship.relationship.RelationshipState`.
+    """
+
+    trust01: float = 0.0
+    duration01: float = 0.0
+
+
+def effective_plasticity(
+    base: float,
+    *,
+    signal: RelationshipSignal,
+    mod: "PlasticityModulation",
+) -> float:
+    """The live, relationship-modulated plasticity used *at eval time* (L16).
+
+    Raises the stored ``base`` plasticity by an additive lift proportional to
+    trust + duration (per the kind's :class:`PlasticityModulation` gains),
+    clamped to ``mod.max_plasticity`` so a boundary loosens toward -- but never
+    past -- its ceiling. The lift only ever *raises* plasticity (a boundary
+    loosens as the bond deepens; it never tightens *below* its base here), and
+    the stored ``base`` is left untouched -- this is a read-time modulation, not
+    a mutation. With the default (no-op) ``mod`` this returns ``base`` exactly.
+    """
+    lift = (
+        float(mod.trust_gain) * _clamp01(signal.trust01)
+        + float(mod.duration_gain) * _clamp01(signal.duration01)
+    )
+    eff = float(base) + max(0.0, lift)
+    return min(float(mod.max_plasticity), max(0.0, eff))
+
+
+def drift_plasticity(
+    current: float,
+    *,
+    confidence: float,
+    age_days: float,
+    floor: float,
+    rate: float,
+) -> float:
+    """One-way plasticity drift: a settled belief gets *stickier* with time (L16).
+
+    Nudges the stored ``current`` plasticity **down** toward ``floor`` by a step
+    that grows with the concept's ``confidence`` and its engaged ``age_days``
+    (saturating via :data:`_PLASTICITY_DRIFT_AGE_HALFLIFE_DAYS`). Monotone
+    non-increasing: a young or low-confidence concept barely moves, an old
+    high-confidence one slowly firms up, and plasticity never rises here and
+    never drops below ``floor``. ``rate <= 0`` (or already at/below ``floor``)
+    is a no-op, so this is opt-in and safe to call every eval.
+    """
+    cur = float(current)
+    fl = float(floor)
+    if float(rate) <= 0.0 or cur <= fl:
+        return cur
+    age_factor = 1.0 - 0.5 ** (
+        max(0.0, float(age_days)) / _PLASTICITY_DRIFT_AGE_HALFLIFE_DAYS
+    )
+    step = float(rate) * _clamp01(confidence) * age_factor
+    new = cur - step * (cur - fl)
+    return max(fl, new)
 
 
 def set_evidence_gate(
@@ -390,11 +474,14 @@ def boundary_evidence_gate(
 
 __all__ = [
     "CONFIDENCE_CAP",
+    "RelationshipSignal",
     "confidence_target",
     "effective_halflife",
     "accrual_alpha",
     "next_confidence",
     "apply_contradiction_penalty",
+    "effective_plasticity",
+    "drift_plasticity",
     "set_evidence_gate",
     "value_evidence_gate",
     "affective_evidence_gate",

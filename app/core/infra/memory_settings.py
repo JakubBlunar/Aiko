@@ -850,9 +850,31 @@ class MemorySettings:
     # both directions. Per-kind defaults live on the ``ConceptKind``
     # registry (identity uses ``concept_identity_plasticity`` above);
     # ``concept_default_plasticity`` is the fallback band for any kind
-    # that registers no default. Relationship modulation (trust/duration
-    # loosening a boundary's plasticity) is deferred.
+    # that registers no default.
     concept_default_plasticity: float = 0.5
+    # L16 relationship modulation + plasticity-drift + re-check slowdown.
+    # (1) Modulation: at eval time, a kind that opts in (only ``boundary``
+    # today, via its registry ``plasticity_modulation``) has its *effective*
+    # plasticity raised by the live trust + relationship-duration signal --
+    # loosening a boundary as the bond deepens, capped at the kind ceiling and
+    # never touching the stored base. ``duration_days_full`` is the days-known
+    # at which the duration term saturates; ``shift_event_delta`` is the band a
+    # lift must cross (vs. the last ``influences`` edge) before a
+    # ``plasticity_shift`` event is emitted. (2) Drift: a settled *active*
+    # concept's stored plasticity is nudged one-way down toward ``drift_floor``
+    # at ``drift_rate``, scaled by confidence + engaged age (stickier with
+    # time). (3) Re-check slowdown: a sticky (low effective-plasticity) concept
+    # is probed for contradictions on a plasticity-scaled stride
+    # (``stride = 1 + round(stride_k * (1 - eff_plast))``) so core beliefs are
+    # re-examined less often. Each piece is independently switchable; all on.
+    concept_plasticity_modulation_enabled: bool = True
+    concept_plasticity_duration_days_full: float = 180.0
+    concept_plasticity_shift_event_delta: float = 0.1
+    concept_plasticity_drift_enabled: bool = True
+    concept_plasticity_drift_rate: float = 0.05
+    concept_plasticity_drift_floor: float = 0.15
+    concept_plasticity_recheck_slowdown_enabled: bool = True
+    concept_plasticity_recheck_stride_k: float = 3.0
     # L21 cold-start / anti-premature guard. Nothing is proposed or
     # surfaced while the topic graph is too sparse to support an
     # abstraction: synthesis is skipped (a manual ``force`` run still
@@ -2575,6 +2597,44 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     0.0,
                     float(memory_raw.get("concept_default_plasticity", 0.5)),
                 ),
+            ),
+            concept_plasticity_modulation_enabled=bool(
+                memory_raw.get("concept_plasticity_modulation_enabled", True)
+            ),
+            concept_plasticity_duration_days_full=max(
+                1.0,
+                float(
+                    memory_raw.get("concept_plasticity_duration_days_full", 180.0)
+                ),
+            ),
+            concept_plasticity_shift_event_delta=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_plasticity_shift_event_delta", 0.1)
+                    ),
+                ),
+            ),
+            concept_plasticity_drift_enabled=bool(
+                memory_raw.get("concept_plasticity_drift_enabled", True)
+            ),
+            concept_plasticity_drift_rate=min(
+                1.0,
+                max(0.0, float(memory_raw.get("concept_plasticity_drift_rate", 0.05))),
+            ),
+            concept_plasticity_drift_floor=min(
+                1.0,
+                max(0.0, float(memory_raw.get("concept_plasticity_drift_floor", 0.15))),
+            ),
+            concept_plasticity_recheck_slowdown_enabled=bool(
+                memory_raw.get(
+                    "concept_plasticity_recheck_slowdown_enabled", True
+                )
+            ),
+            concept_plasticity_recheck_stride_k=max(
+                0.0,
+                float(memory_raw.get("concept_plasticity_recheck_stride_k", 3.0)),
             ),
             concept_min_clusters=max(
                 0,
