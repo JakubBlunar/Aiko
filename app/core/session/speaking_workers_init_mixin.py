@@ -1929,6 +1929,9 @@ class SpeakingWorkersInitMixin:
                         from app.core.concepts.concept_lifecycle_worker import (
                             ConceptLifecycleWorker,
                         )
+                        from app.core.concepts.concept_lifecycle import (
+                            RelationshipSignal,
+                        )
 
                         # L9: optional read-only contradiction detector.
                         # Built only when enabled and the deps it needs
@@ -1973,6 +1976,76 @@ class SpeakingWorkersInitMixin:
                             except Exception:
                                 return True
 
+                        # L16: live relationship signal for plasticity
+                        # modulation. Trust (axes store, clamped to positive)
+                        # loosens a boundary; relationship duration (days since
+                        # ``first_seen_at``, saturating) adds a slower lift.
+                        # Returns ``None`` when the axes store is absent (lean
+                        # deployments) so the worker no-ops modulation.
+                        _axes_store = getattr(
+                            self, "_relationship_axes_store", None
+                        )
+                        _rel_store = getattr(self, "_relationship_store", None)
+                        _rel_user_id = self._user_id
+                        _mem_settings = self._memory_settings
+
+                        def _relationship_signal() -> "RelationshipSignal | None":
+                            if _axes_store is None:
+                                return None
+                            import datetime as _dt
+
+                            try:
+                                trust01 = 0.0
+                                axes = _axes_store.get(_rel_user_id)
+                                if axes is not None:
+                                    trust01 = min(
+                                        1.0,
+                                        max(0.0, float(getattr(axes, "trust", 0.0))),
+                                    )
+                                duration01 = 0.0
+                                if _rel_store is not None:
+                                    rel = _rel_store.get(_rel_user_id)
+                                    seen = getattr(rel, "first_seen_at", None) if rel else None
+                                    if seen:
+                                        try:
+                                            first = _dt.datetime.fromisoformat(
+                                                str(seen).replace("Z", "+00:00")
+                                            )
+                                            if first.tzinfo is None:
+                                                first = first.replace(
+                                                    tzinfo=_dt.timezone.utc
+                                                )
+                                            days = max(
+                                                0.0,
+                                                (
+                                                    _dt.datetime.now(_dt.timezone.utc)
+                                                    - first
+                                                ).total_seconds()
+                                                / 86400.0,
+                                            )
+                                            full = (
+                                                float(
+                                                    getattr(
+                                                        _mem_settings,
+                                                        "concept_plasticity_duration_days_full",
+                                                        180.0,
+                                                    )
+                                                )
+                                                or 180.0
+                                            )
+                                            duration01 = min(1.0, days / full)
+                                        except (TypeError, ValueError):
+                                            duration01 = 0.0
+                                return RelationshipSignal(
+                                    trust01=trust01, duration01=duration01
+                                )
+                            except Exception:
+                                log.debug(
+                                    "relationship signal build failed",
+                                    exc_info=True,
+                                )
+                                return None
+
                         self._concept_lifecycle_worker = ConceptLifecycleWorker(
                             concept_store=self._concept_store,
                             concept_event_store=self._concept_event_store,
@@ -1980,6 +2053,7 @@ class SpeakingWorkersInitMixin:
                             graph_mature_provider=_graph_mature,
                             contradiction_detector=contradiction_detector,
                             belief_reviser=belief_reviser,
+                            relationship_signal_provider=_relationship_signal,
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

@@ -113,6 +113,35 @@ DEFAULT_SURFACE_WEIGHTS = SurfaceWeights()
 
 
 @dataclass(frozen=True, slots=True)
+class PlasticityModulation:
+    """Per-kind relationship modulation of the L16 plasticity band.
+
+    The L3 engine damps every confidence move by a per-concept ``plasticity``
+    (the learning rate). This spec lets a kind's *effective* plasticity be
+    raised by the live relationship signal at eval time -- a behaviour boundary
+    should *loosen* (become more renegotiable) as trust deepens and the
+    relationship matures, but never silently and never below its stored base.
+
+    Both gains are additive lifts (in plasticity units) applied to the base:
+    ``trust_gain`` at full positive trust, ``duration_gain`` at "full"
+    relationship duration. ``max_plasticity`` is the ceiling the lift is
+    clamped to, so a boundary can loosen but never become fully fluid.
+
+    Defaults are **no-op** (both gains ``0.0``, ceiling ``1.0``), which
+    reproduces the pre-modulation behaviour, so a kind opts in by setting
+    non-zero gains -- no change to any other kind until it is tuned. See
+    :func:`app.core.concepts.concept_lifecycle.effective_plasticity`.
+    """
+
+    trust_gain: float = 0.0
+    duration_gain: float = 0.0
+    max_plasticity: float = 1.0
+
+
+DEFAULT_PLASTICITY_MODULATION = PlasticityModulation()
+
+
+@dataclass(frozen=True, slots=True)
 class ConceptKind:
     """Declarative spec for one concept kind.
 
@@ -149,6 +178,11 @@ class ConceptKind:
     # cosine + confidence + recency). Defaults to context-only, which is exactly
     # the pre-L18 cosine ranking, so this is opt-in per kind.
     surface_weights: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS
+    # L16: how the live relationship signal (trust + duration) raises this
+    # kind's *effective* plasticity at eval time. Defaults to no-op, so a kind
+    # opts in (only ``boundary`` does now) -- the L3 worker reads this to loosen
+    # a boundary as the bond deepens, never touching the stored base.
+    plasticity_modulation: PlasticityModulation = DEFAULT_PLASTICITY_MODULATION
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -424,8 +458,8 @@ register_kind(
         evidence_model="set",
         # L16: the canonical *medium* plasticity band -- stickier than affect
         # (0.5) so a boundary doesn't churn, more fluid than a value (0.2) so it
-        # can be renegotiated. Leaves headroom for the deferred L16 trust
-        # modulation to raise it as the bond deepens.
+        # can be renegotiated. This is the base the L16 trust modulation lifts
+        # from as the bond deepens (see ``plasticity_modulation`` below).
         plasticity_default=0.45,
         # L3: the boundary gate -- floors the source count at 1 so a single
         # deliberate anchor can promote (cluster-only boundaries still need >= 2,
@@ -442,16 +476,25 @@ register_kind(
         surface_weights=SurfaceWeights(
             context=0.5, confidence=0.2, recency=0.3, recency_halflife_days=14.0
         ),
+        # L16: boundary is the first consumer of relationship modulation -- its
+        # effective plasticity rises from the 0.45 base toward 0.75 as trust and
+        # duration grow (loosens, never fully fluid). Never touches the stored
+        # base; applied live at eval time by the L3 worker.
+        plasticity_modulation=PlasticityModulation(
+            trust_gain=0.25, duration_gain=0.1, max_plasticity=0.75
+        ),
     )
 )
 
 
 __all__ = [
     "CONCEPT_KINDS",
+    "DEFAULT_PLASTICITY_MODULATION",
     "DEFAULT_SURFACE_WEIGHTS",
     "EVIDENCE_MODELS",
     "SUBJECTS",
     "ConceptKind",
+    "PlasticityModulation",
     "SurfaceWeights",
     "core_lane_kinds",
     "get_kind",

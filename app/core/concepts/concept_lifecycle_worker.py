@@ -73,10 +73,16 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.concepts.concept_kinds import get_kind
+from app.core.concepts.concept_kinds import (
+    DEFAULT_PLASTICITY_MODULATION,
+    get_kind,
+)
 from app.core.concepts.concept_lifecycle import (
+    RelationshipSignal,
     apply_contradiction_penalty,
     confidence_target,
+    drift_plasticity,
+    effective_plasticity,
     next_confidence,
     set_evidence_gate,
 )
@@ -126,6 +132,9 @@ class ConceptLifecycleWorker:
         graph_mature_provider: Callable[[], bool] | None = None,
         contradiction_detector: "ConceptContradictionDetector | None" = None,
         belief_reviser: "ConceptBeliefReviser | None" = None,
+        relationship_signal_provider: (
+            Callable[[], "RelationshipSignal | None"] | None
+        ) = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
@@ -134,9 +143,17 @@ class ConceptLifecycleWorker:
         self._graph_mature_provider = graph_mature_provider
         self._contradiction_detector = contradiction_detector
         self._belief_reviser = belief_reviser
+        # L16: live trust/duration signal for relationship modulation of
+        # plasticity. ``None`` (or a provider returning ``None``) => modulation
+        # no-ops, so lean/test deployments keep the stored plasticity.
+        self._relationship_signal_provider = relationship_signal_provider
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # L16 re-check slowdown: per-concept probe counter (in-memory, resets on
+        # restart) used to skip the contradiction probe on a plasticity-scaled
+        # stride so sticky concepts are re-examined less often.
+        self._probe_counter: dict[int, int] = {}
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -176,6 +193,20 @@ class ConceptLifecycleWorker:
     def _i(self, name: str, default: int) -> int:
         return int(getattr(self._memory_settings, name, default))
 
+    def _b(self, name: str, default: bool) -> bool:
+        return bool(getattr(self._memory_settings, name, default))
+
+    # L16 gates -- each of the three deferred pieces is independently
+    # switchable; all default on.
+    def _modulation_enabled(self) -> bool:
+        return self._b("concept_plasticity_modulation_enabled", True)
+
+    def _drift_enabled(self) -> bool:
+        return self._b("concept_plasticity_drift_enabled", True)
+
+    def _recheck_slowdown_enabled(self) -> bool:
+        return self._b("concept_plasticity_recheck_slowdown_enabled", True)
+
     # ── run ────────────────────────────────────────────────────────────
 
     def run(self) -> dict[str, Any]:
@@ -195,6 +226,12 @@ class ConceptLifecycleWorker:
             # contradiction check this tick, and how many actually fired.
             "contradiction_checks": 0,
             "contradiction_hits": 0,
+            # L16 piece 3: probes skipped this tick because the concept is
+            # sticky (low effective plasticity) and off its re-check stride.
+            "contradiction_skipped_sticky": 0,
+            # L16 piece 1: relationship-modulation band crossings emitted as
+            # ``plasticity_shift`` events this tick.
+            "plasticity_shifts": 0,
             # L15 belief revision: concepts whose supporting memories got
             # re-examined this tick, and the resolutions applied.
             "belief_revisions": 0,
@@ -223,6 +260,16 @@ class ConceptLifecycleWorker:
         stats["scanned"] += 1
         first_eval = concept.last_lifecycle_at is None
 
+        # L16: the *effective* plasticity for this eval. For a kind that opts
+        # into relationship modulation (boundary), the live trust/duration
+        # signal raises the stored base toward its ceiling; for every other
+        # kind this is exactly ``concept.plasticity`` (no behaviour change). The
+        # stored base is never mutated here -- only piece-2 drift below does
+        # that. Captured before any stamping so it matches the value the
+        # confidence math and penalty actually use.
+        base_plast = float(concept.plasticity)
+        eff_plast = self._effective_plasticity(concept, base_plast)
+
         # 1. Accrual + decay (engagement-driven, per-concept anchor).
         engaged_days = self._engaged_days(concept, now)
         target = confidence_target(concept.distinct_source_count)
@@ -231,7 +278,7 @@ class ConceptLifecycleWorker:
             concept.confidence,
             engaged_days=engaged_days,
             halflife_days=self._f("concept_confidence_halflife_days", 45.0),
-            plasticity=concept.plasticity,
+            plasticity=eff_plast,
             target=target,
             reinforced=reinforced,
         )
@@ -245,19 +292,43 @@ class ConceptLifecycleWorker:
         # L9: counter-evidence probe (active concepts only, bounded per
         # tick). A confirmed contradiction knocks confidence down by a
         # plasticity-damped penalty *after* accrual/decay, so fresh
-        # disproof can undo a reinforcement in the same pass.
-        verdict = self._maybe_detect_contradiction(concept, stats)
+        # disproof can undo a reinforcement in the same pass. The probe cadence
+        # + penalty both use the effective (modulated) plasticity (L16).
+        verdict = self._maybe_detect_contradiction(concept, stats, eff_plast)
         if verdict is not None:
             new_conf = apply_contradiction_penalty(
                 concept.confidence,
                 penalty=self._f("concept_contradiction_penalty", 0.25),
-                plasticity=concept.plasticity,
+                plasticity=eff_plast,
             )
             concept.confidence = new_conf
             # L15: record the disproof relation in the graph so belief
             # revision (and later graph consumers) can walk it. Upsert is
             # idempotent, so a repeated hit on the same memory is a no-op.
             self._persist_contradiction_edge(concept, verdict)
+
+        # L16 observability ("never silently"): record the modulation as a
+        # persisted ``influences`` edge and emit a ``plasticity_shift`` event
+        # when the lift crosses a band -- so a boundary loosening is a visible
+        # beat, not silent drift.
+        self._record_modulation(concept, base_plast, eff_plast, now, stats)
+
+        # L16 piece 2: one-way plasticity drift -- a settled *active* belief
+        # gets stickier with age + confidence. Mutates the stored base (piece 1
+        # modulation is read-live on top and never persisted). Skipped on first
+        # eval so the kind band lands cleanly before any drift.
+        if (
+            self._drift_enabled()
+            and concept.status == "active"
+            and not first_eval
+        ):
+            concept.plasticity = drift_plasticity(
+                concept.plasticity,
+                confidence=concept.confidence,
+                age_days=self._age_days(concept, now),
+                floor=self._f("concept_plasticity_drift_floor", 0.15),
+                rate=self._f("concept_plasticity_drift_rate", 0.05),
+            )
 
         # 2-5. Status transition (confidence-driven; age only gates/ delays).
         old_status = concept.status
@@ -316,17 +387,36 @@ class ConceptLifecycleWorker:
     # ── L9 contradiction probe ─────────────────────────────────────────
 
     def _maybe_detect_contradiction(
-        self, concept: "Concept", stats: dict[str, Any]
+        self, concept: "Concept", stats: dict[str, Any], eff_plast: float
     ) -> "ContradictionVerdict | None":
         """Run the read-only detector for one active concept, bounded by
         the per-tick contradiction batch. Counts every *check* (a memory
         search, the real work unit) toward the batch so a single tick
         never sweeps the whole active set; the ``list_stalest`` ordering
-        rotates which concepts are checked across ticks."""
+        rotates which concepts are checked across ticks.
+
+        L16 piece 3: a sticky (low effective-plasticity) concept is a settled
+        belief, so it earns being re-examined *less often*. We skip the probe on
+        a plasticity-scaled deterministic stride (in-memory, resets on restart)
+        -- a fluid concept (``eff_plast ~ 1``) keeps ``stride == 1`` (unchanged),
+        a sticky core belief is probed ~1/stride as often. The skip happens
+        *before* the per-tick budget is consumed, so slowing sticky concepts
+        frees the budget for concepts that actually need checking."""
         if self._contradiction_detector is None:
             return None
         if concept.status != "active":
             return None
+        if self._recheck_slowdown_enabled():
+            k = self._f("concept_plasticity_recheck_stride_k", 3.0)
+            stride = 1 + round(max(0.0, k) * (1.0 - min(1.0, max(0.0, eff_plast))))
+            cid = int(getattr(concept, "concept_id", 0) or 0)
+            n = self._probe_counter.get(cid, 0) + 1
+            self._probe_counter[cid] = n
+            if stride > 1 and (n % stride) != 0:
+                stats["contradiction_skipped_sticky"] = (
+                    stats.get("contradiction_skipped_sticky", 0) + 1
+                )
+                return None
         batch = max(0, self._i("concept_contradiction_batch_size", 20))
         if stats["contradiction_checks"] >= batch:
             return None
@@ -628,6 +718,93 @@ class ConceptLifecycleWorker:
         if registered is not None and registered.plasticity_default is not None:
             return float(registered.plasticity_default)
         return self._f("concept_default_plasticity", 0.5)
+
+    def _effective_plasticity(self, concept: "Concept", base: float) -> float:
+        """L16 piece 1: the relationship-modulated plasticity for this eval.
+
+        For a kind that opts into modulation (only ``boundary`` today) with a
+        live relationship signal available, this raises ``base`` toward the
+        kind's ceiling as trust + duration grow; otherwise it returns ``base``
+        unchanged -- so every non-opted kind (and every lean/test deployment
+        without a signal provider) keeps exactly its stored plasticity."""
+        if not self._modulation_enabled() or self._relationship_signal_provider is None:
+            return base
+        registered = get_kind(concept.kind)
+        mod = getattr(
+            registered, "plasticity_modulation", DEFAULT_PLASTICITY_MODULATION
+        )
+        if mod is DEFAULT_PLASTICITY_MODULATION:
+            return base
+        try:
+            signal = self._relationship_signal_provider() or RelationshipSignal()
+        except Exception:
+            log.debug("relationship_signal_provider raised", exc_info=True)
+            return base
+        return effective_plasticity(base, signal=signal, mod=mod)
+
+    def _record_modulation(
+        self,
+        concept: "Concept",
+        base_plast: float,
+        eff_plast: float,
+        now: datetime,
+        stats: dict[str, Any],
+    ) -> None:
+        """L16 "never silently": persist the modulation as one ``influences``
+        edge (``signal:relationship_trust --influences--> concept``) and emit a
+        ``plasticity_shift`` event when the lift crosses a band vs. the last
+        recorded strength. Best-effort -- edge/event bookkeeping must never break
+        the lifecycle pass. No-op when modulation is off or produced no lift."""
+        if not self._modulation_enabled():
+            return
+        lift = float(eff_plast) - float(base_plast)
+        if lift <= 0.0:
+            return
+        cid = int(getattr(concept, "concept_id", 0) or 0)
+        if cid <= 0:
+            return
+        try:
+            prior = 0.0
+            for edge in self._store.edges_into("concept", cid):
+                if edge.relation == "influences" and edge.src_type == "signal":
+                    prior = float(edge.strength or 0.0)
+                    break
+            delta = self._f("concept_plasticity_shift_event_delta", 0.1)
+            if abs(lift - prior) < delta:
+                return
+            self._store.add_edge(
+                ConceptEdge(
+                    src_type="signal",
+                    src_id="relationship_trust",
+                    dst_type="concept",
+                    dst_id=str(cid),
+                    relation="influences",
+                    polarity=1,
+                    strength=lift,
+                )
+            )
+            loosening = lift > prior
+            reason = (
+                f"Boundary loosening as trust deepens (plasticity "
+                f"{base_plast:.2f} -> {eff_plast:.2f})."
+                if loosening
+                else (
+                    f"Boundary tightening as the signal eases (plasticity "
+                    f"{base_plast:.2f} -> {eff_plast:.2f})."
+                )
+            )
+            self._emit(
+                concept,
+                "plasticity_shift",
+                concept.confidence,
+                now,
+                reason_override=reason,
+            )
+            stats["plasticity_shifts"] = stats.get("plasticity_shifts", 0) + 1
+        except Exception:
+            log.debug(
+                "modulation record failed (concept_id=%s)", cid, exc_info=True
+            )
 
     def _mark_dependents_stale(self, concept: "Concept") -> None:
         """Meta cascade: when a base concept changes status, mark its

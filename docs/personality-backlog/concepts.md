@@ -1196,7 +1196,7 @@ the concept, and how is that damped?
 
 ## L16. Concept plasticity (bounded, believable drift)
 
-**Status: BUILT (core; relationship modulation deferred).** `plasticity` is now
+**Status: SHIPPED (core + all three deferred pieces).** `plasticity` is now
 the single learning rate the L3 engine damps *every* confidence move by, so
 movement is symmetric in both directions: decay (`halflife *= 2 - p`), **accrual**
 ([`accrual_alpha`](../../app/core/concepts/concept_lifecycle.py), step `0.5 + 0.5*p`
@@ -1213,16 +1213,29 @@ the worker stamps the band on a concept's first eval
 See [`concept-lifecycle.md`](../concept-lifecycle.md) and
 [`configuration.md`](../configuration.md).
 
-**Deferred (do not forget).** (1) **Relationship modulation** — trust / duration
-loosening a concept's plasticity (e.g. a boundary becoming renegotiable as trust
-grows) via `relation=influences` edges reading
-[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py) (trust)
-+ [`relationship.py`](../../app/core/relationship/relationship.py) (duration).
-Land this alongside **L18 (boundary concepts)** and **L11 (self-model)**, which
-are its first real consumers. (2) **Plasticity-drift** — a trait becoming stickier
-with age/confidence (plasticity itself is currently fixed at the per-kind default).
-(3) Whether low plasticity should also slow the L15 re-check *trigger* (today it
-only scales the delta).
+**Deferred block — SHIPPED.** All three deferred pieces landed together (this
+also carries **L18a**). (1) **Relationship modulation** — a *hybrid*: the L3
+worker computes an **effective** plasticity at eval time via the pure
+[`effective_plasticity`](../../app/core/concepts/concept_lifecycle.py), lifting a
+kind's stored base by the live trust + relationship-duration signal
+(`RelationshipSignal`, built in
+[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
+from [`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
+(trust) + [`relationship.py`](../../app/core/relationship/relationship.py)
+(duration)). Per-kind gains live on `ConceptKind.plasticity_modulation`;
+**`boundary`** is the first (and only) consumer — its 0.45 base loosens toward a
+0.75 ceiling as the bond deepens, never touching the stored base. "Never
+silently": the worker materializes one `signal:relationship_trust
+--influences--> concept` edge and emits a `plasticity_shift` event when the lift
+crosses a band. (2) **Plasticity-drift** — a settled *active* concept's stored
+plasticity is nudged one-way down toward a floor via
+[`drift_plasticity`](../../app/core/concepts/concept_lifecycle.py), scaled by
+confidence + engaged age (stickier with time). (3) **Re-check slowdown** — a
+sticky (low effective-plasticity) concept is probed for contradictions on a
+plasticity-scaled stride (`1 + round(k·(1−eff_plast))`), so core beliefs are
+re-examined less often (in addition to L16 already scaling the *delta*). Each
+piece is independently switchable via `concept_plasticity_*` settings; see
+[`configuration.md`](../configuration.md).
 
 **Motivation.** Concepts should change over time — but not all at the same rate,
 and not randomly. Some parts of a person (or of Aiko) are core and sticky;
@@ -1369,32 +1382,29 @@ combined dirty-tracking, per-subject `sig_key`). Gated by
 `concept_synthesis_max_boundary_memories` (default 24).
 
 **Deferred (tracked below as their own backlog items, so nothing is silently
-absorbed into this shipped entry):** L18a boundary trust-modulation (the deferred
-L16 piece), L18b boundary behaviour-subsystem gating, L18c boundary-vs-conversation
-conflict steer, L18d concept-vs-concept conflict detection (meta concepts), L18e
-boundary evidence broadening.
+absorbed into this shipped entry):** ~~L18a boundary trust-modulation (the
+deferred L16 piece)~~ **[SHIPPED with L16]**, L18b boundary behaviour-subsystem
+gating, L18c boundary-vs-conversation conflict steer, L18d concept-vs-concept
+conflict detection (meta concepts), L18e boundary evidence broadening.
 
 **Effort.** Shipped on top of L1-L5 / L11 / L27.
 
 ---
 
-## L18a. Boundary trust-modulation (carries the deferred L16 piece)
+## L18a. Boundary trust-modulation (carries the deferred L16 piece) — SHIPPED
 
-**Motivation.** L16 shipped the plasticity *governor* but **not** relationship
-modulation. Boundaries are its natural first consumer: a boundary should loosen
-as the bond deepens — but never silently. Crossing or renegotiating a boundary
-should be a deliberate, trust-gated beat, not drift.
-
-**Sketched approach.** `relation="influences"` edges from `relationship_axes`
-trust + `relationship` duration into a boundary's effective plasticity, so its
-plasticity rises with trust. Until then boundaries use their static medium
-(`0.45`) default.
-
-**Key files.** [`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py)
-(plasticity governor), the relationship axes/duration source, boundary registry
-entry.
-
-**Effort.** Medium (on top of L16 + L18).
+**Status: SHIPPED (folded into the L16 deferred block above).** Boundary is the
+first (and only) consumer of relationship modulation: its `0.45` base plasticity
+loosens toward a `0.75` ceiling as trust + relationship duration grow, computed
+live at eval time by [`effective_plasticity`](../../app/core/concepts/concept_lifecycle.py)
+and never touching the stored base. "Never silently": each modulation
+materializes a `signal:relationship_trust --influences--> concept` edge and, on a
+band cross, emits a `plasticity_shift` event. Per-kind gains live on
+`ConceptKind.plasticity_modulation`
+([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py)); the live signal
+is wired in
+[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py).
+See the **L16** entry for the full description.
 
 ---
 

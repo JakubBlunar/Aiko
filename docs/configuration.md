@@ -524,10 +524,24 @@ When L9 flips a belief to `contradicted`, the doubt flows **back down** to the m
 
 ### L16 — concept plasticity (movement governor)
 
-`plasticity` (`[0, 1]`, per concept) is the single learning rate the L3 engine damps *every* confidence move by — decay (`halflife *= 2 - p`), accrual (step `= 0.5 + 0.5*p` of the gap to target), L9 disproof, and the L15 revision cut — so a sticky, low-plasticity core trait resists change in both directions. `p = 1` reproduces the pre-L16 full snap / full penalty, so only sub-1 kinds slow. Plasticity is stamped once, on a concept's first lifecycle eval, from the per-kind `ConceptKind.plasticity_default` band (see [`concept-lifecycle.md`](concept-lifecycle.md)). Relationship modulation is deferred.
+`plasticity` (`[0, 1]`, per concept) is the single learning rate the L3 engine damps *every* confidence move by — decay (`halflife *= 2 - p`), accrual (step `= 0.5 + 0.5*p` of the gap to target), L9 disproof, and the L15 revision cut — so a sticky, low-plasticity core trait resists change in both directions. `p = 1` reproduces the pre-L16 full snap / full penalty, so only sub-1 kinds slow. Plasticity is stamped once, on a concept's first lifecycle eval, from the per-kind `ConceptKind.plasticity_default` band (see [`concept-lifecycle.md`](concept-lifecycle.md)).
 
 - `memory.concept_identity_plasticity` *(float, `0.3`, clamped `[0, 1]`)* — the `identity` kind's default band (low = sticky). Applied on first eval; also damps decay + L9 disproof + L15 revision for identity concepts.
 - `memory.concept_default_plasticity` *(float, `0.5`, clamped `[0, 1]`)* — fallback band for any kind that registers no `plasticity_default` on the `ConceptKind` registry.
+
+Three further mechanisms let plasticity *move* rather than stay stamped (all default on, each independently switchable):
+
+- **Relationship modulation** (live, at eval time) — a kind that opts in via its registry `plasticity_modulation` (only `boundary` today) has its *effective* plasticity raised by the live trust + relationship-duration signal, loosening a boundary as the bond deepens; the stored base is never touched. Each modulation records a `signal:relationship_trust --influences--> concept` edge and, on a band cross, emits a `plasticity_shift` event ("never silently").
+  - `memory.concept_plasticity_modulation_enabled` *(bool, `true`)* — master switch for the eval-time modulation (and its edge/event bookkeeping).
+  - `memory.concept_plasticity_duration_days_full` *(float, `180.0`, min `1`)* — days-known at which the relationship-duration term saturates to `1.0`.
+  - `memory.concept_plasticity_shift_event_delta` *(float, `0.1`, clamped `[0, 1]`)* — how far the lift must move from the last recorded `influences` strength before a `plasticity_shift` event fires (bands the event stream).
+- **Plasticity-drift** (one-way, persisted) — a settled *active* concept's stored plasticity is nudged **down** toward a floor as its confidence and engaged age grow (stickier with time). Skipped on first eval so the kind band lands first.
+  - `memory.concept_plasticity_drift_enabled` *(bool, `true`)* — master switch for the stored-plasticity drift.
+  - `memory.concept_plasticity_drift_rate` *(float, `0.05`, clamped `[0, 1]`)* — per-eval drift step scale (higher = firms up faster).
+  - `memory.concept_plasticity_drift_floor` *(float, `0.15`, clamped `[0, 1]`)* — the stickiest plasticity drift can reach; it never drops below this.
+- **Re-check slowdown** — a sticky (low effective-plasticity) concept is probed for L9 contradictions on a plasticity-scaled stride (`stride = 1 + round(k·(1 − eff_plast))`), skipping intermediate ticks *without* consuming the per-tick contradiction budget, so core beliefs are re-examined less often.
+  - `memory.concept_plasticity_recheck_slowdown_enabled` *(bool, `true`)* — master switch; off → every active concept is eligible each tick as before.
+  - `memory.concept_plasticity_recheck_stride_k` *(float, `3.0`, min `0`)* — stride steepness; `0` → stride always `1` (no slowdown) even when enabled.
 
 ### L13 — affective concepts (topic → durable affect)
 
