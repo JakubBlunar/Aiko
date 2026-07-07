@@ -721,12 +721,15 @@ class MemorySettings:
     concept_synthesis_max_clusters_per_run: int = 5
     concept_synthesis_max_aiko_memories: int = 40
     concept_synthesis_dirty_size_delta: int = 3
-    # Answer-token budget per proposer LLM call. The aiko-identity pass
-    # emits several first-person concepts with full rationales in one JSON
-    # object, so a low cap truncates the array mid-object and the whole
-    # batch fails to parse (the salvage pass recovers complete objects,
-    # but a roomy budget avoids losing the tail in the first place).
-    concept_synthesis_max_tokens: int = 1600
+    # Answer-token budget per proposer LLM call. Sized generously: a
+    # reasoning-capable maintenance model can spend a large, variable preamble
+    # on visible chain-of-thought before the JSON, and several proposers emit
+    # multiple concepts with full rationales in one object, so a low cap
+    # truncates the array mid-object and the whole batch fails to parse (the
+    # salvage pass recovers complete objects, but a roomy budget avoids losing
+    # the tail in the first place). It's an idle worker, so the extra tokens
+    # cost latency we don't feel.
+    concept_synthesis_max_tokens: int = 4096
     # L13 affective concepts. The post-turn per-cluster affect sampler folds
     # this turn's affect into the live topic cluster's rolling EWMA (one map
     # per subject). ``affect_sampler_min_sim`` / ``affect_sampler_top_n`` gate
@@ -768,6 +771,11 @@ class MemorySettings:
     concept_synthesis_aspiration_min_span_days: float = 14.0
     concept_synthesis_max_aspiration_clusters_per_run: int = 3
     concept_synthesis_max_aspiration_memories: int = 40
+    # L18 boundary synthesis: cap on explicit-anchor memories offered to the
+    # boundary proposer per run (per subject). Boundaries are mined from a
+    # hybrid of topic clusters (bounded by ``concept_synthesis_max_clusters_per_run``)
+    # and these deliberate remembered notes; this bounds the anchor batch.
+    concept_synthesis_max_boundary_memories: int = 24
     # L14 aspiration-momentum worker (the proactive check-in producer). It
     # drafts a private cue over an active aspiration that has gone stale enough
     # to be worth revisiting. ``interval_seconds`` is the idle cadence;
@@ -2345,7 +2353,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             concept_synthesis_max_tokens=max(
                 256,
-                int(memory_raw.get("concept_synthesis_max_tokens", 1600)),
+                int(memory_raw.get("concept_synthesis_max_tokens", 4096)),
             ),
             concept_synthesis_affect_min_samples=max(
                 1,
@@ -2450,6 +2458,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "concept_synthesis_max_aspiration_memories", 40
+                    )
+                ),
+            ),
+            concept_synthesis_max_boundary_memories=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_boundary_memories", 24
                     )
                 ),
             ),

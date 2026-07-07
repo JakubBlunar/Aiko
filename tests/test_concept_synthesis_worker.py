@@ -169,6 +169,8 @@ def _mem_settings(
         concept_synthesis_narrative_min_chain=3,
         concept_synthesis_max_narrative_clusters_per_run=cap_clusters,
         concept_synthesis_max_narrative_memories=cap_aiko,
+        # L18 boundary anchor-batch cap (clusters ride the shared cluster cap).
+        concept_synthesis_max_boundary_memories=cap_aiko,
     )
 
 
@@ -248,10 +250,13 @@ class WorkerHarness:
 
 def _both_responder(system, user):
     """Realistic responder: a user identity concept (spans 2 clusters) and
-    an aiko identity concept (spans 2 self memories). Value passes (L10) are
+    an aiko identity concept (spans 2 self memories).     Value passes (L10) and boundary passes (L18) are
     a deliberate no-op here so the identity-focused tests keep their counts;
-    dedicated value coverage lives in ``ValueProposerTests``."""
+    dedicated value coverage lives in ``ValueProposerTests`` and boundary in
+    ``tests/test_l18_boundary_concepts.py``."""
     if "VALUE concepts about" in system or "her own VALUES" in system:
+        return {"concepts": []}
+    if "BOUNDARIES" in system:
         return {"concepts": []}
     if "HERSELF" in system:
         return {
@@ -311,6 +316,8 @@ class ProposalTests(unittest.TestCase):
 
     def test_single_source_proposal_is_dropped(self) -> None:
         def responder(system, user):
+            if "BOUNDARIES" in system:
+                return {"concepts": []}
             if "HERSELF" in system:
                 return {"concepts": [
                     {"label": "lonely trait", "evidence_memory_ids": [1],
@@ -709,7 +716,9 @@ class AikoCombinedPassTests(unittest.TestCase):
         captured: dict[str, str] = {}
 
         def responder(system, user):
-            if "HERSELF" in system:
+            # Exclude the L18 boundary aiko pass (also first-person / "HERSELF")
+            # so we capture the identity self-theme prompt, not the boundary one.
+            if "HERSELF" in system and "BOUNDARIES" not in system:
                 captured["aiko"] = user
             return {"concepts": []}
 

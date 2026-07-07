@@ -64,7 +64,15 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 # Cosine threshold above which a fresh proposal is treated as the same
 # candidate as an existing concept (dedupe -> reinforce instead of add).
 _DEDUPE_COS = 0.9
-_MAX_TOKENS = 1600
+# Answer-token budget per proposer LLM call. Sized generously because a
+# reasoning-capable maintenance model (e.g. qwen3.x) can spend a large,
+# variable preamble on visible chain-of-thought *before* the ``{"concepts":
+# [...]}`` array, and several proposers emit multiple concepts with full
+# rationales in one object -- a tight cap truncates the array mid-object and
+# the batch fails to parse (the salvage pass recovers complete leading objects,
+# but a roomy budget avoids losing the tail in the first place). This is an
+# idle worker, so the extra tokens cost latency we don't feel.
+_MAX_TOKENS = 4096
 _TEMPERATURE = 0.6
 
 _KV_CLUSTER_SIGS = "concept_synth.cluster_sigs"
@@ -486,6 +494,21 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _max_boundary_memories(self) -> int:
+        """L18: cap on explicit-anchor memories offered to the boundary
+        proposer per run (per subject) -- bounds the prompt / LLM cost."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_boundary_memories",
+                    24,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -556,6 +579,7 @@ class ConceptSynthesisWorker:
             "ritual_dirty": False,
             "narrative_dirty": False,
             "aspiration_dirty": False,
+            "boundary_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -574,6 +598,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_narrative_pass(ctx, spec, stats, force)
                 elif spec.population == "aspiration":
                     proposals = self._run_aspiration_pass(ctx, spec, stats, force)
+                elif spec.population == "boundary":
+                    proposals = self._run_boundary_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -1239,6 +1265,122 @@ class ConceptSynthesisWorker:
             min_chain=min_chain,
             existing=self._existing_for(spec),
         )
+
+    # ── boundary pass (L18) ─────────────────────────────────────────────
+
+    def _run_boundary_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L18 boundary pass: mine behaviour-gating lines for ``spec.subject``
+        from a *hybrid* of topic clusters AND Aiko's explicit remembered
+        anchors -- ``self_tagged`` notes about the user for ``subject="user"``,
+        ``self`` / ``reflection`` / ``diary`` notes about herself for
+        ``subject="aiko"``. The proposer's composition rule lets a single
+        deliberate anchor seed a boundary. Combined cluster + memory
+        dirty-tracking (mirrors :meth:`_run_aiko_pass`) so a settled corpus is a
+        fast no-op. Gated by ``agent.boundary_synthesis_enabled``."""
+        if not bool(
+            getattr(self._agent_settings, "boundary_synthesis_enabled", True)
+        ):
+            return []
+        subject = spec.subject
+        anchor_kinds = (
+            AIKO_SELF_KINDS if subject == "aiko" else ("self_tagged",)
+        )
+        pop = self._memory_store.iter_by_kinds(anchor_kinds)
+        mem_count = len(pop)
+        clusters = self._dominant_clusters(subject)
+        if mem_count == 0 and not clusters:
+            return []
+        mem_max_id = max((int(m.id) for m in pop), default=0)
+
+        sig_key = spec.sig_key or ("concept_synth.boundary_sig." + subject)
+        prev = self._load_sigs(sig_key)
+        delta = self._dirty_size_delta
+
+        prev_count = int(prev.get("mem_count", 0)) if prev else 0
+        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+
+        prev_clusters = prev.get("clusters", {}) if prev else {}
+        dirty_clusters: list[tuple[int, str, int, int, bool]] = []
+        for rep, label, size, _kinds in clusters:
+            p = prev_clusters.get(str(rep))
+            if p is None:
+                dirty_clusters.append((rep, label, size, size, True))
+                continue
+            prev_size = int(p.get("size", 0))
+            prev_label = str(p.get("label", ""))
+            drift = abs(size - prev_size)
+            if force or prev_label != label or drift >= delta:
+                dirty_clusters.append((rep, label, size, drift, False))
+
+        is_dirty = force or mem_dirty or bool(dirty_clusters)
+        stats["boundary_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        cluster_index = [
+            (rep, label, size) for rep, label, size, _k in clusters
+        ]
+        dirty_clusters.sort(key=lambda d: (0 if d[4] else 1, -d[3]))
+        focus_rows = dirty_clusters[: self._max_clusters_per_run]
+        focus_reps = {rep for rep, _l, _s, _d, _n in focus_rows}
+        focus_clusters = [
+            FocusCluster(
+                rep=rep,
+                label=label,
+                size=size,
+                representative=self._memory_content(rep),
+                digest=self._digest_for_rep(rep),
+            )
+            for rep, label, size, _drift, _new in focus_rows
+        ]
+
+        # Anchor specifics: salience-sorted, minus any that are a cluster's
+        # representative (so a theme and its headline note aren't offered
+        # twice), capped.
+        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
+        batch = [
+            m
+            for m in sorted(
+                pop,
+                key=lambda m: float(getattr(m, "salience", 0.0)),
+                reverse=True,
+            )
+            if int(m.id) not in cluster_reps
+        ][: self._max_boundary_memories]
+
+        proposals = spec.propose(
+            ctx,
+            focus_clusters=focus_clusters,
+            cluster_index=cluster_index,
+            memories=batch,
+            existing=self._existing_for(spec),
+        )
+
+        # Persist combined signature. Processed focus reps go fresh; unprocessed
+        # dirty clusters keep their old signature so they stay dirty and drain
+        # next run (mirrors the aiko pass).
+        current = {rep: (label, size) for rep, label, size, _k in clusters}
+        new_clusters: dict[str, dict[str, Any]] = {}
+        for rep, (label, size) in current.items():
+            if rep in focus_reps:
+                new_clusters[str(rep)] = {"size": size, "label": label}
+            elif str(rep) in prev_clusters:
+                new_clusters[str(rep)] = prev_clusters[str(rep)]
+        self._save_sigs(
+            sig_key,
+            {
+                "mem_count": mem_count,
+                "mem_max_id": mem_max_id,
+                "clusters": new_clusters,
+            },
+        )
+        return proposals
 
     @staticmethod
     def _span_days(mems: list[Any]) -> float:

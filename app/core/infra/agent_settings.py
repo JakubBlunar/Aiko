@@ -514,6 +514,12 @@ class AgentSettings:
     # Off skips the worker and its prompt block. Cadence/thresholds live under
     # MemorySettings (``aspiration_momentum_*``).
     aspiration_momentum_enabled: bool = True
+    # L18 boundary synthesis (the behaviour-gating kind). When enabled, the
+    # synthesis worker's boundary pass mines each subject from a hybrid of topic
+    # clusters AND explicit remembered anchors (``self_tagged`` about the user /
+    # ``self`` about herself) for soft behaviour lines. Off just skips that one
+    # pass. Cap lives under MemorySettings (``concept_synthesis_max_boundary_memories``).
+    boundary_synthesis_enabled: bool = True
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

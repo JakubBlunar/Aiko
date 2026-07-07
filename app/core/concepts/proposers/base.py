@@ -124,7 +124,7 @@ class ProposerSpec:
     subject: str
     evidence_model: str
     # "clusters" | "aiko_memories" | "affect" | "shared_moments"
-    # | "narrative" | "aspiration"
+    # | "narrative" | "aspiration" | "boundary"
     population: str
     propose: Callable[..., list[CandidateProposal]]
     sig_key: str = ""
@@ -517,6 +517,139 @@ def propose_narrative(
     )
 
 
+def propose_boundary(
+    ctx: ProposerContext,
+    *,
+    subject: str,
+    system: str,
+    focus_clusters: Sequence[FocusCluster] = (),
+    cluster_index: Sequence[tuple[int, str, int]] = (),
+    memories: Sequence[Any] = (),
+    existing: Sequence[ExistingConcept] = (),
+) -> list[CandidateProposal]:
+    """Shared body for the L18 boundary proposers (both subjects).
+
+    A boundary *gates behaviour*, so unlike the trait/value kinds it is mined
+    from topic clusters AND Aiko's explicit remembered anchors (``memories`` --
+    ``self_tagged`` notes about the user for ``subject="user"``, ``self`` /
+    ``reflection`` / ``diary`` notes about herself for ``subject="aiko"``). One
+    concept may cite cluster rep ids, memory ids, or a mix, and evidence edges
+    carry mixed ``("cluster", rep)`` / ``("memory", id)`` nodes (the ``set``
+    model allows it).
+
+    **Composition rule.** A NEW boundary is accepted when it is grounded by at
+    least ONE explicit anchor memory OR by at least TWO clusters -- a single
+    deliberate anchor is enough (that is the whole point of the anchor path),
+    but a lone cluster is not (that would be a stray topic, not a line). This
+    upstream rule is what lets the L3 :func:`boundary_evidence_gate` safely
+    floor the source count at 1. ``subject`` shapes the prompt voice only (the
+    system prompt already carries the first-/third-person framing)."""
+    valid_reps = {int(rep) for rep, _label, _size in cluster_index}
+    valid_mem_ids: set[int] = set()
+    mem_lines: list[str] = []
+    for mem in memories:
+        try:
+            mid = int(mem.id)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        valid_mem_ids.add(mid)
+        mem_lines.append(f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+
+    if not valid_reps and not valid_mem_ids:
+        return []
+    existing_ids = {int(e.id) for e in existing}
+
+    sections: list[str] = []
+    if cluster_index:
+        map_lines = [
+            f"- [{rep}] {label} (size {size})"
+            for rep, label, size in cluster_index
+        ]
+        sections.append(
+            "TOPIC MAP (recurring patterns, by size):\n" + "\n".join(map_lines)
+        )
+    if focus_clusters:
+        focus_lines: list[str] = []
+        for fc in focus_clusters:
+            parts = [f"[{fc.rep}] {fc.label} (size {fc.size})"]
+            if fc.representative:
+                parts.append(f"  representative: {snippet(fc.representative)}")
+            if fc.digest:
+                parts.append(f"  digest: {snippet(fc.digest)}")
+            focus_lines.append("\n".join(parts))
+        sections.append("FOCUS CLUSTERS (detail):\n" + "\n\n".join(focus_lines))
+    if mem_lines:
+        sections.append(
+            "NOTABLE REMEMBERED NOTES (deliberate anchors -- a single one can "
+            "ground a boundary):\n" + "\n".join(mem_lines)
+        )
+    sections.append("ALREADY-KNOWN BOUNDARIES:\n" + format_existing(existing))
+    sections.append(
+        "Propose NEW boundaries grounded in the material above (cite cluster "
+        "rep ids in 'evidence_cluster_reps' and/or remembered-note ids in "
+        "'evidence_memory_ids'), or reinforce a known one by id."
+    )
+    user = "\n\n".join(sections)
+
+    raw = ctx.call_llm(system, user)
+    proposals: list[CandidateProposal] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        reps = list(
+            dict.fromkeys(
+                r
+                for r in coerce_id_list(item.get("evidence_cluster_reps"))
+                if r in valid_reps
+            )
+        )
+        mids = list(
+            dict.fromkeys(
+                i
+                for i in coerce_id_list(item.get("evidence_memory_ids"))
+                if i in valid_mem_ids
+            )
+        )
+        if not reps and not mids:
+            continue
+        evidence = [("cluster", str(r)) for r in reps]
+        evidence += [("memory", str(i)) for i in mids]
+        rationale = str(item.get("rationale") or "").strip()
+
+        reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
+        if reinforces is not None:
+            proposals.append(
+                CandidateProposal(
+                    label="",
+                    rationale=rationale,
+                    confidence=0.0,
+                    evidence=evidence,
+                    kind="boundary",
+                    subject=subject,
+                    evidence_model="set",
+                    reinforces_id=reinforces,
+                )
+            )
+            continue
+
+        label = str(item.get("label") or "").strip()
+        # Composition rule: one deliberate anchor OR >= 2 clusters.
+        if not label or not (len(mids) >= 1 or len(reps) >= 2):
+            continue
+        proposals.append(
+            CandidateProposal(
+                label=label,
+                rationale=rationale,
+                confidence=clamp01(item.get("confidence")),
+                evidence=evidence,
+                kind="boundary",
+                subject=subject,
+                evidence_model="set",
+            )
+        )
+    return proposals
+
+
 __all__ = [
     "AIKO_SELF_KINDS",
     "MIN_SOURCES",
@@ -530,6 +663,7 @@ __all__ = [
     "coerce_id_list",
     "format_existing",
     "propose_aiko_hybrid",
+    "propose_boundary",
     "propose_narrative",
     "propose_ordered_concept",
     "resolve_reinforces",

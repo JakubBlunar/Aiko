@@ -129,9 +129,11 @@ Future kinds (each a deferred entry below, all reusing L1-L6):
   "I want to be someone he can rely on"). The second `sequence`-evidence kind,
   the open-ended sibling of L8. See L14 (SHIPPED — both subjects + momentum
   callbacks).
-- **Boundary** (user **or** aiko, cluster-set; behaviour-gating) — constraints
-  that gate behaviour ("dislikes tickling"; or Aiko's own "I won't pretend to
-  agree just to please him"); the canonical medium-plasticity kind. See L18.
+- **Boundary** (user **or** aiko, `set`; behaviour-gating) — soft, guiding
+  constraints that gate behaviour ("go gentler about his work"; or Aiko's own "I
+  won't fake agreement just to please him"); the canonical medium-plasticity
+  kind, mined from clusters + explicit remembered anchors. See L18 (SHIPPED —
+  both subjects + anchor sourcing + composite surfacing).
 
 Note on **subject=aiko**: "self-concepts" are not a separate kind — they are
 identity / value / affective / boundary / aspiration concepts with
@@ -1309,35 +1311,162 @@ mentioning"? How to phrase drift on a core trait without sounding alarming?
 
 ---
 
-## L18. Boundary concepts (deferred)
+## L18. Boundary concepts (SHIPPED — both subjects + anchor sourcing + composite surfacing)
 
-**Kind.** subject `user` **or** `aiko` (L11), relationship-modulated, evidence
-model `cluster_set`; canonical **medium**-plasticity kind (L16).
+**Kind.** `boundary`, subject `user` (default) and `aiko` (L11), evidence model
+**`set`**; canonical **medium**-plasticity kind (`plasticity_default=0.45`).
 
 **Motivation.** Some concepts aren't traits or tastes — they *gate behaviour*.
-"Dislikes tickling", "don't tease about work", "no pet names yet". These
-directly constrain what Aiko does, so they're behaviorally load-bearing in a way
-identity concepts aren't.
+"Go gentler about his work when he's stressed", "no pet names yet"; first-person
+"I won't fake agreement just to please him". These are behaviorally load-bearing
+in a way identity concepts aren't. **Per the shipped steer they are guiding, not
+refusals** — soft relationship/preference lines that bend how Aiko shows up, never
+content-policy hard stops and never a reason to refuse a topic.
 
-**Key files.** Registry entry (L1); consumed by the behaviour subsystems that
-already exist — touch gestures (K31/K32), tease economy (K59), expression mask
-(K60) — as a *gate*, and modulated by `relationship_axes` trust (L16).
+**Status: SHIPPED.** What actually shipped:
 
-**Sketched approach.** Same cluster-set machinery, but the surfacing target is a
-behavioural *constraint* rather than a prompt fact: an active boundary concept
-suppresses or softens the relevant behaviour. Medium plasticity with
-trust-modulation (L16) means a boundary can loosen as the relationship deepens,
-but never silently — crossing or renegotiating a boundary should be a deliberate,
-trust-gated beat, not drift.
+- **Evidence = topic clusters + explicit remembered anchors.** A boundary forms
+  from a broad cluster pattern *or* from a specific thing Aiko deliberately chose
+  to remember (`[[remember:…]]` → `kind="self_tagged"` about the user;
+  `[[remember:self:…]]` → `kind="self"` about her — the aiko pass also reads
+  `reflection` / `diary`). This is the "we discuss it, she remembers it, then
+  behaves that way" path. The two proposers
+  ([`boundary_user`](../../app/core/concepts/proposers/boundary_user.py) /
+  [`boundary_aiko`](../../app/core/concepts/proposers/boundary_aiko.py)) are the
+  first **hybrid** proposers for both subjects, sharing a `propose_boundary` body
+  in [`base.py`](../../app/core/concepts/proposers/base.py).
+- **A single deliberate anchor can seed a boundary.** Unlike every other kind
+  (`>= 2` sources), one explicit anchor is enough; cluster-only boundaries still
+  need `>= 2`. The proposer enforces the composition rule (`>= 1` anchor **OR**
+  `>= 2` clusters); the L3
+  [`boundary_evidence_gate`](../../app/core/concepts/concept_lifecycle.py)
+  *overrides* the source floor to 1 (not `max`) — deliberately bypassing the L21
+  young-graph source-count tightening for a chosen annotation, while its
+  confidence tightening still applies via `max`. Age (`0.5d`) + confidence
+  (`0.65`) floors still guard against noise.
+- **Soft always-on surfacing.** `core_always_on=True`, `core_min_confidence=0.8`
+  (joins the L27 core lane), no `surfacing_targets` (it routes through the T3
+  `relevant_context` path, not `profile_block`). A dedicated
+  `_concept_boundary_header` renders it with soft/guiding framing for user, aiko,
+  and relationship subjects — no refusal/hard-stop language.
+- **A general per-kind composite surfacing scorer.** Surfacing used to be
+  single-signal (core lane by *confidence* only, turn-relevant fill by *cosine*
+  only). L18 adds a `SurfaceWeights` field on `ConceptKind` and a pure
+  [`concept_surfacing`](../../app/core/concepts/concept_surfacing.py) helper
+  (`recency_boost` + `composite_score`) blending **context (cosine) + confidence
+  + recency**, applied to the turn-relevant fill in
+  [`inner_life_part1`](../../app/core/session/inner_life_part1.py). Defaults are
+  context-only, so this is **opt-in per kind** and every other kind is unchanged;
+  boundary opts into a recency-heavy blend (`context 0.5 / confidence 0.2 /
+  recency 0.3`, 14-day half-life) because a line she was just reminded of matters
+  more than a stale one.
 
-> **Carries the deferred L16 piece.** L16 shipped the plasticity *governor* but
-> **not** relationship modulation. This kind is its first consumer: build the
-> trust/duration → plasticity modulation (via `relation=influences` edges reading
-> `relationship_axes` trust + `relationship` duration) here, so a boundary's
-> plasticity rises with trust. Until then boundaries use their static
-> medium-plasticity default.
+**Synthesis.** A `"boundary"` population + `_run_boundary_pass(subject)` in
+[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py),
+mirroring the aiko combined cluster+memory pass (subject-specific anchor kinds,
+combined dirty-tracking, per-subject `sig_key`). Gated by
+`agent.boundary_synthesis_enabled`; anchor batch capped by
+`concept_synthesis_max_boundary_memories` (default 24).
 
-**Effort.** Medium (on top of L1-L5, L16).
+**Deferred (tracked below as their own backlog items, so nothing is silently
+absorbed into this shipped entry):** L18a boundary trust-modulation (the deferred
+L16 piece), L18b boundary behaviour-subsystem gating, L18c boundary-vs-conversation
+conflict steer, L18d concept-vs-concept conflict detection (meta concepts), L18e
+boundary evidence broadening.
+
+**Effort.** Shipped on top of L1-L5 / L11 / L27.
+
+---
+
+## L18a. Boundary trust-modulation (carries the deferred L16 piece)
+
+**Motivation.** L16 shipped the plasticity *governor* but **not** relationship
+modulation. Boundaries are its natural first consumer: a boundary should loosen
+as the bond deepens — but never silently. Crossing or renegotiating a boundary
+should be a deliberate, trust-gated beat, not drift.
+
+**Sketched approach.** `relation="influences"` edges from `relationship_axes`
+trust + `relationship` duration into a boundary's effective plasticity, so its
+plasticity rises with trust. Until then boundaries use their static medium
+(`0.45`) default.
+
+**Key files.** [`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py)
+(plasticity governor), the relationship axes/duration source, boundary registry
+entry.
+
+**Effort.** Medium (on top of L16 + L18).
+
+---
+
+## L18b. Boundary behaviour-subsystem gating
+
+**Motivation.** Today a boundary surfaces as **prompt guidance** only. To be
+truly load-bearing, an active boundary should also suppress/soften the relevant
+behaviour subsystems at the code level — not just ask the model nicely.
+
+**Sketched approach.** Read active boundary concepts (via `ConceptView`) as a
+*gate* into touch gestures (K31/K32), the tease economy (K59), and the expression
+mask (K60), softening rather than hard-blocking (consistent with the "guiding,
+not refusals" steer).
+
+**Key files.** The K31/K32/K59/K60 subsystems; a boundary→behaviour read path off
+`ConceptView`.
+
+**Effort.** Medium.
+
+---
+
+## L18c. Boundary-vs-conversation conflict steer (fast-follow)
+
+**Motivation.** When the live turn heads toward crossing an active boundary, Aiko
+should feel the tension in-the-moment rather than only carrying the boundary as
+background guidance.
+
+**Sketched approach.** A K29-style per-turn detector (`classify_pair` + a cosine
+gate) between the live turn and active boundaries → a soft T6 cue when the turn
+approaches a boundary. Reuses the existing per-turn conflict machinery pattern.
+
+**Key files.** K29 conflict detector, the T6 cue surfacing path, `ConceptView`
+boundary read.
+
+**Effort.** Small-medium (fast-follow to L18).
+
+---
+
+## L18d. Concept-vs-concept conflict detection (under meta concepts)
+
+**Motivation.** Tensions *between* concepts — boundary vs value, boundary vs
+boundary — are a distinct problem from boundary-vs-live-conversation. This is the
+general machinery for reasoning about how concepts clash, and belongs with the
+meta-concept work (L29).
+
+**Sketched approach.** A new edge relation + a detector that distinguishes
+concept-vs-concept tensions, feeding the meta-concept layer rather than a per-turn
+steer.
+
+**Key files.** `concept_edges` (new relation), a concept-pair detector; folds into
+L29 meta narratives.
+
+**Effort.** Medium-large (with L29).
+
+---
+
+## L18e. Boundary evidence broadening
+
+**Motivation.** L18 mines *deliberate* anchors (`[[remember:…]]`) + clusters. Many
+stated limits/preferences never become a deliberate anchor but still deserve to
+seed a boundary; and now that the per-kind `surface_weights` mechanism exists, the
+non-boundary kinds can be tuned too.
+
+**Sketched approach.** A dedicated preference/limit memory signal (mine explicit
+stated-limit memories beyond deliberate anchors), plus tuning `surface_weights`
+for identity/value/etc. now that the composite scorer is in place.
+
+**Key files.** The anchor-kind selection in `_run_boundary_pass`, the memory
+tagging/signal source, per-kind `surface_weights` in
+[`concept_kinds.py`](../../app/core/concepts/concept_kinds.py).
+
+**Effort.** Small-medium.
 
 ---
 

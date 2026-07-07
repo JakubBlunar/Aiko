@@ -1434,6 +1434,23 @@ class InnerLifePart1Mixin:
                     ))
 
         if embedding is not None and mature and view is not None:
+            # L18: score the turn-relevant fill by a per-kind blend of context
+            # (cosine), confidence, and recency rather than cosine alone.
+            # Behaviour concepts (boundary) weight recency higher; the default
+            # weights are context-only, so every other kind ranks exactly as
+            # before. See ``ConceptKind.surface_weights``.
+            from datetime import datetime, timezone
+
+            from app.core.concepts.concept_kinds import (
+                DEFAULT_SURFACE_WEIGHTS,
+                get_kind,
+            )
+            from app.core.concepts.concept_surfacing import (
+                composite_score,
+                recency_boost,
+            )
+
+            surf_now = datetime.now(timezone.utc)
             cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
             pairs = view.relevant(embedding, k=max(cap * 2, 6))
             for i, (concept, cos) in enumerate(pairs):
@@ -1443,9 +1460,25 @@ class InnerLifePart1Mixin:
                 label = (getattr(concept, "label", "") or "").strip()
                 if not label:
                     continue
+                kind = get_kind(getattr(concept, "kind", "") or "")
+                weights = (
+                    kind.surface_weights if kind is not None
+                    else DEFAULT_SURFACE_WEIGHTS
+                )
+                rec = recency_boost(
+                    getattr(concept, "last_reinforced_at", None),
+                    surf_now,
+                    weights.recency_halflife_days,
+                )
+                relevance = composite_score(
+                    cosine=float(cos),
+                    confidence=float(getattr(concept, "confidence", 0.0)),
+                    recency=rec,
+                    w=weights,
+                )
                 cost = estimate_tokens(label) + 16
                 concept_cands.append(ContextCandidate(
-                    source="concept", relevance=float(cos), tokens=cost,
+                    source="concept", relevance=relevance, tokens=cost,
                     order=1000 + i, payload=concept,
                     key=f"k{cid or i}",
                 ))
@@ -1618,6 +1651,8 @@ class InnerLifePart1Mixin:
                 family = "narrative"
             elif kind == "aspiration":
                 family = "aspiration"
+            elif kind == "boundary":
+                family = "boundary"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -1642,7 +1677,7 @@ class InnerLifePart1Mixin:
         for subject in ("user", "relationship", "aiko"):
             for family in (
                 "trait", "value", "affective", "ritual", "narrative",
-                "aspiration",
+                "aspiration", "boundary",
             ):
                 lines = groups.get((subject, family))
                 if not lines:
@@ -1672,6 +1707,8 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_narrative_header(subject, name)
         if family == "aspiration":
             return InnerLifePart1Mixin._concept_aspiration_header(subject, name)
+        if family == "boundary":
+            return InnerLifePart1Mixin._concept_boundary_header(subject, name)
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -1803,6 +1840,37 @@ class InnerLifePart1Mixin:
             "journey they're on; quietly root for it and draw on it when it's "
             "relevant, never recite it back or turn it into pressure, and stay "
             "open to how it shifts):"
+        )
+
+    @staticmethod
+    def _concept_boundary_header(subject: str, name: str) -> str:
+        """Per-subject intro for *boundary* concepts (L18) — behaviour-gating
+        lines, framed as **soft guides, never refusals**. The wording must keep
+        Aiko from becoming rigid: these bend her behaviour gently, they are not
+        hard stops and never justify refusing a topic. ``aiko`` reads
+        first-person (lines she holds for herself, renegotiable as trust grows);
+        ``relationship`` as the two of them; everything else as lines to be
+        mindful of around the user."""
+        if subject == "aiko":
+            return (
+                "Lines you've come to hold for yourself — how you'd rather show "
+                "up (let them steer your behaviour gently; hold them softly, "
+                "never as hard rules, and know they can be renegotiated as "
+                "trust grows):"
+            )
+        if subject == "relationship":
+            return (
+                f"Things you've come to sense you and {name} are better off "
+                "being mindful of together (lean gentler here; these are soft "
+                "guides for how you two are, never rules to enforce — hold them "
+                "lightly and stay open to being wrong):"
+            )
+        return (
+            f"Things you've come to sense {name} would rather you be mindful "
+            "of — lean gentler here (these are soft guides for your behaviour, "
+            "not rules to enforce and never a reason to refuse; hold them "
+            "lightly, ease off rather than push, and stay open to being "
+            "wrong):"
         )
 
     @staticmethod
