@@ -345,6 +345,49 @@ def aspiration_evidence_gate(
     )
 
 
+# Built-in bars for a *boundary* concept (L18). A boundary *gates behaviour*
+# ("go gentler about work", "I won't fake agreement"), so unlike the other
+# set kinds it is allowed to form from a SINGLE deliberate anchor -- a thing
+# Aiko explicitly chose to remember (``[[remember:...]]`` / ``[[remember:self:...]]``).
+# The proposer guarantees a one-source boundary is anchor-grounded (cluster-only
+# boundaries always carry >= 2 clusters), so this gate floors the source count at
+# 1 by *overriding* the caller's min (NOT ``max``-ing it up). That deliberately
+# bypasses the L21 young-graph *source-count* tightening -- an explicit anchor is
+# a chosen annotation, not a thin inference -- while the young-graph *confidence*
+# tightening still applies via ``max``. Age + confidence floors guard against noise.
+_BOUNDARY_MIN_SOURCES = 1
+_BOUNDARY_MIN_AGE_DAYS = 0.5
+_BOUNDARY_MIN_CONFIDENCE = 0.65
+
+
+def boundary_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``boundary`` concepts (L18).
+
+    Same shape as :func:`set_evidence_gate`, but the source floor is
+    **overridden** to 1 (not ``max``-ed up) so a single deliberate anchor can
+    seed a behaviour boundary; the proposer enforces that a one-source boundary
+    is anchor-grounded. The age + confidence floors still take the caller's
+    value when it is higher, via ``max`` (so the L21 young-graph confidence
+    tightening still applies).
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=_BOUNDARY_MIN_SOURCES,
+        min_age_days=max(float(min_age_days), _BOUNDARY_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _BOUNDARY_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "confidence_target",
@@ -358,4 +401,5 @@ __all__ = [
     "ritual_evidence_gate",
     "narrative_evidence_gate",
     "aspiration_evidence_gate",
+    "boundary_evidence_gate",
 ]

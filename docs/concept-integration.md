@@ -95,6 +95,28 @@ me** — neither branches on kind names. In
   store directly), and — staleness-driven — drafts a private check-in cue into
   the `aiko.aspiration_momentum` kv ring; `_render_aspiration_momentum_block`
   surfaces it as a watermark-gated T6 hint the chat model phrases in-context.
+- `boundary` concepts (L18, `subject=user` **and** `aiko`) are the
+  behaviour-*gating* kind — soft, guiding lines, never refusals ("go gentler
+  about his work"; first-person "I won't fake agreement just to please him").
+  They are the first kind mined from a **hybrid of topic clusters + explicit
+  remembered anchors** (`self_tagged` about the user / `self`+`reflection`+`diary`
+  about her), and a **single deliberate anchor can seed one** — the proposer's
+  composition rule (`>= 1` anchor OR `>= 2` clusters) lets the L3
+  `boundary_evidence_gate` floor the source count at 1. They **join the always-on
+  core lane** (`core_always_on=True`, `core_min_confidence=0.8`) yet carry **no**
+  `surfacing_targets` (they route through the T3 `relevant_context` path, pinned +
+  relevance, not `profile_block`). Rendering routes `family="boundary"` through a
+  soft `_concept_boundary_header`.
+- **Composite surfacing (per-kind, introduced with L18).** The turn-relevant
+  concept fill in `build_relevant_context` no longer ranks by raw cosine alone: a
+  `SurfaceWeights` field on each `ConceptKind` + the pure
+  [`concept_surfacing.py`](../app/core/concepts/concept_surfacing.py) helper
+  (`recency_boost` + `composite_score`) blend **context (cosine) + confidence +
+  recency**. Defaults are context-only (so it reproduces the old cosine ranking —
+  **opt-in per kind**); `boundary` opts into a recency-heavy blend so a line she
+  was just reminded of outranks a stale one. Behaviour concepts weight recency
+  higher than identity/value concepts, which barely care about it. The core lane
+  + pinned path is unchanged (still confidence-ranked, turn-agnostic).
 - `kinds_for_target(target, subject=None)` resolves the set of kind names
   routing to a target. `ConceptView.for_target` consumes it, so a new kind
   auto-flows to the matching consumer with **no consumer code change** —
@@ -108,12 +130,13 @@ isn't derived twice.
 | view / claim | source of truth | consumer / target | status |
 | --- | --- | --- | --- |
 | Aiko's self-model (who she is + what she values) | `subject=aiko` concepts (identity + value) | `build_relevant_context` -> T3 `relevant_context` (`yourself` headers) | **shipped (concepts-only)** |
-| always-on core lane | `core_always_on` kinds (`identity`, `value`) | `build_relevant_context` | **shipped (migrated)** |
+| always-on core lane | `core_always_on` kinds (`identity`, `value`, `boundary`) | `build_relevant_context` | **shipped (migrated)** |
 | concept recall tool | active concepts (any subject) | `recall_concept` | **shipped (migrated)** |
 | user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | deferred (L28) |
 | cluster annotation | concepts spanning a cluster | `interest_map` via `for_cluster` | deferred (L28) |
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
 | aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |
+| behaviour boundaries (soft guiding lines) | `boundary` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance (composite-scored) | **shipped (L18)** |
 
 ## Recipe for a new consumer
 

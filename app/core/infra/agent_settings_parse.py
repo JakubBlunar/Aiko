@@ -218,6 +218,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             aspiration_momentum_enabled=bool(
                 agent_raw.get("aspiration_momentum_enabled", True),
             ),
+            boundary_synthesis_enabled=bool(
+                agent_raw.get("boundary_synthesis_enabled", True),
+            ),
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),

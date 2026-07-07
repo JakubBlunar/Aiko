@@ -59,6 +59,7 @@ from dataclasses import dataclass, field
 from app.core.concepts.concept_lifecycle import (
     affective_evidence_gate,
     aspiration_evidence_gate,
+    boundary_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
@@ -79,6 +80,36 @@ EVIDENCE_MODELS: tuple[str, ...] = (
     "recurring",
     "meta",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceWeights:
+    """Per-kind blend for the turn-relevant surfacing score (L18).
+
+    The concept fill in ``build_relevant_context`` scores each candidate by a
+    normalized blend of three signals rather than raw cosine alone:
+
+    - ``context`` -- cosine of the concept label to the live turn embedding.
+    - ``confidence`` -- the concept's stored confidence.
+    - ``recency`` -- a decay boost from ``last_reinforced_at`` (see
+      :func:`app.core.concepts.concept_surfacing.recency_boost`), with the
+      per-kind ``recency_halflife_days`` controlling how fast it fades.
+
+    Defaults are **context-only** (``confidence=recency=0``), which reproduces
+    the pre-L18 cosine-only behaviour, so a kind opts into the blend by setting
+    non-zero weights -- no change to any other kind until it is tuned.
+    Behaviour-loaded kinds (boundary) weight recency higher: a line she was just
+    reminded of should matter more than a stale one, whereas an identity trait
+    barely cares about recency.
+    """
+
+    context: float = 1.0
+    confidence: float = 0.0
+    recency: float = 0.0
+    recency_halflife_days: float = 30.0
+
+
+DEFAULT_SURFACE_WEIGHTS = SurfaceWeights()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +145,10 @@ class ConceptKind:
     # earn a higher bar). ``None`` => fall back to the global
     # ``context_budget_core_min_confidence`` setting.
     core_min_confidence: float | None = None
+    # L18: the per-kind blend the turn-relevant surfacing scorer uses (context
+    # cosine + confidence + recency). Defaults to context-only, which is exactly
+    # the pre-L18 cosine ranking, so this is opt-in per kind.
+    surface_weights: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -371,11 +406,53 @@ register_kind(
 )
 
 
+# ── L18: boundary ─────────────────────────────────────────────────────
+# The behaviour-*gating* kind: a line to be gentle about rather than a trait
+# ("go gentler about work with him", first-person "I won't fake agreement just
+# to please him"). Unlike the other set kinds it is mined from topic clusters
+# AND Aiko's explicit remembered anchors (``self_tagged`` about the user /
+# ``self`` about herself), and a SINGLE deliberate anchor can seed one (the L18
+# gate floors the source count at 1; the proposer guarantees a one-source
+# boundary is anchor-grounded). Subject-parameterized (user + aiko). These are
+# guiding, not refusals -- the rendering keeps them soft. Because a boundary is
+# behaviorally load-bearing it joins the always-on core lane, and it weights
+# *recency* in surfacing (a line she was just reminded of matters more).
+register_kind(
+    ConceptKind(
+        name="boundary",
+        subject="user",
+        evidence_model="set",
+        # L16: the canonical *medium* plasticity band -- stickier than affect
+        # (0.5) so a boundary doesn't churn, more fluid than a value (0.2) so it
+        # can be renegotiated. Leaves headroom for the deferred L16 trust
+        # modulation to raise it as the bond deepens.
+        plasticity_default=0.45,
+        # L3: the boundary gate -- floors the source count at 1 so a single
+        # deliberate anchor can promote (cluster-only boundaries still need >= 2,
+        # enforced by the proposer), with medium age + confidence bars.
+        promotion_gate=boundary_evidence_gate,
+        # L24 / L27: a boundary is a behaviour guide, not a user-profile fact, so
+        # it is NOT routed to ``profile_block`` -- it surfaces via the T3
+        # relevant_context path (core-lane pin + relevance) for both subjects.
+        core_always_on=True,
+        core_min_confidence=0.8,
+        # L18: recency-heavy surfacing blend -- a behaviour line she was just
+        # reminded of should outrank a stale one; still weighted by context and
+        # confidence, and short half-life so old boundaries fade in ranking.
+        surface_weights=SurfaceWeights(
+            context=0.5, confidence=0.2, recency=0.3, recency_halflife_days=14.0
+        ),
+    )
+)
+
+
 __all__ = [
     "CONCEPT_KINDS",
+    "DEFAULT_SURFACE_WEIGHTS",
     "EVIDENCE_MODELS",
     "SUBJECTS",
     "ConceptKind",
+    "SurfaceWeights",
     "core_lane_kinds",
     "get_kind",
     "kinds_for_target",

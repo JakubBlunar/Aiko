@@ -47,6 +47,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   that show a *sustained direction* rather than a closed arc. Shares the
   :func:`propose_ordered_concept` body with narrative (gate flag
   ``"directional"`` vs ``"closed"``).
+- ``boundary_user`` / ``boundary_aiko`` -- *boundary* (a behaviour-gating line;
+  L18). The first *hybrid* proposers for both subjects: they mine the
+  ``"boundary"`` population -- topic clusters AND Aiko's explicit remembered
+  anchors (``self_tagged`` about the user / ``self`` about herself) -- and name
+  soft lines that should guide her behaviour. Share the :func:`propose_boundary`
+  body, whose composition rule lets a single deliberate anchor seed a boundary
+  (a lone cluster needs a sibling). Only the voice differs (user third-person /
+  aiko first-person).
 """
 from __future__ import annotations
 
@@ -55,6 +63,8 @@ from app.core.concepts.proposers import (
     affective_user,
     aspiration_aiko,
     aspiration_user,
+    boundary_aiko,
+    boundary_user,
     identity_aiko,
     identity_user,
     narrative_aiko,
@@ -76,6 +86,7 @@ from app.core.concepts.proposers.base import (
     coerce_id_list,
     format_existing,
     propose_aiko_hybrid,
+    propose_boundary,
     propose_narrative,
     propose_ordered_concept,
     resolve_reinforces,
@@ -85,6 +96,8 @@ from app.core.concepts.proposers.affective_aiko import propose_affective_aiko
 from app.core.concepts.proposers.affective_user import propose_affective_user
 from app.core.concepts.proposers.aspiration_aiko import propose_aspiration_aiko
 from app.core.concepts.proposers.aspiration_user import propose_aspiration_user
+from app.core.concepts.proposers.boundary_aiko import propose_boundary_aiko
+from app.core.concepts.proposers.boundary_user import propose_boundary_user
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
 from app.core.concepts.proposers.narrative_aiko import propose_narrative_aiko
@@ -107,6 +120,8 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     narrative_aiko.SPEC,
     aspiration_user.SPEC,
     aspiration_aiko.SPEC,
+    boundary_user.SPEC,
+    boundary_aiko.SPEC,
 )
 
 
@@ -128,6 +143,9 @@ __all__ = [
     "propose_aiko_hybrid",
     "propose_aspiration_aiko",
     "propose_aspiration_user",
+    "propose_boundary",
+    "propose_boundary_aiko",
+    "propose_boundary_user",
     "propose_identity_aiko",
     "propose_identity_user",
     "propose_narrative",
