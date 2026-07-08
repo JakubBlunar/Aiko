@@ -171,6 +171,8 @@ def _mem_settings(
         concept_synthesis_max_narrative_memories=cap_aiko,
         # L18 boundary anchor-batch cap (clusters ride the shared cluster cap).
         concept_synthesis_max_boundary_memories=cap_aiko,
+        # L23 communication-style anchor-batch cap (same shape as boundary).
+        concept_synthesis_max_comm_style_memories=cap_aiko,
     )
 
 
@@ -208,6 +210,9 @@ class WorkerHarness:
         assistant_name=None,
         earliest=None,
         shared_moments=None,
+        user_profile_store=None,
+        style_signal_store=None,
+        user_id_provider=None,
     ):
         tmp = tempfile.mkdtemp()
         self.path = Path(tmp) / "test.db"
@@ -245,6 +250,9 @@ class WorkerHarness:
                 if assistant_name is not None
                 else None
             ),
+            user_profile_store=user_profile_store,
+            style_signal_store=style_signal_store,
+            user_id_provider=user_id_provider,
         )
 
 
@@ -257,6 +265,8 @@ def _both_responder(system, user):
     if "VALUE concepts about" in system or "her own VALUES" in system:
         return {"concepts": []}
     if "BOUNDARIES" in system:
+        return {"concepts": []}
+    if "communication-style" in system:
         return {"concepts": []}
     if "HERSELF" in system:
         return {

@@ -55,6 +55,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   body, whose composition rule lets a single deliberate anchor seed a boundary
   (a lone cluster needs a sibling). Only the voice differs (user third-person /
   aiko first-person).
+- ``communication_style_user`` / ``communication_style_aiko`` -- *communication
+  style* (a self-authored delivery-style line bound to context; L23 follow-on).
+  Hybrid proposers over the ``"comm_style"`` population -- topic clusters AND the
+  remembered anchors (``self_tagged`` about the user / ``self`` about herself) --
+  additionally *guided* (not grounded) by a persisted style-signal digest (K13
+  labels + the profile ``communication_style`` field). Share the
+  :func:`propose_communication_style` body, whose composition rule lets a single
+  anchor seed a line. The delivery vehicle for lightening the hard-coded persona.
 """
 from __future__ import annotations
 
@@ -65,6 +73,8 @@ from app.core.concepts.proposers import (
     aspiration_user,
     boundary_aiko,
     boundary_user,
+    communication_style_aiko,
+    communication_style_user,
     identity_aiko,
     identity_user,
     narrative_aiko,
@@ -87,6 +97,7 @@ from app.core.concepts.proposers.base import (
     format_existing,
     propose_aiko_hybrid,
     propose_boundary,
+    propose_communication_style,
     propose_narrative,
     propose_ordered_concept,
     resolve_reinforces,
@@ -98,6 +109,12 @@ from app.core.concepts.proposers.aspiration_aiko import propose_aspiration_aiko
 from app.core.concepts.proposers.aspiration_user import propose_aspiration_user
 from app.core.concepts.proposers.boundary_aiko import propose_boundary_aiko
 from app.core.concepts.proposers.boundary_user import propose_boundary_user
+from app.core.concepts.proposers.communication_style_aiko import (
+    propose_communication_style_aiko,
+)
+from app.core.concepts.proposers.communication_style_user import (
+    propose_communication_style_user,
+)
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
 from app.core.concepts.proposers.narrative_aiko import propose_narrative_aiko
@@ -122,6 +139,8 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     aspiration_aiko.SPEC,
     boundary_user.SPEC,
     boundary_aiko.SPEC,
+    communication_style_user.SPEC,
+    communication_style_aiko.SPEC,
 )
 
 
@@ -146,6 +165,9 @@ __all__ = [
     "propose_boundary",
     "propose_boundary_aiko",
     "propose_boundary_user",
+    "propose_communication_style",
+    "propose_communication_style_aiko",
+    "propose_communication_style_user",
     "propose_identity_aiko",
     "propose_identity_user",
     "propose_narrative",

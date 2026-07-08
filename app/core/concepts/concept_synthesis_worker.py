@@ -27,6 +27,7 @@ kind/subject-agnostic.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -181,6 +182,9 @@ class ConceptSynthesisWorker:
         user_display_name_provider: Callable[[], str] | None = None,
         assistant_display_name_provider: Callable[[], str] | None = None,
         concept_event_store: "ConceptEventStore | None" = None,
+        user_profile_store: Any = None,
+        style_signal_store: Any = None,
+        user_id_provider: Callable[[], str] | None = None,
     ) -> None:
         self._concept_store = concept_store
         self._concept_event_store = concept_event_store
@@ -198,6 +202,12 @@ class ConceptSynthesisWorker:
         self._notify_concept_added = notify_concept_added
         self._user_name_provider = user_display_name_provider
         self._assistant_name_provider = assistant_display_name_provider
+        # L23: optional style-signal sources for the communication-style pass.
+        # All optional -> when absent the digest is empty and the pass still
+        # runs on anchors + clusters (keeps tests / cold installs working).
+        self._user_profile_store = user_profile_store
+        self._style_signal_store = style_signal_store
+        self._user_id_provider = user_id_provider
         self._llm_calls = 0
 
     @staticmethod
@@ -509,6 +519,22 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _max_comm_style_memories(self) -> int:
+        """L23: cap on explicit-anchor memories offered to the
+        communication-style proposer per run (per subject) -- bounds prompt /
+        LLM cost."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_comm_style_memories",
+                    24,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -580,6 +606,7 @@ class ConceptSynthesisWorker:
             "narrative_dirty": False,
             "aspiration_dirty": False,
             "boundary_dirty": False,
+            "comm_style_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -600,6 +627,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_aspiration_pass(ctx, spec, stats, force)
                 elif spec.population == "boundary":
                     proposals = self._run_boundary_pass(ctx, spec, stats, force)
+                elif spec.population == "comm_style":
+                    proposals = self._run_comm_style_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -1381,6 +1410,194 @@ class ConceptSynthesisWorker:
             },
         )
         return proposals
+
+    def _run_comm_style_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L23 communication-style pass: mine self-authored delivery-style lines
+        for ``spec.subject`` from a *hybrid* of topic clusters AND the remembered
+        anchors (``self_tagged`` about the user / ``self`` / ``reflection`` /
+        ``diary`` about herself), additionally *guided* by a persisted
+        style-signal digest (K13 labels + the profile ``communication_style``
+        field). The digest steers labeling only -- it is never evidence -- so a
+        concept still needs real cluster/memory grounding (the proposer's
+        composition rule lets a single anchor seed a line). Combined cluster +
+        memory dirty-tracking, with a digest hash folded in so a material shift
+        in the observed style re-fires the pass. Gated by
+        ``agent.communication_style_synthesis_enabled``."""
+        if not bool(
+            getattr(
+                self._agent_settings,
+                "communication_style_synthesis_enabled",
+                True,
+            )
+        ):
+            return []
+        subject = spec.subject
+        anchor_kinds = (
+            AIKO_SELF_KINDS if subject == "aiko" else ("self_tagged",)
+        )
+        pop = self._memory_store.iter_by_kinds(anchor_kinds)
+        mem_count = len(pop)
+        clusters = self._dominant_clusters(subject)
+        if mem_count == 0 and not clusters:
+            return []
+        mem_max_id = max((int(m.id) for m in pop), default=0)
+
+        # Style digest guides labeling (not evidence). Its hash is part of the
+        # dirty key so a material style shift re-fires an otherwise-settled pass.
+        digest = self._build_style_digest(subject)
+        digest_hash = hashlib.sha1(
+            digest.encode("utf-8", "ignore")
+        ).hexdigest()[:12]
+
+        sig_key = spec.sig_key or ("concept_synth.comm_style_sig." + subject)
+        prev = self._load_sigs(sig_key)
+        delta = self._dirty_size_delta
+
+        prev_count = int(prev.get("mem_count", 0)) if prev else 0
+        prev_digest = str(prev.get("digest_hash", "")) if prev else ""
+        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+        digest_dirty = bool(digest_hash) and digest_hash != prev_digest
+
+        prev_clusters = prev.get("clusters", {}) if prev else {}
+        dirty_clusters: list[tuple[int, str, int, int, bool]] = []
+        for rep, label, size, _kinds in clusters:
+            p = prev_clusters.get(str(rep))
+            if p is None:
+                dirty_clusters.append((rep, label, size, size, True))
+                continue
+            prev_size = int(p.get("size", 0))
+            prev_label = str(p.get("label", ""))
+            drift = abs(size - prev_size)
+            if force or prev_label != label or drift >= delta:
+                dirty_clusters.append((rep, label, size, drift, False))
+
+        is_dirty = force or mem_dirty or digest_dirty or bool(dirty_clusters)
+        stats["comm_style_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        cluster_index = [
+            (rep, label, size) for rep, label, size, _k in clusters
+        ]
+        dirty_clusters.sort(key=lambda d: (0 if d[4] else 1, -d[3]))
+        focus_rows = dirty_clusters[: self._max_clusters_per_run]
+        focus_reps = {rep for rep, _l, _s, _d, _n in focus_rows}
+        focus_clusters = [
+            FocusCluster(
+                rep=rep,
+                label=label,
+                size=size,
+                representative=self._memory_content(rep),
+                digest=self._digest_for_rep(rep),
+            )
+            for rep, label, size, _drift, _new in focus_rows
+        ]
+
+        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
+        batch = [
+            m
+            for m in sorted(
+                pop,
+                key=lambda m: float(getattr(m, "salience", 0.0)),
+                reverse=True,
+            )
+            if int(m.id) not in cluster_reps
+        ][: self._max_comm_style_memories]
+
+        proposals = spec.propose(
+            ctx,
+            focus_clusters=focus_clusters,
+            cluster_index=cluster_index,
+            memories=batch,
+            existing=self._existing_for(spec),
+            style_digest=digest,
+        )
+
+        current = {rep: (label, size) for rep, label, size, _k in clusters}
+        new_clusters: dict[str, dict[str, Any]] = {}
+        for rep, (label, size) in current.items():
+            if rep in focus_reps:
+                new_clusters[str(rep)] = {"size": size, "label": label}
+            elif str(rep) in prev_clusters:
+                new_clusters[str(rep)] = prev_clusters[str(rep)]
+        self._save_sigs(
+            sig_key,
+            {
+                "mem_count": mem_count,
+                "mem_max_id": mem_max_id,
+                "digest_hash": digest_hash,
+                "clusters": new_clusters,
+            },
+        )
+        return proposals
+
+    def _build_style_digest(self, subject: str) -> str:
+        """Compact, persisted read of how the user communicates -- the K13
+        style-signal labels + the distilled profile ``communication_style``
+        field -- rendered as one short line for the proposer prompt.
+
+        This is *guidance only* (never evidence). For ``subject="user"`` it reads
+        as "how {user} writes lately"; for ``subject="aiko"`` the same user read
+        is framed as "what he responds to", so Aiko's self-authored style adapts
+        to him. Returns ``""`` when the sources are absent (cold install / tests)
+        or too thin to have warmed up -- the pass then runs on anchors + clusters
+        alone."""
+        uid = ""
+        try:
+            uid = (self._user_id_provider() if self._user_id_provider else "") or ""
+        except Exception:
+            uid = ""
+        if not uid:
+            return ""
+
+        parts: list[str] = []
+
+        # K13 style-signal labels from the persisted window (no live analyzer).
+        if self._style_signal_store is not None:
+            try:
+                blob = self._style_signal_store.load(uid)
+            except Exception:
+                blob = None
+            if isinstance(blob, dict):
+                try:
+                    from app.core.persona.style_signal import StyleSignalAnalyzer
+
+                    analyzer = StyleSignalAnalyzer(
+                        agent_settings=self._agent_settings
+                    )
+                    analyzer.from_dict(blob)
+                    sig = analyzer.current_signal()
+                    labels = (
+                        analyzer.labels_for_signal(sig) if sig else []
+                    )
+                except Exception:
+                    labels = []
+                if labels:
+                    parts.append("writes: " + ", ".join(labels))
+
+        # Distilled profile communication_style field.
+        if self._user_profile_store is not None:
+            try:
+                entry = self._user_profile_store.fields(uid).get(
+                    "communication_style"
+                )
+            except Exception:
+                entry = None
+            value = str(getattr(entry, "value", "") or "").strip()
+            if value:
+                parts.append("noted style: " + value)
+
+        if not parts:
+            return ""
+
+        who = "How he writes / what he responds to" if subject == "aiko" else "How the user writes lately"
+        return who + " -- " + "; ".join(parts)
 
     @staticmethod
     def _span_days(mems: list[Any]) -> float:

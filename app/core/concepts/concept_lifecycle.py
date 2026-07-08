@@ -472,6 +472,46 @@ def boundary_evidence_gate(
     )
 
 
+# Built-in bars for a *communication_style* concept (L23 follow-on). A style
+# guide ("explain code in depth with examples", "lead more in casual chat") is a
+# behaviour boundary on delivery, so it mirrors boundary: the source floor is
+# **overridden** to 1 so a single deliberate self-authored anchor can seed a
+# style line ("tell her once and it sticks"); the proposer enforces that a
+# one-source style concept is anchor-grounded (cluster-only inference still needs
+# >= 2). Age + confidence floors take the caller's value when higher, via ``max``.
+_COMM_STYLE_MIN_SOURCES = 1
+_COMM_STYLE_MIN_AGE_DAYS = 0.5
+_COMM_STYLE_MIN_CONFIDENCE = 0.65
+
+
+def communication_style_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``communication_style`` concepts (L23 follow-on).
+
+    Same shape as :func:`set_evidence_gate`, with a boundary-like source floor
+    **overridden** to 1 so a single deliberate anchor (a remembered "talk to me
+    like X" note) can promote a delivery-style line. The proposer's composition
+    rule keeps a one-source concept anchor-grounded; cluster-only inference needs
+    >= 2. Age + confidence floors still take the caller's value when higher, via
+    ``max`` (so the L21 young-graph confidence tightening still applies).
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=_COMM_STYLE_MIN_SOURCES,
+        min_age_days=max(float(min_age_days), _COMM_STYLE_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _COMM_STYLE_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "RelationshipSignal",
@@ -489,4 +529,5 @@ __all__ = [
     "narrative_evidence_gate",
     "aspiration_evidence_gate",
     "boundary_evidence_gate",
+    "communication_style_evidence_gate",
 ]

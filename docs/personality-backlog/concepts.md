@@ -1665,14 +1665,49 @@ history behind DT4 replay)? Precision/recall target to gate a release?
 > *identity-only* first (`context_budget_identity_cap` / `_min_confidence`) and
 > was generalised to be **kind-aware** in **L27**.
 
-> **Follow-on — self-authored *style* concepts (future).** The budget is the
-> delivery vehicle for the north star: progressively lighten the fixed
-> persona prompt so Aiko is more model-agnostic and driven by remembered
-> context. The next pass is a new concept *kind* for **communication style**
-> — how detailed her replies should be, when to lead vs. follow, how much to
-> hedge — mined from the conversation and surfaced through the same
-> `relevant_context` region so it conforms to the user over time instead of
-> being hard-coded in the persona file.
+> **Follow-on — self-authored *style* concepts. SHIPPED (kind + mining +
+> surfacing; persona-lightening deferred).** The budget is the delivery vehicle
+> for the north star: progressively lighten the fixed persona prompt so Aiko is
+> more model-agnostic and driven by remembered context. Shipped as a new concept
+> *kind* `communication_style` (`subject=user` **and** `aiko`) — how detailed her
+> replies should be, when to lead vs. follow, how much to hedge — **bound to the
+> context it applies to** and surfaced through the same `relevant_context` region
+> so it conforms to the user over time instead of being hard-coded in the persona
+> file.
+>
+> - **Kind + gate.** `communication_style` (`set`, `plasticity_default=0.4`) with
+>   a boundary-like `communication_style_evidence_gate` (source floor overridden
+>   to 1 so a **single self-authored anchor** promotes — "tell her once and it
+>   sticks"; cluster-only inference still needs `>= 2`; age `0.5d` + confidence
+>   `0.65` floors). Registered in [`concept_kinds.py`](../../app/core/concepts/concept_kinds.py).
+> - **Hybrid mining, digest-guided.** A `"comm_style"` synthesis population +
+>   `_run_comm_style_pass(subject)` feeds two proposers
+>   ([`communication_style_user`](../../app/core/concepts/proposers/communication_style_user.py)
+>   / [`communication_style_aiko`](../../app/core/concepts/proposers/communication_style_aiko.py))
+>   sharing `propose_communication_style`. Evidence = anchors (`self_tagged` /
+>   `self`·`reflection`·`diary`) + topic clusters; **guided (never grounded)** by
+>   a persisted *style-signal digest* — K13 `style_signal` labels + the distilled
+>   `user_profile.communication_style` field (digest hash folded into the pass
+>   dirty-key so a material style shift re-fires it).
+> - **Context-scoped surfacing.** NOT on the always-on core lane — a style line is
+>   only relevant when its context is live — so it surfaces purely by relevance +
+>   spreading activation: the proposer binds each label to its context and cites
+>   the backing topic cluster, so `ConceptView.activated` lights it up when that
+>   topic is hot. Rendered under a soft `_concept_communication_style_header`.
+> - **Knobs.** `agent.communication_style_synthesis_enabled`,
+>   `memory.concept_synthesis_max_comm_style_memories` (see
+>   [`docs/configuration.md`](../configuration.md)).
+>
+> **Deferred (do not forget) — lighten the hard-coded persona.** The concept kind
+> ships first; the actual *trimming* of the fixed persona style copy is a
+> follow-up once style concepts have populated (mirrors how the aiko identity /
+> value concepts shipped before the self-image persona copy was pulled). Candidate
+> blocks in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+> to soften/trim once the mined layer carries the load: **"How you talk:"**,
+> **"Conversation rules:"** (the LENGTH rule + vary-openers), **"Leading vs
+> following:"**, and the hedging sections ("Kill the survey hedge", memory-trust
+> hedging). Also open: `core_always_on` pinning for style once tuned, and richer
+> digest inputs (K14 engagement, K75 expertise, K20 pushback).
 
 **Motivation.** L5 caps *how many* concepts surface but not *which*. Once the
 population grows to dozens of active concepts, "show a few" needs to mean "show
