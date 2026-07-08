@@ -14,7 +14,18 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
-from app.core.concepts.concept_surfacing import composite_score, recency_boost
+from app.core.concepts.concept_surfacing import (
+    composite_score,
+    event_charge,
+    habituation_factor,
+    load_habituation,
+    recency_boost,
+    salience,
+    save_habituation,
+    stability,
+    surface_score,
+    turns_since_surfaced,
+)
 
 _UTC = timezone.utc
 _NOW = datetime(2026, 3, 1, 12, 0, tzinfo=_UTC)
@@ -104,6 +115,163 @@ class CompositeScoreTests(unittest.TestCase):
         hi = composite_score(cosine=0.62, confidence=0.1, recency=0.1, w=w)
         lo = composite_score(cosine=0.55, confidence=1.0, recency=1.0, w=w)
         self.assertGreater(hi, lo)
+
+
+class StabilityTests(unittest.TestCase):
+    def test_low_plasticity_keeps_full_confidence(self) -> None:
+        # A sticky (plasticity 0) belief contributes its confidence outright.
+        self.assertAlmostEqual(stability(0.8, 0.0), 0.8)
+
+    def test_high_plasticity_halves_contribution(self) -> None:
+        # A fully fluid (plasticity 1) concept contributes half its confidence.
+        self.assertAlmostEqual(stability(0.8, 1.0), 0.4)
+        self.assertAlmostEqual(stability(1.0, 0.5), 0.75)
+
+    def test_clamps_inputs(self) -> None:
+        self.assertAlmostEqual(stability(2.0, 0.0), 1.0)
+        self.assertAlmostEqual(stability(-1.0, 0.0), 0.0)
+
+
+class HabituationFactorTests(unittest.TestCase):
+    def test_never_surfaced_is_neutral(self) -> None:
+        self.assertEqual(habituation_factor(None, window=4, floor=0.35), 1.0)
+
+    def test_zero_window_disables(self) -> None:
+        self.assertEqual(habituation_factor(1, window=0, floor=0.35), 1.0)
+
+    def test_same_turn_not_penalized(self) -> None:
+        # turns_since <= 0 means a second look on the same turn -> no penalty.
+        self.assertEqual(habituation_factor(0, window=4, floor=0.35), 1.0)
+
+    def test_strongest_at_previous_turn(self) -> None:
+        # Surfaced last turn (ts == 1) is the floor, the strongest suppression.
+        self.assertAlmostEqual(
+            habituation_factor(1, window=4, floor=0.35), 0.35
+        )
+
+    def test_recovers_across_window(self) -> None:
+        f2 = habituation_factor(2, window=4, floor=0.35)
+        f3 = habituation_factor(3, window=4, floor=0.35)
+        self.assertLess(0.35, f2)
+        self.assertLess(f2, f3)
+        self.assertLess(f3, 1.0)
+        # Fully recovered once turns_since reaches the window.
+        self.assertEqual(habituation_factor(4, window=4, floor=0.35), 1.0)
+        self.assertEqual(habituation_factor(9, window=4, floor=0.35), 1.0)
+
+
+class SurfaceScoreTests(unittest.TestCase):
+    def test_default_weights_equal_cosine(self) -> None:
+        for cos in (0.0, 0.3, 0.77, 1.0):
+            self.assertAlmostEqual(
+                surface_score(cosine=cos, confidence=0.9, recency=0.5,
+                              stability=0.5, w=DEFAULT_SURFACE_WEIGHTS),
+                cos,
+            )
+
+    def test_habituation_multiplies_final_score(self) -> None:
+        self.assertAlmostEqual(
+            surface_score(cosine=0.8, confidence=0.0, habituation=0.5),
+            0.4,
+        )
+
+    def test_activation_is_additive_boost(self) -> None:
+        # activation is applied on top of the normalized base, so a primed
+        # concept can rise above its raw cosine.
+        w = SurfaceWeights(context=1.0, activation=0.5)
+        self.assertAlmostEqual(
+            surface_score(cosine=0.4, confidence=0.0, activation=1.0, w=w),
+            0.9,
+        )
+
+    def test_stability_enters_the_blend(self) -> None:
+        w = SurfaceWeights(context=0.5, stability=0.5)
+        self.assertAlmostEqual(
+            surface_score(cosine=1.0, confidence=0.0, stability=0.0, w=w), 0.5
+        )
+        self.assertAlmostEqual(
+            surface_score(cosine=1.0, confidence=0.0, stability=1.0, w=w), 1.0
+        )
+
+    def test_result_clamped_to_unit_range(self) -> None:
+        w = SurfaceWeights(context=1.0, activation=1.0)
+        self.assertEqual(
+            surface_score(cosine=1.0, confidence=0.0, activation=1.0, w=w), 1.0
+        )
+
+
+class SalienceTests(unittest.TestCase):
+    def test_no_events_is_zero(self) -> None:
+        self.assertEqual(event_charge([], _NOW, halflife_days=14.0), 0.0)
+
+    def test_contradiction_charges_hardest(self) -> None:
+        fresh = _NOW.isoformat()
+        contra = event_charge(
+            [("contradicted", fresh)], _NOW, halflife_days=14.0
+        )
+        shift = event_charge(
+            [("plasticity_shift", fresh)], _NOW, halflife_days=14.0
+        )
+        self.assertAlmostEqual(contra, 1.0)
+        self.assertGreaterEqual(contra, shift)
+        self.assertGreater(shift, 0.0)
+
+    def test_charge_takes_strongest_and_decays(self) -> None:
+        fresh = _NOW.isoformat()
+        old = (_NOW - timedelta(days=14.0)).isoformat()
+        # A fresh promotion + an old contradiction: the decayed contradiction
+        # (1.0 * 0.5) still beats the fresh promotion (0.4 * 1.0).
+        mixed = event_charge(
+            [("promoted", fresh), ("contradicted", old)],
+            _NOW, halflife_days=14.0,
+        )
+        self.assertAlmostEqual(mixed, 0.5, places=3)
+
+    def test_unknown_event_type_ignored(self) -> None:
+        self.assertEqual(
+            event_charge(
+                [("discovered", _NOW.isoformat())], _NOW, halflife_days=14.0
+            ),
+            0.0,
+        )
+
+    def test_salience_soft_or(self) -> None:
+        self.assertAlmostEqual(salience(change=0.0, affect=0.0), 0.0)
+        self.assertAlmostEqual(salience(change=0.5, affect=0.0), 0.5)
+        # Soft-OR: 0.5 and 0.5 -> 0.75, never exceeding 1.0.
+        self.assertAlmostEqual(salience(change=0.5, affect=0.5), 0.75)
+        self.assertAlmostEqual(salience(change=1.0, affect=0.9), 1.0)
+
+
+class HabituationStateTests(unittest.TestCase):
+    def test_load_empty_or_junk_is_empty(self) -> None:
+        self.assertEqual(load_habituation(lambda _k: None), {})
+        self.assertEqual(load_habituation(lambda _k: ""), {})
+        self.assertEqual(load_habituation(lambda _k: "not-json"), {})
+        self.assertEqual(load_habituation(lambda _k: "[1,2,3]"), {})
+
+    def test_save_load_round_trip(self) -> None:
+        box: dict[str, str] = {}
+        save_habituation(box.__setitem__, {7: 3, 9: 5})
+        from app.core.concepts.concept_surfacing import HABITUATION_KV_KEY
+        self.assertIn(HABITUATION_KV_KEY, box)
+        loaded = load_habituation(box.get)
+        self.assertEqual(loaded, {7: 3, 9: 5})
+
+    def test_save_prunes_to_cap_keeping_newest(self) -> None:
+        box: dict[str, str] = {}
+        state = {cid: cid for cid in range(10)}  # turn == id
+        save_habituation(box.__setitem__, state, cap=3)
+        loaded = load_habituation(box.get)
+        self.assertEqual(set(loaded), {7, 8, 9})
+
+    def test_turns_since_surfaced(self) -> None:
+        state = {7: 10}
+        self.assertIsNone(turns_since_surfaced(state, 99, 12))
+        self.assertEqual(turns_since_surfaced(state, 7, 12), 2)
+        # Same turn / clock skew never yields a negative penalty.
+        self.assertEqual(turns_since_surfaced(state, 7, 10), 0)
+        self.assertEqual(turns_since_surfaced(state, 7, 8), 0)
 
 
 if __name__ == "__main__":

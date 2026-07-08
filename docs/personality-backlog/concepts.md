@@ -1632,16 +1632,38 @@ history behind DT4 replay)? Precision/recall target to gate a release?
 > and selected to fill a shared, context-window-relative token budget,
 > reserved before history. Per-source floors/caps/weights/min-relevance are
 > the `memory.context_budget_*` knobs. See
-> [`docs/context-budget.md`](../../docs/context-budget.md). What remains
-> genuinely open from the sketch below (deferred): the per-concept
-> **novelty/anti-nag cooldown**, **confidence×plasticity-stability** and
-> **recency-of-reinforcement** terms in the relevance blend, and the
-> **tension/drift priority override** — the current selector scores on
-> turn-relevance cosine + per-source weight only. The **always-on core
-> concept lane** (surface high-confidence concepts regardless of turn
-> relevance) has a v0 shipped — an *identity-only* pinned lane
-> (`context_budget_identity_cap` / `_min_confidence`) — and is generalised
-> to be **kind-aware** in **L27**.
+> [`docs/context-budget.md`](../../docs/context-budget.md).
+>
+> **Cognitive-surfacing pass — SHIPPED.** The deferred blend terms are now
+> live as a "how a mind brings a thought forward" scorer in
+> [`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)
+> (`surface_score`), driven by per-kind
+> [`SurfaceWeights`](../../app/core/concepts/concept_kinds.py):
+> - **confidence×plasticity stability** (`stability()`) — identity/value rank
+>   on how *settled* a belief is, not just cosine;
+> - **recency of reinforcement** (`recency_boost()`, already used by boundary,
+>   now affective too);
+> - **emotional / recent-change salience** (`salience()` + `event_charge()`) —
+>   a freshly `contradicted` / `plasticity_shift` / `revived` / `promoted`
+>   concept intrudes, fading over a per-kind half-life (boundary/affective);
+> - **spreading activation** (`ConceptView.activated()`) — concepts that share
+>   a *hot topic cluster* with the turn's active set (pinned core) are primed
+>   into the pool with an additive boost even at low direct cosine; the
+>   concept→concept `references` path (`dependents_of`) is wired but **dormant**
+>   until meta concepts (L12 / L20) populate those edges;
+> - **habituation / anti-nag cooldown** (`habituation_factor()` + a `kv_meta`
+>   `{concept_id: last_surfaced_turn}` map on the `relationship.total_turns`
+>   clock) — a concept surfaced in the last few turns is damped (strong on the
+>   flex lane so it steps aside; soft on the core lane, which *rotates* which
+>   core beliefs show rather than suppressing any). Knobs:
+>   `memory.concept_surfacing_*` (see [`docs/configuration.md`]). The per-turn
+>   `score` breakdown is threaded into the concept trace for the MCP view.
+>
+> Still genuinely open (deferred): the **tension/drift priority override** and a
+> **cluster-affect** term for salience (the `affect` input to `salience()` is
+> threaded but fed `0.0` today). The **always-on core concept lane** shipped
+> *identity-only* first (`context_budget_identity_cap` / `_min_confidence`) and
+> was generalised to be **kind-aware** in **L27**.
 
 > **Follow-on — self-authored *style* concepts (future).** The budget is the
 > delivery vehicle for the north star: progressively lighten the fixed
@@ -1833,7 +1855,7 @@ cache-hit reports exactly what was in the prompt.
 
 ## L27. Kind-aware always-on core-concept selection (generalise the identity lane)
 
-**Status: SHIPPED (kind-aware core lane); anti-nag cooldown deferred.** The
+**Status: SHIPPED (kind-aware core lane + anti-nag rotation).** The
 always-on lane is now **registry-driven and balanced**, not identity-only.
 `build_relevant_context` calls `ConceptView.core_lane(...)`, which gathers every
 kind that opts in via `ConceptKind.core_always_on` (each gated by its own
@@ -1850,11 +1872,20 @@ in the turn trace (MCP `get_last_concept_trace`). A new kind joins the lane with
 **one registry field** — no selector/region code change. See
 [`docs/context-budget.md`](../../docs/context-budget.md#always-on-core-lane-l27).
 
-**Remaining (deferred):** the per-concept **anti-nag cooldown** (so the same core
-concept isn't pinned on literally every turn) — held back while `identity` is the
-only live kind, since rotating a tiny identity set would just hide the self-model
-on alternating turns. The optional live **tension** (L12) / fresh **drift** (L17)
-override stays deferred with those entries. Legacy
+**Anti-nag rotation — SHIPPED (L23 cognitive-surfacing pass).** The core lane now
+applies a *soft* habituation: it over-fetches, and a core concept surfaced within
+the last few turns drops **behind** the fresh ones (both keeping the balanced
+round-robin order), so when more concepts qualify than the cap allows the lane
+*rotates* which ones show — but a concept is never suppressed out of contention
+(the sole qualifier in a bucket always stays, gated by the gentler
+`concept_surfacing_core_habituation_floor`). The flex lane uses the stronger
+`concept_surfacing_habituation_floor`. State is a `kv_meta`
+`{concept_id: last_surfaced_turn}` map on the `relationship.total_turns` clock;
+see [`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py) and the
+`memory.concept_surfacing_*` knobs.
+
+**Remaining (deferred):** the optional live **tension** (L12) / fresh **drift**
+(L17) override stays deferred with those entries. Legacy
 `context_budget_identity_cap` / `_min_confidence` config keys still parse.
 
 Original framing (retained for context):

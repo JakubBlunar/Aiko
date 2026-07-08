@@ -331,10 +331,22 @@ class CandidatesPoolTests(unittest.TestCase):
         self.assertEqual(calls["n"], 0)
 
 
+class _CEdge:
+    def __init__(self, dst_type, dst_id, *, src_type=None, src_id=None,
+                 relation="evidence"):
+        self.dst_type = dst_type
+        self.dst_id = str(dst_id)
+        self.src_type = src_type
+        self.src_id = str(src_id) if src_id is not None else None
+        self.relation = relation
+
+
 class _FakeConceptStore:
-    def __init__(self, concepts: list[object], *, near_score: float = 0.6) -> None:
+    def __init__(self, concepts: list[object], *, near_score: float = 0.6,
+                 edges: dict | None = None) -> None:
         self._concepts = concepts
         self._near_score = near_score
+        self._edges = edges or {}
 
     def nearest(self, _vec: object, *, status: str = "active", k: int = 8):
         return [(c, self._near_score) for c in self._concepts[:k]]
@@ -347,10 +359,27 @@ class _FakeConceptStore:
             and (kind is None or getattr(c, "kind", None) == kind)
         ]
 
+    def get(self, cid):
+        return next(
+            (c for c in self._concepts if int(getattr(c, "concept_id", 0)) == int(cid)),
+            None,
+        )
+
+    def edges_from(self, node_type, node_id):
+        return list(self._edges.get((node_type, str(node_id)), []))
+
+    def evidence_of(self, _cid):
+        return []
+
+    def dependents_of(self, _cid):
+        return []
+
 
 class _FakeTopicGraph:
-    def __init__(self, rows: list[tuple[int, str, float]]) -> None:
+    def __init__(self, rows: list[tuple[int, str, float]],
+                 clusters: list | None = None) -> None:
         self._rows = rows
+        self._clusters = clusters or []
 
     def mature(self, *, min_clusters: int = 6) -> bool:
         return True
@@ -360,6 +389,9 @@ class _FakeTopicGraph:
 
     def cluster_id_for(self, _mid: int):
         return None
+
+    def topic_clusters(self):
+        return list(self._clusters)
 
 
 def _ms() -> SimpleNamespace:
@@ -582,6 +614,241 @@ class RelevantContextResultTests(unittest.TestCase):
         rc = RelevantContext()
         self.assertEqual(rc.text, "")
         self.assertEqual(rc.reason, "ok")
+
+
+class _FakeKV:
+    """Minimal ``kv_get`` / ``kv_set`` backed by a dict (the L23 habituation
+    store seam)."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    def kv_get(self, key: str):
+        return self.store.get(key)
+
+    def kv_set(self, key: str, value: str) -> None:
+        self.store[key] = value
+
+
+class _FakeTracker:
+    """A relationship tracker whose ``get`` exposes a mutable ``total_turns``."""
+
+    def __init__(self, total_turns: int = 0) -> None:
+        self.total_turns = total_turns
+
+    def get(self, _user_id: str):
+        return SimpleNamespace(total_turns=self.total_turns)
+
+
+class _FakeEventStore:
+    """A concept-event timeline whose ``list`` returns newest-first events."""
+
+    def __init__(self, events: list) -> None:
+        self._events = events
+
+    def list(self, *, limit: int = 200):
+        return self._events[: max(1, int(limit))]
+
+
+class HabituationWiringTests(unittest.TestCase):
+    """L23 habituation wired through ``build_relevant_context``: the chosen
+    concepts are stamped into ``kv_meta`` and damp themselves on later turns
+    (flex), while the always-on core lane *rotates* rather than suppresses."""
+
+    def _host(self, concepts: list, *, near_score: float, tracker: _FakeTracker,
+              kv: _FakeKV, events: list | None = None,
+              edges: dict | None = None, cluster_rows: list | None = None,
+              clusters: list | None = None):
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        hits = [_mem_hit(i, 0.9 - i * 0.02) for i in range(15)]
+        rag = RagRetriever(
+            _StubStore(hits),  # type: ignore[arg-type]
+            _StubEmbedder(),  # type: ignore[arg-type]
+            top_k=6, score_threshold=0.0,
+            include_messages=False, include_documents=False,
+            memory_store=_RecordingMemoryStore(),  # type: ignore[arg-type]
+        )
+        rows = (
+            cluster_rows if cluster_rows is not None
+            else [(1, "weekend hiking", 0.6)]
+        )
+
+        class _Host(InnerLifePart1Mixin):
+            def __init__(self) -> None:
+                self._rag_retriever = rag
+                self._embedder = _StubEmbedder()
+                self._concept_store = _FakeConceptStore(
+                    concepts, near_score=near_score, edges=edges,
+                )
+                self._topic_graph = _FakeTopicGraph(rows, clusters=clusters)
+                self._memory_settings = _ms()
+                self._memory_store = None
+                self._chat_db = kv
+                self._relationship_tracker = tracker
+                self._user_id = "u1"
+                self._concept_event_store = (
+                    _FakeEventStore(events) if events is not None else None
+                )
+
+            @property
+            def user_display_name(self) -> str:
+                return "Jacob"
+
+        return _Host()
+
+    def _run(self, host, text="tell me about hiking"):
+        return host.build_relevant_context(
+            user_text=text, recent_turns=[], session_key="s1",
+            budget_tokens=2000, degrade_level=0,
+        )
+
+    def _trace_by_id(self, region):
+        return {
+            int(e["concept_id"]): e
+            for e in region.concept_trace.get("surfaced", [])
+        }
+
+    def test_chosen_ids_written_to_kv(self) -> None:
+        from app.core.concepts.concept_surfacing import (
+            HABITUATION_KV_KEY,
+            load_habituation,
+        )
+        concept = SimpleNamespace(
+            concept_id=7, label="enjoys systems thinking", confidence=0.82,
+            plasticity=0.5, kind="identity", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        kv = _FakeKV()
+        host = self._host([concept], near_score=0.6,
+                          tracker=_FakeTracker(3), kv=kv)
+        region = self._run(host)
+        self.assertIn("enjoys systems thinking", region.text)
+        state = load_habituation(kv.kv_get)
+        # Stamped at total_turns + 1 (the in-flight turn index).
+        self.assertEqual(state.get(7), 4)
+        self.assertIn(HABITUATION_KV_KEY, kv.store)
+
+    def test_flex_concept_habituated_on_resurface(self) -> None:
+        # A non-core (affective) concept that surfaces on the turn-relevant lane
+        # is damped when it comes back a turn later.
+        concept = SimpleNamespace(
+            concept_id=11, label="loves talking about music", confidence=0.6,
+            plasticity=0.5, kind="affective", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        kv = _FakeKV()
+        tracker = _FakeTracker(3)
+        host = self._host([concept], near_score=0.7, tracker=tracker, kv=kv)
+
+        first = self._run(host)
+        self.assertIn(11, self._trace_by_id(first))
+        comp1 = self._trace_by_id(first)[11]["score"]
+        self.assertAlmostEqual(comp1["habituation"], 1.0)
+
+        # Next user-turn: the post-turn counter advanced by one. Surfaced last
+        # turn, habituation pushes it under the relevance floor -> it steps aside
+        # entirely this turn (repetition suppression / anti-nag).
+        tracker.total_turns = 4
+        second = self._run(host)
+        self.assertNotIn(11, self._trace_by_id(second))
+
+    def test_core_lane_soft_rotation(self) -> None:
+        # Three core-qualifying identity concepts, a core cap of two. Pre-seed
+        # the habituation clock so #1 and #2 were surfaced last turn while #3 is
+        # rested: the core lane rotates the rested #3 in and drops the *weaker*
+        # just-shown one (#2), never emptying the pinned set.
+        from app.core.concepts.concept_surfacing import save_habituation
+
+        def _c(cid: int, conf: float):
+            return SimpleNamespace(
+                concept_id=cid, label=f"trait {cid}", confidence=conf,
+                plasticity=0.3, kind="identity", subject="user",
+                status="active", last_reinforced_at=None,
+            )
+
+        concepts = [_c(1, 0.9), _c(2, 0.85), _c(3, 0.8)]
+        kv = _FakeKV()
+        tracker = _FakeTracker(10)  # current turn == 11
+        save_habituation(kv.kv_set, {1: 10, 2: 10})  # both surfaced last turn
+        host = self._host(concepts, near_score=0.0, tracker=tracker, kv=kv)
+
+        region = self._run(host, text="what's the weather")
+        pinned = {
+            cid for cid, e in self._trace_by_id(region).items()
+            if e.get("pinned")
+        }
+        # #3 (rested) rotates into the core lane; the cap is still honoured and
+        # at least one previously-shown concept is retained.
+        self.assertIn(3, pinned)
+        self.assertEqual(len(pinned), 2)
+        self.assertTrue(pinned & {1, 2})
+
+    def test_salience_lifts_freshly_changed_concept(self) -> None:
+        # Two equally-relevant affective concepts; only #21 was just
+        # contradicted. Salience should lift #21's flex score above its stale
+        # sibling #22.
+        def _c(cid: int):
+            return SimpleNamespace(
+                concept_id=cid, label=f"feels strongly about topic {cid}",
+                confidence=0.6, plasticity=0.5, kind="affective",
+                subject="user", status="active", last_reinforced_at=None,
+            )
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        events = [
+            SimpleNamespace(
+                concept_id=21, event_type="contradicted", created_at=now_iso,
+            )
+        ]
+        kv = _FakeKV()
+        host = self._host(
+            [_c(21), _c(22)], near_score=0.7, tracker=_FakeTracker(3),
+            kv=kv, events=events,
+        )
+        region = self._run(host)
+        comps = self._trace_by_id(region)
+        self.assertGreater(comps[21]["score"]["salience"], 0.0)
+        self.assertEqual(comps[22]["score"]["salience"], 0.0)
+        self.assertGreater(
+            comps[21]["score"]["score"], comps[22]["score"]["score"]
+        )
+
+    def test_activation_lifts_hot_cluster_sibling(self) -> None:
+        # A low-cosine identity concept that spans the turn's hot topic cluster
+        # gets a spreading-activation boost that carries it over the relevance
+        # floor -- surfacing on association, not direct similarity.
+        concept = SimpleNamespace(
+            concept_id=2, label="prefers minimalist tools", confidence=0.6,
+            plasticity=0.3, kind="identity", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        # best_clusters_for -> cluster_id 5; the bridge maps it to rep id 100;
+        # concept #2 spans cluster 100.
+        cluster_rows = [(5, "developer tooling", 0.6)]
+        clusters = [SimpleNamespace(cluster_id=5, representative_id=100)]
+        edges = {("cluster", "100"): [_CEdge("concept", 2)]}
+
+        def _mk():
+            return self._host(
+                [concept], near_score=0.1, tracker=_FakeTracker(3),
+                kv=_FakeKV(), cluster_rows=cluster_rows, clusters=clusters,
+                edges=edges,
+            )
+
+        # With activation on, the sibling surfaces and its trace records a boost.
+        host = _mk()
+        region = self._run(host, text="what tools should I use")
+        comps = self._trace_by_id(region)
+        self.assertIn(2, comps)
+        self.assertGreater(comps[2]["score"].get("activation", 0.0), 0.0)
+
+        # With activation off, the same low-cosine concept stays below the floor.
+        host_off = _mk()
+        host_off._memory_settings.concept_surfacing_activation_enabled = False
+        region_off = self._run(host_off, text="what tools should I use")
+        self.assertNotIn(2, self._trace_by_id(region_off))
 
 
 if __name__ == "__main__":

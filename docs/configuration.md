@@ -928,6 +928,24 @@ One turn-relevance-scored selector fills a shared token budget with a variable m
 - `memory.context_budget_core_cap` *(int, `2`, min `0`)* — **always-on core lane (L27)**: up to this many high-confidence concepts are *pinned* into the region every turn regardless of turn relevance — this is how "who the user is, what they + Aiko value, how she wants to behave" reaches the prompt even when it doesn't match the topic. Which kinds participate is declared per-kind in the `ConceptKind` registry (`core_always_on`); the picks are **balanced across kinds and subjects** so no one kind (or subject) crowds out the rest, and Aiko's self-model (`subject=aiko`) surfaces alongside the user-model. Pinned concepts bypass the concept `_cap` and `_min_relevance`, so they enrich on top of the relevance picks (they still consume the shared token budget). `0` disables the lane. *(The legacy `context_budget_identity_cap` key still parses into this one.)*
 - `memory.context_budget_core_min_confidence` *(float, `0.75`, clamped `[0, 1]`)* — global fallback confidence bar a concept must clear before it is eligible for the pinned lane, so only settled core beliefs are asserted every turn. A kind may set its own `core_min_confidence` in the registry (e.g. a higher bar for behaviour-loaded value/boundary kinds); this setting applies to kinds that don't. *(The legacy `context_budget_identity_min_confidence` key still parses into this one.)*
 
+#### Cognitive surfacing (L23) — how concepts are *chosen* per turn
+
+The turn-relevant concept lane is scored by a per-kind blend (`ConceptKind.surface_weights`) that models how a mind brings a thought forward: cosine + confidence + recency + a **stability** term (`confidence × plasticity-adjusted`, so a settled/sticky belief ranks on how firmly it's held) + an **emotional/recent-change salience** bump + an additive **spreading-activation** boost, all damped by a repetition-suppression **habituation** multiplier. Defaults are context-only per kind, so an untuned kind ranks exactly as before.
+
+- **Habituation (repetition suppression / anti-nag).** A concept surfaced in the last few turns is damped so surfacing rotates instead of nagging. Turn clock is `relationship.total_turns`; state persists in `kv_meta` under `concept.surfacing_habituation`.
+  - `memory.concept_surfacing_habituation_enabled` *(bool, `true`)* — master switch.
+  - `memory.concept_surfacing_habituation_window_turns` *(int, `4`, min `0`)* — how many turns the suppression lasts (strongest at "surfaced last turn", recovering to none across the window). `0` disables.
+  - `memory.concept_surfacing_habituation_floor` *(float, `0.35`, clamped `[0, 1]`)* — strongest suppression multiplier on the **flex** (turn-relevant) lane; lower = a just-surfaced concept steps aside harder.
+  - `memory.concept_surfacing_core_habituation_floor` *(float, `0.8`, clamped `[0, 1]`)* — gentler floor on the **always-on core lane**: the lane over-fetches and *rotates* which core concepts show, but never suppresses the sole qualifier out of contention.
+  - `memory.concept_surfacing_state_cap` *(int, `300`, min `0`)* — max concepts kept in the persisted last-surfaced map (pruned to the most recent).
+- **Salience (emotional / recent-change intrusion).** A concept with a sharp recent lifecycle event (`contradicted` / `plasticity_shift` / `revived` / `promoted`) gets an intrusion bump on the flex lane, fading over the per-kind `salience_halflife_days`. Only kinds with a non-zero `salience` weight (boundary, affective) are affected.
+  - `memory.concept_surfacing_salience_enabled` *(bool, `true`)* — master switch.
+  - `memory.concept_surfacing_salience_event_scan` *(int, `120`, min `0`)* — how many recent timeline events are scanned per turn to build the per-concept charge map.
+- **Spreading activation (associative priming).** Concepts that share a *hot topic cluster* with the turn's active set (the pinned core) — or, once meta concepts exist, are referenced by them — are pulled into the candidate pool with an additive boost, so a related idea can surface even at low direct cosine. Only kinds with a non-zero `activation` weight (identity/value/affective/boundary) are lifted.
+  - `memory.concept_surfacing_activation_enabled` *(bool, `true`)* — master switch.
+  - `memory.concept_surfacing_activation_seed_cap` *(int, `4`, min `0`)* — max seed concepts (from the pinned core) whose neighbours are expanded.
+  - `memory.concept_surfacing_activation_max` *(int, `4`, min `0`)* — max activated neighbours pulled into the pool per turn.
+
 ### Tier lifecycle (schema v8)
 
 - `memory.tiers_enabled` *(bool, `true`)* — master switch for the tiered lifecycle. Off → behaves like the old flat-pool design.

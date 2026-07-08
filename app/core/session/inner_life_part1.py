@@ -1409,6 +1409,65 @@ class InnerLifePart1Mixin:
         # + subjects. They bypass the relevance floor + concept cap in the
         # selector and are rendered first, deduped against the turn-relevant
         # pool below by concept_id.
+        from datetime import datetime, timezone
+
+        from app.core.concepts.concept_kinds import (
+            DEFAULT_SURFACE_WEIGHTS,
+            get_kind,
+        )
+        from app.core.concepts.concept_surfacing import (
+            event_charge,
+            habituation_factor,
+            recency_boost,
+            salience as concept_salience,
+            stability as concept_stability,
+            surface_score,
+            turns_since_surfaced,
+        )
+
+        # L23 habituation: damp concepts surfaced in the last few turns so
+        # surfacing rotates like a mind moving on, not a loop repeating. State +
+        # user-turn clock are loaded once; the factor is applied *softly* to the
+        # always-on core lane (rotate which core concepts show, never suppress
+        # the sole qualifier) and *strongly* to the turn-relevant flex lane. With
+        # a fresh (empty) state every factor is 1.0, so behaviour is unchanged
+        # until concepts actually start surfacing.
+        surf_now = datetime.now(timezone.utc)
+        hab_enabled = bool(
+            getattr(ms, "concept_surfacing_habituation_enabled", True)
+        )
+        hab_window = int(
+            getattr(ms, "concept_surfacing_habituation_window_turns", 4)
+        )
+        hab_flex_floor = float(
+            getattr(ms, "concept_surfacing_habituation_floor", 0.35)
+        )
+        hab_core_floor = float(
+            getattr(ms, "concept_surfacing_core_habituation_floor", 0.8)
+        )
+        hab_state, hab_turn = (
+            self._load_concept_habituation() if hab_enabled else ({}, 0)
+        )
+        # L23 salience: a per-concept "recent charge" map from the lifecycle
+        # timeline (contradicted / plasticity_shift / revived / promoted), built
+        # once per turn so a freshly-changed concept can intrude on the flex lane.
+        sal_enabled = bool(
+            getattr(ms, "concept_surfacing_salience_enabled", True)
+        )
+        recent_events: dict[int, list] = (
+            self._recent_concept_events(
+                int(getattr(ms, "concept_surfacing_salience_event_scan", 120))
+            )
+            if sal_enabled else {}
+        )
+        score_components: dict[int, dict] = {}
+
+        def _habituation(cid: int, floor: float) -> float:
+            if not hab_enabled:
+                return 1.0
+            ts = turns_since_surfaced(hab_state, cid, hab_turn)
+            return habituation_factor(ts, window=hab_window, floor=floor)
+
         pinned_ids: set[int] = set()
         if mature and view is not None:
             core_cap = max(0, int(getattr(ms, "context_budget_core_cap", 2)))
@@ -1416,72 +1475,177 @@ class InnerLifePart1Mixin:
                 getattr(ms, "context_budget_core_min_confidence", 0.75)
             )
             if core_cap > 0:
+                # Over-fetch so habituation can rotate the picks; core_lane's
+                # round-robin is prefix-stable, so with all-fresh state the first
+                # ``core_cap`` are identical to a plain ``limit=core_cap`` call.
+                core_fetch = core_cap * 3 if hab_enabled else core_cap
                 core_concepts = view.core_lane(
-                    limit=core_cap, default_min_confidence=core_min,
+                    limit=core_fetch, default_min_confidence=core_min,
                 )
-                for i, concept in enumerate(core_concepts):
+                # Rotate softly: a core concept surfaced within the window drops
+                # *behind* fresh ones (both keep core_lane's balanced native
+                # order), but stale ones still fill if fewer than the cap are
+                # fresh -- so a core belief is never suppressed out of contention.
+                fresh: list = []
+                stale: list = []
+                for concept in core_concepts:
                     label = (getattr(concept, "label", "") or "").strip()
                     if not label:
                         continue
                     cid = int(getattr(concept, "concept_id", 0))
+                    hab = _habituation(cid, hab_core_floor)
+                    (fresh if hab >= 0.999 else stale).append(
+                        (concept, cid, label, hab)
+                    )
+                for i, (concept, cid, label, hab) in enumerate(
+                    (fresh + stale)[:core_cap]
+                ):
                     pinned_ids.add(cid)
+                    conf = float(getattr(concept, "confidence", 0.0))
                     cost = estimate_tokens(label) + 16
                     concept_cands.append(ContextCandidate(
-                        source="concept",
-                        relevance=float(getattr(concept, "confidence", 0.0)),
+                        source="concept", relevance=conf,
                         tokens=cost, order=i, payload=concept,
                         key=f"k{cid}", pinned=True,
                     ))
+                    score_components[cid] = {
+                        "lane": "core",
+                        "confidence": round(conf, 4),
+                        "habituation": round(hab, 4),
+                    }
 
+        # Shared per-concept scorer for the turn-relevant + activation lanes:
+        # a per-kind blend of context (cosine) + confidence + recency +
+        # stability + salience, damped by habituation, plus an additive
+        # activation boost. Default weights are context-only, so a kind that
+        # hasn't opted in ranks exactly as before (modulo habituation, 1.0 on a
+        # fresh state). See ``ConceptKind.surface_weights``.
+        def _add_scored(concept, cos, *, activation, order, lane) -> bool:
+            cid = int(getattr(concept, "concept_id", 0))
+            label = (getattr(concept, "label", "") or "").strip()
+            if not label:
+                return False
+            kind = get_kind(getattr(concept, "kind", "") or "")
+            weights = (
+                kind.surface_weights if kind is not None
+                else DEFAULT_SURFACE_WEIGHTS
+            )
+            conf = float(getattr(concept, "confidence", 0.0))
+            rec = recency_boost(
+                getattr(concept, "last_reinforced_at", None),
+                surf_now, weights.recency_halflife_days,
+            )
+            stab = concept_stability(
+                conf, float(getattr(concept, "plasticity", 0.0))
+            )
+            sal = 0.0
+            if sal_enabled and weights.salience > 0.0:
+                sal = concept_salience(
+                    change=event_charge(
+                        recent_events.get(cid, ()),
+                        surf_now, halflife_days=weights.salience_halflife_days,
+                    ),
+                )
+            hab = _habituation(cid, hab_flex_floor)
+            relevance = surface_score(
+                cosine=float(cos), confidence=conf, recency=rec,
+                stability=stab, salience=sal, activation=float(activation),
+                habituation=hab, w=weights,
+            )
+            concept_cands.append(ContextCandidate(
+                source="concept", relevance=relevance,
+                tokens=estimate_tokens(label) + 16, order=order,
+                payload=concept, key=f"k{cid or order}",
+            ))
+            comp = {
+                "lane": lane,
+                "cosine": round(float(cos), 4),
+                "recency": round(rec, 4),
+                "stability": round(stab, 4),
+                "salience": round(sal, 4),
+                "habituation": round(hab, 4),
+                "score": round(relevance, 4),
+            }
+            if activation > 0.0:
+                comp["activation"] = round(float(activation), 4)
+            score_components[cid] = comp
+            return True
+
+        # L23 spreading activation: which concepts are *primed* by the turn's
+        # active set (the pinned core "what's on my mind" + the hot topic
+        # clusters). Computed *before* the flex lane so an associated concept
+        # gets its additive boost whether it also has direct cosine (boosting
+        # its flex candidate) or not (added fresh below). The boost only lifts
+        # kinds that opted in via a non-zero ``activation`` weight.
+        activation_map: dict[int, tuple] = {}
+        act_enabled = bool(
+            getattr(ms, "concept_surfacing_activation_enabled", True)
+        )
+        act_max = max(0, int(getattr(ms, "concept_surfacing_activation_max", 4)))
+        if act_enabled and mature and view is not None and act_max > 0:
+            hot_reps: list[int] = []
+            if cluster_cands and graph is not None:
+                # Bridge the turn's hot cluster ids (best_clusters_for keys on a
+                # per-rebuild index) to the representative ids the concept
+                # evidence edges are keyed by -- once per turn.
+                try:
+                    rep_by_cid = {
+                        int(c.cluster_id): int(c.representative_id)
+                        for c in graph.topic_clusters()
+                    }
+                except Exception:
+                    log.debug("activation: cluster bridge failed", exc_info=True)
+                    rep_by_cid = {}
+                for cand in cluster_cands:
+                    rep = rep_by_cid.get(int(cand.payload[0]))
+                    if rep is not None:
+                        hot_reps.append(rep)
+            seed_cap = max(0, int(
+                getattr(ms, "concept_surfacing_activation_seed_cap", 4)
+            ))
+            seeds = list(pinned_ids)[:seed_cap]
+            if hot_reps or seeds:
+                try:
+                    activated = view.activated(
+                        hot_reps, seed_concept_ids=seeds, limit=act_max,
+                    )
+                except Exception:
+                    log.debug("activation: activated() failed", exc_info=True)
+                    activated = []
+                for concept, strength in activated:
+                    cid = int(getattr(concept, "concept_id", 0))
+                    if cid > 0 and cid not in pinned_ids:
+                        activation_map[cid] = (concept, float(strength))
+
+        seen_concept_ids: set[int] = set(pinned_ids)
         if embedding is not None and mature and view is not None:
-            # L18: score the turn-relevant fill by a per-kind blend of context
-            # (cosine), confidence, and recency rather than cosine alone.
-            # Behaviour concepts (boundary) weight recency higher; the default
-            # weights are context-only, so every other kind ranks exactly as
-            # before. See ``ConceptKind.surface_weights``.
-            from datetime import datetime, timezone
-
-            from app.core.concepts.concept_kinds import (
-                DEFAULT_SURFACE_WEIGHTS,
-                get_kind,
-            )
-            from app.core.concepts.concept_surfacing import (
-                composite_score,
-                recency_boost,
-            )
-
-            surf_now = datetime.now(timezone.utc)
             cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
             pairs = view.relevant(embedding, k=max(cap * 2, 6))
             for i, (concept, cos) in enumerate(pairs):
                 cid = int(getattr(concept, "concept_id", 0))
                 if cid in pinned_ids:
                     continue
-                label = (getattr(concept, "label", "") or "").strip()
-                if not label:
+                act = activation_map.get(cid)
+                if _add_scored(
+                    concept, cos, activation=(act[1] if act else 0.0),
+                    order=1000 + i, lane="flex",
+                ):
+                    seen_concept_ids.add(cid)
+
+        # Add the activated neighbours that weren't already relevant/pinned, at
+        # zero direct cosine -- surfacing purely on association.
+        if activation_map:
+            for j, (cid, (concept, strength)) in enumerate(
+                sorted(
+                    activation_map.items(),
+                    key=lambda kv: kv[1][1], reverse=True,
+                )
+            ):
+                if cid in seen_concept_ids:
                     continue
-                kind = get_kind(getattr(concept, "kind", "") or "")
-                weights = (
-                    kind.surface_weights if kind is not None
-                    else DEFAULT_SURFACE_WEIGHTS
-                )
-                rec = recency_boost(
-                    getattr(concept, "last_reinforced_at", None),
-                    surf_now,
-                    weights.recency_halflife_days,
-                )
-                relevance = composite_score(
-                    cosine=float(cos),
-                    confidence=float(getattr(concept, "confidence", 0.0)),
-                    recency=rec,
-                    w=weights,
-                )
-                cost = estimate_tokens(label) + 16
-                concept_cands.append(ContextCandidate(
-                    source="concept", relevance=relevance, tokens=cost,
-                    order=1000 + i, payload=concept,
-                    key=f"k{cid or i}",
-                ))
+                if _add_scored(concept, 0.0, activation=strength,
+                               order=2000 + j, lane="activation"):
+                    seen_concept_ids.add(cid)
 
         # ── budgeted selection ──────────────────────────────────────────
         selector = ContextBudgetSelector({
@@ -1541,6 +1705,7 @@ class InnerLifePart1Mixin:
         )]
         concept_block, concept_trace = self._render_relevant_concepts(
             concept_pairs, pinned_ids=pinned_ids,
+            score_components=score_components,
         )
         if concept_block:
             sections.append(concept_block)
@@ -1576,6 +1741,17 @@ class InnerLifePart1Mixin:
             except Exception:
                 log.debug("relevant_context: mark_surfaced raised", exc_info=True)
 
+        # L23: stamp the habituation clock for the concepts that actually made
+        # it into the prompt (the sole write on this read path, mirroring
+        # ``rag.mark_surfaced``) so they step aside on the next few turns.
+        if hab_enabled and hab_turn > 0:
+            chosen_cids = [
+                int(getattr(c, "concept_id", 0))
+                for c in concept_pairs
+                if int(getattr(c, "concept_id", 0)) > 0
+            ]
+            self._write_concept_habituation(hab_state, chosen_cids, hab_turn)
+
         return RelevantContext(
             text=text,
             selection=selection,
@@ -1604,8 +1780,90 @@ class InnerLifePart1Mixin:
             "list."
         )
 
+    def _concept_current_turn(self) -> int:
+        """The monotonic user-turn index for L23 habituation.
+
+        Uses ``relationship.total_turns`` (bumped post-turn) + 1 for the
+        in-flight turn, so the value written for concepts surfaced this turn
+        matches ``total_turns`` after this turn's post-turn increment -- a
+        concept surfaced now reads ``turns_since == 1`` next turn. ``0`` (never
+        habituate) when no relationship tracker is wired."""
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is None:
+            return 0
+        try:
+            state = tracker.get(self._user_id)
+            return int(getattr(state, "total_turns", 0) or 0) + 1
+        except Exception:
+            log.debug("concept habituation turn read failed", exc_info=True)
+            return 0
+
+    def _recent_concept_events(self, scan: int) -> "dict[int, list]":
+        """A ``{concept_id: [(event_type, created_at), ...]}`` map from the most
+        recent ``scan`` lifecycle-timeline events, for the L23 salience bump.
+        Empty when no event store is wired or ``scan <= 0``. Best-effort."""
+        if scan <= 0:
+            return {}
+        store = getattr(self, "_concept_event_store", None)
+        if store is None:
+            return {}
+        try:
+            events = store.list(limit=int(scan))
+        except Exception:
+            log.debug("recent concept events read failed", exc_info=True)
+            return {}
+        out: dict[int, list] = {}
+        for ev in events:
+            cid = getattr(ev, "concept_id", None)
+            if cid is None:
+                continue
+            out.setdefault(int(cid), []).append(
+                (getattr(ev, "event_type", ""), getattr(ev, "created_at", ""))
+            )
+        return out
+
+    def _load_concept_habituation(self) -> "tuple[dict[int, int], int]":
+        """Load the ``{concept_id: last_surfaced_turn}`` map + current turn.
+        Empty map / turn ``0`` on any failure (habituation then no-ops)."""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return {}, 0
+        try:
+            from app.core.concepts.concept_surfacing import load_habituation
+
+            state = load_habituation(chat_db.kv_get)
+        except Exception:
+            log.debug("concept habituation load failed", exc_info=True)
+            state = {}
+        return state, self._concept_current_turn()
+
+    def _write_concept_habituation(
+        self, state: "dict[int, int]", chosen_ids: "list[int]", current_turn: int,
+    ) -> None:
+        """Stamp ``current_turn`` for the concepts that made it into the prompt
+        and persist the pruned map. Best-effort; never breaks the turn."""
+        if not chosen_ids or current_turn <= 0:
+            return
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return
+        try:
+            from app.core.concepts.concept_surfacing import save_habituation
+
+            for cid in chosen_ids:
+                state[int(cid)] = int(current_turn)
+            cap = int(
+                getattr(
+                    self._memory_settings, "concept_surfacing_state_cap", 300
+                )
+            )
+            save_habituation(chat_db.kv_set, state, cap=cap)
+        except Exception:
+            log.debug("concept habituation write failed", exc_info=True)
+
     def _render_relevant_concepts(
         self, concepts: list, *, pinned_ids: "set[int] | None" = None,
+        score_components: "dict[int, dict] | None" = None,
     ) -> tuple[str, dict]:
         """Render the budget-chosen concepts as hedged impressions, reusing
         the L5 confidence hedging + evidence grounding. Returns
@@ -1626,6 +1884,7 @@ class InnerLifePart1Mixin:
         if not concepts:
             return "", {"surfaced": [], "reason": "no_eligible"}
         pinned = pinned_ids or set()
+        components = score_components or {}
         name = self.user_display_name
         # Group by (subject, family) so value concepts (the normative *why*,
         # L10) render in a distinct voice from identity/trait concepts (the
@@ -1661,7 +1920,7 @@ class InnerLifePart1Mixin:
             groups.setdefault((subject, family), []).append(
                 f"- {hedge} {label}{grounding}"
             )
-            surfaced_trace.append({
+            entry = {
                 "concept_id": int(getattr(c, "concept_id", 0)),
                 "label": label,
                 "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
@@ -1672,7 +1931,14 @@ class InnerLifePart1Mixin:
                 "hedge": hedge,
                 "last_reinforced_at": getattr(c, "last_reinforced_at", None),
                 "supporting": support,
-            })
+            }
+            # L23: attach the surfacing score breakdown (lane, cosine, recency,
+            # stability, salience, activation, habituation) so the MCP concept
+            # trace shows *why* each concept ranked where it did.
+            comp = components.get(int(getattr(c, "concept_id", 0)))
+            if comp:
+                entry["score"] = comp
+            surfaced_trace.append(entry)
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
             for family in (
