@@ -776,6 +776,11 @@ class MemorySettings:
     # hybrid of topic clusters (bounded by ``concept_synthesis_max_clusters_per_run``)
     # and these deliberate remembered notes; this bounds the anchor batch.
     concept_synthesis_max_boundary_memories: int = 24
+    # L23: cap on explicit-anchor memories offered to the communication-style
+    # proposer per run (per subject). Style lines are mined from a hybrid of
+    # topic clusters and deliberate remembered notes; this bounds the anchor
+    # batch (same shape as the boundary cap).
+    concept_synthesis_max_comm_style_memories: int = 24
     # L14 aspiration-momentum worker (the proactive check-in producer). It
     # drafts a private cue over an active aspiration that has gone stale enough
     # to be worth revisiting. ``interval_seconds`` is the idle cadence;
@@ -2521,6 +2526,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "concept_synthesis_max_boundary_memories", 24
+                    )
+                ),
+            ),
+            concept_synthesis_max_comm_style_memories=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_comm_style_memories", 24
                     )
                 ),
             ),

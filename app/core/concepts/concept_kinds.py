@@ -60,6 +60,7 @@ from app.core.concepts.concept_lifecycle import (
     affective_evidence_gate,
     aspiration_evidence_gate,
     boundary_evidence_gate,
+    communication_style_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
@@ -524,6 +525,48 @@ register_kind(
         # base; applied live at eval time by the L3 worker.
         plasticity_modulation=PlasticityModulation(
             trust_gain=0.25, duration_gain=0.1, max_plasticity=0.75
+        ),
+    )
+)
+
+
+# The self-authored *delivery-style* kind (L23 north-star follow-on): how the
+# conversation should feel rather than what it is about -- reply detail level,
+# lead vs follow, hedging/confidence, warmth vs terseness -- bound to the context
+# it applies to ("explain code in depth with examples when we talk programming").
+# The delivery vehicle for lightening the hard-coded persona: mined from the
+# conversation and surfaced through the same T3 relevant_context region so Aiko
+# conforms to the user over time instead of being fixed in the persona file.
+# Like boundary it is mined from topic clusters AND explicit remembered anchors
+# (``self`` about herself / ``self_tagged`` about the user), a SINGLE deliberate
+# anchor can seed one (the gate floors sources at 1; the proposer keeps a
+# one-source concept anchor-grounded), and it is subject-parameterized (user +
+# aiko). Unlike boundary it does NOT pin to the always-on core lane -- a style
+# line is only relevant when its context is live -- so it surfaces purely by
+# relevance + spreading activation (it cites the topic cluster it applies to, so
+# ``ConceptView.activated`` lights it up when that topic is hot this turn).
+register_kind(
+    ConceptKind(
+        name="communication_style",
+        subject="user",
+        evidence_model="set",
+        # L16: medium plasticity -- a style preference adapts as the bond and the
+        # user's habits shift, but shouldn't churn turn to turn. Slightly stickier
+        # than affect (0.5), on par with boundary (0.45) as a behaviour guide.
+        plasticity_default=0.4,
+        # L3: boundary-like gate -- a single self-authored anchor promotes
+        # ("tell her once and it sticks"); cluster-only inference still needs >= 2
+        # (enforced by the proposer composition rule), with medium age/confidence.
+        promotion_gate=communication_style_evidence_gate,
+        # L24 / L27: a delivery-style line is a behaviour guide, not a user-profile
+        # fact, so it is NOT routed to ``profile_block`` -- both subjects surface
+        # through the T3 relevant_context path. It is intentionally NOT on the core
+        # lane (``core_always_on=False``): style should surface only when its
+        # context is active, not pinned every turn.
+        surface_weights=SurfaceWeights(
+            context=0.5, confidence=0.15, stability=0.25, recency=0.1,
+            activation=0.15,
+            recency_halflife_days=21.0,
         ),
     )
 )

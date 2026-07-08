@@ -520,6 +520,13 @@ class AgentSettings:
     # ``self`` about herself) for soft behaviour lines. Off just skips that one
     # pass. Cap lives under MemorySettings (``concept_synthesis_max_boundary_memories``).
     boundary_synthesis_enabled: bool = True
+    # L23 communication-style synthesis (the self-authored delivery-style kind).
+    # When enabled, the synthesis worker's comm-style pass mines each subject from
+    # a hybrid of topic clusters AND remembered anchors, guided by a persisted
+    # style-signal digest, for delivery-style lines that lighten the fixed
+    # persona. Off just skips that one pass. Cap lives under MemorySettings
+    # (``concept_synthesis_max_comm_style_memories``).
+    communication_style_synthesis_enabled: bool = True
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

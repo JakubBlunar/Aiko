@@ -1912,6 +1912,8 @@ class InnerLifePart1Mixin:
                 family = "aspiration"
             elif kind == "boundary":
                 family = "boundary"
+            elif kind == "communication_style":
+                family = "communication_style"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -1943,7 +1945,7 @@ class InnerLifePart1Mixin:
         for subject in ("user", "relationship", "aiko"):
             for family in (
                 "trait", "value", "affective", "ritual", "narrative",
-                "aspiration", "boundary",
+                "aspiration", "boundary", "communication_style",
             ):
                 lines = groups.get((subject, family))
                 if not lines:
@@ -1975,6 +1977,10 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_aspiration_header(subject, name)
         if family == "boundary":
             return InnerLifePart1Mixin._concept_boundary_header(subject, name)
+        if family == "communication_style":
+            return InnerLifePart1Mixin._concept_communication_style_header(
+                subject, name
+            )
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
 
     @staticmethod
@@ -2137,6 +2143,34 @@ class InnerLifePart1Mixin:
             "not rules to enforce and never a reason to refuse; hold them "
             "lightly, ease off rather than push, and stay open to being "
             "wrong):"
+        )
+
+    @staticmethod
+    def _concept_communication_style_header(subject: str, name: str) -> str:
+        """Per-subject intro for *communication_style* concepts (L23) — how the
+        conversation should feel (detail level, lead vs follow, hedging, warmth),
+        bound to the context they apply to. These lighten the fixed persona:
+        remembered delivery preferences that steer HOW to talk, not what to say.
+        ``aiko`` reads first-person (how she's chosen to show up); everything else
+        as how the user likes the conversation to feel. Held softly — a style,
+        not a rule."""
+        if subject == "aiko":
+            return (
+                f"How you've chosen to show up with {name} — your own way of "
+                "landing a reply (let these steer HOW you talk when they fit the "
+                "moment: how much detail, when to lead vs follow, how much to "
+                "hedge; hold them lightly and stay open to adjusting):"
+            )
+        if subject == "relationship":
+            return (
+                f"How the two of you have settled into talking (let these shape "
+                f"HOW you land a reply with {name} when they fit — hold them "
+                "lightly, not as rules):"
+            )
+        return (
+            f"How {name} likes the conversation to feel (let these steer HOW "
+            "you deliver when they fit the moment — how much detail, how direct, "
+            "how much to lead; hold them lightly and stay open to being wrong):"
         )
 
     @staticmethod

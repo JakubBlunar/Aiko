@@ -650,6 +650,152 @@ def propose_boundary(
     return proposals
 
 
+def propose_communication_style(
+    ctx: ProposerContext,
+    *,
+    subject: str,
+    system: str,
+    focus_clusters: Sequence[FocusCluster] = (),
+    cluster_index: Sequence[tuple[int, str, int]] = (),
+    memories: Sequence[Any] = (),
+    existing: Sequence[ExistingConcept] = (),
+    style_digest: str = "",
+) -> list[CandidateProposal]:
+    """Shared body for the L23 communication-style proposers (both subjects).
+
+    A communication-style concept guides *how the conversation should feel* --
+    reply detail level, lead vs follow, hedging/confidence, warmth vs terseness
+    -- **bound to the context it applies to** ("explain code in depth with
+    examples when we talk programming"). Like a boundary it gates delivery, so it
+    is a *hybrid* mined from topic clusters AND explicit remembered anchors
+    (``memories`` -- ``self_tagged`` about the user for ``subject="user"``,
+    ``self`` / ``reflection`` / ``diary`` about herself for ``subject="aiko"``).
+
+    A ``style_digest`` (persisted K13 style-signal labels + the distilled profile
+    ``communication_style`` field) may be woven in as *guidance* -- it steers what
+    style to name, but is NOT evidence: a proposed concept must still cite real
+    cluster / memory ids, so the digest never grounds a concept on its own.
+
+    **Composition rule.** A NEW style concept is accepted when grounded by at
+    least ONE explicit anchor memory OR by at least TWO clusters -- a single
+    deliberate anchor is enough ("tell her once"), a lone cluster is not. This is
+    what lets the L3 :func:`communication_style_evidence_gate` floor the source
+    count at 1. ``subject`` shapes the prompt voice only.
+    """
+    valid_reps = {int(rep) for rep, _label, _size in cluster_index}
+    valid_mem_ids: set[int] = set()
+    mem_lines: list[str] = []
+    for mem in memories:
+        try:
+            mid = int(mem.id)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        valid_mem_ids.add(mid)
+        mem_lines.append(f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+
+    if not valid_reps and not valid_mem_ids:
+        return []
+    existing_ids = {int(e.id) for e in existing}
+
+    sections: list[str] = []
+    digest = (style_digest or "").strip()
+    if digest:
+        sections.append(
+            "STYLE SIGNAL (observed lately -- guidance only, NOT evidence you "
+            "may cite):\n" + snippet(digest)
+        )
+    if cluster_index:
+        map_lines = [
+            f"- [{rep}] {label} (size {size})"
+            for rep, label, size in cluster_index
+        ]
+        sections.append(
+            "TOPIC MAP (recurring patterns, by size):\n" + "\n".join(map_lines)
+        )
+    if focus_clusters:
+        focus_lines: list[str] = []
+        for fc in focus_clusters:
+            parts = [f"[{fc.rep}] {fc.label} (size {fc.size})"]
+            if fc.representative:
+                parts.append(f"  representative: {snippet(fc.representative)}")
+            if fc.digest:
+                parts.append(f"  digest: {snippet(fc.digest)}")
+            focus_lines.append("\n".join(parts))
+        sections.append("FOCUS CLUSTERS (detail):\n" + "\n\n".join(focus_lines))
+    if mem_lines:
+        sections.append(
+            "NOTABLE REMEMBERED NOTES (deliberate anchors -- a single one can "
+            "ground a style line):\n" + "\n".join(mem_lines)
+        )
+    sections.append(
+        "ALREADY-KNOWN COMMUNICATION-STYLE LINES:\n" + format_existing(existing)
+    )
+    sections.append(
+        "Propose NEW communication-style lines grounded in the material above "
+        "(cite cluster rep ids in 'evidence_cluster_reps' and/or remembered-note "
+        "ids in 'evidence_memory_ids'), or reinforce a known one by id."
+    )
+    user = "\n\n".join(sections)
+
+    raw = ctx.call_llm(system, user)
+    proposals: list[CandidateProposal] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        reps = list(
+            dict.fromkeys(
+                r
+                for r in coerce_id_list(item.get("evidence_cluster_reps"))
+                if r in valid_reps
+            )
+        )
+        mids = list(
+            dict.fromkeys(
+                i
+                for i in coerce_id_list(item.get("evidence_memory_ids"))
+                if i in valid_mem_ids
+            )
+        )
+        if not reps and not mids:
+            continue
+        evidence = [("cluster", str(r)) for r in reps]
+        evidence += [("memory", str(i)) for i in mids]
+        rationale = str(item.get("rationale") or "").strip()
+
+        reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
+        if reinforces is not None:
+            proposals.append(
+                CandidateProposal(
+                    label="",
+                    rationale=rationale,
+                    confidence=0.0,
+                    evidence=evidence,
+                    kind="communication_style",
+                    subject=subject,
+                    evidence_model="set",
+                    reinforces_id=reinforces,
+                )
+            )
+            continue
+
+        label = str(item.get("label") or "").strip()
+        # Composition rule: one deliberate anchor OR >= 2 clusters.
+        if not label or not (len(mids) >= 1 or len(reps) >= 2):
+            continue
+        proposals.append(
+            CandidateProposal(
+                label=label,
+                rationale=rationale,
+                confidence=clamp01(item.get("confidence")),
+                evidence=evidence,
+                kind="communication_style",
+                subject=subject,
+                evidence_model="set",
+            )
+        )
+    return proposals
+
+
 __all__ = [
     "AIKO_SELF_KINDS",
     "MIN_SOURCES",
@@ -664,6 +810,7 @@ __all__ = [
     "format_existing",
     "propose_aiko_hybrid",
     "propose_boundary",
+    "propose_communication_style",
     "propose_narrative",
     "propose_ordered_concept",
     "resolve_reinforces",

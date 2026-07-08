@@ -221,6 +221,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             boundary_synthesis_enabled=bool(
                 agent_raw.get("boundary_synthesis_enabled", True),
             ),
+            communication_style_synthesis_enabled=bool(
+                agent_raw.get("communication_style_synthesis_enabled", True),
+            ),
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),

@@ -1870,6 +1870,9 @@ class SpeakingWorkersInitMixin:
                         from app.core.concepts.concept_synthesis_worker import (
                             ConceptSynthesisWorker,
                         )
+                        from app.core.persona.style_signal import (
+                            StyleSignalStore,
+                        )
 
                         self._concept_synthesis_worker = ConceptSynthesisWorker(
                             concept_store=self._concept_store,
@@ -1895,6 +1898,17 @@ class SpeakingWorkersInitMixin:
                                 or "Aiko"
                             ),
                             concept_event_store=self._concept_event_store,
+                            # L23: persisted style signals for the
+                            # communication-style pass (digest guidance only).
+                            # StyleSignalStore is built inline -- the live
+                            # analyzer/store isn't wired until detectors init,
+                            # which runs after this worker.
+                            user_profile_store=self._user_profile_store,
+                            style_signal_store=StyleSignalStore(self._chat_db),
+                            user_id_provider=(
+                                lambda: getattr(self, "_user_id", "")
+                                or "default"
+                            ),
                         )
                         self._idle_scheduler.register(
                             self._concept_synthesis_worker,
