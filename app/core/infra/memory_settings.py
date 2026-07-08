@@ -875,6 +875,39 @@ class MemorySettings:
     concept_plasticity_drift_floor: float = 0.15
     concept_plasticity_recheck_slowdown_enabled: bool = True
     concept_plasticity_recheck_stride_k: float = 3.0
+    # L23 cognitive surfacing -- habituation (repetition suppression). A concept
+    # surfaced recently is damped by a ``[floor, 1]`` multiplier that recovers
+    # over ``window_turns`` user-turns (turn clock = ``relationship.total_turns``,
+    # state in ``kv_meta`` under ``concept.surfacing_habituation``). The flex
+    # (turn-relevant) lane uses ``_floor`` (strong suppression so it steps
+    # aside); the always-on core lane uses the gentler ``_core_floor`` and only
+    # *rotates* which core concepts show when more qualify than the cap -- a core
+    # belief is never suppressed out of contention. ``_state_cap`` bounds the
+    # persisted map. Salience + spreading-activation land in later L23 passes.
+    concept_surfacing_habituation_enabled: bool = True
+    concept_surfacing_habituation_window_turns: int = 4
+    concept_surfacing_habituation_floor: float = 0.35
+    concept_surfacing_core_habituation_floor: float = 0.8
+    concept_surfacing_state_cap: int = 300
+    # L23 cognitive surfacing -- emotional / recent-change salience. A concept
+    # with a sharp recent lifecycle event (contradicted, plasticity_shift,
+    # revived, promoted) gets an intrusion bump on the turn-relevant lane, so a
+    # freshly-changed belief surfaces even at moderate cosine, fading over the
+    # per-kind ``salience_halflife_days``. ``_event_scan`` bounds how many recent
+    # events are scanned per turn to build the per-concept charge map. Only kinds
+    # with a non-zero ``salience`` weight (boundary, affective) are affected.
+    concept_surfacing_salience_enabled: bool = True
+    concept_surfacing_salience_event_scan: int = 120
+    # L23 cognitive surfacing -- spreading activation (associative priming). The
+    # turn's hot topic clusters + the directly-relevant concepts "seed" the
+    # graph; their shared-cluster neighbours (and, once meta concepts exist,
+    # concept->concept references) are pulled into the candidate pool with an
+    # additive activation boost, so a concept associated with what's being
+    # discussed can surface even at low direct cosine. ``_seed_cap`` bounds how
+    # many seed concepts expand; ``_max`` caps the activated neighbours added.
+    concept_surfacing_activation_enabled: bool = True
+    concept_surfacing_activation_seed_cap: int = 4
+    concept_surfacing_activation_max: int = 4
     # L21 cold-start / anti-premature guard. Nothing is proposed or
     # surfaced while the topic graph is too sparse to support an
     # abstraction: synthesis is skipped (a manual ``force`` run still
@@ -2635,6 +2668,63 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_plasticity_recheck_stride_k=max(
                 0.0,
                 float(memory_raw.get("concept_plasticity_recheck_stride_k", 3.0)),
+            ),
+            concept_surfacing_habituation_enabled=bool(
+                memory_raw.get("concept_surfacing_habituation_enabled", True)
+            ),
+            concept_surfacing_habituation_window_turns=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_habituation_window_turns", 4
+                    )
+                ),
+            ),
+            concept_surfacing_habituation_floor=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_surfacing_habituation_floor", 0.35)
+                    ),
+                ),
+            ),
+            concept_surfacing_core_habituation_floor=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_surfacing_core_habituation_floor", 0.8
+                        )
+                    ),
+                ),
+            ),
+            concept_surfacing_state_cap=max(
+                0,
+                int(memory_raw.get("concept_surfacing_state_cap", 300)),
+            ),
+            concept_surfacing_salience_enabled=bool(
+                memory_raw.get("concept_surfacing_salience_enabled", True)
+            ),
+            concept_surfacing_salience_event_scan=max(
+                0,
+                int(
+                    memory_raw.get("concept_surfacing_salience_event_scan", 120)
+                ),
+            ),
+            concept_surfacing_activation_enabled=bool(
+                memory_raw.get("concept_surfacing_activation_enabled", True)
+            ),
+            concept_surfacing_activation_seed_cap=max(
+                0,
+                int(
+                    memory_raw.get("concept_surfacing_activation_seed_cap", 4)
+                ),
+            ),
+            concept_surfacing_activation_max=max(
+                0,
+                int(memory_raw.get("concept_surfacing_activation_max", 4)),
             ),
             concept_min_clusters=max(
                 0,

@@ -35,20 +35,33 @@ def _c(cid, *, subject="user", kind="identity", confidence=0.7,
 
 
 class _Edge:
-    def __init__(self, dst_type, dst_id):
+    def __init__(self, dst_type, dst_id, *, src_type=None, src_id=None,
+                 relation="evidence"):
         self.dst_type = dst_type
         self.dst_id = str(dst_id)
+        self.src_type = src_type
+        self.src_id = str(src_id) if src_id is not None else None
+        self.relation = relation
 
 
 class _FakeStore:
     """In-memory stand-in exposing the ConceptStore read surface used by
     the facade."""
 
-    def __init__(self, concepts, *, near_score=0.6, edges=None):
+    def __init__(self, concepts, *, near_score=0.6, edges=None, into=None,
+                 deps=None):
         self._concepts = {int(c.concept_id): c for c in concepts}
         self._near_score = near_score
         self._edges = edges or {}
+        self._into = into or {}
+        self._deps = deps or {}
         self.nearest_calls = []
+
+    def evidence_of(self, cid):
+        return list(self._into.get(int(cid), []))
+
+    def dependents_of(self, cid):
+        return list(self._deps.get(int(cid), []))
 
     def list_by(self, *, status=None, subject=None, kind=None, user_id=None):
         return [
@@ -220,6 +233,69 @@ class ForClusterTests(unittest.TestCase):
 
     def test_no_edges_empty(self) -> None:
         self.assertEqual(ConceptView(_FakeStore([_c(1)])).for_cluster(1), [])
+
+
+class ActivatedTests(unittest.TestCase):
+    """L23 spreading activation: shared-cluster adjacency (+ dormant meta)."""
+
+    def test_direct_hot_cluster_siblings(self) -> None:
+        store = _FakeStore(
+            [_c(1), _c(2), _c(3, status="candidate")],
+            edges={
+                ("cluster", "100"): [
+                    _Edge("concept", 1),
+                    _Edge("concept", 2),
+                    _Edge("concept", 3),  # inactive -> dropped by for_cluster
+                ],
+            },
+        )
+        out = ConceptView(store).activated([100], seed_concept_ids=[1])
+        # #1 is a seed (excluded); #2 activates at full strength; #3 inactive.
+        self.assertEqual([(c.concept_id, s) for c, s in out], [(2, 1.0)])
+
+    def test_two_hop_via_seed_cluster(self) -> None:
+        # Seed #1 is backed by cluster rep 100; its sibling #2 activates at the
+        # weaker 2-hop strength when the cluster isn't itself hot.
+        store = _FakeStore(
+            [_c(1), _c(2)],
+            edges={("cluster", "100"): [_Edge("concept", 1), _Edge("concept", 2)]},
+            into={1: [_Edge("concept", 1, src_type="cluster", src_id=100)]},
+        )
+        out = ConceptView(store).activated([], seed_concept_ids=[1])
+        self.assertEqual([(c.concept_id, s) for c, s in out], [(2, 0.6)])
+
+    def test_direct_beats_two_hop_on_overlap(self) -> None:
+        store = _FakeStore(
+            [_c(1), _c(2)],
+            edges={("cluster", "100"): [_Edge("concept", 1), _Edge("concept", 2)]},
+            into={1: [_Edge("concept", 1, src_type="cluster", src_id=100)]},
+        )
+        # #2 reachable both directly (hot cluster 100) and 2-hop via seed #1 ->
+        # the stronger direct strength wins.
+        out = ConceptView(store).activated([100], seed_concept_ids=[1])
+        self.assertEqual([(c.concept_id, s) for c, s in out], [(2, 1.0)])
+
+    def test_dependents_meta_path_dormant_but_wired(self) -> None:
+        # With no concept->concept references (meta not shipped) the path is
+        # inert; once such edges exist the referenced concept activates.
+        store = _FakeStore(
+            [_c(1), _c(9)],
+            deps={1: [9]},  # simulates a meta referencing base #1
+        )
+        out = ConceptView(store).activated([], seed_concept_ids=[1])
+        self.assertEqual([(c.concept_id, s) for c, s in out], [(9, 0.8)])
+
+    def test_limit_and_missing_store(self) -> None:
+        store = _FakeStore(
+            [_c(1), _c(2), _c(3)],
+            edges={
+                ("cluster", "100"): [
+                    _Edge("concept", 1), _Edge("concept", 2), _Edge("concept", 3),
+                ],
+            },
+        )
+        self.assertEqual(len(ConceptView(store).activated([100], limit=1)), 1)
+        self.assertEqual(ConceptView(None).activated([100]), [])
 
 
 class EvidenceLabelsTests(unittest.TestCase):

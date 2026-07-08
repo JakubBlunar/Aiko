@@ -95,18 +95,40 @@ class SurfaceWeights:
       :func:`app.core.concepts.concept_surfacing.recency_boost`), with the
       per-kind ``recency_halflife_days`` controlling how fast it fades.
 
-    Defaults are **context-only** (``confidence=recency=0``), which reproduces
+    Defaults are **context-only** (all other weights ``0``), which reproduces
     the pre-L18 cosine-only behaviour, so a kind opts into the blend by setting
     non-zero weights -- no change to any other kind until it is tuned.
     Behaviour-loaded kinds (boundary) weight recency higher: a line she was just
     reminded of should matter more than a stale one, whereas an identity trait
     barely cares about recency.
+
+    The L23 cognitive-surfacing pass adds three more per-kind signals to the
+    same blend (all default ``0.0`` -> opt-in, no change until tuned):
+
+    - ``stability`` -- ``confidence * plasticity-adjusted`` (see
+      :func:`app.core.concepts.concept_surfacing.stability`): a settled, sticky
+      (low-plasticity) core belief is worth asserting on *how held* it is, not
+      just cosine. Identity/value opt in.
+    - ``salience`` -- an emotional/recent-change charge (affect magnitude +
+      recent lifecycle events + fresh reinforcement) that lets a charged concept
+      intrude. Behaviour/affective kinds opt in.
+    - ``activation`` -- the spreading-activation weight. Unlike the others this
+      is **not** part of the sum-normalized blend; it is an additive boost
+      applied on top (a concept associated with the turn's hot topics is primed
+      even at low direct cosine). ``activation_*`` half-life is unused today.
+
+    ``recency_halflife_days`` controls the recency decay; ``salience_halflife_days``
+    the recent-change event decay.
     """
 
     context: float = 1.0
     confidence: float = 0.0
     recency: float = 0.0
     recency_halflife_days: float = 30.0
+    stability: float = 0.0
+    salience: float = 0.0
+    salience_halflife_days: float = 21.0
+    activation: float = 0.0
 
 
 DEFAULT_SURFACE_WEIGHTS = SurfaceWeights()
@@ -289,6 +311,12 @@ register_kind(
         # user is and how Aiko tends to be, carried into every turn. Its bar
         # falls back to the global ``context_budget_core_min_confidence``.
         core_always_on=True,
+        # L23: on the turn-relevant lane, a non-core identity trait ranks on how
+        # *settled* it is (stability), not recency -- who someone is barely cares
+        # that they were reminded of it. Context stays dominant.
+        surface_weights=SurfaceWeights(
+            context=0.6, confidence=0.1, stability=0.3, activation=0.15
+        ),
     )
 )
 
@@ -324,6 +352,11 @@ register_kind(
         # value every turn when it is very settled.
         core_always_on=True,
         core_min_confidence=0.85,
+        # L23: values lean on stability even more than identity -- a hard-won
+        # principle asserts on how firmly it is held.
+        surface_weights=SurfaceWeights(
+            context=0.55, confidence=0.1, stability=0.35, activation=0.15
+        ),
     )
 )
 
@@ -352,6 +385,13 @@ register_kind(
         # turn. So no ``surfacing_targets`` (they route through the T3
         # relevant_context relevance path for both subjects) and they do NOT
         # join the always-on core lane.
+        # L23: a topic's emotional weather is a *recent* thing -- weight recency
+        # so a freshly-felt affect outranks a stale one (salience added in the
+        # L23 Phase 2 pass). Short-ish half-life like boundary.
+        surface_weights=SurfaceWeights(
+            context=0.5, recency=0.3, salience=0.2, activation=0.25,
+            recency_halflife_days=21.0, salience_halflife_days=21.0,
+        ),
     )
 )
 
@@ -474,7 +514,9 @@ register_kind(
         # reminded of should outrank a stale one; still weighted by context and
         # confidence, and short half-life so old boundaries fade in ranking.
         surface_weights=SurfaceWeights(
-            context=0.5, confidence=0.2, recency=0.3, recency_halflife_days=14.0
+            context=0.45, confidence=0.15, recency=0.25, salience=0.15,
+            activation=0.2,
+            recency_halflife_days=14.0, salience_halflife_days=14.0,
         ),
         # L16: boundary is the first consumer of relationship modulation -- its
         # effective plasticity rises from the 0.45 base toward 0.75 as trust and

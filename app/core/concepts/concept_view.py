@@ -290,6 +290,79 @@ class ConceptView:
                 out.append(c)
         return out
 
+    def activated(
+        self,
+        cluster_rep_ids,
+        *,
+        seed_concept_ids=(),
+        limit: int = 8,
+    ) -> list[tuple["Concept", float]]:
+        """L23 spreading activation: concepts *primed* by the turn's active
+        set, each paired with an activation strength in ``(0, 1]``.
+
+        Models associative priming -- thinking about one thing lights up its
+        neighbours -- over two adjacency paths:
+
+        1. **Shared-cluster (1-hop, strength 1.0).** Concepts that span any of
+           ``cluster_rep_ids`` (the turn's hot topic clusters), via the
+           ``cluster -> concept`` evidence edges (:meth:`for_cluster`).
+        2. **Shared-cluster via a seed concept (2-hop, strength 0.6).** For each
+           id in ``seed_concept_ids`` (the directly-relevant / pinned concepts),
+           the clusters that back it are found (its ``evidence`` edges), and
+           their *other* member concepts are activated -- siblings that share a
+           theme with something already in mind.
+
+        A third path -- concept->concept ``references`` edges
+        (:meth:`ConceptStore.dependents_of`) -- is wired but **dormant**: no
+        such edges exist until meta concepts (L12 / L20) populate them, at which
+        point a referenced base auto-activates with no change here.
+
+        Seeds are excluded from the result; the strongest strength per concept
+        wins on overlap; the result is capped at ``limit``.
+        """
+        if self._store is None or limit <= 0:
+            return []
+        seeds = {int(s) for s in seed_concept_ids}
+        acc: dict[int, tuple["Concept", float]] = {}
+
+        def _bump(concept: "Concept", strength: float) -> None:
+            cid = int(getattr(concept, "concept_id", 0))
+            if cid <= 0 or cid in seeds:
+                return
+            prev = acc.get(cid)
+            if prev is None or strength > prev[1]:
+                acc[cid] = (concept, strength)
+
+        # Path 1: siblings that span each hot cluster.
+        for rep in cluster_rep_ids or ():
+            for concept in self.for_cluster(rep):
+                _bump(concept, 1.0)
+
+        # Path 2 + 3: expand out from each seed concept.
+        for sid in seeds:
+            # 2-hop shared-cluster: the seed's backing clusters -> their members.
+            try:
+                back = self._store.evidence_of(int(sid))
+            except Exception:
+                log.debug("activated: evidence_of failed", exc_info=True)
+                back = []
+            for e in back:
+                if getattr(e, "src_type", None) != "cluster":
+                    continue
+                for concept in self.for_cluster(getattr(e, "src_id", None)):
+                    _bump(concept, 0.6)
+            # Dormant meta path: concept->concept references (empty until L12/L20).
+            try:
+                for dep_id in self._store.dependents_of(int(sid)):
+                    dep = self._store.get(int(dep_id))
+                    if dep is not None and getattr(dep, "status", None) == "active":
+                        _bump(dep, 0.8)
+            except Exception:
+                log.debug("activated: dependents_of failed", exc_info=True)
+
+        out = sorted(acc.values(), key=lambda t: t[1], reverse=True)
+        return out[: max(0, int(limit))]
+
     # ── grounding resolution ──────────────────────────────────────────
 
     def evidence_labels(
