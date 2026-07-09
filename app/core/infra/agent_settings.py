@@ -527,6 +527,23 @@ class AgentSettings:
     # persona. Off just skips that one pass. Cap lives under MemorySettings
     # (``concept_synthesis_max_comm_style_memories``).
     communication_style_synthesis_enabled: bool = True
+    # L12 tension synthesis (the first *meta* kind -- concepts over concepts).
+    # When enabled, the synthesis worker's tension pass (which runs last, over
+    # the active base concepts) names two of them held in friction for each of
+    # the user / relationship / aiko lenses. Off just skips that one pass. Cap
+    # lives under MemorySettings (``concept_synthesis_max_tension_concepts``).
+    tension_synthesis_enabled: bool = True
+    # L12 tension cue -- the ONLY surface for a tension concept (they are kept
+    # out of the relevant-context block so a standing friction can never nag).
+    # When enabled, TensionCueWorker occasionally drafts a private "a friction
+    # worth sitting with" cue that ``_render_tension_block`` surfaces as a
+    # strictly-cooldowned T6 hint (cue producer, phrased in-context -- never
+    # verbatim). Off skips the worker and its prompt block.
+    tension_cue_enabled: bool = True
+    # Per-tension cooldown (days) between successive cues about the SAME tension,
+    # so surfacing rotates across whatever frictions are live and stays rare.
+    # Deliberately long -- a tension is "delivered with the most care".
+    tension_cue_cooldown_days: float = 6.0
     # L5 surfacing now flows through the unified T3 relevant_context region
     # (memory.context_budget_concept_*), which is turn-relevance scored and
     # shares the surfacing budget -- the old always-on ``concept_block``

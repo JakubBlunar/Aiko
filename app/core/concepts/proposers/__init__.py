@@ -63,6 +63,16 @@ self-concept can be grounded by a theme, a memory, or a mix.
   labels + the profile ``communication_style`` field). Share the
   :func:`propose_communication_style` body, whose composition rule lets a single
   anchor seed a line. The delivery vehicle for lightening the hard-coded persona.
+- ``tension_user`` / ``tension_relationship`` / ``tension_aiko`` -- *tension*
+  (L12), the first *meta* proposers. Unlike every other proposer their raw
+  material is not clusters/memories but the small set of active BASE (non-meta)
+  concepts: they mine the ``"tension"`` population and name two of those
+  concepts held in genuine friction (an internal push/pull; a cross-subject
+  user-vs-aiko value clash for the relationship lens). Share the
+  :func:`propose_tension` body, whose composition rule accepts exactly a pair of
+  distinct concept ids, emitting ``("concept", id)`` evidence with
+  ``evidence_model="meta"``. They run LAST so their base concepts are already
+  ``active`` (the meta dependency-ordering rule).
 """
 from __future__ import annotations
 
@@ -80,6 +90,9 @@ from app.core.concepts.proposers import (
     narrative_aiko,
     narrative_user,
     relationship_ritual,
+    tension_aiko,
+    tension_relationship,
+    tension_user,
     value_aiko,
     value_user,
 )
@@ -92,6 +105,7 @@ from app.core.concepts.proposers.base import (
     NarrativeCandidate,
     ProposerContext,
     ProposerSpec,
+    TensionBase,
     clamp01,
     coerce_id_list,
     format_existing,
@@ -100,6 +114,7 @@ from app.core.concepts.proposers.base import (
     propose_communication_style,
     propose_narrative,
     propose_ordered_concept,
+    propose_tension,
     resolve_reinforces,
     snippet,
 )
@@ -122,6 +137,11 @@ from app.core.concepts.proposers.narrative_user import propose_narrative_user
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
 )
+from app.core.concepts.proposers.tension_aiko import propose_tension_aiko
+from app.core.concepts.proposers.tension_relationship import (
+    propose_tension_relationship,
+)
+from app.core.concepts.proposers.tension_user import propose_tension_user
 from app.core.concepts.proposers.value_aiko import propose_value_aiko
 from app.core.concepts.proposers.value_user import propose_value_user
 
@@ -141,6 +161,11 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     boundary_aiko.SPEC,
     communication_style_user.SPEC,
     communication_style_aiko.SPEC,
+    # Meta proposers run LAST: their base concepts must already be ``active``
+    # (the L1 meta dependency-ordering rule).
+    tension_user.SPEC,
+    tension_relationship.SPEC,
+    tension_aiko.SPEC,
 )
 
 
@@ -154,6 +179,7 @@ __all__ = [
     "NarrativeCandidate",
     "ProposerContext",
     "ProposerSpec",
+    "TensionBase",
     "clamp01",
     "coerce_id_list",
     "format_existing",
@@ -175,6 +201,10 @@ __all__ = [
     "propose_narrative_user",
     "propose_ordered_concept",
     "propose_relationship_ritual",
+    "propose_tension",
+    "propose_tension_aiko",
+    "propose_tension_relationship",
+    "propose_tension_user",
     "propose_value_aiko",
     "propose_value_user",
     "resolve_reinforces",

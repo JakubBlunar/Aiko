@@ -224,6 +224,15 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             communication_style_synthesis_enabled=bool(
                 agent_raw.get("communication_style_synthesis_enabled", True),
             ),
+            tension_synthesis_enabled=bool(
+                agent_raw.get("tension_synthesis_enabled", True),
+            ),
+            tension_cue_enabled=bool(
+                agent_raw.get("tension_cue_enabled", True),
+            ),
+            tension_cue_cooldown_days=float(
+                agent_raw.get("tension_cue_cooldown_days", 6.0),
+            ),
             concept_synthesis_enabled=bool(
                 agent_raw.get("concept_synthesis_enabled", True),
             ),

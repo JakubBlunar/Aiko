@@ -933,44 +933,74 @@ existing one). The self-model this stands up is what L17 (drift) and L19
 
 ---
 
-## L12. Tension / contradiction concepts (deferred)
+## L12. Tension / contradiction concepts (SHIPPED — the first meta kind)
 
-**Kind.** subject `user`, evidence model `concept_graph` (concepts over
-concepts).
+**Status: SHIPPED (all three subjects; the first `concept -> concept`
+consumer).** The `tension` kind names two *other* active concepts held in
+friction. Subjects: `user` (an internal push/pull he hasn't articulated),
+`relationship` (a cross-subject user-value vs aiko-value clash), and `aiko` (a
+tension within herself).
+
+**Kind.** `tension`, `evidence_model="meta"` (the code vocabulary for the design
+doc's `concept_graph`), registered in
+[`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) with
+`tension_evidence_gate` (source floor overridden to 2 — the two sides — with age
+`1.0d` + confidence `0.6` floors), `core_always_on=False`, medium-fluid
+plasticity `0.35`.
 
 **Motivation.** The most human observation of all: noticing an internal tension
-the user hasn't articulated. "You've been in Maker Mode a lot this week but
+the person hasn't articulated. "You've been in Maker Mode a lot this week but
 haven't taken one of your walks." "Wants simplicity but keeps adding
 complexity." "Values rest but rarely takes it." These land hard *because* they
 require holding two patterns at once and seeing the friction — pure synthesis,
 impossible without the concept layer beneath.
 
-**Key files.** Registry entry (L1) using a `concept -> concept`
-`relation=references` edge in `concept_edges` (the reason the graph is typed);
-proposer reads *active concepts* + the L4 co-activation / dormancy signal;
-surfacing is a live **T6** `prepared_nudge` cue, not a static block.
+**What shipped.**
 
-**Sketched approach.** Detect a tension when two active concepts are in a
-push/pull (one hot while a normally-paired one is dormant; a value concept
-contradicted by an activity concept). This is the first `concept_graph` kind, so
-it inherits the L1 meta-concept rules wholesale — dependency ordering (proposed
-only after its bases are `active`), cascade re-evaluation when a base is
-retired, `min`-bounded confidence, and the no-meta-of-meta depth cap. Gate on
-both referenced concepts being `active` and the friction recurring. **Handle
-with the most care of any kind:** delivered as a gentle observation, never
-nagging, on a strict cooldown — this is where a companion earns trust or loses
-it.
+- **Evidence wiring.** A tension cites its two bases as `evidence` edges with
+  `src_type="concept"` — so `evidence_of` counts them (`distinct_source_count`
+  = 2, gate/snapshot work unchanged) AND `dependents_of(base)` walks to the
+  tension, lighting up the previously-dormant `ConceptView.activated()` meta
+  path (`_bump(dep, 0.8)`) and the `_mark_dependents_stale` cascade for free.
+- **Proposer.** A `"tension"` synthesis population + `_run_tension_pass(subject)`
+  runs **last** (dependency-ordering rule) over the active *base* (non-meta)
+  concepts (the `user`/`aiko` lenses read that subject's pool; `relationship`
+  pairs across both), dirty-tracked on a fingerprint of the offered pool (ids +
+  rounded confidence + a live/quiet hint from `last_reinforced_at`). Three
+  proposers ([`tension_user`](../../app/core/concepts/proposers/tension_user.py) /
+  [`tension_relationship`](../../app/core/concepts/proposers/tension_relationship.py) /
+  [`tension_aiko`](../../app/core/concepts/proposers/tension_aiko.py)) share the
+  `propose_tension` body; composition rule = exactly a pair of distinct base
+  ids.
+- **The four L1 meta rules.** (1) dependency ordering — proposers last + reads
+  `status="active"`; (2) cascade — `ConceptLifecycleWorker._apply_meta_rules`
+  retires a tension to dormant when a base leaves `active`, driven by the live
+  `_mark_dependents_stale`; (3) confidence bounding — `min(conf, min(base
+  confidences))` at accrual; (4) depth cap + cycle guard — only non-meta actives
+  are offered, plus a persist-time `_filter_meta_evidence` guard rejecting any
+  `("concept", id)` edge to a missing or meta target.
+- **Surfacing — delivered with the most care of any kind.** Tension is
+  **excluded from the static T3 relevant-context render**
+  (`_add_scored` early-returns on `kind=="tension"`) so a standing friction can
+  never nag. The only surface is a strictly-cooldowned **T6 cue**:
+  [`TensionCueWorker`](../../app/core/proactive/tension_cue_worker.py) drafts a
+  ripe active tension into the `aiko.tension_cue` kv ring;
+  `_render_tension_block` folds the newest unseen one in as a private,
+  non-verbatim observation (watermark-gated, per-tension cooldown), phrased
+  gently and — for the relationship lens — never as a grievance.
+- **Knobs.** `agent.tension_synthesis_enabled`, `agent.tension_cue_enabled`,
+  `agent.tension_cue_cooldown_days`, `memory.concept_synthesis_max_tension_concepts`,
+  `memory.tension_cue_{interval_seconds,min_confidence,journal_max}`.
 
-**Value tensions (L10 shipped `value` kind).** Now that `value` concepts exist
-for both subjects, two concrete tension shapes live here: (a) the
-**cross-subject value clash** — a `subject=user` value vs a `subject=aiko` value:
-aligned pairs are a *shared value* (bonding), clashing pairs are a *relationship
-tension* and exactly where a real relationship lives (never delivered as a
-grievance); and (b) **value-contradicted-by-behaviour** — a held value concept
-vs a contradicting activity/identity concept ("values rest but rarely takes
-it"). Both ride the same `concept -> concept references` machinery above.
+**Concrete first shapes covered.** (a) the **cross-subject value clash** (the
+`relationship` proposer) — aligned pairs are a shared value (skipped), clashing
+pairs a tender relationship tension; (b) **value-contradicted-by-behaviour** and
+other same-subject frictions (the `user` / `aiko` proposers).
 
-**Effort.** Large (depends on L4 + a healthy population of active concepts).
+**Still open (folds into future meta work).** L18d concept-vs-concept conflict
+detection and L20 abstraction ride the same `concept -> concept` machinery this
+established. A dedicated tension/drift *surfacing priority override* (L23) is
+still deferred.
 
 ---
 

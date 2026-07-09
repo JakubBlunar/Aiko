@@ -46,6 +46,7 @@ from app.core.concepts.proposers import (
     NarrativeCandidate,
     ProposerContext,
     ProposerSpec,
+    TensionBase,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import Concept, ConceptEdge
@@ -535,6 +536,23 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _max_tension_concepts(self) -> int:
+        """L12: cap on active base concepts offered to the tension proposer per
+        run (per subject) -- bounds the prompt / LLM cost. Concept cardinality
+        is small by design (tens), so this rarely bites; for the relationship
+        lens each side gets roughly half."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_tension_concepts",
+                    24,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -607,6 +625,7 @@ class ConceptSynthesisWorker:
             "aspiration_dirty": False,
             "boundary_dirty": False,
             "comm_style_dirty": False,
+            "tension_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -629,6 +648,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_boundary_pass(ctx, spec, stats, force)
                 elif spec.population == "comm_style":
                     proposals = self._run_comm_style_pass(ctx, spec, stats, force)
+                elif spec.population == "tension":
+                    proposals = self._run_tension_pass(ctx, spec, stats, force)
                 else:
                     proposals = []
             except Exception:
@@ -1537,6 +1558,138 @@ class ConceptSynthesisWorker:
         )
         return proposals
 
+    def _run_tension_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L12 tension pass -- the first *meta* proposer. Unlike every other
+        pass the raw material is not clusters/memories but the small set of
+        active BASE (non-meta) concepts for ``spec.subject``: the ``user`` /
+        ``aiko`` lenses read that subject's own actives, while ``relationship``
+        pairs across both subjects for a cross-subject value clash. The proposer
+        names two of those concepts held in friction and cites them as
+        ``("concept", id)`` evidence.
+
+        Offering only non-meta actives is what keeps the meta depth cap (no
+        meta-of-meta) true by construction, and reading ``status="active"`` is
+        the dependency-ordering guarantee (a tension can only be built on
+        promoted bases). Dirty-tracked on a fingerprint of the offered pool (ids
+        + rounded confidence + live/quiet hint) so a settled graph is a fast
+        no-op, but a base going quiet or shifting confidence re-fires the pass.
+        Gated by ``agent.tension_synthesis_enabled``."""
+        if not bool(
+            getattr(self._agent_settings, "tension_synthesis_enabled", True)
+        ):
+            return []
+        subject = spec.subject
+        cap = self._max_tension_concepts
+        if subject == "relationship":
+            half = max(2, cap // 2)
+            pool = (
+                self._active_tension_bases("user", half)
+                + self._active_tension_bases("aiko", half)
+            )
+        else:
+            pool = self._active_tension_bases(subject, cap)
+
+        # A tension needs at least two concepts to hold in friction; for the
+        # relationship lens it needs at least one of each subject. Leave the
+        # shared ``tension_dirty`` flag untouched on an early-out (the three
+        # tension specs share it, so it accumulates via OR below).
+        if len(pool) < 2:
+            return []
+        if subject == "relationship" and not (
+            any(b.subject == "user" for b in pool)
+            and any(b.subject == "aiko" for b in pool)
+        ):
+            return []
+
+        sig_key = spec.sig_key or ("concept_synth.tension_sig." + subject)
+        prev = self._load_sigs(sig_key)
+        fingerprint = self._tension_fingerprint(pool)
+        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
+        is_dirty = force or fingerprint != prev_fp
+        # OR-accumulate: user / relationship / aiko all share the flag, so a
+        # later empty lens must not clear an earlier dirty one.
+        stats["tension_dirty"] = bool(stats.get("tension_dirty")) or bool(
+            is_dirty
+        )
+        if not is_dirty:
+            return []
+
+        proposals = spec.propose(
+            ctx,
+            concepts=pool,
+            existing=self._existing_for(spec),
+        )
+        self._save_sigs(
+            sig_key, {"fingerprint": fingerprint, "count": len(pool)}
+        )
+        return proposals
+
+    def _active_tension_bases(
+        self, subject: str, limit: int
+    ) -> list[TensionBase]:
+        """The active, non-meta concepts for ``subject``, highest-confidence
+        first and capped at ``limit``, rendered as :class:`TensionBase` rows for
+        the tension proposer. Excluding ``evidence_model=="meta"`` is the meta
+        depth cap (a tension can never reference another tension)."""
+        try:
+            rows = [
+                c
+                for c in self._concept_store.list_by(
+                    status="active", subject=subject
+                )
+                if c.evidence_model != "meta"
+            ]
+        except Exception:
+            log.debug("tension base list failed (%s)", subject, exc_info=True)
+            return []
+        rows.sort(key=lambda c: float(c.confidence), reverse=True)
+        rows = rows[: max(2, int(limit))]
+        now = _parse_iso(_now_iso())
+        return [
+            TensionBase(
+                id=int(c.concept_id),
+                subject=str(c.subject),
+                kind=str(c.kind),
+                label=str(c.label),
+                rationale=str(c.rationale or ""),
+                confidence=float(c.confidence),
+                hint=self._activity_hint(c, now),
+            )
+            for c in rows
+        ]
+
+    @staticmethod
+    def _activity_hint(concept: Concept, now: "datetime | None") -> str:
+        """A coarse 'live vs quiet' hint from ``last_reinforced_at`` -- the L4
+        'one pattern hot while a normally-paired one has gone dormant' signal in
+        cheap form. Empty when it can't be dated or sits in the middle band."""
+        ts = _parse_iso(getattr(concept, "last_reinforced_at", None) or "")
+        if ts is None or now is None:
+            return ""
+        days = (now - ts).total_seconds() / 86400.0
+        if days <= 7.0:
+            return "live lately"
+        if days >= 30.0:
+            return "gone quiet lately"
+        return ""
+
+    @staticmethod
+    def _tension_fingerprint(pool: list[TensionBase]) -> str:
+        """Stable hash of the offered base pool (ids + rounded confidence +
+        live/quiet hint). Folding the hint in means a concept going quiet -- a
+        new tension signal -- re-fires an otherwise-settled pass."""
+        key = "|".join(
+            f"{b.id}:{round(float(b.confidence), 1)}:{b.hint}"
+            for b in sorted(pool, key=lambda b: int(b.id))
+        )
+        return hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:16]
+
     def _build_style_digest(self, subject: str) -> str:
         """Compact, persisted read of how the user communicates -- the K13
         style-signal labels + the distilled profile ``communication_style``
@@ -1653,6 +1806,16 @@ class ConceptSynthesisWorker:
     ) -> None:
         if not proposal.evidence:
             return
+
+        # Meta depth cap + cycle guard (L12, rule 4), enforced at persist time:
+        # a meta concept may reference only EXISTING, non-meta concepts. Drops
+        # any ``("concept", id)`` edge whose target vanished (retired between
+        # propose and persist) or is itself meta; a tension that loses either
+        # side of its pair is no longer a tension, so we reject it.
+        if proposal.evidence_model == "meta":
+            proposal.evidence = self._filter_meta_evidence(proposal.evidence)
+            if len({(t, i) for t, i in proposal.evidence}) < 2:
+                return
 
         # LLM-directed reinforcement: attach the new evidence to the named
         # existing concept (the proposer already validated the id against
@@ -1838,6 +2001,28 @@ class ConceptSynthesisWorker:
         concept.last_reinforced_at = _now_iso()
         # confidence / plasticity / status intentionally left to L3.
         self._concept_store.update(concept)
+
+    def _filter_meta_evidence(
+        self, evidence: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Keep only ``("concept", id)`` edges whose target is a live, non-meta
+        concept (plus any non-concept edges untouched). Enforces the L12 meta
+        depth cap / cycle guard at persist time: a base that turned out to be
+        meta or has vanished is dropped, so a tension can never reference
+        another tension or a ghost."""
+        kept: list[tuple[str, str]] = []
+        for node_type, node_id in evidence:
+            if node_type != "concept":
+                kept.append((node_type, node_id))
+                continue
+            try:
+                target = self._concept_store.get(int(node_id))
+            except (TypeError, ValueError):
+                target = None
+            if target is None or target.evidence_model == "meta":
+                continue
+            kept.append((node_type, node_id))
+        return kept
 
     def _add_evidence_edges(
         self,

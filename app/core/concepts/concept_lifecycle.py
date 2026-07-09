@@ -512,6 +512,53 @@ def communication_style_evidence_gate(
     )
 
 
+# Built-in bars for a *tension* concept (L12) -- the first meta (concept-over-
+# concept) kind. A tension is built on exactly TWO base concepts, so its source
+# floor is **overridden** to 2 (a tension without both sides is not a tension);
+# this bypasses the L21 young-graph source-count tightening, which is meant for
+# raw-evidence kinds, not a fixed-arity meta concept. The age + confidence floors
+# still take the caller's value when higher, via ``max`` -- and they are set a
+# notch above the fluid kinds because a tension is delivered "with the most care
+# of any kind" (L12), so it should only assert once it has genuinely settled. The
+# two hard meta guarantees -- both bases still ``active`` and confidence bounded
+# by the shakier base (rule 3) -- are enforced in the lifecycle worker, which has
+# the store access this pure predicate does not.
+_TENSION_MIN_SOURCES = 2
+_TENSION_MIN_AGE_DAYS = 1.0
+_TENSION_MIN_CONFIDENCE = 0.6
+
+
+def tension_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``tension`` concepts (L12, the first meta kind).
+
+    Same shape as :func:`set_evidence_gate`, but the source floor is
+    **overridden** to 2 -- a tension references exactly the two base concepts it
+    holds in friction, so "enough sources" means "both sides present", not the
+    global minimum. Age + confidence floors take the caller's value when it is
+    higher, via ``max`` (so the L21 young-graph confidence tightening still
+    applies), and sit a notch above the fluid kinds so a tension only surfaces
+    once it has settled. The store-dependent meta rules (both bases ``active``;
+    confidence bounded by ``min`` of the base confidences) live in the lifecycle
+    worker, not here.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=_TENSION_MIN_SOURCES,
+        min_age_days=max(float(min_age_days), _TENSION_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _TENSION_MIN_CONFIDENCE),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "RelationshipSignal",
@@ -530,4 +577,5 @@ __all__ = [
     "aspiration_evidence_gate",
     "boundary_evidence_gate",
     "communication_style_evidence_gate",
+    "tension_evidence_gate",
 ]
