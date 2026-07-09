@@ -156,6 +156,24 @@ class MemorySettings:
     opinion_injection_per_hour_cap: int = 6
     opinion_injection_per_day_cap: int = 30
 
+    # ── L18c: boundary-vs-conversation clash cue ──────────────────────
+    # Gating for the per-turn "this turn nears an active boundary" T6 cue
+    # (master switch: ``agent.boundary_clash_enabled``). Cosine-only, no
+    # LLM:
+    # * ``min_cosine`` — the live turn's embedding must clear this against
+    #   an active boundary concept's label. Set a touch above the K29
+    #   opinion floor (0.55): a boundary is a broader behavioural line, so
+    #   a slightly firmer topical match keeps the cue from over-firing.
+    # * ``min_user_words`` — short quips ("lol", "ok") can't credibly
+    #   approach a boundary; skip them (mirrors K29).
+    # * ``cooldown_turns`` / ``per_session_cap`` — a standing boundary is
+    #   background guidance, so the sharp in-the-moment cue is rate-limited
+    #   the same way K29 is (never nag).
+    boundary_clash_min_cosine: float = 0.58
+    boundary_clash_min_user_words: int = 4
+    boundary_clash_cooldown_turns: int = 5
+    boundary_clash_per_session_cap: int = 3
+
     # ── K46: stance persistence ──────────────────────────────────────
     # How many turns after Aiko states a taste/opinion (a K29 cue
     # actually fired) the stance stays "warm" — i.e. a mild pushback in
@@ -1610,6 +1628,26 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             opinion_injection_per_day_cap=max(
                 0,
                 int(memory_raw.get("opinion_injection_per_day_cap", 30)),
+            ),
+            # ── L18c: boundary-vs-conversation clash cue ───────────────
+            boundary_clash_min_cosine=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("boundary_clash_min_cosine", 0.58)),
+                ),
+            ),
+            boundary_clash_min_user_words=max(
+                0,
+                int(memory_raw.get("boundary_clash_min_user_words", 4)),
+            ),
+            boundary_clash_cooldown_turns=max(
+                0,
+                int(memory_raw.get("boundary_clash_cooldown_turns", 5)),
+            ),
+            boundary_clash_per_session_cap=max(
+                0,
+                int(memory_raw.get("boundary_clash_per_session_cap", 3)),
             ),
             # ── K46: stance persistence ───────────────────────────────
             stance_persistence_window=max(

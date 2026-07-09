@@ -1888,6 +1888,19 @@ class AgentSettings:
     opinion_injection_enabled: bool = True
     opinion_injection_require_definite: bool = False
 
+    # ── L18c: boundary-vs-conversation clash cue ──────────────────────
+    # Master switch for the per-turn "this turn is heading toward one of
+    # your soft lines" cue. When on (default) a K29-style detector reads
+    # active ``boundary`` concepts, embeds the live turn, and -- when the
+    # turn is near a boundary (cosine gate) -- surfaces a soft T6 cue so
+    # Aiko feels the tension in-the-moment instead of only carrying the
+    # boundary as background guidance. Cosine-only, no hot-path LLM. The
+    # cosine / cooldown / per-session-cap knobs live under
+    # ``memory.boundary_clash_*``. Off -> the provider never runs (no
+    # embed, no concept read). See
+    # [`app/core/affect/boundary_clash_detector.py`](../affect/boundary_clash_detector.py).
+    boundary_clash_enabled: bool = True
+
     # ── K46: stance persistence ───────────────────────────────────────
     # Master switch for the "don't cave on taste pushback" cue. When on
     # and Aiko has recently stated a taste/opinion (a K29 cue fired in

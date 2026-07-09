@@ -54,6 +54,7 @@ exists to keep them in lock-step.
 | Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
 | Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
+| Feel the tension when a turn nears a boundary (L18c boundary clash) | `agent.boundary_clash_enabled` | `true` |
 | Don't cave on taste pushback (K46 stance persistence) | `agent.stance_persistence_enabled` | `true` |
 | Long-arc callbacks "weeks ago you said…" (K63) | `agent.long_arc_callback_enabled` | `true` |
 | Dormant-interest re-opener "we haven't talked about X in ages" (K67) | `agent.dormant_interest_enabled` | `true` |
@@ -842,6 +843,24 @@ Settings:
 - `memory.opinion_injection_per_hour_cap` *(int, `6`, min `0`)* and `memory.opinion_injection_per_day_cap` *(int, `30`, min `0`)* — LLM-gate budgets for the borderline path. Independent from F5's conflict-detector budget (different `state_key`). Setting either to `0` disables the LLM gate (effectively `require_definite=true`).
 
 Verification: enable INFO logging on `app.session` and watch for `opinion-injection fire: trigger=… cosine=… stance_id=… heuristic=… signals=… llm_verdict=… cooldown_set=… session_count=…` on every fire. The MCP tools `get_opinion_injection_state()` and `force_opinion_injection()` cover end-to-end repro without waiting for an organic trigger; the `get_opinion_injection_state` payload includes the rate-limiter snapshot, the last-fire diagnostics, and the live settings snapshot so the tuning loop is "tweak `user.json`, restart, call the tool, see how the rendered cue would change". Tests: `tests/test_opinion_injection_detector.py`, `tests/test_opinion_injection_provider.py`, `OpinionInjectionProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
+
+### L18b/L18c — boundary & communication-style steering
+
+Two related pieces that make the *learned* concept lines (the `communication_style` / `boundary` kinds) actually steer delivery, rather than sitting under the fixed persona.
+
+**L18b — persona lightening + the learned-style steer.** The persona's talk-style rules (`How you talk`, `Conversation rules` incl. `LENGTH:` / `DON'T ALWAYS ASK A QUESTION`, `Leading vs following`) sit at the top of the prompt (T0) and are phrased as *defaults*. A constant, name-aware addendum ([`build_learned_style_addendum`](../app/core/session/prompt_support.py)) is folded in right after the persona (same slot as the speech-grammar addendum, still T0, so it stays in the cache prefix) telling the model that when the context later surfaces a learned communication-style / boundary line, that line is the *live calibration* of the defaults and wins when it fits — "hold them lightly, never as hard rules, and when none surface the defaults simply stand". The addendum is self-gating (inert on turns where nothing surfaces), so there is no per-turn or per-concept branching in T0. Two persona rules (`LENGTH:` sizing and the "1 in 3 turns end on a thought" question cadence) were softened to name that a surfaced learned line recalibrates them. No behaviour-subsystem code gating (K31/K59/K60 stay as-is) — the steer is entirely in the prompt, which keeps it robust across different chat models. This has no dedicated settings knob (it rides the existing `communication_style` / `boundary` concept synthesis switches).
+
+**L18c — boundary-vs-conversation clash cue.** A K29-style per-turn detector ([`boundary_clash_detector`](../app/core/affect/boundary_clash_detector.py)) that fires a soft T6 cue when the live turn is heading *toward* an active `boundary` concept — so Aiko feels the tension in-the-moment instead of only carrying the boundary as background T3 guidance. It reads active boundaries via `ConceptView.relevant` (embedding-nearest, which yields the label-cosine in one call), applies a cosine + word-count gate, and uses `classify_pair` only to *sharpen* the register (a lexical clash makes it "pushing right at" rather than "brushing up against"). Cosine-only, no hot-path LLM. The cue is self-contained (no persona edit needed) and forbids naming the line out loud, refusing, or lecturing.
+
+Settings:
+
+- `agent.boundary_clash_enabled` *(bool, `true`)* — master switch. Off → the provider never runs (no embed, no concept read).
+- `memory.boundary_clash_min_cosine` *(float, `0.58`, range `[0, 1]`)* — cosine floor between the live turn and an active boundary's label. Set a touch above the K29 opinion floor (0.55) because a boundary is a broader behavioural line; higher → only near-exact topical brushes fire.
+- `memory.boundary_clash_min_user_words` *(int, `4`, min `0`)* — short quips can't credibly approach a boundary. `0` disables the length gate.
+- `memory.boundary_clash_cooldown_turns` *(int, `5`, min `0`)* — turns of cooldown after a fire. `0` disables.
+- `memory.boundary_clash_per_session_cap` *(int, `3`, min `0`)* — hard cap on fires per session (a standing boundary is background guidance; the sharp cue never nags). `0` disables the cap (cooldown still applies).
+
+Verification: enable INFO logging on `app.session` and watch for `boundary-clash fire: trigger=… cosine=… concept_id=… subject=… heuristic=… cooldown_set=… session_count=…` on every fire. Tests: `tests/test_boundary_clash.py`.
 
 ### K46 — stance persistence (don't cave on taste pushback)
 

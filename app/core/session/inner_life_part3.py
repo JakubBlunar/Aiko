@@ -256,6 +256,152 @@ class InnerLifePart3Mixin:
         self._opinion_injection_cue_emitted = True  # K46
         return block
 
+    def _render_boundary_clash_block(self, user_text: str) -> str:
+        """L18c: surface a soft cue when the live turn nears an active boundary.
+
+        Sibling of :meth:`_render_opinion_injection_block` -- a provider-time
+        detector that fires on the same turn the user message arrives. Simpler
+        than K29: the raw material is active ``boundary`` concepts (read via
+        ``ConceptView``), the gate is cosine-only (no hot-path LLM), and
+        ``classify_pair`` only sharpens the cue's register (approach vs push).
+
+        Guardrails mirror K29:
+
+        * Master switch (``agent.boundary_clash_enabled``) flips it off.
+        * Cooldown counter (``memory.boundary_clash_cooldown_turns``,
+          default 5) decremented every call, armed on fire.
+        * Per-session cap (``memory.boundary_clash_per_session_cap``,
+          default 3) -- a standing boundary is background guidance, so the
+          sharp in-the-moment cue never nags.
+        * Cosine + word-count gates live in the detector module.
+        """
+        if not bool(
+            getattr(self._settings.agent, "boundary_clash_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.affect import boundary_clash_detector
+            from app.core.concepts.concept_view import concept_view_from
+        except Exception:
+            log.debug("boundary-clash import failed", exc_info=True)
+            return ""
+
+        # Decrement cooldown first so a quiet turn always whittles the
+        # counter down even when nothing trips the trigger.
+        current_cooldown = max(0, int(getattr(self, "_boundary_clash_cooldown", 0)))
+        if current_cooldown > 0:
+            self._boundary_clash_cooldown = current_cooldown - 1
+        if self._boundary_clash_cooldown > 0:
+            return ""
+
+        session_cap = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "boundary_clash_per_session_cap",
+                    3,
+                )
+            ),
+        )
+        session_count = int(getattr(self, "_boundary_clash_session_count", 0))
+        if session_cap > 0 and session_count >= session_cap:
+            return ""
+
+        view = concept_view_from(self)
+        embedder = getattr(self, "_embedder", None)
+        if view is None or not view.enabled or embedder is None:
+            return ""
+
+        try:
+            user_vec = embedder.embed(user_text or "")
+        except Exception:
+            log.debug("boundary-clash: embedder failed", exc_info=True)
+            return ""
+
+        # All active boundaries, nearest first; the detector applies the
+        # cosine floor so pass min_sim=0.0 here (subject is left unset so
+        # user / relationship / aiko lines all compete).
+        try:
+            pairs = view.relevant(user_vec, kind="boundary", k=8, min_sim=0.0)
+        except Exception:
+            log.debug("boundary-clash: concept read failed", exc_info=True)
+            return ""
+        if not pairs:
+            return ""
+
+        candidates = [
+            boundary_clash_detector.BoundaryCandidate(
+                concept_id=int(getattr(c, "concept_id", 0)),
+                subject=str(getattr(c, "subject", "") or "user"),
+                label=str(getattr(c, "label", "") or ""),
+                cosine=float(sim),
+            )
+            for (c, sim) in pairs
+        ]
+
+        memory_settings = self._memory_settings
+        try:
+            result = boundary_clash_detector.detect(
+                user_text or "",
+                candidates=candidates,
+                min_cosine=float(
+                    getattr(
+                        memory_settings,
+                        "boundary_clash_min_cosine",
+                        boundary_clash_detector.DEFAULT_MIN_COSINE,
+                    )
+                ),
+                min_user_words=int(
+                    getattr(
+                        memory_settings,
+                        "boundary_clash_min_user_words",
+                        boundary_clash_detector.DEFAULT_MIN_USER_WORDS,
+                    )
+                ),
+            )
+        except Exception:
+            log.debug("boundary-clash detector raised", exc_info=True)
+            return ""
+
+        if result is None:
+            return ""
+
+        cooldown_turns = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "boundary_clash_cooldown_turns",
+                    5,
+                )
+            ),
+        )
+        self._boundary_clash_cooldown = cooldown_turns
+        self._boundary_clash_session_count = session_count + 1
+        self._last_boundary_clash = result
+
+        log.info(
+            "boundary-clash fire: trigger=%s cosine=%.3f concept_id=%d "
+            "subject=%s heuristic=%s cooldown_set=%d session_count=%d",
+            result.trigger,
+            result.cosine,
+            result.concept_id,
+            result.subject,
+            result.heuristic_label,
+            cooldown_turns,
+            self._boundary_clash_session_count,
+        )
+
+        try:
+            return boundary_clash_detector.render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("boundary-clash render failed", exc_info=True)
+            return ""
+
     def _opinion_injection_llm_verdict(
         self,
         user_text: str,

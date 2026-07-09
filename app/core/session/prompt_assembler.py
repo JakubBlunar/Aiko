@@ -38,6 +38,7 @@ from app.core.session.prompt_support import (
     _MESSAGE_OVERHEAD,
     clip_text_to_tokens,
     build_speech_grammar_addendum,
+    build_learned_style_addendum,
     _SPEECH_GRAMMAR_ADDENDUM,
     _TOUCH_GRAMMAR_ADDENDUM,
     _build_overlay_grammar_addendum,
@@ -172,6 +173,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # message" cues).
         "implicit_need_block",
         "opinion_injection_block",
+        # L18c: boundary-vs-conversation clash cue. Sits next to the K29
+        # stance cue (same live-read-on-the-user cluster).
+        "boundary_clash_block",
         # K46: "don't cave on taste pushback" — sits right after the K29
         # stance cue (same live-read-on-the-user cluster).
         "stance_persistence_block",
@@ -538,6 +542,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # through an LLM YES/NO gate) so an Aiko with a few stored
         # stances doesn't slip into contrarianism.
         self._opinion_injection_provider: Callable[[str], str] | None = None
+        # L18c boundary-clash — soft cue when the live turn nears an
+        # active boundary concept. Takes ``user_text`` (embeds it, reads
+        # active boundaries via ConceptView, cosine-gated). Sits in the
+        # same T6 "live read on the turn" cluster as K29.
+        self._boundary_clash_provider: Callable[[str], str] | None = None
         # K46 stance-persistence — "hold your take" cue on mild taste
         # pushback right after a K29 stance. Takes ``user_text`` (it
         # classifies the live pushback band), sits right after the K29
@@ -1546,6 +1555,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     opinion_injection_block = ""
 
+        # L18c — boundary-vs-conversation clash. Fires a soft cue when the
+        # live turn nears an active boundary concept (cosine-gated, no
+        # LLM). Empty on almost every turn (needs an active boundary AND a
+        # topical match). Not gated on aggressive mode -- a steer to hold a
+        # soft line where the turn brushes it is what tight budgets want.
+        boundary_clash_block = ""
+        if getattr(self, "_boundary_clash_provider", None) is not None:
+            with _timed_phase(provider_ms, "boundary_clash"):
+                try:
+                    boundary_clash_block = (
+                        self._boundary_clash_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug("boundary-clash provider raised", exc_info=True)
+                    boundary_clash_block = ""
+
         # K46 — stance persistence. Fires a "hold your take" cue when a
         # mild pushback lands right after Aiko stated a taste (K29 cue
         # fired in the last few turns). Empty on almost every turn (needs
@@ -2299,6 +2324,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "promise_followthrough_block",
             "misattunement_block",
             "opinion_injection_block",
+            "boundary_clash_block",
             "stance_persistence_block",
             "novelty_block",
             "stagnation_block",
@@ -2317,6 +2343,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "promise_followthrough_block": promise_followthrough_block,
             "misattunement_block": misattunement_block,
             "opinion_injection_block": opinion_injection_block,
+            "boundary_clash_block": boundary_clash_block,
             "stance_persistence_block": stance_persistence_block,
             "novelty_block": novelty_block,
             "stagnation_block": stagnation_block,
@@ -2350,6 +2377,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             ]
             misattunement_block = cue_blocks["misattunement_block"]
             opinion_injection_block = cue_blocks["opinion_injection_block"]
+            boundary_clash_block = cue_blocks["boundary_clash_block"]
             stance_persistence_block = cue_blocks["stance_persistence_block"]
             novelty_block = cue_blocks["novelty_block"]
             stagnation_block = cue_blocks["stagnation_block"]
@@ -2400,6 +2428,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # drop unsupported requests, so it's safe to advertise
             # every kind unconditionally.
             system_parts.append(_TOUCH_GRAMMAR_ADDENDUM)
+            # L18b: bridge the fixed talk-style defaults above to the
+            # learned communication_style / boundary lines that surface at
+            # T3. Constant text -> stays in the cache prefix; self-gating
+            # wording -> inert on turns where nothing surfaces.
+            system_parts.append(
+                build_learned_style_addendum(self._resolve_user_display_name()),
+            )
         if narrative_block:
             system_parts.append(narrative_block)
         if profile_block:
@@ -2666,6 +2701,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # fused grounding line never carries stance signal so
             # K29 is purely additive on top.
             system_parts.append(opinion_injection_block)
+        if boundary_clash_block:
+            # L18c: boundary-vs-conversation clash sits next to the K29
+            # stance cue -- both are live reads on the user's turn that
+            # steer HOW to reply (share your take / hold a soft line). NOT
+            # in the K16 suppression set: the fused grounding line carries
+            # no boundary signal, so this is purely additive on top.
+            system_parts.append(boundary_clash_block)
         if stance_persistence_block:
             # K46: "don't cave on taste pushback" lands right after the
             # K29 stance cue so the "share your take" + "hold your take"

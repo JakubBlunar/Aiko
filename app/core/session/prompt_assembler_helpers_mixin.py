@@ -205,6 +205,7 @@ class PromptAssemblerHelpersMixin:
         misattunement: Callable[[str], str] | None = None,
         implicit_need: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
+        boundary_clash: Callable[[str], str] | None = None,
         stance_persistence: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         reconnection: Callable[[], str] | None = None,
@@ -356,6 +357,8 @@ class PromptAssemblerHelpersMixin:
             self._implicit_need_provider = implicit_need
         if opinion_injection is not None:
             self._opinion_injection_provider = opinion_injection
+        if boundary_clash is not None:
+            self._boundary_clash_provider = boundary_clash
         if stance_persistence is not None:
             self._stance_persistence_provider = stance_persistence
         if absence_curiosity is not None:

@@ -78,6 +78,41 @@ def build_speech_grammar_addendum(user_display_name: str = "the user") -> str:
 # ``build_speech_grammar_addendum`` with the runtime user name.
 _SPEECH_GRAMMAR_ADDENDUM = build_speech_grammar_addendum()
 
+
+# L18b: the bridge between the fixed persona talk-style defaults (which
+# sit just above this in T0) and the *learned* communication_style /
+# boundary concept lines that surface later at T3 (relevant_context).
+# Without it the two layers just coexist and the model has no reason to
+# let a surfaced line win over the generic default. Constant text (never
+# per-turn), so it stays in the cache prefix; self-gating in wording so
+# it is inert on turns where nothing surfaces ("when none surface the
+# defaults simply stand"). ~60 tokens.
+def build_learned_style_addendum(user_display_name: str = "the user") -> str:
+    """Steer connecting the persona talk-style defaults to surfaced
+    communication_style / boundary concept lines (L18b).
+
+    The persona rules above this block are *defaults*; when the context
+    surfaces a learned line about how the user likes the conversation to
+    feel, how Aiko has chosen to show up, or a soft boundary, that line is
+    the live calibration and wins over the generic default when it fits.
+    Name-aware so the referent is tight; ``"the user"`` is the test
+    default.
+    """
+    name = user_display_name or "the user"
+    return (
+        "Your talk-style rules above are just that -- defaults. Some turns "
+        f"your context will surface learned lines about how {name} likes the "
+        "conversation to feel, how you've chosen to show up, or soft "
+        "boundaries you've come to hold (they arrive later in the prompt as "
+        "short \"how you talk / lines you hold\" impressions). When those "
+        "appear, treat them as the live calibration of the rules above: let "
+        "them adjust how much detail you give, how direct you are, when you "
+        "lead vs follow, how playful or gentle you land. They win over the "
+        "generic defaults when they fit the moment -- hold them lightly, "
+        "never as hard rules, and when none surface the defaults simply "
+        "stand."
+    )
+
 # K31 / B7 soft physicality: ``[[touch:KIND]]`` tag family. Folded
 # into the system prompt unconditionally (the persona block teaches the
 # "use sparingly + reaches earned" posture). Eight curated kinds,
