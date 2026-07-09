@@ -781,6 +781,19 @@ class MemorySettings:
     # topic clusters and deliberate remembered notes; this bounds the anchor
     # batch (same shape as the boundary cap).
     concept_synthesis_max_comm_style_memories: int = 24
+    # L12: cap on active BASE concepts offered to the tension (meta) proposer
+    # per run (per subject); for the relationship lens each side gets roughly
+    # half. Concept cardinality is small by design (tens), so this rarely bites
+    # -- it only bounds the prompt when the graph is unusually rich.
+    concept_synthesis_max_tension_concepts: int = 24
+    # L12 tension-cue worker (the proactive "a friction worth sitting with"
+    # producer). ``interval_seconds`` is the idle cadence; ``min_confidence``
+    # gates which tensions qualify; ``journal_max`` bounds the cue ring. The
+    # per-tension cooldown lives under AgentSettings
+    # (``tension_cue_cooldown_days``) next to the enable flags.
+    tension_cue_interval_seconds: float = 28800.0
+    tension_cue_min_confidence: float = 0.6
+    tension_cue_journal_max: int = 4
     # L14 aspiration-momentum worker (the proactive check-in producer). It
     # drafts a private cue over an active aspiration that has gone stale enough
     # to be worth revisiting. ``interval_seconds`` is the idle cadence;
@@ -2536,6 +2549,27 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         "concept_synthesis_max_comm_style_memories", 24
                     )
                 ),
+            ),
+            concept_synthesis_max_tension_concepts=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_tension_concepts", 24
+                    )
+                ),
+            ),
+            tension_cue_interval_seconds=max(
+                60.0,
+                float(
+                    memory_raw.get("tension_cue_interval_seconds", 28800.0)
+                ),
+            ),
+            tension_cue_min_confidence=float(
+                memory_raw.get("tension_cue_min_confidence", 0.6)
+            ),
+            tension_cue_journal_max=max(
+                1,
+                int(memory_raw.get("tension_cue_journal_max", 4)),
             ),
             aspiration_momentum_interval_seconds=max(
                 60.0,

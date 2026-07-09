@@ -330,11 +330,36 @@ class ConceptLifecycleWorker:
                 rate=self._f("concept_plasticity_drift_rate", 0.05),
             )
 
+        # L12 meta rule 3 (confidence bounding): a meta concept can't be more
+        # certain than the shakiest concept it's built on. Applied after
+        # accrual/penalty so a strong tension riding a wobbling base is reined
+        # in *before* the gate sees its confidence. ``meta_moot`` (rule 2) is
+        # carried down to the transition override below. No-op for base kinds.
+        meta_moot = False
+        if concept.evidence_model == "meta":
+            new_conf, meta_moot = self._apply_meta_rules(concept, new_conf)
+            concept.confidence = new_conf
+
         # 2-5. Status transition (confidence-driven; age only gates/ delays).
         old_status = concept.status
         new_status, event_type = self._transition(
             concept, now, new_conf, contradicted=verdict is not None
         )
+        # L12 meta rule 2 (cascade): a tension whose base is no longer active is
+        # moot -- never let it be (or become) active. Demote a promoted one to
+        # dormant (revivable when the base returns and the tension is
+        # re-proposed); hold a candidate/dormant/retired one back from
+        # promotion/revival. The base's own status change already marked this
+        # dependent stale, so it is being re-evaluated here.
+        if (
+            concept.evidence_model == "meta"
+            and meta_moot
+            and new_status == "active"
+        ):
+            if old_status == "active":
+                new_status, event_type = "dormant", "dormant"
+            else:
+                new_status, event_type = old_status, ""
         status_changed = new_status != old_status
         if status_changed:
             concept.status = new_status
@@ -807,11 +832,12 @@ class ConceptLifecycleWorker:
             )
 
     def _mark_dependents_stale(self, concept: "Concept") -> None:
-        """Meta cascade: when a base concept changes status, mark its
-        dependents stale so the next tick re-evaluates them (rather than
-        recursing inline). A no-op today -- only ``set``/identity concepts
-        exist, which have no dependents -- but this is the batch-safe hook
-        for later meta kinds."""
+        """Meta cascade (L12 rule 2): when a base concept changes status, mark
+        its dependents stale so the next tick re-evaluates them (rather than
+        recursing inline). Live for tension concepts (L12) -- a base that
+        promotes / retires / is disproven walks to the tensions built on it via
+        ``dependents_of`` (the ``concept -> concept`` evidence edges), forcing
+        :meth:`_apply_meta_rules` to re-check them on the next round-robin."""
         try:
             dep_ids = self._store.dependents_of(concept.concept_id)
         except Exception:
@@ -828,6 +854,51 @@ class ConceptLifecycleWorker:
                 log.debug(
                     "cascade stale-mark failed (id=%s)", dep_id, exc_info=True
                 )
+
+    def _apply_meta_rules(
+        self, concept: "Concept", conf: float
+    ) -> tuple[float, bool]:
+        """L12 meta rules 2 + 3 for a ``evidence_model=="meta"`` concept.
+
+        Resolve the base concepts it references (its ``("concept", ...)``
+        evidence edges) and:
+
+        - **Rule 3 (confidence bounding):** return ``min(conf, min(base
+          confidences))`` -- a tension can be no more certain than the shakiest
+          concept it is built on.
+        - **Rule 2 (moot):** flag ``moot=True`` when any referenced base is
+          missing or no longer ``active`` (a tension whose side was retired /
+          went dormant is no longer a live tension). With no resolvable base
+          concept at all it is moot by definition.
+
+        Returns ``(bounded_confidence, moot)``. Base kinds never call this."""
+        base_ids: list[int] = []
+        try:
+            for e in self._store.evidence_of(concept.concept_id):
+                if e.src_type == "concept":
+                    try:
+                        base_ids.append(int(e.src_id))
+                    except (TypeError, ValueError):
+                        continue
+        except Exception:
+            log.debug(
+                "meta evidence resolve failed (id=%s)",
+                concept.concept_id, exc_info=True,
+            )
+            return conf, True
+        if not base_ids:
+            return conf, True
+
+        base_confs: list[float] = []
+        moot = False
+        for bid in base_ids:
+            base = self._store.get(bid)
+            if base is None or base.status != "active":
+                moot = True
+                continue
+            base_confs.append(float(base.confidence))
+        bounded = min(conf, min(base_confs)) if base_confs else conf
+        return bounded, moot
 
     # ── events ──────────────────────────────────────────────────────────
 

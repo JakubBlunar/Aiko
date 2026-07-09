@@ -173,6 +173,9 @@ def _mem_settings(
         concept_synthesis_max_boundary_memories=cap_aiko,
         # L23 communication-style anchor-batch cap (same shape as boundary).
         concept_synthesis_max_comm_style_memories=cap_aiko,
+        # L12 tension: cap on active base concepts offered to the tension
+        # (meta) proposer per run, per subject.
+        concept_synthesis_max_tension_concepts=cap_aiko,
     )
 
 
@@ -267,6 +270,8 @@ def _both_responder(system, user):
     if "BOUNDARIES" in system:
         return {"concepts": []}
     if "communication-style" in system:
+        return {"concepts": []}
+    if "tension" in system.lower():
         return {"concepts": []}
     if "HERSELF" in system:
         return {

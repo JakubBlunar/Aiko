@@ -1525,6 +1525,13 @@ class InnerLifePart1Mixin:
             label = (getattr(concept, "label", "") or "").strip()
             if not label:
                 return False
+            # L12: a tension concept never renders in the static T3 block -- it
+            # surfaces only through the strictly-cooldowned T6 tension cue, so a
+            # standing friction can never nag. Its evidence edges still power the
+            # spreading-activation + cascade machinery upstream; this only drops
+            # it from the rendered relevant-context lane.
+            if (getattr(concept, "kind", "") or "") == "tension":
+                return False
             kind = get_kind(getattr(concept, "kind", "") or "")
             weights = (
                 kind.surface_weights if kind is not None

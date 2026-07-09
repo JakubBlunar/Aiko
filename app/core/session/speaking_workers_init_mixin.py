@@ -645,6 +645,7 @@ class SpeakingWorkersInitMixin:
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
             aspiration_momentum=self._render_aspiration_momentum_block,
+            tension=self._render_tension_block,
             wellbeing_concern=self._render_wellbeing_concern_block,
             shared_ritual=self._render_shared_ritual_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
@@ -2215,6 +2216,79 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._aspiration_momentum_worker = None
+
+                # L12: TensionCueWorker. Rare, gentle producer that drafts a
+                # private "a friction worth sitting with" cue over an active
+                # ``tension`` (meta) concept (read via a ConceptView, per L24).
+                # Consumer side is ``_render_tension_block``; tension concepts
+                # are kept out of the relevant-context block, so this
+                # strictly-cooldowned cue is their only surface. Opt-in via
+                # ``concepts_enabled`` AND ``tension_cue_enabled``. Non-fatal.
+                self._tension_cue_worker = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(settings.agent, "tension_cue_enabled", True)
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_view import (
+                            concept_view_from,
+                        )
+                        from app.core.proactive.tension_cue_worker import (
+                            TensionCueWorker,
+                        )
+
+                        mem = self._memory_settings
+                        self._tension_cue_worker = TensionCueWorker(
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            view_provider=lambda: concept_view_from(self),
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            enabled_provider=lambda: bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "tension_cue_enabled",
+                                    True,
+                                )
+                            ),
+                            interval_seconds=float(
+                                getattr(
+                                    mem,
+                                    "tension_cue_interval_seconds",
+                                    28800.0,
+                                )
+                            ),
+                            cooldown_days=float(
+                                getattr(
+                                    self._settings.agent,
+                                    "tension_cue_cooldown_days",
+                                    6.0,
+                                )
+                            ),
+                            min_confidence=float(
+                                getattr(
+                                    mem,
+                                    "tension_cue_min_confidence",
+                                    0.6,
+                                )
+                            ),
+                            journal_max=int(
+                                getattr(mem, "tension_cue_journal_max", 4)
+                            ),
+                        )
+                        self._idle_scheduler.register(
+                            self._tension_cue_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "TensionCueWorker boot failed", exc_info=True
+                        )
+                        self._tension_cue_worker = None
 
                 # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
                 # likely upcoming questions during idle windows so the

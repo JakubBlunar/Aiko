@@ -203,6 +203,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K73: warm "this has become our thing" shared-ritual beat.
         # Sibling cue-producer; cooldown + acknowledged-flag gated.
         "shared_ritual_block",
+        # L12: rare, gentle "a friction worth sitting with" cue over an active
+        # tension (meta) concept. Sibling cue-producer; strictly cooldowned
+        # one-shot drafted by TensionCueWorker -- the only surface for a
+        # tension (kept out of the relevant-context block).
+        "tension_block",
         # K-time3: forward sweep over future_plan rows due in the horizon
         # window, with the relative times pre-resolved. Clusters with the
         # other future-plan / time-anchored cues (follow_up).
@@ -608,6 +613,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # aspiration. Watermark-gated one-shot, sibling of growth_witness /
         # self_callback.
         self._aspiration_momentum_provider: Callable[[], str] | None = None
+        # L12 tension cue. Consumer of the TensionCueWorker ring; surfaces a
+        # rare, gentle "a friction worth sitting with" observation over an
+        # active tension (meta) concept. Tension concepts are otherwise kept
+        # OUT of the relevant-context block, so this cooldowned cue is their
+        # only surface. Watermark-gated one-shot, sibling of aspiration_momentum.
+        self._tension_provider: Callable[[], str] | None = None
         # K-time3: upcoming-horizon cue. A forward sweep over future_plan
         # rows due within the horizon window, rendered with the relative
         # times pre-resolved so the model never recomputes a future date.
@@ -1742,6 +1753,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     aspiration_momentum_block = ""
 
+        # L12 tension cue: rare, gentle "a friction worth sitting with" beat
+        # over an active tension (meta) concept. Built every turn (consumes a
+        # watermark) but almost always empty. Sibling of aspiration_momentum.
+        tension_block = ""
+        if getattr(self, "_tension_provider", None) is not None:
+            with _timed_phase(provider_ms, "tension"):
+                try:
+                    tension_block = self._tension_provider() or ""
+                except Exception:
+                    log.debug("tension provider raised", exc_info=True)
+                    tension_block = ""
+
         # K72 wellbeing concern: rare, hard-gated "you doing okay?" cue.
         # Built every turn (consumes a watermark) but almost always empty.
         wellbeing_concern_block = ""
@@ -2729,6 +2752,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer family; cooldown + acknowledged-flag gated
             # one-shot. NOT in the K16 suppression set.
             system_parts.append(shared_ritual_block)
+        if tension_block:
+            # L12: rare, gentle "a friction worth sitting with" observation
+            # over an active tension (meta) concept. Sits with the cue-producer
+            # family; strictly cooldowned one-shot and the ONLY surface for a
+            # tension (kept out of the relevant-context block).
+            system_parts.append(tension_block)
         if upcoming_horizon_block:
             # K-time3: "coming up ..." with the relative times pre-resolved.
             # Sits right after the follow_up cue — both are future-plan /

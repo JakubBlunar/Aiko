@@ -94,6 +94,27 @@ class NarrativeCandidate:
 
 
 @dataclass(slots=True)
+class TensionBase:
+    """One active *base* concept offered to the L12 tension proposer as raw
+    material. Unlike :class:`ExistingConcept` (id + label, for dedup), a
+    tension base carries the extra context the model needs to spot a
+    push/pull between two of them: its ``subject`` / ``kind`` (so a value can
+    be told apart from an activity), a ``rationale`` snippet, its
+    ``confidence``, and an optional ``hint`` about whether it has been live or
+    has gone quiet lately (the "hot while a normally-paired concept is
+    dormant" signal). Only non-meta actives are ever passed, which is what
+    keeps the meta depth cap (no meta-of-meta) true by construction."""
+
+    id: int
+    subject: str
+    kind: str
+    label: str
+    rationale: str = ""
+    confidence: float = 0.5
+    hint: str = ""
+
+
+@dataclass(slots=True)
 class ProposerContext:
     """Shared plumbing handed to every proposer. ``call_llm`` is the
     worker's bound LLM helper ``(system, user) -> list[dict]`` (already
@@ -796,6 +817,116 @@ def propose_communication_style(
     return proposals
 
 
+def _tension_base_line(base: TensionBase) -> str:
+    """Render one active base concept for the tension prompt: id, its
+    subject/kind and confidence, the label, a rationale snippet, and the
+    optional live/quiet hint that helps the model spot a push/pull."""
+    head = f"[{base.id}] ({base.subject}/{base.kind}, conf {base.confidence:.2f}) {base.label}"
+    rat = snippet(base.rationale or "")
+    if rat:
+        head += f" -- {rat}"
+    if base.hint:
+        head += f"  [{base.hint}]"
+    return head
+
+
+def propose_tension(
+    ctx: ProposerContext,
+    *,
+    subject: str,
+    system: str,
+    concepts: Sequence[TensionBase] = (),
+    existing: Sequence[ExistingConcept] = (),
+) -> list[CandidateProposal]:
+    """Shared body for the L12 tension proposers -- the first *meta* kind.
+
+    A tension is a concept whose evidence is two OTHER active concepts held in
+    friction: an internal push/pull the person hasn't articulated ("values rest
+    but rarely takes it"; "wants simplicity but keeps adding complexity"), or --
+    for ``subject="relationship"`` -- a user value clashing with an aiko value.
+    Unlike every other proposer the raw material is not clusters/memories but
+    the small set of active *base* (non-meta) concepts (``concepts``), so the
+    evidence it emits is ``("concept", id)`` and its ``evidence_model`` is
+    ``"meta"``.
+
+    **Composition rule.** A tension holds exactly TWO distinct base concepts, so
+    a NEW proposal is accepted only when it cites exactly two distinct ids from
+    the offered set (this is the arity the L3 :func:`tension_evidence_gate`
+    floors at 2). Because only non-meta actives are ever offered, a tension can
+    never reference another tension (the meta depth cap) and cannot form a
+    cycle. ``subject`` shapes the prompt lens only.
+    """
+    valid_ids = {int(b.id) for b in concepts}
+    if not valid_ids:
+        return []
+    existing_ids = {int(e.id) for e in existing}
+
+    base_lines = [_tension_base_line(b) for b in concepts]
+    sections = [
+        "ACTIVE CONCEPTS (each already an established, settled belief -- cite "
+        "their ids):\n" + "\n".join(base_lines),
+        "ALREADY-KNOWN TENSIONS:\n" + format_existing(existing),
+        "Name a NEW tension ONLY when two of the concepts above are genuinely "
+        "in friction (cite exactly two ids in 'evidence_concept_ids'), or "
+        "reinforce a known one by id. Return nothing rather than forcing a "
+        "clash that isn't there.",
+    ]
+    user = "\n\n".join(sections)
+
+    raw = ctx.call_llm(system, user)
+    proposals: list[CandidateProposal] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cids = list(
+            dict.fromkeys(
+                c
+                for c in coerce_id_list(item.get("evidence_concept_ids"))
+                if c in valid_ids
+            )
+        )
+        rationale = str(item.get("rationale") or "").strip()
+
+        reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
+        if reinforces is not None:
+            # A reinforcement re-affirms an existing tension: it still needs the
+            # two sides present so the edges (and the source count) stay whole.
+            if len(cids) != 2:
+                continue
+            evidence = [("concept", str(c)) for c in cids]
+            proposals.append(
+                CandidateProposal(
+                    label="",
+                    rationale=rationale,
+                    confidence=0.0,
+                    evidence=evidence,
+                    kind="tension",
+                    subject=subject,
+                    evidence_model="meta",
+                    reinforces_id=reinforces,
+                )
+            )
+            continue
+
+        label = str(item.get("label") or "").strip()
+        # Composition rule: a tension is exactly a pair of distinct base concepts.
+        if not label or len(cids) != 2:
+            continue
+        evidence = [("concept", str(c)) for c in cids]
+        proposals.append(
+            CandidateProposal(
+                label=label,
+                rationale=rationale,
+                confidence=clamp01(item.get("confidence")),
+                evidence=evidence,
+                kind="tension",
+                subject=subject,
+                evidence_model="meta",
+            )
+        )
+    return proposals
+
+
 __all__ = [
     "AIKO_SELF_KINDS",
     "MIN_SOURCES",
@@ -805,6 +936,7 @@ __all__ = [
     "NarrativeCandidate",
     "ProposerContext",
     "ProposerSpec",
+    "TensionBase",
     "clamp01",
     "coerce_id_list",
     "format_existing",
@@ -813,6 +945,7 @@ __all__ = [
     "propose_communication_style",
     "propose_narrative",
     "propose_ordered_concept",
+    "propose_tension",
     "resolve_reinforces",
     "snippet",
 ]

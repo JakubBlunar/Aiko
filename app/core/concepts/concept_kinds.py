@@ -64,6 +64,7 @@ from app.core.concepts.concept_lifecycle import (
     narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
+    tension_evidence_gate,
     value_evidence_gate,
 )
 
@@ -567,6 +568,48 @@ register_kind(
             context=0.5, confidence=0.15, stability=0.25, recency=0.1,
             activation=0.15,
             recency_halflife_days=21.0,
+        ),
+    )
+)
+
+
+# The first *meta* kind (L12): a tension is a concept whose evidence is two OTHER
+# active concepts held in friction -- an internal push/pull the person hasn't
+# articulated ("values rest but rarely takes it"), or, for ``subject=relationship``,
+# a user value clashing with an aiko value (never a grievance, the place a real
+# relationship lives). ``evidence_model="meta"`` -- its two ``("concept", id)``
+# evidence edges are what light up the (previously dormant) ``dependents_of``
+# activation path and the L3 cascade. Delivered "with the most care of any kind":
+# it is intentionally NOT on the core lane and is filtered OUT of the static T3
+# render (so it can never nag); the only visible surface is a strictly-cooldowned
+# T6 cue. The store-dependent meta rules (both bases must stay ``active``;
+# confidence bounded by ``min`` of the base confidences) are enforced in the L3
+# worker, not the pure gate.
+register_kind(
+    ConceptKind(
+        name="tension",
+        subject="user",
+        evidence_model="meta",
+        # L16: medium-fluid. A tension is a live reading of two concepts in
+        # friction, not a hard-won trait -- it should ease as the underlying
+        # concepts shift, so it drifts a little faster than a boundary (0.45)
+        # but is stickier than raw affect (0.5) since holding two patterns at
+        # once is a considered observation, not a mood.
+        plasticity_default=0.35,
+        # L3: the meta gate -- floors the source count at 2 (both sides of the
+        # friction), with a higher age + confidence bar than the fluid kinds
+        # because a tension asserts with care.
+        promotion_gate=tension_evidence_gate,
+        # L12: never pinned every turn (``core_always_on=False``) and never
+        # rendered in the static T3 block -- see the tension exclusion in
+        # ``build_relevant_context`` and the T6 ``tension_block`` cue. These
+        # weights only matter for the internal spreading-activation ripeness
+        # signal the cue producer reads (activation-heavy: a tension is worth
+        # revisiting exactly when its base concepts are live this turn).
+        surface_weights=SurfaceWeights(
+            context=0.5, confidence=0.1, stability=0.2, recency=0.1,
+            activation=0.3,
+            recency_halflife_days=14.0,
         ),
     )
 )
