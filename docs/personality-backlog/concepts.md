@@ -1413,9 +1413,11 @@ combined dirty-tracking, per-subject `sig_key`). Gated by
 
 **Deferred (tracked below as their own backlog items, so nothing is silently
 absorbed into this shipped entry):** ~~L18a boundary trust-modulation (the
-deferred L16 piece)~~ **[SHIPPED with L16]**, L18b boundary behaviour-subsystem
-gating, L18c boundary-vs-conversation conflict steer, L18d concept-vs-concept
-conflict detection (meta concepts), L18e boundary evidence broadening.
+deferred L16 piece)~~ **[SHIPPED with L16]**, ~~L18b boundary behaviour-subsystem
+gating~~ **[SHIPPED, reframed as persona-lightening + learned-style steer]**,
+~~L18c boundary-vs-conversation conflict steer~~ **[SHIPPED]**, L18d
+concept-vs-concept conflict detection (meta concepts), L18e boundary evidence
+broadening.
 
 **Effort.** Shipped on top of L1-L5 / L11 / L27.
 
@@ -1438,36 +1440,63 @@ See the **L16** entry for the full description.
 
 ---
 
-## L18b. Boundary behaviour-subsystem gating
+## L18b. Boundary behaviour-subsystem gating — SHIPPED (reframed)
 
-**Motivation.** Today a boundary surfaces as **prompt guidance** only. To be
-truly load-bearing, an active boundary should also suppress/soften the relevant
-behaviour subsystems at the code level — not just ask the model nicely.
+**Status: SHIPPED**, reframed away from code-level behaviour-subsystem gating.
+The original sketch (read active boundaries as a *gate* into K31/K32 touch,
+K59 tease, K60 mask) was dropped: Aiko can run on a different chat model whose
+behaviour is driven by the *prompt*, not by those Python subsystems, so gating
+them wouldn't reliably move the needle. Instead the load-bearing work is a
+prompt steer:
 
-**Sketched approach.** Read active boundary concepts (via `ConceptView`) as a
-*gate* into touch gestures (K31/K32), the tease economy (K59), and the expression
-mask (K60), softening rather than hard-blocking (consistent with the "guiding,
-not refusals" steer).
+- **Persona lightened.** The talk-style rules at T0 (`How you talk`,
+  `Conversation rules` incl. `LENGTH:` / `DON'T ALWAYS ASK A QUESTION`,
+  `Leading vs following`) are now framed as *defaults*. Two of the most
+  absolute rules (`LENGTH:` sizing, the "1 in 3 turns end on a thought"
+  question cadence) were softened to name that a surfaced learned line
+  recalibrates them.
+- **The learned-style steer.** A constant, name-aware addendum
+  (`build_learned_style_addendum` in
+  [`prompt_support.py`](../../app/core/session/prompt_support.py)) folds in
+  right after the persona (same T0 slot as the speech-grammar addendum, so it
+  stays in the cache prefix) telling the model that when the context surfaces a
+  learned `communication_style` / `boundary` line it is the *live calibration*
+  of the defaults and wins when it fits — "hold them lightly, never as hard
+  rules, and when none surface the defaults simply stand". Self-gating, so
+  there is no per-turn branching in T0.
 
-**Key files.** The K31/K32/K59/K60 subsystems; a boundary→behaviour read path off
-`ConceptView`.
+This carries the deferred L23 "lighten hard-coded persona style blocks"
+follow-on. The `communication_style` / `boundary` concept headers in
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) already say
+"let these steer HOW you talk"; the addendum is the missing bridge from those
+T3 lines back to the T0 defaults.
 
-**Effort.** Medium.
+**Effort.** Small (prompt-only).
 
 ---
 
-## L18c. Boundary-vs-conversation conflict steer (fast-follow)
+## L18c. Boundary-vs-conversation conflict steer (fast-follow) — SHIPPED
 
-**Motivation.** When the live turn heads toward crossing an active boundary, Aiko
-should feel the tension in-the-moment rather than only carrying the boundary as
-background guidance.
+**Status: SHIPPED.** A K29-style per-turn detector
+([`boundary_clash_detector.py`](../../app/core/affect/boundary_clash_detector.py))
+fires a soft T6 cue when the live turn is heading *toward* an active `boundary`
+concept, so Aiko feels the tension in-the-moment instead of only carrying the
+boundary as background T3 guidance.
 
-**Sketched approach.** A K29-style per-turn detector (`classify_pair` + a cosine
-gate) between the live turn and active boundaries → a soft T6 cue when the turn
-approaches a boundary. Reuses the existing per-turn conflict machinery pattern.
+- **Read.** Active boundaries via `ConceptView.relevant` (embedding-nearest,
+  which yields the label-cosine in one call) across all subjects
+  (user / relationship / aiko).
+- **Gate.** Cosine floor (`memory.boundary_clash_min_cosine`, default 0.58 —
+  a notch above the K29 opinion floor) + a word-count gate. `classify_pair` is
+  used only to *sharpen* the register ("pushing right at" vs "brushing up
+  against"), never to gate the fire. Cosine-only, no hot-path LLM.
+- **Surfacing.** Provider `_render_boundary_clash_block` in
+  [`inner_life_part3.py`](../../app/core/session/inner_life_part3.py), wired
+  into the T6 "live read on the turn" cluster next to K29 (cooldown +
+  per-session cap mirror K29; joins the K51 cue-register rotation). The cue is
+  self-contained and forbids naming the line out loud, refusing, or lecturing.
 
-**Key files.** K29 conflict detector, the T6 cue surfacing path, `ConceptView`
-boundary read.
+Gated by `agent.boundary_clash_enabled`. Tests: `tests/test_boundary_clash.py`.
 
 **Effort.** Small-medium (fast-follow to L18).
 

@@ -631,6 +631,7 @@ class SpeakingWorkersInitMixin:
             misattunement=self._render_misattunement_block,
             implicit_need=self._render_implicit_need_block,
             opinion_injection=self._render_opinion_injection_block,
+            boundary_clash=self._render_boundary_clash_block,
             stance_persistence=self._render_stance_persistence_block,
             absence_curiosity=self._render_absence_curiosity_block,
             reconnection=self._render_reconnection_block,
