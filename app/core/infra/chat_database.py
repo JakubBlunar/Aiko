@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 24
+_SCHEMA_VERSION = 25
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -192,7 +192,12 @@ CREATE TABLE IF NOT EXISTS user_relationship (
     total_turns INTEGER NOT NULL DEFAULT 0,
     total_sessions INTEGER NOT NULL DEFAULT 0,
     last_milestone_at TEXT,
-    milestone_label TEXT
+    milestone_label TEXT,
+    -- v25: JSON list of milestone labels already surfaced (fire-once).
+    -- NULL means "never initialised" (a pre-v25 row) and triggers a
+    -- one-time backfill in RelationshipTracker.record_turn that seeds it
+    -- with every already-crossed milestone so stale ones never re-fire.
+    milestones_surfaced TEXT
 );
 
 -- Schema v7: relationship "axes" — four floats in [-1, 1] tracking
@@ -1181,6 +1186,21 @@ class ChatDatabase:
                 )
             except sqlite3.OperationalError:
                 pass
+        # v24 -> v25: fire-once relationship milestones. A single
+        # ``milestone_label`` column can only remember the *last* milestone,
+        # so for any established relationship the old ``_next_milestone``
+        # logic ping-ponged between all crossed milestones (e.g. re-announcing
+        # "first hundred turns" and "first week together" on alternating turns
+        # forever). ``milestones_surfaced`` is a JSON set of labels already
+        # surfaced. Existing rows stay NULL so record_turn backfills them with
+        # everything already crossed on the next turn (announcing nothing),
+        # which stops the stale re-fires without retroactively spamming.
+        try:
+            conn.execute(
+                "ALTER TABLE user_relationship ADD COLUMN milestones_surfaced TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
