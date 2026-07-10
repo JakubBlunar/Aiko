@@ -26,6 +26,7 @@ for a month now" naturally.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,11 @@ class RelationshipState:
     total_sessions: int
     last_milestone_at: str | None
     milestone_label: str | None
+    # v25: the set of milestone labels already surfaced (fire-once). A
+    # tuple for immutability; ``None`` means "never initialised" -- a
+    # pre-v25 row that record_turn backfills on its next tick (seeding it
+    # with everything already crossed so nothing stale re-announces).
+    milestones_surfaced: tuple[str, ...] | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -83,6 +89,11 @@ class RelationshipState:
             "total_sessions": int(self.total_sessions),
             "last_milestone_at": self.last_milestone_at,
             "milestone_label": self.milestone_label,
+            "milestones_surfaced": (
+                list(self.milestones_surfaced)
+                if self.milestones_surfaced is not None
+                else None
+            ),
         }
 
 
@@ -95,12 +106,28 @@ class RelationshipStore:
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+    @staticmethod
+    def _parse_surfaced(raw: object) -> tuple[str, ...] | None:
+        """Parse the ``milestones_surfaced`` JSON column. ``None`` (a
+        pre-v25 NULL) stays ``None`` so record_turn knows to backfill;
+        a malformed value degrades to an empty (initialised) set rather
+        than re-triggering the backfill forever."""
+        if raw is None:
+            return None
+        try:
+            parsed = json.loads(str(raw))
+        except Exception:
+            return ()
+        if not isinstance(parsed, list):
+            return ()
+        return tuple(str(x) for x in parsed)
+
     def get(self, user_id: str) -> RelationshipState | None:
         if not user_id:
             return None
         row = self._db.execute_fetchone(
             "SELECT user_id, first_seen_at, total_turns, total_sessions, "
-            "last_milestone_at, milestone_label "
+            "last_milestone_at, milestone_label, milestones_surfaced "
             "FROM user_relationship WHERE user_id = ?",
             (user_id,),
         )
@@ -113,6 +140,7 @@ class RelationshipStore:
             total_sessions=int(row[3] or 0),
             last_milestone_at=str(row[4]) if row[4] else None,
             milestone_label=str(row[5]) if row[5] else None,
+            milestones_surfaced=self._parse_surfaced(row[6]),
         )
 
     def get_or_create(self, user_id: str) -> RelationshipState:
@@ -120,9 +148,13 @@ class RelationshipStore:
         if existing is not None:
             return existing
         now = self._now_iso()
+        # A brand-new row is born *initialised* (empty set, not NULL): a new
+        # user has crossed nothing yet, so every future milestone is a
+        # genuine first crossing and the backfill path never applies to them.
         self._db.execute_commit(
             "INSERT INTO user_relationship (user_id, first_seen_at, "
-            "total_turns, total_sessions) VALUES (?, ?, 0, 0)",
+            "total_turns, total_sessions, milestones_surfaced) "
+            "VALUES (?, ?, 0, 0, '[]')",
             (user_id, now),
         )
         return RelationshipState(
@@ -132,6 +164,7 @@ class RelationshipStore:
             total_sessions=0,
             last_milestone_at=None,
             milestone_label=None,
+            milestones_surfaced=(),
         )
 
     def update(
@@ -142,6 +175,7 @@ class RelationshipStore:
         total_sessions: int | None = None,
         milestone_label: str | None = None,
         milestone_at: str | None = None,
+        milestones_surfaced: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         if not user_id:
             return
@@ -152,10 +186,20 @@ class RelationshipStore:
         new_sessions = total_sessions if total_sessions is not None else existing.total_sessions
         new_label = milestone_label if milestone_label is not None else existing.milestone_label
         new_at = milestone_at if milestone_at is not None else existing.last_milestone_at
+        if milestones_surfaced is not None:
+            surfaced_json: str | None = json.dumps(list(milestones_surfaced))
+        elif existing.milestones_surfaced is not None:
+            surfaced_json = json.dumps(list(existing.milestones_surfaced))
+        else:
+            surfaced_json = None
         self._db.execute_commit(
             "UPDATE user_relationship SET total_turns = ?, total_sessions = ?, "
-            "milestone_label = ?, last_milestone_at = ? WHERE user_id = ?",
-            (int(new_turns), int(new_sessions), new_label, new_at, user_id),
+            "milestone_label = ?, last_milestone_at = ?, "
+            "milestones_surfaced = ? WHERE user_id = ?",
+            (
+                int(new_turns), int(new_sessions), new_label, new_at,
+                surfaced_json, user_id,
+            ),
         )
 
 
@@ -203,18 +247,51 @@ class RelationshipTracker:
         """Increment turn counter. Returns (new_state, new_milestone_label).
 
         ``new_milestone_label`` is non-None only when this turn crossed a
-        milestone that we hadn't already surfaced.
+        milestone we hadn't surfaced before. Milestones are **fire-once**:
+        each label is remembered in the persistent ``milestones_surfaced``
+        set, so a crossed milestone never re-announces (the old single-label
+        logic ping-ponged between all crossed milestones for any established
+        relationship).
+
+        Backfill: a pre-v25 row arrives with ``milestones_surfaced is None``.
+        On its first tick we seed that set with *every* already-crossed
+        milestone and announce nothing -- so an existing user who is already
+        1000 turns and months in doesn't get a burst of stale "first hundred
+        turns" / "first week" callbacks.
         """
         state = self._store.get_or_create(user_id)
         moment = now or datetime.now(timezone.utc)
         new_turns = state.total_turns + 1
-        crossed = _next_milestone(state, new_turns=new_turns, now=moment)
+        crossed_now = _crossed_milestones(state, new_turns=new_turns, now=moment)
+
+        if state.milestones_surfaced is None:
+            # Backfill an uninitialised (pre-v25) row: everything crossed so
+            # far counts as already-seen; surface nothing this turn.
+            new_surfaced = tuple(
+                label for label, _t, _d in _MILESTONES if label in crossed_now
+            )
+            crossed: str | None = None
+        else:
+            seen = set(state.milestones_surfaced)
+            crossed = next(
+                (
+                    label
+                    for label, _t, _d in _MILESTONES
+                    if label in crossed_now and label not in seen
+                ),
+                None,
+            )
+            new_surfaced = state.milestones_surfaced + (
+                (crossed,) if crossed is not None else ()
+            )
+
         moment_iso = moment.isoformat(timespec="seconds")
         self._store.update(
             user_id,
             total_turns=new_turns,
             milestone_label=crossed if crossed is not None else state.milestone_label,
             milestone_at=moment_iso if crossed is not None else state.last_milestone_at,
+            milestones_surfaced=new_surfaced,
         )
         new_state = RelationshipState(
             user_id=user_id,
@@ -223,6 +300,7 @@ class RelationshipTracker:
             total_sessions=state.total_sessions,
             last_milestone_at=moment_iso if crossed is not None else state.last_milestone_at,
             milestone_label=crossed if crossed is not None else state.milestone_label,
+            milestones_surfaced=new_surfaced,
         )
         return new_state, crossed
 
@@ -256,13 +334,16 @@ def phase_for(state: RelationshipState, *, now: datetime) -> str:
     return "new"
 
 
-def _next_milestone(
+def _crossed_milestones(
     state: RelationshipState,
     *,
     new_turns: int,
     now: datetime,
-) -> str | None:
-    """Find the most-recent milestone we just crossed, if any."""
+) -> set[str]:
+    """The set of milestone labels whose threshold is satisfied at
+    ``new_turns`` / the current age. Purely a function of the counters --
+    "already surfaced?" is tracked separately by the caller, which is what
+    makes milestones fire once instead of re-triggering every turn."""
     age_days = _days_since(
         RelationshipState(
             user_id=state.user_id,
@@ -274,14 +355,13 @@ def _next_milestone(
         ),
         now=now,
     )
+    crossed: set[str] = set()
     for label, turn_threshold, day_threshold in _MILESTONES:
-        if state.milestone_label == label:
-            continue
         crossed_turns = turn_threshold > 0 and new_turns >= turn_threshold
         crossed_days = day_threshold > 0 and age_days >= day_threshold
         if crossed_turns or crossed_days:
-            return label
-    return None
+            crossed.add(label)
+    return crossed
 
 
 # Phase-keyed ambient relationship lines. Templated on the user's
@@ -372,14 +452,36 @@ def render_ambient(
     phase = phase_for(state, now=now)
     base = phase_ambient_line(phase, user_display_name)
     age_days = _days_since(state, now=now)
-    if state.milestone_label:
-        # Append a single milestone hint so the LLM knows what to honor.
+    # Only call a milestone "recent" for a short window after it was
+    # surfaced. Otherwise a milestone crossed long ago would pin the suffix
+    # to "Recent milestone: …" forever and starve the more informative
+    # age/turns line -- and read as freshly-reached to the LLM.
+    if state.milestone_label and _milestone_is_recent(state, now=now):
         suffix = f" Recent milestone: {state.milestone_label.replace('_', ' ')}."
     elif age_days >= 1.0:
         suffix = f" You've been talking for ~{int(age_days)} days, {state.total_turns} turns."
     else:
         suffix = ""
     return base + suffix
+
+
+# How long a surfaced milestone still reads as "recent" in the ambient line.
+_MILESTONE_RECENCY_DAYS: float = 2.0
+
+
+def _milestone_is_recent(state: RelationshipState, *, now: datetime) -> bool:
+    """True when ``last_milestone_at`` is within ``_MILESTONE_RECENCY_DAYS``.
+
+    A milestone with no timestamp is treated as recent (best-effort back-
+    compat with rows written before we required the timestamp)."""
+    if not state.last_milestone_at:
+        return True
+    ts = _parse_iso(state.last_milestone_at)
+    if ts is None:
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts).total_seconds() <= _MILESTONE_RECENCY_DAYS * 86400.0
 
 
 __all__ = [

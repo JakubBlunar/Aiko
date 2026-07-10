@@ -95,6 +95,24 @@ class RenderAmbientTests(unittest.TestCase):
         line = render_ambient(s, now=datetime.now(timezone.utc))
         self.assertIn("first hundred turns", line)
 
+    def test_stale_milestone_falls_back_to_age_line(self):
+        # A milestone crossed long ago must not pin the ambient suffix to
+        # "Recent milestone: …" forever (it read as freshly-reached to the
+        # LLM and starved the informative age/turns line).
+        now = datetime.now(timezone.utc)
+        s = RelationshipState(
+            user_id="u",
+            first_seen_at=(now - timedelta(days=40)).isoformat(timespec="seconds"),
+            total_turns=1490,
+            total_sessions=30,
+            last_milestone_at=(now - timedelta(days=10)).isoformat(timespec="seconds"),
+            milestone_label="first_hundred_turns",
+            milestones_surfaced=("first_hundred_turns",),
+        )
+        line = render_ambient(s, now=now)
+        self.assertNotIn("Recent milestone", line)
+        self.assertIn("1490 turns", line)
+
 
 class RelationshipTrackerTests(unittest.TestCase):
     def test_record_turn_increments(self):
@@ -130,6 +148,81 @@ class RelationshipTrackerTests(unittest.TestCase):
                 if m:
                     seen.append(m)
             self.assertNotIn("first_hundred_turns", seen)
+        finally:
+            f.close()
+
+    def test_milestone_does_not_pingpong_across_a_week(self):
+        # Regression: the old single-``milestone_label`` logic re-announced
+        # a crossed milestone the moment a *different* one was also crossed,
+        # so an established relationship ping-ponged "first hundred turns"
+        # and "first week together" on alternating turns forever.
+        f = _Fixture()
+        try:
+            base = datetime.now(timezone.utc)
+            fired: list[str] = []
+            for _ in range(100):
+                _, m = f.tracker.record_turn("u", now=base)
+                if m:
+                    fired.append(m)
+            self.assertEqual(fired.count("first_hundred_turns"), 1)
+
+            later = base + timedelta(days=8)
+            fired2: list[str] = []
+            for _ in range(40):
+                _, m = f.tracker.record_turn("u", now=later)
+                if m:
+                    fired2.append(m)
+            # first_hundred_turns was already surfaced -> never again.
+            self.assertNotIn("first_hundred_turns", fired2)
+            # first_week_together crosses now, but only once.
+            self.assertEqual(fired2.count("first_week_together"), 1)
+        finally:
+            f.close()
+
+    def test_backfill_suppresses_stale_milestones(self):
+        # A pre-v25 row (milestones_surfaced NULL) with a long history must
+        # not spray a burst of stale milestones; the first tick seeds the
+        # surfaced set with everything already crossed and announces nothing.
+        f = _Fixture()
+        try:
+            f.tracker.get("old")  # create the row
+            old_seen = (
+                datetime.now(timezone.utc) - timedelta(days=60)
+            ).isoformat(timespec="seconds")
+            f.db.execute_commit(
+                "UPDATE user_relationship SET total_turns = ?, "
+                "first_seen_at = ?, milestones_surfaced = NULL "
+                "WHERE user_id = ?",
+                (500, old_seen, "old"),
+            )
+            state, m = f.tracker.record_turn("old")
+            self.assertIsNone(m)
+            assert state.milestones_surfaced is not None
+            self.assertIn("first_hundred_turns", state.milestones_surfaced)
+            self.assertIn("first_week_together", state.milestones_surfaced)
+            self.assertIn("first_month_together", state.milestones_surfaced)
+            self.assertNotIn("hundred_days_together", state.milestones_surfaced)
+
+            # A genuinely-new milestone still fires once after backfill.
+            later = datetime.now(timezone.utc) + timedelta(days=110)
+            fired: list[str] = []
+            for _ in range(3):
+                _, m2 = f.tracker.record_turn("old", now=later)
+                if m2:
+                    fired.append(m2)
+            self.assertEqual(fired.count("hundred_days_together"), 1)
+        finally:
+            f.close()
+
+    def test_surfaced_set_persists(self):
+        f = _Fixture()
+        try:
+            now = datetime.now(timezone.utc)
+            for _ in range(100):
+                f.tracker.record_turn("p", now=now)
+            reloaded = f.store.get("p")
+            assert reloaded is not None and reloaded.milestones_surfaced is not None
+            self.assertIn("first_hundred_turns", reloaded.milestones_surfaced)
         finally:
             f.close()
 

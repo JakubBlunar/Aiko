@@ -892,18 +892,25 @@ class WorldMixin:
             except Exception:
                 log.debug("together anniversary failed", exc_info=True)
 
-        # Milestones list with crossed-off dates (when known).
+        # Milestones list with crossed-off dates (when known). A milestone
+        # is "crossed" if it's in the persistent surfaced set (v25); we fall
+        # back to the single last-label for rows not yet backfilled. Using
+        # the set is what lets the tab highlight *every* milestone reached,
+        # not just the most recent one.
         milestones: list[dict[str, Any]] = []
         last_milestone_label = None
         last_milestone_at = None
+        surfaced: set[str] = set()
         if rel_state is not None:
             last_milestone_label = getattr(rel_state, "milestone_label", None)
             last_milestone_at = getattr(rel_state, "last_milestone_at", None)
+            surfaced = set(getattr(rel_state, "milestones_surfaced", None) or ())
         for label, _turns, _days in _MILESTONES:
+            crossed = label in surfaced or label == last_milestone_label
             milestones.append({
                 "label": label,
                 "human": label.replace("_", " "),
-                "crossed": label == last_milestone_label,
+                "crossed": crossed,
                 "crossed_at": last_milestone_at if label == last_milestone_label else None,
             })
 
