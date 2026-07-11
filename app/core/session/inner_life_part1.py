@@ -1256,6 +1256,21 @@ class InnerLifePart1Mixin:
             return f" — it keeps surfacing around {clean[0]}"
         return f" — it keeps surfacing around {clean[0]} and {clean[1]}"
 
+    @staticmethod
+    def _concept_rationale_phrase(rationale: str, cap: int) -> str:
+        """L27: a compact 'why' clause for a core/pinned concept -- the
+        stored rationale trimmed to a word boundary at ``cap`` chars.
+        Empty when there is nothing to say (so a rationale-less core
+        concept stays terse) or when disabled by ``cap <= 0``."""
+        text = (rationale or "").strip()
+        cap = max(0, int(cap))
+        if not text or cap == 0:
+            return ""
+        if len(text) > cap:
+            cut = text[:cap].rsplit(" ", 1)[0].rstrip(" ,;:.—-")
+            text = (cut or text[:cap]).rstrip() + "\u2026"
+        return f" — the sense of it traces back to {text}"
+
     # ── Unified context budget (T3 relevant_context region) ────────────
 
     def build_relevant_context(
@@ -1893,6 +1908,17 @@ class InnerLifePart1Mixin:
         pinned = pinned_ids or set()
         components = score_components or {}
         name = self.user_display_name
+        # L27 core-lane enrichment: the always-on pinned concepts (and only
+        # those) may carry a compact rationale clause so the always-present
+        # beliefs read as grounded, without inflating the token cost of the
+        # turn-relevant fill.
+        ms = getattr(self, "_memory_settings", None)
+        core_rationale_on = bool(
+            getattr(ms, "concept_surfacing_core_rationale_enabled", True)
+        )
+        rationale_cap = int(
+            getattr(ms, "concept_surfacing_rationale_max_chars", 120)
+        )
         # Group by (subject, family) so value concepts (the normative *why*,
         # L10) render in a distinct voice from identity/trait concepts (the
         # *what*) instead of all sharing the "things you've come to
@@ -1926,20 +1952,27 @@ class InnerLifePart1Mixin:
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
             support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
             grounding = self._concept_grounding_phrase(support)
+            cid_int = int(getattr(c, "concept_id", 0))
+            rationale_clause = ""
+            if core_rationale_on and cid_int in pinned:
+                rationale_clause = self._concept_rationale_phrase(
+                    getattr(c, "rationale", ""), rationale_cap
+                )
             groups.setdefault((subject, family), []).append(
-                f"- {hedge} {label}{grounding}"
+                f"- {hedge} {label}{grounding}{rationale_clause}"
             )
             entry = {
-                "concept_id": int(getattr(c, "concept_id", 0)),
+                "concept_id": cid_int,
                 "label": label,
                 "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
                 "plasticity": round(float(getattr(c, "plasticity", 0.0)), 4),
                 "kind": kind,
                 "subject": getattr(c, "subject", None),
-                "pinned": int(getattr(c, "concept_id", 0)) in pinned,
+                "pinned": cid_int in pinned,
                 "hedge": hedge,
                 "last_reinforced_at": getattr(c, "last_reinforced_at", None),
                 "supporting": support,
+                "rationale_surfaced": bool(rationale_clause),
             }
             # L23: attach the surfacing score breakdown (lane, cosine, recency,
             # stability, salience, activation, habituation) so the MCP concept

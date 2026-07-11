@@ -1584,6 +1584,14 @@ class RagRetriever:
                 continue
             evidence.append({"text": (mem.content or "")[:280]})
 
+        # Higher-order links this concept participates in, so the "why"
+        # can reach past raw memories to the concepts it connects to: meta
+        # concepts (e.g. tensions) that reference it, its own base concepts
+        # when it is itself a meta, and generalization edges in either
+        # direction (L20; empty until that ships). Bounded so the bundle
+        # stays compact.
+        related = self._concept_related_links(concept, edges, limit=6)
+
         return {
             "concept": {
                 "label": concept.label,
@@ -1591,12 +1599,73 @@ class RagRetriever:
                 "subject": concept.subject,
                 "status": concept.status,
                 "confidence": round(float(concept.confidence), 3),
-                "rationale": (concept.rationale or "")[:280],
+                "rationale": (concept.rationale or "")[:500],
             },
             "score": round(float(sim), 3),
             "evidence": evidence,
             "clusters": cluster_labels,
+            "related": related,
         }
+
+    def _concept_related_links(
+        self, concept: Any, evidence_edges: list[Any], *, limit: int = 6
+    ) -> list[dict[str, Any]]:
+        """Resolve the concept-to-concept neighbours of ``concept`` for the
+        ``recall_concept`` "why" bundle: dependent metas (tensions that
+        reference it), its base concepts when it is itself a meta (from the
+        already-fetched ``evidence_edges``), and ``generalizes`` links in
+        either direction. Skips missing / non-active neighbours; bounded by
+        ``limit``. Never raises (best-effort enrichment)."""
+        store = self._concept_store
+        if store is None:
+            return []
+        out: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        self_id = int(concept.concept_id)
+
+        def add(cid: int, relation: str) -> None:
+            if len(out) >= limit or cid in seen or cid == self_id:
+                return
+            rc = store.get(cid)
+            if rc is None or rc.status != "active":
+                return
+            seen.add(cid)
+            out.append({
+                "label": rc.label,
+                "subject": rc.subject,
+                "kind": rc.kind,
+                "relation": relation,
+            })
+
+        try:
+            # Metas that reference this concept as a base (e.g. tensions).
+            for dep_id in store.dependents_of(self_id):
+                dep = store.get(dep_id)
+                add(dep_id, dep.kind if dep is not None else "references")
+            # This concept's own base concepts, when it is a meta.
+            for e in evidence_edges:
+                if e.src_type == "concept":
+                    try:
+                        add(int(e.src_id), "references")
+                    except (TypeError, ValueError):
+                        continue
+            # Generalization links (either direction).
+            edges = store.edges_from("concept", self_id) + store.edges_into(
+                "concept", self_id
+            )
+            for e in edges:
+                if e.relation != "generalizes":
+                    continue
+                other = e.dst_id if str(e.src_id) == str(self_id) else e.src_id
+                if e.dst_type != "concept" and e.src_type != "concept":
+                    continue
+                try:
+                    add(int(other), "generalizes")
+                except (TypeError, ValueError):
+                    continue
+        except Exception:
+            log.debug("recall_concept related links failed", exc_info=True)
+        return out
 
     # ── aged callback lane (K63) ────────────────────────────────────────
 
