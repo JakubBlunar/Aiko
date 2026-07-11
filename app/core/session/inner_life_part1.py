@@ -999,18 +999,71 @@ class InnerLifePart1Mixin:
         return ctx
 
     def _render_user_profile_block(self) -> str:
-        """Phase 3a: bullet block of the high-confidence profile fields."""
+        """Phase 3a / L28: bullet block of the high-confidence profile fields,
+        led by the ``subject=user`` identity + value concepts (the upstream
+        source of truth) and floored by the SQLite profile for the structured
+        facts the concept layer doesn't cover.
+        """
         store = getattr(self, "_user_profile_store", None)
         if store is None:
             return ""
+        from app.core.concepts.concept_view import concept_view_from
+
+        concept_lines, skip_fields = self._profile_concept_lines(
+            concept_view_from(self)
+        )
         try:
             return store.render_block(
                 self._user_id,
                 user_display_name=self.user_display_name,
+                concept_lines=concept_lines,
+                skip_fields=skip_fields,
             )
         except Exception:
             log.debug("user profile block render failed", exc_info=True)
             return ""
+
+    def _profile_concept_lines(self, view) -> tuple[list[str], set[str]]:
+        """L28: the ``subject=user`` concepts that lead the profile block.
+
+        Reads identity + value concepts through the single ``ConceptView``
+        facade via ``for_target("profile_block", subject="user")`` (both kinds
+        route there), renders each as a terse ``- {label}`` bullet, and reports
+        ``skip_fields={"values"}`` when any value concept is present so the
+        SQLite ``values`` field doesn't restate what the concept layer now
+        owns. Returns ``([], set())`` on a cold/disabled layer or any error, so
+        the block falls back to the pre-L28 SQLite-only rendering unchanged.
+        """
+        if view is None or not getattr(view, "enabled", False):
+            return [], set()
+        ms = getattr(self, "_memory_settings", None)
+        cap = max(0, int(getattr(ms, "profile_concept_max_lines", 10)))
+        bar = float(getattr(ms, "profile_concept_min_confidence", 0.5))
+        if cap == 0:
+            return [], set()
+        try:
+            concepts = view.for_target(
+                "profile_block", subject="user",
+                min_confidence=bar, limit=cap,
+            )
+        except Exception:
+            log.debug("profile concept lookup failed", exc_info=True)
+            return [], set()
+        lines: list[str] = []
+        seen: set[str] = set()
+        skip_fields: set[str] = set()
+        for c in concepts:
+            label = str(getattr(c, "label", "") or "").strip()
+            if not label:
+                continue
+            key = label.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- {label}")
+            if str(getattr(c, "kind", "")) == "value":
+                skip_fields.add("values")
+        return lines, skip_fields
 
     def _render_user_state_block(self) -> str:
         """Phase 3a: tiny per-turn 'Right now <name>...' line."""

@@ -170,12 +170,25 @@ class UserProfileStore:
         *,
         min_confidence: float = 0.4,
         user_display_name: str = "the user",
+        concept_lines: list[str] | None = None,
+        skip_fields: set[str] | None = None,
     ) -> str:
-        entries = self.fields(user_id)
-        if not entries:
-            return ""
-        lines: list[str] = []
-        for entry in entries.values():
+        """Prompt-ready bullet block of the high-confidence profile fields.
+
+        L28: this store stays the single renderer of the block text. A caller
+        that composes from the concept layer (the upstream source of truth for
+        identity + value) passes ``concept_lines`` -- pre-rendered bullets that
+        lead the block -- and ``skip_fields`` -- the SQLite fields the concept
+        layer now owns (e.g. ``{"values"}``), suppressed so the same claim
+        isn't told twice. The header appears when EITHER source is non-empty;
+        an empty block (no concepts, no fields) still returns ``""``, so the
+        no-concept path is byte-identical to the pre-L28 behaviour.
+        """
+        skip = skip_fields or set()
+        lines: list[str] = list(concept_lines or [])
+        for entry in self.fields(user_id).values():
+            if entry.field in skip:
+                continue
             if entry.confidence < min_confidence:
                 continue
             value = entry.value.strip()

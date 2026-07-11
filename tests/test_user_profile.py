@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.user_profile import (
@@ -12,6 +13,7 @@ from app.core.infra.user_profile import (
     UserProfileWorker,
     _parse_profile_payload,
 )
+from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 
 
 class _Fixture:
@@ -347,6 +349,130 @@ class RoutinesFieldTests(unittest.TestCase):
             self.assertIn("Sunday-morning chats", block)
         finally:
             f.close()
+
+
+# ── L28: concept-led profile block ────────────────────────────────────
+
+
+class _FakeConcept:
+    def __init__(self, label: str, kind: str, confidence: float = 0.8) -> None:
+        self.label = label
+        self.kind = kind
+        self.confidence = confidence
+
+
+class _FakeView:
+    """Minimal ConceptView stand-in for the profile composition path."""
+
+    def __init__(self, concepts, *, enabled: bool = True) -> None:
+        self._concepts = list(concepts)
+        self.enabled = enabled
+        self.calls: list[dict] = []
+
+    def for_target(self, target, *, subject=None, min_confidence=0.0, limit=None):
+        self.calls.append(
+            {"target": target, "subject": subject,
+             "min_confidence": min_confidence, "limit": limit}
+        )
+        rows = [
+            c for c in self._concepts
+            if float(c.confidence) >= float(min_confidence)
+        ]
+        if limit is not None:
+            rows = rows[: int(limit)]
+        return rows
+
+
+def _profile_lines(view, *, max_lines=10, min_confidence=0.5):
+    """Invoke the mixin helper with a lightweight fake ``self``."""
+    fake_self = SimpleNamespace(
+        _memory_settings=SimpleNamespace(
+            profile_concept_max_lines=max_lines,
+            profile_concept_min_confidence=min_confidence,
+        )
+    )
+    return InnerLifePart1Mixin._profile_concept_lines(fake_self, view)
+
+
+class RenderBlockMergeTests(unittest.TestCase):
+    def test_concept_lines_lead_and_values_suppressed(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.upsert("u1", "name", "Jacob", 0.9)
+            f.store.upsert("u1", "values", "honesty", 0.8)
+            block = f.store.render_block(
+                "u1",
+                concept_lines=["- cares about honesty above all"],
+                skip_fields={"values"},
+            )
+            lines = block.splitlines()
+            # Header, then the concept bullet leads, then the SQLite fields.
+            self.assertEqual(lines[1], "- cares about honesty above all")
+            self.assertIn("Jacob", block)
+            # The SQLite ``values`` field is suppressed (concept owns it).
+            self.assertNotIn("- values: honesty", block)
+        finally:
+            f.close()
+
+    def test_header_shows_with_only_concept_lines(self) -> None:
+        f = _Fixture()
+        try:
+            block = f.store.render_block(
+                "empty-user",
+                concept_lines=["- keeps a tidy dev setup"],
+            )
+            self.assertIn("(profile):", block)
+            self.assertIn("- keeps a tidy dev setup", block)
+        finally:
+            f.close()
+
+    def test_empty_with_no_concepts_and_no_fields(self) -> None:
+        f = _Fixture()
+        try:
+            self.assertEqual(f.store.render_block("nobody"), "")
+        finally:
+            f.close()
+
+
+class ProfileConceptLinesTests(unittest.TestCase):
+    def test_identity_and_value_yield_bullets_and_skip_values(self) -> None:
+        view = _FakeView([
+            _FakeConcept("keeps a tidy dev setup", "identity"),
+            _FakeConcept("cares about honesty", "value"),
+        ])
+        lines, skip = _profile_lines(view)
+        self.assertEqual(
+            lines, ["- keeps a tidy dev setup", "- cares about honesty"],
+        )
+        self.assertEqual(skip, {"values"})
+        # Routed through for_target with the profile_block/user contract.
+        self.assertEqual(view.calls[0]["target"], "profile_block")
+        self.assertEqual(view.calls[0]["subject"], "user")
+
+    def test_identity_only_does_not_skip_values(self) -> None:
+        view = _FakeView([_FakeConcept("keeps a tidy dev setup", "identity")])
+        lines, skip = _profile_lines(view)
+        self.assertEqual(lines, ["- keeps a tidy dev setup"])
+        self.assertEqual(skip, set())
+
+    def test_disabled_view_is_noop(self) -> None:
+        view = _FakeView([_FakeConcept("x", "value")], enabled=False)
+        self.assertEqual(_profile_lines(view), ([], set()))
+
+    def test_none_view_is_noop(self) -> None:
+        self.assertEqual(_profile_lines(None), ([], set()))
+
+    def test_zero_cap_disables_concept_lead(self) -> None:
+        view = _FakeView([_FakeConcept("x", "value")])
+        self.assertEqual(_profile_lines(view, max_lines=0), ([], set()))
+
+    def test_duplicate_labels_deduped(self) -> None:
+        view = _FakeView([
+            _FakeConcept("cares about honesty", "value"),
+            _FakeConcept("Cares About Honesty", "identity"),
+        ])
+        lines, _ = _profile_lines(view)
+        self.assertEqual(lines, ["- cares about honesty"])
 
 
 if __name__ == "__main__":
