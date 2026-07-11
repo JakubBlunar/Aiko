@@ -31,17 +31,29 @@ class _Embedder:
 
 
 class _Edge:
-    def __init__(self, src_type: str, src_id: Any, relation: str = "evidence") -> None:
+    def __init__(
+        self, src_type: str, src_id: Any, relation: str = "evidence",
+        *, dst_type: str = "concept", dst_id: Any = 0,
+    ) -> None:
         self.src_type = src_type
         self.src_id = str(src_id)
+        self.dst_type = dst_type
+        self.dst_id = str(dst_id)
         self.relation = relation
         self.ordinal = None
 
 
 class _ConceptStore:
-    def __init__(self, matches, edges) -> None:
+    def __init__(
+        self, matches, edges, *, concepts=None, dependents=None,
+        edges_from=None, edges_into=None,
+    ) -> None:
         self._matches = matches
         self._edges = edges
+        self._concepts = {int(k): v for k, v in (concepts or {}).items()}
+        self._dependents = dependents or {}
+        self._edges_from = edges_from or {}
+        self._edges_into = edges_into or {}
         self.nearest_calls: list[dict] = []
 
     def nearest(self, q, *, subject=None, status=None, k=8, **_kw):
@@ -52,6 +64,18 @@ class _ConceptStore:
 
     def evidence_of(self, concept_id):
         return list(self._edges)
+
+    def get(self, concept_id):
+        return self._concepts.get(int(concept_id))
+
+    def dependents_of(self, concept_id):
+        return list(self._dependents.get(int(concept_id), []))
+
+    def edges_from(self, node_type, node_id):
+        return list(self._edges_from.get(str(node_id), []))
+
+    def edges_into(self, node_type, node_id):
+        return list(self._edges_into.get(str(node_id), []))
 
 
 class _Cluster:
@@ -112,7 +136,14 @@ def _concept(cid=1, label="Jacob enjoys understanding systems", confidence=0.82)
     )
 
 
-def _build(*, matches, edges, clusters, mems):
+def _meta(cid, label, *, kind="tension", subject="user", status="active"):
+    return SimpleNamespace(
+        concept_id=cid, label=label, kind=kind, subject=subject,
+        status=status, confidence=0.7, rationale="",
+    )
+
+
+def _build(*, matches, edges, clusters, mems, store_kwargs=None):
     retriever = RagRetriever(
         _StubStore(),  # type: ignore[arg-type]
         _Embedder(),  # type: ignore[arg-type]
@@ -125,7 +156,9 @@ def _build(*, matches, edges, clusters, mems):
         topic_expansion_enabled=False,
     )
     retriever.set_topic_graph(_Graph(clusters))  # type: ignore[arg-type]
-    retriever.set_concept_store(_ConceptStore(matches, edges))  # type: ignore[arg-type]
+    retriever.set_concept_store(
+        _ConceptStore(matches, edges, **(store_kwargs or {}))  # type: ignore[arg-type]
+    )
     return retriever
 
 
@@ -203,6 +236,72 @@ class RecallConceptRetrieverTests(unittest.TestCase):
         c = _concept()
         r = _build(matches=[(c, 0.05)], edges=[], clusters=[], mems={})
         self.assertIsNone(r.recall_concept("x", min_concept_sim=0.20))
+
+    def test_related_includes_dependent_meta(self) -> None:
+        # A base concept whose lookup surfaces the tension meta that
+        # references it, tagged with the meta's kind as the relation.
+        base = _concept(cid=1, label="values honesty")
+        meta = _meta(10, "honesty vs kindness pull", kind="tension")
+        r = _build(
+            matches=[(base, 0.7)], edges=[], clusters=[], mems={},
+            store_kwargs={"concepts": {10: meta}, "dependents": {1: [10]}},
+        )
+        out = r.recall_concept("why do you think I value honesty")
+        self.assertIn("related", out)
+        rels = out["related"]
+        self.assertEqual(len(rels), 1)
+        self.assertEqual(rels[0]["label"], "honesty vs kindness pull")
+        self.assertEqual(rels[0]["relation"], "tension")
+
+    def test_related_includes_base_concepts_of_meta(self) -> None:
+        # A tension meta surfaces its concept-typed evidence (its two bases).
+        meta = _meta(10, "honesty vs kindness pull", kind="tension")
+        base_a = _concept(cid=1, label="values honesty")
+        base_b = _concept(cid=2, label="wants to spare feelings")
+        edges = [_Edge("concept", 1), _Edge("concept", 2)]
+        r = _build(
+            matches=[(meta, 0.7)], edges=edges, clusters=[], mems={},
+            store_kwargs={"concepts": {1: base_a, 2: base_b}},
+        )
+        out = r.recall_concept("why the pull")
+        labels = {rel["label"] for rel in out["related"]}
+        self.assertEqual(labels, {"values honesty", "wants to spare feelings"})
+        self.assertTrue(
+            all(rel["relation"] == "references" for rel in out["related"])
+        )
+
+    def test_related_skips_inactive_neighbour(self) -> None:
+        base = _concept(cid=1, label="values honesty")
+        meta = _meta(10, "retired tension", status="retired")
+        r = _build(
+            matches=[(base, 0.7)], edges=[], clusters=[], mems={},
+            store_kwargs={"concepts": {10: meta}, "dependents": {1: [10]}},
+        )
+        out = r.recall_concept("x")
+        self.assertEqual(out["related"], [])
+
+    def test_related_empty_without_concept_edges(self) -> None:
+        c = _concept()
+        edges = [_Edge("cluster", 100)]
+        clusters = [_Cluster(100, "systems", [1])]
+        mems = {1: _Mem(1, "a note")}
+        r = _build(matches=[(c, 0.7)], edges=edges, clusters=clusters, mems=mems)
+        out = r.recall_concept("x")
+        self.assertEqual(out["related"], [])
+
+    def test_rationale_survives_past_280(self) -> None:
+        # The bundle cap was raised 280 -> 500: a 350-char rationale is kept
+        # whole, and a very long one is trimmed to 500.
+        long = "r" * 350
+        c = _concept()
+        c.rationale = long
+        r = _build(matches=[(c, 0.7)], edges=[], clusters=[], mems={})
+        out = r.recall_concept("x")
+        self.assertEqual(len(out["concept"]["rationale"]), 350)
+
+        c.rationale = "r" * 600
+        out2 = r.recall_concept("x")
+        self.assertEqual(len(out2["concept"]["rationale"]), 500)
 
     def test_none_when_store_not_wired(self) -> None:
         retriever = RagRetriever(

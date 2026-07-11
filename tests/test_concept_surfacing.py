@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
+from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.concepts.concept_surfacing import (
     composite_score,
     event_charge,
@@ -272,6 +274,91 @@ class HabituationStateTests(unittest.TestCase):
         # Same turn / clock skew never yields a negative penalty.
         self.assertEqual(turns_since_surfaced(state, 7, 10), 0)
         self.assertEqual(turns_since_surfaced(state, 7, 8), 0)
+
+
+_ELLIPSIS = "\u2026"
+
+
+def _concept(
+    cid: int, label: str, *, rationale: str = "", subject: str = "user",
+    kind: str = "trait", confidence: float = 0.9,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        concept_id=cid, label=label, rationale=rationale, subject=subject,
+        kind=kind, confidence=confidence, plasticity=0.2,
+        last_reinforced_at=None,
+    )
+
+
+class _RenderHarness(InnerLifePart1Mixin):
+    """Minimal stand-in exercising ``_render_relevant_concepts`` in isolation:
+    real hedging / grounding / header statics, stubbed evidence + settings."""
+
+    def __init__(self, *, core_rationale: bool = True, cap: int = 120) -> None:
+        self._memory_settings = SimpleNamespace(
+            concept_surfacing_core_rationale_enabled=core_rationale,
+            concept_surfacing_rationale_max_chars=cap,
+            concept_surfacing_state_cap=300,
+        )
+
+    @property
+    def user_display_name(self) -> str:
+        return "Alex"
+
+    def _concept_supporting_labels(self, concept_id: int) -> list[str]:
+        return []
+
+
+class CoreRationaleClauseTests(unittest.TestCase):
+    _MARK = "the sense of it traces back to"
+
+    def test_pinned_concept_renders_rationale(self) -> None:
+        h = _RenderHarness()
+        c = _concept(
+            7, "values careful reasoning",
+            rationale="they slow down before deciding",
+        )
+        text, trace = h._render_relevant_concepts([c], pinned_ids={7})
+        self.assertIn(
+            f"{self._MARK} they slow down before deciding", text
+        )
+        self.assertTrue(trace["surfaced"][0]["rationale_surfaced"])
+
+    def test_non_pinned_concept_omits_rationale(self) -> None:
+        h = _RenderHarness()
+        c = _concept(7, "values careful reasoning", rationale="a reason")
+        text, trace = h._render_relevant_concepts([c], pinned_ids=set())
+        self.assertNotIn(self._MARK, text)
+        self.assertFalse(trace["surfaced"][0]["rationale_surfaced"])
+
+    def test_disabled_flag_omits_rationale(self) -> None:
+        h = _RenderHarness(core_rationale=False)
+        c = _concept(7, "a trait", rationale="a reason")
+        text, trace = h._render_relevant_concepts([c], pinned_ids={7})
+        self.assertNotIn(self._MARK, text)
+        self.assertFalse(trace["surfaced"][0]["rationale_surfaced"])
+
+    def test_blank_rationale_no_clause(self) -> None:
+        h = _RenderHarness()
+        c = _concept(7, "a trait", rationale="   ")
+        text, trace = h._render_relevant_concepts([c], pinned_ids={7})
+        self.assertNotIn(self._MARK, text)
+        self.assertFalse(trace["surfaced"][0]["rationale_surfaced"])
+
+    def test_rationale_respects_char_cap(self) -> None:
+        h = _RenderHarness(cap=20)
+        c = _concept(
+            7, "a trait",
+            rationale=(
+                "because they consistently choose the harder honest "
+                "path over comfort"
+            ),
+        )
+        text, trace = h._render_relevant_concepts([c], pinned_ids={7})
+        tail = text.split(f"{self._MARK} ", 1)[1]
+        self.assertTrue(tail.endswith(_ELLIPSIS))
+        self.assertLessEqual(len(tail.rstrip(_ELLIPSIS).strip()), 20)
+        self.assertTrue(trace["surfaced"][0]["rationale_surfaced"])
 
 
 if __name__ == "__main__":

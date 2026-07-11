@@ -925,6 +925,13 @@ class MemorySettings:
     concept_surfacing_habituation_floor: float = 0.35
     concept_surfacing_core_habituation_floor: float = 0.8
     concept_surfacing_state_cap: int = 300
+    # L27 core-lane rationale clause. When on, an always-on *pinned* concept
+    # may carry a compact "why" clause (its stored rationale, trimmed to
+    # ``rationale_max_chars`` on a word boundary) after its grounding, so the
+    # ever-present beliefs read as grounded. Applies to pinned concepts only,
+    # so the turn-relevant fill stays token-lean.
+    concept_surfacing_core_rationale_enabled: bool = True
+    concept_surfacing_rationale_max_chars: int = 180
     # L23 cognitive surfacing -- emotional / recent-change salience. A concept
     # with a sharp recent lifecycle event (contradicted, plasticity_shift,
     # revived, promoted) gets an intrusion bump on the turn-relevant lane, so a
@@ -2804,6 +2811,19 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_surfacing_state_cap=max(
                 0,
                 int(memory_raw.get("concept_surfacing_state_cap", 300)),
+            ),
+            concept_surfacing_core_rationale_enabled=bool(
+                memory_raw.get(
+                    "concept_surfacing_core_rationale_enabled", True
+                )
+            ),
+            concept_surfacing_rationale_max_chars=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_rationale_max_chars", 120
+                    )
+                ),
             ),
             concept_surfacing_salience_enabled=bool(
                 memory_raw.get("concept_surfacing_salience_enabled", True)
