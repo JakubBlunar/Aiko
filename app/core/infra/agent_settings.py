@@ -531,6 +531,13 @@ class AgentSettings:
     # ``self`` about herself) for soft behaviour lines. Off just skips that one
     # pass. Cap lives under MemorySettings (``concept_synthesis_max_boundary_memories``).
     boundary_synthesis_enabled: bool = True
+    # L18e boundary evidence broadening. When enabled, the user boundary pass
+    # also mines ``preference`` memories (stated tastes/limits the extractor
+    # captured that never became a deliberate ``[[remember:]]`` anchor), not
+    # just ``self_tagged`` anchors -- the proposer already rejects non-limits,
+    # so this only widens the candidate pool. Off keeps the anchors-only
+    # behaviour. Aiko-subject boundaries are unaffected.
+    boundary_evidence_broadening_enabled: bool = True
     # L23 communication-style synthesis (the self-authored delivery-style kind).
     # When enabled, the synthesis worker's comm-style pass mines each subject from
     # a hybrid of topic clusters AND remembered anchors, guided by a persisted

@@ -555,6 +555,26 @@ class ConceptStore:
             return
         self._drop_mirror(cid)
 
+    def _tension_parents(self, concept_id: int) -> set[int]:
+        """The ids of the ``tension`` meta concepts this concept is a *base*
+        of. A tension base points at its meta via a concept->concept
+        ``evidence`` edge, so this walks the outgoing evidence edges and keeps
+        those whose destination resolves to an active-or-not ``tension``
+        concept. Used by :meth:`merge_into` to refuse fusing two co-bases of
+        the same tension."""
+        out: set[int] = set()
+        for e in self.edges_from("concept", int(concept_id)):
+            if e.dst_type != "concept" or e.relation != "evidence":
+                continue
+            try:
+                meta_id = int(e.dst_id)
+            except (TypeError, ValueError):
+                continue
+            meta = self.get(meta_id)
+            if meta is not None and meta.kind == "tension":
+                out.add(meta_id)
+        return out
+
     def merge_into(self, *, canonical_id: int, absorbed_id: int) -> bool:
         """Fuse ``absorbed`` into ``canonical`` (L2 near-duplicate
         consolidation) and delete the absorbed row. Structural /
@@ -589,8 +609,17 @@ class ConceptStore:
             or canonical.kind != absorbed.kind
         ):
             return False
-        # Refuse to collapse two concepts held in explicit friction /
-        # disproof of each other -- that is L12/L9 territory, not a dup.
+        # Refuse to collapse two concepts held in explicit friction with each
+        # other -- that is L12 tension territory, not a dup. Tension bases link
+        # to their meta via a concept->concept ``evidence`` edge (not a direct
+        # ``tension`` edge between the bases), so two concepts that are
+        # co-bases of the *same* tension meta are in explicit friction: merging
+        # them would collapse a tension onto itself.
+        if self._tension_parents(abs_id) & self._tension_parents(can_id):
+            return False
+        # Also refuse on a direct concept->concept friction/disproof edge
+        # between the two. None are written today (contradicts is
+        # concept->memory), but this future-proofs L18d / L20 relations.
         conflict = {"tension", "contradicts"}
         for e in self.edges_from("concept", abs_id):
             if e.dst_type == "concept" and str(e.dst_id) == str(can_id) and (

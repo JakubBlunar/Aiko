@@ -1329,18 +1329,33 @@ class ConceptSynthesisWorker:
         from a *hybrid* of topic clusters AND Aiko's explicit remembered
         anchors -- ``self_tagged`` notes about the user for ``subject="user"``,
         ``self`` / ``reflection`` / ``diary`` notes about herself for
-        ``subject="aiko"``. The proposer's composition rule lets a single
-        deliberate anchor seed a boundary. Combined cluster + memory
-        dirty-tracking (mirrors :meth:`_run_aiko_pass`) so a settled corpus is a
-        fast no-op. Gated by ``agent.boundary_synthesis_enabled``."""
+        ``subject="aiko"``. L18e also folds ``preference`` memories into the
+        user pool when ``agent.boundary_evidence_broadening_enabled`` (stated
+        tastes/limits that never became a deliberate anchor). The proposer's
+        composition rule lets a single deliberate anchor seed a boundary.
+        Combined cluster + memory dirty-tracking (mirrors :meth:`_run_aiko_pass`)
+        so a settled corpus is a fast no-op. Gated by
+        ``agent.boundary_synthesis_enabled``."""
         if not bool(
             getattr(self._agent_settings, "boundary_synthesis_enabled", True)
         ):
             return []
         subject = spec.subject
-        anchor_kinds = (
-            AIKO_SELF_KINDS if subject == "aiko" else ("self_tagged",)
-        )
+        if subject == "aiko":
+            anchor_kinds: tuple[str, ...] = AIKO_SELF_KINDS
+        else:
+            # L18e: broaden past deliberate anchors to stated preferences/limits
+            # (the proposer rejects non-boundary tastes), unless disabled.
+            broaden = bool(
+                getattr(
+                    self._agent_settings,
+                    "boundary_evidence_broadening_enabled",
+                    True,
+                )
+            )
+            anchor_kinds = (
+                ("self_tagged", "preference") if broaden else ("self_tagged",)
+            )
         pop = self._memory_store.iter_by_kinds(anchor_kinds)
         mem_count = len(pop)
         clusters = self._dominant_clusters(subject)

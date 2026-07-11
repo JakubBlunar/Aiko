@@ -416,6 +416,11 @@ register_kind(
         # (same band as identity), so a settled arc resists churn but can still
         # decay if never recalled.
         plasticity_default=0.3,
+        # L18e: a closed arc asserts on how *settled* it is, not recency
+        # (mirrors identity) -- context stays dominant, stability breaks ties.
+        surface_weights=SurfaceWeights(
+            context=0.6, confidence=0.1, stability=0.3
+        ),
         # L3: the sequence gate -- >= 3 chain steps (a story, not an anecdote),
         # a non-instant age, a moderate confidence bar.
         promotion_gate=narrative_evidence_gate,
@@ -450,6 +455,12 @@ register_kind(
         # L24 / L27: aspirations surface when the live turn touches them (T3
         # relevance) AND via the proactive momentum worker -> no
         # ``surfacing_targets`` and NOT in the always-on core lane.
+        # L18e: a trajectory is a *moving* thing -- weight recency so a
+        # freshly-advanced aspiration outranks a stale one; context still leads.
+        surface_weights=SurfaceWeights(
+            context=0.6, confidence=0.15, recency=0.25,
+            recency_halflife_days=21.0,
+        ),
     )
 )
 
@@ -478,6 +489,12 @@ register_kind(
         # when the live turn touches the shared pattern, not be pinned every
         # turn. So no ``surfacing_targets`` (they route through the T3
         # relevant_context relevance path) and they do NOT join the core lane.
+        # L18e: a settled shared pattern leans on stability, with a light
+        # recency nudge so a recently-enacted ritual reads a touch warmer.
+        surface_weights=SurfaceWeights(
+            context=0.65, stability=0.2, recency=0.15,
+            recency_halflife_days=30.0,
+        ),
     )
 )
 

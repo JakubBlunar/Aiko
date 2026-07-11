@@ -831,5 +831,58 @@ class YoungGraphGateTests(unittest.TestCase):
         self.assertEqual(h.store.get(c.concept_id).status, "active")
 
 
+class ReinforcedEventTests(unittest.TestCase):
+    """A fresh reinforcement on an already-active concept (no status change)
+    leaves a ``reinforced`` beat on the timeline; nothing fires without new
+    evidence, and a first evaluation never counts as a reinforcement beat."""
+
+    def _active(self, h, **over):
+        base = dict(
+            status="active",
+            promoted_at=_iso(10),
+            confidence=0.85,
+            distinct_source_count=3,
+            first_evidence_at=_iso(20),
+            first_evidence_engagement=0.0,
+            last_lifecycle_engagement=0.0,
+        )
+        base.update(over)
+        return _add(h.store, **base)
+
+    def test_reinforced_active_concept_emits_event(self) -> None:
+        h = _harness()
+        # New evidence landed (last_reinforced) after the last eval, no clock
+        # advance -> no decay -> stays active -> a reinforced beat.
+        c = self._active(
+            h, last_lifecycle_at=_iso(5), last_reinforced_at=_iso(1)
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+        self.assertEqual(
+            [e.event_type for e in h.events.list(limit=10)], ["reinforced"]
+        )
+
+    def test_no_event_without_fresh_evidence(self) -> None:
+        h = _harness()
+        # last_reinforced predates the last eval -> not reinforced -> silent.
+        c = self._active(
+            h, last_lifecycle_at=_iso(1), last_reinforced_at=_iso(9)
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+        self.assertEqual(h.events.count(), 0)
+
+    def test_first_eval_does_not_emit_reinforced(self) -> None:
+        h = _harness()
+        # last_lifecycle_at is None -> first eval. ``reinforced`` is True by
+        # convention there, but the beat is reserved for later ticks.
+        c = self._active(
+            h, last_lifecycle_at=None, last_reinforced_at=_iso(1)
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+        self.assertEqual(h.events.count(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

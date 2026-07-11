@@ -399,5 +399,94 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(row[0], "a real memory")
 
 
+class MergeIntoTests(unittest.TestCase):
+    def test_merges_ordinary_near_duplicate(self) -> None:
+        _, store, _ = _build()
+        can = store.add(
+            _c("enjoys systems", subject="user", kind="identity")
+        )
+        absorbed = store.add(
+            _c("likes systems", subject="user", kind="identity")
+        )
+        store.add_edge(
+            ConceptEdge("memory", "7", "concept", str(absorbed), "evidence")
+        )
+        self.assertTrue(
+            store.merge_into(canonical_id=can, absorbed_id=absorbed)
+        )
+        self.assertIsNone(store.get(absorbed))
+        surviving = store.get(can)
+        assert surviving is not None
+        # The absorbed row's evidence edge re-points onto the canonical.
+        self.assertEqual(
+            [e.src_id for e in store.evidence_of(can)], ["7"]
+        )
+
+    def test_refuses_co_bases_of_same_tension(self) -> None:
+        _, store, _ = _build()
+        base_a = store.add(
+            _c("values deep focus", subject="user", kind="identity")
+        )
+        base_b = store.add(
+            _c("wants more walks", subject="user", kind="identity")
+        )
+        meta = store.add(
+            _c("focus vs movement pull", subject="user", kind="tension",
+               evidence_model="meta")
+        )
+        # Tension bases point at the meta via concept->concept evidence edges.
+        store.add_edge(
+            ConceptEdge("concept", str(base_a), "concept", str(meta),
+                        "evidence")
+        )
+        store.add_edge(
+            ConceptEdge("concept", str(base_b), "concept", str(meta),
+                        "evidence")
+        )
+        self.assertFalse(
+            store.merge_into(canonical_id=base_a, absorbed_id=base_b)
+        )
+        # Both bases survive.
+        self.assertIsNotNone(store.get(base_a))
+        self.assertIsNotNone(store.get(base_b))
+
+    def test_refuses_direct_conflict_edge(self) -> None:
+        _, store, _ = _build()
+        can = store.add(_c("a", subject="user", kind="identity"))
+        absorbed = store.add(_c("b", subject="user", kind="identity"))
+        store.add_edge(
+            ConceptEdge("concept", str(absorbed), "concept", str(can),
+                        "tension")
+        )
+        self.assertFalse(
+            store.merge_into(canonical_id=can, absorbed_id=absorbed)
+        )
+        self.assertIsNotNone(store.get(absorbed))
+
+    def test_merges_bases_of_different_tensions(self) -> None:
+        # Co-bases guard is specific: two concepts each in a *different*
+        # tension are still fair game for a near-dup merge.
+        _, store, _ = _build()
+        can = store.add(_c("a", subject="user", kind="identity"))
+        absorbed = store.add(_c("a2", subject="user", kind="identity"))
+        m1 = store.add(
+            _c("t1", subject="user", kind="tension", evidence_model="meta")
+        )
+        m2 = store.add(
+            _c("t2", subject="user", kind="tension", evidence_model="meta")
+        )
+        store.add_edge(
+            ConceptEdge("concept", str(can), "concept", str(m1), "evidence")
+        )
+        store.add_edge(
+            ConceptEdge("concept", str(absorbed), "concept", str(m2),
+                        "evidence")
+        )
+        self.assertTrue(
+            store.merge_into(canonical_id=can, absorbed_id=absorbed)
+        )
+        self.assertIsNone(store.get(absorbed))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -312,10 +312,12 @@ class ConceptView:
            their *other* member concepts are activated -- siblings that share a
            theme with something already in mind.
 
-        A third path -- concept->concept ``references`` edges
-        (:meth:`ConceptStore.dependents_of`) -- is wired but **dormant**: no
-        such edges exist until meta concepts (L12 / L20) populate them, at which
-        point a referenced base auto-activates with no change here.
+        A third path -- concept->concept edges (:meth:`ConceptStore.dependents_of`)
+        -- lights up today for L12 **tensions**, whose bases point at the meta
+        via concept->concept ``evidence`` edges, so a base's activation pulls in
+        its tension meta. The reserved ``references`` / ``generalizes`` relations
+        (L20) stay unpopulated for now and will flow through the same path with
+        no change here once they ship.
 
         Seeds are excluded from the result; the strongest strength per concept
         wins on overlap; the result is capped at ``limit``.
@@ -351,7 +353,9 @@ class ConceptView:
                     continue
                 for concept in self.for_cluster(getattr(e, "src_id", None)):
                     _bump(concept, 0.6)
-            # Dormant meta path: concept->concept references (empty until L12/L20).
+            # Meta path: concept->concept edges. Live for L12 tensions (base
+            # -> tension meta via ``evidence``); reserved references/generalizes
+            # (L20) flow through here for free once populated.
             try:
                 for dep_id in self._store.dependents_of(int(sid)):
                     dep = self._store.get(int(dep_id))
