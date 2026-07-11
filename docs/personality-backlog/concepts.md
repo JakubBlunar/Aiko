@@ -997,10 +997,11 @@ impossible without the concept layer beneath.
 pairs a tender relationship tension; (b) **value-contradicted-by-behaviour** and
 other same-subject frictions (the `user` / `aiko` proposers).
 
-**Still open (folds into future meta work).** L18d concept-vs-concept conflict
-detection and L20 abstraction ride the same `concept -> concept` machinery this
-established. A dedicated tension/drift *surfacing priority override* (L23) is
-still deferred.
+**Still open (folds into future meta work).** L20 abstraction rides the same
+`concept -> concept` machinery this established. (L18d concept-vs-concept
+conflict detection also rides it — shipped: boundary clashes are now a
+first-class shape in the tension proposers.) A dedicated tension/drift
+*surfacing priority override* (L23) is still deferred.
 
 ---
 
@@ -1504,19 +1505,32 @@ Gated by `agent.boundary_clash_enabled`. Tests: `tests/test_boundary_clash.py`.
 
 ## L18d. Concept-vs-concept conflict detection (under meta concepts)
 
+**Status: SHIPPED (subsumed by L12; boundary-clash shape added to the tension
+proposers).**
+
 **Motivation.** Tensions *between* concepts — boundary vs value, boundary vs
 boundary — are a distinct problem from boundary-vs-live-conversation. This is the
 general machinery for reasoning about how concepts clash, and belongs with the
 meta-concept work (L29).
 
-**Sketched approach.** A new edge relation + a detector that distinguishes
-concept-vs-concept tensions, feeding the meta-concept layer rather than a per-turn
-steer.
+**What shipped.** The concept-vs-concept conflict machinery is L12's tension
+metas: `_run_tension_pass` offers every active non-meta concept — boundaries
+included — to the proposer, and a chosen pair is stored as a `tension` meta with
+`("concept", id)` `evidence` edges, surfaced through the T6 `TensionCueWorker`.
+The only gap was framing: the three proposer prompts named friction as
+value-vs-behaviour / hot-vs-quiet only, so boundary clashes under-fired. Fixed
+prompt-only — `tension_user.py`, `tension_aiko.py`, `tension_relationship.py`
+now name a boundary pulled against by a value/habit that crosses it (or two
+boundaries that can't both be honoured) as a first-class friction shape, each
+with an example.
 
-**Key files.** `concept_edges` (new relation), a concept-pair detector; folds into
-L29 meta narratives.
+**Dropped as redundant.** The sketched dedicated new edge relation + separate
+concept-pair detector — a boundary-involving pair already composes into a
+`tension` meta exactly like any other pair, so a parallel mechanism would only
+duplicate it.
 
-**Effort.** Medium-large (with L29).
+**Key files.** `app/core/concepts/proposers/tension_{user,aiko,relationship}.py`;
+tests in `tests/test_tension_concepts.py` (`BoundaryClashShapeTests`).
 
 ---
 
