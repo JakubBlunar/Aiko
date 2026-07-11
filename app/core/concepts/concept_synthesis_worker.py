@@ -553,6 +553,22 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _max_generalization_concepts(self) -> int:
+        """L20: cap on active base concepts offered to the generalization
+        proposer per run (per subject) -- bounds the prompt / LLM cost, mirrors
+        the tension cap."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_generalization_concepts",
+                    24,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -626,6 +642,7 @@ class ConceptSynthesisWorker:
             "boundary_dirty": False,
             "comm_style_dirty": False,
             "tension_dirty": False,
+            "generalization_dirty": False,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -650,6 +667,10 @@ class ConceptSynthesisWorker:
                     proposals = self._run_comm_style_pass(ctx, spec, stats, force)
                 elif spec.population == "tension":
                     proposals = self._run_tension_pass(ctx, spec, stats, force)
+                elif spec.population == "generalization":
+                    proposals = self._run_generalization_pass(
+                        ctx, spec, stats, force
+                    )
                 else:
                     proposals = []
             except Exception:
@@ -1632,6 +1653,63 @@ class ConceptSynthesisWorker:
         stats["tension_dirty"] = bool(stats.get("tension_dirty")) or bool(
             is_dirty
         )
+        if not is_dirty:
+            return []
+
+        proposals = spec.propose(
+            ctx,
+            concepts=pool,
+            existing=self._existing_for(spec),
+        )
+        self._save_sigs(
+            sig_key, {"fingerprint": fingerprint, "count": len(pool)}
+        )
+        return proposals
+
+    def _run_generalization_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L20 generalization pass -- the abstraction *meta* proposer. Like the
+        tension pass its raw material is the active BASE (non-meta) concepts for
+        ``spec.subject`` (``user`` / ``aiko`` only -- an abstraction is over one
+        subject's own concepts, never cross-subject), and the proposer names a
+        higher-order super-concept 2+ of them are facets of, cited as
+        ``("concept", id)`` evidence.
+
+        Offering only non-meta actives keeps the meta depth cap (no
+        abstraction-of-abstraction) true by construction; reading
+        ``status="active"`` is the dependency-ordering guarantee. Dirty-tracked
+        on the same base-pool fingerprint as tension (ids + rounded confidence +
+        live/quiet hint) so a settled graph is a fast no-op. Gated by
+        ``agent.generalization_synthesis_enabled``."""
+        if not bool(
+            getattr(
+                self._agent_settings, "generalization_synthesis_enabled", True
+            )
+        ):
+            return []
+        subject = spec.subject
+        pool = self._active_tension_bases(
+            subject, self._max_generalization_concepts
+        )
+        # An abstraction needs at least two concepts to generalise over.
+        if len(pool) < 2:
+            return []
+
+        sig_key = spec.sig_key or (
+            "concept_synth.generalization_sig." + subject
+        )
+        prev = self._load_sigs(sig_key)
+        fingerprint = self._tension_fingerprint(pool)
+        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
+        is_dirty = force or fingerprint != prev_fp
+        stats["generalization_dirty"] = bool(
+            stats.get("generalization_dirty")
+        ) or bool(is_dirty)
         if not is_dirty:
             return []
 

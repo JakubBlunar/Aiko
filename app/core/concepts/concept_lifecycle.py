@@ -559,6 +559,55 @@ def tension_evidence_gate(
     )
 
 
+# Built-in bars for a *generalization* concept (L20) -- the abstraction meta: a
+# concept whose evidence is 2+ OTHER active concepts (of any kind, same subject)
+# that it names a latent super-concept over ("builds things that last" over
+# React / AI / home-server tinkering). Like a tension it is ``evidence_model=
+# "meta"``, so its source floor is **overridden** to a fixed 2 (an abstraction
+# needs at least two children to abstract) rather than tightened by the L21
+# young-graph rule. But an abstraction should be SLOWER and BETTER-SUPPORTED than
+# a tension -- it sits above a whole cluster of settled beliefs and, once formed,
+# speaks *for* them -- so its age + confidence floors sit a notch higher again.
+# The store-dependent meta rules (>=2 bases still ``active``; confidence bounded
+# by the shakiest active child) live in the lifecycle worker.
+_GENERALIZATION_MIN_SOURCES = 2
+_GENERALIZATION_MIN_AGE_DAYS = 3.0
+_GENERALIZATION_MIN_CONFIDENCE = 0.72
+
+
+def generalization_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``generalization`` concepts (L20, the abstraction
+    meta kind).
+
+    Same shape as :func:`tension_evidence_gate`: the source floor is
+    **overridden** to 2 (a fixed-arity-floor meta needs at least two children),
+    while age + confidence take the caller's value when higher via ``max``. The
+    floors are set above the tension bars because an abstraction is meant to be
+    slow and well-supported -- it should only surface once it has genuinely
+    earned the right to speak for the concepts beneath it. The store-dependent
+    meta rules (>= 2 children still ``active``; confidence bounded by the
+    shakiest active child) live in the lifecycle worker, not here.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=_GENERALIZATION_MIN_SOURCES,
+        min_age_days=max(float(min_age_days), _GENERALIZATION_MIN_AGE_DAYS),
+        min_confidence=max(
+            float(min_confidence), _GENERALIZATION_MIN_CONFIDENCE
+        ),
+    )
+
+
 __all__ = [
     "CONFIDENCE_CAP",
     "RelationshipSignal",
@@ -578,4 +627,5 @@ __all__ = [
     "boundary_evidence_gate",
     "communication_style_evidence_gate",
     "tension_evidence_gate",
+    "generalization_evidence_gate",
 ]

@@ -927,8 +927,118 @@ def propose_tension(
     return proposals
 
 
+# The most children a single generalization may abstract over. Keeps the meta
+# compact (and its ``distinct_source_count`` sane); an abstraction that wants to
+# span more than this is usually two abstractions.
+GENERALIZATION_MAX_CHILDREN = 6
+
+
+def propose_generalization(
+    ctx: ProposerContext,
+    *,
+    subject: str,
+    system: str,
+    concepts: Sequence[TensionBase] = (),
+    existing: Sequence[ExistingConcept] = (),
+) -> list[CandidateProposal]:
+    """Shared body for the L20 generalization proposers -- the abstraction meta
+    kind.
+
+    A generalization is a concept whose evidence is 2+ OTHER active concepts (of
+    any kind, same subject) that it names a latent super-concept over: "he
+    builds things that last" over React / AI / home-server tinkering, or "she
+    reaches for warmth over being right" over several of her own values. Like a
+    tension its raw material is the small set of active *base* (non-meta)
+    concepts (``concepts``), so the evidence it emits is ``("concept", id)`` and
+    its ``evidence_model`` is ``"meta"``. Unlike a tension it holds them in
+    *is-a / part-of*, not friction, and its arity is a RANGE (2..N), not a fixed
+    pair.
+
+    **Composition rule.** A NEW proposal is accepted only when it cites at least
+    two distinct ids from the offered set (the arity the L3
+    :func:`generalization_evidence_gate` floors at 2), capped at
+    :data:`GENERALIZATION_MAX_CHILDREN`. Because only non-meta actives are ever
+    offered, a generalization can never abstract another meta (the depth cap)
+    and cannot form a cycle. ``subject`` shapes the prompt lens only.
+    """
+    valid_ids = {int(b.id) for b in concepts}
+    if not valid_ids:
+        return []
+    existing_ids = {int(e.id) for e in existing}
+
+    base_lines = [_tension_base_line(b) for b in concepts]
+    sections = [
+        "ACTIVE CONCEPTS (each already an established, settled belief -- cite "
+        "their ids):\n" + "\n".join(base_lines),
+        "ALREADY-KNOWN ABSTRACTIONS:\n" + format_existing(existing),
+        "Name a NEW abstraction ONLY when several of the concepts above (two "
+        "or more, of any kind) are really facets of ONE higher-order thing "
+        "their individual labels don't name -- an is-a / part-of super-concept "
+        "('builds things that last' over specific hobbies; 'protects his own "
+        "time' over several habits). Cite every concept it covers in "
+        "'evidence_concept_ids', or reinforce a known one by id. This is NOT a "
+        "friction or a restatement of one concept -- return nothing rather "
+        "than forcing an abstraction that isn't really there.",
+    ]
+    user = "\n\n".join(sections)
+
+    raw = ctx.call_llm(system, user)
+    proposals: list[CandidateProposal] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cids = list(
+            dict.fromkeys(
+                c
+                for c in coerce_id_list(item.get("evidence_concept_ids"))
+                if c in valid_ids
+            )
+        )[:GENERALIZATION_MAX_CHILDREN]
+        rationale = str(item.get("rationale") or "").strip()
+
+        reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
+        if reinforces is not None:
+            # A reinforcement re-affirms an existing abstraction: it still needs
+            # at least two children so the edges (and source count) stay whole.
+            if len(cids) < 2:
+                continue
+            evidence = [("concept", str(c)) for c in cids]
+            proposals.append(
+                CandidateProposal(
+                    label="",
+                    rationale=rationale,
+                    confidence=0.0,
+                    evidence=evidence,
+                    kind="generalization",
+                    subject=subject,
+                    evidence_model="meta",
+                    reinforces_id=reinforces,
+                )
+            )
+            continue
+
+        label = str(item.get("label") or "").strip()
+        # Composition rule: an abstraction covers 2+ distinct base concepts.
+        if not label or len(cids) < 2:
+            continue
+        evidence = [("concept", str(c)) for c in cids]
+        proposals.append(
+            CandidateProposal(
+                label=label,
+                rationale=rationale,
+                confidence=clamp01(item.get("confidence")),
+                evidence=evidence,
+                kind="generalization",
+                subject=subject,
+                evidence_model="meta",
+            )
+        )
+    return proposals
+
+
 __all__ = [
     "AIKO_SELF_KINDS",
+    "GENERALIZATION_MAX_CHILDREN",
     "MIN_SOURCES",
     "CandidateProposal",
     "ExistingConcept",
@@ -943,6 +1053,7 @@ __all__ = [
     "propose_aiko_hybrid",
     "propose_boundary",
     "propose_communication_style",
+    "propose_generalization",
     "propose_narrative",
     "propose_ordered_concept",
     "propose_tension",
