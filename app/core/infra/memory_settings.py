@@ -932,6 +932,14 @@ class MemorySettings:
     # so the turn-relevant fill stays token-lean.
     concept_surfacing_core_rationale_enabled: bool = True
     concept_surfacing_rationale_max_chars: int = 180
+    # L28 user-profile composition. The profile block leads with the
+    # ``subject=user`` identity + value concepts (upstream source of truth)
+    # before the SQLite profile fields. ``profile_concept_max_lines`` caps how
+    # many concept bullets lead the block; ``profile_concept_min_confidence``
+    # is the confidence bar a concept must clear to appear there. Set the cap
+    # to 0 to disable the concept lead entirely (pure SQLite profile).
+    profile_concept_max_lines: int = 10
+    profile_concept_min_confidence: float = 0.5
     # L23 cognitive surfacing -- emotional / recent-change salience. A concept
     # with a sharp recent lifecycle event (contradicted, plasticity_shift,
     # revived, promoted) gets an intrusion bump on the turn-relevant lane, so a
@@ -2823,6 +2831,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get(
                         "concept_surfacing_rationale_max_chars", 120
                     )
+                ),
+            ),
+            profile_concept_max_lines=max(
+                0, int(memory_raw.get("profile_concept_max_lines", 10)),
+            ),
+            profile_concept_min_confidence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("profile_concept_min_confidence", 0.5)
+                    ),
                 ),
             ),
             concept_surfacing_salience_enabled=bool(

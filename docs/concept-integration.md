@@ -132,7 +132,7 @@ isn't derived twice.
 | Aiko's self-model (who she is + what she values) | `subject=aiko` concepts (identity + value) | `build_relevant_context` -> T3 `relevant_context` (`yourself` headers) | **shipped (concepts-only)** |
 | always-on core lane | `core_always_on` kinds (`identity`, `value`, `boundary`) | `build_relevant_context` | **shipped (migrated)** |
 | concept recall tool | active concepts (any subject) | `recall_concept` | **shipped (migrated)** |
-| user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | deferred (L28) |
+| user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | **shipped (L28)** — concepts lead the block; SQLite is the floor and the `values` field is suppressed when a value concept exists |
 | cluster annotation | concepts spanning a cluster | `interest_map` via `for_cluster` | deferred (L28) |
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
 | aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |

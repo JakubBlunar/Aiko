@@ -819,10 +819,11 @@ T0 `self_image_block` was removed).
 
 **Follow-ups still open (all deferred, tracked here):**
 
-- **L28** — route `subject=user` values into `profile_block` via a `for_target`
-  consumer (they surface via the T3 relevance region today). Comes for free
-  when `UserProfileWorker` migrates: `for_target("profile_block",
-  subject="user")` already returns identity **and** value. See L28.
+- **L28 (SHIPPED)** — `subject=user` values now lead `profile_block` alongside
+  identity: `_render_user_profile_block` reads `for_target("profile_block",
+  subject="user")` (which returns identity **and** value) and suppresses the
+  SQLite `values` field when a value concept exists. They still also surface via
+  the T3 relevance region. See L28.
 - **L12** — value-vs-value tension across subjects (a `subject=user` value vs a
   `subject=aiko` value: shared when aligned, a relationship tension when they
   clash) and the value-contradicted-by-behaviour case (a value concept vs a
@@ -2053,14 +2054,20 @@ each kind that ships).
 
 ---
 
-## L28. Roll remaining derivers/workers onto the `ConceptView` contract (deferred)
+## L28. Roll remaining derivers/workers onto the `ConceptView` contract (in progress)
 
-**Status: deferred — depends on the L24 substrate (shipped).** L24 shipped the
-reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
+**Status: in progress — substrate shipped (L24), first consumer migrated.** L24
+shipped the reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
 `kinds_for_target()` routing); the live consumers are `build_relevant_context`
-(T3 core lane + relevance) and `recall_concept`. This entry tracks migrating
-the *rest* of the concept-overlapping consumers onto the same contract so none
-is forgotten and no consumer keeps a bespoke read path into the layer.
+(T3 core lane + relevance), `recall_concept`, and — new — `user_profile` ->
+`profile_block`. This entry tracks migrating the *rest* of the
+concept-overlapping consumers onto the same contract so none is forgotten and no
+consumer keeps a bespoke read path into the layer.
+
+**Migration order (decided).** Compose-first per consumer (concepts primary,
+raw derivation as the floor) per the L24 stance. Start with the consumer that
+overlaps an already-shipped kind and is most self-contained; `user_profile`
+(overlaps `identity` + `value`) went first.
 
 **Motivation.** The contract is only as valuable as its adoption: as long as any
 deriver still reads `ConceptStore` directly (or re-derives evidence/cluster
@@ -2069,14 +2076,16 @@ labels itself), it can drift from the concept layer and re-introduce the
 background worker's resolutions (concept lookup + evidence/cluster/memory
 grounding) is the goal.
 
-**Key files (per remaining consumer -> target).**
-- [`user_profile.py`](../../app/core/infra/user_profile.py) — `UserProfileWorker`,
-  `subject=user` identity concepts -> `profile_block` (via
-  `ConceptView.for_target("profile_block", subject="user")`). **This picks up
-  `subject=user` value concepts for free** — L10 shipped `value` with the same
-  `surfacing_targets={"user": "profile_block"}`, so `for_target` already returns
-  identity **and** value; no extra routing work, and it retires the L10 deferral
-  of user values into `profile_block` in one migration.
+**Key files (per consumer -> target).**
+- **SHIPPED** — [`user_profile.py`](../../app/core/infra/user_profile.py) /
+  `_render_user_profile_block` ([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)):
+  `subject=user` identity **and** value concepts lead `profile_block` via
+  `ConceptView.for_target("profile_block", subject="user")`, floored by the
+  SQLite profile (which still owns the structured facts — name, occupation,
+  location, hobbies, schedule). The SQLite `values` field is suppressed when a
+  value concept exists (`skip_fields`), so the same claim isn't told twice. This
+  retired the L10 deferral of user values into `profile_block` in one migration.
+  Tunable via `profile_concept_max_lines` / `profile_concept_min_confidence`.
 - `interest_map` cluster annotation in
   [`topic_graph.py`](../../app/core/conversation/topic_graph.py) — annotate
   clusters with the concepts spanning them via `ConceptView.for_cluster(rep_id)`.
@@ -2087,6 +2096,16 @@ grounding) is the goal.
   and `ForwardCuriosityWorker` routine hints.
 - [`goal_store.py`](../../app/core/goals/goal_store.py) — overlaps L14 aspiration
   concepts (gated on L14 shipping).
+- **Additional candidates (noted while shipping user_profile).**
+  - `communication_style` concepts (L-comm, both subjects) overlap the profile's
+    `communication_style` field and the delivery-guidance cues — they surface via
+    the T3 relevance path today; a `for_target` route into a delivery-style block
+    (or the profile's `communication_style` line) would make them the source of
+    truth the same way identity/value now are.
+  - Opinion / stance injection (K29) could bias on `subject=aiko` value concepts
+    (not only `kind="self"` memories) via `ConceptView.core(subject="aiko",
+    kind="value")`, so her stance draws on stored values. Cross-ref the K29
+    follow-up already noted under L10.
 
 **Sketched approach.** For each consumer: take a `ConceptView` (late-bound
 provider via `concept_view_from(host)`), read via `core` / `relevant` / `for_target`
@@ -2100,8 +2119,10 @@ overlaps an already-shipped concept kind (`user_profile` overlaps `identity`
 today); others unblock as their kinds ship (value L10, boundary L18,
 aspiration L14).
 
-**Open questions.** Migration order? Compose-first (concepts as primary) vs.
-blend-first (concepts as an additional input) per consumer?
+**Open questions.** Resolved for the shipped path: compose-first, `user_profile`
+first. Remaining per-consumer question: whether a relevance-only kind
+(`communication_style`) is worth a dedicated `for_target` block vs. leaving it on
+the T3 path.
 
 **Effort.** Medium, incremental (one small ticket per consumer).
 
