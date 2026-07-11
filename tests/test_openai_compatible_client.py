@@ -1828,5 +1828,156 @@ class ResponsesApiClientTests(unittest.TestCase):
                 ))
 
 
+class ApiStyleRoutingTests(unittest.TestCase):
+    """``api_style`` forces the OpenAI-compat surface + shapes reasoning.
+
+    This is the seam that lets xAI Grok (whose reasoning + prompt caching
+    live on the Responses surface) opt in without a model-name hack, while
+    ``"auto"`` keeps the historical per-model-name detection intact.
+    """
+
+    def _client(
+        self,
+        *,
+        api_style: str,
+        model: str = "grok-4.5",
+        reasoning_effort: str = "",
+    ) -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.x.ai/v1",
+            model=model,
+            api_key="xai-test",
+            reasoning_effort=reasoning_effort,
+            api_style=api_style,
+        )
+
+    def test_responses_style_forces_responses_for_non_openai_model(self) -> None:
+        client = self._client(api_style="responses")
+        self.assertTrue(client._should_use_responses("grok-4.5"))
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertTrue(posted.call_args.args[0].endswith("/responses"))
+
+    def test_chat_completions_style_forces_chat_for_gpt5(self) -> None:
+        client = self._client(api_style="chat_completions", model="gpt-5.4-mini")
+        self.assertFalse(client._should_use_responses("gpt-5.4-mini"))
+        fake = _fake_chat_response(content="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertTrue(posted.call_args.args[0].endswith("/chat/completions"))
+
+    def test_auto_style_matches_name_detection(self) -> None:
+        client = self._client(api_style="auto")
+        for model in ("gpt-5.4-mini", "grok-4.5", "gpt-4o-mini"):
+            self.assertEqual(
+                client._should_use_responses(model),
+                _use_responses_api(model),
+                msg=model,
+            )
+
+    def test_reasoning_omitted_when_unset_for_forced_responses(self) -> None:
+        # Grok rejects "minimal"; an unset effort on a forced-responses
+        # provider must omit the reasoning block, not default to minimal.
+        client = self._client(api_style="responses", reasoning_effort="")
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertNotIn("reasoning", posted.call_args.kwargs["json"])
+
+    def test_reasoning_effort_passed_through_for_forced_responses(self) -> None:
+        client = self._client(api_style="responses", reasoning_effort="low")
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertEqual(
+            posted.call_args.kwargs["json"].get("reasoning"), {"effort": "low"},
+        )
+
+    def test_tool_pass_disables_reasoning_on_forced_responses(self) -> None:
+        # The forced tool-pick pass (tools present) must switch reasoning
+        # off ("none") so a reasoning-forced provider (Grok) doesn't pay a
+        # full think cycle just to route tools.
+        client = self._client(api_style="responses", reasoning_effort="low")
+        fake = _fake_responses_response(text="", function_calls=[
+            {"name": "get_time", "arguments": "{}", "call_id": "c1"},
+        ])
+        tools = [{
+            "type": "function",
+            "function": {"name": "get_time", "description": "d", "parameters": {}},
+        }]
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 32},
+                tools=tools,
+                tool_choice="required",
+            )
+        self.assertEqual(
+            posted.call_args.kwargs["json"].get("reasoning"), {"effort": "none"},
+        )
+
+    def test_reply_pass_keeps_reasoning_on_forced_responses(self) -> None:
+        # No tools == the streaming reply pass -> keep the configured effort.
+        client = self._client(api_style="responses", reasoning_effort="low")
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertEqual(
+            posted.call_args.kwargs["json"].get("reasoning"), {"effort": "low"},
+        )
+
+    def test_prompt_cache_key_on_responses_payload(self) -> None:
+        client = self._client(api_style="responses", reasoning_effort="low")
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 32, "prompt_cache_key": "sess-42"},
+            )
+        self.assertEqual(
+            posted.call_args.kwargs["json"].get("prompt_cache_key"), "sess-42",
+        )
+
+    def test_prompt_cache_key_dropped_from_chat_body(self) -> None:
+        # On /v1/chat/completions the key is provider-specific and would
+        # 400 on strict providers -> it must never reach the body.
+        client = self._client(api_style="chat_completions")
+        fake = _fake_chat_response(content="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 32, "prompt_cache_key": "sess-42"},
+            )
+        self.assertNotIn("prompt_cache_key", posted.call_args.kwargs["json"])
+
+
 if __name__ == "__main__":
     unittest.main()

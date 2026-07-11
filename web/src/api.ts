@@ -202,6 +202,7 @@ export const api = {
     api_key: string;
     model: string;
     reasoning_effort?: string;
+    api_style?: "auto" | "responses" | "chat_completions";
     extra_headers?: Record<string, string>;
   }) =>
     jsonFetch<LlmTestConnectionResult>("/api/llm/test-connection", {

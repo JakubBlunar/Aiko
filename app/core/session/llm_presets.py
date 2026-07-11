@@ -112,6 +112,36 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "default_context_window": 131_072,
     },
     {
+        "id": "xai",
+        "label": "xAI (Grok)",
+        "provider": "openai_compatible",
+        "base_url": "https://api.x.ai/v1",
+        # Grok reasons by default and can't be disabled; low/medium/high
+        # are the valid efforts. grok-4.5 is the flagship; grok-4 and the
+        # cheaper grok-3-mini round out the shortlist. The live
+        # ``/v1/models`` response still fills the dropdown with the rest.
+        "recommended_models": [
+            "grok-4.5",
+            "grok-4.3",
+            "grok-3-mini",
+        ],
+        "env_hint": "XAI_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Paid (no free tier)",
+        "docs_url": "https://docs.x.ai",
+        "default_workers_use_local": True,
+        "default_context_window": 131_072,
+        # xAI recommends the Responses API for new integrations, and it's
+        # where Grok's reasoning-effort + prompt caching live — so force
+        # the Responses surface rather than the legacy chat-completions
+        # one (see LlmProvider.api_style / OpenAICompatibleClient).
+        "api_style": "responses",
+        # A safe latency-friendly default for background/worker roles; the
+        # user can bump it per-route. Empty would resolve to "omit" for a
+        # forced-responses provider, which is also fine.
+        "default_reasoning_effort": "low",
+    },
+    {
         "id": "openrouter",
         "label": "OpenRouter",
         "provider": "openai_compatible",

@@ -224,6 +224,7 @@ def _build_chat_client(
             extra_headers=extra_headers or None,
             keep_alive=chat_llm.keep_alive,
             reasoning_effort=getattr(chat_llm, "reasoning_effort", "") or "",
+            api_style=getattr(chat_llm, "api_style", "auto") or "auto",
         )
     # Default path: Ollama (local or cloud, distinguished only by base_url).
     return OllamaClient(

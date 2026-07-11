@@ -193,6 +193,7 @@ class ClientCache:
                 extra_headers=extra_headers or None,
                 keep_alive=provider.keep_alive,
                 reasoning_effort=getattr(provider, "reasoning_effort", "") or "",
+                api_style=getattr(provider, "api_style", "auto") or "auto",
             )
         return OllamaClient(
             self._ollama_settings,

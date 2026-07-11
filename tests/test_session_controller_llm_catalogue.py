@@ -350,6 +350,67 @@ class UpdateRouteTests(unittest.TestCase):
             )
 
 
+class ApiStyleRoundTripTests(unittest.TestCase):
+    """``api_style`` survives add / patch / mask and mirrors to chat_llm."""
+
+    def test_default_provider_masks_auto(self) -> None:
+        controller = _make_controller()
+        row = next(
+            r for r in controller.list_providers() if r["id"] == "openai"
+        )
+        self.assertEqual(row.get("api_style"), "auto")
+
+    def test_add_from_xai_template_seeds_responses(self) -> None:
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            entry = controller.add_provider(
+                template_id="xai",
+                draft={"name": "Grok"},
+            )
+        self.assertEqual(entry["kind"], "openai_compatible")
+        self.assertEqual(entry["base_url"], "https://api.x.ai/v1")
+        self.assertEqual(entry["api_style"], "responses")
+        # The preset's default reasoning-effort is carried too.
+        self.assertEqual(entry["reasoning_effort"], "low")
+
+    def test_patch_api_style_normalises_and_persists(self) -> None:
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            entry = controller.update_provider(
+                "openai", {"api_style": "RESPONSES"},
+            )
+        self.assertEqual(entry["api_style"], "responses")
+        self.assertEqual(
+            controller._settings.llm.providers[1].api_style, "responses",
+        )
+
+    def test_patch_bad_api_style_falls_back_to_auto(self) -> None:
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            entry = controller.update_provider(
+                "openai", {"api_style": "banana"},
+            )
+        self.assertEqual(entry["api_style"], "auto")
+
+    def test_patch_api_style_mirrors_to_chat_llm(self) -> None:
+        # main_chat points at ``openai`` -> the legacy block must mirror.
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            controller.update_provider("openai", {"api_style": "responses"})
+        self.assertEqual(
+            getattr(controller._settings.chat_llm, "api_style", None),
+            "responses",
+        )
+
+
 class ClientCacheStatsTests(unittest.TestCase):
     def test_stats_delegates_to_cache(self) -> None:
         controller = _make_controller()

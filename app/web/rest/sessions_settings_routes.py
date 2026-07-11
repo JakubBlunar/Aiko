@@ -945,7 +945,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         # Build a throwaway ChatLlmSettings + client. Reuses the
         # controller's existing factory so the test path can't drift
         # from the real path.
-        from app.core.infra.settings import ChatLlmSettings
+        from app.core.infra.settings import ChatLlmSettings, _norm_api_style
         from app.core.session.session_controller import (
             _build_chat_client,
         )
@@ -963,6 +963,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             reasoning_effort=str(
                 payload.get("reasoning_effort", "") or ""
             ).strip().lower(),
+            api_style=_norm_api_style(payload.get("api_style")),
         )
         try:
             probe = _build_chat_client(

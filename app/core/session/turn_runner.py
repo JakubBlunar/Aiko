@@ -663,6 +663,7 @@ class TurnRunner:
                 try:
                     tool_usage = self._maybe_run_tool_pass(
                         messages, stop_requested=stop_requested, allow=allow,
+                        session_key=session_key,
                     )
                 except Exception:
                     log.exception("tool pre-pass failed; falling back to plain stream")
@@ -732,6 +733,11 @@ class TurnRunner:
                     "temperature": self._temperature,
                     "num_predict": self._max_tokens,
                     "num_ctx": self._context_window,
+                    # Stable per-conversation caching hint. Ignored by
+                    # Ollama + chat-completions; used on the Responses
+                    # surface (OpenAI / xAI Grok) to pin the shared prefix
+                    # to one cache server. See OpenAICompatibleClient.
+                    "prompt_cache_key": session_key,
                 },
                 model=self._model,
                 stop_event=self._stop,
@@ -1217,6 +1223,7 @@ class TurnRunner:
         stop_requested: StopPredicate | None,
         max_rounds: int = 2,
         allow: "set[str] | None" = None,
+        session_key: str = "",
     ) -> OllamaUsage:
         """Run up to ``max_rounds`` ``chat_with_tools`` passes and mutate
         ``messages`` in place by appending the assistant's tool_calls and
@@ -1296,6 +1303,9 @@ class TurnRunner:
                         # kept at "minimal" (raising it did not change the
                         # tool-vs-text decision, see openai_compatible_client).
                         "num_predict": min(self._max_tokens, 512),
+                        # Same conversation as the stream pass -> same cache
+                        # key so both passes share the prefix cache server.
+                        "prompt_cache_key": session_key,
                     },
                     tools=tool_schemas,
                     tool_choice=tool_choice,

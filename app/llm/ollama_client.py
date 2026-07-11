@@ -331,6 +331,10 @@ class OllamaClient:
         merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
+        # ``prompt_cache_key`` is an OpenAI/xAI Responses-surface caching
+        # hint injected by the turn runner; it's meaningless to Ollama and
+        # must not leak into the ``options`` map sent to the local server.
+        merged_options.pop("prompt_cache_key", None)
         self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         payload: dict[str, Any] = {
@@ -466,6 +470,10 @@ class OllamaClient:
         merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
+        # ``prompt_cache_key`` is an OpenAI/xAI Responses-surface caching
+        # hint injected by the turn runner; it's meaningless to Ollama and
+        # must not leak into the ``options`` map sent to the local server.
+        merged_options.pop("prompt_cache_key", None)
         self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         payload: dict[str, Any] = {
@@ -575,6 +583,10 @@ class OllamaClient:
         merged_options = self._default_options(0.0)
         if options:
             merged_options.update(options)
+        # ``prompt_cache_key`` is an OpenAI/xAI Responses-surface caching
+        # hint injected by the turn runner; it's meaningless to Ollama and
+        # must not leak into the ``options`` map sent to the local server.
+        merged_options.pop("prompt_cache_key", None)
         self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         effective_keep_alive = (
