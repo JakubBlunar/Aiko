@@ -408,6 +408,18 @@ class ConceptLifecycleWorker:
             self._emit(concept, event_type, new_conf, now)
             stats["events"] += 1
             self._mark_dependents_stale(concept)
+        elif (
+            not first_eval
+            and reinforced
+            and concept.status == "active"
+        ):
+            # Fresh distinct evidence landed on an already-active belief
+            # without shifting its status -- a genuine reinforcement beat worth
+            # a timeline row. Bounded: ``reinforced`` only trips when new
+            # evidence arrived since the last eval, so this fires at most once
+            # per tick per concept that was actually reinforced.
+            self._emit(concept, "reinforced", new_conf, now)
+            stats["events"] += 1
 
     # ── L9 contradiction probe ─────────────────────────────────────────
 
@@ -983,6 +995,11 @@ class ConceptLifecycleWorker:
         if event_type == "revived":
             return (
                 f"Revived: fresh evidence lifted confidence to {conf:.2f}."
+            )
+        if event_type == "reinforced":
+            return (
+                f"Reinforced: {distinct} distinct source(s), confidence "
+                f"now {conf:.2f}."
             )
         if event_type == "contradicted":
             # Normally supplied via reason_override with the disproving

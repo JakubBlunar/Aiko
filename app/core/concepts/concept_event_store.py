@@ -48,11 +48,13 @@ def _now_iso() -> str:
 class ConceptEvent:
     """One row in the concept discovery timeline.
 
-    ``event_type`` is an open enum (``discovered`` for v1; ``reinforced``
-    / ``promoted`` / ``contradicted`` reserved for later). ``novelty`` is
-    ``1 - cosine`` to the nearest existing concept of the same
-    subject/kind at synthesis time (``1.0`` for a first-of-its-kind, and
-    ``0.0`` for historical rows backfilled from pre-timeline concepts).
+    ``event_type`` is an open enum. Emitted today: ``discovered`` (L2
+    synthesis), ``promoted`` / ``dormant`` / ``retired`` / ``revived`` /
+    ``contradicted`` / ``plasticity_shift`` / ``reinforced`` (L3 lifecycle),
+    and ``merged`` (L2 consolidation). ``novelty`` is ``1 - cosine`` to the
+    nearest existing concept of the same subject/kind at synthesis time
+    (``1.0`` for a first-of-its-kind, and ``0.0`` for historical rows
+    backfilled from pre-timeline concepts).
     """
 
     event_type: str = "discovered"

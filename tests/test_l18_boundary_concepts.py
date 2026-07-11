@@ -196,6 +196,59 @@ class BoundaryPassTests(unittest.TestCase):
         self.assertEqual(h.store.list_by(subject="user", kind="boundary"), [])
 
 
+def _pref_boundary_responder(system, user):
+    # Cite only the preference memory (no cluster reps), so the boundary
+    # stands or falls on whether that memory reached the proposer.
+    if "BOUNDARIES" in system and "for HERSELF" not in system:
+        return {"concepts": [{
+            "label": "Be gentle with Jacob about deadlines",
+            "evidence_memory_ids": [550],
+            "rationale": "he'd rather not be rushed",
+            "confidence": 0.7,
+        }]}
+    return {"concepts": []}
+
+
+class L18eBroadeningTests(unittest.TestCase):
+    """L18e: a stated ``preference`` memory (never a deliberate anchor) can
+    seed a user boundary when broadening is on, and is ignored when off."""
+
+    def _pref(self) -> MemStub:
+        return MemStub(
+            550, "Jacob would rather not be rushed on deadlines.",
+            "preference", 0.9,
+        )
+
+    def test_preference_seeds_boundary_when_broadening_on(self) -> None:
+        # Default agent leaves the flag unset -> broadening defaults on.
+        h = WorkerHarness(
+            _pref_boundary_responder, clusters=[_user_cluster()],
+            self_memories=[self._pref()],
+        )
+        h.worker.run()
+        out = h.store.list_by(subject="user", kind="boundary")
+        self.assertEqual(len(out), 1)
+        ev = h.store.evidence_of(out[0].concept_id)
+        self.assertEqual(
+            [(e.src_type, e.src_id) for e in ev], [("memory", "550")]
+        )
+
+    def test_preference_ignored_when_broadening_off(self) -> None:
+        agent = types.SimpleNamespace(
+            concepts_enabled=True,
+            concept_synthesis_enabled=True,
+            boundary_evidence_broadening_enabled=False,
+        )
+        h = WorkerHarness(
+            _pref_boundary_responder, clusters=[_user_cluster()],
+            self_memories=[self._pref()], agent=agent,
+        )
+        h.worker.run()
+        # Preference never entered the anchor pool, so the cited id is filtered
+        # out and the lone-cluster boundary is dropped.
+        self.assertEqual(h.store.list_by(subject="user", kind="boundary"), [])
+
+
 # ── proposer (direct): composition rule + voice ──────────────────────────
 
 

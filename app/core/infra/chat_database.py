@@ -433,9 +433,9 @@ CREATE INDEX IF NOT EXISTS idx_concept_edges_src ON concept_edges(src_type, src_
 CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_id);
 
 -- Schema v22: concept discovery timeline. An APPEND-ONLY log of the
--- moments Aiko forms (or, later, reinforces / promotes / retires) a
--- higher-order concept -- her "aha!" moments, scrollable years later to
--- watch her understanding of herself and the user evolve. Deliberately
+-- moments Aiko forms, reinforces, promotes, or retires a higher-order
+-- concept -- her "aha!" moments, scrollable years later to watch her
+-- understanding of herself and the user evolve. Deliberately
 -- DECOUPLED from the concept lifecycle: ``concept_id`` is a soft
 -- reference, never cascade-deleted, and ``label`` snapshots the concept
 -- text at event time, so deleting or relabelling a concept still leaves
@@ -443,8 +443,10 @@ CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_
 -- existing concept of the same subject/kind at synthesis time (1.0 for a
 -- first-of-its-kind); ``source_kinds`` records what the concept rests on
 -- (``cluster`` / ``memory``); ``reason`` is a generated, factual
--- one-liner. ``event_type`` is an open enum (``discovered`` for v1) so
--- reinforcement / promotion events are a value, not a migration.
+-- one-liner. ``event_type`` is an open enum (``discovered`` / ``promoted``
+-- / ``dormant`` / ``retired`` / ``revived`` / ``contradicted`` /
+-- ``plasticity_shift`` / ``reinforced`` / ``merged`` today) so a new event
+-- kind is a value, not a migration.
 CREATE TABLE IF NOT EXISTS concept_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     concept_id INTEGER,

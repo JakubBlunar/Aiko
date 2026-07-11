@@ -276,6 +276,31 @@ class HabituationStateTests(unittest.TestCase):
         self.assertEqual(turns_since_surfaced(state, 7, 8), 0)
 
 
+class KindSurfaceWeightsTests(unittest.TestCase):
+    """L18e: the three kinds that were still context-only (== raw cosine) now
+    carry a tuned, non-default blend."""
+
+    def test_narrative_aspiration_ritual_are_tuned(self) -> None:
+        from app.core.concepts.concept_kinds import get_kind
+
+        for name in ("narrative", "aspiration", "ritual"):
+            kind = get_kind(name)
+            self.assertIsNotNone(kind, name)
+            self.assertNotEqual(
+                kind.surface_weights, DEFAULT_SURFACE_WEIGHTS, name
+            )
+
+    def test_narrative_leans_on_stability(self) -> None:
+        from app.core.concepts.concept_kinds import get_kind
+
+        self.assertGreater(get_kind("narrative").surface_weights.stability, 0.0)
+
+    def test_aspiration_weights_recency(self) -> None:
+        from app.core.concepts.concept_kinds import get_kind
+
+        self.assertGreater(get_kind("aspiration").surface_weights.recency, 0.0)
+
+
 _ELLIPSIS = "\u2026"
 
 
