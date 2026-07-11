@@ -2083,6 +2083,109 @@ class SpeakingWorkersInitMixin:
                         )
                         self._concept_lifecycle_worker = None
 
+                # L2: ConceptConsolidationWorker. Retroactive near-duplicate
+                # fusion -- an LLM-adjudicated merge of paraphrase-twin
+                # concepts that slipped under the creation-time dedup bar.
+                # Needs the concept store + a maintenance LLM client; opt-in
+                # via ``concepts_enabled`` AND ``concept_consolidation_enabled``.
+                # Its own FactCheckRateLimiter budget. Non-fatal on failure.
+                self._concept_consolidation_worker = None
+                self._concept_consolidation_rate_limiter = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and getattr(self, "_maintenance_client", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            self._memory_settings,
+                            "concept_consolidation_enabled",
+                            True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_consolidation_worker import (  # noqa: E501
+                            ConceptConsolidationWorker,
+                        )
+                        from app.core.memory.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+
+                        def _consolidation_graph_mature() -> bool:
+                            graph = getattr(self, "_topic_graph", None)
+                            if graph is None:
+                                return True
+                            min_clusters = int(
+                                getattr(
+                                    self._memory_settings,
+                                    "concept_min_clusters",
+                                    6,
+                                )
+                            )
+                            try:
+                                return bool(
+                                    graph.mature(min_clusters=min_clusters)
+                                )
+                            except Exception:
+                                return True
+
+                        self._concept_consolidation_rate_limiter = (
+                            FactCheckRateLimiter(
+                                self._chat_db,
+                                per_hour_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "concept_consolidation_per_hour_cap",
+                                        6,
+                                    )
+                                ),
+                                per_day_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "concept_consolidation_per_day_cap",
+                                        30,
+                                    )
+                                ),
+                                state_key="concept_consolidation.rate_state",
+                            )
+                        )
+                        self._concept_consolidation_worker = (
+                            ConceptConsolidationWorker(
+                                concept_store=self._concept_store,
+                                memory_settings=self._memory_settings,
+                                agent_settings=settings.agent,
+                                # Idle-scheduler worker → maintenance tier.
+                                ollama=self._maintenance_client,
+                                chat_model=self._effective_worker_model,
+                                rate_limiter=(
+                                    self._concept_consolidation_rate_limiter
+                                ),
+                                cancel_event=self._fact_check_cancel,
+                                concept_event_store=self._concept_event_store,
+                                graph_mature_provider=(
+                                    _consolidation_graph_mature
+                                ),
+                                user_display_name_provider=(
+                                    lambda: self.user_display_name
+                                ),
+                                assistant_display_name_provider=(
+                                    lambda: self._fact_check_assistant_name()
+                                    or "Aiko"
+                                ),
+                            )
+                        )
+                        self._idle_scheduler.register(
+                            self._concept_consolidation_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "ConceptConsolidationWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._concept_consolidation_worker = None
+                        self._concept_consolidation_rate_limiter = None
+
                 # L25: concept<->memory edge referential integrity. Wire the
                 # reconciler as a MemoryStore delete listener (drop a deleted
                 # memory's edges + recompute the affected concepts' evidence

@@ -362,6 +362,17 @@ class AgentSettings:
     # live on ``MemorySettings.concept_belief_revision_*``.
     concept_belief_revision_per_hour_cap: int = 6
     concept_belief_revision_per_day_cap: int = 30
+    # ── L2 concept layer: near-duplicate consolidation worker ────────
+    # Hourly + daily caps on the LLM "same belief?" adjudication calls the
+    # ``ConceptConsolidationWorker`` may issue for near-duplicate concept
+    # pairs (cosine over ``concept_consolidation_merge_cosine`` gates which
+    # pairs reach the LLM at all). Persisted to ``kv_meta`` via a dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='concept_consolidation.rate_state'`` so it never shares a
+    # budget with L9 / L15 / F5. The master switch + candidate band live on
+    # ``MemorySettings.concept_consolidation_*``.
+    concept_consolidation_per_hour_cap: int = 6
+    concept_consolidation_per_day_cap: int = 30
     # ── K35 personality backlog: memory consolidation worker ─────────
     # Master switch for
     # :class:`app.core.memory.memory_consolidation_worker.MemoryConsolidationWorker`.

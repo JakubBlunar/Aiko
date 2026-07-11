@@ -1047,6 +1047,22 @@ class MemorySettings:
     concept_belief_revision_confidence_penalty: float = 0.2
     concept_belief_revision_confidence_floor: float = 0.2
     concept_belief_revision_superseded_relevance_days: float = 7.0
+    # L2 near-duplicate consolidation. Creation-time dedup keeps anything at
+    # / above the dedup cosine from splitting into two rows; this idle worker
+    # is the retroactive fix for paraphrase twins that land just *below* that
+    # bar and accumulate in the ``active`` set. Each tick pulls a rolling
+    # batch of the stalest actives and, for each, finds its nearest same-
+    # ``(subject, kind)`` active neighbour; a pair over ``merge_cosine`` is a
+    # *candidate* an LLM adjudicates (same belief? paraphrase / subset), and
+    # only a ``same`` verdict merges (folding the weaker row's evidence into
+    # the stronger via ``ConceptStore.merge_into``). Never mutates
+    # confidence / plasticity / status -- the stronger row always survives, so
+    # the L3 engine stays the single writer. LLM spend is bounded by the
+    # agent-side ``concept_consolidation_per_hour/day_cap`` limiter.
+    concept_consolidation_enabled: bool = True
+    concept_consolidation_interval_seconds: int = 900
+    concept_consolidation_batch_size: int = 40
+    concept_consolidation_merge_cosine: float = 0.88
     # L25 edge referential integrity. Concept edges (evidence /
     # contradicts) point at memory rows that get deleted, pruned, and
     # merged. Most deletes are reconciled synchronously by the reconciler's
@@ -3027,6 +3043,32 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         "concept_belief_revision_superseded_relevance_days",
                         7.0,
                     )
+                ),
+            ),
+            concept_consolidation_enabled=bool(
+                memory_raw.get("concept_consolidation_enabled", True)
+            ),
+            concept_consolidation_interval_seconds=max(
+                30,
+                int(
+                    memory_raw.get(
+                        "concept_consolidation_interval_seconds", 900
+                    )
+                ),
+            ),
+            concept_consolidation_batch_size=max(
+                1,
+                int(memory_raw.get("concept_consolidation_batch_size", 40)),
+            ),
+            concept_consolidation_merge_cosine=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_consolidation_merge_cosine", 0.88
+                        )
+                    ),
                 ),
             ),
             concept_edge_integrity_enabled=bool(

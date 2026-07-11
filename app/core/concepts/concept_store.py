@@ -555,6 +555,88 @@ class ConceptStore:
             return
         self._drop_mirror(cid)
 
+    def merge_into(self, *, canonical_id: int, absorbed_id: int) -> bool:
+        """Fuse ``absorbed`` into ``canonical`` (L2 near-duplicate
+        consolidation) and delete the absorbed row. Structural /
+        evidence-only: this re-points every edge touching
+        ``concept:absorbed`` onto ``concept:canonical`` (``add_edge``
+        upserts on the unique key, so a collision with an edge the
+        canonical already owns merges rather than duplicates), recomputes
+        the canonical's ``distinct_source_count`` / ``evidence_count`` from
+        the union of its surviving evidence edges, and bumps
+        ``last_reinforced_at`` so the L3 lifecycle engine re-derives
+        confidence on its next tick.
+
+        Deliberately does **not** touch the canonical's
+        ``confidence`` / ``plasticity`` / ``status`` -- that stays the
+        single-writer L3 engine's job. Callers therefore pick the
+        stronger row as ``canonical`` so nothing is lost.
+
+        Returns ``True`` on a completed merge, ``False`` when refused
+        (missing row, same id, differing ``(subject, kind)``, or a direct
+        conflict edge between the two).
+        """
+        can_id = int(canonical_id)
+        abs_id = int(absorbed_id)
+        if can_id == abs_id:
+            return False
+        canonical = self.get(can_id)
+        absorbed = self.get(abs_id)
+        if canonical is None or absorbed is None:
+            return False
+        if (
+            canonical.subject != absorbed.subject
+            or canonical.kind != absorbed.kind
+        ):
+            return False
+        # Refuse to collapse two concepts held in explicit friction /
+        # disproof of each other -- that is L12/L9 territory, not a dup.
+        conflict = {"tension", "contradicts"}
+        for e in self.edges_from("concept", abs_id):
+            if e.dst_type == "concept" and str(e.dst_id) == str(can_id) and (
+                e.relation in conflict
+            ):
+                return False
+        for e in self.edges_into("concept", abs_id):
+            if e.src_type == "concept" and str(e.src_id) == str(can_id) and (
+                e.relation in conflict
+            ):
+                return False
+
+        can_s = str(can_id)
+        # Re-point edges whose *source* is the absorbed concept (things
+        # that depend on it: metas / generalizations), skipping any edge
+        # that would become a self-loop on the canonical.
+        for e in self.edges_from("concept", abs_id):
+            if e.dst_type == "concept" and str(e.dst_id) == can_s:
+                continue
+            e.src_id = can_s
+            e.edge_id = 0
+            self.add_edge(e)
+        # Re-point edges whose *destination* is the absorbed concept (its
+        # supporting evidence / bases).
+        for e in self.edges_into("concept", abs_id):
+            if e.src_type == "concept" and str(e.src_id) == can_s:
+                continue
+            e.dst_id = can_s
+            e.edge_id = 0
+            self.add_edge(e)
+
+        # Drop the absorbed row (also clears its now-orphaned edges + the
+        # mirror entry).
+        self.delete(abs_id)
+
+        # Recompute the canonical's evidence tallies from the surviving
+        # (re-pointed + deduped) evidence edges -- honest structural counts
+        # rather than a naive sum that would double-count shared sources.
+        evidence = self.evidence_of(can_id)
+        sources = {(e.src_type, str(e.src_id)) for e in evidence}
+        canonical.evidence_count = len(evidence)
+        canonical.distinct_source_count = len(sources)
+        canonical.last_reinforced_at = _now_iso()
+        self.update(canonical)
+        return True
+
     # ── edge writes ───────────────────────────────────────────────────
 
     def add_edge(self, edge: ConceptEdge) -> int:
