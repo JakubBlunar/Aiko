@@ -106,6 +106,14 @@ _CONTEXT_WINDOW_TABLE: tuple[tuple[str, int], ...] = (
     ("anthropic/claude-3.5", 200_000),
     ("anthropic/claude-3", 200_000),
     ("anthropic/claude-4", 200_000),
+    # ── xAI Grok. grok-4.5 is ~256 k-500 k native; capped at 128 k
+    # here for the same reasons as the others (real chat rarely
+    # exceeds ~50 k, keeps compaction honest). ``x-ai/`` is the
+    # OpenRouter slug prefix; ``grok`` alone catches bare ids.
+    ("grok-4", 131_072),
+    ("grok-3", 131_072),
+    ("grok", 131_072),
+    ("x-ai/grok", 131_072),
 )
 
 
@@ -558,6 +566,7 @@ class OpenAICompatibleClient:
         extra_headers: dict[str, str] | None = None,
         keep_alive: str | None = None,
         reasoning_effort: str | None = None,
+        api_style: str | None = None,
     ) -> None:
         if not (base_url or "").strip():
             raise ValueError("OpenAICompatibleClient requires a base_url")
@@ -592,10 +601,34 @@ class OpenAICompatibleClient:
         # None = "auto" -> the built-in ``minimal`` default. A non-empty
         # value is sent verbatim (providers disagree on the vocabulary).
         self._reasoning_effort = (reasoning_effort or "").strip().lower()
+        # Which OpenAI-compatible surface to speak. ``"auto"`` keeps the
+        # per-model-name routing (OpenAI GPT-5.x / o-series -> Responses
+        # API); ``"responses"`` / ``"chat_completions"`` force one surface
+        # (xAI Grok needs ``"responses"``). See ``_should_use_responses``.
+        style = (api_style or "auto").strip().lower()
+        self._api_style = (
+            style if style in ("auto", "responses", "chat_completions") else "auto"
+        )
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    def _should_use_responses(self, model: str) -> bool:
+        """Decide whether ``model`` is driven via ``POST /v1/responses``.
+
+        ``api_style`` wins when it forces a surface; ``"auto"`` falls back
+        to the historical per-model-name detection (:func:`_use_responses_api`,
+        which only matches OpenAI's dotted GPT-5.x line). This is the seam
+        that lets a provider like xAI Grok — whose reasoning + prompt
+        caching live on the Responses surface — opt in without a
+        model-name hack in the shared regex.
+        """
+        if self._api_style == "responses":
+            return True
+        if self._api_style == "chat_completions":
+            return False
+        return _use_responses_api(model)
 
     def set_reasoning_effort(self, value: str | None) -> None:
         """Update the Responses-API reasoning-effort hint at runtime.
@@ -733,6 +766,12 @@ class OpenAICompatibleClient:
             # it here so it never leaks onto a non-Responses payload (or
             # double-writes) via the generic pass-through below.
             opts.pop("reasoning_effort", None)
+            # ``prompt_cache_key`` is a Responses-surface caching hint
+            # (see ``_build_responses_payload``). On /v1/chat/completions
+            # it's provider-specific (xAI uses an ``x-grok-conv-id``
+            # header instead), and a stray unknown body param 400s on
+            # strict providers — so drop it from the chat-completions body.
+            opts.pop("prompt_cache_key", None)
             temp = opts.pop("temperature", None)
             if temp is not None and not responses_api:
                 try:
@@ -798,7 +837,18 @@ class OpenAICompatibleClient:
             override = options.get("reasoning_effort")
             if override is not None:
                 effort = str(override).strip().lower()
-        return effort or "minimal"
+        if effort:
+            return effort
+        # Unset. On the OpenAI ``auto`` path the safe default is
+        # ``minimal`` (keeps a tight visible-token budget from being eaten
+        # by reasoning). But a provider *forced* onto the Responses surface
+        # (api_style="responses", e.g. xAI Grok) may reject ``minimal``
+        # entirely (Grok wants low/medium/high) — so there we ``omit`` the
+        # reasoning block and let the provider apply its own default rather
+        # than 400 on an unsupported value.
+        if self._api_style == "responses":
+            return "omit"
+        return "minimal"
 
     def _build_responses_payload(
         self,
@@ -827,6 +877,19 @@ class OpenAICompatibleClient:
             "stream": stream,
         }
         effort = self._resolve_reasoning_effort(options)
+        # Tool-decision pass optimisation. When ``tools`` are present this
+        # is the forced tool-pick pass (the reply pass streams WITHOUT
+        # tools), which gains nothing from a reasoning trace — it just
+        # emits a function name + tiny JSON args. On a reasoning-forced
+        # provider (``api_style="responses"``, e.g. xAI Grok, whose
+        # *default* effort is otherwise "high") that trace is pure latency
+        # paid on every single turn. Grok accepts ``"none"`` to switch
+        # reasoning off, so we do that here; the streaming reply pass still
+        # honours the configured effort. Left untouched on the OpenAI
+        # ``auto`` path (its reasoning vocabulary differs per model and
+        # this pass is already cheap there).
+        if tools and self._api_style == "responses":
+            effort = "none"
         if effort != "omit":
             payload["reasoning"] = {"effort": effort}
         if options and isinstance(options, dict):
@@ -853,6 +916,16 @@ class OpenAICompatibleClient:
                 payload["tool_choice"] = _tool_choice_to_responses(tool_choice)
         if format_json:
             payload["text"] = {"format": {"type": "json_object"}}
+        # Prompt caching: a stable per-conversation key routes a
+        # conversation's requests to the same server so the shared prefix
+        # actually hits the cache (OpenAI + xAI both honour it on the
+        # Responses surface). Neutral ``options`` key set by the caller
+        # (the turn's session id); absent -> no key, provider falls back
+        # to best-effort prefix caching.
+        if options and isinstance(options, dict):
+            cache_key = options.get("prompt_cache_key")
+            if cache_key:
+                payload["prompt_cache_key"] = str(cache_key)
         return payload
 
     def _responses_complete(
@@ -1093,7 +1166,7 @@ class OpenAICompatibleClient:
     ) -> ChatResponse:
         del keep_alive  # Ollama-only knob; see __init__ docstring
         use_model = (model or "").strip() or self._default_model
-        if _use_responses_api(use_model):
+        if self._should_use_responses(use_model):
             content, tool_calls, usage = self._responses_complete(
                 messages=messages,
                 model=use_model,
@@ -1198,7 +1271,7 @@ class OpenAICompatibleClient:
         del keep_alive
         del think  # OpenAI-compat doesn't expose a thinking-trace toggle
         use_model = (model or "").strip() or self._default_model
-        if _use_responses_api(use_model):
+        if self._should_use_responses(use_model):
             yield from self._responses_stream(
                 messages=messages,
                 model=use_model,
@@ -1330,7 +1403,7 @@ class OpenAICompatibleClient:
             if timeout_seconds is not None
             else self._timeout_seconds
         )
-        if _use_responses_api(use_model):
+        if self._should_use_responses(use_model):
             content, _tool_calls, usage = self._responses_complete(
                 messages=messages,
                 model=use_model,

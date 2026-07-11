@@ -51,6 +51,9 @@ interface DraftState {
    *  Free-text because providers disagree on the vocabulary — gpt-5-mini
    *  accepts ``minimal`` but gpt-5.4-mini wants ``none`` / ``low`` / … */
   reasoning_effort: string;
+  /** OpenAI-compat surface selector: auto / responses / chat_completions.
+   *  xAI Grok needs "responses" for reasoning + prompt caching. */
+  api_style: "auto" | "responses" | "chat_completions";
   extra_headers_json: string;
   /** Explicit context-window override. ``null`` means "auto" — let
    *  the controller resolve via the active client's
@@ -84,6 +87,7 @@ function snapshotToDraft(
     workers_use_local: snap.workers_use_local,
     max_tokens: snap.max_tokens,
     reasoning_effort: snap.reasoning_effort || "",
+    api_style: snap.api_style || "auto",
     extra_headers_json:
       Object.keys(snap.extra_headers || {}).length > 0
         ? JSON.stringify(snap.extra_headers, null, 2)
@@ -245,6 +249,7 @@ export function ChatProviderSection({
         api_key: draft.api_key_touched ? draft.api_key : "",
         model: draft.model,
         reasoning_effort: draft.reasoning_effort,
+        api_style: draft.api_style,
         extra_headers: parseHeaders(draft.extra_headers_json),
       };
       const result = await api.testLlmConnection(payload);
@@ -297,6 +302,7 @@ export function ChatProviderSection({
           workers_use_local: draft.workers_use_local,
           max_tokens: draft.max_tokens,
           reasoning_effort: draft.reasoning_effort,
+          api_style: draft.api_style,
           // ``0`` / empty / null -> server treats as "no explicit
           //  override" and falls back to ``client.get_context_length``
           //  per the precedence in ``_resolve_context_window``.
@@ -624,6 +630,38 @@ export function ChatProviderSection({
                 ),
               )}
             </datalist>
+          </label>
+          <label className="block">
+            <span className="block text-[11px] text-ink-100/60">
+              API style
+              <span className="block text-[10px] text-ink-100/40">
+                Which OpenAI-compatible surface to speak.{" "}
+                <span className="font-medium">Auto</span> routes by model
+                name (OpenAI GPT-5.x uses the Responses API).{" "}
+                <span className="font-medium">Responses</span> forces{" "}
+                <span className="font-medium">/v1/responses</span> — needed
+                for xAI Grok reasoning + prompt caching.{" "}
+                <span className="font-medium">Chat completions</span> forces
+                the legacy endpoint. Ignored by Ollama.
+              </span>
+            </span>
+            <select
+              value={draft.api_style}
+              onChange={(e) =>
+                editDraft({
+                  api_style: e.target.value as DraftState["api_style"],
+                })
+              }
+              className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+            >
+              <option value="auto">Auto (route by model name)</option>
+              <option value="responses">
+                Responses API (/v1/responses · xAI Grok)
+              </option>
+              <option value="chat_completions">
+                Chat completions (/v1/chat/completions)
+              </option>
+            </select>
           </label>
           <label className="block">
             <span className="block text-[11px] text-ink-100/60">

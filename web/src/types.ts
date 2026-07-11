@@ -201,6 +201,11 @@ export interface LlmProvider {
   /** Reasoning-effort hint for OpenAI Responses-API models (GPT-5 /
    * o-series). Empty = "auto" (client default). A route can override. */
   reasoning_effort: string;
+  /** Which OpenAI-compatible surface to speak. ``"auto"`` routes by
+   * model name (OpenAI GPT-5.x -> Responses API); ``"responses"`` forces
+   * ``/v1/responses`` (xAI Grok reasoning + caching live there);
+   * ``"chat_completions"`` forces the legacy endpoint. */
+  api_style: "auto" | "responses" | "chat_completions";
 }
 
 /** One row in the role-assignment table. */
@@ -244,6 +249,9 @@ export interface ChatLlmSnapshot {
   keep_alive: string;
   workers_use_local: boolean;
   reasoning_effort: string;
+  /** OpenAI-compat surface selector mirrored from the active provider.
+   * See {@link LlmProvider.api_style}. */
+  api_style: "auto" | "responses" | "chat_completions";
   extra_headers: Record<string, string>;
 }
 

@@ -35,6 +35,9 @@ interface ProviderDraft {
   /** Reasoning-effort hint for OpenAI Responses-API models. Empty =
    *  "auto" (client default). A route can override per-role. */
   reasoning_effort: string;
+  /** OpenAI-compat surface selector: auto / responses / chat_completions
+   *  (xAI Grok needs "responses"). Ignored by the Ollama kind. */
+  api_style: "auto" | "responses" | "chat_completions";
   extra_headers_json: string;
   // Credential draft fields. ``api_key`` is empty when the user hasn't
   // touched the password field; on save we only send it when touched.
@@ -50,6 +53,7 @@ function providerToDraft(provider: LlmProvider): ProviderDraft {
     keep_alive: provider.keep_alive,
     timeout_seconds: provider.timeout_seconds,
     reasoning_effort: provider.reasoning_effort || "",
+    api_style: provider.api_style || "auto",
     extra_headers_json:
       Object.keys(provider.extra_headers || {}).length > 0
         ? JSON.stringify(provider.extra_headers, null, 2)
@@ -162,6 +166,7 @@ export function LlmProvidersListSection() {
           keep_alive: draft.keep_alive,
           timeout_seconds: draft.timeout_seconds,
           reasoning_effort: draft.reasoning_effort,
+          api_style: draft.api_style,
         });
         upsertProvider(updated);
         // Reset the touched flag so the masked placeholder reappears.
@@ -436,6 +441,35 @@ export function LlmProvidersListSection() {
                         <option key={v} value={v} />
                       ))}
                     </datalist>
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-ink-100/60">
+                      API style (OpenAI-compatible surface)
+                    </span>
+                    <select
+                      value={draft.api_style}
+                      onChange={(e) =>
+                        editDraft(p.id, {
+                          api_style: e.target
+                            .value as ProviderDraft["api_style"],
+                        })
+                      }
+                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                    >
+                      <option value="auto">
+                        Auto (route by model name)
+                      </option>
+                      <option value="responses">
+                        Responses API (/v1/responses · xAI Grok)
+                      </option>
+                      <option value="chat_completions">
+                        Chat completions (/v1/chat/completions)
+                      </option>
+                    </select>
+                    <span className="mt-1 block text-[10px] text-ink-100/40">
+                      xAI Grok needs Responses for reasoning + prompt
+                      caching. Ignored for local Ollama.
+                    </span>
                   </label>
                   <label className="block">
                     <span className="block text-[11px] text-ink-100/60">

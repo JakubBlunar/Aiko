@@ -117,6 +117,12 @@ class ChatLlmSettings:
     # / ``high`` / ``xhigh`` — so this is free-text, sent verbatim only
     # for Responses-API models and ignored everywhere else.
     reasoning_effort: str = ""
+    # OpenAI-compatible surface selector mirrored from the active
+    # provider (see ``LlmProvider.api_style``): ``"auto"`` (per-model-name
+    # routing), ``"responses"`` (force /v1/responses — xAI Grok), or
+    # ``"chat_completions"``. Threaded into the main-chat client build so
+    # the primary turn path honours it just like the factory routes do.
+    api_style: str = "auto"
 
 
 @dataclass(slots=True)
@@ -146,6 +152,15 @@ class LlmProvider:
     # Provider-level reasoning-effort default (see ChatLlmSettings).
     # A route's own ``reasoning_effort`` overrides this when set.
     reasoning_effort: str = ""
+    # Which OpenAI-compatible surface to speak (openai_compatible only).
+    # ``"auto"`` (default) keeps the historical behaviour: the client
+    # decides per-model by name (OpenAI GPT-5.x / o-series -> Responses
+    # API, everything else -> /v1/chat/completions). ``"responses"``
+    # forces every request through ``POST /v1/responses`` (needed for
+    # providers like xAI Grok whose reasoning + caching live on that
+    # surface). ``"chat_completions"`` forces the legacy endpoint.
+    # Ignored by the Ollama kind.
+    api_style: str = "auto"
 
 
 @dataclass(slots=True)
@@ -1091,7 +1106,7 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
     ).strip().lower()
     _KNOWN_PRESETS: frozenset[str] = frozenset({
         "", "ollama", "ollama_cloud", "openai", "gemini",
-        "groq", "openrouter",
+        "groq", "openrouter", "xai",
     })
     if preset_raw not in _KNOWN_PRESETS:
         preset_raw = ""
@@ -1115,6 +1130,7 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
         reasoning_effort=_norm_reasoning_effort(
             payload.get("reasoning_effort")
         ),
+        api_style=_norm_api_style(payload.get("api_style")),
     )
 
 
@@ -1131,6 +1147,23 @@ def _norm_reasoning_effort(raw: Any) -> str:
     if raw is None:
         return ""
     return str(raw).strip().lower()
+
+
+# Valid values for ``LlmProvider.api_style`` (openai_compatible only).
+_VALID_API_STYLES: frozenset[str] = frozenset(
+    {"auto", "responses", "chat_completions"}
+)
+
+
+def _norm_api_style(raw: Any) -> str:
+    """Normalise the OpenAI-compat surface selector to a known value.
+
+    Anything unrecognised (including empty / None) falls back to
+    ``"auto"`` — the historical per-model-name routing — so a
+    hand-edited config can never wedge the client into an unknown mode.
+    """
+    value = str(raw or "").strip().lower()
+    return value if value in _VALID_API_STYLES else "auto"
 
 
 def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
@@ -1178,6 +1211,7 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
         reasoning_effort=_norm_reasoning_effort(
             payload.get("reasoning_effort")
         ),
+        api_style=_norm_api_style(payload.get("api_style")),
     )
 
 
@@ -1520,6 +1554,7 @@ def _migrate_legacy_llm(
             reasoning_effort=(
                 getattr(chat_llm, "reasoning_effort", "") or ""
             ).strip().lower(),
+            api_style=_norm_api_style(getattr(chat_llm, "api_style", "auto")),
         )
         providers.append(remote_provider)
         chat_provider_id = remote_provider.id

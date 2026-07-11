@@ -26,6 +26,7 @@ from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
 from app.core.infra.settings import LLM_ROLE_WORKFLOW
 from app.core.infra.settings import LlmProvider
 from app.core.infra.settings import LlmRoute
+from app.core.infra.settings import _norm_api_style
 from app.core.infra.settings import _urls_match
 from app.core.infra.settings import persist_user_overrides
 from app.core.infra import secret_store
@@ -135,6 +136,8 @@ class LlmSettingsMixin:
                 "reasoning_effort",
                 str(payload["reasoning_effort"] or "").strip().lower(),
             )
+        if "api_style" in payload:
+            _set("api_style", _norm_api_style(payload["api_style"]))
         if "extra_headers" in payload:
             raw_headers = payload.get("extra_headers") or {}
             if isinstance(raw_headers, dict):
@@ -163,6 +166,7 @@ class LlmSettingsMixin:
                 "keep_alive": chat_llm.keep_alive,
                 "workers_use_local": chat_llm.workers_use_local,
                 "reasoning_effort": getattr(chat_llm, "reasoning_effort", ""),
+                "api_style": getattr(chat_llm, "api_style", "auto") or "auto",
                 "extra_headers": dict(chat_llm.extra_headers or {}),
             }})
         except Exception:
@@ -269,6 +273,7 @@ class LlmSettingsMixin:
             "keep_alive": cfg.keep_alive,
             "workers_use_local": bool(cfg.workers_use_local),
             "reasoning_effort": getattr(cfg, "reasoning_effort", "") or "",
+            "api_style": getattr(cfg, "api_style", "auto") or "auto",
             "extra_headers": dict(cfg.extra_headers or {}),
         }
 
@@ -286,6 +291,7 @@ class LlmSettingsMixin:
             "timeout_seconds": int(provider.timeout_seconds or 300),
             "keep_alive": provider.keep_alive,
             "reasoning_effort": getattr(provider, "reasoning_effort", "") or "",
+            "api_style": getattr(provider, "api_style", "auto") or "auto",
         }
 
     def list_providers(self) -> list[dict[str, Any]]:
@@ -351,6 +357,10 @@ class LlmSettingsMixin:
                         "name": preset.get("label", template_id),
                         "base_url": preset.get("base_url", ""),
                         "api_key_env": preset.get("env_hint", ""),
+                        "api_style": preset.get("api_style", "auto"),
+                        "reasoning_effort": preset.get(
+                            "default_reasoning_effort", "",
+                        ),
                     }
                     break
         payload = dict(draft or {})
@@ -388,6 +398,7 @@ class LlmSettingsMixin:
         reasoning_effort = str(
             payload.get("reasoning_effort", "") or ""
         ).strip().lower()
+        api_style = _norm_api_style(payload.get("api_style"))
         new_provider = LlmProvider(
             id=provider_id,
             name=name,
@@ -399,6 +410,7 @@ class LlmSettingsMixin:
             timeout_seconds=timeout,
             keep_alive=keep_alive,
             reasoning_effort=reasoning_effort,
+            api_style=api_style,
         )
         if self._find_llm_provider(provider_id) is not None:
             raise ValueError(
@@ -457,6 +469,8 @@ class LlmSettingsMixin:
             provider.reasoning_effort = str(
                 draft["reasoning_effort"] or ""
             ).strip().lower()
+        if "api_style" in draft:
+            provider.api_style = _norm_api_style(draft["api_style"])
         # Anything changed -> drop the cached client so future
         # ``cache.get`` rebuilds with the new fields.
         self._client_cache.invalidate(provider_id)
@@ -741,6 +755,7 @@ class LlmSettingsMixin:
             (getattr(route, "reasoning_effort", "") or "").strip()
             or (getattr(provider, "reasoning_effort", "") or "").strip()
         )
+        cfg.api_style = _norm_api_style(getattr(provider, "api_style", "auto"))
         # Set the UI hint to the provider id when it matches a known
         # preset (purely cosmetic — used to highlight the card).
         cfg.provider_preset = (
@@ -769,6 +784,7 @@ class LlmSettingsMixin:
                 (getattr(route, "reasoning_effort", "") or "").strip()
                 or (getattr(provider, "reasoning_effort", "") or "").strip()
             ),
+            "api_style": _norm_api_style(getattr(provider, "api_style", "auto")),
             "extra_headers": dict(provider.extra_headers or {}),
             # ``workers_use_local`` lives outside the catalogue for
             # now (a per-role concern that the new ``routes`` table
