@@ -271,6 +271,57 @@ class ProposerTests(unittest.TestCase):
         self.assertIn("FIRST PERSON", calls["system"])
 
 
+class BoundaryClashShapeTests(unittest.TestCase):
+    """L18d: each tension prompt advertises the boundary-clash shape, and a
+    boundary-involving pair composes into a tension exactly like any other."""
+
+    def test_user_prompt_names_boundary_shape(self) -> None:
+        ctx, calls = _ctx(lambda s, u: {"concepts": []})
+        propose_tension_user(ctx, concepts=_bases((1, "user", "value", "a")))
+        self.assertIn("boundary", calls["system"])
+
+    def test_aiko_prompt_names_boundary_shape(self) -> None:
+        ctx, calls = _ctx(lambda s, u: {"concepts": []})
+        propose_tension_aiko(ctx, concepts=_bases((1, "aiko", "value", "a")))
+        self.assertIn("boundary", calls["system"])
+
+    def test_relationship_prompt_names_boundary_shape(self) -> None:
+        ctx, calls = _ctx(lambda s, u: {"concepts": []})
+        propose_tension_relationship(
+            ctx,
+            concepts=_bases(
+                (1, "user", "value", "a"), (2, "aiko", "value", "b"),
+            ),
+        )
+        self.assertIn("boundary", calls["system"])
+
+    def test_boundary_vs_value_pair_composes(self) -> None:
+        # A boundary base + a value base cited together yields one tension meta
+        # with both as ("concept", id) evidence -- no special-casing by kind.
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "He'd rather not be pushed to decide, yet values "
+                         "being decisive",
+                "evidence_concept_ids": [1, 2],
+                "confidence": 0.7,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_tension_user(
+            ctx,
+            concepts=_bases(
+                (1, "user", "boundary", "don't push him to decide on the spot"),
+                (2, "user", "value", "values being decisive"),
+            ),
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "tension")
+        self.assertEqual(out[0].evidence_model, "meta")
+        self.assertEqual(
+            out[0].evidence, [("concept", "1"), ("concept", "2")]
+        )
+
+
 # ── worker tension pass ──────────────────────────────────────────────────
 
 
