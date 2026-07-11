@@ -137,6 +137,7 @@ isn't derived twice.
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
 | aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |
 | behaviour boundaries (soft guiding lines) | `boundary` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance (composite-scored) | **shipped (L18)** |
+| abstraction / through-lines (the bigger pattern over several concepts) | `generalization` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance; children suppressed beneath a present parent | **shipped (L20)** — rides the L12 meta `evidence` rails; single-level only |
 
 ## Recipe for a new consumer
 

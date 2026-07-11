@@ -1722,6 +1722,15 @@ class InnerLifePart1Mixin:
                                order=2000 + j, lane="activation"):
                     seen_concept_ids.add(cid)
 
+        # L20: prefer the abstraction, not its parts. When a generalization
+        # parent is among the candidates at sufficient confidence, drop its
+        # child concepts so Aiko speaks the through-line ("builds things that
+        # last") instead of reciting the sub-concepts beneath it. Runs across
+        # the whole concept pool (core + flex + activation) before selection, so
+        # a pinned parent suppresses even a pinned child.
+        if concept_cands:
+            concept_cands = self._suppress_generalized_children(concept_cands)
+
         # ── budgeted selection ──────────────────────────────────────────
         selector = ContextBudgetSelector({
             "memory": SourceBudget(
@@ -1897,6 +1906,54 @@ class InnerLifePart1Mixin:
             )
         return out
 
+    def _suppress_generalized_children(self, cands: list) -> list:
+        """L20 "prefer the abstraction" filter over the concept candidate pool.
+
+        Any candidate that is a ``generalization`` parent clearing
+        ``generalization_parent_min_confidence`` has its child concepts (its
+        ``("concept", id)`` evidence bases) removed from the pool, so the
+        rendered context carries the through-line and not the specifics beneath
+        it. The parent itself is never a child of anything (metas are excluded
+        from the base pool), so it always survives. No-op when disabled, when the
+        store is missing, or when no parent qualifies -- and best-effort (any
+        failure returns the pool untouched)."""
+        ms = getattr(self, "_memory_settings", None)
+        if not bool(
+            getattr(ms, "generalization_suppress_children_enabled", True)
+        ):
+            return cands
+        store = getattr(self, "_concept_store", None)
+        if store is None:
+            return cands
+        bar = float(getattr(ms, "generalization_parent_min_confidence", 0.7))
+        covered: set[int] = set()
+        for cand in cands:
+            concept = getattr(cand, "payload", None)
+            if (getattr(concept, "kind", "") or "") != "generalization":
+                continue
+            if float(getattr(concept, "confidence", 0.0)) < bar:
+                continue
+            try:
+                for e in store.evidence_of(
+                    int(getattr(concept, "concept_id", 0))
+                ):
+                    if e.src_type == "concept":
+                        try:
+                            covered.add(int(e.src_id))
+                        except (TypeError, ValueError):
+                            continue
+            except Exception:
+                log.debug(
+                    "generalization child lookup failed", exc_info=True
+                )
+        if not covered:
+            return cands
+        return [
+            c for c in cands
+            if int(getattr(getattr(c, "payload", None), "concept_id", 0))
+            not in covered
+        ]
+
     def _load_concept_habituation(self) -> "tuple[dict[int, int], int]":
         """Load the ``{concept_id: last_surfaced_turn}`` map + current turn.
         Empty map / turn ``0`` on any failure (habituation then no-ops)."""
@@ -2000,6 +2057,8 @@ class InnerLifePart1Mixin:
                 family = "boundary"
             elif kind == "communication_style":
                 family = "communication_style"
+            elif kind == "generalization":
+                family = "generalization"
             else:
                 family = "trait"
             hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
@@ -2037,8 +2096,8 @@ class InnerLifePart1Mixin:
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
             for family in (
-                "trait", "value", "affective", "ritual", "narrative",
-                "aspiration", "boundary", "communication_style",
+                "generalization", "trait", "value", "affective", "ritual",
+                "narrative", "aspiration", "boundary", "communication_style",
             ):
                 lines = groups.get((subject, family))
                 if not lines:
@@ -2074,7 +2133,42 @@ class InnerLifePart1Mixin:
             return InnerLifePart1Mixin._concept_communication_style_header(
                 subject, name
             )
+        if family == "generalization":
+            return InnerLifePart1Mixin._concept_generalization_header(
+                subject, name
+            )
         return InnerLifePart1Mixin._concept_subject_header(subject, name)
+
+    @staticmethod
+    def _concept_generalization_header(subject: str, name: str) -> str:
+        """Per-subject intro for *generalization* concepts (L20) — the
+        higher-order through-lines that tie several smaller concepts into one.
+        These are the abstractions Aiko should reach for *instead* of reciting
+        the specifics beneath them (the child concepts are suppressed when one
+        of these is present), so the framing is "the bigger pattern", held as an
+        impression. ``aiko`` reads first-person (patterns in who she is);
+        ``relationship`` as the two of them; everything else as the user's."""
+        if subject == "aiko":
+            return (
+                "Bigger patterns you've noticed in who you are — the "
+                "through-lines that tie a lot of your smaller traits together "
+                "(let them give you a sense of your own shape; lean on the "
+                "whole rather than listing the parts, hold them lightly, and "
+                "you can be wrong about yourself too):"
+            )
+        if subject == "relationship":
+            return (
+                f"Bigger patterns you've come to see in you and {name} together "
+                "— the through-lines beneath the smaller things (hold them "
+                "lightly; lean on the whole rather than reciting the parts, and "
+                "stay open to being wrong):"
+            )
+        return (
+            f"Bigger patterns you've come to see in {name} — the through-lines "
+            "that tie a lot of the smaller things together (hold these lightly; "
+            "they're impressions, not facts — reach for the whole rather than "
+            "listing the specifics beneath it, and stay open to being wrong):"
+        )
 
     @staticmethod
     def _concept_value_header(subject: str, name: str) -> str:

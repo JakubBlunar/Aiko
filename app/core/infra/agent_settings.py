@@ -551,6 +551,12 @@ class AgentSettings:
     # the user / relationship / aiko lenses. Off just skips that one pass. Cap
     # lives under MemorySettings (``concept_synthesis_max_tension_concepts``).
     tension_synthesis_enabled: bool = True
+    # L20 generalization synthesis (the abstraction *meta* kind). When enabled,
+    # the synthesis worker's generalization pass (also last, over the active
+    # base concepts) names a higher-order super-concept 2+ of them are facets of
+    # for the user / aiko lenses. Off just skips that one pass. Cap lives under
+    # MemorySettings (``concept_synthesis_max_generalization_concepts``).
+    generalization_synthesis_enabled: bool = True
     # L12 tension cue -- the ONLY surface for a tension concept (they are kept
     # out of the relevant-context block so a standing friction can never nag).
     # When enabled, TensionCueWorker occasionally drafts a private "a friction

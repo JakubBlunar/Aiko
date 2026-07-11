@@ -238,6 +238,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             tension_synthesis_enabled=bool(
                 agent_raw.get("tension_synthesis_enabled", True),
             ),
+            generalization_synthesis_enabled=bool(
+                agent_raw.get("generalization_synthesis_enabled", True),
+            ),
             tension_cue_enabled=bool(
                 agent_raw.get("tension_cue_enabled", True),
             ),

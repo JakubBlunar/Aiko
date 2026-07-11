@@ -73,6 +73,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   distinct concept ids, emitting ``("concept", id)`` evidence with
   ``evidence_model="meta"``. They run LAST so their base concepts are already
   ``active`` (the meta dependency-ordering rule).
+- ``generalization_user`` / ``generalization_aiko`` -- *generalization* (L20),
+  the abstraction meta proposers. Like tension their raw material is the active
+  BASE (non-meta) concepts, but they name a higher-order super-concept that 2+
+  of those are all facets of ("builds things that last" over several hobbies) --
+  is-a / part-of, not friction. Share the :func:`propose_generalization` body,
+  whose composition rule accepts 2..N distinct concept ids (capped at
+  ``GENERALIZATION_MAX_CHILDREN``), emitting ``("concept", id)`` evidence with
+  ``evidence_model="meta"``. They run with the other metas, LAST.
 """
 from __future__ import annotations
 
@@ -85,6 +93,8 @@ from app.core.concepts.proposers import (
     boundary_user,
     communication_style_aiko,
     communication_style_user,
+    generalization_aiko,
+    generalization_user,
     identity_aiko,
     identity_user,
     narrative_aiko,
@@ -98,6 +108,7 @@ from app.core.concepts.proposers import (
 )
 from app.core.concepts.proposers.base import (
     AIKO_SELF_KINDS,
+    GENERALIZATION_MAX_CHILDREN,
     MIN_SOURCES,
     CandidateProposal,
     ExistingConcept,
@@ -112,6 +123,7 @@ from app.core.concepts.proposers.base import (
     propose_aiko_hybrid,
     propose_boundary,
     propose_communication_style,
+    propose_generalization,
     propose_narrative,
     propose_ordered_concept,
     propose_tension,
@@ -129,6 +141,12 @@ from app.core.concepts.proposers.communication_style_aiko import (
 )
 from app.core.concepts.proposers.communication_style_user import (
     propose_communication_style_user,
+)
+from app.core.concepts.proposers.generalization_aiko import (
+    propose_generalization_aiko,
+)
+from app.core.concepts.proposers.generalization_user import (
+    propose_generalization_user,
 )
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
@@ -166,12 +184,17 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     tension_user.SPEC,
     tension_relationship.SPEC,
     tension_aiko.SPEC,
+    # L20 abstraction metas -- also over active base concepts, so they sit
+    # with the other metas at the end of the pass order.
+    generalization_user.SPEC,
+    generalization_aiko.SPEC,
 )
 
 
 __all__ = [
     "AIKO_SELF_KINDS",
     "CONCEPT_PROPOSERS",
+    "GENERALIZATION_MAX_CHILDREN",
     "MIN_SOURCES",
     "CandidateProposal",
     "ExistingConcept",
@@ -194,6 +217,9 @@ __all__ = [
     "propose_communication_style",
     "propose_communication_style_aiko",
     "propose_communication_style_user",
+    "propose_generalization",
+    "propose_generalization_aiko",
+    "propose_generalization_user",
     "propose_identity_aiko",
     "propose_identity_user",
     "propose_narrative",

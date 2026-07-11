@@ -870,18 +870,21 @@ class ConceptLifecycleWorker:
     def _apply_meta_rules(
         self, concept: "Concept", conf: float
     ) -> tuple[float, bool]:
-        """L12 meta rules 2 + 3 for a ``evidence_model=="meta"`` concept.
+        """Meta rules 2 + 3 for a ``evidence_model=="meta"`` concept.
 
         Resolve the base concepts it references (its ``("concept", ...)``
         evidence edges) and:
 
-        - **Rule 3 (confidence bounding):** return ``min(conf, min(base
-          confidences))`` -- a tension can be no more certain than the shakiest
-          concept it is built on.
-        - **Rule 2 (moot):** flag ``moot=True`` when any referenced base is
-          missing or no longer ``active`` (a tension whose side was retired /
-          went dormant is no longer a live tension). With no resolvable base
-          concept at all it is moot by definition.
+        - **Rule 3 (confidence bounding):** return ``min(conf, min(active base
+          confidences))`` -- a meta can be no more certain than the shakiest
+          concept it is *still* built on.
+        - **Rule 2 (moot):** flag ``moot`` when the meta no longer stands on
+          enough active bases. The floor is **arity-aware**: a tension (L12)
+          holds exactly two concepts in friction, so losing EITHER side makes it
+          moot; a generalization (L20) abstracts several concepts, so it stays
+          live as long as at least TWO children remain active and only goes moot
+          when fewer than two survive. With no resolvable base at all it is moot
+          by definition.
 
         Returns ``(bounded_confidence, moot)``. Base kinds never call this."""
         base_ids: list[int] = []
@@ -902,14 +905,21 @@ class ConceptLifecycleWorker:
             return conf, True
 
         base_confs: list[float] = []
-        moot = False
+        missing_any = False
         for bid in base_ids:
             base = self._store.get(bid)
             if base is None or base.status != "active":
-                moot = True
+                missing_any = True
                 continue
             base_confs.append(float(base.confidence))
         bounded = min(conf, min(base_confs)) if base_confs else conf
+        # Arity-aware moot: a generalization survives losing a child as long as
+        # >= 2 remain (it abstracts many); every other meta (tension) needs ALL
+        # of its bases, so any missing base makes it moot.
+        if concept.kind == "generalization":
+            moot = len(base_confs) < 2
+        else:
+            moot = missing_any or not base_confs
         return bounded, moot
 
     # ── events ──────────────────────────────────────────────────────────

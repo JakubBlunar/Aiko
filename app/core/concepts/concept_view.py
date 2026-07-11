@@ -313,11 +313,11 @@ class ConceptView:
            theme with something already in mind.
 
         A third path -- concept->concept edges (:meth:`ConceptStore.dependents_of`)
-        -- lights up today for L12 **tensions**, whose bases point at the meta
-        via concept->concept ``evidence`` edges, so a base's activation pulls in
-        its tension meta. The reserved ``references`` / ``generalizes`` relations
-        (L20) stay unpopulated for now and will flow through the same path with
-        no change here once they ship.
+        -- lights up for both meta kinds: L12 **tensions** and L20
+        **generalizations**, whose bases point at the meta via concept->concept
+        ``evidence`` edges, so a base's activation pulls in the meta above it.
+        (The ``generalizes`` edge relation stays reserved for a future
+        multi-level hierarchy; L20 rides the ``evidence`` relation like L12.)
 
         Seeds are excluded from the result; the strongest strength per concept
         wins on overlap; the result is capped at ``limit``.
@@ -353,9 +353,10 @@ class ConceptView:
                     continue
                 for concept in self.for_cluster(getattr(e, "src_id", None)):
                     _bump(concept, 0.6)
-            # Meta path: concept->concept edges. Live for L12 tensions (base
-            # -> tension meta via ``evidence``); reserved references/generalizes
-            # (L20) flow through here for free once populated.
+            # Meta path: concept->concept edges. Live for both meta kinds --
+            # L12 tensions and L20 generalizations (base -> meta via
+            # ``evidence``); the ``generalizes`` relation stays reserved for a
+            # future multi-level hierarchy.
             try:
                 for dep_id in self._store.dependents_of(int(sid)):
                     dep = self._store.get(int(dep_id))

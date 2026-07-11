@@ -804,6 +804,16 @@ class MemorySettings:
     # half. Concept cardinality is small by design (tens), so this rarely bites
     # -- it only bounds the prompt when the graph is unusually rich.
     concept_synthesis_max_tension_concepts: int = 24
+    # L20: cap on active BASE concepts offered to the generalization (meta)
+    # proposer per run (per subject). Same shape/rationale as the tension cap.
+    concept_synthesis_max_generalization_concepts: int = 24
+    # L20 surfacing: "prefer the abstraction". When a generalization parent is
+    # among the turn's concept candidates at >= ``parent_min_confidence``, its
+    # child concepts are dropped from the pool so Aiko speaks the through-line
+    # instead of reciting the specifics beneath it. Disable to render parent +
+    # children side by side.
+    generalization_suppress_children_enabled: bool = True
+    generalization_parent_min_confidence: float = 0.7
     # L12 tension-cue worker (the proactive "a friction worth sitting with"
     # producer). ``interval_seconds`` is the idle cadence; ``min_confidence``
     # gates which tensions qualify; ``journal_max`` bounds the cue ring. The
@@ -2625,6 +2635,30 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get(
                         "concept_synthesis_max_tension_concepts", 24
                     )
+                ),
+            ),
+            concept_synthesis_max_generalization_concepts=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_generalization_concepts", 24
+                    )
+                ),
+            ),
+            generalization_suppress_children_enabled=bool(
+                memory_raw.get(
+                    "generalization_suppress_children_enabled", True
+                )
+            ),
+            generalization_parent_min_confidence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "generalization_parent_min_confidence", 0.7
+                        )
+                    ),
                 ),
             ),
             tension_cue_interval_seconds=max(

@@ -999,10 +999,12 @@ pairs a tender relationship tension; (b) **value-contradicted-by-behaviour** and
 other same-subject frictions (the `user` / `aiko` proposers).
 
 **Still open (folds into future meta work).** L20 abstraction rides the same
-`concept -> concept` machinery this established. (L18d concept-vs-concept
-conflict detection also rides it — shipped: boundary clashes are now a
-first-class shape in the tension proposers.) A dedicated tension/drift
-*surfacing priority override* (L23) is still deferred.
+`concept -> concept` machinery this established — **shipped**: the
+`generalization` meta reuses these `relation="evidence"` rails, adding only an
+arity range and an arity-aware moot rule. (L18d concept-vs-concept conflict
+detection also rides it — shipped: boundary clashes are now a first-class shape
+in the tension proposers.) A dedicated tension/drift *surfacing priority
+override* (L23) is still deferred.
 
 ---
 
@@ -1597,31 +1599,49 @@ without it becoming a monologue?
 
 ## L20. Concept abstraction hierarchy (generalization)
 
-**Motivation.** The *founding* example of this whole thread — "Programming ->
-React / AI / TypeScript / Home Server", and then a concept that was never stated
-directly: "things he builds for long-term enjoyment". That is a concept whose
-evidence is **other concepts**, abstracting them into a higher-order one. It's
-distinct from tension (L12, which holds two concepts in *friction*):
-generalization holds several concepts in *is-a / part-of* and names the
-abstraction over them. Without it, the layer tops out one level above clusters;
-with it, abstraction can keep climbing.
+**Status: SHIPPED (single-level).** A `generalization` meta kind that abstracts
+2+ active concepts (of any kind, same subject) into a higher-order super-concept,
+riding the **L12 tension meta rails**: `evidence_model="meta"`, base->parent
+links stored as `relation="evidence"` `concept -> concept` edges (NOT the
+`generalizes` relation — see below), and all the shared meta machinery
+(`_filter_meta_evidence` depth/cycle cap, `dependents_of` activation, the L3
+cascade). It differs from tension in exactly three ways: **arity is a range**
+(2..N children, capped at `GENERALIZATION_MAX_CHILDREN`, not a fixed pair);
+**moot is arity-aware** (`_apply_meta_rules` branches on kind — a generalization
+stays live while >= 2 children remain active, so it survives losing one, and its
+confidence is bounded by the shakiest *active* child); and it **renders + pins**
+(on the always-on core lane at a high bar), where a tension is hidden. When a
+generalization parent is present at `generalization_parent_min_confidence`, its
+children are suppressed from the surfacing pool (`_suppress_generalized_children`)
+so Aiko says "you love building things that last" instead of reciting the five
+sub-interests.
 
-**Key files.** Registry entry (L1) using `concept -> concept`
-`relation=generalizes` edges (the reason `generalizes` is in the edge enum);
-proposer reads existing active concepts and looks for a latent super-concept;
-inherits the L1 meta-concept rules (dependency ordering — children active first;
-cascade; `min`-bounded confidence; depth/cycle guard, though generalization is
-the one place a *shallow* multi-level hierarchy may eventually be worth allowing).
+**Key files.** `generalization` kind + `generalization_evidence_gate`
+(slower/stronger than tension: 2-source floor, 3.0d age, 0.72 confidence) in
+`concept_kinds.py` / `concept_lifecycle.py`; `propose_generalization` in
+`proposers/base.py` + `generalization_user.py` / `generalization_aiko.py` (SPECs
+registered last, with the tension metas); `_run_generalization_pass` +
+`generalization` population dispatch in `concept_synthesis_worker.py`; the
+arity-aware `_apply_meta_rules` branch in `concept_lifecycle_worker.py`; the
+`generalization` family + `_concept_generalization_header` + child suppression in
+`inner_life_part1.py`; recall enrichment in `rag_retriever.py`
+(`_concept_related_links` labels a generalization parent/child as `"generalizes"`
+via concept *kind*, since the link rides an `evidence` edge). Settings:
+`agent.generalization_synthesis_enabled`, `memory.concept_synthesis_max_
+generalization_concepts` / `generalization_suppress_children_enabled` /
+`generalization_parent_min_confidence`.
 
-**Sketched approach.** A `concept_graph` proposer over active concepts of the
-same subject that proposes a parent when several children share a latent theme
-their individual labels don't name. Higher promotion bar (an abstraction should
-be slow and well-supported). Surfacing prefers the **most abstract confidently-
-held** concept for a given area, so Aiko says "you love building things that
-last" rather than reciting the five sub-interests. Feeds L19 naturally — the
-abstraction level is what a self-narrative reaches for.
+**Why `evidence` edges, not `generalizes`.** Reusing the tension rails means the
+whole meta lifecycle (dependency ordering — children active first; cascade;
+`min`-bounded confidence; depth/cycle guard) works unchanged; the parent/child
+relationship is recovered from the neighbour's `kind == "generalization"`, not
+the edge relation. The `generalizes` relation in the edge enum is now
+effectively reserved for a future *multi-level* hierarchy.
 
-**Effort.** Large (depends on a healthy population of base concepts).
+**Remaining follow-up.** Multi-level hierarchies (parent-of-parent) — the meta
+depth cap stays for v1, so a generalization can't yet abstract another
+generalization; relationship-subject abstractions (user + aiko only for now).
+Feeds L19 naturally — the abstraction level is what a self-narrative reaches for.
 
 ---
 
@@ -1723,8 +1743,9 @@ history behind DT4 replay)? Precision/recall target to gate a release?
 > - **spreading activation** (`ConceptView.activated()`) — concepts that share
 >   a *hot topic cluster* with the turn's active set (pinned core) are primed
 >   into the pool with an additive boost even at low direct cosine; the
->   concept→concept `references` path (`dependents_of`) is wired but **dormant**
->   until meta concepts (L12 / L20) populate those edges;
+>   concept→concept path (`dependents_of`) is now **lit** by the L12 tension and
+>   L20 generalization metas (their `("concept", id)` `evidence` edges), so a hot
+>   base primes the meta above it;
 > - **habituation / anti-nag cooldown** (`habituation_factor()` + a `kv_meta`
 >   `{concept_id: last_surfaced_turn}` map on the `relationship.total_turns`
 >   clock) — a concept surfaced in the last few turns is damped (strong on the

@@ -61,6 +61,7 @@ from app.core.concepts.concept_lifecycle import (
     aspiration_evidence_gate,
     boundary_evidence_gate,
     communication_style_evidence_gate,
+    generalization_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
     set_evidence_gate,
@@ -627,6 +628,49 @@ register_kind(
             context=0.5, confidence=0.1, stability=0.2, recency=0.1,
             activation=0.3,
             recency_halflife_days=14.0,
+        ),
+    )
+)
+
+
+# The abstraction meta kind (L20): a generalization is a concept whose evidence
+# is 2+ OTHER active concepts (of any kind, same subject) that it names a latent
+# super-concept over -- "he builds things that last" abstracting React / AI /
+# home-server tinkering, or "she reaches for warmth over being right" over
+# several of her own values. Distinct from a tension (which holds two concepts in
+# *friction*): a generalization holds several in *is-a / part-of* and names the
+# whole. ``evidence_model="meta"`` -- its ``("concept", id)`` evidence edges ride
+# the same lifecycle rails as tension (cascade, confidence bounding, depth cap),
+# with an arity-aware moot rule in the L3 worker (still live while >= 2 children
+# stay active, so it survives losing one). UNLIKE tension it DOES render in the
+# static T3 block: the whole point is that Aiko speaks the abstraction and its
+# children step aside (the suppression in ``build_relevant_context``), so it
+# joins the always-on core lane at a HIGH confidence bar -- a settled abstraction
+# is exactly the "who they are" the core lane is for.
+register_kind(
+    ConceptKind(
+        name="generalization",
+        subject="user",
+        evidence_model="meta",
+        # L16: low plasticity -- an abstraction is the most hard-won, settled
+        # thing in the layer (it sits above a whole cluster of beliefs), so it
+        # should drift the slowest of the metas, near identity/value.
+        plasticity_default=0.25,
+        # L3: the abstraction gate -- floors sources at 2 with age + confidence
+        # bars a notch above tension, because a generalization should be slow
+        # and well-supported before it speaks for the concepts beneath it.
+        promotion_gate=generalization_evidence_gate,
+        # L20 / L27: joins the always-on core lane at a high bar so a settled
+        # abstraction pins every turn and its children are suppressed beneath
+        # it. Confidence/stability-leaning (an abstraction is a settled belief,
+        # not a live reading), with a light activation term so a parent still
+        # lifts when its children are hot this turn.
+        core_always_on=True,
+        core_min_confidence=0.8,
+        surface_weights=SurfaceWeights(
+            context=0.5, confidence=0.3, stability=0.2,
+            activation=0.1,
+            recency_halflife_days=30.0,
         ),
     )
 )
