@@ -853,11 +853,17 @@ class WorldMixin:
             except Exception:
                 rel_state = None
         try:
-            from app.core.relationship.relationship import _MILESTONES, phase_for
+            from app.core.relationship.relationship import (
+                _MILESTONES,
+                _crossed_milestones,
+                phase_for,
+            )
         except Exception:
             _MILESTONES = ()  # type: ignore[assignment]
             def phase_for(*_a: Any, **_kw: Any) -> str:  # type: ignore[no-redef]
                 return "new"
+            def _crossed_milestones(*_a: Any, **_kw: Any) -> set[str]:  # type: ignore[no-redef]
+                return set()
 
         phase = "new"
         if rel_state is not None:
@@ -892,21 +898,42 @@ class WorldMixin:
             except Exception:
                 log.debug("together anniversary failed", exc_info=True)
 
-        # Milestones list with crossed-off dates (when known). A milestone
-        # is "crossed" if it's in the persistent surfaced set (v25); we fall
-        # back to the single last-label for rows not yet backfilled. Using
-        # the set is what lets the tab highlight *every* milestone reached,
-        # not just the most recent one.
+        # Milestones list with crossed-off dates (when known). A milestone is
+        # "crossed" for display if its threshold is *currently* satisfied
+        # (live check against the counters), OR it's in the persistent surfaced
+        # set (v25), OR it's the last-label fallback for un-backfilled rows.
+        # The live union is what stops the tab lagging the counters shown in
+        # the same panel -- a day-based milestone (e.g. "first week") reads as
+        # reached the moment its age threshold passes, without waiting for the
+        # next post-turn ``record_turn`` to append it to ``milestones_surfaced``
+        # (which stays the authority for fire-once celebration / RAG, not for
+        # this display).
         milestones: list[dict[str, Any]] = []
         last_milestone_label = None
         last_milestone_at = None
         surfaced: set[str] = set()
+        live: set[str] = set()
         if rel_state is not None:
             last_milestone_label = getattr(rel_state, "milestone_label", None)
             last_milestone_at = getattr(rel_state, "last_milestone_at", None)
             surfaced = set(getattr(rel_state, "milestones_surfaced", None) or ())
+            try:
+                from datetime import datetime, timezone
+
+                live = _crossed_milestones(
+                    rel_state,
+                    new_turns=int(getattr(rel_state, "total_turns", 0) or 0),
+                    now=datetime.now(timezone.utc),
+                )
+            except Exception:
+                log.debug("together live milestone check failed", exc_info=True)
+                live = set()
         for label, _turns, _days in _MILESTONES:
-            crossed = label in surfaced or label == last_milestone_label
+            crossed = (
+                label in live
+                or label in surfaced
+                or label == last_milestone_label
+            )
             milestones.append({
                 "label": label,
                 "human": label.replace("_", " "),
