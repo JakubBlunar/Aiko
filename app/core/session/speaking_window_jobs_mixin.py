@@ -43,7 +43,15 @@ class SpeakingWindowJobsMixin:
     """Per-turn ``_maybe_schedule_*`` cluster + milestone memory helper."""
 
     def _record_milestone_memory(self, label: str) -> None:
-        """Persist a milestone as a callback memory so RAG surfaces it."""
+        """Persist a milestone as a durable, dated historical record.
+
+        This is *history*, not a standing prompt to re-raise it: the timely,
+        once-only acknowledgment is the J8 ``_render_milestone_block`` one-shot.
+        We deliberately keep the content a neutral, dated fact (no "she might
+        bring this up") and give it a low salience, so RAG can recall it as
+        context if a milestone genuinely becomes relevant but it doesn't keep
+        nudging Aiko to ask about the same milestone turn after turn.
+        """
         if not label:
             return
         store = getattr(self, "_memory_store", None)
@@ -51,9 +59,12 @@ class SpeakingWindowJobsMixin:
         if store is None or embedder is None:
             return
         humanized = label.replace("_", " ")
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         content = (
-            f"Aiko reached a milestone with {self.user_display_name}: {humanized}. "
-            "She might naturally bring this up in conversation."
+            f"Aiko and {self.user_display_name} reached a relationship "
+            f"milestone: {humanized} (on {today})."
         )
         try:
             emb = embedder.embed(content)
@@ -65,7 +76,10 @@ class SpeakingWindowJobsMixin:
                 content=content,
                 kind="callback",
                 embedding=emb,
-                salience=0.6,
+                # Low salience: this is background history, not a live topic --
+                # it should rank below topical memories so it stops resurfacing
+                # as a recurring "how did our first week go?" prompt.
+                salience=0.35,
                 source_session=self.session_key,
                 # Schema v8: relationship milestones are real,
                 # confirmed events. Long_term so they survive the

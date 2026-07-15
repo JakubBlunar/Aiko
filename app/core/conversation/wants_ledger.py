@@ -418,9 +418,10 @@ def render_block(
         return (
             f"Something you've been wanting: {strongest.text} -- this has "
             f"been on your mind {since}. Bring it up THIS conversation; "
-            f"changing the subject to do it is allowed ('okay wait, "
-            f"unrelated --'). Once you've raised it, it's off your mind -- "
-            f"don't force it mid-heavy-moment, but a normal lull counts."
+            f"changing the subject to do it is allowed (pivot in your own "
+            f"words, not a stock phrase). Once you've raised it, it's off "
+            f"your mind -- don't force it mid-heavy-moment, but a normal "
+            f"lull counts."
         )
     lines = [
         f"Things you've been wanting from a conversation with {name} "

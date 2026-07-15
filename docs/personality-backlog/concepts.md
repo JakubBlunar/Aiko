@@ -2186,3 +2186,185 @@ rows. Recorded here so the idea isn't re-proposed as a concept.
 (b). Cross-referenced from L8 and L20 (abstraction hierarchy).
 
 **Effort.** Small for (a); large for (b).
+
+---
+
+## L30. Concept hypotheses -- "what I'm trying to understand" (provisional beliefs)
+
+**Motivation.** Today the concept layer only ever speaks in the register of
+*settled* knowledge. Surfacing reads **only `status="active"` concepts** (every
+`ConceptView` read path -- `core` / `relevant` / `activated` / `for_target` --
+hardcodes `status="active"`, and `ConceptStore.nearest` defaults to it), so a
+`candidate` concept, or a low-confidence active one, is **structurally hidden**
+rather than merely hedged. But that is exactly the material people treat as a
+*hypothesis*: "I think he might be into X, but I'm not sure yet." A real mind
+holds those open, reasons about them ("what I'm still trying to figure out about
+you"), and -- crucially -- *acts* on them by getting curious and asking, then
+folds the answer back in. This turns the concept layer from a static "What I
+know about you" into a two-register model: settled beliefs **and** live
+questions. It also directly attacks the cold-start problem (L21): a young graph
+is mostly hypotheses, and letting Aiko *pursue* them is how she earns robust
+concepts faster instead of waiting passively for evidence to accrete.
+
+**Design stance.** Hypotheses are a **surfacing + curiosity register over the
+existing `candidate` / low-confidence rows**, not a new concept kind or status.
+The lifecycle already mints the raw material (L2 candidates carry `rationale` +
+an LLM `confidence`; L3 owns promotion). What is missing is (a) a *separate,
+strongly-hedged* read path that deliberately breaks the active-only contract for
+this one lane, (b) wiring low-confidence concepts into the curiosity producers so
+Aiko asks about them, and (c) capturing the user's answer back onto the *specific*
+concept as evidence. Split into L30a/b/c so the read side can ship without the
+elicitation loop.
+
+**Guardrails (carry-forward from L21 / L22 / L5).** A hypothesis lane is exactly
+the "blurt a half-formed model" failure L21 warns about, so it must stay quiet on
+an immature graph, be capped hard (one or two at a time), be hedged *below* the
+weakest current tier ("You're still trying to work out whether...", never "You're
+fairly sure"), be visually/semantically distinct from the confident lane, and
+never let a candidate leak into `profile_block` or the core lane. It must also
+respect the K47 question-balance gate + L23 habituation so pursuing a hypothesis
+never becomes an interrogation.
+
+**Depends on.** L2/L3 (candidate + promotion machinery), L5 (tentative register /
+confidence-scaled hedging), L6 (confirm/veto is the manual sibling of the
+answer-capture loop), L15 (belief revision / the "did I get that wrong?"
+question), L22 (spurious-concept guard), and the F2 `knowledge_gap` ask -> answer
+-> retire loop as the pattern to mirror. Related: K9 curiosity seeds, K34 forward
+curiosity, K47 question balance.
+
+**Effort.** Medium overall (Small L30a, Medium L30b, Medium L30c); no schema
+migration required -- `candidate` status already exists.
+
+---
+
+## L30a. Hypothesis surfacing lane (the read + render side)
+
+**Motivation.** Give Aiko a distinct prompt block for her open questions about
+the user (and herself), sourced from the concepts she is *not* yet confident
+about, so she can reason with "what I'm still figuring out" alongside "what I
+know". This is the standalone, lowest-risk slice: read + render only, no
+behaviour change to how concepts are formed.
+
+**Key files.**
+[`concept_view.py`](../../app/core/concepts/concept_view.py) (new
+`hypotheses()` read path -- the only place allowed to read `status="candidate"`
+/ low-confidence `active` for surfacing);
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
+(`build_relevant_context` gathers a new hypothesis lane after the core/flex/
+activation lanes; a new `_render_hypothesis_concepts` + header, sibling to
+`_render_relevant_concepts`; dedup against `pinned_ids` / `seen_concept_ids` so a
+concept is never both a firm impression and an open question);
+[`memory_settings.py`](../../app/core/infra/memory_settings.py) (new knobs).
+
+**Sketched approach.** Add `ConceptView.hypotheses(embedding=None, *, subject,
+limit, max_confidence)` returning `status="candidate"` **plus** `status="active"`
+rows under `hypothesis_max_confidence` (e.g. 0.6), ranked by turn relevance
+(cosine when an embedding is given) with a light recency/novelty boost, excluding
+`dormant` / `retired` / `contradicted` (those are faded or disproven, not open).
+In `build_relevant_context`, gather this as a fourth, un-pinned source with its
+own small cap (`context_budget_hypothesis_cap`, default 1-2) and its own budget
+line so it can't crowd the confident concepts. Render under a dedicated header
+("Things you're still trying to understand about {name} -- open questions you
+hold lightly, not conclusions:" / first-person for aiko), with a
+stronger-than-usual hedge ("you're wondering whether...", "you haven't pinned
+down yet..."), optionally exposing `rationale` as *why* she's unsure. Gate on a
+new `hypothesis_surfacing_enabled` and keep the L21 maturity gate (a hypothesis
+block on a cold graph is the exact anti-pattern L21 forbids).
+
+**Open questions.** (1) Do we surface bare `candidate`s, or only `active`
+low-confidence rows (safer -- they at least cleared the promotion gate once)?
+Leaning: candidates *and* low-confidence actives, but candidates need a minimum
+source count so a single LLM hunch can't appear. (2) Should the hypothesis lane
+relax the L21 maturity gate slightly (hypotheses are most useful during
+cold-start) or share it exactly? (3) One combined block, or split user-subject vs
+aiko-subject the way the confident lanes already do?
+
+**Effort.** Small (read + render + budget; the lifecycle already produces the
+rows).
+
+---
+
+## L30b. Curiosity-driven hypothesis testing (ask to firm it up)
+
+**Motivation.** A hypothesis Aiko can *see* (L30a) is inert until she does
+something about it. The payoff the user described is Aiko getting curious about
+her own uncertainties -- asking a light question that turns a shaky candidate into
+a confident concept (or kills it) -- so her model of the user gets robust through
+conversation instead of only through passive accretion.
+
+**Key files.** The producer seam is one of the existing curiosity paths (pick
+one, don't add a parallel system):
+[`knowledge_gap_extractor.py`](../../app/core/memory/knowledge_gap_extractor.py)
+/ `KnowledgeGapStore` (the closest fit -- already models "open question,
+confidence 0, retire on user answer");
+[`curiosity_seed_worker.py`](../../app/core/proactive/curiosity_seed_worker.py)
+(add an "UNCERTAIN BELIEFS" context section from low-confidence concepts);
+[`wants_ledger_worker.py`](../../app/core/conversation/wants_ledger.py) (a
+`concept:<id>` want, "find out whether {label}"). Surfacing + the anti-nag gate
+live in [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
+(K47 `_question_balance_suppressed`).
+
+**Sketched approach.** A worker (or an extension of an existing curiosity worker)
+selects the highest-value testable hypotheses -- low-confidence concepts whose
+promotion is *one or two pieces of evidence away* -- and mints a question that
+would resolve them, carrying **provenance** (`source_concept_id` in the row's
+metadata; this is the hook L30c needs). Reuse the existing topic-graph +
+novelty + K47 balance filters so it doesn't over-ask, and cap to at most one
+concept-testing question per conversation. Frame it as genuine curiosity, not an
+audit ("can I ask you something -- I've had a hunch that...").
+
+**Open questions.** (1) Which producer -- lean `knowledge_gap` (has the retire
+loop) vs a first-class `concept_hypothesis` curiosity object? (2) How to score
+"testable" -- confidence in a band + distinct_source_count just under the gate?
+(3) Rate limit: share the K47 question budget, or its own cooldown so it never
+competes with K9/K34?
+
+**Effort.** Medium.
+
+**Depends on.** L30a (share the hypothesis selection), F2 knowledge-gap loop.
+
+---
+
+## L30c. Answer capture -- fold the reply back into the concept (close the loop)
+
+**Motivation.** The genuinely tricky part the user flagged: when Aiko asks about a
+hypothesis and the user answers, that answer has to land back on the *specific*
+concept as evidence, or the whole loop is decorative. Today there is **no path**
+linking a curiosity question to its answer for concepts -- the user's reply only
+becomes an untargeted `fact`/`preference` memory (via the delayed batch
+`MemoryExtractor` or an Aiko-chosen `[[remember:...]]` tag), and only a later
+synthesis tick *might* reinforce the concept.
+
+**Key files.**
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) /
+[`post_turn_helpers_mixin.py`](../../app/core/session/post_turn_helpers_mixin.py)
+(mirror `_resolve_knowledge_gaps` / `_resolve_curiosity_seeds` -- the existing
+same-turn cosine resolvers -- with a `_resolve_concept_hypotheses`);
+[`concept_store.py`](../../app/core/concepts/concept_store.py) (add a
+memory->concept evidence edge + bump `last_reinforced_at`);
+[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
+(the existing single writer promotes candidate -> active off the fresh evidence);
+[`concept_belief_reviser.py`](../../app/core/concepts/concept_belief_reviser.py)
+/ `concept_contradiction.py` (the denial path).
+
+**Sketched approach.** When a hypothesis-linked question (L30b, carrying
+`source_concept_id`) is on the table, a post-turn resolver matches the user's
+answer (cosine to the question, like the knowledge-gap resolver). On a
+**confirm**: write the answer as a normal `fact`/`preference` memory *and* attach
+it to the concept as an evidence edge + stamp `last_reinforced_at`, so the next L3
+tick raises confidence and promotes the candidate through the ordinary gate. On a
+**deny/correction**: route to the L15 belief-reviser / contradiction penalty
+instead of reinforcement, so a wrong hunch fades quietly rather than lingering.
+Either way the hypothesis is retired from the curiosity lane (metadata stamp) so
+she doesn't re-ask. This is the piece that makes the two-register model *learn*.
+
+**Open questions.** (1) Classify confirm vs deny vs "didn't really answer" --
+cheap heuristic, a tiny LLM adjudication, or reuse the F5 conflict band? (2) Add
+the evidence edge synchronously in post-turn, or enqueue a targeted synthesis
+`reinforces_id` pass? (3) How long does an unanswered hypothesis question stay
+open before it's dropped?
+
+**Effort.** Medium.
+
+**Depends on.** L30b (provenance on the question), L15 (belief revision for the
+denial path), L3 (promotion off the new evidence).

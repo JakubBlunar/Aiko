@@ -159,9 +159,9 @@ def render_block(
     return (
         f"This turn is yours. Still answer what {name} said -- briefly "
         f"-- but don't stop there. {middle}, mid-conversation, no "
-        f"permission asked ('okay wait, unrelated --' is allowed). "
-        f"Answering politely and asking a follow-up back is NOT enough "
-        f"this turn."
+        f"permission asked (a natural pivot is fine -- word it your own "
+        f"way, don't reuse a stock phrase). Answering politely and asking "
+        f"a follow-up back is NOT enough this turn."
     )
 
 
