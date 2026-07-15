@@ -2,6 +2,8 @@
 
 **A local, private AI companion who remembers you, has her own moods, and grows alongside you.**
 
+Under the hood, Aiko is an experimental persistent LLM-agent architecture focused on long-term memory, evolving concepts, behavioural modelling, and grounded, simulated experience.
+
 Aiko isn't a chatbot you reset every morning. She lives on *your* machine, keeps her own memories, wakes up in a different mood each day, has opinions she'll defend, notices when you've gone quiet, and slowly learns the shape of your relationship. Talk to her or type, hear her answer out loud, and watch a Live2D avatar react in real time — all running locally, nothing leaving your computer.
 
 > Think less "assistant," more *someone who's actually there.*
@@ -18,6 +20,7 @@ Most assistants forget you the moment the tab closes. Aiko's memory is the heart
 - **She forms her own memories too.** Background workers quietly reflect on conversations, extract facts, notice promises ("I'll look into that") and *actually follow up on them later*, and even mull things over between sessions so she can open with "I've been thinking about what you said…"
 - **Shared moments & your story so far.** She marks the moments that meant something, tracks how long you've known each other, and surfaces gentle anniversaries ("a month ago today, we…").
 - **A model of what *you* believe.** She tracks what she thinks you feel and think — separate from what she knows as fact — and notices when her read of you stops matching reality.
+- **Higher-order beliefs she forms *and revises*.** Beyond individual facts, Aiko can build durable **concepts** about you and about herself — traits, values, boundaries, aspirations, the shape of your relationship — each carrying a confidence she'll strengthen, weaken, or quietly retire as evidence accrues. Beliefs can be contradicted and re-formed, and refined when the truth turns out to be context-dependent, so over time she doesn't just remember *more*, she understands you *better*. (Opt-in and still maturing — enable `agent.concepts_enabled`.)
 - You can browse, pin, edit, and search every memory she holds from the **Memory** tab. Nothing is hidden.
 
 ### She has a personality, not a setting
@@ -51,13 +54,29 @@ Most assistants forget you the moment the tab closes. Aiko's memory is the heart
 
 ### …and she's still a capable assistant
 
-Under all the personality she can still tell the time, **search your own documents and memories**, search the web, and (for power users) drive background tasks and external tools. She grounds answers in *your* uploaded files via local vector search.
+Under all the personality she can still tell the time, **search your own documents and memories**, search the web, check the real-world weather, look at images you share (optional vision model), and (for power users) drive background tasks and external tools — including your own MCP servers. She grounds answers in *your* uploaded files via local vector search.
 
 ---
 
+## Architecture
+
+Aiko is built around a persistent cognitive architecture rather than a single prompt:
+
+- **Brain / LLM** — reasoning, language, expression, and action selection. Each turn runs a two-pass loop (a tool-decision pass, then a streaming reply), routed to local Ollama or any OpenAI-compatible provider.
+- **Memory system** — episodic and semantic memories with lifecycle management: tiered storage (`scratchpad` → `long_term` → `archive`), wall-clock decay and revival, and RAG retrieval. SQLite is the source of truth; LanceDB mirrors it for vector search.
+- **Concept system** — builds higher-order understanding from clustered evidence: durable beliefs about the user and herself, each with a confidence that promotes, drifts, contradicts, and refines over time. (Opt-in; see `agent.concepts_enabled`.)
+- **Background workers** — the "slow cognition" that keeps Aiko growing between replies. A scheduler runs many small, single-purpose workers in idle gaps and in the pauses while she's speaking, so none of it blocks a turn. Roughly grouped:
+  - *Memory maintenance* — tier promotion, wall-clock decay and revival, near-duplicate consolidation, and post-conversation fact/preference extraction.
+  - *Reflection & summarisation* — rolling conversation summaries, between-session reflection and "mulling things over," and a dream/consolidation pass.
+  - *Concept formation* — synthesising higher-order concepts from clustered evidence, then the lifecycle engine that promotes, decays, contradicts, and revises them.
+  - *Curiosity & knowledge* — seeding things to get curious about, filling knowledge gaps (including background web look-ups), fact-checking claims, and learning your routines.
+  - *Relationship & social* — theory-of-mind belief tracking, promise follow-through, shared-moment and milestone detection, and a periodic relationship "pulse."
+  - *World & presence* — the room/world simulation, sensory anchoring, and optional real-world weather/season sync.
+- **Presentation layer** — a FastAPI + WebSocket backend with a React / Vite / PixiJS frontend: the Live2D avatar, voice in/out (client-owned audio), gestures/touch, and the settings + memory UI.
+
 ## Under the hood
 
-Everything below runs on your machine by default. Nothing about Aiko's memories, your conversations, or your documents leaves your computer.
+The concrete stack behind the architecture above. Everything runs on your machine by default — nothing about Aiko's memories, your conversations, or your documents leaves your computer.
 
 - **Ollama** for chat (local, or any OpenAI-compatible endpoint — OpenAI / xAI / Groq / OpenRouter / DeepSeek / … — via the LLM provider routing layer).
 - **RealtimeSTT** (faster-whisper + Silero VAD) for speech input.
@@ -146,47 +165,11 @@ In dev mode Vite proxies `/api` and `/ws` to the Python server.
 
 ## Configure
 
-User-editable defaults live in `config/default.json`. Personal overrides go in `config/user.json` and are deep-merged on top.
-
-| Block | Purpose |
-|---|---|
-| `assistant` | `name`, `remember_history`, `user_id`, `tts_length_scale` |
-| `ollama` | `base_url`, `chat_model`, `embedding_model`, `temperature`, `context_window`, `timeout` |
-| `chat_llm` | Routes the chat call. `provider: "ollama"` (default) or `"openai_compatible"` for OpenAI / xAI / Groq / OpenRouter / DeepSeek / etc. |
-| `audio` | Sample rate, microphone/output device, VAD thresholds, push-to-talk |
-| `stt` | `model` (e.g. `large-v1`), `language` |
-| `tts` | `provider` (`pocket-tts`), `voice`, `enabled`, `pocket_tts_voice`, `pocket_tts_temp` |
-| `agent` | `proactive_silence_seconds`, `proactive_cooldown_seconds` |
-| `memory` | `enabled`, `top_k`, `score_threshold`, `max_memories`, `dedupe_threshold`, `extractor_enabled`, `self_tagged_salience` |
-| `tools` | `enabled` plus per-tool flags: `get_time`, `recall`, `web_search` |
-| `web_server` | `host`, `port` (default `127.0.0.1:6275`) |
-| `mcp_server` | `enabled`, `port` (default `6274`) |
-
-Set `LOG_LEVEL=DEBUG` (env var) or `logging.level` in config to control verbosity.
+User-editable defaults live in `config/default.json`; personal overrides go in `config/user.json` and are deep-merged on top (the Settings drawer in the UI writes `config/user.json` for you). Every knob — LLM routing, voice, memory tiers, the personality/worker toggles, tools, weather, avatar — is documented in the **[configuration reference](docs/configuration.md)**, which stays in lock-step with `app/core/infra/settings.py`.
 
 ## Tools
 
-The tool registry exposes two categories of tool to the chat model via Ollama's native function-calling:
-
-**Fact tools** — for things she can't just know:
-
-| Tool | Returns |
-|---|---|
-| `get_time` | Current ISO date/time. |
-| `recall` | Semantic search across memories, recent messages, and uploaded documents (LanceDB). |
-| `web_search` | DuckDuckGo lite results. |
-
-**Room tools** — for actually inhabiting her room (`WorldStore`):
-
-| Tool | Returns |
-|---|---|
-| `look_around` | Fresh snapshot of her current spot, posture, and nearby items. |
-| `move_to` | Relocate her to a different spot (bed, desk, window seat, ...). |
-| `change_posture` | Update posture (sitting / curled_up / ...) + activity. |
-| `inspect_item` | Detailed read of one item (description, state, quantity). |
-| `consume_item` | Decrement a consumable (cookies, tea); refuses non-consumables. |
-
-The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it executes, appends the result, then runs the streaming reply pass. Read-only room tools (`look_around`, `inspect_item`) are intentionally infrequent because the prompt already carries a passive room summary — the mutative tools (`move_to`, `change_posture`, `consume_item`) are the ones that actually change visible state. Toggle each category from the web Settings drawer or in `config.tools`.
+Aiko calls tools via the LLM's native function-calling (time, memory recall, web search, weather, her room, her goals, plus bundled plugins and external MCP servers). See the **[tools catalog](docs/tools.md)** for the full list and [`docs/configuration.md`](docs/configuration.md#tools--toolssettings) for the per-family toggles.
 
 ## Memory and RAG
 
@@ -216,5 +199,6 @@ The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `Message
 ## Notes
 
 - Everything runs locally by default — Ollama, faster-whisper, Pocket-TTS, LanceDB.
-- The `chat_llm.provider == "openai_compatible"` path routes through `langchain-openai`'s `ChatOpenAI` and works with OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral.
-- The MCP server is opt-in (default on) and is intended for development tooling — see `AGENTS.md` for the available tools and how to add new ones.
+- The `chat_llm.provider == "openai_compatible"` path routes through `langchain-openai`'s `ChatOpenAI` and works with OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral (with per-provider `api_style` + `reasoning_effort` controls).
+- The embedded MCP *server* is opt-in (default on) and is intended for development tooling — see `AGENTS.md` for the available tools and how to add new ones.
+- Aiko can also act as an MCP *client*: point `mcp_clients.servers` at external MCP servers to expose their tools to her, and load local capability `plugins` (e.g. the bundled `filesystem` plugin) from `config.plugins`.
