@@ -18,6 +18,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
+from app.core.infra import timephrase
 
 
 CircadianPeriod = Literal[
@@ -202,9 +203,9 @@ def compute(
     """
     if now is None:
         try:
-            now = datetime.now().astimezone()
+            now = timephrase.now()
         except Exception:
-            now = datetime.now()
+            now = timephrase.now()
     hour = int(now.hour)
     minute = int(now.minute)
     period = _classify_period(hour)

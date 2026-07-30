@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 import numpy as np
 
 from app.llm.embedder import cosine_similarity
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.rag.rag_store import RagStore
@@ -333,7 +334,7 @@ class SearchHit:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _encode(vec: np.ndarray) -> bytes:
@@ -1392,7 +1393,7 @@ class MemoryStore:
         ``elapsed_days`` defaults to 1.0 (one day) to match the old
         contract.
         """
-        now_dt = now or datetime.now(timezone.utc)
+        now_dt = now or timephrase.utcnow()
 
         # Resolve effective per-tier rates first so the legacy ``by`` arg
         # can map onto them cleanly.

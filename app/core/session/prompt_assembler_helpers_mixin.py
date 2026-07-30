@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
+from app.core.infra import timephrase
 from app.core.infra import timephrase as _timephrase
 from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
@@ -734,7 +735,7 @@ class PromptAssemblerHelpersMixin:
         cue, not a directive -- the persona is responsible for tone.
         """
         try:
-            now = datetime.now().astimezone()
+            now = timephrase.now()
         except Exception:
             return ""
         hour = now.hour
@@ -891,7 +892,7 @@ class PromptAssemblerHelpersMixin:
         kept: list[dict[str, Any]] = []
         running = 0
         dropped = 0
-        anchor = now if now is not None else datetime.now(timezone.utc)
+        anchor = now if now is not None else timephrase.utcnow()
         for row in reversed(history):
             content = (row.content or "").strip()
             if not content:

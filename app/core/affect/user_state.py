@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -111,7 +112,7 @@ class UserStateStore:
     def upsert(self, state: UserStateNow) -> None:
         if not state.user_id:
             return
-        now = state.updated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = state.updated_at or timephrase.utcnow().isoformat(timespec="seconds")
         self._db.execute_commit(
             "INSERT INTO user_state_now (user_id, perceived_mood, "
             "perceived_energy, perceived_focus, last_topic, updated_at) "
@@ -184,7 +185,7 @@ class UserStateEstimator:
         energy = _detect_energy(text) or prev.perceived_energy
         focus = _detect_focus(text) or prev.perceived_focus
         topic = _extract_topic(text) or prev.last_topic
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = timephrase.utcnow().isoformat(timespec="seconds")
         return UserStateNow(
             user_id=user_id,
             perceived_mood=mood,

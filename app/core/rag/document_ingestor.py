@@ -23,9 +23,9 @@ import shutil
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.rag.rag_store import RagStore
@@ -275,4 +275,4 @@ def _normalize_whitespace(text: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()

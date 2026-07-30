@@ -43,6 +43,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Sequence
+from app.core.infra import timephrase
 
 
 # ── Result types ────────────────────────────────────────────────────
@@ -228,7 +229,7 @@ def is_stale(stored_iso: str | None, now: datetime | None = None) -> bool:
         stored_dt = datetime.fromisoformat(text)
     except ValueError:
         return True
-    now_dt = now if now is not None else datetime.now().astimezone()
+    now_dt = now if now is not None else timephrase.now()
     try:
         stored_local = (
             stored_dt.astimezone() if stored_dt.tzinfo is not None else stored_dt

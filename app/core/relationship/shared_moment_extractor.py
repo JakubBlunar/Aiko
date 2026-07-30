@@ -508,7 +508,7 @@ class MomentDetector:
         if candidate is None:
             self._stats["llm_returned_null"] += 1
             return None
-        candidate.when = datetime.now(timezone.utc).isoformat()
+        candidate.when = timephrase.utcnow().isoformat()
         if self._persist is not None:
             try:
                 self._persist(candidate)

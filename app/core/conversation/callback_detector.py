@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 import numpy as np
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.callback_detector")
@@ -177,7 +178,7 @@ def detect(
         else CALLBACK_KINDS
     )
 
-    now_ts = now or datetime.now(timezone.utc)
+    now_ts = now or timephrase.utcnow()
     age_floor = max(1, int(age_floor_days))
     cooldown = max(0, int(cooldown_hours))
     top_n = max(1, int(top_k))
@@ -296,7 +297,7 @@ def record(
         return 0
     if memory_store is None:
         return 0
-    now_ts = now or datetime.now(timezone.utc)
+    now_ts = now or timephrase.utcnow()
     now_iso = now_ts.isoformat()
     bump_s = max(0.0, float(salience_bump))
     bump_r = max(0.0, float(revival_bump))

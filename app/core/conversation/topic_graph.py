@@ -62,6 +62,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.infra import timephrase
 
 try:  # networkx ships louvain_communities since 3.0; stay defensive anyway.
     import networkx as _nx
@@ -856,7 +857,7 @@ class TopicGraph:
         except Exception:
             log.debug("cluster_activity mirror snapshot failed", exc_info=True)
             touch_by_id = {}
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         out: list[InterestActivity] = []
         with self._lock:
             for cluster in self._live.values():
@@ -933,7 +934,7 @@ class TopicGraph:
         except Exception:
             mirror_size = 0
         ttl = max(1.0, float(ttl_seconds))
-        now_ts = datetime.now(timezone.utc).timestamp()
+        now_ts = timephrase.utcnow().timestamp()
         # Key on the thresholds too (not just bucket_by / size / TTL): two
         # callers with different bars must not share a result. In practice
         # both consumers read the same settings so the cache still hits.

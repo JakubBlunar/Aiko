@@ -59,12 +59,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from app.llm.embedder import cosine_similarity
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -89,7 +89,7 @@ _DEFAULT_SIMILARITY_THRESHOLD = 0.5
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from app.llm.embedder import cosine_similarity
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -65,7 +66,7 @@ _DEFAULT_TTL_DAYS = 90
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 @dataclass(frozen=True)
@@ -348,7 +349,7 @@ class KnowledgeGapStore:
         Called periodically from :class:`MemoryDecayWorker`. Returns the
         number of rows pruned. Resolved rows are kept (audit trail).
         """
-        cutoff = (now or datetime.now(timezone.utc))
+        cutoff = (now or timephrase.utcnow())
         from datetime import timedelta
 
         threshold = cutoff - timedelta(days=self._ttl_days)

@@ -23,6 +23,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 # kv_meta key the WorldNoticeWorker watches for a freshly user-given item.
 # Holds a small JSON blob ``{"id", "name", "at"}`` stamped by
@@ -238,7 +239,7 @@ class WorldMixin:
             if not bool(getattr(agent, "vitality_enabled", True)):
                 return {"energy": None, "expressiveness_mult": 1.0, "band": "normal"}
             chat_db = getattr(self, "_chat_db", None)
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             baseline, _rhythm = _vr.current_baseline(
                 chat_db,
                 now,
@@ -544,7 +545,7 @@ class WorldMixin:
                     chat_db is not None
                     and normalized_kind in _af.REACTION_TO_KIND
                 ):
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _af.deserialize(
                         chat_db.kv_get(_af.KV_AFFECTION_STYLE)
                     )
@@ -590,7 +591,7 @@ class WorldMixin:
                 chat_db = getattr(self, "_chat_db", None)
                 prev_kinds = getattr(self, "_prev_humor_kinds", None)
                 if chat_db is not None and prev_kinds:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _hs.deserialize(
                         chat_db.kv_get(_hs.KV_HUMOR_STYLE)
                     )
@@ -633,7 +634,7 @@ class WorldMixin:
                 chat_db = getattr(self, "_chat_db", None)
                 score = _ip.score_user_reaction(normalized_kind)
                 if chat_db is not None and score is not None:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _ip.deserialize(
                         chat_db.kv_get(_ip.KV_INTIMACY_PACING)
                     )
@@ -885,7 +886,7 @@ class WorldMixin:
                 from app.core.relationship.anniversary import pick_anniversary
 
                 match = pick_anniversary(
-                    store.iter_all(), now=datetime.now(timezone.utc),
+                    store.iter_all(), now=timephrase.utcnow(),
                 )
                 if match is not None:
                     anniversary_payload = {
@@ -923,7 +924,7 @@ class WorldMixin:
                 live = _crossed_milestones(
                     rel_state,
                     new_turns=int(getattr(rel_state, "total_turns", 0) or 0),
-                    now=datetime.now(timezone.utc),
+                    now=timephrase.utcnow(),
                 )
             except Exception:
                 log.debug("together live milestone check failed", exc_info=True)
@@ -952,7 +953,7 @@ class WorldMixin:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 days_known = int(
-                    (datetime.now(timezone.utc) - dt).total_seconds() // 86400
+                    (timephrase.utcnow() - dt).total_seconds() // 86400
                 )
             except Exception:
                 days_known = 0
@@ -1022,7 +1023,7 @@ class WorldMixin:
         try:
             self._chat_db.kv_set(
                 WORLD_INTENTIONAL_STATE_KEY,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                timephrase.utcnow().isoformat(timespec="seconds"),
             )
         except Exception:
             log.debug("intentional-state stamp failed", exc_info=True)
@@ -1135,7 +1136,7 @@ class WorldMixin:
                     json.dumps({
                         "id": snap.get("id"),
                         "name": snap.get("name") or name,
-                        "at": datetime.now(timezone.utc).isoformat(
+                        "at": timephrase.utcnow().isoformat(
                             timespec="seconds"
                         ),
                     }),

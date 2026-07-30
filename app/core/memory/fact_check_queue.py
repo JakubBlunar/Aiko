@@ -26,6 +26,7 @@ import logging
 import threading
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -126,7 +127,7 @@ class FactCheckQueue:
             memory_id=int(memory_id),
             claim_text=cleaned,
             claim_kind=str(claim_kind or "fact"),
-            enqueued_at=datetime.now(timezone.utc).isoformat(),
+            enqueued_at=timephrase.utcnow().isoformat(),
         )
         with self._lock:
             items = self._load()

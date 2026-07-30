@@ -53,6 +53,7 @@ from app.core.proactive.knowledge_gap_notice_worker import (
     topic_key,
     topic_relevant,
 )
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -74,7 +75,7 @@ _RISE_MIN_DELTA = 3
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

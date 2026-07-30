@@ -29,6 +29,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -113,7 +114,7 @@ class FactCheckRateLimiter:
 
     def snapshot(self, now: datetime | None = None) -> dict[str, int]:
         """Return current ``{hour_used, hour_cap, day_used, day_cap}``."""
-        cur = now or datetime.now(timezone.utc)
+        cur = now or timephrase.utcnow()
         hour_key, day_key = self._now_bucket_keys(cur)
         with self._lock:
             state = self._load()
@@ -136,7 +137,7 @@ class FactCheckRateLimiter:
 
     def allow(self, now: datetime | None = None) -> bool:
         """Atomically check + consume one token. Returns True if allowed."""
-        cur = now or datetime.now(timezone.utc)
+        cur = now or timephrase.utcnow()
         hour_key, day_key = self._now_bucket_keys(cur)
         with self._lock:
             state = self._load()

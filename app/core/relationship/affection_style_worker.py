@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.relationship import affection_style as _af
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -112,7 +113,7 @@ class AffectionStyleDecayWorker:
             return {"decayed": False, "reason": "empty"}
 
         state = _af.deserialize(stored)
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         floor = float(getattr(self._settings, "affection_style_floor", 0.05))
         new_state = _af.decay_toward_uniform(
             state, now, half_life_days=half_life, floor=floor,

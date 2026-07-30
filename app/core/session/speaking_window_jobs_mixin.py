@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -61,7 +62,7 @@ class SpeakingWindowJobsMixin:
         humanized = label.replace("_", " ")
         from datetime import datetime, timezone
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = timephrase.utcnow().strftime("%Y-%m-%d")
         content = (
             f"Aiko and {self.user_display_name} reached a relationship "
             f"milestone: {humanized} (on {today})."

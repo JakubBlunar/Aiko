@@ -24,11 +24,12 @@ function, so semantics are identical).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.conversation import wants_ledger
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.goals.goal_store import GoalStore
@@ -49,7 +50,7 @@ _GOAL_INITIAL_PRESSURE = 0.05
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 class WantsLedgerWorker:

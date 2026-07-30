@@ -37,8 +37,8 @@ and writes ``goal_progress`` notes against it.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.onboarding_goal")
@@ -182,7 +182,7 @@ def _mark_seeded(chat_db: "ChatDatabase", *, when: str) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 __all__ = [

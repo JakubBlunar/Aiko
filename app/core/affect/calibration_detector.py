@@ -52,6 +52,7 @@ from typing import Literal
 import numpy as np
 
 from app.core.affect.calibration_store import CalibrationState, TopicSlot
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.calibration_detector")
@@ -284,7 +285,7 @@ def apply_signal(
       recently).
     - ``last_updated_at`` is bumped to ``now``.
     """
-    now_ts = now or datetime.now(timezone.utc)
+    now_ts = now or timephrase.utcnow()
     new_global = _clamp(state.global_score + signal.delta, 0.0, 1.0)
 
     new_topics: list[TopicSlot] = list(state.topics)
@@ -406,7 +407,7 @@ def decay(
     if float(half_life_days) <= 0.0:
         return state
 
-    now_ts = now or datetime.now(timezone.utc)
+    now_ts = now or timephrase.utcnow()
     elapsed_seconds = (now_ts - state.last_updated_at).total_seconds()
     if elapsed_seconds <= 0:
         return state

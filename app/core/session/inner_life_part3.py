@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.session")
@@ -706,7 +707,7 @@ class InnerLifePart3Mixin:
         mem = self._memory_settings
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         kv_get = self._chat_db.kv_get
         kv_set = self._chat_db.kv_set
 
@@ -1524,7 +1525,7 @@ class InnerLifePart3Mixin:
             from app.core.conversation import wants_ledger as _wl
 
             agent = self._settings.agent
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             state = _wl.deserialize(chat_db.kv_get(_wl.KV_WANTS_LEDGER))
             if not state.wants and not state.recently_acted:
                 return ""
@@ -1596,7 +1597,7 @@ class InnerLifePart3Mixin:
 
             from app.core.affect import emotion_episodes as _ee
 
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             raw = chat_db.kv_get(_ee.KV_EMOTION_EPISODES)
             state = _ee.deserialize(raw)
             if not state.episodes and state.pending_thaw is None:
@@ -1782,7 +1783,7 @@ class InnerLifePart3Mixin:
                 self._tease_collection_force_next = False
 
             agent = self._settings.agent
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
 
             if not force:
                 # Humor-axis floor.

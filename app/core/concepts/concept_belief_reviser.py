@@ -50,7 +50,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.concepts.concept_lifecycle import apply_contradiction_penalty
@@ -58,6 +58,7 @@ from app.core.memory.conflict_heuristics import (
     HEURISTIC_NO,
     classify_pair,
 )
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_store import Concept, ConceptStore
@@ -106,7 +107,7 @@ _USER_TEMPLATE = (
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _preview(text: str | None) -> str:

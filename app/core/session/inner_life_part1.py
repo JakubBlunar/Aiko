@@ -6,6 +6,7 @@ from app.core.session.inner_life_shared import (
     _circadian,
     _format_running_task_line,
 )
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.session")
@@ -357,7 +358,7 @@ class InnerLifePart1Mixin:
                 KV_DAY_COLOR_SET_AT,
             )
 
-            now = datetime.now().astimezone()
+            now = timephrase.now()
 
             forced = getattr(self, "_day_color_force_next", None)
             if forced:
@@ -454,7 +455,7 @@ class InnerLifePart1Mixin:
             from app.core.affect import vitality_rhythm as _vr
 
             mem = self._memory_settings
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             baseline, rhythm = _vr.current_baseline(
                 chat_db,
                 now,
@@ -548,7 +549,7 @@ class InnerLifePart1Mixin:
             chat_db = getattr(self, "_chat_db", None)
             if chat_db is None:
                 return ""
-            now = datetime.now().astimezone()
+            now = timephrase.now()
 
             # Lazy daily sample — seatbelt for a starved idle scheduler.
             try:
@@ -601,7 +602,7 @@ class InnerLifePart1Mixin:
                     if prev.tzinfo is None:
                         prev = prev.replace(tzinfo=timezone.utc)
                     elapsed_days = (
-                        datetime.now(timezone.utc) - prev
+                        timephrase.utcnow() - prev
                     ).total_seconds() / 86400.0
                     if elapsed_days < cooldown_days:
                         return ""
@@ -702,7 +703,7 @@ class InnerLifePart1Mixin:
                     0.5,
                 )
             )
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
 
             # 2. MCP force_reset shortcut -- wipe state, then fall
             # through to the read path so the cue still renders
@@ -1134,7 +1135,7 @@ class InnerLifePart1Mixin:
             state = tracker.get(self._user_id)
             return render_petname_block(
                 state,
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 user_display_name=self.user_display_name,
             )
         except Exception:
@@ -1500,7 +1501,7 @@ class InnerLifePart1Mixin:
         # the sole qualifier) and *strongly* to the turn-relevant flex lane. With
         # a fresh (empty) state every factor is 1.0, so behaviour is unchanged
         # until concepts actually start surfacing.
-        surf_now = datetime.now(timezone.utc)
+        surf_now = timephrase.utcnow()
         hab_enabled = bool(
             getattr(ms, "concept_surfacing_habituation_enabled", True)
         )

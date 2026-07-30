@@ -15,6 +15,7 @@ You are an expert in Python 3.11+, FastAPI, PixiJS/React frontends, Ollama funct
 - No PySide6 / Qt. The web UI is the only UI.
 - Don't use f-strings for print/log lines that have no variables.
 - Don't add emojis to source files unless the user explicitly asks.
+- Narrative time reads go through `timephrase.utcnow()` / `timephrase.now()`, not `datetime.now(...)` — that seam is what the DT1 debug clock (`AIKO_DEBUG_CLOCK=1`) shifts. Runtime timing (`time.monotonic()`) stays real.
 - Tool registry is built per-turn from settings; never instantiate tools inside loops.
 - TTS text processing (`prepare_tts_text`) applies to the spoken stream only, not the chat transcript.
 - Long-term memory writes go through `MemoryStore.add(...)` (SQLite) and are mirrored into LanceDB by `MemoryStore` itself when a `RagStore` is attached.

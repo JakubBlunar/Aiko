@@ -21,6 +21,7 @@ from app.llm.token_utils import estimate_tokens
 import json
 from app.core.session.session_text_utils import sanitize_user_text
 import time
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.session")
@@ -529,7 +530,7 @@ class ChatTurnMixin:
             )
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             return max(0.0, (now - ts).total_seconds() / 3600.0)
         except Exception:
             return None

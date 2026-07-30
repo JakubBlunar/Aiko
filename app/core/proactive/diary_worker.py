@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import numpy as np
@@ -56,7 +57,7 @@ _MIN_ENTRY_CHARS = 16
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def build_recent_context(

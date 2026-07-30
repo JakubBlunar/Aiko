@@ -19,12 +19,13 @@ implement the same :class:`IdleWorker` Protocol and register at boot.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
+from app.core.infra import timephrase
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 @runtime_checkable

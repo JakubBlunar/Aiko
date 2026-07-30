@@ -58,6 +58,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from app.core.infra import timephrase
 
 
 # ── kv_meta key ─────────────────────────────────────────────────────
@@ -181,7 +182,7 @@ class IntimacyPacingState:
 
 def neutral_state(now: datetime | None = None) -> IntimacyPacingState:
     """Return a fresh neutral state (``user_pace == 0.5``)."""
-    ts = (now or datetime.now(timezone.utc)).isoformat()
+    ts = (now or timephrase.utcnow()).isoformat()
     return IntimacyPacingState(user_pace=NEUTRAL, updated_at=ts)
 
 
@@ -485,7 +486,7 @@ def deserialize(text: str | None) -> IntimacyPacingState:
         pace = NEUTRAL
     updated_at = data.get("updated_at")
     if not isinstance(updated_at, str) or not updated_at.strip():
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at = timephrase.utcnow().isoformat()
     return IntimacyPacingState(user_pace=pace, updated_at=updated_at)
 
 

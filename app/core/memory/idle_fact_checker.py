@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.fact_check_queue import ClaimItem, FactCheckQueue
@@ -507,7 +508,7 @@ class IdleFactChecker:
             # The underlying memory was deleted while the claim was
             # queued — nothing to update.
             return {"memory_missing": True}
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = timephrase.utcnow().isoformat()
         metadata = dict(memory.metadata) if memory.metadata else {}
         flags = dict(metadata.get("flags") or {}) if isinstance(metadata.get("flags"), dict) else {}
 

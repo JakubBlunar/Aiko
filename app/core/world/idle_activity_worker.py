@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.world.activity_selection import weighted_pick
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.world.world_store import WorldStore
@@ -100,7 +101,7 @@ _INTENTIONAL_STATE_KEY = "world.intentional_state_at"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _match_location(locations: list[Any], *keywords: str) -> Any | None:

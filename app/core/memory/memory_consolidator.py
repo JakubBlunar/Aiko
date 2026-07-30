@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable
 import numpy as np
 
 from app.core.session.session_text_utils import resolve_user_name
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -151,7 +152,7 @@ class MemoryConsolidator:
         last = self._read_last_run(user_id)
         if last is None:
             return True
-        now = now_utc or datetime.now(timezone.utc)
+        now = now_utc or timephrase.utcnow()
         try:
             then = datetime.fromisoformat(last)
             if then.tzinfo is None:
@@ -347,7 +348,7 @@ class MemoryConsolidator:
         # use signal). The SQL UPDATE here is intentionally narrow.
         try:
             conn = self._mem._get_conn()  # noqa: SLF001 — internal access by design
-            now = datetime.now(timezone.utc).isoformat()
+            now = timephrase.utcnow().isoformat()
             conn.execute(
                 "UPDATE memories SET last_used_at = ?, use_count = use_count + 1 "
                 "WHERE id = ?",
@@ -393,7 +394,7 @@ class MemoryConsolidator:
     def _record_run(self, user_id: str, *, now_utc: datetime | None) -> None:
         if not user_id:
             return
-        now = (now_utc or datetime.now(timezone.utc)).isoformat()
+        now = (now_utc or timephrase.utcnow()).isoformat()
         self._db.execute_commit(
             "INSERT INTO consolidator_state (user_id, last_cluster_index, last_run_at) "
             "VALUES (?, 0, ?) "

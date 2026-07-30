@@ -10,6 +10,7 @@ import logging
 
 from app.core.memory.memory_store import Memory, MemoryStore, SearchHit
 from app.llm.embedder import Embedder
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.memory_retriever")
@@ -85,7 +86,7 @@ class MemoryRetriever:
             f"What you know about {user_display_name} (long-term memory):"
         ]
         seen: set[str] = set()
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         for hit in hits:
             content = (hit.memory.content or "").strip()
             if not content:

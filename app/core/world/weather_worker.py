@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -44,7 +45,7 @@ def persist_weather_snapshot(chat_db: "ChatDatabase", snapshot: dict[str, Any]) 
         chat_db.kv_set(
             KV_WEATHER_FETCHED_AT,
             str(snapshot.get("fetched_at")
-                or datetime.now().astimezone().isoformat(timespec="seconds")),
+                or timephrase.now().isoformat(timespec="seconds")),
         )
     except Exception:
         log.debug("persist_weather_snapshot failed", exc_info=True)

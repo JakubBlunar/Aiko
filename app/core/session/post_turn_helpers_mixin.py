@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.session")
@@ -254,7 +255,7 @@ class PostTurnHelpersMixin:
             )
             if not fulfilled:
                 return 0
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = timephrase.utcnow().isoformat()
             resolved = 0
             for mem in fulfilled:
                 try:
@@ -402,7 +403,7 @@ class PostTurnHelpersMixin:
 
             from app.core.relationship import tease_ledger as _tl
 
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             state = _tl.expire(
                 _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER)),
                 now,
@@ -483,7 +484,7 @@ class PostTurnHelpersMixin:
             chat_db = getattr(self, "_chat_db", None)
             if chat_db is None:
                 return 0.0
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             state = _ee.apply_decay(
                 _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)), now,
             )
@@ -574,7 +575,7 @@ class PostTurnHelpersMixin:
         matches = graph.best_clusters_for(qvec, top_n=top_n, min_sim=min_sim)
         if not matches:
             return
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = timephrase.utcnow().isoformat(timespec="seconds")
 
         # Aiko map — always (her scalar is always defined).
         try:
@@ -636,7 +637,7 @@ class PostTurnHelpersMixin:
         if chat_db is None:
             return
         mem = self._memory_settings
-        now = datetime.now().astimezone()
+        now = timephrase.now()
         baseline, _rhythm = _vr.current_baseline(
             chat_db,
             now,
@@ -779,7 +780,7 @@ class PostTurnHelpersMixin:
             if not queue:
                 return
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         state = _ee.apply_decay(
             _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)), now,
         )
@@ -1058,7 +1059,7 @@ class PostTurnHelpersMixin:
             )
         )
         from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = timephrase.utcnow().isoformat()
         for seed in active:
             try:
                 sim = float((turn_vec * seed.embedding).sum())
@@ -1553,7 +1554,7 @@ class PostTurnHelpersMixin:
 
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         chat_db = getattr(self, "_chat_db", None)
         cooldown_h = float(
             getattr(self._settings.agent, "conflict_repair_cooldown_hours", 12.0)

@@ -24,11 +24,12 @@ missed beat, never a crashed tick.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive import aspiration_momentum as _am
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ _KV_LAST_SIGNATURE = "aspiration_momentum.last_signature"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 class AspirationMomentumWorker:

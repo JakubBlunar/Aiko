@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.calibration_store")
@@ -255,7 +256,7 @@ class CalibrationStore:
                 (
                     user_id,
                     blob,
-                    datetime.now(timezone.utc).isoformat(),
+                    timephrase.utcnow().isoformat(),
                 ),
             )
         except sqlite3.Error:

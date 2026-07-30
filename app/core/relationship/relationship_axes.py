@@ -22,6 +22,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterable
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -98,7 +99,7 @@ class RelationshipAxesState:
     trust: float = 0.0
     comfort: float = 0.0
     updated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+        default_factory=lambda: timephrase.utcnow().isoformat(),
     )
 
     def to_payload(self) -> dict[str, Any]:
@@ -121,7 +122,7 @@ class RelationshipAxesStore:
         self._db = db
 
     def _now(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return timephrase.utcnow().isoformat()
 
     def get_raw(self, user_id: str) -> RelationshipAxesState:
         """Return the persisted row WITHOUT applying decay."""
@@ -145,7 +146,7 @@ class RelationshipAxesStore:
     def get(self, user_id: str, *, now: datetime | None = None) -> RelationshipAxesState:
         """Return the state with decay-on-read applied (and persisted)."""
         state = self.get_raw(user_id)
-        decayed = apply_decay(state, now=now or datetime.now(timezone.utc))
+        decayed = apply_decay(state, now=now or timephrase.utcnow())
         if decayed is not state:
             self.save(decayed)
         return decayed
@@ -354,7 +355,7 @@ class RelationshipAxesUpdater:
         if chat_db is None:
             return None
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         cap_state = _ur.load_daily_state(chat_db)
         verdict = _ur.apply_daily_cap(
             proposed, cap_state, now=now, daily_cap=daily_cap,

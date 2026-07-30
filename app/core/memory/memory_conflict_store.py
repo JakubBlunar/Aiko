@@ -37,7 +37,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -72,6 +71,7 @@ from app.core.memory.conflict_heuristics import (  # noqa: E402
     HEURISTIC_DEFINITE,
     HEURISTIC_NO,
 )
+from app.core.infra import timephrase
 
 # Origin of the conflict flag.
 FLAGGED_BY_AUTO = "auto"
@@ -79,7 +79,7 @@ FLAGGED_BY_AIKO = "aiko"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _encode_signals(signals: list[str] | None) -> str | None:

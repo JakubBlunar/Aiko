@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.affect import mood_drift
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.affect.affect_state import AffectStore
@@ -136,7 +137,7 @@ class MoodDriftSampleWorker:
     def run(self) -> dict[str, Any]:
         if not bool(getattr(self._settings, "mood_drift_enabled", True)):
             return {"skipped": True, "reason": "disabled"}
-        now = datetime.now().astimezone()
+        now = timephrase.now()
         try:
             samples, wrote = record_daily_sample(
                 chat_db=self._chat_db,

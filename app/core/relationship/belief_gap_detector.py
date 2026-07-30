@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from app.core.relationship.belief_store import (
@@ -50,6 +50,7 @@ from app.core.memory.conflict_heuristics import (
     HEURISTIC_DEFINITE,
     classify_pair,
 )
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.affect.affect_state import AffectState
@@ -83,7 +84,7 @@ class BeliefGap:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(stamp: str | None) -> datetime | None:

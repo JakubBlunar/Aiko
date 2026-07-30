@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.world import hobby as hobby_mod
 from app.core.world.idle_activity_worker import append_idle_seed
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -56,7 +57,7 @@ def load_hobby(kv_get: Callable[[str], str | None]) -> dict[str, Any] | None:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 class HobbyWorker:

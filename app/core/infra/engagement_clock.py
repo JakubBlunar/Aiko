@@ -31,6 +31,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable
 
+from app.core.infra import timephrase
+
 log = logging.getLogger("app.engagement_clock")
 
 # kv_meta keys. ``total_units`` is the monotonic accumulated active
@@ -38,6 +40,10 @@ log = logging.getLogger("app.engagement_clock")
 # (used only to size the next credit, never to drive decay).
 _KV_TOTAL = "engagement.total_units"
 _KV_LAST_TURN = "engagement.last_turn_at"
+# DT1 only: the pre-advance total, stashed the first time the debug clock
+# credits synthetic engagement so ``debug_restore`` can undo it. Absent
+# during normal operation.
+_KV_DEBUG_ANCHOR = "engagement.debug_anchor"
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -71,7 +77,7 @@ class EngagementClock:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._settings = settings
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or timephrase.utcnow
 
     # ── config knobs ──────────────────────────────────────────────────
 
@@ -171,6 +177,65 @@ class EngagementClock:
             days = min(days, max(0.0, float(clamp_days)))
         return days
 
+    # ── DT1 debug hooks ───────────────────────────────────────────────
+    #
+    # Engaged time is the domain concept decay and memory decay actually
+    # run on, so the DT1 virtual clock cannot reach them by shifting the
+    # wall clock -- it has to credit units here. Unlike the wall-clock
+    # offset, which is in-memory and vanishes on restart, this is a real
+    # write to persisted state, so it takes an undo anchor with it.
+
+    def debug_advance(self, engaged_days: float) -> dict[str, float]:
+        """Credit ``engaged_days`` worth of synthetic engagement (DT1 only).
+
+        Stashes the pre-advance total on first use so
+        :meth:`debug_restore` can put it back. Repeated advances keep the
+        *original* anchor, so one restore undoes all of them.
+        """
+        before = self.total()
+        # Falsy rather than ``is None``: ``debug_restore`` clears the key
+        # to "" (kv has no delete), and a later advance must re-anchor.
+        if not self._safe_get(_KV_DEBUG_ANCHOR):
+            self._safe_set(_KV_DEBUG_ANCHOR, repr(before))
+        after = max(0.0, before + float(engaged_days) * self._seconds_per_day)
+        self._safe_set(_KV_TOTAL, repr(after))
+        log.warning(
+            "DT1 debug clock credited %.2f engaged days (%.0f -> %.0f units)",
+            float(engaged_days), before, after,
+        )
+        return {"before": before, "after": after}
+
+    def debug_restore(self) -> dict[str, float] | None:
+        """Undo every :meth:`debug_advance`, returning to the real total.
+
+        ``None`` when no synthetic engagement was ever credited.
+        """
+        raw = self._safe_get(_KV_DEBUG_ANCHOR)
+        if raw is None:
+            return None
+        try:
+            anchor = max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return None
+        before = self.total()
+        self._safe_set(_KV_TOTAL, repr(anchor))
+        self._safe_set(_KV_DEBUG_ANCHOR, "")
+        log.warning(
+            "DT1 debug clock restored engagement (%.0f -> %.0f units)",
+            before, anchor,
+        )
+        return {"before": before, "after": anchor}
+
+    def debug_anchor(self) -> float | None:
+        """The stashed pre-advance total, or ``None`` if nothing is staged."""
+        raw = self._safe_get(_KV_DEBUG_ANCHOR)
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     # ── internals ─────────────────────────────────────────────────────
 
     def _safe_get(self, key: str) -> str | None:
@@ -178,6 +243,12 @@ class EngagementClock:
             return self._kv_get(key)
         except Exception:
             return None
+
+    def _safe_set(self, key: str, value: str) -> None:
+        try:
+            self._kv_set(key, value)
+        except Exception:
+            log.debug("engagement clock write failed", exc_info=True)
 
 
 __all__ = ["EngagementClock"]

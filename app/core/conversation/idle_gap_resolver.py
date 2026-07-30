@@ -41,10 +41,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.knowledge_gap_extractor import KnowledgeGapStore
@@ -77,7 +78,7 @@ _ANSWER_KINDS: frozenset[str] = frozenset({
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _preview(text: str | None) -> str:

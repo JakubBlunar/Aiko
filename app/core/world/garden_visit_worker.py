@@ -36,6 +36,7 @@ from app.core.world.idle_activity_worker import (
     AWAY_ACTIVITIES_JOURNAL_KEY,
     append_journal,
 )
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -285,7 +286,7 @@ class GardenVisitWorker:
     # ── main step ───────────────────────────────────────────────────
 
     def run(self) -> dict[str, Any]:
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         forced = self._force_next
         self._force_next = False
         if not self._enabled():
@@ -715,7 +716,7 @@ class GardenVisitWorker:
 
     def debug_state(self, now: datetime | None = None) -> dict[str, Any]:
         """Snapshot for the ``get_garden_visit_state`` MCP tool."""
-        now = now or datetime.now(timezone.utc)
+        now = now or timephrase.utcnow()
         try:
             state = self._store.get_state()
             garden = self._store.get_location("garden")

@@ -38,11 +38,12 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.services.response_text_service import strip_all_meta_tags
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.settings import AgentSettings, MemorySettings
@@ -90,7 +91,7 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _trim(text: str | None, *, max_chars: int) -> str:

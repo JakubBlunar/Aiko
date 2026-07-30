@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterable
 
 from app.core.relationship.shared_moment_extractor import (
     SharedMomentCandidate,
     normalise_vibe,
 )
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -45,7 +46,7 @@ log = logging.getLogger("app.shared_moments")
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 @dataclass(slots=True)

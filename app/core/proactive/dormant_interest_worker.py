@@ -46,6 +46,7 @@ from app.core.proactive.idle_worker import default_is_ready
 # Reuse the stable per-topic key the F10f notice worker already ships, so a
 # dormant topic's identity survives cluster renumbering.
 from app.core.proactive.knowledge_gap_notice_worker import topic_key
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -61,7 +62,7 @@ _KV_TOPIC_COOLDOWNS = "dormant_interest.topic_cooldowns"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

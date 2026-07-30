@@ -36,9 +36,10 @@ import re
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.world_store")
@@ -311,7 +312,7 @@ class RoomState:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _slugify(text: str) -> str:
@@ -392,7 +393,7 @@ def promote_stage(
     except ValueError:
         return None
     min_age = float(_STAGE_MIN_AGE_HOURS.get(current, 24.0))
-    now_dt = now or datetime.now(timezone.utc)
+    now_dt = now or timephrase.utcnow()
     last_promotion = _parse_iso(state.get("last_promotion_at")) or _parse_iso(
         state.get("planted_at")
     ) or _parse_iso(item.created_at)
@@ -1449,7 +1450,7 @@ class WorldStore:
         item = self.get_item(int(item_id))
         if item is None or item.kind != "plant":
             return None
-        now_dt = now or datetime.now(timezone.utc)
+        now_dt = now or timephrase.utcnow()
         new_state = dict(item.state or {})
         new_state["last_watered_at"] = now_dt.isoformat()
         new_state["days_dry"] = 0
@@ -1519,7 +1520,7 @@ class WorldStore:
             consumable=True,
             quantity=quantity,
             state={
-                "harvested_at": (now or datetime.now(timezone.utc)).isoformat(),
+                "harvested_at": (now or timephrase.utcnow()).isoformat(),
                 "from_plant": item.name,
                 "species": produce_species,
             },
@@ -1550,7 +1551,7 @@ class WorldStore:
             seed_state = {
                 "species": species or fact["display_name"],
                 "from_harvest_of": item.name,
-                "gift_at": (now or datetime.now(timezone.utc)).isoformat(),
+                "gift_at": (now or timephrase.utcnow()).isoformat(),
             }
             seed_pair = self.add_item(
                 slug=f"seed_packet_{species or 'harvest'}",
@@ -1573,14 +1574,14 @@ class WorldStore:
             reset_state = dict(state)
             reset_state["stage"] = "growing"
             reset_state["last_promotion_at"] = (
-                now or datetime.now(timezone.utc)
+                now or timephrase.utcnow()
             ).isoformat()
             reset_state["last_watered_at"] = (
-                now or datetime.now(timezone.utc)
+                now or timephrase.utcnow()
             ).isoformat()
             reset_state["days_dry"] = 0
             reset_state["last_harvested_at"] = (
-                now or datetime.now(timezone.utc)
+                now or timephrase.utcnow()
             ).isoformat()
             self.update_item(item.id, state=reset_state)
             result["plant"]["reset"] = True

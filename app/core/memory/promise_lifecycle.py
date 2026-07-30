@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from app.core.memory.conflict_heuristics import _content_words, _tokenize
+from app.core.infra import timephrase
 
 log = logging.getLogger("app.promise_lifecycle")
 
@@ -86,7 +87,7 @@ def promise_age_hours(memory: Any, *, now: datetime | None = None) -> float | No
     created = _parse_iso(getattr(memory, "created_at", None))
     if created is None:
         return None
-    ref = now or datetime.now(timezone.utc)
+    ref = now or timephrase.utcnow()
     return max(0.0, (ref - created).total_seconds() / 3600.0)
 
 

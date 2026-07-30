@@ -52,6 +52,7 @@ from app.core.concepts.proposers import (
 )
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import Concept, ConceptEdge
+from app.core.infra import timephrase
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
@@ -106,7 +107,7 @@ _TOPIC_DIGEST_PREFIX = "aiko.topic_digest."
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -222,7 +223,7 @@ class ConceptSynthesisWorker:
         self._memory_settings = memory_settings
         self._kv_get = kv_get
         self._kv_set = kv_set
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or timephrase.utcnow
         self._notify_concept_added = notify_concept_added
         self._user_name_provider = user_display_name_provider
         self._assistant_name_provider = assistant_display_name_provider

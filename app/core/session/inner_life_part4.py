@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+
+from app.core.infra import timephrase
 from app.core.session.inner_life_shared import (
     _circadian,
     _MILESTONE_PHRASES,
@@ -89,7 +91,7 @@ class InnerLifePart4Mixin:
                 from app.core.relationship.relationship import _days_since, phase_for
 
                 rstate = tracker.get(self._user_id)
-                now = datetime.now(timezone.utc)
+                now = timephrase.utcnow()
                 ctx.relationship_phase = phase_for(rstate, now=now)
                 days = _days_since(rstate, now=now)
                 ctx.relationship_days = int(days) if days is not None else None
@@ -269,7 +271,7 @@ class InnerLifePart4Mixin:
             from app.core.relationship.anniversary import pick_anniversary, render_anniversary_block
 
             moments = store.iter_all()
-            match = pick_anniversary(moments, now=datetime.now(timezone.utc))
+            match = pick_anniversary(moments, now=timephrase.utcnow())
             if match is None:
                 return ""
             # Stamp the row so we don't surface it again on the very next
@@ -448,7 +450,7 @@ class InnerLifePart4Mixin:
             ts = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            gap = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+            gap = max(0.0, (timephrase.utcnow() - ts).total_seconds())
             return gap, str(last_at)
         except Exception:
             return None
@@ -684,7 +686,7 @@ class InnerLifePart4Mixin:
 
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         force = bool(getattr(self, "_appreciation_force_next", False))
         if force:
             self._appreciation_force_next = False
@@ -857,7 +859,7 @@ class InnerLifePart4Mixin:
             agent = self._settings.agent
             state = _vb.deserialize(chat_db.kv_get(_vb.KV_BUDGET_STATE))
             decayed = _vb.apply_decay(
-                state, datetime.now(timezone.utc),
+                state, timephrase.utcnow(),
                 regen_per_hour=float(getattr(
                     agent, "vulnerability_budget_regen_per_hour", 0.5)),
                 max_capacity=int(getattr(
@@ -898,7 +900,7 @@ class InnerLifePart4Mixin:
 
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         force = bool(
             getattr(self, "_reciprocal_vulnerability_force_next", False)
         )
@@ -1082,7 +1084,7 @@ class InnerLifePart4Mixin:
 
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         force = bool(getattr(self, "_reciprocal_vulnerability_force_next", False))
         if force:
             self._reciprocal_vulnerability_force_next = False
@@ -1267,7 +1269,7 @@ class InnerLifePart4Mixin:
             from app.core.relationship.relationship import _days_since
 
             rstate = tracker.get(self._user_id)
-            return float(_days_since(rstate, now=datetime.now(timezone.utc)))
+            return float(_days_since(rstate, now=timephrase.utcnow()))
         except Exception:
             log.debug("relationship tenure lookup failed", exc_info=True)
             return 0.0

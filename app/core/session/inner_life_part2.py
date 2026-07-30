@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 
+from app.core.infra import timephrase
+
 
 log = logging.getLogger("app.session")
 
@@ -286,7 +288,7 @@ class InnerLifePart2Mixin:
             state = store.get(self._user_id)
             state = calibration_detector.decay(
                 state,
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 half_life_days=float(
                     getattr(
                         self._memory_settings,
@@ -620,7 +622,7 @@ class InnerLifePart2Mixin:
                 reflections=reflections,
                 active_goal_vecs=goal_vecs,
                 recent_user_vecs=msg_vecs,
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 min_age_hours=float(
                     getattr(
                         memory_settings,
@@ -738,7 +740,7 @@ class InnerLifePart2Mixin:
             )
         )
 
-        now_local = datetime.now()
+        now_local = timephrase.now()
         if force_next:
             try:
                 gap_hours = float(seconds) / 3600.0 if seconds is not None else overnight_h
@@ -830,7 +832,7 @@ class InnerLifePart2Mixin:
             return None
 
         prefix = "[dream] "
-        now_utc = datetime.now(timezone.utc)
+        now_utc = timephrase.utcnow()
         best_dt: datetime | None = None
         best_content: str | None = None
         for mem in reflections:
@@ -1206,7 +1208,7 @@ class InnerLifePart2Mixin:
                         if last.tzinfo is None:
                             last = last.replace(tzinfo=timezone.utc)
                         elapsed = (
-                            datetime.now(timezone.utc) - last
+                            timephrase.utcnow() - last
                         ).total_seconds()
                         if elapsed < cooldown_s:
                             log.debug(
@@ -1225,7 +1227,7 @@ class InnerLifePart2Mixin:
             chat_db.kv_set(watermark_key, at)
             chat_db.kv_set(
                 "idle_seed.surfaced_clock",
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                timephrase.utcnow().isoformat(timespec="seconds"),
             )
         except Exception:
             log.debug("idle_seed watermark write failed", exc_info=True)
@@ -1738,7 +1740,7 @@ class InnerLifePart2Mixin:
             return ""
 
         watermark_key = "shared_ritual.last_surfaced_at"
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         if not force_next:
             cooldown_days = float(
                 getattr(agent, "shared_ritual_surface_cooldown_days", 3.0)
@@ -2281,7 +2283,7 @@ class InnerLifePart2Mixin:
                 last = _parse_dt_utc(chat_db.kv_get(clock_key))
                 if last is not None:
                     elapsed_h = (
-                        datetime.now(timezone.utc) - last
+                        timephrase.utcnow() - last
                     ).total_seconds() / 3600.0
                     if elapsed_h < cooldown_h:
                         return ""
@@ -2323,7 +2325,7 @@ class InnerLifePart2Mixin:
 
             chat_db.kv_set(
                 clock_key,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                timephrase.utcnow().isoformat(timespec="seconds"),
             )
         except Exception:
             log.debug("dormant_interest clock write failed", exc_info=True)

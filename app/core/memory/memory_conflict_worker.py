@@ -53,7 +53,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -73,6 +73,7 @@ from app.core.memory.memory_conflict_store import (
     STATUS_AUTO_RESOLVED,
     STATUS_OPEN,
 )
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
@@ -138,7 +139,7 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _now_iso() -> str:

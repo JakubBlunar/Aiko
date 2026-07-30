@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -222,7 +223,7 @@ class UserProfileStore:
         if not value:
             return False
         confidence = max(0.0, min(1.0, float(confidence)))
-        now = now_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = now_iso or timephrase.utcnow().isoformat(timespec="seconds")
         existing = self.fields(user_id).get(field)
         if existing is not None:
             # Merge: keep the higher-confidence value; if values differ but

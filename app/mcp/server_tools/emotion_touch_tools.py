@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.session.session_controller import SessionController
@@ -30,7 +31,7 @@ def register(mcp, session: "SessionController") -> None:
             raw = chat_db.kv_get(_ee.KV_EMOTION_EPISODES)
             stored = _ee.deserialize(raw)
             decayed = _ee.apply_decay(
-                stored, datetime.now(timezone.utc),
+                stored, timephrase.utcnow(),
             )
             decayed_by_id = {e.id: e for e in decayed.episodes}
             payload = {
@@ -95,7 +96,7 @@ def register(mcp, session: "SessionController") -> None:
             chat_db = getattr(session, "_chat_db", None)
             if chat_db is None:
                 return json.dumps({"error": "no chat db"})
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             state = _ee.apply_decay(
                 _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)),
                 now,
@@ -275,7 +276,7 @@ def register(mcp, session: "SessionController") -> None:
             chat_db = getattr(session, "_chat_db", None)
             if chat_db is None:
                 return json.dumps({"error": "no chat db"})
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             state = _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER))
             humor = None
             axes_store = getattr(
@@ -566,7 +567,7 @@ def register(mcp, session: "SessionController") -> None:
             max_cap = int(
                 getattr(agent, "vulnerability_budget_max_capacity", 12),
             )
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             new_state = _vb.spend(
                 state, int(cost), now,
                 regen_per_hour=regen, max_capacity=max_cap,
