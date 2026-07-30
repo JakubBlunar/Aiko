@@ -44,6 +44,7 @@ from app.core.session.session_text_utils import resolve_user_name, speaker_label
 from app.llm.chat_client import content_looks_complete
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.memory_extractor")
@@ -130,7 +131,7 @@ def _build_system_prompt(
     """
     name = user_display_name or "the user"
     if today is None:
-        today = datetime.now(timezone.utc).astimezone()
+        today = timephrase.utcnow().astimezone()
     today_human = today.strftime("%A, %B %d, %Y, %H:%M %Z").strip()
     today_iso = today.isoformat()
     valid_types = ", ".join(VALID_TEMPORAL_TYPES)
@@ -355,7 +356,7 @@ class MemoryExtractor:
             + "\n\nReturn the JSON now."
         )
 
-        now = datetime.now(timezone.utc).astimezone()
+        now = timephrase.utcnow().astimezone()
         messages = [
             {
                 "role": "system",

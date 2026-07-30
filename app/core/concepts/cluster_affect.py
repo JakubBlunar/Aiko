@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.cluster_affect")
@@ -203,7 +204,7 @@ def _prune(
 ) -> dict[str, ClusterAffectState]:
     if not state_map:
         return state_map
-    now = datetime.now(timezone.utc)
+    now = timephrase.utcnow()
 
     def _age_days(st: ClusterAffectState) -> float:
         try:

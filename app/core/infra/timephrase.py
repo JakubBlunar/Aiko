@@ -57,6 +57,15 @@ def _default_now() -> datetime:
 _now_provider: Callable[[], datetime] = _default_now
 
 
+def real_now() -> datetime:
+    """The true wall clock, bypassing any installed provider.
+
+    The DT1 debug clock needs this to compute ``real + offset`` without
+    recursing into itself once it is the installed provider.
+    """
+    return to_aware(_default_now())
+
+
 def now() -> datetime:
     """Return the current moment as a timezone-aware datetime.
 
@@ -65,6 +74,23 @@ def now() -> datetime:
     """
     value = _now_provider()
     return to_aware(value)
+
+
+def utcnow() -> datetime:
+    """Return the current moment as a UTC-aware datetime.
+
+    The UTC-normalised twin of :func:`now`, and the form the rest of the
+    app's private ``_utcnow()`` / ``_now_iso()`` helpers use. It exists
+    because :func:`_default_now` deliberately returns *local* aware time
+    (relative phrasing wants the user's timezone), while stored
+    timestamps and elapsed-time math are all UTC: routing those through
+    :func:`now` directly would silently start writing local-offset ISO
+    strings into the database.
+
+    Both functions read the same provider, so the DT1 debug clock moves
+    them together.
+    """
+    return now().astimezone(timezone.utc)
 
 
 def set_now_provider(provider: Callable[[], datetime] | None) -> None:

@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import MemoryStore
@@ -223,7 +224,7 @@ class MemoryDecayWorker:
         Returns counters under stable keys so a future telemetry hook
         can graph how often the worker is actually doing useful work.
         """
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         future_cutoff = (now - _FUTURE_TO_PAST_BUFFER).isoformat()
         relevance_cutoff = now.isoformat()
 

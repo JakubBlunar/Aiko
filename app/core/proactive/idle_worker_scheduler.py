@@ -44,13 +44,17 @@ from app.core.proactive.idle_worker import (
     IdleWorkerRecord,
     default_is_ready,
 )
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.idle_worker_scheduler")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    # Routed through the timephrase seam because this is the single "now"
+    # handed to every registered worker's is_ready(): shifting it moves
+    # the whole idle cadence together under the DT1 debug clock.
+    return timephrase.utcnow()
 
 
 # Reserved kv_meta key prefix for per-worker bookkeeping.

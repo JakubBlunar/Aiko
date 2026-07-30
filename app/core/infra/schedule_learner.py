@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -149,7 +150,7 @@ _ROUTINES_VALUE_CAP = 240
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: object) -> datetime | None:

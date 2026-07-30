@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -57,7 +58,7 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

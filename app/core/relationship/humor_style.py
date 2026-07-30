@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
+from app.core.infra import timephrase
 
 
 KV_HUMOR_STYLE = "aiko.humor_style"
@@ -126,7 +127,7 @@ class HumorStyleState:
 
 
 def uniform_state(now: datetime | None = None) -> HumorStyleState:
-    ts = (now or datetime.now(timezone.utc)).isoformat()
+    ts = (now or timephrase.utcnow()).isoformat()
     return HumorStyleState(
         weights={k: _UNIFORM for k in HUMOR_KINDS}, updated_at=ts,
     )
@@ -350,7 +351,7 @@ def deserialize(text: str | None) -> HumorStyleState:
             weights[k] = _UNIFORM
     updated_at = data.get("updated_at")
     if not isinstance(updated_at, str) or not updated_at.strip():
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at = timephrase.utcnow().isoformat()
     total = sum(max(0.0, v) for v in weights.values())
     if total <= 0.0:
         return uniform_state(now=_parse_iso(updated_at))

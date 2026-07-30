@@ -28,12 +28,12 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import pyarrow as pa
+from app.core.infra import timephrase
 
 try:
     import lancedb
@@ -55,7 +55,7 @@ TABLE_DOCUMENTS = "documents"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 # ── Public dataclasses (pure-python views; LanceDB rows are dicts) ──────────

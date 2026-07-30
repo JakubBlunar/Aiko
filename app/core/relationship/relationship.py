@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -104,7 +105,7 @@ class RelationshipStore:
         self._db = db
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return timephrase.utcnow().isoformat(timespec="seconds")
 
     @staticmethod
     def _parse_surfaced(raw: object) -> tuple[str, ...] | None:
@@ -216,7 +217,7 @@ class RelationshipTracker:
 
     def current_phase(self, user_id: str, *, now: datetime | None = None) -> str:
         state = self.get(user_id)
-        return phase_for(state, now=now or datetime.now(timezone.utc))
+        return phase_for(state, now=now or timephrase.utcnow())
 
     def ambient_line(
         self,
@@ -228,7 +229,7 @@ class RelationshipTracker:
         state = self.get(user_id)
         return render_ambient(
             state,
-            now=now or datetime.now(timezone.utc),
+            now=now or timephrase.utcnow(),
             user_display_name=user_display_name,
         )
 
@@ -260,7 +261,7 @@ class RelationshipTracker:
         turns" / "first week" callbacks.
         """
         state = self._store.get_or_create(user_id)
-        moment = now or datetime.now(timezone.utc)
+        moment = now or timephrase.utcnow()
         new_turns = state.total_turns + 1
         crossed_now = _crossed_milestones(state, new_turns=new_turns, now=moment)
 

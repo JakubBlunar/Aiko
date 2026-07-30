@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.core.session.session_text_utils import resolve_user_name
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -118,7 +119,7 @@ class RelationshipPulseWorker:
         now_utc: datetime | None = None,
     ) -> bool:
         last_at, last_turns = self._read_state(user_id)
-        now = now_utc or datetime.now(timezone.utc)
+        now = now_utc or timephrase.utcnow()
         rel = self._rel
         current_turns = 0
         if rel is not None:
@@ -301,7 +302,7 @@ class RelationshipPulseWorker:
     def _record_state(self, user_id: str, *, now_utc: datetime | None) -> None:
         if not user_id:
             return
-        now = (now_utc or datetime.now(timezone.utc)).isoformat()
+        now = (now_utc or timephrase.utcnow()).isoformat()
         rel = self._rel
         turns = 0
         if rel is not None:

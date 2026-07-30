@@ -50,6 +50,7 @@ from app.core.proactive.idle_worker import default_is_ready
 # Reuse the cheap lexical "is the live turn on this topic?" gate the F10f
 # notice worker already ships — same shape, no need for a second copy.
 from app.core.proactive.knowledge_gap_notice_worker import topic_relevant
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicCluster, TopicGraph
@@ -74,7 +75,7 @@ _MEMBER_SNIPPET_CHARS = 140
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

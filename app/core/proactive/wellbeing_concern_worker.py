@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.affect import mood_drift as _md
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.relationship import wellbeing_concern as _wc
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ _KV_LAST_SIGNATURE = "wellbeing_concern.last_signature"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: object) -> datetime | None:

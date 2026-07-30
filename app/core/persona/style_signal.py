@@ -32,6 +32,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.style_signal")
@@ -460,7 +461,7 @@ class StyleSignalStore:
                 (
                     user_id,
                     blob,
-                    datetime.now(timezone.utc).isoformat(),
+                    timephrase.utcnow().isoformat(),
                 ),
             )
         except Exception:

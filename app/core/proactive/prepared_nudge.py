@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Callable
 
 from app.core.proactive.proactive_line_guard import validate_proactive_line
 from app.core.session.session_text_utils import resolve_user_name
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.goals.agenda import AgendaStore
@@ -103,7 +104,7 @@ class PreparedNudgeStore:
         self._db = db
 
     def _now(self) -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return timephrase.utcnow().isoformat(timespec="seconds")
 
     def upsert(
         self,
@@ -166,7 +167,7 @@ class PreparedNudgeStore:
         nudge = self.get(user_id)
         if nudge is None:
             return None
-        now = now_utc or datetime.now(timezone.utc)
+        now = now_utc or timephrase.utcnow()
         try:
             then = datetime.fromisoformat(
                 nudge.prepared_at.replace("Z", "+00:00"),

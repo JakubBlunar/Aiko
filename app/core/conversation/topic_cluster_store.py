@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import numpy as np
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -37,7 +37,7 @@ log = logging.getLogger("app.topic_cluster_store")
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _encode_centroid(vec: "np.ndarray | None") -> bytes:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.session.session_controller import SessionController
@@ -84,7 +85,7 @@ def register(mcp, session: "SessionController") -> None:
                 if memory_store is not None:
                     reflections = list(memory_store.iter_by_kind("reflection"))
                     # Count rows in the age window for diagnostic.
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     min_age = float(
                         getattr(
                             memory,
@@ -1460,7 +1461,7 @@ def register(mcp, session: "SessionController") -> None:
                 try:
                     from datetime import datetime, timezone
 
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     late, neg_days, neg_cats = worker._collect_message_signal(
                         now
                     )
@@ -2638,7 +2639,7 @@ def register(mcp, session: "SessionController") -> None:
                 key=lambda m: (m.last_used_at or m.created_at or ""),
                 reverse=True,
             )
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             rows: list[dict[str, Any]] = []
             cap = max(1, int(limit))
             for mem in rows_iter[:cap]:

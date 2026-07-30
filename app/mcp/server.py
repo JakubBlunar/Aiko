@@ -31,6 +31,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
 
     from app.mcp.server_tools import (
         core_tools,
+        debug_clock_tools,
         memory_worker_tools,
         self_state_tools,
         emotion_touch_tools,
@@ -39,6 +40,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
     )
 
     core_tools.register(mcp, session)
+    debug_clock_tools.register(mcp, session)
     memory_worker_tools.register(mcp, session)
     self_state_tools.register(mcp, session)
     emotion_touch_tools.register(mcp, session)

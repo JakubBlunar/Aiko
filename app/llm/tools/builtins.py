@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from app.llm.tools.base import Tool, ToolError, ToolSchema
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.tools.builtins")
@@ -50,7 +51,7 @@ class GetTimeTool:
 
                 now = datetime.now(ZoneInfo(tz_name))
             else:
-                now = datetime.now().astimezone()
+                now = timephrase.now()
         except Exception as exc:
             raise ToolError(f"unknown timezone {tz_name!r}: {exc}") from exc
         return json.dumps(

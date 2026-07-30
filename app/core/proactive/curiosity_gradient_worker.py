@@ -49,6 +49,7 @@ from app.core.proactive.idle_worker import default_is_ready
 
 # Reuse the cheap lexical "is the live turn on this topic?" gate.
 from app.core.proactive.knowledge_gap_notice_worker import topic_relevant
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicCluster, TopicGraph
@@ -66,7 +67,7 @@ _KV_DAY_COUNT = "curiosity_gradient.day_count"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

@@ -32,10 +32,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.infra import timephrase
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
@@ -88,7 +89,7 @@ class ConceptConsolidationWorker:
         self._graph_mature_provider = graph_mature_provider
         self._user_name_provider = user_display_name_provider
         self._assistant_name_provider = assistant_display_name_provider
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or timephrase.utcnow
         # pair (frozenset of two ids) -> expiry datetime.
         self._negative_cache: dict[frozenset[int], datetime] = {}
 

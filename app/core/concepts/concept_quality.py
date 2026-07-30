@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_store import Concept
@@ -577,7 +578,7 @@ def build_quality_report(
     """
     rows = list(concepts)
     limits = thresholds or QualityThresholds()
-    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    when = (now or timephrase.utcnow()).astimezone(timezone.utc)
     facts = dict(evidence_facts or {})
 
     return {

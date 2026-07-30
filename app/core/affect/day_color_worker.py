@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.affect import day_color
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -131,7 +132,7 @@ class DayColorWorker:
             log.debug("day_color worker: kv_get failed", exc_info=True)
             return {"skipped": True, "reason": "kv_get_failed"}
 
-        now = datetime.now().astimezone()
+        now = timephrase.now()
         if not day_color.is_stale(stored_at, now):
             return {"rolled": False, "reason": "fresh"}
 

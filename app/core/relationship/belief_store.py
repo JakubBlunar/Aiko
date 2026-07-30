@@ -36,10 +36,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -86,7 +86,7 @@ _TOPIC_DEDUPE_COSINE = 0.88
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _encode_metadata(metadata: dict[str, Any] | None) -> str | None:

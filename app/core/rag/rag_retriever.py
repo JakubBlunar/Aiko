@@ -37,6 +37,7 @@ import numpy as np
 from app.core.infra import timephrase as _tp
 from app.core.infra.time_expr import TimeWindow, parse_time_window
 from app.core.rag.rag_store import MessageRecord, RagHit
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -458,7 +459,7 @@ def _is_anniversary_today(metadata: dict | None) -> bool:
         return False
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    delta = (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
+    delta = (timephrase.utcnow() - when).total_seconds() / 86400.0
     if delta <= 0:
         return False
     for window in _ANNIVERSARY_WINDOW_DAYS:
@@ -1139,7 +1140,7 @@ class RagRetriever:
                                 # the dedupe/top-k cut at the bottom
                                 # of ``retrieve`` discards it, instead
                                 # of scattering ``continue`` here.
-                                if _temporal_filter_drops(mem, datetime.now(timezone.utc)):
+                                if _temporal_filter_drops(mem, timephrase.utcnow()):
                                     h.score = -1.0
                                 else:
                                     h.score += _temporal_boost(mem)
@@ -1717,7 +1718,7 @@ class RagRetriever:
         try:
             return _lac.candidates_from_hits(
                 hits,
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 min_age_days=int(min_age_days),
                 allowed_kinds=kinds,
             )
@@ -2092,7 +2093,7 @@ class RagRetriever:
         document_lines: list[str] = []
         expansion_lines: list[str] = []
         digest_lines: list[str] = []
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         for hit in hits:
             text = (hit.text or "").strip()
             if not text:
@@ -2348,7 +2349,7 @@ def _recency_bonus(created_at: str) -> float:
             ts = ts.replace(tzinfo=timezone.utc)
     except Exception:
         return 0.0
-    delta_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    delta_days = (timephrase.utcnow() - ts).total_seconds() / 86400.0
     if delta_days < 0:
         delta_days = 0.0
     # Exponential decay halved every _MESSAGE_HALFLIFE_DAYS; bonus shrinks
@@ -2392,7 +2393,7 @@ def _hours_since(iso_ts: str | None) -> float | None:
             ts = ts.replace(tzinfo=timezone.utc)
     except Exception:
         return None
-    seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    seconds = (timephrase.utcnow() - ts).total_seconds()
     return max(0.0, seconds / 3600.0)
 
 

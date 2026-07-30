@@ -811,6 +811,26 @@ class DetectorsInitMixin:
         # it instead of leaving the user at a chat that 404s.
         self._missing_chat_model: str = ""
 
+        # ── DT1 virtual clock ────────────────────────────────────────────
+        # Installed before the MCP server so its tools always find a
+        # clock object. Off unless AIKO_DEBUG_CLOCK is set, and the
+        # offset is in-memory only, so a normal run can never inherit a
+        # shifted "now" from a previous session.
+        self._debug_clock = None
+        try:
+            from app.core.infra.debug_clock import (
+                DebugClock,
+                debug_clock_enabled,
+            )
+
+            self._debug_clock = DebugClock(
+                enabled=debug_clock_enabled(),
+                engagement_clock=getattr(self, "_engagement_clock", None),
+            )
+            self._debug_clock.install()
+        except Exception:
+            log.warning("DT1 debug clock init failed", exc_info=True)
+
         # ── MCP debug server ─────────────────────────────────────────────
         self._mcp_server_runner = None
         if settings.mcp_server.enabled:

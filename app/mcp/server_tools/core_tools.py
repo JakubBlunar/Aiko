@@ -59,6 +59,12 @@ def register(mcp, session: "SessionController") -> None:
             "live_mode": getattr(session, "_live_voice_session_active", False),
             "last_metrics": session.get_last_metrics(),
         }
+        # A shifted DT1 clock makes every time-gated feature misbehave in
+        # ways that look like unrelated bugs, so it has to be visible from
+        # the first thing anyone calls. Absent entirely when on real time.
+        clock = getattr(session, "_debug_clock", None)
+        if clock is not None and getattr(clock, "active", False):
+            info["debug_clock"] = clock.status()
         return json.dumps(info, indent=2, default=str)
 
     @mcp.tool()

@@ -28,6 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -110,7 +111,7 @@ class AffectState:
     valence_trend_24h: float = 0.0
     arousal_trend_24h: float = 0.0
     updated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+        default_factory=lambda: timephrase.utcnow().isoformat(),
     )
 
     def to_payload(self) -> dict[str, Any]:
@@ -482,7 +483,7 @@ class AffectUpdater:
         state.arousal_trend_24h = round(new_aro_trend, 4)
         state.mood_label = mood_label
         state.mood_intensity = round(mood_intensity, 4)
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = timephrase.utcnow().isoformat()
 
         self._store.save(state)
         log.debug(
@@ -505,7 +506,7 @@ class AffectUpdater:
                 ts = ts.replace(tzinfo=timezone.utc)
         except Exception:
             return 0.0
-        delta = datetime.now(timezone.utc) - ts
+        delta = timephrase.utcnow() - ts
         return max(0.0, delta.total_seconds())
 
 

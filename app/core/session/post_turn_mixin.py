@@ -29,6 +29,7 @@ from typing import Any
 log = logging.getLogger("app.session")
 
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
+from app.core.infra import timephrase
 
 
 class PostTurnMixin(PostTurnHelpersMixin):
@@ -386,7 +387,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     log.debug(
                         "self-noticing vec-ring append failed", exc_info=True,
                     )
-                now = datetime.now(timezone.utc)
+                now = timephrase.utcnow()
                 hits = callback_detector.detect(
                     assistant_vec=turn_vec,
                     memory_store=self._memory_store,
@@ -547,7 +548,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                             recent_window,
                         )
                 if signal is not None and not shielded:
-                    now_cal = datetime.now(timezone.utc)
+                    now_cal = timephrase.utcnow()
                     state = calibration_store.get(self._user_id)
                     # Decay before applying so the delta lands on a
                     # current snapshot rather than a stale one.
@@ -1394,7 +1395,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
 
                 chat_db = getattr(self, "_chat_db", None)
                 if chat_db is not None:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _af.deserialize(
                         chat_db.kv_get(_af.KV_AFFECTION_STYLE)
                     )
@@ -1479,7 +1480,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
 
                 chat_db = getattr(self, "_chat_db", None)
                 if chat_db is not None:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _hs.deserialize(chat_db.kv_get(_hs.KV_HUMOR_STYLE))
                     changed = False
 
@@ -1552,7 +1553,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
 
                 chat_db = getattr(self, "_chat_db", None)
                 if chat_db is not None:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     state = _ip.deserialize(
                         chat_db.kv_get(_ip.KV_INTIMACY_PACING)
                     )
@@ -1636,7 +1637,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                                     0.25,
                                 )
                             ),
-                            now_iso=datetime.now(timezone.utc).isoformat(
+                            now_iso=timephrase.utcnow().isoformat(
                                 timespec="seconds"
                             ),
                         )
@@ -1753,7 +1754,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
 
                 chat_db = getattr(self, "_chat_db", None)
                 if chat_db is not None:
-                    now = datetime.now(timezone.utc)
+                    now = timephrase.utcnow()
                     try:
                         stored = chat_db.kv_get(_vb.KV_BUDGET_STATE)
                     except Exception:
@@ -1842,7 +1843,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                         )
                         hits = _wl.detect_acted(state, turn_text)
                         if hits:
-                            now = datetime.now(timezone.utc)
+                            now = timephrase.utcnow()
                             for want_id in hits:
                                 want = next(
                                     (

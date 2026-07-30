@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.session.session_controller import SessionController
@@ -344,7 +345,7 @@ def register(mcp, session: "SessionController") -> None:
 
                 try:
                     out["rate"] = limiter.snapshot(
-                        datetime.now(timezone.utc)
+                        timephrase.utcnow()
                     )
                 except Exception:
                     out["rate"] = None
@@ -442,7 +443,7 @@ def register(mcp, session: "SessionController") -> None:
                 from datetime import datetime, timezone
 
                 try:
-                    out["rate"] = limiter.snapshot(datetime.now(timezone.utc))
+                    out["rate"] = limiter.snapshot(timephrase.utcnow())
                 except Exception:
                     out["rate"] = None
             try:
@@ -570,7 +571,7 @@ def register(mcp, session: "SessionController") -> None:
                 except Exception:
                     stored_at = None
 
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             stale = day_color.is_stale(stored_at, now)
 
             age_hours: float | None = None
@@ -727,7 +728,7 @@ def register(mcp, session: "SessionController") -> None:
             agent = session._settings.agent
             mem = session._memory_settings
             chat_db = getattr(session, "_chat_db", None)
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             baseline, rhythm = _vr.current_baseline(
                 chat_db,
                 now,
@@ -870,7 +871,7 @@ def register(mcp, session: "SessionController") -> None:
             chat_db = getattr(session, "_chat_db", None)
             if chat_db is None:
                 return "force_vitality_rhythm: no chat_db on session"
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             chat_db.kv_set(_vr.KV_RHYTHM, chosen.name)
             chat_db.kv_set(_vr.KV_RHYTHM_SET_AT, now.isoformat())
             return json.dumps(
@@ -1104,7 +1105,7 @@ def register(mcp, session: "SessionController") -> None:
                     if prev.tzinfo is None:
                         prev = prev.replace(tzinfo=timezone.utc)
                     elapsed = (
-                        datetime.now(timezone.utc) - prev
+                        timephrase.utcnow() - prev
                     ).total_seconds() / 86400.0
                     cooldown_remaining = round(max(0.0, cooldown_days - elapsed), 3)
                 except Exception:
@@ -1172,7 +1173,7 @@ def register(mcp, session: "SessionController") -> None:
                 affect_store=session._affect_store,
                 axes_store=getattr(session, "_relationship_axes_store", None),
                 user_id=session._user_id,
-                now=datetime.now().astimezone(),
+                now=timephrase.now(),
             )
             return json.dumps(
                 {
@@ -1356,7 +1357,7 @@ def register(mcp, session: "SessionController") -> None:
                 except Exception:
                     stored = None
             state = _wl.deserialize(stored)
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             payload = {
                 "enabled": bool(
                     getattr(agent, "wants_ledger_enabled", True)
@@ -1442,7 +1443,7 @@ def register(mcp, session: "SessionController") -> None:
                 kind=kind,
                 source="manual",
                 source_ref="",
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 cap=int(
                     getattr(session._settings.agent, "wants_cap", 8)
                 ),
@@ -1844,7 +1845,7 @@ def register(mcp, session: "SessionController") -> None:
             total = sum(floored.values()) or 1.0
             persisted = _af.AffectionStyleState(
                 weights={k: v / total for k, v in floored.items()},
-                updated_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=timephrase.utcnow().isoformat(),
             )
             chat_db.kv_set(_af.KV_AFFECTION_STYLE, _af.serialize(persisted))
             return json.dumps(
@@ -2015,7 +2016,7 @@ def register(mcp, session: "SessionController") -> None:
             total = sum(floored.values()) or 1.0
             persisted = _hs.HumorStyleState(
                 weights={k: v / total for k, v in floored.items()},
-                updated_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=timephrase.utcnow().isoformat(),
             )
             chat_db.kv_set(_hs.KV_HUMOR_STYLE, _hs.serialize(persisted))
             return json.dumps(
@@ -2200,7 +2201,7 @@ def register(mcp, session: "SessionController") -> None:
             v = _ip.clamp01(float(value))
             state = _ip.IntimacyPacingState(
                 user_pace=v,
-                updated_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=timephrase.utcnow().isoformat(),
             )
             chat_db.kv_set(_ip.KV_INTIMACY_PACING, _ip.serialize(state))
             return json.dumps({"user_pace": round(v, 4)})

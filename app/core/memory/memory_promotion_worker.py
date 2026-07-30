@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -38,7 +39,7 @@ log = logging.getLogger("app.memory_promotion_worker")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

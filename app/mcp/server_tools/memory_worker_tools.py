@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.core.infra import timephrase
+
 if TYPE_CHECKING:
     from app.core.session.session_controller import SessionController
 
@@ -451,7 +453,7 @@ def register(mcp, session: "SessionController") -> None:
         }
         if worker is None:
             return json.dumps(out, indent=2, default=str)
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         try:
             out["interval_seconds"] = worker.interval_seconds
         except Exception as exc:  # pragma: no cover -- diag tool
@@ -517,7 +519,7 @@ def register(mcp, session: "SessionController") -> None:
             state = store.get(session._user_id)
             state = calibration_detector.decay(
                 state,
-                now=datetime.now(timezone.utc),
+                now=timephrase.utcnow(),
                 half_life_days=float(
                     getattr(
                         session._memory_settings,
@@ -1215,7 +1217,7 @@ def register(mcp, session: "SessionController") -> None:
         try:
             from app.core.conversation import long_arc_callback as _lac
 
-            now = datetime.now(timezone.utc)
+            now = timephrase.utcnow()
             out["last_fired_at"] = session._chat_db.kv_get(_lac.KV_LAST_FIRED_AT)
             out["recent_ids"] = _lac.load_recent_ids(session._chat_db.kv_get)
             out["cooldown_elapsed"] = _lac.cooldown_elapsed(

@@ -47,7 +47,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.relationship.belief_store import (
@@ -58,9 +58,9 @@ from app.core.relationship.belief_store import (
     SOURCE_WORKER,
     VALID_KINDS,
 )
-from app.core.infra import timephrase
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -118,7 +118,7 @@ _JSON_ARRAY_RE = re.compile(r"\[.*\]", flags=re.DOTALL)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _now_iso() -> str:

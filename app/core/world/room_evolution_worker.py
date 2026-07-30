@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.world import room_evolution as evo
 from app.core.world.idle_activity_worker import append_idle_seed
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -312,7 +313,7 @@ class RoomEvolutionWorker:
 
     @staticmethod
     def _utcnow() -> datetime:
-        return datetime.now(timezone.utc)
+        return timephrase.utcnow()
 
 
 __all__ = ["RoomEvolutionWorker", "KV_LAST_EVOLVED_AT"]

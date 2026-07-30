@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -92,7 +93,7 @@ class ArcStore:
         self._db = db
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return timephrase.utcnow().isoformat(timespec="seconds")
 
     def get(self, user_id: str) -> ArcState | None:
         if not user_id:

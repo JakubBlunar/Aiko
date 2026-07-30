@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.world.world_store import WorldStore
@@ -132,7 +133,7 @@ class CircadianSettleWorker:
                     return {"fired": 0, "disabled": True}
             except Exception:
                 pass
-        now = datetime.now(timezone.utc)
+        now = timephrase.utcnow()
         if self._intentional_hold_active(now):
             return {"fired": 0, "skipped_intentional_hold": True}
         if self._garden_visit_outstanding(now):
@@ -205,7 +206,7 @@ class CircadianSettleWorker:
         try:
             from app.core.affect.circadian import compute
 
-            now = datetime.now()
+            now = timephrase.now()
             return str(compute(now).period)
         except Exception:
             return ""

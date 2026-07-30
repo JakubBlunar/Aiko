@@ -88,6 +88,7 @@ from app.core.concepts.concept_lifecycle import (
 )
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import ConceptEdge
+from app.core.infra import timephrase
 from app.core.proactive.idle_worker import default_is_ready
 
 if TYPE_CHECKING:
@@ -149,7 +150,7 @@ class ConceptLifecycleWorker:
         self._relationship_signal_provider = relationship_signal_provider
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or timephrase.utcnow
         # L16 re-check slowdown: per-concept probe counter (in-memory, resets on
         # restart) used to skip the contradiction probe on a plasticity-scaled
         # stride so sticky concepts are re-examined less often.

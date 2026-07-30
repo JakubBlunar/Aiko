@@ -42,11 +42,13 @@ prompt for the next brainstorm, not a queue.
 
 Dev / debug tooling (DT-series):
 
-- **DT1.** Virtual clock / time-travel for time-gated features (the
-  highest-leverage debug tool here).
+- **DT1.** ~~Virtual clock / time-travel for time-gated features~~ —
+  **shipped**, behind `AIKO_DEBUG_CLOCK=1`. Five MCP tools; note the two
+  separate levers (wall-clock vs. engaged time).
 - **DT2.** Relationship state inspector — one-shot consolidated snapshot.
 - **DT3.** Feature-flag catalog + "minimal mode" preset.
-- **DT4.** Scenario / conversation replay harness.
+- **DT4.** Scenario / conversation replay harness (the deterministic-clock
+  half is now unblocked by DT1).
 
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
@@ -341,7 +343,8 @@ counterpart to the live DT-series debug tooling.
   T0->T6 cache ladder + the inline-tag grammar).
 - **T5.** LLM behavioural eval suite — a scoreboard, not a CI gate
   (umbrella over K10 persona regression + L22 concept eval).
-- **T6.** Determinism seams (`Clock` + seeded RNG; shared with DT1).
+- **T6.** Determinism seams (seeded RNG; the `Clock` half landed with DT1 —
+  `timephrase.now` / `utcnow` is now the single process-wide "now").
 
 ---
 

@@ -51,10 +51,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from app.core.infra import timephrase
 from app.core.memory.cluster_scope import partition_by_cluster
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.settings import AgentSettings, MemorySettings
@@ -84,7 +84,7 @@ _SYSTEM_PROMPT = (
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _now_iso() -> str:

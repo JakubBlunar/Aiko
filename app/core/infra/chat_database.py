@@ -5,9 +5,9 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from app.core.infra import timephrase
 
 _SCHEMA_VERSION = 25
 
@@ -735,7 +735,7 @@ class ThreadNoteRow:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 
 def _snippet(text: str | None, *, max_chars: int = 80) -> str:

@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
+from app.core.infra import timephrase
 
 
 VERDICT_ENGAGED = "engaged"
@@ -62,7 +63,7 @@ class OwnedThread:
     source: str
     embedding: Any | None = None
     opened_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: timephrase.utcnow()
     )
 
 

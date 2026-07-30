@@ -192,6 +192,13 @@ Three env vars cover everything a fresh container needs — they override
 | `AIKO_WEB_PORT` | `6275` | Port the server listens on inside the container |
 | `AIKO_OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Where Aiko finds Ollama (chat **and** embeddings) |
 
+One more, off by default and not in the image: `AIKO_DEBUG_CLOCK=1` arms the
+DT1 virtual clock so the MCP time-travel tools can advance Aiko's sense of
+"now". Add it to the `aiko` service's `environment:` block when you need it,
+and only against a copy of the data volume — rows written while the clock is
+advanced keep their virtual timestamps. See
+[`rules/debugging.md` §f](../rules/debugging.md).
+
 Compose reads `.env` for a few convenience knobs — copy and tweak:
 
 ```bash

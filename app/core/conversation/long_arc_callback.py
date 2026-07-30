@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
 from app.core.infra import timephrase as _tp
+from app.core.infra import timephrase
 
 log = logging.getLogger("app.long_arc_callback")
 
@@ -158,7 +159,7 @@ def render_block(
     memory's details may have faded (K25), so Aiko floats it as a question
     rather than asserting it as fact.
     """
-    when = now or datetime.now(timezone.utc)
+    when = now or timephrase.utcnow()
     name = (user_display_name or "the user").strip() or "the user"
     snippet = _snippet(candidate.content)
     if not snippet:

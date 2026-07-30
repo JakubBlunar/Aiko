@@ -41,6 +41,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from app.llm.tools.base import ToolError, ToolSchema
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -562,7 +563,7 @@ class PlantSeedTool:
             base = item.name.lower().replace("seed packet", "").strip()
             species = base.split()[0] if base else "plant"
         fact = species_fact(species)
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = timephrase.utcnow().isoformat()
         plant_state = {
             "species": species,
             "stage": "sprout",

@@ -47,6 +47,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from app.core.infra import timephrase
 
 
 # ── kv_meta key ─────────────────────────────────────────────────────
@@ -155,7 +156,7 @@ class AffectionStyleState:
 
 def uniform_state(now: datetime | None = None) -> AffectionStyleState:
     """Return a fresh uniform state (every kind equal)."""
-    ts = (now or datetime.now(timezone.utc)).isoformat()
+    ts = (now or timephrase.utcnow()).isoformat()
     return AffectionStyleState(
         weights={k: _UNIFORM for k in AFFECTION_KINDS},
         updated_at=ts,
@@ -468,7 +469,7 @@ def deserialize(text: str | None) -> AffectionStyleState:
             weights[k] = _UNIFORM
     updated_at = data.get("updated_at")
     if not isinstance(updated_at, str) or not updated_at.strip():
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at = timephrase.utcnow().isoformat()
     # Renormalise on load (no floor coercion — preserve a legitimately
     # zeroed legacy weight until the next mutation re-floors it).
     total = sum(max(0.0, v) for v in weights.values())

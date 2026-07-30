@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -119,7 +120,7 @@ class AgendaStore:
             log.debug("agenda on_change listener raised", exc_info=True)
 
     def _now(self) -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return timephrase.utcnow().isoformat(timespec="seconds")
 
     # ── reads ──────────────────────────────────────────────────────────
 

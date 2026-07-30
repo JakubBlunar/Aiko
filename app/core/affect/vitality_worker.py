@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.affect import vitality as _vit
 from app.core.affect import vitality_rhythm as _vr
 from app.core.proactive.idle_worker import default_is_ready
+from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -81,7 +82,7 @@ class VitalityWorker:
         if not bool(getattr(self._agent, "vitality_enabled", True)):
             return {"skipped": True, "reason": "disabled"}
         try:
-            now = datetime.now().astimezone()
+            now = timephrase.now()
             baseline, _rhythm = _vr.current_baseline(
                 self._chat_db,
                 now,

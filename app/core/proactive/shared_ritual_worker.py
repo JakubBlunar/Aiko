@@ -29,6 +29,7 @@ from app.core.infra.schedule_learner import (
 )
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.relationship import shared_ritual as _sr
+from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
@@ -39,7 +40,7 @@ log = logging.getLogger("app.shared_ritual_worker")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return timephrase.utcnow()
 
 
 def _parse_iso(value: object) -> datetime | None:

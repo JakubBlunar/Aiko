@@ -16,12 +16,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from app.core.infra import timephrase
 
 
 def _now_iso_for_conflict() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return timephrase.utcnow().isoformat()
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.memory.memory_extractor import MemoryExtractor
