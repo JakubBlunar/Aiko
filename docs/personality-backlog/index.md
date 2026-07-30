@@ -225,88 +225,48 @@ single writer of `confidence` / `plasticity` / `status`; L3/L15/L16/L17
 are passes of it, not competing workers). v1 ships identity end-to-end;
 every other kind is a stub.
 
-Shared machinery (kind-agnostic):
+**The layer is built.** L1-L16, L18, L20, L21 and L23-L28 have all
+shipped: the store and typed edge graph, the per-kind proposers, the
+single-writer lifecycle engine, ten concept kinds across three subjects
+(including the two meta kinds), plasticity, belief revision, the UI and
+MCP debug surface, and the trace. It ships **off** by default
+(`agent.concepts_enabled`) because synthesis is a recurring
+maintenance-LLM cost that wants a mature topic graph behind it. Per-item
+status lives in [`concepts.md`](concepts.md); what follows is only what
+is still open.
 
-- **L1.** Concept store + schema — `concepts` + the typed `concept_edges`
-  influence graph + `ConceptKind` registry. Designed for **meta-concepts**
-  from day one (concepts referencing concepts): dependency ordering,
-  cascade on retirement, `min`-bounded confidence, depth/cycle guard.
-- **L2.** Concept synthesis worker — the proposer (idle, worker LLM;
-  per-kind proposer via the registry; the only thing that *creates*
-  concepts).
-- **L3.** The lifecycle engine — the single writer of every concept's
-  confidence/plasticity/status: accrual + auto-promotion (candidate ->
-  active on recurrence + >=2 evidence + stability; per-kind gate), and the
-  host for the L15/L16/L17 passes.
-- **L4.** Cluster co-activation signal (the "Maker Mode" primitive).
-- **L5.** Concept prompt surfacing (per-kind targets) + `recall_concept`.
-- **L6.** Concepts UI + MCP debug (optional human-in-the-loop
-  accelerant).
-- **L21.** Cold-start + anti-premature-proposal guard (quietly no-op for
-  a new user; don't mint spurious early concepts).
-- **L22.** Concept-quality evaluation + observability (spurious-concept
-  guard + offline eval harness, sibling to K10; MCP graph dump).
-- **L23.** Surfacing salience / selection budget (which active concepts
-  win the prompt this turn, within a token budget).
-- **L24.** Integration contract — existing derivers (interest_map,
-  beliefs, profile, goals) consume concepts instead of
-  running parallel/contradictory. (Aiko's self-model is already
-  concepts-only — the daily self-image worker was removed.)
-- **L25.** Edge referential integrity across the memory lifecycle
-  (archive / consolidate / delete keep `concept_edges` consistent).
-- **L26.** Concept trace + "how Aiko is thinking" observability
-  (per-turn: which concepts entered the prompt; graph/transition dump).
-  Build a thin version early — it validates every other entry.
+Open — quality and pruning:
 
-Proposer discipline + register fold into L2 (anti-Barnum: specific,
-falsifiable concepts) and L5 (offered tentatively, not asserted).
-- **L9.** Identity concepts as living, confidence-bearing beliefs
-  (confidence + last-reinforced + supporting evidence; strengthen,
-  weaken, or be disproven). Near-term, on top of L1-L5.
+- **L22.** Concept-quality evaluation. *Partly shipped.* The measurement
+  half exists: `concept_quality.py`, `GET /api/concepts/quality`, the
+  `get_concept_quality` MCP tool, and the layer-health strip in the
+  Concepts panel, covering production / promotion / reinforcement rates,
+  the confidence and evidence distributions, near-duplicate pairs, and
+  per-(kind, subject) label-register rates. The three spurious-concept
+  signals are computed but **advisory only** — nothing is demoted on
+  them yet. Still open: tuning the thresholds against those numbers,
+  enabling demotion for the never-reinforced signal, a one-off sweep
+  over the concepts minted before the proposer was disciplined, and the
+  offline eval harness (deliberately last: hand-authoring goldens before
+  the register settles would enshrine the output we are fixing).
 
-Concept kinds (each a registry entry over the shared machinery; identity
-ships in v1). **Kind and subject (`user` / `aiko` / `relationship`) are
-orthogonal** — most kinds exist for both people (Aiko has her own values,
-boundaries, affect); "self-concepts" are just `subject=aiko`, enabled by
-L11, not a separate kind:
+Open — self-history:
 
-- **L7.** Relationship (deferred) — recurring shared-moment rituals.
-- **L8.** Narrative (deferred) — ordered-memory story arcs.
-- **L10.** Value (deferred) — the normative *why* under choices; subject
-  `user` **or** `aiko` (Aiko has her own values).
-- **L11.** Subject=aiko enablement (deferred) — not a kind; the plumbing
-  that lets *every* kind exist about Aiko herself (her self-model),
-  foundation for L17/L19.
-- **L12.** Tension / contradiction (deferred) — concepts *over* concepts
-  ("Maker Mode a lot but no walks"); handle with care.
-- **L13.** Affective (deferred) — durable topic <-> mood associations.
-- **L14.** Aspiration / trajectory (deferred) — where the user is heading.
-- **L18.** Boundary (deferred) — behaviour-gating constraints; the
-  canonical medium-plasticity kind.
-- **L20.** Abstraction hierarchy (deferred) — generalization concepts
-  *over* other concepts ("things he builds for enjoyment"); the founding
-  example, `relation=generalizes`.
-- (Lighter candidates folded into identity for now: rhythm/temporal,
-  taste, expertise.)
-
-Capstone:
-
-- **L19.** Aiko's autobiography — her self-history as a durable,
-  traversable timeline (the "two histories"): traverse the self-concept
-  graph + snapshots to genuinely answer "Have you changed?". Depends on
-  L11 + L16 + L17.
-
-Cross-cutting properties (attributes every concept carries):
-
-- **L15.** Bidirectional confidence / belief revision — a contradicted
-  concept triggers a re-check of its evidence memories via F1/F5
-  (trigger, not a blind write; preserves memory as source of truth).
-- **L16.** Concept plasticity — a per-concept learning rate so drift is
-  bounded and believable (core traits sticky, tastes fluid;
-  trust/duration-modulated).
 - **L17.** Self-drift noticing — Aiko notices her own change by comparing
   self-concept snapshots over time ("I think you've corrupted me... I ask
-  for cookies more than I used to").
+  for cookies more than I used to"). Broken into L17a-f in
+  [`concepts.md`](concepts.md): the trajectory read layer, the
+  change-salience classifier, the learning-event record, self-correction
+  meta-concepts, the surfacing debugger, and the evolution diary.
+- **L19.** Aiko's autobiography (capstone) — her self-history as a
+  durable, traversable timeline: traverse the self-concept graph +
+  snapshots to genuinely answer "Have you changed?". Depends on L17.
+
+Open — later kinds and refinements (L29-L36, all detailed in
+[`concepts.md`](concepts.md)): relationship & meta narratives, concept
+hypotheses and the curiosity loop that tests them, concept fission,
+importance as a second axis beside confidence, introspective reflection,
+a richer edge taxonomy, surface-reason labels, and a strategy layer.
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

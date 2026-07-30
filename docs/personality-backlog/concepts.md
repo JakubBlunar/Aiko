@@ -1986,32 +1986,78 @@ seed anything at onboarding (K19 cold-start companion), or stay fully emergent?
 
 ## L22. Concept-quality evaluation + observability
 
+**Status: MEASUREMENT SHIPPED; enforcement and the offline harness deferred.**
+
 **Motivation.** Confidence gates (L3) and the optional human-in-loop (L6) keep
-*individual* concepts honest, but nothing measures whether the layer as a whole
-is producing *good* concepts or slowly drifting into plausible-sounding nonsense.
-Given the K10 persona-regression harness already exists, a concept-quality
-sibling is the natural guardrail — and it's what lets us tune the L3 thresholds
-with evidence instead of vibes.
+*individual* concepts honest, but nothing measured whether the layer as a whole
+was producing *good* concepts. It wasn't, and none of it was visible from any
+existing surface. The first month of real use: **544 concepts at ~20/day, a 91%
+promotion rate, 83% of actives never reinforced after promotion, zero demotions
+ever, and 729 near-duplicate pairs (under the then-current 0.9 dedupe bar)
+against 9 merges.**
 
-**Key files.** A small eval harness alongside the K10 persona tests; MCP
-introspection beyond L6 (`get_concepts_state` already sketched) — add a
-concept-graph dump + quality counters in [`app/mcp/server.py`](../../app/mcp/server.py).
+### What shipped
 
-**Sketched approach.** Two layers. (1) **Live spurious-concept guard**: cheap
-runtime signals the L3 engine already computes — a concept whose evidence is all
-one cluster (should've been a topic, not a concept), whose supporting memories
-are all low-confidence, or that never re-reinforces after promotion — flagged
-for demotion/review. (2) **Offline eval harness**: a fixture corpus of memories
-with expected/forbidden concepts, run in CI like the persona regression tests,
-scoring precision (no junk) over recall (found the obvious ones) — precision
-matters more here, since a wrong concept is louder than a missing one.
-Observability: an MCP dump of the concept graph (nodes + edges + confidence +
-provenance) so we can eyeball what she's actually forming.
+[`concept_quality.py`](../../app/core/concepts/concept_quality.py) is the pure
+scorer (I/O-free, following the `persona_regression.py` split);
+[`concept_snapshot.build_concept_quality`](../../app/core/concepts/concept_snapshot.py)
+does the graph joins around it. Surfaced via `GET /api/concepts/quality`, the
+`get_concept_quality` MCP tool, and a layer-health strip above the Concepts
+panel. Four families of metric:
 
-**Open questions.** What's the fixture corpus (hand-authored vs. replayed real
-history behind DT4 replay)? Precision/recall target to gate a release?
+- **Flow** — production rate, promotion rate, reinforcement / merge /
+  contradiction volume, and demotions. Answers "is it minting faster than it
+  prunes?"
+- **Shape** — confidence and evidence distributions, plus actives sitting
+  *below* the promotion bar they passed.
+- **Register** — per-(kind, subject) label-template concentration:
+  interpretive-frame rate, imported-jargon rate, leading-n-gram share. Never
+  pooled globally, because a high shared opening is correct for `value` and
+  pathological for `identity` — pooling would average the signal to nothing.
+  This is what localised the template collapse to *one* proposer
+  (`identity`/`user`: 72% frame, 52% jargon) while `value`/`aiko`,
+  `boundary`/`aiko`, `affective`, `narrative` and `aspiration` measured clean.
+- **Pruning** — the never-reinforced count and how many *engaged* days
+  (≈ conversation hours) decay would need to demote them at the current
+  half-life. On the shipped defaults that is a median of ~54, which is why
+  production outran pruning.
 
-**Effort.** Medium.
+All three spurious-concept signals are computed as read-only per-concept fields:
+**(A)** distinct cluster span, resolving memory edges through to their clusters
+rather than trusting `distinct_source_count`, which counts distinct *edges*;
+**(B)** mean/min confidence of the supporting memories, joined from the memory
+mirror — nothing in the layer had ever read `memory.confidence`; **(C)**
+`unreinforced_since_promotion`. Nothing acts on them.
+
+Shipped alongside, since they were the mechanical causes rather than
+measurement gaps: `_existing_for` is now relevance-selected and capped (it was
+injecting all 203 identity concepts into every prompt — a token cost, a
+200-shot demonstration of the template to imitate, and a list too long to pick
+a reinforce-by-id target from); the register rules in
+[`identity_user.py`](../../app/core/concepts/proposers/identity_user.py) ban the
+specific collapse without touching the shared interpretive bodies in
+`proposers/base.py`; `_DEDUPE_COS` dropped 0.9 → 0.86 (nothing in the graph had
+*ever* reached 0.9, so the guard had never fired) and the consolidation band
+0.88 → 0.84; and L3 now demotes an active concept whose evidence was reconciled
+away to nothing, which the confidence-only status floors could not see.
+
+### Still open
+
+- **Threshold tuning against the numbers** — half-life, dormant floor,
+  promotion gate. Deliberately deferred until there is a scoreboard to tune
+  against, which there now is.
+- **Enforcement of signal C** — demote the never-reinforced set. Needs a
+  chosen threshold and a one-off sweep over the concepts minted before the
+  proposer was disciplined.
+- **Offline eval harness** — a fixture corpus with expected/forbidden concepts,
+  scored precision-over-recall in CI like the K10 persona regression. Held back
+  on purpose: hand-authoring goldens before the proposer emits the register we
+  want would enshrine the output we are trying to fix.
+
+**Open questions.** Fixture corpus hand-authored vs. replayed real history
+(behind DT4 replay)? Precision/recall target to gate a release?
+
+**Effort.** Medium (remaining).
 
 ---
 

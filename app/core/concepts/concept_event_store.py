@@ -49,9 +49,12 @@ class ConceptEvent:
     """One row in the concept discovery timeline.
 
     ``event_type`` is an open enum. Emitted today: ``discovered`` (L2
-    synthesis), ``promoted`` / ``dormant`` / ``retired`` / ``revived`` /
-    ``contradicted`` / ``plasticity_shift`` / ``reinforced`` (L3 lifecycle),
-    and ``merged`` (L2 consolidation). ``novelty`` is ``1 - cosine`` to the
+    synthesis), ``promoted`` / ``demoted`` / ``dormant`` / ``retired`` /
+    ``revived`` / ``contradicted`` / ``plasticity_shift`` / ``reinforced``
+    (L3 lifecycle), and ``merged`` (L2 consolidation). ``demoted`` is the
+    structural counterpart to ``dormant``: the belief did not fade, its
+    supporting evidence was reconciled away and it no longer rests on
+    anything. ``novelty`` is ``1 - cosine`` to the
     nearest existing concept of the same subject/kind at synthesis time
     (``1.0`` for a first-of-its-kind, and ``0.0`` for historical rows
     backfilled from pre-timeline concepts).
@@ -183,6 +186,26 @@ class ConceptEventStore:
         except Exception:
             return 0
         return int(row[0]) if row else 0
+
+    def counts_by_type(self) -> dict[str, int]:
+        """Whole-timeline tally of ``event_type -> count``.
+
+        The L22 flow metrics (promotion rate, demotions, reinforcement
+        volume) are ratios over the full history, so they need a grouped
+        count rather than a page of rows. Aggregated in SQL because the
+        timeline is unbounded by design -- paging it into Python just to
+        count would grow linearly forever.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT event_type, COUNT(*) FROM concept_events "
+                "GROUP BY event_type"
+            ).fetchall()
+        except Exception:
+            log.warning("concept event counts failed", exc_info=True)
+            return {}
+        return {str(r[0] or ""): int(r[1] or 0) for r in rows}
 
 
 __all__ = ["ConceptEvent", "ConceptEventStore"]

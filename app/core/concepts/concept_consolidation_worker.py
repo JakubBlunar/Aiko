@@ -157,7 +157,7 @@ class ConceptConsolidationWorker:
         self._evict_expired(now)
 
         batch_size = max(1, self._i("concept_consolidation_batch_size", 40))
-        merge_cos = self._fl("concept_consolidation_merge_cosine", 0.88)
+        merge_cos = self._fl("concept_consolidation_merge_cosine", 0.84)
         batch = self._store.list_stalest(batch_size)
 
         stats: dict[str, Any] = {

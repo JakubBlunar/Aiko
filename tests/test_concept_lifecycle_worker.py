@@ -332,6 +332,72 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(got.status, "retired")
         self.assertIn("retired", [e.event_type for e in h.events.list()])
 
+    def test_active_with_no_evidence_left_is_demoted(self) -> None:
+        # L25 reconciles a concept's edges away when its supporting
+        # memories are deleted. The status floors read confidence only, so
+        # this belief would otherwise have stayed active at 0.9 for the
+        # tens of engaged days decay needs to reach the dormant floor.
+        h = _harness()
+        c = _add(
+            h.store, status="active", confidence=0.9, distinct_source_count=0,
+            evidence_count=0, last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0, promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        stats = h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "candidate")
+        self.assertEqual(stats["demoted"], 1)
+        self.assertIn("demoted", [e.event_type for e in h.events.list()])
+
+    def test_demotion_does_not_touch_beliefs_with_a_single_source(self) -> None:
+        # The source bar is not uniform across kinds (boundary and
+        # communication_style accept a single deliberate anchor), so the
+        # re-gate fires only at zero -- anything else is a threshold call.
+        h = _harness()
+        c = _add(
+            h.store, status="active", confidence=0.9, distinct_source_count=1,
+            last_lifecycle_at=_iso(1), last_lifecycle_engagement=0.0,
+            promoted_at=_iso(9),
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_demoted_concept_can_repromote_when_evidence_returns(self) -> None:
+        # Demotion is a return to the funnel, not a verdict: re-evidence
+        # it and the ordinary promotion gate lets it back through.
+        h = _harness(with_clock=False)  # wall-clock, so age already clears
+        c = _add(
+            h.store, status="active", confidence=0.9, distinct_source_count=0,
+            first_evidence_at=_iso(9), last_lifecycle_at=_iso(2),
+            promoted_at=_iso(9),
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+
+        restored = h.store.get(c.concept_id)
+        restored.distinct_source_count = 3
+        restored.last_reinforced_at = _iso(0)
+        restored.last_lifecycle_at = _iso(1)
+        h.store.update(restored)
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_candidate_with_no_evidence_is_not_demoted_again(self) -> None:
+        # The re-gate is an active-only concern; a candidate is already in
+        # the funnel and the TTL is what removes it.
+        h = _harness()
+        c = _add(
+            h.store, status="candidate", distinct_source_count=0,
+            first_evidence_at=_iso(1), last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0,
+        )
+        h.kv.set("engagement.total_units", "0.0")
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+        self.assertEqual(h.events.count(), 0)
+
     def test_retired_revives_on_fresh_evidence(self) -> None:
         h = _harness(with_clock=False)  # wall-clock fallback
         c = _add(

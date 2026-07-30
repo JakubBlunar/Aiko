@@ -360,6 +360,19 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(500, f"worker run failed: {exc}") from exc
         return JSONResponse({"result": result or {}})
 
+    @app.get("/api/concepts/quality")
+    def get_concept_quality() -> JSONResponse:
+        """L22 quality scoreboard -- is the concept *layer* healthy?
+
+        Where ``/api/concepts`` lists what Aiko believes, this aggregates
+        it: production vs. pruning rates, confidence + evidence
+        distributions, paraphrase twins under the dedupe bar, per-kind
+        label-template concentration, and the spurious-concept signals.
+        Read-only and advisory; nothing here demotes anything. Empty
+        ``enabled=False`` shape when the concept layer is disabled.
+        """
+        return JSONResponse(session.concept_quality())
+
     @app.get("/api/concepts/timeline")
     def get_concept_timeline(
         limit: int = 200,

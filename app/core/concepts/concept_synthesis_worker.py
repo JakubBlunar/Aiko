@@ -33,9 +33,11 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from app.core.concepts.proposers import (
     AIKO_SELF_KINDS,
@@ -65,7 +67,19 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
 # Cosine threshold above which a fresh proposal is treated as the same
 # candidate as an existing concept (dedupe -> reinforce instead of add).
-_DEDUPE_COS = 0.9
+#
+# Was 0.9, which turned out to be a dead threshold: over a month of real
+# use, *no* pair of same-(kind, subject) concepts ever reached it, so the
+# guard never once fired and every paraphrase twin landed as its own row.
+# Measured over that graph, pairs from 0.86 up are restatements of the
+# same belief ("the architectural refinement of Aiko's memory systems as
+# a ritualistic anchor" vs "the architectural integrity of Aiko's memory
+# system as a prerequisite"), while 0.82 and below is where genuinely
+# different subjects start sharing a sentence template. There is no
+# adjudicator on this path -- a hit silently reinforces instead of
+# creating -- so it sits at the conservative end of the twin range and
+# leaves the rest to the consolidation worker, which does adjudicate.
+_DEDUPE_COS = 0.86
 # Answer-token budget per proposer LLM call. Sized generously because a
 # reasoning-capable maintenance model (e.g. qwen3.x) can spend a large,
 # variable preamble on visible chain-of-thought *before* the ``{"concepts":
@@ -76,6 +90,15 @@ _DEDUPE_COS = 0.9
 # idle worker, so the extra tokens cost latency we don't feel.
 _MAX_TOKENS = 4096
 _TEMPERATURE = 0.6
+
+# How many existing concepts a proposer prompt may list. See
+# ``_existing_for``: this block is what lets the model reinforce an
+# existing concept by id rather than minting a near-duplicate, so it has
+# to be long enough to contain the right one and short enough that the
+# model reads it as a list to check against rather than a corpus to
+# imitate. Selection is by relevance, so the cap only has to cover the
+# concepts plausibly about the material in front of it.
+_MAX_EXISTING = 40
 
 _KV_CLUSTER_SIGS = "concept_synth.cluster_sigs"
 _KV_AIKO_SIG = "concept_synth.aiko_sig"
@@ -745,7 +768,7 @@ class ConceptSynthesisWorker:
             ctx,
             focus_clusters=focus_clusters,
             cluster_index=cluster_index,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(spec, focus=focus_clusters),
             coactivation=self._coactivation_modes(),
         )
 
@@ -881,7 +904,9 @@ class ConceptSynthesisWorker:
             focus_clusters=focus_clusters,
             cluster_index=cluster_index,
             memories=batch,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(
+                spec, focus=focus_clusters, memories=batch
+            ),
         )
 
         # Persist combined signature. Mark processed focus reps fresh; keep
@@ -1078,7 +1103,9 @@ class ConceptSynthesisWorker:
                 affect_by_rep=affect_by_rep,
                 memories=memories_batch,
                 memory_affect=memory_affect,
-                existing=self._existing_for(spec),
+                existing=self._existing_for(
+                    spec, focus=focus_clusters, memories=memories_batch
+                ),
             )
         else:
             proposals = spec.propose(
@@ -1086,7 +1113,7 @@ class ConceptSynthesisWorker:
                 focus_clusters=focus_clusters,
                 cluster_index=cluster_index,
                 affect_by_rep=affect_by_rep,
-                existing=self._existing_for(spec),
+                existing=self._existing_for(spec, focus=focus_clusters),
             )
 
         # Persist sig: processed focus reps fresh; unprocessed dirty reps keep
@@ -1299,7 +1326,7 @@ class ConceptSynthesisWorker:
             ctx,
             candidates=candidates,
             min_chain=min_chain,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(spec, focus=candidates),
         )
 
     def _run_aspiration_pass(
@@ -1334,7 +1361,7 @@ class ConceptSynthesisWorker:
             ctx,
             candidates=candidates,
             min_chain=min_chain,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(spec, focus=candidates),
         )
 
     # ── boundary pass (L18) ─────────────────────────────────────────────
@@ -1445,7 +1472,9 @@ class ConceptSynthesisWorker:
             focus_clusters=focus_clusters,
             cluster_index=cluster_index,
             memories=batch,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(
+                spec, focus=focus_clusters, memories=batch
+            ),
         )
 
         # Persist combined signature. Processed focus reps go fresh; unprocessed
@@ -1572,7 +1601,9 @@ class ConceptSynthesisWorker:
             focus_clusters=focus_clusters,
             cluster_index=cluster_index,
             memories=batch,
-            existing=self._existing_for(spec),
+            existing=self._existing_for(
+                spec, focus=focus_clusters, memories=batch
+            ),
             style_digest=digest,
         )
 
@@ -1880,17 +1911,118 @@ class ConceptSynthesisWorker:
         mems.sort(key=_key)
         return mems
 
-    def _existing_for(self, spec: ProposerSpec) -> list[ExistingConcept]:
-        """Concepts already stored for this proposer's (subject, kind) --
-        both candidate and active -- so the LLM can avoid re-proposing
-        them and reinforce by id instead. Cardinality is low by design,
-        so passing them all is cheap."""
-        return [
-            ExistingConcept(id=c.concept_id, label=c.label)
-            for c in self._concept_store.list_by(
-                subject=spec.subject, kind=spec.kind
-            )
-        ]
+    def _existing_for(
+        self,
+        spec: ProposerSpec,
+        *,
+        focus: "Sequence[Any]" = (),
+        memories: "Sequence[Any]" = (),
+    ) -> list[ExistingConcept]:
+        """The existing concepts worth showing this proposer, bounded.
+
+        Handed to the LLM so it can reinforce an existing concept by id
+        instead of re-proposing it. This used to pass *every* stored
+        concept of the (subject, kind), on the assumption that
+        cardinality stays low. It does not: identity/user alone reached
+        203, at which point the block was three things at once -- a large
+        recurring token cost, a 200-shot demonstration of the exact
+        sentence template to imitate, and a list too long to pick an id
+        out of, so reinforce-by-id under-fired and near-duplicates were
+        minted instead.
+
+        So select by relevance to what this pass is actually looking at:
+        take the focus material's representative memories (and any
+        specific memories offered) as query vectors, and keep the nearest
+        concepts by cosine. Concepts about *this* material are exactly the
+        ones the model might reinforce; the rest were never candidates.
+
+        ``focus`` is any sequence of objects carrying a cluster
+        representative id in ``rep`` -- :class:`FocusCluster` for the
+        cluster passes, :class:`NarrativeCandidate` for the ordered ones.
+
+        Falls back to the whole set, still capped, when no query vector is
+        available (passes with no cluster/memory focus, or an unembedded
+        corpus) -- a short arbitrary list beats an unbounded one.
+        """
+        query_vecs = self._focus_vectors(focus, memories)
+        if not query_vecs:
+            return [
+                ExistingConcept(id=c.concept_id, label=c.label)
+                for c in self._concept_store.list_by(
+                    subject=spec.subject, kind=spec.kind
+                )[:_MAX_EXISTING]
+            ]
+
+        # Best cosine per concept across the focus vectors, so a concept
+        # that is highly relevant to one cluster is not diluted by being
+        # unrelated to the others.
+        best: dict[int, tuple[float, str]] = {}
+        for vec in query_vecs:
+            try:
+                hits = self._concept_store.nearest(
+                    vec,
+                    subject=spec.subject,
+                    kind=spec.kind,
+                    status=None,
+                    k=_MAX_EXISTING,
+                )
+            except Exception:
+                log.debug("existing-concept selection failed", exc_info=True)
+                continue
+            for concept, cos in hits:
+                cid = int(concept.concept_id)
+                if cid not in best or cos > best[cid][0]:
+                    best[cid] = (float(cos), concept.label)
+
+        ranked = sorted(best.items(), key=lambda kv: -kv[1][0])[:_MAX_EXISTING]
+        return [ExistingConcept(id=cid, label=label) for cid, (_c, label) in ranked]
+
+    def _focus_vectors(
+        self,
+        focus: "Sequence[Any]",
+        memories: "Sequence[Any]",
+    ) -> list["np.ndarray"]:
+        """Embedding vectors describing what this pass is looking at.
+
+        Reuses the embeddings already stored on the memory rows (cluster
+        representatives and the offered specifics), so relevance selection
+        costs no embedder call.
+        """
+        vecs: list[np.ndarray] = []
+        seen: set[int] = set()
+
+        def _take(mem: Any) -> None:
+            embedding = getattr(mem, "embedding", None)
+            if embedding is None:
+                return
+            arr = np.asarray(embedding, dtype=np.float32).ravel()
+            if arr.size:
+                vecs.append(arr)
+
+        for item in focus:
+            try:
+                rep = int(getattr(item, "rep", 0))
+            except (TypeError, ValueError):
+                continue
+            if not rep or rep in seen:
+                continue
+            seen.add(rep)
+            try:
+                _take(self._memory_store.get(rep))
+            except Exception:
+                log.debug("focus vector lookup failed", exc_info=True)
+
+        for mem in memories:
+            try:
+                mid = int(getattr(mem, "id", 0))
+            except (TypeError, ValueError):
+                continue
+            if mid in seen:
+                continue
+            seen.add(mid)
+            _take(mem)
+
+        return vecs
 
     # ── persistence (shared) ───────────────────────────────────────────
 

@@ -4,6 +4,26 @@ Finds higher-order identity concepts by connecting topics that look
 separate but reflect the same underlying trait/interest. Evidence edges
 point ``cluster`` nodes at the concept; requires >= ``min_sources``
 distinct clusters including at least one focus cluster.
+
+**The register rules exist because this proposer collapsed.** Asked to be
+"specific and falsifiable", the model satisfied it by over-*interpreting*
+rather than by observing more closely, and converged on one sentence:
+*"<name> treats <mundane activity> as a <engineering metaphor> that
+verifies <emotional need>"*. Seventy-two percent of the labels it had
+produced carried that frame; a quarter opened with the literal words
+"<name> treats the". So the rules below ban the specific move --
+inventing a function for an ordinary activity, and importing vocabulary
+from an unrelated domain -- rather than banning interpretation.
+
+That distinction is why they live here and not in
+:mod:`app.core.concepts.proposers.base`. Several kinds are interpretive
+*by design*: ``value`` is the normative why under a choice (L10), and
+``tension`` / ``generalization`` / ``affective`` / ``aspiration`` are all
+inference. Measured over the same graph they show near-zero contamination
+on both markers, so a shared "don't say what it really means" rule would
+contradict their purpose and damage output that is currently good.
+:mod:`app.core.concepts.concept_quality` tracks the two rates per (kind,
+subject), which is the regression guard on both sides of that line.
 """
 from __future__ import annotations
 
@@ -44,10 +64,30 @@ def _system(user_name: str, assistant_name: str) -> str:
         f"Refer to the AI companion as '{assistant_name}'.\n"
         "- Each NEW concept MUST span at least two distinct clusters (by "
         "rep id).\n"
-        "- Be SPECIFIC and FALSIFIABLE. No horoscope traits like 'is "
-        "curious' or 'is intelligent' that are true of everyone and "
-        "disprovable by no one. Say something the raw cluster labels do "
-        "not already say.\n"
+        "- Be SPECIFIC and FALSIFIABLE -- specific in what you OBSERVED, "
+        f"not in how cleverly you explain it. A good concept is one you "
+        f"could watch {user_name} for a week and find false. No horoscope "
+        "traits like 'is curious' or 'is intelligent' that are true of "
+        "everyone and disprovable by no one. Say something the raw "
+        "cluster labels do not already say.\n"
+        "- Say what they DO, prefer, or keep returning to -- not what it "
+        "'really means'. Do not assign a hidden function to an ordinary "
+        "activity: a bath is a bath, a snack is a snack, a typo is a "
+        "typo. If the label claims one thing is really a way of "
+        "verifying, validating, testing, or proving another, you have "
+        "invented a theory instead of noticing a pattern.\n"
+        "- Never describe one part of their life in vocabulary borrowed "
+        "from another. Technical language belongs in concepts about "
+        "technical work, not in concepts about food, rest, affection, or "
+        f"routine. Bad: '{user_name} treats the scheduling of baths as a "
+        "mandatory system idle protocol required to transition from "
+        f"high-cognitive debugging to low-stakes intimacy.' Good: "
+        f"'{user_name} winds down with a long bath after a hard "
+        "debugging session and comes back noticeably warmer.'\n"
+        "- Keep the label to ONE claim. If it needs a comma to add what "
+        "the behaviour demonstrates or why it matters, cut everything "
+        "after the comma -- interpretation belongs in 'rationale', which "
+        "is where you should put it.\n"
         "- Do NOT re-propose an ALREADY-KNOWN concept or a trivial "
         "rewording of one. If a focus cluster instead adds fresh support "
         "for a known concept, REINFORCE it: emit an item with its id in "

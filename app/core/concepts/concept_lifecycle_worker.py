@@ -218,6 +218,7 @@ class ConceptLifecycleWorker:
         stats = {
             "scanned": 0,
             "promoted": 0,
+            "demoted": 0,
             "dormant": 0,
             "retired": 0,
             "revived": 0,
@@ -579,6 +580,17 @@ class ConceptLifecycleWorker:
             # dented confidence leaves it active-but-weakened.
             if contradicted and conf < contradicted_floor:
                 return "contradicted", "contradicted"
+            # L22/L25: the evidence a belief was promoted on can be taken
+            # away afterwards -- memories get deleted, pruned or merged,
+            # and the reconciler drops the edges. Nothing used to notice:
+            # the status floors read *confidence* only, so a concept whose
+            # support had vanished entirely stayed active at 0.85 for as
+            # long as decay took to reach the dormant floor (tens of
+            # engaged days). An unsupported belief goes back to the
+            # candidate funnel, where the TTL retires it if the evidence
+            # never returns.
+            if not self._has_any_evidence(concept):
+                return "candidate", "demoted"
             if conf < dormant_floor:
                 return "dormant", "dormant"
             return "active", ""
@@ -651,6 +663,25 @@ class ConceptLifecycleWorker:
                 min_confidence=min_confidence,
             )
         )
+
+    @staticmethod
+    def _has_any_evidence(concept: "Concept") -> bool:
+        """Whether an active belief still rests on anything at all.
+
+        Deliberately the weakest possible re-gate: zero distinct sources
+        fails *every* kind's promotion gate, so demoting on it needs no
+        per-kind reasoning and cannot misfire. That matters because the
+        source bar is not uniform -- ``boundary`` and
+        ``communication_style`` override it down to 1, since a single
+        deliberate anchor is enough for them -- so re-applying the full
+        bar here would strip legitimately single-anchored beliefs.
+
+        Re-gating against each kind's real source bar would catch more
+        (32 actives currently sit below it, against 6 at zero), but that
+        is a threshold decision to make against the quality scoreboard
+        rather than a bug fix, so it stays out of this path for now.
+        """
+        return int(concept.distinct_source_count) > 0
 
     def _graph_mature(self) -> bool:
         """Whether the topic graph has cleared the L21 maturity floor.
@@ -928,6 +959,8 @@ class ConceptLifecycleWorker:
     def _tally(stats: dict[str, Any], event_type: str) -> None:
         if event_type == "promoted":
             stats["promoted"] += 1
+        elif event_type == "demoted":
+            stats["demoted"] += 1
         elif event_type == "dormant":
             stats["dormant"] += 1
         elif event_type == "retired":
@@ -1001,6 +1034,11 @@ class ConceptLifecycleWorker:
             return (
                 f"Retired stale candidate: only {distinct} source(s) after "
                 f"{age:.0f}d."
+            )
+        if event_type == "demoted":
+            return (
+                "Demoted to candidate: all supporting evidence was removed, "
+                "so the belief no longer rests on anything."
             )
         if event_type == "revived":
             return (

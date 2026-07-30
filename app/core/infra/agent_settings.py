@@ -485,12 +485,17 @@ class AgentSettings:
     # existing in-memory mirror; no embedding work).
     topic_graph_enabled: bool = True
     # ── L1 higher-order concept layer ─────────────────────────────────
-    # Master switch for the concept substrate (schema v21: ``concepts`` +
-    # ``concept_edges`` and the in-process ConceptStore mirror). Defaults
-    # OFF: L1 only builds the data layer + store, so with no proposer
-    # (L2) or lifecycle engine (L3) yet there is nothing to run -- the
-    # flag just constructs and warm-starts the store so later L-entries
-    # have somewhere to write. The tables exist regardless of the flag.
+    # Master switch for the whole concept layer: the substrate (schema
+    # v21 ``concepts`` + ``concept_edges`` and the in-process ConceptStore
+    # mirror) plus every worker above it -- the L2 synthesis proposers,
+    # the L3 lifecycle engine, consolidation, and edge reconciliation.
+    # The per-feature switches below are all subordinate to this one.
+    #
+    # Still defaults OFF, now for a cost reason rather than an
+    # incompleteness one: synthesis is a recurring maintenance-LLM spend
+    # on an idle worker, and it wants a topic graph with real history
+    # behind it before its output is worth anything (see the L21 maturity
+    # gate). The tables exist regardless of the flag.
     concepts_enabled: bool = False
     # L2 concept synthesis proposer. When enabled (and ``concepts_enabled``
     # is on), a regular, incremental idle worker mines topic clusters +

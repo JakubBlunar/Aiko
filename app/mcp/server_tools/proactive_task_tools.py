@@ -2263,6 +2263,43 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_concept_graph raised: {exc}"
 
     @mcp.tool()
+    def get_concept_quality() -> str:
+        """L22 — is the concept *layer* healthy? (the quality scoreboard)
+
+        Where ``get_concept_graph`` dumps what Aiko believes, this
+        aggregates it into the numbers that say whether the layer is
+        working. Sections:
+
+        - ``flow`` — production rate, ``promotion_rate_pct`` (what share
+          of proposals become beliefs) and ``demotion_events``. A high
+          promotion rate next to zero demotions means the graph only
+          grows.
+        - ``confidence`` / ``evidence`` — distributions, plus actives
+          sitting *below* the promotion bar (``active_below_bar``,
+          ``active_zero_source``) and the L22 spurious signals
+          ``single_cluster_active`` (evidence all from one topic) and
+          ``weak_memory_active`` (supporting memories are low-confidence).
+        - ``duplicates`` — paraphrase twins in the cosine band just under
+          the creation-time dedupe bar, i.e. the ones that slipped past it.
+        - ``register`` — per ``kind/subject`` label-template concentration
+          (``frame_pct`` / ``jargon_pct`` / ``top_lead_ngram``). Read per
+          kind, never pooled: a high shared opening is correct for
+          ``value`` and pathological for ``identity``.
+        - ``pruning`` — ``unreinforced_since_promotion`` and how many
+          engaged days (~conversation hours) decay would need to demote
+          them at the current half-life.
+
+        Read-only and advisory — nothing here changes a concept.
+        ``enabled=False`` when the layer is off.
+        """
+        try:
+            return json.dumps(
+                session.concept_quality(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_quality raised: {exc}"
+
+    @mcp.tool()
     def get_concept_transitions(limit: int = 50) -> str:
         """L26 — recent concept lifecycle transitions ("what changed").
 

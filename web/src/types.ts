@@ -998,6 +998,76 @@ export interface ConceptsSnapshot {
   concepts: ConceptRow[];
 }
 
+/** One (kind, subject) row of the L22 label-register readout. Always read
+ *  per kind: a high `top_lead_pct` is correct for `value` ("Jacob values
+ *  ...") and a collapse for `identity` ("Jacob treats the ..."). */
+export interface ConceptRegisterEntry {
+  n: number;
+  frame_pct: number;
+  jargon_pct: number;
+  top_lead_ngram: string;
+  top_lead_pct: number;
+}
+
+/** L22 quality scoreboard — whether the concept *layer* is healthy, as
+ *  opposed to what it currently believes. Advisory only. */
+export interface ConceptQualityReport {
+  enabled: boolean;
+  generated_at: string;
+  thresholds: Record<string, number>;
+  totals: {
+    total: number;
+    by_status: Record<string, number>;
+    by_subject: Record<string, number>;
+    by_kind: Record<string, number>;
+    by_kind_subject: Record<string, number>;
+  };
+  flow: {
+    window_days?: number;
+    concepts_per_day?: number | null;
+    events?: Record<string, number>;
+    promotion_rate_pct?: number;
+    reinforced_events?: number;
+    merged_events?: number;
+    contradicted_events?: number;
+    demotion_events?: number;
+  };
+  confidence: {
+    by_status?: Record<
+      string,
+      { n: number; min: number; mean: number; max: number }
+    >;
+    high_confidence_pct?: number;
+    high_confidence_threshold?: number;
+  };
+  evidence: {
+    promote_min_sources?: number;
+    active_below_bar?: number;
+    active_zero_source?: number;
+    single_cluster_active?: number;
+    weak_memory_active?: number;
+    distinct_source_histogram?: Record<string, number>;
+  };
+  duplicates: {
+    band?: { floor: number; ceiling: number };
+    pair_count: number;
+    pairs: {
+      kind: string;
+      subject: string;
+      cosine: number;
+      a: { id: number; label: string };
+      b: { id: number; label: string };
+    }[];
+  };
+  register: Record<string, ConceptRegisterEntry>;
+  pruning: {
+    active?: number;
+    unreinforced_since_promotion?: number;
+    unreinforced_pct?: number;
+    median_engaged_days_to_dormant?: number | null;
+  };
+}
+
 // One entry in Aiko's concept discovery timeline -- an "aha!" moment.
 export interface ConceptEvent {
   id: number;

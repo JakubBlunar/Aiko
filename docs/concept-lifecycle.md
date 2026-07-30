@@ -39,6 +39,7 @@ stateDiagram-v2
     [*] --> candidate: L2 proposes
     candidate --> active: distinct_sources >= min AND age >= min_age AND confidence >= min_conf
     candidate --> retired: stale (age >= candidate_ttl, still < min sources)
+    active --> candidate: demoted — evidence reconciled away to zero sources
     active --> dormant: confidence < dormant_floor
     active --> contradicted: counter-evidence AND confidence < contradicted_floor (L9)
     contradicted --> active: revived — re-reinforced past promote_min_confidence
@@ -60,6 +61,7 @@ worker is also gated by `agent.concepts_enabled`.
 | --- | --- | --- |
 | `candidate → active` | `distinct_source_count >= min_sources` **and** `age_days >= min_age_days` **and** `confidence >= min_confidence` (the per-kind `promotion_gate`, default the `set`-evidence gate) | `concept_promote_min_sources`, `concept_promote_min_age_days`, `concept_promote_min_confidence` |
 | `candidate → retired` | `age_days >= candidate_ttl` **and** `distinct_source_count < min_sources` | `concept_candidate_ttl_days`, `concept_promote_min_sources` |
+| `active → candidate` | `distinct_source_count == 0` — every supporting edge was deleted or repointed away (L25), so the belief rests on nothing. Checked **before** the confidence floors, because confidence decays far too slowly to notice on its own. It keeps its confidence and re-promotes normally once evidence returns. | (none — structural) |
 | `active → dormant` | `confidence < dormant_floor` (and **not** contradicted this tick) | `concept_dormant_confidence_floor` |
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |
 | `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
@@ -113,7 +115,7 @@ The one rule that keeps a second writer from ever creeping in:
 | **L2 synthesis worker** | creates `candidate` rows + `evidence` edges; reinforces existing concepts of *any* status (`evidence_count`, `distinct_source_count`, `last_reinforced_at`) | `confidence` / `plasticity` / `status` / `promoted_at` / `last_lifecycle_*` / `first_evidence_engagement` |
 | **L3 lifecycle worker** | **single writer** of `confidence` / `plasticity` / `status` / `promoted_at` + the `last_lifecycle_at` / `last_lifecycle_engagement` / `first_evidence_engagement` anchors; emits lifecycle events | edges / evidence counts / memories |
 | **L9 `ConceptContradictionDetector`** | nothing — **read-only** input. Reads the concept + nearby memories and returns a verdict; L3 applies the penalty / transition. | `confidence` / `status` / anything (it is not a writer) |
-| **L25 `ConceptEdgeReconciler`** | drops / repoints edges when their target memory is deleted or merged, and recomputes the affected concepts' *edge-derived* `evidence_count` / `distinct_source_count` (same recompute L2 does) | `confidence` / `plasticity` / `status` / memories |
+| **L25 `ConceptEdgeReconciler`** | drops / repoints edges when their target memory is deleted or merged, and recomputes the affected concepts' *edge-derived* `evidence_count` / `distinct_source_count` (same recompute L2 does). It never re-gates `status` itself — it makes the counts truthful and L3's rolling sweep reads them and demotes. | `confidence` / `plasticity` / `status` / memories |
 | **L25 `ConceptEdgeIntegrityWorker`** | idle sweep — asks the reconciler to GC orphaned memory edges left by listener-bypassing `prune()` | anything directly (delegates to the reconciler) |
 | **L6 (future)** | manual confirm (hard-promote) / reject (→ terminal `suppressed`), *through* L3's rules — the only other actor allowed to drive a status change | — |
 | **L5** | nothing — read-only consumer that surfaces `active` concepts (with L9 supporting-grounding) | any mutation |
@@ -304,6 +306,7 @@ append-only, decoupled from concept deletion) with a generated `reason`.
 | --- | --- | --- |
 | `discovered` | L2 | concept first synthesised |
 | `promoted` | L3 | `candidate → active` |
+| `demoted` | L3 | `active → candidate` — all supporting evidence was removed |
 | `dormant` | L3 | `active → dormant` |
 | `retired` | L3 | `→ retired` (decayed or stale candidate) |
 | `revived` | L3 | leaving `dormant`/`retired`/`contradicted` back up on fresh evidence |
