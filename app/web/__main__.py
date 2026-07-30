@@ -35,11 +35,12 @@ def _apply_env_overrides(settings) -> None:
 
       * ``AIKO_WEB_HOST``        -> web_server.host   (use 0.0.0.0 in Docker)
       * ``AIKO_WEB_PORT``        -> web_server.port
-      * ``AIKO_OLLAMA_BASE_URL`` -> ollama.base_url   (e.g.
-        http://host.docker.internal:11434, or http://ollama:11434 for an
-        in-compose Ollama). The embedder + the synthesised LLM provider
-        catalogue both fall back to ollama.base_url, so this one value
-        retargets chat, embeddings, and workers at once.
+      * ``AIKO_OLLAMA_BASE_URL`` -> the ``base_url`` of every Ollama
+        provider in the catalogue (e.g. http://host.docker.internal:11434,
+        or http://ollama:11434 for an in-compose Ollama). Chat, workers
+        and embeddings all resolve their endpoint through the catalogue,
+        so this one value retargets them together. Remote
+        (``openai_compatible``) providers are left alone.
 
     Every override is best-effort: a malformed value is logged and ignored
     rather than crashing boot.
@@ -55,10 +56,26 @@ def _apply_env_overrides(settings) -> None:
                 web.port = int(port)
             except (TypeError, ValueError):
                 log.warning("ignoring invalid AIKO_WEB_PORT=%r", port)
-    ollama = getattr(settings, "ollama", None)
-    base_url = os.environ.get("AIKO_OLLAMA_BASE_URL")
-    if ollama is not None and base_url:
-        ollama.base_url = base_url.strip()
+    base_url = (os.environ.get("AIKO_OLLAMA_BASE_URL") or "").strip()
+    llm = getattr(settings, "llm", None)
+    if base_url and llm is not None:
+        retargeted = [
+            provider.id
+            for provider in llm.providers
+            if provider.kind == "ollama"
+        ]
+        for provider in llm.providers:
+            if provider.kind == "ollama":
+                provider.base_url = base_url
+        # The transport template is derived at load time, so refresh it
+        # too or the main-chat client would still dial the old host.
+        if getattr(settings, "ollama", None) is not None:
+            settings.ollama.base_url = base_url
+        log.info(
+            "AIKO_OLLAMA_BASE_URL=%s applied to provider(s): %s",
+            base_url,
+            ", ".join(retargeted) or "(none)",
+        )
 
 
 def main() -> int:

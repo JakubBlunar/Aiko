@@ -25,7 +25,7 @@ Design contract
   pre-keyring plaintext-config behaviour is preserved verbatim.
 
 Account naming: a single :data:`SERVICE_NAME` namespace with one account
-per credential -- :data:`CHAT_LLM_ACCOUNT` for the legacy ``chat_llm``
+per credential -- :data:`CHAT_LLM_ACCOUNT` for the retired ``chat_llm``
 block and ``provider:<id>`` (:func:`provider_account`) for each
 catalogue provider row.
 """
@@ -41,9 +41,11 @@ log = logging.getLogger("app.secret_store")
 # Namespace under which every Aiko credential is filed in the OS store.
 SERVICE_NAME = "aiko-assistant"
 
-# Account name for the legacy ``chat_llm`` block when no catalogue
-# provider can be resolved for it (see ``_chat_llm_secret_account`` on
-# the controller, which prefers the ``main_chat`` provider's account).
+# Account the retired ``chat_llm`` config block filed its key under.
+# Kept only so the one-shot adoption in
+# ``LlmSettingsMixin._adopt_retired_chat_llm_secret`` can find and
+# re-file it onto the ``main_chat`` provider's account. Nothing writes
+# here any more.
 CHAT_LLM_ACCOUNT = "chat_llm"
 
 # Account name for the web-search backend (LangSearch) API key.

@@ -325,7 +325,7 @@ class ChatClient(Protocol):
 
         Ollama exposes this via ``/api/show``; OpenAI-compatible
         providers usually don't, in which case the controller falls
-        back to ``chat_llm.context_window`` or a hardcoded default.
+        back to the route's ``context_window`` or a hardcoded default.
         """
 
 

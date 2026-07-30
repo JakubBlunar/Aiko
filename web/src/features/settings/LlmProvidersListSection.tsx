@@ -19,11 +19,9 @@ import { Section } from "./SettingsSection";
  *     a route still references the provider — we surface it).
  *
  * "Add provider" picks one of the curated templates from
- * ``/api/llm/presets`` and appends a new catalogue row. The legacy
- * ``ChatProviderSection`` preset-card UI keeps working for the
- * single-active-provider story (it mirror-writes through the same
- * catalogue), so users who only need one provider never have to
- * interact with this list.
+ * ``/api/llm/presets`` and appends a new catalogue row; the template
+ * seeds the endpoint and links out to wherever that provider hands out
+ * API keys. Assign the new entry to a role in the routes table above.
  */
 
 interface ProviderDraft {
@@ -511,17 +509,31 @@ export function LlmProvidersListSection() {
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {availableTemplates.map((t) => (
-              <button
+              <div
                 key={t.id}
-                type="button"
-                onClick={() => void addFromTemplate(t.id)}
-                className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-left text-xs text-ink-100/80 hover:bg-white/5"
+                className="rounded-md border border-white/10 bg-black/30 px-2 py-1"
               >
-                <div className="font-medium">{t.label}</div>
-                <div className="text-[10px] text-ink-100/40">
-                  {t.free_tier}
-                </div>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => void addFromTemplate(t.id)}
+                  className="w-full text-left text-xs text-ink-100/80 hover:text-ink-100"
+                >
+                  <div className="font-medium">{t.label}</div>
+                  <div className="text-[10px] text-ink-100/40">
+                    {t.free_tier}
+                  </div>
+                </button>
+                {t.docs_url ? (
+                  <a
+                    href={t.docs_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-0.5 block text-[10px] text-ink-100/40 underline-offset-2 hover:text-ink-100/70 hover:underline"
+                  >
+                    {t.api_key_required ? "Get an API key" : "Docs"}
+                  </a>
+                ) : null}
+              </div>
             ))}
             <button
               type="button"

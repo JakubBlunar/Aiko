@@ -3772,10 +3772,14 @@ class VulnerabilityBudgetSettingsTests(unittest.TestCase):
         self.assertTrue(result.agent.vulnerability_budget_enabled)
 
 
-class ChatLlmSettingsTests(unittest.TestCase):
-    """``chat_llm.workers_use_local`` + ``provider_preset`` round-trip
-    through the loader. Also verifies ``provider="openai_compatible"``
-    is accepted while a typo'd preset collapses to ``""``.
+class LlmBlockSettingsTests(unittest.TestCase):
+    """The ``llm`` block is the only LLM config surface.
+
+    Pins the parts a broken first-run would trip over: the shipped
+    defaults are self-consistent, an explicit route ``context_window``
+    survives the loader (auto-detect would ask Ollama for the model's
+    advertised 256 k maximum), and ``AppSettings.ollama`` is derived
+    from the catalogue rather than parsed from a config block.
     """
 
     def setUp(self) -> None:
@@ -3794,47 +3798,105 @@ class ChatLlmSettingsTests(unittest.TestCase):
             default_path.read_text(encoding="utf-8"),
         )
 
-    def _write_config(self, chat_llm_extra: dict | None = None) -> Path:
+    def _write_config(self, llm_extra: dict | None = None) -> Path:
         cfg = copy.deepcopy(self._base_config)
-        if chat_llm_extra is not None:
-            cfg["chat_llm"] = {**cfg.get("chat_llm", {}), **chat_llm_extra}
+        if llm_extra is not None:
+            cfg["llm"] = {**cfg.get("llm", {}), **llm_extra}
         path = Path(self._tmp.name) / "config.json"
         path.write_text(json.dumps(cfg), encoding="utf-8")
         return path
 
-    def test_workers_use_local_defaults_true(self) -> None:
-        path = self._write_config()
-        result = load_settings(config_path=path)
-        self.assertTrue(result.chat_llm.workers_use_local)
-
-    def test_workers_use_local_override_round_trips(self) -> None:
-        path = self._write_config({"workers_use_local": False})
-        result = load_settings(config_path=path)
-        self.assertFalse(result.chat_llm.workers_use_local)
-
-    def test_provider_preset_round_trips(self) -> None:
-        for preset in ("ollama", "gemini", "openai", "groq", "openrouter"):
-            path = self._write_config({"provider_preset": preset})
-            result = load_settings(config_path=path)
-            self.assertEqual(
-                result.chat_llm.provider_preset, preset,
-                f"preset {preset} did not round-trip",
+    def test_shipped_defaults_are_self_consistent(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        ids = {p.id for p in result.llm.providers}
+        self.assertIn("local_ollama", ids)
+        for role in ("main_chat", "worker_default", "workflow"):
+            route = result.llm.routes[role]
+            self.assertIn(
+                route.provider_id, ids,
+                f"route {role} points at an unknown provider",
             )
+            self.assertTrue(route.model, f"route {role} has no model")
+        self.assertIn(result.llm.embedding.provider_id, ids)
 
-    def test_unknown_preset_collapses_to_empty(self) -> None:
-        path = self._write_config({"provider_preset": "made-up"})
-        result = load_settings(config_path=path)
-        self.assertEqual(result.chat_llm.provider_preset, "")
+    def test_default_routes_pin_an_explicit_context_window(self) -> None:
+        # Left at None the controller asks Ollama for the model's
+        # maximum, and current Qwen tags advertise 256 k -- which spills
+        # a 9B model out of VRAM on a 12 GB card.
+        result = load_settings(config_path=self._write_config())
+        for role in ("main_chat", "worker_default", "workflow"):
+            self.assertEqual(result.llm.routes[role].context_window, 65_536)
 
-    def test_provider_openai_compatible_accepted(self) -> None:
-        path = self._write_config({"provider": "openai_compatible"})
-        result = load_settings(config_path=path)
-        self.assertEqual(result.chat_llm.provider, "openai_compatible")
+    def test_route_context_window_override_round_trips(self) -> None:
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["routes"]["main_chat"]["context_window"] = 8192
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(result.llm.routes["main_chat"].context_window, 8192)
 
-    def test_unknown_provider_falls_back_to_ollama(self) -> None:
-        path = self._write_config({"provider": "azure"})
-        result = load_settings(config_path=path)
-        self.assertEqual(result.chat_llm.provider, "ollama")
+    def test_embedding_block_round_trips(self) -> None:
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["embedding"] = {
+            "provider_id": "local_ollama",
+            "model": "nomic-embed-text",
+            "num_ctx": 512,
+            "num_gpu": 0,
+        }
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(result.llm.embedding.model, "nomic-embed-text")
+        self.assertEqual(result.llm.embedding.num_ctx, 512)
+        self.assertEqual(result.llm.embedding.num_gpu, 0)
+
+    def test_ollama_transport_is_derived_from_the_local_provider(self) -> None:
+        # ``AppSettings.ollama`` is no longer a parsed config block --
+        # it's a transport template built from the catalogue, so callers
+        # that still read it see the provider's real endpoint.
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["providers"][0]["base_url"] = "http://ollama.internal:11434"
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(
+            result.ollama.base_url, "http://ollama.internal:11434",
+        )
+
+    def test_unknown_provider_kind_falls_back_to_ollama(self) -> None:
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["providers"][0]["kind"] = "azure"
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(result.llm.providers[0].kind, "ollama")
+
+
+class UserConfigPathTests(unittest.TestCase):
+    """``AIKO_USER_CONFIG`` relocates the writable overrides file.
+
+    The container points it into the data volume — ``/app/config`` sits
+    in the image's writable layer, so without the override every setting
+    the first-run wizard collects is discarded on the next recreate.
+    """
+
+    def test_env_override_wins(self) -> None:
+        with mock.patch.dict(
+            settings_mod.os.environ,
+            {"AIKO_USER_CONFIG": "/tmp/elsewhere/user.json"},
+        ):
+            resolved = settings_mod._resolve_user_config_path()
+        self.assertEqual(resolved, Path("/tmp/elsewhere/user.json"))
+
+    def test_default_is_the_repo_config_dir(self) -> None:
+        env = {
+            k: v
+            for k, v in settings_mod.os.environ.items()
+            if k != "AIKO_USER_CONFIG"
+        }
+        with mock.patch.dict(settings_mod.os.environ, env, clear=True):
+            resolved = settings_mod._resolve_user_config_path()
+        self.assertEqual(resolved.name, "user.json")
+        self.assertEqual(resolved.parent.name, "config")
+
+    def test_blank_env_falls_back_to_the_default(self) -> None:
+        with mock.patch.dict(
+            settings_mod.os.environ, {"AIKO_USER_CONFIG": "   "},
+        ):
+            resolved = settings_mod._resolve_user_config_path()
+        self.assertEqual(resolved.parent.name, "config")
 
 
 class TaskOrchestrationSettingsTests(unittest.TestCase):

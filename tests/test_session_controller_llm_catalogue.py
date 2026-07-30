@@ -1,16 +1,16 @@
-"""Unit tests for the PR 2 catalogue CRUD on :class:`SessionController`.
+"""Unit tests for the provider-catalogue CRUD on :class:`SessionController`.
 
 These tests build a *stub* controller via ``SessionController.__new__``
 (same pattern as :mod:`tests.test_session_controller_provider_switch`)
-and exercise the new public methods directly:
+and exercise the public methods directly:
 
 - :meth:`SessionController.list_providers` / :meth:`list_routes`
 - :meth:`add_provider` (template + custom + id collision)
-- :meth:`update_provider` (cache invalidation + chat_llm mirror)
+- :meth:`update_provider` (cache invalidation + live rebuild)
 - :meth:`update_provider_credentials`
 - :meth:`remove_provider` (can't-delete-when-referenced)
-- :meth:`update_route` (main_chat cascades via reconfigure_chat_llm,
-  worker_default is recorded but doesn't rebuild the client)
+- :meth:`update_route` (the single role-assignment mutation path)
+- :meth:`required_models` / :meth:`validate_pull_target`
 - :meth:`client_cache_stats`
 
 The heavy machinery (turn_runner, proactive, persist_user_overrides) is
@@ -20,12 +20,12 @@ mocked out. We never touch a real LLM endpoint.
 from __future__ import annotations
 
 import unittest
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app.core.infra.settings import (
     LLM_ROLE_MAIN_CHAT,
     LLM_ROLE_WORKER_DEFAULT,
+    LlmEmbedding,
     LlmProvider,
     LlmRoute,
     LlmSettings,
@@ -37,10 +37,9 @@ from app.llm.ollama_client import OllamaClient
 
 
 def _make_controller() -> SessionController:
-    """Build a bare-bones controller with the legacy + catalogue
-    blocks pre-populated with a known starting state.
+    """Build a bare-bones controller with a known catalogue state.
 
-    Catalogue starts with:
+    Catalogue:
     - ``local_ollama`` (kind=ollama)
     - ``openai`` (kind=openai_compatible, has api key)
 
@@ -50,7 +49,6 @@ def _make_controller() -> SessionController:
     """
     controller = SessionController.__new__(SessionController)
     settings = load_settings()
-    # Force a known catalogue state.
     settings.llm = LlmSettings(
         providers=[
             LlmProvider(
@@ -78,32 +76,29 @@ def _make_controller() -> SessionController:
             LLM_ROLE_WORKER_DEFAULT: LlmRoute(
                 provider_id="local_ollama",
                 model="llama3.1:8b",
+                context_window=65_536,
                 max_tokens=512,
             ),
         },
+        embedding=LlmEmbedding(
+            provider_id="local_ollama",
+            model="qwen3-embedding:0.6b",
+            num_ctx=2048,
+            num_gpu=0,
+        ),
     )
-    # Also align the legacy block with the catalogue so the
-    # mirror-write logic is exercised from a sane starting point.
-    settings.chat_llm.provider = "openai_compatible"
-    settings.chat_llm.provider_preset = "openai"
-    settings.chat_llm.model = "gpt-5-mini"
-    settings.chat_llm.base_url = "https://api.openai.com/v1"
-    settings.chat_llm.api_key = "sk-existing"
-    settings.chat_llm.api_key_env = "OPENAI_API_KEY"
-    settings.chat_llm.context_window = 131_072
-    settings.chat_llm.max_tokens = 512
-    settings.chat_llm.workers_use_local = True
     controller._settings = settings
     controller._chat_provider = "openai_compatible"
     controller._chat_client = OllamaClient(settings.ollama)
-    controller._worker_client = controller._chat_client
-    controller._ollama = controller._chat_client
+    controller._install_worker_clients(controller._chat_client)
     controller._effective_chat_model = "gpt-5-mini"
+    controller._effective_worker_model = "llama3.1:8b"
     controller._context_window = 131_072
-    controller._context_source = "client"
+    controller._context_source = "config"
     controller._models_cache = None
+    controller._missing_chat_model = ""
     controller._client_cache = ClientCache(settings.ollama)
-    # Stub the runtime objects ``reconfigure_chat_llm`` cascades into.
+    # Stub the runtime objects a rebuild cascades into.
     controller._turn_runner = MagicMock()
     controller._proactive = MagicMock()
     controller._summary_worker = MagicMock()
@@ -198,10 +193,9 @@ class UpdateProviderTests(unittest.TestCase):
             controller._settings.llm.providers[1].name, "Renamed",
         )
 
-    def test_patch_base_url_mirrors_to_chat_llm(self) -> None:
-        """When main_chat points at the patched provider, the legacy
-        ``chat_llm.base_url`` is kept in sync (so the rebuilt client
-        hits the new endpoint)."""
+    def test_patch_base_url_rebuilds_the_live_client(self) -> None:
+        """``main_chat`` points at the patched provider, so the cached
+        client is stale the moment the endpoint changes."""
         controller = _make_controller()
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
@@ -211,12 +205,10 @@ class UpdateProviderTests(unittest.TestCase):
             controller.update_provider(
                 "openai", {"base_url": "https://example.com/v1"},
             )
-        # Legacy block mirrored.
         self.assertEqual(
-            controller._settings.chat_llm.base_url,
+            controller._settings.llm.providers[1].base_url,
             "https://example.com/v1",
         )
-        # Cache slot invalidated.
         invalidate.assert_called_with("openai")
         # turn_runner + proactive were re-bound.
         controller._turn_runner.update_runtime.assert_called()
@@ -244,10 +236,8 @@ class UpdateProviderCredentialsTests(unittest.TestCase):
         self.assertEqual(
             controller._settings.llm.providers[1].api_key, "sk-rotated",
         )
-        # Legacy block mirrored.
-        self.assertEqual(
-            controller._settings.chat_llm.api_key, "sk-rotated",
-        )
+        # The masked row never echoes the raw key back.
+        self.assertNotIn("api_key", entry)
         invalidate.assert_called_with("openai")
         controller._turn_runner.update_runtime.assert_called()
 
@@ -291,55 +281,63 @@ class RemoveProviderTests(unittest.TestCase):
 
 
 class UpdateRouteTests(unittest.TestCase):
-    def test_main_chat_cascades_through_reconfigure(self) -> None:
-        """A main_chat update routes through ``reconfigure_chat_llm``
-        so all the legacy cascades (TurnRunner, ProactiveDirector,
-        SummaryWorker) still fire."""
-        controller = _make_controller()
-        with patch.object(
-            controller, "reconfigure_chat_llm", return_value={"ok": True},
-        ) as reconfig:
-            controller.update_route(
-                LLM_ROLE_MAIN_CHAT,
-                {
-                    "provider_id": "local_ollama",
-                    "model": "llama3.1:70b",
-                    "context_window": 8192,
-                },
-            )
-        reconfig.assert_called_once()
-        payload = reconfig.call_args.args[0]
-        self.assertEqual(payload["provider"], "ollama")
-        self.assertEqual(payload["model"], "llama3.1:70b")
-        self.assertEqual(payload["context_window"], 8192)
-        # The catalogue row was mutated in place.
-        self.assertEqual(
-            controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT].provider_id,
-            "local_ollama",
-        )
+    """``update_route`` owns both the write and the live rebuild."""
 
-    def test_worker_default_persists_without_rebuild(self) -> None:
-        """For non-main_chat roles, the route is recorded but the
-        chat client is NOT rebuilt (workers pick it up on restart)."""
-        controller = _make_controller()
+    def _update(self, controller, role, draft):
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ) as persist, patch.object(
-            controller, "reconfigure_chat_llm",
-        ) as reconfig:
-            controller.update_route(
-                LLM_ROLE_WORKER_DEFAULT,
-                {"provider_id": "openai", "model": "gpt-5-nano"},
-            )
-        # No reconfigure happened.
-        reconfig.assert_not_called()
-        # But the catalogue was persisted and mutated.
-        persist.assert_called_once()
-        worker_route = controller._settings.llm.routes[
-            LLM_ROLE_WORKER_DEFAULT
-        ]
+        ) as persist, patch(
+            "app.core.session.session_controller.OllamaClient.get_context_length",
+            return_value=None,
+        ):
+            result = controller.update_route(role, draft)
+        return result, persist
+
+    def test_main_chat_update_rebuilds_and_cascades(self) -> None:
+        controller = _make_controller()
+        result, persist = self._update(
+            controller,
+            LLM_ROLE_MAIN_CHAT,
+            {
+                "provider_id": "local_ollama",
+                "model": "llama3.1:70b",
+                "context_window": 8192,
+            },
+        )
+        route = controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT]
+        self.assertEqual(route.provider_id, "local_ollama")
+        self.assertEqual(route.model, "llama3.1:70b")
+        self.assertEqual(route.context_window, 8192)
+        self.assertEqual(result["model"], "llama3.1:70b")
+        persist.assert_called()
+        # The chat model cascade reached the turn runner.
+        self.assertEqual(controller._effective_chat_model, "llama3.1:70b")
+        controller._turn_runner.update_runtime.assert_called()
+
+    def test_partial_draft_keeps_untouched_fields(self) -> None:
+        # A model-only edit must not silently reset the context window
+        # back to auto-detect.
+        controller = _make_controller()
+        self._update(controller, LLM_ROLE_MAIN_CHAT, {"model": "gpt-5-nano"})
+        route = controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT]
+        self.assertEqual(route.model, "gpt-5-nano")
+        self.assertEqual(route.context_window, 131_072)
+        self.assertEqual(route.provider_id, "openai")
+
+    def test_worker_default_update_persists_and_retargets(self) -> None:
+        controller = _make_controller()
+        _result, persist = self._update(
+            controller,
+            LLM_ROLE_WORKER_DEFAULT,
+            {"provider_id": "openai", "model": "gpt-5-nano"},
+        )
+        persist.assert_called()
+        worker_route = controller._settings.llm.routes[LLM_ROLE_WORKER_DEFAULT]
         self.assertEqual(worker_route.provider_id, "openai")
         self.assertEqual(worker_route.model, "gpt-5-nano")
+        # Chat and workers now agree, so they share one client rather
+        # than holding two connections to the same endpoint.
+        self.assertIs(controller._worker_client_inner, controller._chat_client)
 
     def test_route_unknown_provider_raises_key_error(self) -> None:
         controller = _make_controller()
@@ -349,9 +347,61 @@ class UpdateRouteTests(unittest.TestCase):
                 {"provider_id": "ghost", "model": "x"},
             )
 
+    def test_switching_to_an_installed_model_clears_the_missing_flag(
+        self,
+    ) -> None:
+        # The flag is a boot-time snapshot; without a refresh here the
+        # onboarding banner would keep naming the model the user just
+        # moved away from.
+        controller = _make_controller()
+        controller._missing_chat_model = "qwen3.5:9b"
+        with patch.object(
+            OllamaClient, "list_models", return_value=["llama3.1:8b"],
+        ):
+            self._update(
+                controller,
+                LLM_ROLE_MAIN_CHAT,
+                {"provider_id": "local_ollama", "model": "llama3.1:8b"},
+            )
+        self.assertEqual(controller._missing_chat_model, "")
+
+    def test_switching_to_an_absent_model_sets_the_missing_flag(self) -> None:
+        controller = _make_controller()
+        with patch.object(
+            OllamaClient, "list_models", return_value=["llama3.1:8b"],
+        ):
+            self._update(
+                controller,
+                LLM_ROLE_MAIN_CHAT,
+                {"provider_id": "local_ollama", "model": "qwen3.5:9b"},
+            )
+        self.assertEqual(controller._missing_chat_model, "qwen3.5:9b")
+
+    def test_unreachable_provider_leaves_the_missing_flag_alone(self) -> None:
+        # No verdict is better than a wrong one: a transient outage
+        # shouldn't flip the banner on for a model that is installed.
+        controller = _make_controller()
+        controller._missing_chat_model = "qwen3.5:9b"
+        with patch.object(
+            OllamaClient, "list_models", side_effect=OSError("refused"),
+        ):
+            self._update(
+                controller,
+                LLM_ROLE_MAIN_CHAT,
+                {"provider_id": "local_ollama", "model": "qwen3.5:9b"},
+            )
+        self.assertEqual(controller._missing_chat_model, "qwen3.5:9b")
+
+    def test_hosted_provider_clears_the_missing_flag(self) -> None:
+        # Nothing to download for a remote endpoint.
+        controller = _make_controller()
+        controller._missing_chat_model = "qwen3.5:9b"
+        self._update(controller, LLM_ROLE_MAIN_CHAT, {"model": "gpt-5-nano"})
+        self.assertEqual(controller._missing_chat_model, "")
+
 
 class ApiStyleRoundTripTests(unittest.TestCase):
-    """``api_style`` survives add / patch / mask and mirrors to chat_llm."""
+    """``api_style`` survives add / patch / mask."""
 
     def test_default_provider_masks_auto(self) -> None:
         controller = _make_controller()
@@ -398,17 +448,69 @@ class ApiStyleRoundTripTests(unittest.TestCase):
             )
         self.assertEqual(entry["api_style"], "auto")
 
-    def test_patch_api_style_mirrors_to_chat_llm(self) -> None:
-        # main_chat points at ``openai`` -> the legacy block must mirror.
-        controller = _make_controller()
-        with patch(
-            "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ):
-            controller.update_provider("openai", {"api_style": "responses"})
-        self.assertEqual(
-            getattr(controller._settings.chat_llm, "api_style", None),
-            "responses",
+
+class RequiredModelsTests(unittest.TestCase):
+    """``required_models`` backs the first-run model step: it has to
+    report what's actually downloaded, not what's configured."""
+
+    def _with_installed(self, controller, installed: list[str]):
+        probe = MagicMock()
+        probe.list_models.return_value = installed
+        return patch(
+            "app.core.session.llm_settings_mixin.build_probe_client",
+            return_value=probe,
         )
+
+    def test_reports_missing_local_models(self) -> None:
+        controller = _make_controller()
+        with self._with_installed(controller, ["llama3.1:8b"]):
+            report = controller.required_models()
+        self.assertTrue(report["reachable"])
+        by_role = {row["role"]: row for row in report["required"]}
+        # main_chat is on a hosted provider -> nothing to download.
+        self.assertNotIn(LLM_ROLE_MAIN_CHAT, by_role)
+        self.assertTrue(by_role[LLM_ROLE_WORKER_DEFAULT]["installed"])
+        self.assertFalse(by_role["embedding"]["installed"])
+
+    def test_unreachable_ollama_reports_everything_missing(self) -> None:
+        controller = _make_controller()
+        probe = MagicMock()
+        probe.list_models.side_effect = OSError("connection refused")
+        with patch(
+            "app.core.session.llm_settings_mixin.build_probe_client",
+            return_value=probe,
+        ):
+            report = controller.required_models()
+        self.assertFalse(report["reachable"])
+        self.assertEqual(report["installed"], [])
+        self.assertTrue(
+            all(not row["installed"] for row in report["required"]),
+        )
+
+
+class ValidatePullTargetTests(unittest.TestCase):
+    def test_defaults_to_the_local_ollama_provider(self) -> None:
+        controller = _make_controller()
+        provider = controller.validate_pull_target("qwen3.5:9b")
+        self.assertEqual(provider.id, "local_ollama")
+
+    def test_hosted_provider_rejected(self) -> None:
+        # There's nothing to download for an OpenAI-compatible endpoint.
+        controller = _make_controller()
+        with self.assertRaises(ValueError):
+            controller.validate_pull_target(
+                "gpt-5-mini", provider_id="openai",
+            )
+
+    def test_unknown_provider_raises_key_error(self) -> None:
+        controller = _make_controller()
+        with self.assertRaises(KeyError):
+            controller.validate_pull_target("x", provider_id="ghost")
+
+    def test_blank_model_rejected(self) -> None:
+        controller = _make_controller()
+        with self.assertRaises(ValueError):
+            controller.validate_pull_target("   ")
 
 
 class ClientCacheStatsTests(unittest.TestCase):
@@ -419,36 +521,6 @@ class ClientCacheStatsTests(unittest.TestCase):
         stats = controller.client_cache_stats()
         self.assertEqual(stats["entries"], 1)
         self.assertEqual(stats["providers"], 1)
-
-
-class ReconfigureMirrorTests(unittest.TestCase):
-    """End-to-end: legacy ``reconfigure_chat_llm`` -> ``llm.routes``
-    mirror. The reverse direction (``update_route`` -> ``chat_llm``)
-    is covered in :class:`UpdateRouteTests`."""
-
-    def test_legacy_reconfigure_updates_catalogue(self) -> None:
-        controller = _make_controller()
-        with patch(
-            "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ), patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
-            return_value=None,
-        ):
-            controller.reconfigure_chat_llm({
-                "provider": "openai_compatible",
-                "model": "gpt-5-nano",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "sk-existing",
-                "workers_use_local": True,
-                "provider_preset": "openai",
-            })
-        # The legacy block changed (existing behaviour).
-        self.assertEqual(
-            controller._settings.chat_llm.model, "gpt-5-nano",
-        )
-        # The catalogue's main_chat route reflects the new model.
-        main_route = controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT]
-        self.assertEqual(main_route.model, "gpt-5-nano")
 
 
 if __name__ == "__main__":

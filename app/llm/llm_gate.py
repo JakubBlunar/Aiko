@@ -215,7 +215,7 @@ class GatedChatClient:
     ) -> None:
         """Repoint this proxy at a new inner client / gate in place.
 
-        Used on ``reconfigure_chat_llm`` so the ~24 worker references that
+        Used on a route edit so the ~24 worker references that
         already hold this proxy object transparently follow the new
         worker-client topology without re-wiring every worker. The swap is
         a plain attribute write — any call already inside the gate keeps

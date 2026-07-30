@@ -79,6 +79,9 @@ from app.core.session.session_text_utils import (
 )
 from app.core.infra.settings import (
     AppSettings,
+    LLM_ROLE_MAIN_CHAT,
+    LLM_ROLE_WORKER_DEFAULT,
+    find_provider,
 )
 from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.proactive.summary_worker import SummaryWorker
@@ -87,7 +90,7 @@ from app.core.session.turn_runner import TurnRunner
 from app.core.session.merge_buffer import _MergeBuffer
 from app.core.session.session_state import SessionState
 from app.llm.chat_client import ChatClient
-from app.llm.embedder import Embedder
+from app.llm.embedder import build_embedder
 from app.llm.factory import ClientCache, build_client_for_route
 from app.llm.llm_gate import (
     CONVERSATION_WORKER,
@@ -162,78 +165,6 @@ def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
 # ``_PROVIDER_PRESETS`` now lives in app/core/session/llm_presets.py
 # (consumed by llm_settings_mixin). ``GET /api/llm/presets`` reaches it
 # via ``SessionController.provider_presets()``.
-
-
-def _build_chat_client(
-    *,
-    chat_llm: Any,
-    ollama_settings: Any,
-    role: str,
-) -> ChatClient:
-    """Factory: pick a concrete chat client for ``chat_llm.provider``.
-
-    ``role`` is one of ``"chat"`` (main TurnRunner path) or ``"worker"``
-    (background workers). It's used only for logging clarity — the two
-    callers in :class:`SessionController` go through the same code
-    path and only diverge on whether ``chat_llm.workers_use_local``
-    forces a local fallback.
-
-    Resolves the API key in this order:
-    1. ``chat_llm.api_key`` (explicit override)
-    2. ``os.environ[chat_llm.api_key_env or inferred]``
-    """
-    base_url = (chat_llm.base_url or "").strip() or ollama_settings.base_url
-    api_key_explicit = (chat_llm.api_key or "").strip()
-    api_key_env_name = _resolve_env_var_name(
-        base_url=base_url,
-        explicit=(chat_llm.api_key_env or "").strip(),
-    )
-    api_key = api_key_explicit or os.environ.get(
-        api_key_env_name, "",
-    ).strip()
-    extra_headers = {
-        str(k).strip(): str(v).strip()
-        for k, v in dict(chat_llm.extra_headers or {}).items()
-        if str(k).strip() and v is not None
-    }
-    provider = (chat_llm.provider or "ollama").strip().lower()
-    if provider == "openai_compatible":
-        model = (chat_llm.model or "").strip()
-        if not model:
-            # Empty model = config not finished yet. Falling through to
-            # a local Ollama client keeps the boot healthy until the
-            # user picks one in the drawer.
-            log.warning(
-                "chat_llm.provider=openai_compatible but model is empty; "
-                "falling back to local Ollama for role=%s. Configure "
-                "chat_llm.model in user.json or via Settings → Chat.",
-                role,
-            )
-            return OllamaClient(
-                ollama_settings,
-                base_url=base_url,
-                api_key=api_key or None,
-                extra_headers=extra_headers or None,
-                keep_alive=chat_llm.keep_alive,
-            )
-        return OpenAICompatibleClient(
-            ollama_settings,
-            base_url=base_url,
-            api_key=api_key or None,
-            model=model,
-            extra_headers=extra_headers or None,
-            keep_alive=chat_llm.keep_alive,
-            reasoning_effort=getattr(chat_llm, "reasoning_effort", "") or "",
-            api_style=getattr(chat_llm, "api_style", "auto") or "auto",
-        )
-    # Default path: Ollama (local or cloud, distinguished only by base_url).
-    return OllamaClient(
-        ollama_settings,
-        base_url=base_url,
-        api_key=api_key or None,
-        extra_headers=extra_headers or None,
-        keep_alive=chat_llm.keep_alive,
-    )
 
 
 def _avatar_seed_sources(name: str) -> list[Path]:
@@ -352,93 +283,83 @@ class SessionController(
         # is present (the plaintext-config path is preserved verbatim).
         self._init_secret_storage()
 
-        # ── Chat LLM clients (provider-aware split) ──────────────────────
-        # Two clients live side by side:
-        #   - ``self._chat_client`` is the user-visible path (TurnRunner +
-        #     ProactiveDirector). Routes through whatever ``chat_llm.provider``
-        #     points at — local Ollama, Ollama Cloud, or any OpenAI-compatible
-        #     endpoint (Gemini, OpenAI, Groq, OpenRouter, ...).
-        #   - ``self._worker_client`` is the background-worker path
-        #     (reflection, dream, belief, ~24 workers in total). Defaults to
-        #     a local Ollama instance so a switch to Gemini doesn't drain its
-        #     1500-req/day free tier within the hour; set
-        #     ``chat_llm.workers_use_local = False`` to share the chat
-        #     client instead.
+        # ── Chat LLM clients (route-driven) ──────────────────────────────
+        # Everything comes from ``settings.llm``: the provider catalogue
+        # says which endpoints exist, the routes say which model + budget
+        # serves each role. Two clients live side by side:
+        #   - ``self._chat_client`` serves the ``main_chat`` route — the
+        #     user-visible path (TurnRunner + ProactiveDirector).
+        #   - ``self._worker_client`` serves ``worker_default`` — the
+        #     background lane (reflection, dream, belief, ~24 workers).
+        # Routes pointing at the same endpoint resolve to the SAME cached
+        # client (the cache key is kind + base_url + api_key), so the
+        # all-local default pays for one connection pool and keeps one
+        # model resident. Pointing ``main_chat`` at a remote provider
+        # while workers stay local is the other common shape: it keeps a
+        # free-tier quota (Gemini = 1500 req/day) for user-visible turns.
         # ``self._ollama`` is a back-compat alias for the worker client — too
         # many older test patches and a few external scripts reach in for
         # it for us to rename in this round.
-        chat_llm = settings.chat_llm
-        # PR 2: shared client cache for the provider catalogue. Routes
-        # pointing at the same provider share one underlying ChatClient
-        # so credentials / TCP pool / TLS cost are paid once. The
-        # legacy code path below builds its own clients without the
-        # cache for unchanged back-compat; the new public methods
-        # (``update_route``, ``test_provider``, …) go through the
-        # cache via :func:`app.llm.factory.build_client_for_route`.
         self._client_cache = ClientCache(settings.ollama)
-        self._chat_client: ChatClient = _build_chat_client(
-            chat_llm=chat_llm,
-            ollama_settings=settings.ollama,
-            role="chat",
+        chat_route = self._route_or_none(LLM_ROLE_MAIN_CHAT)
+        worker_route = self._route_or_none(LLM_ROLE_WORKER_DEFAULT)
+        self._chat_client: ChatClient = self._build_route_client(
+            chat_route, role=LLM_ROLE_MAIN_CHAT,
         )
-        if (
-            (chat_llm.provider or "ollama").strip().lower() != "ollama"
-            and bool(getattr(chat_llm, "workers_use_local", True))
+        if worker_route is None or self._routes_share_client(
+            chat_route, worker_route,
         ):
-            # Workers stay on a local Ollama instance with the configured
-            # base_url ignored — we use the canonical OllamaSettings.base_url
-            # (typically http://127.0.0.1:11434) so the user doesn't have
-            # to set two URLs. The worker model + context window come from
-            # the ``worker_default`` route (P13), falling back to the
-            # legacy ``ollama.*`` block.
-            raw_worker_client: ChatClient = self._build_worker_ollama_client(
-                chat_llm.keep_alive
-            )
+            raw_worker_client: ChatClient = self._chat_client
         else:
-            # Either pure Ollama (one client serves both roles) or the
-            # user explicitly opted workers into the remote provider.
-            raw_worker_client = self._chat_client
+            # A distinct worker target gets its own client so the
+            # transport carries the worker route's context window — the
+            # shared cache is keyed on the endpoint, not on the route.
+            raw_worker_client = self._build_worker_client()
         # Phase 6: wrap the raw worker client in the priority gate and
         # expose the conversation / maintenance / workflow proxy views.
         # Sets self._worker_client, self._ollama, self._maintenance_client,
         # self._workflow_client, self._worker_llm_gate.
         self._worker_client: ChatClient
         self._install_worker_clients(raw_worker_client)
-        self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
+        chat_provider = (
+            find_provider(settings.llm, chat_route.provider_id)
+            if chat_route is not None
+            else None
+        )
+        self._chat_provider = (
+            chat_provider.kind if chat_provider is not None else "ollama"
+        )
 
-        chat_model_override = (chat_llm.model or "").strip()
         self._effective_chat_model = (
-            chat_model_override
-            or (settings.ollama.chat_model or "").strip()
-            or "llama3.1:8b"
+            (chat_route.model if chat_route else "").strip() or "llama3.1:8b"
         )
         # Workers route through ``self._worker_client``; when that's a
         # separate local Ollama instance (the common "chat = OpenAI,
-        # workers = local" case) the worker model MUST come from
-        # ``settings.ollama.chat_model`` — sending the chat model
-        # name (e.g. ``gpt-5-mini``) to a local Ollama 404s with
-        # ``model 'gpt-5-mini' not found``. When the worker client
-        # IS the chat client (pure-Ollama or ``workers_use_local=False``),
-        # both models collapse to the same value.
+        # workers = local" case) the worker model MUST come from the
+        # ``worker_default`` route — sending the chat model name (e.g.
+        # ``gpt-5-mini``) to a local Ollama 404s with ``model
+        # 'gpt-5-mini' not found``. When the worker client IS the chat
+        # client both models collapse to the same value.
         if self._worker_client_inner is self._chat_client:
             self._effective_worker_model = self._effective_chat_model
         else:
-            # Route-first (P13): the worker_default route owns the model.
             self._effective_worker_model, _ = self._worker_route_model_ctx()
 
-        # Resolve context window: explicit config override > Ollama /api/show > fallback.
-        # ``self._context_source`` records which path won (used for stats display).
-        ctx_override = chat_llm.context_window or getattr(
-            settings.ollama, "context_window", None
-        )
+        # Resolve context window: the route's explicit value > Ollama
+        # /api/show > fallback. ``self._context_source`` records which
+        # path won (used for stats display).
         self._context_window, self._context_source = self._resolve_context_window(
-            ctx_override, self._effective_chat_model,
+            chat_route.context_window if chat_route else None,
+            self._effective_chat_model,
         )
-        self._max_tokens = max(64, int(chat_llm.max_tokens or 512))
-        temp = chat_llm.temperature
-        if temp is None:
-            temp = float(settings.ollama.temperature)
-        self._temperature = float(temp)
+        self._max_tokens = max(
+            64, int((chat_route.max_tokens if chat_route else 0) or 512),
+        )
+        self._temperature = float(
+            chat_route.temperature
+            if chat_route is not None and chat_route.temperature is not None
+            else settings.ollama.temperature
+        )
 
         # ── Database ─────────────────────────────────────────────────────
         storage_path = (
@@ -601,7 +522,7 @@ class SessionController(
         self._rag_store = None  # type: ignore[var-annotated]
         if self._memory_settings.enabled:
             try:
-                self._embedder = Embedder(settings.ollama)
+                self._embedder = build_embedder(settings.llm)
                 self._memory_store = MemoryStore(
                     storage_path,
                     max_memories=self._memory_settings.max_memories,
@@ -1145,45 +1066,18 @@ class SessionController(
     # reconfigure_search) now live in
     # app/core/session/search_provider_mixin.py.
 
-    # LLM settings / provider catalogue / routes / secrets methods live in
-    # llm_settings_mixin.py. _build_chat_client stays defined in this
-    # module (re-exported); the mixin forwards to it lazily.
-
-
-    # ── PR 2: provider catalogue + role-assignment API ──────────────
-    #
-    # The catalogue lives on ``self._settings.llm`` and is kept in sync
-    # with the legacy ``chat_llm`` + ``ollama`` blocks via the
-    # mirror-write helpers below. The legacy blocks remain the
-    # in-memory primary for now (the ``_chat_client`` / ``_worker_client``
-    # construction paths still read from them) — this keeps the diff
-    # contained and lets external scripts / MCP keep reading
-    # ``chat_llm`` unchanged. Phase 3 may flip the direction.
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ── PR 2: catalogue <-> legacy mirror helpers ───────────────────
-
-
-
+    # LLM provider catalogue, route CRUD and secrets live in
+    # llm_settings_mixin.py; client construction lives in
+    # llm_clients_mixin.py. ``self._settings.llm`` is the single source
+    # of truth for both.
 
     # ── Secret storage (OS keychain) ────────────────────────────────
     #
     # API keys never touch ``user.json`` as plaintext once a keychain
-    # backend is available. The in-memory dataclasses (``provider.api_key``
-    # / ``chat_llm.api_key``) keep holding the resolved key for the life
-    # of the process, so every existing read / mask / cache-key path is
-    # untouched -- only *persistence* is redirected to the keychain.
+    # backend is available. The in-memory ``provider.api_key`` keeps
+    # holding the resolved key for the life of the process, so every
+    # existing read / mask / cache-key path is untouched -- only
+    # *persistence* is redirected to the keychain.
 
 
 

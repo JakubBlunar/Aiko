@@ -58,23 +58,6 @@ class _StubEmbedder:
         return [0.0, 0.0]
 
 
-class _StubOllamaSettings:
-    """Minimal ``OllamaSettings`` surface the warmup helper reads."""
-
-    def __init__(self, context_window: int | None = 32768) -> None:
-        self.context_window = context_window
-
-
-class _StubAppSettings:
-    """``SessionController._settings`` carries an ``.ollama`` block —
-    the worker warmup uses ``self._settings.ollama.context_window`` to
-    size ``num_ctx`` on the very first call (the kv-cache-size fix).
-    """
-
-    def __init__(self, context_window: int | None = 32768) -> None:
-        self.ollama = _StubOllamaSettings(context_window)
-
-
 def _make_stub_session(
     *,
     worker_client: Any,
@@ -86,7 +69,11 @@ def _make_stub_session(
     """Return an object with just the attributes the helpers read."""
 
     class _Stub:
-        pass
+        # The worker warmup sizes ``num_ctx`` from the ``worker_default``
+        # route (the kv-cache-size fix), read through the same helper the
+        # worker client factory uses.
+        def _worker_route_model_ctx(self) -> tuple[str, int | None]:
+            return (effective_worker_model, context_window)
 
     stub = _Stub()
     stub._worker_client = worker_client
@@ -98,7 +85,6 @@ def _make_stub_session(
     stub._chat_client = chat_client
     stub._effective_worker_model = effective_worker_model
     stub._embedder = embedder
-    stub._settings = _StubAppSettings(context_window)
     return stub
 
 
@@ -195,12 +181,10 @@ class PrewarmLocalWorkerModelTests(unittest.TestCase):
         )
 
     def test_happy_path_omits_options_when_context_window_unset(self) -> None:
-        # When the user hasn't configured a context window (the
-        # documented ``None`` "auto-detect" sentinel), the warmup
-        # must NOT pass an empty ``options`` dict either — the
-        # OllamaClient's own default-injection layer will handle the
-        # fallback. Explicit ``None`` keeps the call site behaviour
-        # symmetric with the legacy code path.
+        # When the route leaves the context window at ``None``
+        # ("auto-detect"), the warmup must NOT pass an empty
+        # ``options`` dict either — the OllamaClient's own
+        # default-injection layer handles the fallback.
         worker = MagicMock(spec=OllamaClient)
         chat = object()
         stub = _make_stub_session(

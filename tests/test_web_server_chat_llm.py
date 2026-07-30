@@ -1,8 +1,13 @@
-"""Tests for the chat-LLM provider REST surface.
+"""Tests for the LLM provider REST surface.
 
-Covers ``GET /api/settings`` masking, ``PATCH /api/settings`` chat_llm
-branch, ``PUT /api/settings/llm-credentials``, ``GET /api/llm/presets``,
-``GET /api/models?provider=``, and ``POST /api/llm/test-connection``.
+Covers ``GET /api/settings`` masking, ``GET /api/llm/presets``,
+``GET /api/models?provider=``, ``GET /api/models/required``,
+``POST /api/models/pull`` and ``POST /api/llm/test-connection``.
+
+The legacy ``chat_llm`` block and its ``PUT /api/settings/llm-credentials``
+endpoint are gone: credentials now live per provider in the catalogue
+(``PUT /api/llm/providers/{id}/credentials``), and role assignments go
+through ``PATCH /api/llm/routes/{role}``.
 """
 
 from __future__ import annotations
@@ -54,16 +59,12 @@ class _EndpointingBlock:
 
 @dataclass
 class _OllamaBlock:
+    """The derived transport template on ``AppSettings.ollama``."""
+
     temperature: float = 0.6
     base_url: str = "http://127.0.0.1:11434"
-    chat_model: str = "llama3.1:8b"
-    embedding_model: str = "qwen3-embedding:0.6b"
+    chat_model: str = "qwen3.5:9b"
     timeout: int = 300
-
-
-@dataclass
-class _ChatLlmBlock:
-    max_tokens: int = 512
 
 
 @dataclass
@@ -95,7 +96,6 @@ class _SettingsStub:
     tools: _ToolsBlock = field(default_factory=_ToolsBlock)
     endpointing: _EndpointingBlock = field(default_factory=_EndpointingBlock)
     ollama: _OllamaBlock = field(default_factory=_OllamaBlock)
-    chat_llm: _ChatLlmBlock = field(default_factory=_ChatLlmBlock)
     stt: _SttBlock = field(default_factory=_SttBlock)
     tts: _TtsBlock = field(default_factory=_TtsBlock)
     audio: _AudioBlock = field(default_factory=_AudioBlock)
@@ -108,12 +108,12 @@ _SAMPLE_PRESETS = [
         "label": "Local Ollama",
         "provider": "ollama",
         "base_url": "http://127.0.0.1:11434",
-        "recommended_models": ["llama3.1:8b"],
+        "recommended_models": ["qwen3.5:9b"],
         "env_hint": "",
         "api_key_required": False,
         "free_tier": "Unlimited (local)",
         "docs_url": "https://ollama.com",
-        "default_workers_use_local": False,
+        "default_context_window": 65_536,
     },
     {
         "id": "gemini",
@@ -127,7 +127,7 @@ _SAMPLE_PRESETS = [
         "api_key_required": True,
         "free_tier": "~1500 req/day free",
         "docs_url": "https://ai.google.dev",
-        "default_workers_use_local": True,
+        "default_context_window": 131_072,
     },
 ]
 
@@ -137,9 +137,10 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     session = MagicMock()
     session._settings = settings
     session.session_key = "u:s"
-    session.effective_chat_model = "llama3.1:8b"
-    session.context_window_size = 8192
-    session.context_window_source = "fallback"
+    session.effective_chat_model = "qwen3.5:9b"
+    session.context_window_size = 65_536
+    session.context_window_source = "route"
+    session.max_tokens = 512
     session.tts_provider = "fake"
     session.tts_voice = "fake"
     session.stt_model = "fake"
@@ -147,22 +148,6 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     session.vad_silence_seconds = 1.0
     session.barge_in_enabled.return_value = False
     session.available_tool_names.return_value = []
-    # The masked snapshot — never includes the raw key.
-    masked = {
-        "provider": "ollama",
-        "provider_preset": "",
-        "model": "",
-        "base_url": "http://127.0.0.1:11434",
-        "has_api_key": False,
-        "api_key_env": "",
-        "max_tokens": 512,
-        "temperature": None,
-        "context_window": None,
-        "keep_alive": "30m",
-        "workers_use_local": True,
-        "extra_headers": {},
-    }
-    session._chat_llm_public_snapshot.return_value = masked
     # GET /api/settings also embeds the masked weather snapshot; return a
     # serialisable dict so FastAPI's JSON encoder doesn't choke on a mock.
     session._weather_public_snapshot.return_value = {
@@ -171,24 +156,40 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
         "has_api_key": False,
     }
     session.provider_presets.return_value = _SAMPLE_PRESETS
-    session.list_chat_models.return_value = ["llama3.1:8b"]
-    # ``reconfigure_chat_llm`` returns the updated snapshot.
-    session.reconfigure_chat_llm.return_value = masked
+    session.list_chat_models.return_value = ["qwen3.5:9b"]
+    session.required_models.return_value = {
+        "provider_id": "local_ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "reachable": True,
+        "installed": ["qwen3.5:9b"],
+        "required": [
+            {
+                "role": "main_chat",
+                "model": "qwen3.5:9b",
+                "provider_id": "local_ollama",
+                "installed": True,
+            },
+            {
+                "role": "embedding",
+                "model": "qwen3-embedding:0.6b",
+                "provider_id": "local_ollama",
+                "installed": False,
+            },
+        ],
+    }
 
     app = create_web_app(session)
     return TestClient(app), session, settings
 
 
-class GetSettingsChatLlmTests(unittest.TestCase):
-    def test_get_includes_masked_chat_llm_block(self) -> None:
+class GetSettingsTests(unittest.TestCase):
+    def test_get_no_longer_exposes_a_chat_llm_block(self) -> None:
+        # The block was retired; anything reading it would be reading a
+        # value that no longer drives the chat client.
         client, _session, _settings = _build_client()
         response = client.get("/api/settings")
         self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertIn("chat_llm", body)
-        self.assertIn("has_api_key", body["chat_llm"])
-        self.assertNotIn("api_key", body["chat_llm"])
-        self.assertEqual(body["chat_llm"]["provider"], "ollama")
+        self.assertNotIn("chat_llm", response.json())
 
     def test_get_includes_masked_search_block(self) -> None:
         client, _session, _settings = _build_client()
@@ -236,127 +237,58 @@ class SearchCredentialsTests(unittest.TestCase):
         self.assertEqual(called["provider"], "langsearch")
 
 
-class PatchChatLlmTests(unittest.TestCase):
-    def test_patch_chat_llm_triggers_reconfigure_and_broadcast(
-        self,
-    ) -> None:
+class RetiredEndpointTests(unittest.TestCase):
+    def test_llm_credentials_endpoint_is_gone(self) -> None:
+        # Per-provider credentials replaced it. A stale client hitting
+        # the old path must fail loudly rather than silently no-op.
+        client, _session, _settings = _build_client()
+        response = client.put(
+            "/api/settings/llm-credentials", json={"api_key": "sk-test"},
+        )
+        self.assertEqual(response.status_code, 405)
+
+    def test_patch_settings_ignores_a_chat_llm_payload(self) -> None:
         client, session, _settings = _build_client()
         response = client.patch(
             "/api/settings",
-            json={
-                "chat_llm": {
-                    "provider": "openai_compatible",
-                    "model": "gemini-2.5-flash-lite",
-                    "workers_use_local": True,
-                },
-            },
+            json={"chat_llm": {"model": "gpt-4o-mini", "api_key": "leak"}},
         )
         self.assertEqual(response.status_code, 200)
-        session.reconfigure_chat_llm.assert_called_once()
-        called_payload = session.reconfigure_chat_llm.call_args.args[0]
-        self.assertEqual(called_payload.get("model"), "gemini-2.5-flash-lite")
-        self.assertTrue(called_payload.get("workers_use_local"))
+        session.update_route.assert_not_called()
 
-    def test_patch_chat_llm_strips_api_key_from_payload(self) -> None:
-        # Safety net: PATCH /api/settings is NOT the credentials path.
-        # An api_key that slips into the payload is dropped before
-        # reaching ``reconfigure_chat_llm``.
+
+class RouteUpdateTests(unittest.TestCase):
+    """``PATCH /api/llm/routes/{role}`` is the single mutation path for
+    "which model serves this role"."""
+
+    def test_patch_route_delegates_to_update_route(self) -> None:
         client, session, _settings = _build_client()
-        client.patch(
-            "/api/settings",
-            json={
-                "chat_llm": {
-                    "provider": "openai_compatible",
-                    "model": "gpt-4o-mini",
-                    "api_key": "should-be-dropped",
-                },
-            },
-        )
-        called_payload = session.reconfigure_chat_llm.call_args.args[0]
-        self.assertNotIn("api_key", called_payload)
-
-    def test_patch_chat_llm_context_window_round_trips(self) -> None:
-        """The new Context window input on the Advanced panel saves
-        through to ``reconfigure_chat_llm`` so the controller can rebuild
-        the prompt-assembler budget. Both a positive integer and a
-        ``null`` (= auto) value must be passed through unchanged."""
-        client, session, _settings = _build_client()
-        # Positive integer override.
-        client.patch(
-            "/api/settings",
-            json={
-                "chat_llm": {
-                    "provider": "openai_compatible",
-                    "model": "gpt-5-mini",
-                    "context_window": 65_536,
-                },
-            },
-        )
-        called = session.reconfigure_chat_llm.call_args.args[0]
-        self.assertEqual(called.get("context_window"), 65_536)
-        self.assertEqual(called.get("model"), "gpt-5-mini")
-        # ``null`` -> "auto" (controller falls back to client lookup).
-        session.reconfigure_chat_llm.reset_mock()
-        client.patch(
-            "/api/settings",
-            json={
-                "chat_llm": {
-                    "provider": "openai_compatible",
-                    "model": "gpt-5-mini",
-                    "context_window": None,
-                },
-            },
-        )
-        called = session.reconfigure_chat_llm.call_args.args[0]
-        self.assertIsNone(called.get("context_window"))
-
-
-class PutCredentialsTests(unittest.TestCase):
-    def test_put_credentials_writes_via_reconfigure(self) -> None:
-        client, session, _settings = _build_client()
-        response = client.put(
-            "/api/settings/llm-credentials",
-            json={
-                "api_key": "AIza-test",
-                "base_url": (
-                    "https://generativelanguage.googleapis.com/v1beta/openai/"
-                ),
-            },
+        session.update_route.return_value = {
+            "provider_id": "local_ollama",
+            "model": "qwen3.5:9b",
+            "context_window": 65_536,
+            "max_tokens": 512,
+            "temperature": None,
+            "reasoning_effort": "",
+        }
+        response = client.patch(
+            "/api/llm/routes/main_chat",
+            json={"model": "qwen3.5:9b", "context_window": 65_536},
         )
         self.assertEqual(response.status_code, 200)
-        body = response.json()
-        # Response is the masked snapshot — never echo the raw key.
-        self.assertNotIn("api_key", body)
-        self.assertIn("has_api_key", body)
-        session.reconfigure_chat_llm.assert_called_once()
-        called_payload = session.reconfigure_chat_llm.call_args.args[0]
-        self.assertEqual(called_payload["api_key"], "AIza-test")
+        session.update_route.assert_called_once()
+        role, patch_payload = session.update_route.call_args.args
+        self.assertEqual(role, "main_chat")
+        self.assertEqual(patch_payload.get("model"), "qwen3.5:9b")
+        self.assertEqual(patch_payload.get("context_window"), 65_536)
 
-    def test_put_credentials_rejects_whitespace_in_api_key(self) -> None:
+    def test_patch_unknown_route_returns_404(self) -> None:
         client, session, _settings = _build_client()
-        response = client.put(
-            "/api/settings/llm-credentials",
-            json={"api_key": "bad key with spaces"},
+        session.update_route.side_effect = KeyError("unknown role")
+        response = client.patch(
+            "/api/llm/routes/does_not_exist", json={"model": "x"},
         )
-        self.assertEqual(response.status_code, 400)
-        session.reconfigure_chat_llm.assert_not_called()
-
-    def test_put_credentials_rejects_invalid_base_url(self) -> None:
-        client, session, _settings = _build_client()
-        response = client.put(
-            "/api/settings/llm-credentials",
-            json={"base_url": "ftp://example.com"},
-        )
-        self.assertEqual(response.status_code, 400)
-        session.reconfigure_chat_llm.assert_not_called()
-
-    def test_put_credentials_with_empty_body_is_noop(self) -> None:
-        client, session, _settings = _build_client()
-        response = client.put(
-            "/api/settings/llm-credentials", json={},
-        )
-        self.assertEqual(response.status_code, 200)
-        session.reconfigure_chat_llm.assert_not_called()
+        self.assertEqual(response.status_code, 404)
 
 
 class PresetsAndModelsTests(unittest.TestCase):
@@ -372,38 +304,90 @@ class PresetsAndModelsTests(unittest.TestCase):
 
     def test_models_provider_query_dispatches(self) -> None:
         client, session, _settings = _build_client()
-        client.get("/api/models?provider=openai_compatible")
-        session.list_chat_models.assert_called_with(
-            provider="openai_compatible",
-        )
+        client.get("/api/models?provider=local_ollama")
+        session.list_chat_models.assert_called_with(provider="local_ollama")
 
     def test_models_no_provider_uses_default(self) -> None:
         client, session, _settings = _build_client()
         client.get("/api/models")
         session.list_chat_models.assert_called_with(refresh=False)
 
+    def test_required_models_reports_install_state(self) -> None:
+        # The first-run model step needs "configured but not pulled" to
+        # be visible; /api/models deliberately blurs that.
+        client, _session, _settings = _build_client()
+        body = client.get("/api/models/required").json()
+        self.assertTrue(body["reachable"])
+        by_role = {row["role"]: row for row in body["required"]}
+        self.assertTrue(by_role["main_chat"]["installed"])
+        self.assertFalse(by_role["embedding"]["installed"])
+
+
+class PullModelTests(unittest.TestCase):
+    """``POST /api/models/pull`` returns 202 and streams progress over
+    the WebSocket — a multi-GB download outlives any HTTP timeout."""
+
+    def test_pull_returns_202_and_starts_a_worker(self) -> None:
+        client, session, _settings = _build_client()
+        response = client.post(
+            "/api/models/pull", json={"model": "qwen3.5:9b"},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["model"], "qwen3.5:9b")
+        session.validate_pull_target.assert_called_once()
+
+    def test_pull_requires_a_model(self) -> None:
+        client, session, _settings = _build_client()
+        response = client.post("/api/models/pull", json={})
+        self.assertEqual(response.status_code, 400)
+        session.validate_pull_target.assert_not_called()
+
+    def test_unknown_provider_returns_404(self) -> None:
+        client, session, _settings = _build_client()
+        session.validate_pull_target.side_effect = KeyError("unknown provider")
+        response = client.post(
+            "/api/models/pull",
+            json={"model": "qwen3.5:9b", "provider_id": "nope"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_hosted_provider_returns_400(self) -> None:
+        # Nothing to download for an OpenAI-compatible endpoint.
+        client, session, _settings = _build_client()
+        session.validate_pull_target.side_effect = ValueError(
+            "provider 'openai' is openai_compatible",
+        )
+        response = client.post(
+            "/api/models/pull",
+            json={"model": "gpt-5-mini", "provider_id": "openai"},
+        )
+        self.assertEqual(response.status_code, 400)
+
 
 class TestConnectionTests(unittest.TestCase):
     """``POST /api/llm/test-connection`` happy + failure paths.
 
-    Heart of the contract: the endpoint **never** calls
-    ``persist_user_overrides`` (the candidate creds are dry-run only)
-    and **never** mutates ``session._settings.chat_llm`` or any of the
-    real client references on the controller.
+    Heart of the contract: the endpoint **never** persists the
+    candidate creds and never touches the saved catalogue or the live
+    clients — it builds a throwaway probe client instead.
     """
+
+    _PROBE = "app.web.rest.sessions_settings_routes.build_probe_client"
+
+    def _stub_probe(self, **attrs: Any) -> MagicMock:
+        stub = MagicMock()
+        for key, value in attrs.items():
+            setattr(stub, key, value)
+        return stub
 
     def test_happy_path_returns_success(self) -> None:
         client, session, _settings = _build_client()
-        # Build a stub ChatClient that responds with a fixed content.
         stub = MagicMock()
         stub.chat_with_tools.return_value = MagicMock(
             content="ok", tool_calls=[],
         )
         stub.last_usage = MagicMock(prompt_tokens=4, completion_tokens=1)
-        with patch(
-            "app.core.session.session_controller._build_chat_client",
-            return_value=stub,
-        ), patch(
+        with patch(self._PROBE, return_value=stub), patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist:
             response = client.post(
@@ -426,8 +410,32 @@ class TestConnectionTests(unittest.TestCase):
         self.assertIsNone(body["error_message"])
         # REGRESSION: test-connection must never persist credentials.
         persist.assert_not_called()
-        # And must never call reconfigure_chat_llm either.
-        session.reconfigure_chat_llm.assert_not_called()
+        session.update_route.assert_not_called()
+
+    def test_probe_provider_carries_the_candidate_credentials(self) -> None:
+        # The probe row is synthesised from the request body, not read
+        # back from the catalogue — otherwise "test before saving"
+        # would silently test the saved config instead.
+        client, _session, _settings = _build_client()
+        stub = MagicMock()
+        stub.chat_with_tools.return_value = MagicMock(content="ok")
+        stub.last_usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        with patch(self._PROBE, return_value=stub) as build:
+            client.post(
+                "/api/llm/test-connection",
+                json={
+                    "provider": "openai_compatible",
+                    "model": "gpt-5-mini",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "sk-candidate",
+                    "api_style": "responses",
+                },
+            )
+        probe_provider = build.call_args.args[0]
+        self.assertEqual(probe_provider.kind, "openai_compatible")
+        self.assertEqual(probe_provider.base_url, "https://api.openai.com/v1")
+        self.assertEqual(probe_provider.api_key, "sk-candidate")
+        self.assertEqual(probe_provider.api_style, "responses")
 
     def test_unauthorized_returns_structured_error(self) -> None:
         client, _session, _settings = _build_client()
@@ -437,10 +445,7 @@ class TestConnectionTests(unittest.TestCase):
         stub.chat_with_tools.side_effect = requests.HTTPError(
             "401 Unauthorized", response=http_resp,
         )
-        with patch(
-            "app.core.session.session_controller._build_chat_client",
-            return_value=stub,
-        ):
+        with patch(self._PROBE, return_value=stub):
             response = client.post(
                 "/api/llm/test-connection",
                 json={
@@ -460,10 +465,7 @@ class TestConnectionTests(unittest.TestCase):
         client, _session, _settings = _build_client()
         stub = MagicMock()
         stub.chat_with_tools.side_effect = requests.exceptions.Timeout()
-        with patch(
-            "app.core.session.session_controller._build_chat_client",
-            return_value=stub,
-        ):
+        with patch(self._PROBE, return_value=stub):
             response = client.post(
                 "/api/llm/test-connection",
                 json={

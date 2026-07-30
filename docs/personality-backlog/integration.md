@@ -288,7 +288,7 @@ HTTPS + update flow).
 
 ---
 
-## I10. Make `llm.routes` the single runtime source; retire the legacy `chat_llm` mirror
+## I10. Make `llm.routes` the single runtime source; retire the legacy `chat_llm` mirror — SHIPPED
 
 **Motivation.** The LLM provider catalogue (`llm.providers` + `llm.routes`)
 is the **UI-facing** source of truth, but it is **not** what the runtime
@@ -351,3 +351,47 @@ users upgrading from pre-catalogue configs) or get a sunset version?
 **Effort.** Medium–Large (touches the boot client-build, both mirror
 mixins, REST/WS, the frontend Chat tab, and the migration/round-trip
 tests).
+
+> **Shipped** — full removal, not a shim. `ChatLlmSettings`,
+> `_parse_chat_llm`, `AppSettings.chat_llm`, `reconfigure_chat_llm`, both
+> mirror helpers, the `chat_llm` REST/WS payloads, the
+> `PUT /api/settings/llm-credentials` endpoint and the frontend
+> `ChatProviderSection` are all deleted.
+>
+> **Runtime source.** `SessionController.__init__` builds the chat client
+> from `llm.routes.main_chat` through `build_client_for_route` +
+> `ClientCache`, the same path the workers already used.
+> `_build_chat_client` is gone; the credential-probe case (candidate creds
+> that were never saved) went to a dedicated `factory.build_probe_client`
+> so it can't poison the shared cache. `update_route` is now the single
+> mutation path and owns the live-rebuild cascade.
+>
+> **The two homeless fields found their homes.** Embeddings moved into a
+> new `llm.embedding` block (`provider_id` / `model` / `num_ctx` /
+> `num_gpu`), so `Embedder` takes an `LlmEmbedding` + its provider instead
+> of the old `OllamaSettings`. `workers_use_local` is simply deleted — it
+> *is* `worker_default.provider_id`, so storing it separately could only
+> ever disagree with the routes.
+>
+> **`AppSettings.ollama` survives as a derived read-only view** of
+> `routes.worker_default` + `llm.embedding`, which is what kept the
+> ~40 legacy read sites from all needing to change in one commit. Nothing
+> writes to it.
+>
+> **Migration is one-shot and persisted.** `_migrate_legacy_llm`
+> synthesises the catalogue from whatever legacy blocks a `user.json`
+> still has, writes the resulting `llm` block back, and prunes the retired
+> keys via the new `prune_user_override_keys` — so the second boot reads
+> the new block with no legacy code in the path. The legacy keychain entry
+> is adopted onto the `main_chat` provider's account during secrets
+> hydration, so an existing OpenAI key keeps working without a re-entry.
+>
+> **First-run fallout.** With one config home it became worth fixing the
+> onboarding: the default is now `qwen3.5:9b` at an explicit 65 536
+> context on all three routes (auto-detect asks Ollama for the advertised
+> max, and recent Qwen tags advertise 256 k, which doesn't fit in consumer
+> VRAM). `prewarm_runtime` no longer raises when the model isn't
+> downloaded — it reports `missing_chat_model` in the WS hello so the UI
+> can reach onboarding — and a new model step lists what's installed,
+> lets you pick, and pulls the missing one with a progress bar over
+> `POST /api/models/pull` + `model_pull_progress` events.

@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from app.core.infra import crash_logging
-from app.core.infra.settings import _parse_grounding_line_mode, persist_user_overrides
+from app.core.infra.settings import _norm_api_style, _parse_grounding_line_mode
+from app.core.infra.settings import LlmProvider, persist_user_overrides
+from app.llm.factory import build_probe_client
 from app.web.server import _classify_test_error, _search_public_snapshot
 
 
 log = logging.getLogger("app.web.server")
+
+# Model names with a pull in flight. Guards against a double-click
+# starting two downloads of the same multi-GB model; ``set`` mutation
+# from the request thread + the worker thread is safe under the GIL for
+# these single ``add`` / ``discard`` calls.
+_active_pulls: set[str] = set()
 
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
@@ -172,13 +181,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "model": session.effective_chat_model,
                 "context_window": session.context_window_size,
                 "temperature": float(s.ollama.temperature),
-                "max_tokens": int(s.chat_llm.max_tokens),
+                "max_tokens": int(session.max_tokens),
             },
-            # Provider routing snapshot. The raw API key is intentionally
-            # NOT echoed back — only ``has_api_key`` so the UI knows
-            # whether to prefill the password input with a •••• placeholder
-            # or leave it empty.
-            "chat_llm": session._chat_llm_public_snapshot(),
             "tts": {
                 "provider": session.tts_provider,
                 "voice": session.tts_voice,
@@ -371,29 +375,6 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             session.set_chat_model(str(chat["model"]))
             hub.broadcast({"type": "model_changed", "model": session.effective_chat_model})
             _broadcast_context_window()
-        chat_llm_patch = payload.get("chat_llm") or {}
-        if chat_llm_patch:
-            # Safety net: never accept an API key through the generic
-            # PATCH endpoint. ``PUT /api/settings/llm-credentials`` is
-            # the dedicated write-only path so a misclick in another
-            # form field can't leak credentials in browser tooling.
-            chat_llm_patch.pop("api_key", None)
-            try:
-                snapshot = session.reconfigure_chat_llm(chat_llm_patch)
-                hub.broadcast({
-                    "type": "llm_settings_changed",
-                    "chat_llm": snapshot,
-                })
-                hub.broadcast({
-                    "type": "model_changed",
-                    "model": session.effective_chat_model,
-                })
-                _broadcast_context_window()
-            except Exception as exc:
-                log.warning("reconfigure_chat_llm failed: %s", exc, exc_info=True)
-                raise HTTPException(
-                    400, f"chat_llm reconfigure failed: {exc}",
-                )
         search_patch = payload.get("search") or {}
         if search_patch:
             # Safety net: never accept the search API key through the
@@ -792,16 +773,87 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     def list_models(
         refresh: bool = False, provider: str | None = None,
     ) -> JSONResponse:
-        # ``provider`` (optional) lets the React drawer preview the
-        # model list of a non-active provider before the user commits
-        # to it. Empty / missing -> active provider, cached.
+        # ``provider`` (optional) is a catalogue provider id: it lets
+        # the drawer and the first-run picker preview another
+        # provider's model list before committing to it. Empty /
+        # missing -> active provider, cached.
         if provider:
             return JSONResponse(
                 session.list_chat_models(provider=provider),
             )
         return JSONResponse(session.list_chat_models(refresh=refresh))
 
-    # ── REST: LLM provider config (chat_llm) ────────────────────────
+    @app.get("/api/models/required")
+    def required_models() -> JSONResponse:
+        """Report the locally-hosted models the current routes need.
+
+        Used by the first-run model step to distinguish "configured"
+        from "actually downloaded" — ``GET /api/models`` deliberately
+        blurs that line for the settings dropdown.
+        """
+        return JSONResponse(session.required_models())
+
+    @app.post("/api/models/pull", status_code=202)
+    async def pull_model(payload: dict[str, Any]) -> JSONResponse:
+        """Start downloading a model onto an Ollama provider.
+
+        Returns 202 immediately: a multi-GB pull runs for minutes, far
+        past any sane HTTP timeout. Progress is broadcast as
+        ``model_pull_progress`` WS events, terminated by one carrying
+        ``done`` or ``error``. Concurrent pulls of the same model are
+        rejected with 409 so a double-click can't start two downloads.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        model = str(payload.get("model", "") or "").strip()
+        if not model:
+            raise HTTPException(400, "model is required")
+        provider_id = str(payload.get("provider_id", "") or "").strip()
+        if model in _active_pulls:
+            raise HTTPException(409, f"already pulling {model}")
+
+        def _broadcast(event: dict[str, Any]) -> None:
+            hub.broadcast({"type": "model_pull_progress", **event})
+
+        def _run() -> None:
+            try:
+                session.pull_model(
+                    model, provider_id=provider_id, on_progress=_broadcast,
+                )
+            except Exception as exc:
+                log.warning("model pull failed: %s", exc, exc_info=True)
+                _broadcast({
+                    "model": model,
+                    "status": "error",
+                    "error": str(exc)[:500],
+                })
+            else:
+                _broadcast({
+                    "model": model, "status": "done", "percent": 100.0,
+                })
+            finally:
+                _active_pulls.discard(model)
+
+        try:
+            # Validate the target before claiming the slot, so a bad
+            # provider id fails fast with a 4xx instead of an async
+            # error event the caller has to wait for.
+            session.validate_pull_target(model, provider_id=provider_id)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        _active_pulls.add(model)
+        threading.Thread(
+            target=_run, name=f"model-pull-{model}", daemon=True,
+        ).start()
+        # Explicit status: a JSONResponse carries its own code, which
+        # would otherwise override the decorator's 202.
+        return JSONResponse(
+            {"status": "started", "model": model}, status_code=202,
+        )
+
+    # ── REST: LLM provider catalogue + routes ───────────────────────
 
     @app.get("/api/llm/presets")
     def get_llm_presets() -> JSONResponse:
@@ -812,62 +864,6 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         without re-encoding the same strings on the client.
         """
         return JSONResponse({"presets": session.provider_presets()})
-
-    @app.put("/api/settings/llm-credentials")
-    async def put_llm_credentials(payload: dict[str, Any]) -> JSONResponse:
-        """Persist provider credentials + URL in one write-only call.
-
-        Body accepts ``{api_key, api_key_env, base_url, extra_headers}``.
-        Mirrors :func:`put_identity`'s shape. Validates that ``base_url``
-        (if present) starts with ``http://`` or ``https://`` and that
-        the API key is whitespace-free (so a stray copy-paste newline
-        can't trip later requests). Returns the masked snapshot.
-        """
-        patch: dict[str, Any] = {}
-        if "api_key" in payload:
-            raw_key = str(payload.get("api_key", "") or "")
-            if raw_key and any(c.isspace() for c in raw_key):
-                raise HTTPException(
-                    400,
-                    "api_key must not contain whitespace",
-                )
-            patch["api_key"] = raw_key.strip()
-        if "api_key_env" in payload:
-            patch["api_key_env"] = str(
-                payload.get("api_key_env", "") or "",
-            ).strip()
-        if "base_url" in payload:
-            raw_url = str(payload.get("base_url", "") or "").strip()
-            if raw_url and not (
-                raw_url.startswith("http://")
-                or raw_url.startswith("https://")
-            ):
-                raise HTTPException(
-                    400,
-                    "base_url must start with http:// or https://",
-                )
-            patch["base_url"] = raw_url
-        if "extra_headers" in payload:
-            raw_headers = payload.get("extra_headers") or {}
-            if not isinstance(raw_headers, dict):
-                raise HTTPException(
-                    400, "extra_headers must be an object",
-                )
-            patch["extra_headers"] = raw_headers
-        if not patch:
-            return JSONResponse(session._chat_llm_public_snapshot())
-        try:
-            snapshot = session.reconfigure_chat_llm(patch)
-        except Exception as exc:
-            log.warning(
-                "llm-credentials write failed: %s", exc, exc_info=True,
-            )
-            raise HTTPException(400, f"credentials write failed: {exc}")
-        hub.broadcast({
-            "type": "llm_settings_changed",
-            "chat_llm": snapshot,
-        })
-        return JSONResponse(snapshot)
 
     @app.put("/api/settings/search-credentials")
     async def put_search_credentials(payload: dict[str, Any]) -> JSONResponse:
@@ -914,10 +910,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
         Issues a real one-token chat completion against the supplied
         ``{provider, base_url, api_key, model, extra_headers}`` using a
-        throwaway :class:`app.llm.chat_client.ChatClient`. The
-        controller's saved ``chat_llm`` is **never** touched — this is
-        explicitly a dry run so the user can pre-flight Gemini before
-        committing the key to disk.
+        throwaway :class:`app.llm.chat_client.ChatClient`. The saved
+        catalogue is **never** touched and the probe client is never
+        cached — this is explicitly a dry run so the user can pre-flight
+        Gemini before committing the key to disk.
 
         Returns 200 with a structured ``{success, ...}`` payload on
         both pass and fail so the UI can show a green check or a red
@@ -942,17 +938,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if not isinstance(raw_headers, dict):
             raise HTTPException(400, "extra_headers must be an object")
 
-        # Build a throwaway ChatLlmSettings + client. Reuses the
-        # controller's existing factory so the test path can't drift
-        # from the real path.
-        from app.core.infra.settings import ChatLlmSettings, _norm_api_style
-        from app.core.session.session_controller import (
-            _build_chat_client,
-        )
-
-        probe_cfg = ChatLlmSettings(
-            provider=provider,
-            model=model,
+        # Build a throwaway provider row + client. Goes through the same
+        # factory the live routes use so the test path can't drift from
+        # the real one.
+        probe_provider = LlmProvider(
+            id="__connection_test__",
+            name="Connection test",
+            kind=provider,
             base_url=base_url,
             api_key=api_key,
             extra_headers={
@@ -966,11 +958,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             api_style=_norm_api_style(payload.get("api_style")),
         )
         try:
-            probe = _build_chat_client(
-                chat_llm=probe_cfg,
-                ollama_settings=session._settings.ollama,
-                role="connection_test",
-            )
+            probe = build_probe_client(probe_provider, model=model)
         except Exception as exc:
             log.info("test-connection client build failed: %s", exc)
             return JSONResponse({
@@ -1035,12 +1023,11 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "error_message": error_message,
             })
 
-    # ── PR 2: provider catalogue + role-assignment REST surface ────
+    # ── Provider catalogue + role-assignment REST surface ──────────
     #
-    # New endpoints sit alongside the legacy /api/settings + /api/llm/presets +
-    # /api/llm/test-connection ones (which keep working unchanged as back-compat
-    # shims). The new catalogue is the eventual primary; the legacy block stays
-    # readable / writable so downgrades and external scripts don't break.
+    # The ``llm`` block is the only LLM config surface: these endpoints
+    # own it. ``/api/llm/presets`` and ``/api/llm/test-connection`` above
+    # are read-only / dry-run helpers that feed the same UI.
 
     @app.get("/api/llm/providers")
     def get_llm_providers() -> JSONResponse:
@@ -1107,8 +1094,9 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     ) -> JSONResponse:
         """Replace the api_key / api_key_env on a saved provider.
 
-        Validates that the API key is whitespace-free (parallel to the
-        legacy /api/settings/llm-credentials endpoint).
+        Write-only: the key never comes back out, only ``has_api_key``.
+        Validates that the API key is whitespace-free so a stray
+        copy-paste newline can't trip later requests.
         """
         if not isinstance(payload, dict):
             raise HTTPException(400, "expected JSON object body")
@@ -1199,11 +1187,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     ) -> JSONResponse:
         """Set ``llm.routes[role]`` from a partial draft.
 
-        For ``main_chat`` this cascades through the legacy
-        :meth:`SessionController.reconfigure_chat_llm` path so the
-        in-flight chat client + TurnRunner are rebuilt immediately.
-        For other roles (currently only ``worker_default``) the route
-        is recorded; a restart picks it up.
+        Keys absent from the draft keep their current value. Roles that
+        have live clients behind them (``main_chat``, ``worker_default``,
+        ``workflow``) are rebuilt in place, so the change takes effect
+        on the next turn rather than at the next restart.
         """
         if not isinstance(payload, dict):
             raise HTTPException(400, "expected JSON object body")
@@ -1217,10 +1204,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             "type": "llm_settings_changed",
             "providers": session.list_providers(),
             "routes": session.list_routes(),
-            # Echo the matching legacy snapshot so the existing UI
-            # keeps working unchanged until the catalogue UI lands.
-            "chat_llm": session._chat_llm_public_snapshot(),
         })
+        hub.broadcast({
+            "type": "model_changed",
+            "model": session.effective_chat_model,
+        })
+        _broadcast_context_window()
         return JSONResponse(updated)
 
     @app.get("/api/voices")

@@ -18,6 +18,27 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.web.runner")
 
 
+def _warn_if_no_websocket_impl() -> None:
+    """Fail loudly when uvicorn can't speak WebSocket.
+
+    uvicorn's WS support lives in an optional dependency. With none
+    installed it still serves HTTP fine and answers the ``/ws``
+    handshake with a plain 404, so the app looks healthy while the
+    entire UI sits in a reconnect loop. A dev checkout always has one
+    transitively, which is exactly why this only ever bites a clean
+    install (the slim container).
+    """
+    import importlib.util
+
+    if any(importlib.util.find_spec(name) for name in ("websockets", "wsproto")):
+        return
+    log.error(
+        "No WebSocket implementation installed (websockets / wsproto) — "
+        "uvicorn will answer /ws with 404 and the UI cannot connect. "
+        "Install with: pip install websockets"
+    )
+
+
 class WebServerRunner:
     """Manage a uvicorn instance for the FastAPI/WS app on a daemon thread."""
 
@@ -40,6 +61,8 @@ class WebServerRunner:
 
     def _run(self) -> None:
         import uvicorn
+
+        _warn_if_no_websocket_impl()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

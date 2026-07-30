@@ -295,10 +295,28 @@ class VoiceMixin:
             except Exception as exc:
                 raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
             if not cloud_model and effective not in models:
-                raise RuntimeError(
-                    f"Chat model not found in Ollama: {effective}. "
-                    f"Pull it with: ollama pull {effective}",
+                # Non-fatal on purpose. A fresh install has Ollama
+                # running but nothing pulled yet; raising here would
+                # kill boot before the browser can reach the onboarding
+                # flow that offers to pull the model. Record it instead
+                # and let the UI drive the recovery.
+                self._missing_chat_model = effective
+                report(
+                    f"Chat model not installed: {effective} "
+                    "(pull it from the setup screen or run "
+                    f"'ollama pull {effective}')",
                 )
+                log.warning(
+                    "chat model %s is not installed on %s; skipping warmup",
+                    effective,
+                    getattr(self._chat_client, "base_url", "?"),
+                )
+                self._prewarm_embedder(report)
+                report("Warming TTS models...")
+                self.prewarm_tts()
+                report("Warmup complete (chat model missing)")
+                return
+            self._missing_chat_model = ""
             if cloud_model:
                 report(f"Using Ollama Cloud model: {effective} (no local warmup)")
             else:
@@ -347,9 +365,9 @@ class VoiceMixin:
         * ``_worker_client is _chat_client`` — pure-Ollama mode, the
           chat warmup at the top of :meth:`prewarm_runtime` already
           loaded this model. Touching it again is wasted work.
-        * Worker client is not an :class:`OllamaClient` instance —
-          ``workers_use_local=False`` keeps workers on the remote
-          chat client; nothing local to warm.
+        * Worker client is not an :class:`OllamaClient` instance — the
+          ``worker_default`` route points at a remote provider, so
+          there's nothing local to warm.
         * Effective worker model is empty — config edge case, log
           and skip.
         * Worker model ends in ``:cloud`` / ``-cloud`` — Ollama Cloud
@@ -369,16 +387,16 @@ class VoiceMixin:
             report(f"Using Ollama Cloud worker model: {model} (no local warmup)")
             return
         report(f"Warming worker model: {model}")
-        # Source ``num_ctx`` from ``ollama.context_window`` — the same
-        # field :class:`OllamaClient._default_options` falls back to.
-        # Passing it explicitly here is belt-and-braces: the kv-cache
-        # MUST be sized correctly on the FIRST call, otherwise Ollama
-        # loads the model at its built-in default (often 256k tokens)
-        # and a subsequent worker call with a smaller ``num_ctx``
-        # triggers a full model reload — exactly the pathology you
-        # see in ``ollama ps`` as a CPU/GPU split.
+        # Source ``num_ctx`` from the worker route — the same value
+        # :class:`OllamaClient._default_options` falls back to. Passing
+        # it explicitly here is belt-and-braces: the kv-cache MUST be
+        # sized correctly on the FIRST call, otherwise Ollama loads the
+        # model at its built-in default (often 256k tokens) and a
+        # subsequent worker call with a smaller ``num_ctx`` triggers a
+        # full model reload — exactly the pathology you see in
+        # ``ollama ps`` as a CPU/GPU split.
         worker_options: dict[str, object] = {}
-        worker_ctx = getattr(self._settings.ollama, "context_window", None)
+        _, worker_ctx = self._worker_route_model_ctx()
         if isinstance(worker_ctx, int) and worker_ctx > 0:
             worker_options["num_ctx"] = int(worker_ctx)
         try:

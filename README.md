@@ -88,24 +88,32 @@ The concrete stack behind the architecture above. Everything runs on your machin
 ## Requirements
 
 - Windows 10/11, macOS, or Linux
-- Python 3.11+ (3.13 supported)
+- Python 3.11–3.13 (3.13 is what the dependency lock is built and tested against; **3.14 is not supported** — `ctranslate2`, behind faster-whisper, ships no 3.14 wheels and no sdist)
 - Node.js 20+ (only for the React frontend dev server)
 - Microphone and speakers
-- An Ollama install with a chat model and an embedding model
+- An Ollama install (the first-run wizard downloads the models for you)
 
 ## Quick start with Docker
 
-The fastest way to run the web version on any machine: install [Ollama](https://ollama.com/download), pull the models, then bring up the container.
+The fastest way to run the web version on any machine: install [Ollama](https://ollama.com/download), then bring up the container.
 
 ```bash
-ollama pull qwen3-coder:30b        # or any chat model
-ollama pull qwen3-embedding:0.6b
-
-docker compose up -d --build       # text + avatar (slim image)
+docker compose -f docker-compose-slim.yaml up -d --build
 # open http://localhost:6275
 ```
 
-Add voice (server-side STT/TTS) with `AIKO_PROFILE=full docker compose up -d --build`, or run Ollama in a container too with `docker compose --profile with-ollama up -d --build`. Full guide — image sizes, GPU, model management, desktop — in [`docs/docker.md`](docs/docker.md).
+On first launch a setup wizard asks for your name, then shows which models the
+default config needs (`qwen3.5:9b` for chat, `qwen3-embedding:0.6b` for RAG),
+which of them Ollama already has, and offers to pull the missing ones with a
+progress bar. You can also pick a different installed model there instead. To
+skip the wizard's download step, pull them yourself beforehand:
+
+```bash
+ollama pull qwen3.5:9b
+ollama pull qwen3-embedding:0.6b
+```
+
+For server-side voice (STT/TTS), swap in `docker-compose-full.yaml` — same command, bigger image, and it shares the data volume so nothing is lost when you switch. Add `--profile with-ollama` to either file to run Ollama as a sibling container instead of on the host. Full guide — image sizes, GPU, model management, build caching, desktop — in [`docs/docker.md`](docs/docker.md).
 
 For a from-source / development install, follow the steps below.
 
@@ -117,22 +125,35 @@ For a from-source / development install, follow the steps below.
 - **macOS:** `brew install ollama`
 - **Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
 
-Pull a chat model and the embedding model used for RAG (defaults below match `config/default.json`):
+The first-run wizard can pull the models for you, so this step is optional. To
+do it up front (defaults match `config/default.json`):
 
 ```powershell
-ollama pull jaahas/qwen3.5-uncensored:9b   # or any chat model you prefer
+ollama pull qwen3.5:9b                     # ~6.6 GB, fits 12 GB VRAM at 64k context
 ollama pull qwen3-embedding:0.6b
 ```
+
+`jaahas/qwen3.5-uncensored:9b` is a drop-in alternative for the chat role if you
+want fewer refusals; pick it in the wizard or in **Settings → Chat → Role
+assignments**.
 
 ### 2. Python environment
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[voice]"
+pip install -e ".[voice]" -c requirements.lock
 ```
 
-The `[voice]` extra pulls in RealtimeSTT + Pocket-TTS (the PyTorch/whisper speech stack). Omit it (`pip install -e .`) for a lighter, text-only install — the app boots fine without voice. The console script `aiko-web` is installed as a shortcut for `python -m app.web`.
+The `[voice]` extra pulls in RealtimeSTT + Pocket-TTS (the PyTorch/whisper speech stack). Omit it (`pip install -e . -c requirements.lock`) for a lighter, text-only install — the app boots fine without voice. The console script `aiko-web` is installed as a shortcut for `python -m app.web`.
+
+`-c requirements.lock` pins the entire dependency graph to the exact versions this project is tested against. It's optional but recommended: without it pip is free to pick newer releases within the ranges in `pyproject.toml`. See [`docs/docker.md`](docs/docker.md#dependency-pinning) for how to regenerate the lock.
+
+On Linux, install the PortAudio and libsndfile system packages first, otherwise PyAudio (a RealtimeSTT dependency with no Linux wheel) can't compile:
+
+```bash
+sudo apt-get install -y python3-dev portaudio19-dev libsndfile1 ffmpeg
+```
 
 ### 3. Frontend dependencies
 
@@ -199,6 +220,6 @@ The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `Message
 ## Notes
 
 - Everything runs locally by default — Ollama, faster-whisper, Pocket-TTS, LanceDB.
-- The `chat_llm.provider == "openai_compatible"` path routes through `langchain-openai`'s `ChatOpenAI` and works with OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral (with per-provider `api_style` + `reasoning_effort` controls).
+- Providers with `kind == "openai_compatible"` route through the hand-rolled `OpenAICompatibleClient` (plain `requests`, no vendor SDK) and work with OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral (with per-provider `api_style` + `reasoning_effort` controls). Add one from **Settings → Chat → Providers** and point any role at it — see [`docs/llm-providers.md`](docs/llm-providers.md).
 - The embedded MCP *server* is opt-in (default on) and is intended for development tooling — see `AGENTS.md` for the available tools and how to add new ones.
 - Aiko can also act as an MCP *client*: point `mcp_clients.servers` at external MCP servers to expose their tools to her, and load local capability `plugins` (e.g. the bundled `filesystem` plugin) from `config.plugins`.

@@ -23,7 +23,7 @@ context (see [Concept backlog L23](personality-backlog/concepts.md) and the
 
 ```mermaid
 flowchart TD
-    CTX["context_window (chat_llm / route override)"] --> SIZE["_size_context_budget: surfacing_budget = clamp(min(fraction*ctx, cap), min, avail - history_floor)"]
+    CTX["context_window (llm.routes[role] override or client lookup)"] --> SIZE["_size_context_budget: surfacing_budget = clamp(min(fraction*ctx, cap), min, avail - history_floor)"]
     UT["user_text + recent turns"] --> PF{"RagPrefetcher warm?"}
     PF -->|"hit: reuse embed + pool"| EMB["shared turn embedding"]
     PF -->|"miss: embed once now"| EMB

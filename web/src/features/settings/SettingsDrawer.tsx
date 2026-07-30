@@ -11,7 +11,6 @@ import { TabStrip } from "@/components/TabStrip";
 import { useAssistantStore } from "@/store";
 import { useWeatherStore } from "@/stores/useWeatherStore";
 import { IdentitySection } from "./IdentitySection";
-import { ChatProviderSection } from "./ChatProviderSection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
 import { LlmRoutesSection } from "./LlmRoutesSection";
 import { VoiceTab } from "./VoiceTab";
@@ -428,15 +427,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 <>
                   <IdentitySection />
 
-                  <ChatProviderSection
-                    settings={settings}
-                    apply={apply}
-                    onSettingsChanged={refreshAll}
-                  />
+                  <LlmRoutesSection />
 
                   <LlmProvidersListSection />
-
-                  <LlmRoutesSection />
 
                   <DiagnosticsSection
                     metrics={metrics}

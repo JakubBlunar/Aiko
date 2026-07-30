@@ -32,8 +32,9 @@ exists to keep them in lock-step.
 |---|---|---|
 | Make Aiko speak faster / slower (global) | `assistant.tts_length_scale` | `1.0` (0.65 fastest – 1.35 slowest) |
 | Set / change your name | `assistant.user_display_name` | `""` (forces first-run onboarding) |
-| Cap reply length (stop rambling) | `chat_llm.max_tokens` | `512` |
-| Keep model warm in VRAM longer | `chat_llm.keep_alive` | `"30m"` |
+| Cap reply length (stop rambling) | `llm.routes.main_chat.max_tokens` | `512` |
+| Shrink the KV cache to fit VRAM | `llm.routes.<role>.context_window` | `65536` |
+| Keep model warm in VRAM longer | `llm.providers[].keep_alive` | `"30m"` |
 | Aiko proactively speaks in **voice** chat after N s silence | `agent.proactive_silence_seconds` | `45` |
 | Aiko proactively speaks in **typed** chat after N s silence | `agent.proactive_silence_seconds_typed` | `240` (4 min) |
 | Enable typed-mode proactive at all | `agent.proactive_typed_enabled` | `true` |
@@ -92,32 +93,19 @@ Personal identity + the one global TTS knob.
 
 ---
 
-## `ollama` — `OllamaSettings` (local Ollama base + embeddings)
+## `llm` — `LlmSettings` (the only LLM config block)
 
-The local Ollama runtime that hosts the **embedding** model and serves as the default local chat base. **Chat/worker model selection, context windows, temperatures and max-tokens now live in `llm.routes`** (Settings → Chat) — this block is no longer the chat-routing block. Its still-authoritative job is the embedder (which is *not* catalogued) plus the local-Ollama defaults used to seed a fresh install and as the `local_ollama` provider mirror.
+Holds the **provider catalogue** (`llm.providers[]`), the **role
+assignment table** (`llm.routes{}`) and the **embedding config**
+(`llm.embedding`). Everything about which model serves which job lives
+here.
 
-All keys are parsed tolerantly (sensible defaults when absent), so `default.json` ships only a lean subset — `base_url`, `chat_model`, `temperature`, `think_num_predict_headroom`. The chat-routing fields (`context_window`, etc.) were removed from `default.json` because the per-role values in `llm.routes` own them; they remain readable if you re-add them.
-
-- `ollama.base_url` *(string, `"http://127.0.0.1:11434"`)* — where the local Ollama daemon listens. Used by the embedder and by the `local_ollama` provider in the catalogue.
-- `ollama.embedding_base_url` *(string, `""`)* — separate URL for the embedding model if you split it onto another box; empty falls back to `base_url`.
-- `ollama.chat_model` *(string, `"qwen3.6:27b"`)* — local chat model. Now used as the **fresh-install default** + the seed for the synthesised `worker_default` route + a fallback when a route leaves the model blank. The active chat/worker models are normally set in `llm.routes`. Must already be `ollama pull`-ed.
-- `ollama.temperature` *(float, `0.6`)* — default local sampling temperature; per-route `llm.routes[role].temperature` overrides it when set.
-- `ollama.context_window` *(int | null, `null`)* — legacy context-window fallback. `null` auto-detects via the Ollama API. **Prefer `llm.routes[role].context_window`**; this exists only as a fallback and is no longer shipped in `default.json`.
-- `ollama.embedding_model` *(string, `"qwen3-embedding:0.6b"`)* — the embedder used for RAG, beliefs, novelty, conflicts, curiosity seeds, etc. Changing this **invalidates the LanceDB** (existing vectors won't match new vectors).
-- `ollama.embedding_num_gpu` / `ollama.embedding_num_ctx` *(int | null, `null`)* — VRAM levers for the embedder (force CPU with `0`, shrink the KV window). See the inline docs in `OllamaSettings`.
-- `ollama.think_num_predict_headroom` *(int, `2048`)* — extra `num_predict` budget added automatically on `think=True` worker calls so the reasoning trace doesn't starve the answer.
-- `ollama.timeout` *(int, `300`)* — HTTP timeout in seconds, shared by every Ollama client (chat + embeddings). Bump if a slow model occasionally times out mid-generation.
-
----
-
-## `llm` — `LlmSettings` (catalogue + role mapping)
-
-The canonical LLM configuration. Holds the **provider catalogue**
-(`llm.providers[]`) and the **role assignment table** (`llm.routes{}`).
-On first boot, [`_migrate_legacy_llm`](../app/core/infra/settings.py)
-synthesises this block from the legacy `chat_llm` + `ollama` blocks
-when `llm.providers` is empty — see [llm-providers.md →
-Migrating from the legacy config](llm-providers.md#migrating-from-the-legacy-chat_llm--ollama-config).
+> **Upgrading?** The old `ollama` and `chat_llm` blocks were retired. On
+> the first boot after upgrading, [`_migrate_legacy_llm`](../app/core/infra/settings.py)
+> folds them into `llm` (providers, routes and embedding), writes the
+> result to `user.json` and deletes the old keys — a one-shot,
+> no-action-required migration. See [llm-providers.md →
+> Migrating from the legacy config](llm-providers.md#migrating-from-the-legacy-chat_llm--ollama-config).
 
 ### `llm.providers[]` — saved provider catalogue
 
@@ -125,52 +113,49 @@ Each entry is a slotted `LlmProvider`:
 
 - `llm.providers[].id` *(string, required, unique)* — stable identifier used by routes. Example: `"local_ollama"`, `"openai"`, `"openai_team"`.
 - `llm.providers[].name` *(string)* — display name for the catalogue list.
-- `llm.providers[].kind` *(string, `"ollama"` | `"openai_compatible"`)* — wire protocol family.
+- `llm.providers[].kind` *(string, `"ollama"` | `"openai_compatible"`)* — wire protocol family. Anything else falls back to `"ollama"`.
 - `llm.providers[].base_url` *(string)* — endpoint URL.
-- `llm.providers[].api_key` *(string, `""`)* — bearer token (written via `PUT /api/llm/providers/{id}/credentials`; never round-trips through GET).
-- `llm.providers[].api_key_env` *(string, `""`)* — env-var fallback (e.g. `"OPENAI_API_KEY"`).
+- `llm.providers[].api_key` *(string, `""`)* — bearer token (written via `PUT /api/llm/providers/{id}/credentials`; never round-trips through GET). Stashed in the OS keychain when one is available, leaving `""` on disk.
+- `llm.providers[].api_key_env` *(string, `""`)* — env-var fallback (e.g. `"OPENAI_API_KEY"`). Inferred from the host when blank.
 - `llm.providers[].extra_headers` *(object, `{}`)* — vendor-specific headers (OpenRouter wants `HTTP-Referer` + `X-Title`).
-- `llm.providers[].timeout_seconds` *(int, `300`)* — HTTP timeout.
-- `llm.providers[].keep_alive` *(string, `"30m"`)* — Ollama-only model-resident-in-VRAM duration; silently ignored by remote providers.
+- `llm.providers[].timeout_seconds` *(int, `300`)* — HTTP timeout, shared by chat + embeddings on this endpoint. Bump if a slow model occasionally times out mid-generation.
+- `llm.providers[].keep_alive` *(string, `"30m"`)* — Ollama-only model-resident-in-VRAM duration; silently ignored by remote providers. Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever").
+- `llm.providers[].reasoning_effort` *(string, `""`)* — default effort for Responses-API models (GPT-5 / o-series / Grok). Empty = the client's own default; a route can override it.
+- `llm.providers[].api_style` *(string, `"auto"` | `"responses"` | `"chat_completions"`)* — OpenAI-compatible surface selector. xAI Grok needs `"responses"` for reasoning + prompt caching.
+- `llm.providers[].think_num_predict_headroom` *(int, `2048`)* — Ollama-only: extra `num_predict` budget added automatically on `think=True` worker calls so the reasoning trace doesn't starve the answer.
 
 Two routes pointing at the same provider share one `ChatClient`
 instance through the cache in [`app/llm/factory.py`](../app/llm/factory.py).
 
 ### `llm.routes{}` — role assignments
 
-Maps a role name (canonical: `"main_chat"`, `"worker_default"`; future: `"heavy_workers"`, …) to an `LlmRoute`:
+Maps a role name (`"main_chat"`, `"worker_default"`, `"workflow"`) to an `LlmRoute`:
 
 - `llm.routes[role].provider_id` *(string, required)* — references `llm.providers[].id`. Server returns 404 when unknown.
 - `llm.routes[role].model` *(string, required)* — model name (for `openai_compatible`) or tag (for `ollama`). Free-text combobox in the drawer.
-- `llm.routes[role].context_window` *(int | null, `null`)* — explicit budget. `null` / `0` falls through to the per-model auto-detect (see `chat_llm.context_window` below for the resolution order).
-- `llm.routes[role].max_tokens` *(int, `512`)* — hard cap per assistant reply for this role.
-- `llm.routes[role].temperature` *(float | null, `null`)* — sampling temperature; `null` inherits from the legacy block.
+- `llm.routes[role].context_window` *(int | null, `65536` in the shipped defaults)* — explicit budget in tokens, used as the prompt-assembly budget and as Ollama's `num_ctx`. Resolution order is **explicit route value > active client's `get_context_length(model)` > hardcoded 8192 fallback**. **Worth setting explicitly for local models**: auto-detect asks Ollama's `/api/show` for the model's advertised maximum, and recent Qwen tags advertise 256 k — a KV cache that size spills the weights out of VRAM and Ollama silently splits the model across CPU and GPU. For remote providers auto-detect consults a static lookup table of **conservative caps** (gpt-5-mini → 131072, gemini-2.5-* → 131072, claude-3-* → 200000, … see `_CONTEXT_WINDOW_TABLE` in `app/llm/openai_compatible_client.py`); those are deliberately below the model's true max because typical use is under 50 k, bigger budgets make compaction lazy, and staying under 128 k keeps OpenAI requests in the cheaper short-context billing column. `context_window_source` on `get_status` / Diagnostics reports which branch won (`config`, `client`, or `fallback`).
+- `llm.routes[role].max_tokens` *(int, `512`)* — hard cap on tokens **per reply** for this role. Without it, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance of drift; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` / `openai-compat response truncated:` warnings — they fire only when the cap actually clipped a reply.
+- `llm.routes[role].temperature` *(float | null, `null`)* — sampling temperature; `null` uses the provider's default.
+- `llm.routes[role].reasoning_effort` *(string, `""`)* — per-role override of the provider's value.
 
-`main_chat` updates cascade through `reconfigure_chat_llm` so the
-live chat client + `TurnRunner` + `ProactiveDirector` rebuild
-immediately. `worker_default` updates are persisted; workers pick
-up the new config on next restart.
+Editing any of the three roles takes effect immediately: `update_route`
+persists the change and rebuilds the live clients, re-pointing the
+`TurnRunner`, the `ProactiveDirector` and every background worker.
 
----
+Pointing `main_chat` and `worker_default` at the same provider **and**
+the same context window makes them share one client — on a single-GPU
+box that's what keeps one set of weights resident instead of thrashing
+between two.
 
-## `chat_llm` — `ChatLlmSettings` (legacy, mirror of `llm.routes.main_chat`)
+### `llm.embedding` — the RAG embedder
 
-Provider-routing layer in front of `ollama`. Lets you run chat on Ollama Cloud, OpenAI, Grok, Groq, OpenRouter, DeepSeek, Together, Mistral — anything OpenAI-compatible.
+Not a route: the embedder speaks a different endpoint (`/api/embeddings`)
+and is always local.
 
-**Status**: legacy. The catalogue (`llm.providers` + `llm.routes`) is the new source of truth; the controller mirror-writes both directions so external scripts that still read `chat_llm.*` keep working. New code should target `llm.routes.main_chat` instead.
-
-- `chat_llm.provider` *(string, `"ollama"`)* — `"ollama"` (local or Ollama Cloud) or `"openai_compatible"` (anything that speaks the OpenAI API: Gemini, OpenAI, Groq, OpenRouter, DeepSeek, …).
-- `chat_llm.provider_preset` *(string, `""`)* — UI hint emitted by the curated picker. One of `""` / `"ollama"` / `"ollama_cloud"` / `"openai"` / `"gemini"` / `"groq"` / `"openrouter"`. Controller ignores it; only the React drawer reads it to highlight the active preset card.
-- `chat_llm.model` *(string, `""`)* — model name override. Empty → falls back to `ollama.chat_model`. For `openai_compatible` this is **required** (e.g. `"gemini-2.5-flash-lite"`, `"gpt-4o-mini"`).
-- `chat_llm.base_url` *(string, `""`)* — endpoint URL. Empty → `ollama.base_url` (when provider is `ollama`).
-- `chat_llm.api_key` *(string, `""`)* — bearer token. Empty → looked up via `api_key_env` or inferred from the host. Always written via `PUT /api/settings/llm-credentials` from the UI so the key never round-trips through `GET /api/settings`.
-- `chat_llm.api_key_env` *(string, `""`)* — explicit env var holding the key (e.g. `"OPENAI_API_KEY"`).
-- `chat_llm.context_window` *(int | null, `null`)* — explicit context-window override (tokens) used as the prompt-assembly budget. Resolution order is **explicit override > active client's `get_context_length(model)` > hardcoded 8192 fallback**. Set to `null` / `0` / unset to use auto-detect: Ollama hits `/api/show` per model; the `OpenAICompatibleClient` consults a static lookup table that maps known cloud model ids to **conservative caps** (gpt-5-mini → 131072, gpt-4.1-mini → 131072, gemini-2.5-* → 131072, claude-3-* → 200000, etc. — see `_CONTEXT_WINDOW_TABLE` in `app/llm/openai_compatible_client.py`). Cap is intentionally below the model's true max: gpt-4.1-mini's 1 M and gemini-2.5-pro's 2 M are clamped to 128 k because (a) typical use is <50 k, (b) bigger budgets make compaction lazy, and (c) for OpenAI's long-context billing tier, staying under 128 k keeps requests in the cheaper short-context column. Editable from the drawer's **Settings → Chat → Advanced → Context window** input. The `context_window_source` field on `get_status` / Diagnostics reports which branch won (`config`, `client`, or `fallback`).
-- `chat_llm.temperature` *(float | null, `null`)* — overrides `ollama.temperature` when set.
-- `chat_llm.extra_headers` *(object, `{}`)* — extra HTTP headers (vendor-specific knobs; OpenRouter wants `HTTP-Referer` + `X-Title`).
-- `chat_llm.max_tokens` *(int, `512`)* — hard cap on tokens **per assistant reply**. Without this, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance the LLM drifts off-topic; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` / `openai-compat response truncated:` warnings — they fire only when the cap actually clipped a reply.
-- `chat_llm.keep_alive` *(string, `"30m"`)* — how long Ollama keeps the chat model resident in VRAM after a request. Ollama-only (silently ignored by remote providers). Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever").
-- `chat_llm.workers_use_local` *(bool, `true`)* — when the chat provider is **not** `"ollama"` AND this is `true`, the ~24 background workers keep talking to a local Ollama instance. Defaults to `true` because Gemini's 1500-req/day free-tier would drain in well under an hour otherwise. Set to `false` to opt workers into the same remote provider (burns quota; useful when there's no local Ollama at all). See [`docs/llm-providers.md`](llm-providers.md) for the rationale.
+- `llm.embedding.provider_id` *(string, `"local_ollama"`)* — which catalogue entry hosts it.
+- `llm.embedding.model` *(string, `"qwen3-embedding:0.6b"`)* — the embedder used for RAG, beliefs, novelty, conflicts, curiosity seeds, etc. Changing this **invalidates the LanceDB** (existing vectors won't match new ones), which triggers a destructive rebuild on the next boot.
+- `llm.embedding.num_ctx` *(int | null, `2048`)* — VRAM lever: `qwen3-embedding` defaults to a 32 k window (~5.8 GB resident) but Aiko only ever embeds short texts.
+- `llm.embedding.num_gpu` *(int | null, `0`)* — VRAM lever: `0` forces CPU, freeing the GPU for the chat model. `null` leaves Ollama's placement alone.
 
 ---
 
@@ -912,7 +897,7 @@ Why: without per-message timestamps the LLM has no clock against the conversatio
 
 - `agent.history_age_prefix_enabled` *(bool, `true`)* — master switch. Off → the chat-history block is byte-identical to the pre-K-time1 behaviour (raw `{role, content}` pairs with no per-message timestamp). Use the off setting for A/B comparison or if your model interprets the bracketed metadata as part of the dialogue.
 
-Cost: ~4–6 tokens per kept history message. Negligible against the configured `ollama.context_window` budget.
+Cost: ~4–6 tokens per kept history message. Negligible against the configured `llm.routes.main_chat.context_window` budget.
 
 Verification: enable INFO logging on `app.core.session.prompt_assembler`; the rendered prompt's history messages start with `[…]` brackets. The `_format_age` ladder is unit-tested in `tests/test_prompt_assembler.py::WallClockHistoryPrefixTests`.
 
@@ -1145,6 +1130,8 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
 
 - `stt.model` *(string, `"large-v1"`)* — whisper model identifier. Larger → more accurate / slower / more VRAM.
 - `stt.language` *(string | null, `"en"`)* — language hint. `null` = autodetect (slower, less accurate on short clips).
+- `stt.device` *(string, `"auto"`, one of `auto` / `cuda` / `cpu`)* — compute device for transcription. `auto` uses the GPU when torch reports a CUDA device and falls back to CPU otherwise, which is what lets the same config boot on a GPU workstation and in the CPU-only Docker image. Pin to `cuda` or `cpu` to skip the probe. Anything unrecognised falls back to `auto`. Note RealtimeSTT's own default is a hard `cuda`, which fails outright without a usable GPU.
+- `stt.compute_type` *(string, `"default"`)* — CTranslate2 quantisation. `default` lets faster-whisper choose per device (float16 on GPU, int8 on CPU). `"int8"` → much lighter and faster on CPU at some accuracy cost; `"float16"` → the usual GPU choice.
 
 ---
 

@@ -404,7 +404,8 @@ class LifecycleMixin:
 
     @property
     def chat_model(self) -> str:
-        return self._settings.ollama.chat_model
+        """Model configured for the ``main_chat`` route."""
+        return self._effective_chat_model
 
     @property
     def effective_chat_model(self) -> str:
@@ -415,11 +416,16 @@ class LifecycleMixin:
         return self._context_window
 
     @property
+    def max_tokens(self) -> int:
+        """Per-reply generation cap from the ``main_chat`` route."""
+        return self._max_tokens
+
+    @property
     def context_window_source(self) -> str:
         """Where ``context_window`` came from: ``config|client|fallback``.
 
-        ``config`` means an explicit ``chat_llm.context_window`` (or
-        legacy ``ollama.context_window``) override won. ``client``
+        ``config`` means the ``main_chat`` route's explicit
+        ``context_window`` won. ``client``
         means the active ``ChatClient`` answered ``get_context_length``
         with a positive value — either Ollama's ``/api/show`` for
         local models or the static OpenAI-compat lookup table for

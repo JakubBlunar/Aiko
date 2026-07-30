@@ -105,9 +105,11 @@ silent failure path). Cheap individually, compounding in aggregate.
 - **I8.** No React error boundary.
 - **I9.** Mobile responsiveness + PWA installability (LAN-responsive
   is cheap; full installable auto-updating PWA needs an HTTPS origin).
-- **I10.** Make `llm.routes` the single runtime source; retire the
-  legacy `chat_llm` mirror (config-file slimming already done; this is
-  the code follow-up).
+- ~~**I10.** Make `llm.routes` the single runtime source; retire the
+  legacy `chat_llm` mirror.~~ **Shipped** — full removal (`chat_llm`,
+  `workers_use_local` and `ChatProviderSection` deleted; embeddings moved
+  to `llm.embedding`; one-shot persisted migration; first-run model
+  picker + pull).
 
 ### H. Immersion polish — [`immersion.md`](immersion.md)
 

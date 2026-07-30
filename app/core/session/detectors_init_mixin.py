@@ -805,6 +805,11 @@ class DetectorsInitMixin:
         self._models_cache: list[str] | None = None
         self._models_cache_time = 0.0
         self._cache_ttl = 60.0
+        # Set by ``prewarm_runtime`` when the main_chat route names a
+        # model that isn't installed on its local Ollama. Surfaced in
+        # the WS hello envelope so the first-run flow can offer to pull
+        # it instead of leaving the user at a chat that 404s.
+        self._missing_chat_model: str = ""
 
         # ── MCP debug server ─────────────────────────────────────────────
         self._mcp_server_runner = None
