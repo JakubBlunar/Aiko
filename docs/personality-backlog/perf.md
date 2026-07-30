@@ -134,13 +134,15 @@ should drop noticeably for surfaces tagged
 uncensored ignores it, fall back to (a) wrapping prompts with
 `<no_think>...</no_think>` tags some templates support, or (b)
 running background workers on a non-reasoning Ollama model
-(e.g. a small 3B instruct) via a `chat_llm.background_model`
-setting; the main turn still uses the reasoning model.
+(e.g. a small 3B instruct) by pointing
+`llm.routes.worker_default` at it; the main turn still uses the
+reasoning model on `llm.routes.main_chat`. No new setting is
+needed — the route table already separates the two.
 
 **Open questions.** Does `/no_think` actually save tokens on
 `jaahas/qwen3.5-uncensored:9b` specifically, or does this fine-
 tune ignore both? If it ignores, the cleaner path is the dual-
-model split (background_model setting), which is more code but
+model split (a second worker route), which is more code but
 also unlocks faster background-worker turnaround independently.
 Note: P13 (shipped) makes the dual-model split actually work —
 set `llm.routes.worker_default.model` and every worker picks it
