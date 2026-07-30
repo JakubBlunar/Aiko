@@ -68,6 +68,19 @@ _announced_base_urls: set[str] = set()
 _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
 
 
+def _strip_gemini_prefix(model: str) -> str:
+    """Normalise a model id to lowercase, minus Gemini's ``models/``.
+
+    Gemini's compat layer reports ids both ways (``gemini-3.6-flash``
+    from the docs, ``models/gemini-3.6-flash`` from ``/models``), and
+    every prefix test below expects the bare form.
+    """
+    name = (model or "").strip().lower()
+    if name.startswith("models/"):
+        name = name[len("models/"):]
+    return name
+
+
 # Conservative context-window caps keyed by model-id prefix.
 #
 # First match wins (longer prefixes must come before shorter ones so
@@ -91,11 +104,21 @@ _CONTEXT_WINDOW_TABLE: tuple[tuple[str, int], ...] = (
     ("o4-mini", 200_000),
     ("o3", 200_000),
     ("o1", 200_000),
+    # ── Gemini 3.x family. 1 M native, capped at 128 k. Covers
+    # gemini-3-flash, gemini-3.1-pro, gemini-3.1-flash-lite,
+    # gemini-3.5-flash-lite, gemini-3.6-flash, … ───────────────────
+    ("gemini-3", 131_072),
     # ── Gemini 2.5 family. 1-2 M native, capped at 128 k. ───────────
     ("gemini-2.5-pro", 131_072),
     ("gemini-2.5-flash-lite", 131_072),
     ("gemini-2.5-flash", 131_072),
     ("gemini-2.5", 131_072),
+    # Catch-all for Gemini generations that don't exist yet. Every
+    # Gemini since 1.5 has shipped with at least a 1 M window, so the
+    # 128 k cap is a far better guess for an unknown tag than the
+    # 8192 last-resort default the controller would otherwise apply.
+    # Must stay below the version-specific rules above.
+    ("gemini-", 131_072),
     # ── Groq llama-3.x family. 128 k native. ────────────────────────
     ("llama-3.3", 131_072),
     ("llama-3.1", 131_072),
@@ -125,9 +148,7 @@ def _lookup_context_window(model: str) -> int | None:
     ``None`` when no prefix matches (the controller falls back to
     the explicit override or the hardcoded 8192 last-resort default).
     """
-    name = (model or "").strip().lower()
-    if name.startswith("models/"):
-        name = name[len("models/"):]
+    name = _strip_gemini_prefix(model)
     if not name:
         return None
     for prefix, window in _CONTEXT_WINDOW_TABLE:
@@ -144,8 +165,58 @@ def _is_gemini_model(model: str) -> bool:
     forms are recognised. Returning True opts into the system-role
     collapse + temperature clamp paths below.
     """
-    name = (model or "").strip().lower()
-    return name.startswith("gemini-") or name.startswith("models/gemini-")
+    return _strip_gemini_prefix(model).startswith("gemini-")
+
+
+# Gemini generations that predate thinking. ``reasoning_effort`` has no
+# meaning for them and the compat layer rejects it, so they keep the
+# plain chat-completions payload.
+_GEMINI_NO_THINKING_PREFIXES: tuple[str, ...] = (
+    "gemini-1.0",
+    "gemini-1.5",
+    "gemini-2.0",
+)
+
+
+def _gemini_supports_thinking(model: str) -> bool:
+    """True when ``model`` accepts a ``reasoning_effort``.
+
+    Deny-list rather than allow-list: every Gemini from 2.5 onwards is a
+    thinking model, so an unrecognised future tag is far more likely to
+    want the parameter than not. Guessing wrong in this direction fails
+    loudly on the first call (a ``400`` whose body we log) and is fixed
+    by setting the route's effort to ``omit``; guessing wrong the other
+    way silently bills every turn at the model's default thinking level,
+    which is the exact cost we're here to avoid.
+    """
+    name = _strip_gemini_prefix(model)
+    return not name.startswith(_GEMINI_NO_THINKING_PREFIXES)
+
+
+def _gemini_thinking_can_be_disabled(model: str) -> bool:
+    """True when ``model`` accepts ``reasoning_effort="none"``.
+
+    Google's compat layer maps ``reasoning_effort`` onto Gemini's
+    ``thinking_level`` / ``thinking_budget``, but switching thinking
+    **off** is only supported on the 2.5 line, and not on 2.5 Pro.
+    Every Gemini 3 model reasons unconditionally and answers ``none``
+    with ``400 Invalid reasoning_effort``.
+    """
+    name = _strip_gemini_prefix(model)
+    return name.startswith("gemini-2.5") and not name.startswith("gemini-2.5-pro")
+
+
+def _gemini_min_effort(model: str) -> str:
+    """Cheapest reasoning effort ``model`` is guaranteed to accept.
+
+    Used for the tool-decision pass, which only has to emit a function
+    name and a few JSON args — a reasoning trace there is pure latency
+    and pure output-token spend on every single turn. ``minimal`` is
+    deliberately not used even though the 3.x Flash tags accept it:
+    3.1 Pro doesn't, and Google's own mapping table collapses it to
+    ``low`` there anyway, so ``low`` is the universal floor.
+    """
+    return "none" if _gemini_thinking_can_be_disabled(model) else "low"
 
 
 def _collapse_system_for_gemini(
@@ -748,6 +819,23 @@ class OpenAICompatibleClient:
                 effort = "omit"
             if effort != "omit":
                 payload["reasoning_effort"] = effort
+        elif _is_gemini_model(model) and _gemini_supports_thinking(model):
+            # Gemini reasons by default too, and its compat layer takes
+            # the same ``reasoning_effort`` key (mapped onto
+            # ``thinking_level`` / ``thinking_budget`` server-side). The
+            # defaults are expensive: 3.6 Flash thinks at ``medium`` and
+            # 3.1 Pro at ``high`` unless told otherwise, and Google bills
+            # thinking tokens at the *output* rate. Leaving the param off
+            # therefore costs both latency and money on every turn, so we
+            # send an explicit effort exactly like the OpenAI branch —
+            # only the vocabulary differs.
+            effort = self._resolve_gemini_effort(options, model=model)
+            if tools and effort != "omit":
+                # Tool-decision pass: a function name plus a few JSON
+                # args. Same reasoning as the Responses branch above.
+                effort = _gemini_min_effort(model)
+            if effort != "omit":
+                payload["reasoning_effort"] = effort
         if options:
             # Pull out the keys we know how to translate, pass the rest
             # through. The Ollama vocabulary leaks here on purpose — the
@@ -762,9 +850,10 @@ class OpenAICompatibleClient:
             # sampling knobs are locked to defaults so we drop them
             # entirely — see ``_is_responses_api_family``.
             opts = dict(options)
-            # Handled explicitly above for the Responses-API family; drop
-            # it here so it never leaks onto a non-Responses payload (or
-            # double-writes) via the generic pass-through below.
+            # Handled explicitly above for the Responses-API family and
+            # for Gemini; drop it here so it never leaks onto a provider
+            # that doesn't understand it (or double-writes the key we
+            # just resolved) via the generic pass-through below.
             opts.pop("reasoning_effort", None)
             # ``prompt_cache_key`` is a Responses-surface caching hint
             # (see ``_build_responses_payload``). On /v1/chat/completions
@@ -849,6 +938,43 @@ class OpenAICompatibleClient:
         if self._api_style == "responses":
             return "omit"
         return "minimal"
+
+    def _resolve_gemini_effort(
+        self, options: dict[str, object] | None, *, model: str,
+    ) -> str:
+        """Resolve ``reasoning_effort`` for a Gemini chat-completions call.
+
+        Same precedence as :meth:`_resolve_reasoning_effort` (per-call
+        override beats the instance default), with two Gemini-specific
+        rules:
+
+        * **Unset resolves to ``low``**, not ``minimal``. ``minimal`` is
+          accepted by the 3.x Flash tags but rejected by 3.1 Pro, and
+          leaving the key off entirely hands the turn to the model's own
+          default — ``medium`` on 3.6 Flash, ``high`` on 3.1 Pro — which
+          is the latency and output-token bill we're trying to avoid.
+        * **``none`` is clamped on models that can't disable thinking.**
+          Only the 2.5 line (minus Pro) accepts it; Gemini 3 answers
+          ``400 Invalid reasoning_effort``. Clamping rather than passing
+          it through means a route configured for one Gemini generation
+          keeps working when it's pointed at another.
+        """
+        effort = self._reasoning_effort
+        if options and isinstance(options, dict):
+            override = options.get("reasoning_effort")
+            if override is not None:
+                effort = str(override).strip().lower()
+        if not effort:
+            return "low"
+        if effort in ("omit", "default"):
+            return "omit"
+        if effort == "none" and not _gemini_thinking_can_be_disabled(model):
+            log.debug(
+                "gemini reasoning_effort=none unsupported on %s; using low",
+                model,
+            )
+            return "low"
+        return effort
 
     def _build_responses_payload(
         self,
