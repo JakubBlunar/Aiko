@@ -56,18 +56,36 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "base_url": (
             "https://generativelanguage.googleapis.com/v1beta/openai/"
         ),
+        # Flash-Lite first: this app's spend is almost entirely *input*
+        # (a large stable prompt against a handful of reply tokens), and
+        # the Lite tags are the cheapest current-generation input rate
+        # Google sells — 3.1 Flash-Lite matches gpt-5-mini's $0.25/M and
+        # $0.025/M cached exactly. 3.5 Flash-Lite costs a little more for
+        # roughly double the throughput; 3.6 Flash is the step up in
+        # capability at 6x the input price.
         "recommended_models": [
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-3.6-flash",
             "gemini-2.5-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
         ],
         "env_hint": "GEMINI_API_KEY",
         "api_key_required": True,
-        "free_tier": "Free tier: ~15 req/min, ~1500 req/day",
+        "free_tier": "Free tier available (rate-limited)",
         "docs_url": "https://ai.google.dev",
-        # 128 k cap from 1-2 M native — see ``_CONTEXT_WINDOW_TABLE``
-        # in ``openai_compatible_client.py`` for the rationale.
+        # 128 k cap from the 1 M native window — see
+        # ``_CONTEXT_WINDOW_TABLE`` in ``openai_compatible_client.py``.
         "default_context_window": 131_072,
+        # Gemini has no /v1/responses surface, so pin the compat
+        # endpoint rather than relying on the model-name auto-detection
+        # happening to not match a Gemini tag.
+        "api_style": "chat_completions",
+        # Every Gemini 3 tag reasons by default (``medium`` on 3.6 Flash,
+        # ``high`` on 3.1 Pro) and thinking tokens bill at the output
+        # rate, so an unset effort is the expensive, slow option. ``low``
+        # is the cheapest value the whole family accepts — only the 2.5
+        # line can switch thinking off outright.
+        "default_reasoning_effort": "low",
     },
     {
         "id": "openai",

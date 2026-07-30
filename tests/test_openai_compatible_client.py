@@ -20,6 +20,7 @@ from app.llm.openai_compatible_client import (
     _collapse_system_for_gemini,
     _is_gemini_model,
     _iter_sse_data_lines,
+    _lookup_context_window,
     _map_finish_reason,
     _messages_to_responses_input,
     _normalize_tool_messages_for_openai,
@@ -937,6 +938,154 @@ class ChatWithToolsTests(unittest.TestCase):
             )
         payload = posted.call_args.kwargs["json"]
         self.assertEqual(payload.get("reasoning"), {"effort": "xhigh"})
+
+    # ── Gemini reasoning effort ─────────────────────────────────────
+
+    def _gemini_payload(
+        self,
+        model: str,
+        *,
+        reasoning_effort: str | None = None,
+        tools: list[dict] | None = None,
+        options: dict | None = None,
+    ) -> dict:
+        """POST one Gemini turn and return the request body."""
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model=model,
+            api_key="key-test",
+            reasoning_effort=reasoning_effort,
+            api_style="chat_completions",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_fake_chat_response(content="ok"),
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                tools=tools,
+                options=options or {"num_predict": 512},
+            )
+        return posted.call_args.kwargs["json"]
+
+    def test_gemini_defaults_to_low_reasoning_effort(self) -> None:
+        """Thinking models get an explicit effort instead of the default.
+
+        Gemini bills thinking tokens at the output rate and 3.x reasons
+        by default (``medium`` on 3.6 Flash, ``high`` on 3.1 Pro), so
+        omitting the parameter is the slow, expensive option — the exact
+        thing that made Grok unattractive.
+        """
+        for model in (
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+            "models/gemini-3.6-flash",
+        ):
+            payload = self._gemini_payload(model)
+            self.assertEqual(
+                payload.get("reasoning_effort"), "low",
+                f"{model} should default to reasoning_effort=low",
+            )
+
+    def test_pre_thinking_gemini_gets_no_reasoning_effort(self) -> None:
+        # 1.5 / 2.0 predate thinking entirely; the parameter is
+        # meaningless there and the compat layer rejects it.
+        for model in ("gemini-2.0-flash", "gemini-1.5-pro"):
+            self.assertNotIn(
+                "reasoning_effort", self._gemini_payload(model),
+                f"{model} must not get reasoning_effort injection",
+            )
+
+    def test_configured_gemini_effort_wins(self) -> None:
+        payload = self._gemini_payload("gemini-3.6-flash", reasoning_effort="high")
+        self.assertEqual(payload.get("reasoning_effort"), "high")
+
+    def test_gemini_omit_suppresses_the_parameter(self) -> None:
+        # Escape hatch for a tag whose vocabulary we guessed wrong:
+        # let Google apply its own default rather than 400.
+        for effort in ("omit", "default"):
+            self.assertNotIn(
+                "reasoning_effort",
+                self._gemini_payload("gemini-3.6-flash", reasoning_effort=effort),
+            )
+
+    def test_none_is_clamped_on_models_that_cannot_stop_thinking(self) -> None:
+        """``none`` is a hard 400 on Gemini 3 and on 2.5 Pro.
+
+        Clamping instead of forwarding means a route carried over from a
+        2.5 Flash setup keeps working when it's pointed at a 3.x tag.
+        """
+        for model in ("gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-2.5-pro"):
+            self.assertEqual(
+                self._gemini_payload(model, reasoning_effort="none").get(
+                    "reasoning_effort",
+                ),
+                "low",
+                f"{model} cannot disable thinking, so none must clamp to low",
+            )
+        # The 2.5 line (minus Pro) genuinely supports switching it off.
+        self.assertEqual(
+            self._gemini_payload(
+                "gemini-2.5-flash-lite", reasoning_effort="none",
+            ).get("reasoning_effort"),
+            "none",
+        )
+
+    def test_gemini_tool_pass_drops_to_the_cheapest_legal_effort(self) -> None:
+        """The tool pass emits a function name and a little JSON.
+
+        A reasoning trace there buys nothing and is paid on every turn,
+        so it drops to the floor for the model's generation — off where
+        that's allowed, ``low`` where it isn't.
+        """
+        tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "description": "current time",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        self.assertEqual(
+            self._gemini_payload(
+                "gemini-3.6-flash", reasoning_effort="high", tools=tool_schema,
+            ).get("reasoning_effort"),
+            "low",
+        )
+        self.assertEqual(
+            self._gemini_payload(
+                "gemini-2.5-flash-lite", reasoning_effort="high", tools=tool_schema,
+            ).get("reasoning_effort"),
+            "none",
+        )
+
+    def test_gemini_per_call_option_overrides_the_client_default(self) -> None:
+        payload = self._gemini_payload(
+            "gemini-3.6-flash",
+            reasoning_effort="low",
+            options={"num_predict": 512, "reasoning_effort": "medium"},
+        )
+        self.assertEqual(payload.get("reasoning_effort"), "medium")
+
+    def test_gemini_context_windows_are_known(self) -> None:
+        # Without a table entry the controller falls back to 8192, which
+        # would silently compact a 1 M-token model down to nothing.
+        for model in (
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+            "models/gemini-3.6-flash",
+            "gemini-2.5-flash-lite",
+            # Catch-all: a generation that doesn't exist yet.
+            "gemini-4-flash",
+        ):
+            self.assertEqual(
+                _lookup_context_window(model), 131_072,
+                f"{model} should resolve to the 128 k cap",
+            )
 
     def test_dotted_gpt5_with_tools_routes_to_responses(self) -> None:
         """gpt-5.4-mini 400s on tools + reasoning_effort in

@@ -25,7 +25,7 @@ quota survives a long conversation by keeping `worker_default` on
 |---|---|---|---|---|
 | **Local Ollama** | `ollama` | `http://127.0.0.1:11434` | `qwen3.5:9b`, `jaahas/qwen3.5-uncensored:9b`, `qwen3.6:27b` | Unlimited (runs on your machine) |
 | **Ollama Cloud** | `ollama` | `https://ollama.com` | `llama3.1:70b`, `qwen2.5:72b` | Paid plan required |
-| **Google Gemini** | `openai_compatible` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-pro` | ~15 req/min, ~1500 req/day |
+| **Google Gemini** | `openai_compatible` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.6-flash`, `gemini-2.5-flash-lite` | Yes (rate-limited) |
 | **OpenAI** | `openai_compatible` | `https://api.openai.com/v1` | `gpt-4o-mini`, `gpt-4o`, `gpt-4.1-mini` | Paid (no free tier) |
 | **Groq** | `openai_compatible` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | 30 req/min |
 | **OpenRouter** | `openai_compatible` | `https://openrouter.ai/api/v1` | `anthropic/claude-3.5-sonnet`, `openai/gpt-4o-mini`, `google/gemini-2.5-flash` | Pay-per-token (some free) |
@@ -55,16 +55,65 @@ that size doesn't fit on a consumer GPU alongside the weights.
    verbatim error (most often `unauthorized` for a typo'd key).
 5. In **Role assignments**, set `main_chat`'s provider to Gemini. The
    **Model** combobox suggests `/v1/models` plus the preset's curated
-   names — `gemini-2.5-flash-lite` is the fastest free-tier option.
+   names — see the model table below.
 6. Click **Save** on the row. The change takes effect on your next
    message — no restart needed.
 
 Leave `worker_default` and `workflow` pointed at `local_ollama`.
 Background workers (reflection, dream, memory extraction, belief
-inference, ~24 jobs total) fire many times per hour and would drain
-Gemini's 1500-req/day budget in well under an hour. Point them at
-Gemini too if you'd rather not run a local model at all — the remote
-provider's quota is on you in that case.
+inference, ~24 jobs total) fire many times per hour and would drain a
+free-tier daily budget in well under an hour. Point them at Gemini too
+if you'd rather not run a local model at all — the remote provider's
+quota is on you in that case.
+
+### Which Gemini model
+
+Aiko's spend is lopsided: a large, mostly stable prompt against a
+handful of reply tokens. A real chat turn runs on the order of 15 k
+input tokens to a few hundred output ones, so the **input** and
+**cached input** columns decide the bill and the output column barely
+registers.
+
+| Model | Input $/M | Cached $/M | Output $/M | Notes |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite` | 0.10 | 0.025 | 0.40 | Cheapest. Previous generation, and the only tag here that can switch thinking off entirely. |
+| `gemini-3.1-flash-lite` | 0.25 | 0.025 | 1.50 | Cheapest current generation; same rates as `gpt-5-mini`. |
+| `gemini-3.5-flash-lite` | 0.30 | 0.03 | 2.50 | ~2x the throughput of 3.1 Flash-Lite. Best latency for the money. |
+| `gemini-3.6-flash` | 1.50 | 0.15 | 7.50 | The step up in capability, at 6x the input price. |
+
+All four carry a 1 M native window, capped to 128 k here for the same
+reason as every other provider (see "Tuning the context window").
+
+**Caching is not automatic in the way OpenAI's is.** Google's implicit
+cache only engages on a sufficiently long, byte-identical prefix, which
+is exactly what the T0→T6 prompt-block ladder in
+[`prompt_assembler.py`](../app/core/session/prompt_assembler.py) is
+built to preserve — so the discount lands as long as you don't reorder
+prompt blocks per turn. Watch the cached-token share on the first day.
+
+### Reasoning effort on Gemini
+
+Every Gemini from 2.5 onwards is a thinking model, thinking tokens bill
+at the **output** rate, and the defaults are not cheap — 3.6 Flash
+thinks at `medium` and 3.1 Pro at `high` unless told otherwise. Sending
+no `reasoning_effort` therefore buys latency and spend you didn't ask
+for, so the client always sends one:
+
+- **Default `low`**, from the preset's `default_reasoning_effort`. Not
+  `minimal`: the 3.x Flash tags accept it but 3.1 Pro rejects it, and
+  Google's own mapping collapses it to `low` there anyway.
+- **The tool-decision pass drops to the floor** for the model's
+  generation — `none` on 2.5 (minus Pro), `low` on everything else.
+  That pass emits a function name and a little JSON; a reasoning trace
+  there is pure latency on every single turn.
+- **`none` is clamped to `low`** on models that can't stop thinking
+  (all of Gemini 3, plus 2.5 Pro), which otherwise answer
+  `400 Invalid reasoning_effort`. So a route carried over from a 2.5
+  Flash setup keeps working when you point it at a 3.x tag.
+- **Set the route's effort to `omit`** to send nothing at all and let
+  Google apply its own default. That's the escape hatch if a new tag
+  disagrees with the vocabulary above.
+- Gemini 1.5 / 2.0 predate thinking and never receive the parameter.
 
 ## Provider catalogue + role mapping
 
@@ -335,7 +384,13 @@ catalogue or the routes change. Payload carries two top-level keys:
   message into the first `user` message (with a blank line as a
   separator) when the configured model starts with `gemini-` or
   `models/gemini-`. The persona is preserved; the wire shape is
-  different.
+  different. The collapsed text still leads the request, so the stable
+  prefix Google's implicit cache keys on survives.
+- **Gemini has no `/v1/responses` surface**, so its preset pins
+  `api_style: "chat_completions"` rather than relying on the model-name
+  auto-detection happening not to match a Gemini tag. Reasoning effort
+  rides along as a flat `reasoning_effort` field on that surface — see
+  "Reasoning effort on Gemini" above.
 - **Truncation logging** is unified. Both `OllamaClient` and
   `OpenAICompatibleClient` log a WARNING when the response stops on a
   `length` / `finish_reason: "length"` sentinel, with the same
