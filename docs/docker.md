@@ -13,19 +13,31 @@ Ollama is **not** baked into the Aiko image — you either run it on the host
 ## TL;DR
 
 ```bash
-# 1. Install Ollama on the host and pull the models (defaults match config/default.json)
-ollama pull qwen3-coder:30b
-ollama pull qwen3-embedding:0.6b
+# 1. Install Ollama on the host — https://ollama.com/download
+#    (the app's first-run wizard downloads the models for you)
 
-# 2. Build + start Aiko (text + avatar, slim image)
-docker compose up -d --build
+# 2. Build + start Aiko
+docker compose -f docker-compose-slim.yaml up -d --build
 
 # 3. Open the UI
 #    http://localhost:6275
 ```
 
 That's it. The container reaches your host's Ollama via
-`host.docker.internal:11434`.
+`host.docker.internal:11434`, and the setup wizard offers to pull anything
+that's missing.
+
+### Which compose file?
+
+| File | Use it for |
+|---|---|
+| `docker-compose-slim.yaml` | Chat, avatar, memory, RAG, tools. **Start here.** |
+| `docker-compose-full.yaml` | Same plus server-side voice. Bigger image, needs more RAM. |
+| `docker-compose.yml` | The shared definition both of the above `include`. Runnable on its own; builds whatever `$AIKO_PROFILE` says. |
+
+The two variants differ by exactly one build arg, and they share the same
+data volume — switching from slim to full (or back) keeps your history,
+memories and settings.
 
 ---
 
@@ -44,12 +56,14 @@ never installs them; the app imports them defensively and simply reports voice
 as unavailable.
 
 ```bash
-# slim (default)
-docker compose up -d --build
+# slim
+docker compose -f docker-compose-slim.yaml up -d --build
 
-# full voice — pick ONE of:
-AIKO_PROFILE=full docker compose up -d --build       # via .env / inline env
-docker build -t aiko:full --build-arg PROFILE=full . # plain docker build
+# full voice
+docker compose -f docker-compose-full.yaml up -d --build
+
+# or without compose at all
+docker build -t aiko:full --build-arg PROFILE=full .
 ```
 
 The full image installs **CPU** PyTorch by default (keeps it from grabbing the
@@ -64,6 +78,106 @@ docker build -t aiko:full-cuda \
 
 (GPU STT then also needs the container to actually see the GPU — same
 NVIDIA Container Toolkit story as the Ollama GPU section below.)
+
+`stt.device` defaults to `auto`, so the same image picks CUDA when the container
+can see a GPU and CPU when it can't. No config change is needed either way.
+
+### Memory: the full profile needs real RAM
+
+The default `stt.model` is `large-v1`, which is roughly a 3 GB model. Loading it
+needs **well over 4 GB** available to the container — Docker Desktop's default
+allocation (often ~2 GB) gets the container **OOM-killed** partway through boot,
+which looks like `Exited (137)` with no error message in the log.
+
+Either raise the limit (Docker Desktop → Settings → Resources → Memory, 8 GB is
+comfortable), or run a smaller model by mounting a `config/user.json`:
+
+```json
+{ "stt": { "model": "small.en", "compute_type": "int8" } }
+```
+
+`int8` also cuts CPU memory and latency noticeably. `tiny` boots in seconds and
+fits well under 2 GB if you just want to confirm the stack works.
+
+---
+
+## Dependency pinning
+
+Python dependencies are pinned twice, on purpose:
+
+- **`pyproject.toml`** holds readable floors *and ceilings* (`numpy>=2.2.3,<3`, …)
+  so nothing can silently jump a breaking major.
+- **`requirements.lock`** holds the exact, verified resolution of the whole
+  transitive graph. The Dockerfile applies it as a pip **constraints** file
+  (`pip install -c requirements.lock .`), so `pyproject.toml` still decides
+  *what* is installed while the lock decides *which versions*.
+
+Regenerate the lock after changing any dependency:
+
+```bash
+uv pip compile pyproject.toml --extra voice \
+  --python-version 3.13 --python-platform x86_64-unknown-linux-gnu \
+  --output-file requirements.lock
+```
+
+Two constraints worth knowing:
+
+- **Python must be 3.11–3.13** (`requires-python = ">=3.11,<3.14"`). `ctranslate2`,
+  which backs faster-whisper, publishes no 3.14 wheels *and* no sdist, so a 3.14
+  install appears to succeed and then dies at runtime with
+  `ModuleNotFoundError: No module named 'faster_whisper'`. The image is built on
+  `python:3.13-slim-bookworm` to match the locked set.
+- **The `wake-word` extra is excluded from the lock and the image.** `openwakeword`
+  needs `tflite-runtime`, which has no Linux wheels past cp311.
+
+---
+
+## Build caching
+
+Rebuilding after a code change takes **a few seconds**, not minutes. Two
+things make that work, and both are easy to break by accident.
+
+**Layer ordering.** The dependency install is keyed on `pyproject.toml` +
+`requirements.lock` and nothing else — the app source is copied in as the
+*last* step in the Dockerfile. Copying `app/` before the install (the
+obvious-looking arrangement) means every edit to a Python file reinstalls
+PyTorch. The install needs the `app` package to exist to build the project,
+so the dependency layer creates an empty stub that the real tree overwrites
+later; that's the only reason the split is possible.
+
+**Cache mounts.** pip's wheel cache, npm's package cache and apt's `.deb`
+archives live on BuildKit `--mount=type=cache` volumes. They persist across
+builds and are shared between the `slim` and `full` profiles, so changing a
+dependency re-*installs* without re-*downloading*, and the second profile
+you build reuses the first one's downloads. Nothing from a cache mount ends
+up in the image, which is why the Dockerfile no longer sets
+`PIP_NO_CACHE_DIR` or deletes `/var/lib/apt/lists` — those would fight the
+mounts for no benefit.
+
+Measured on a warm cache:
+
+| Change | slim | full |
+|---|---|---|
+| Nothing (no-op rebuild) | ~2 s | ~2 s |
+| Python source under `app/` | ~4 s | ~5 s |
+| A dependency in `pyproject.toml` | ~1 min | ~3 min |
+| Frontend source under `web/` | ~1 min | ~1 min |
+
+The frontend row is the odd one out, and it isn't a caching problem: `npm ci`
+*is* cached, but `npm run build` runs `tsc -b` over the whole project and
+then Vite, neither of which has a persistent cache to reuse. Dropping the
+typecheck would roughly halve it at the cost of letting type errors ship, so
+it stays.
+
+Two caveats:
+
+- **BuildKit is required.** It's the default in Docker 23+ and always used by
+  `docker compose build`, but `DOCKER_BUILDKIT=0 docker build` fails outright
+  on the `--mount` flags.
+- **`--no-cache` and `docker builder prune` throw all of this away**, including
+  the download caches. Reach for them only when you actually suspect a stale
+  layer; `docker builder prune --filter type=exec.cachemount` clears *just*
+  the download caches if that's what you're after.
 
 ---
 
@@ -91,6 +205,10 @@ AIKO_OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_PORT=11434
 ```
 
+`AIKO_PROFILE` only applies when you run `docker-compose.yml` directly — the
+two variant files pin their profile so that a file called "slim" can't build
+the voice image because of a stale `.env`.
+
 If you'd rather use the full `config/user.json` mechanism (advanced LLM
 routing, etc.), mount it read-only:
 
@@ -99,6 +217,13 @@ routing, etc.), mount it read-only:
       - aiko-data:/app/data
       - ./config/user.json:/app/config/user.json:ro
 ```
+
+The mount is a **seed**, not the live file. On first boot the entrypoint
+copies it to `/app/data/user.json` (the volume) if that file doesn't exist
+yet, and from then on the app reads and writes the volume copy — see
+"Where settings are stored" below. Editing the mounted file after that
+first boot has no effect; edit the volume copy or `docker compose down -v`
+to re-seed.
 
 ---
 
@@ -112,6 +237,20 @@ that should survive a rebuild:
 - `data/documents/`, `data/attachments/` — uploads
 - `data/personas/active/Alexia/` — the active avatar bundle
 - `data/persona/` — the persona text
+- `data/user.json` — your settings (see below)
+
+### Where settings are stored
+
+Everything you configure at runtime — the name and chat model the first-run
+wizard collects, provider API keys with no OS keychain behind them, avatar
+tweaks — is written to `data/user.json` **inside the volume**, because
+`AIKO_USER_CONFIG=/app/data/user.json` is set in the image.
+
+This matters: `/app/config` lives in the container's writable layer, which
+Docker discards on every `docker compose up --build` or image update. Before
+the override existed, a rebuild silently reset you to the setup wizard.
+`AIKO_USER_CONFIG` works outside Docker too if you want the file somewhere
+other than the repo (e.g. `~/.config/aiko/user.json`).
 
 Two things are baked into the image and seeded into that volume on first run
 so an empty volume doesn't blank them out:
@@ -123,9 +262,11 @@ so an empty volume doesn't blank them out:
   `data/personas/active/Alexia`.
 
 > The avatar bundle is gitignored, so it ships in the image only if it's
-> present on your machine at build time (under `data/personas/active/Alexia/`).
-> If you build on a machine without it, drop the bundle into the volume
-> yourself or mount it in.
+> present on your machine at build time under **`data/personas/active/Alexia/`**
+> (that exact path in the repo root — not `data/persona/`, and not nested one
+> level deeper). The build no longer fails when it's absent: you just get an
+> avatar-less UI until you drop the bundle into the `aiko-data` volume at
+> `personas/active/Alexia/` (or rebuild on a machine that has it).
 
 To wipe and start fresh: `docker compose down -v` (removes the volumes too).
 
@@ -148,13 +289,16 @@ No host Ollama install at all:
 # tell Aiko to use the sibling service instead of the host
 echo 'AIKO_OLLAMA_BASE_URL=http://ollama:11434' >> .env
 
-docker compose --profile with-ollama up -d --build
+docker compose -f docker-compose-slim.yaml --profile with-ollama up -d --build
 
 # pull models INTO the container (stored in the ollama-models volume, so
 # this is a one-time cost — they survive restarts and recreation)
-docker compose exec ollama ollama pull qwen3-coder:30b
+docker compose exec ollama ollama pull qwen3.5:9b
 docker compose exec ollama ollama pull qwen3-embedding:0.6b
 ```
+
+The `with-ollama` profile is defined on the shared file, so it works with
+any of the three (swap in `docker-compose-full.yaml` for voice).
 
 **Changing models later** is just another `ollama pull` (or `ollama rm`) via
 `docker compose exec ollama ...`; the `ollama-models` volume keeps them
@@ -219,6 +363,14 @@ backend address.
 |---|---|
 | UI loads but chat errors / "connection refused" to Ollama | Ollama isn't reachable. Host Ollama: is it running and listening on `0.0.0.0`/all interfaces? Try `AIKO_OLLAMA_BASE_URL=http://host.docker.internal:11434`. In-compose: did you set it to `http://ollama:11434` and pull the models? |
 | "model not found" on first message | `ollama pull <chat_model>` and `ollama pull qwen3-embedding:0.6b` (host or `docker compose exec ollama ...`). |
-| Avatar doesn't load | The Live2D bundle wasn't in the build context. Ensure `data/personas/active/Alexia/` exists at build time, or drop the bundle into the `aiko-data` volume at `personas/active/Alexia/`. |
-| Voice controls do nothing | You're on the `slim` image. Rebuild with `AIKO_PROFILE=full`. |
-| Want a clean slate | `docker compose down -v` then `up -d --build`. |
+| `COPY data/personas/active ... not found` during build | Old Dockerfile behaviour. Pull latest — the avatar COPY is now optional. If you're on an older checkout, create the folder (`mkdir -p data/personas/active/Alexia`) or drop the bundle in before building. |
+| Avatar doesn't load | The Live2D bundle wasn't in the build context. Put it at exactly `data/personas/active/Alexia/` (repo root) at build time, or drop it into the `aiko-data` volume at `personas/active/Alexia/`. A bundle copied to the wrong folder (e.g. `data/persona/`) won't be picked up. |
+| `No module named 'faster_whisper'` | You're on `slim`, or installed bare `realtimestt`. RealtimeSTT 1.x moved the ASR engines behind extras — the `voice` extra requests `realtimestt[faster-whisper,silero-onnx-cpu]`. Rebuild with `docker-compose-full.yaml`. |
+| `snakers4/silero-vad ... not in the list of trusted repositories (y/N)` | Something is using RealtimeSTT's legacy Torch Hub VAD path, which auto-answers *no* when nothing is attached to stdin. Install the `silero-onnx-cpu` extra (the `voice` extra does) and don't pass `silero_use_onnx` — setting it to *either* `True` or `False` pins the backend to the legacy Torch Hub path. |
+| `fatal error: portaudio.h: No such file or directory` during build | `portaudio19-dev` is missing from the build. PyAudio (a hard RealtimeSTT dependency) ships no Linux wheel, so it compiles from source and needs the PortAudio headers. The `full` profile installs it. |
+| `Exited (137)` partway through boot, no error logged | OOM-killed. The container ran out of memory loading `stt.model` (`large-v1` ≈ 3 GB). Raise Docker Desktop's memory limit or use a smaller model — see "Memory" above. `docker inspect <name> --format "{{.State.OOMKilled}}"` confirms it. |
+| `CAS Client Error ... us.aws.cdn.hf.co` while fetching a model | The `hf-xet` transfer backend failing through the container's NAT. The image sets `HF_HUB_DISABLE_XET=1` to use plain HTTPS instead; make sure it isn't overridden to `0`. |
+| `/usr/bin/env: 'sh\r': No such file or directory` (exit 127 at boot) | `docker/entrypoint.sh` was copied in with CRLF line endings. The Dockerfile strips CRs now; if you hit it on an older checkout, re-checkout the file so `.gitattributes` (`*.sh text eol=lf`) applies: `rm docker/entrypoint.sh && git checkout -- docker/entrypoint.sh`. |
+| Voice controls do nothing | You're on the `slim` image. Rebuild with `docker compose -f docker-compose-full.yaml up -d --build`. |
+| Want a clean slate | `docker compose down -v` then `up -d --build` with your chosen file. Removes the data volume, so history, memories and settings go too. |
+| `unknown keyword: include` / the variant file isn't understood | Compose v1 or a v2 older than 2.20. Either update Docker Compose or run the base file with `AIKO_PROFILE=full docker compose up -d --build`. |

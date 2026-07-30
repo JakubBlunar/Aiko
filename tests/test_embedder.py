@@ -11,29 +11,35 @@ from __future__ import annotations
 import threading
 import time
 import unittest
-from types import SimpleNamespace
 
 import numpy as np
 
+from app.core.infra.settings import LlmEmbedding
 from app.llm.embedder import Embedder
 
 
 # ── stub helpers ────────────────────────────────────────────────────
 
 
-def _settings() -> SimpleNamespace:
-    """Minimal stand-in for :class:`OllamaSettings`."""
-    return SimpleNamespace(
-        embedding_model="qwen3-embedding:0.6b",
-        embedding_base_url="",
-        base_url="http://localhost:11434",
+_BASE_URL = "http://localhost:11434"
+
+
+def _config(
+    num_ctx: int | None = None, num_gpu: int | None = None,
+) -> LlmEmbedding:
+    """The ``llm.embedding`` block the Embedder consumes."""
+    return LlmEmbedding(
+        provider_id="local_ollama",
+        model="qwen3-embedding:0.6b",
+        num_ctx=num_ctx,
+        num_gpu=num_gpu,
     )
 
 
 def _build(call_delay_s: float = 0.0) -> tuple[Embedder, list[str]]:
     """Return an ``Embedder`` with ``_call_ollama`` stubbed to a fixed
     delay and a list capturing each call's ``text`` argument."""
-    emb = Embedder(_settings())
+    emb = Embedder(_config(), base_url=_BASE_URL)
     seen: list[str] = []
     vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
@@ -184,8 +190,8 @@ class _FakeResponse:
 class RequestOptionsTests(unittest.TestCase):
     """The VRAM levers (``num_gpu`` / ``num_ctx``) reach the HTTP body."""
 
-    def _capture_payload(self, settings) -> dict:
-        emb = Embedder(settings)
+    def _capture_payload(self, config: LlmEmbedding) -> dict:
+        emb = Embedder(config, base_url=_BASE_URL)
         captured: dict = {}
 
         def _fake_post(url, json=None, timeout=None):  # noqa: A002
@@ -198,26 +204,19 @@ class RequestOptionsTests(unittest.TestCase):
         return captured["json"]
 
     def test_no_options_when_unset(self) -> None:
-        body = self._capture_payload(_settings())
+        body = self._capture_payload(_config())
         self.assertNotIn("options", body)
 
     def test_num_gpu_zero_forces_cpu(self) -> None:
-        settings = _settings()
-        settings.embedding_num_gpu = 0
-        body = self._capture_payload(settings)
+        body = self._capture_payload(_config(num_gpu=0))
         self.assertEqual(body["options"], {"num_gpu": 0})
 
     def test_num_ctx_is_passed(self) -> None:
-        settings = _settings()
-        settings.embedding_num_ctx = 2048
-        body = self._capture_payload(settings)
+        body = self._capture_payload(_config(num_ctx=2048))
         self.assertEqual(body["options"], {"num_ctx": 2048})
 
     def test_both_options_combine(self) -> None:
-        settings = _settings()
-        settings.embedding_num_gpu = 0
-        settings.embedding_num_ctx = 2048
-        body = self._capture_payload(settings)
+        body = self._capture_payload(_config(num_ctx=2048, num_gpu=0))
         self.assertEqual(body["options"], {"num_gpu": 0, "num_ctx": 2048})
 
 

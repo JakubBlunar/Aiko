@@ -32,7 +32,7 @@ Quirks handled here:
   don't (looking at you, Groq with some models) will just return
   text and the existing parsers tolerate that.
 - Extra headers (``HTTP-Referer`` / ``X-Title`` for OpenRouter, etc.)
-  are forwarded from ``chat_llm.extra_headers``.
+  are forwarded from ``LlmProvider.extra_headers``.
 """
 
 from __future__ import annotations
@@ -497,7 +497,7 @@ def _warn_if_truncated(
         return
     log.warning(
         "openai-compat response truncated: surface=%s model=%s "
-        "completion_tokens=%d (hit max_tokens cap; raise chat_llm."
+        "completion_tokens=%d (hit max_tokens cap; raise the route's"
         "max_tokens if this is frequent)",
         surface, model, int(usage.completion_tokens),
     )
@@ -716,7 +716,7 @@ class OpenAICompatibleClient:
             # ``max_completion_tokens`` budget on hidden reasoning
             # tokens before any visible output. With the default
             # ``reasoning_effort="medium"`` and a tight budget (e.g.
-            # ``chat_llm.max_tokens=512``) every token can go to
+            # the route's ``max_tokens=512``) every token can go to
             # reasoning, leaving Aiko's visible reply empty — so we
             # default to ``minimal``.
             #
@@ -1515,7 +1515,7 @@ class OpenAICompatibleClient:
         metadata over ``/v1/models``, so we maintain a static table
         of known model-id prefixes -> conservative caps. Returns
         ``None`` for ids we don't recognise; the controller then
-        falls back to ``chat_llm.context_window`` or the hardcoded
+        falls back to the route's ``context_window`` or the hardcoded
         8192 last-resort default in ``_resolve_context_window``.
 
         Caps are intentionally **conservative**, not the model's

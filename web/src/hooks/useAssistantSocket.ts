@@ -153,6 +153,13 @@ export function useAssistantSocket(): {
               /* avatar endpoint missing or backend offline -- ignore */
             });
         }
+        // Non-empty when the chat route names a local model that isn't
+        // installed; the onboarding model step offers to pull it.
+        store.setMissingChatModel(
+          typeof evt.missing_chat_model === "string"
+            ? evt.missing_chat_model
+            : "",
+        );
         // Identity (first-run onboarding gate). Stale backends omit
         // it; in that case fall back to GET /api/settings/identity so
         // we never miss the onboarding modal trigger.
@@ -286,13 +293,9 @@ export function useAssistantSocket(): {
         break;
 
       case "llm_settings_changed":
-        // Backend broadcast after:
-        //   - legacy PATCH /api/settings { chat_llm: ... } / PUT
-        //     /api/settings/llm-credentials (carries chat_llm? only),
-        //   - PR 2 PATCH /api/llm/providers / /api/llm/routes (carries
-        //     providers + routes snapshots).
-        // The CustomEvent kept for back-compat with any drawer code
-        // that listens on the window for "settings reload, please".
+        // Broadcast after any write to /api/llm/providers or
+        // /api/llm/routes. The CustomEvent is kept for drawer code that
+        // listens on the window for "settings reload, please".
         if (evt.providers !== undefined) {
           store.setLlmProviders(evt.providers);
         }
@@ -302,6 +305,17 @@ export function useAssistantSocket(): {
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("aiko:llm-settings-changed"));
         }
+        break;
+
+      case "model_pull_progress":
+        store.setModelPullProgress({
+          model: evt.model,
+          status: evt.status,
+          completed: evt.completed,
+          total: evt.total,
+          percent: evt.percent,
+          error: evt.error,
+        });
         break;
 
       case "tts_state":

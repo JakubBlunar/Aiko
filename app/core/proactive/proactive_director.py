@@ -426,7 +426,7 @@ class ProactiveDirector:
         cooldown_seconds_typed: float | None = None,
         context_window: int | None = None,
     ) -> None:
-        # ``client`` lets ``SessionController.reconfigure_chat_llm``
+        # ``client`` lets a route edit
         # rebind the proactive director's chat client without
         # rebuilding the whole instance. New nudge tasks see the new
         # client; in-flight ones keep their original reference.

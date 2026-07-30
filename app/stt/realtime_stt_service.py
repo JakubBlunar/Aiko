@@ -52,6 +52,7 @@ class RealtimeSttService:
         self._last_error: str | None = None
         self._loaded_model: str = ""
         self._loaded_language: str = ""
+        self._loaded_device: str = ""
         self._context_active: bool = False
         if AudioToTextRecorder is not None:
             t0 = time.monotonic()
@@ -61,15 +62,16 @@ class RealtimeSttService:
                 self._last_error = f"RealtimeSTT init failed: {exc}"
                 self._recorder = None
                 log.error(
-                    "STT engine init failed: model=%s language=%s exc=%r",
+                    "STT engine init failed: model=%s language=%s device=%s exc=%r",
                     (self._settings.model or "large-v1"),
                     (self._settings.language or "en"),
+                    (self._loaded_device or self._settings.device),
                     exc,
                 )
             else:
                 log.info(
-                    "STT engine ready: model=%s language=%s init_ms=%.0f",
-                    self._loaded_model, self._loaded_language,
+                    "STT engine ready: model=%s language=%s device=%s init_ms=%.0f",
+                    self._loaded_model, self._loaded_language, self._loaded_device,
                     (time.monotonic() - t0) * 1000.0,
                 )
         else:
@@ -78,19 +80,52 @@ class RealtimeSttService:
                 "STT engine unavailable: RealtimeSTT (AudioToTextRecorder) not installed"
             )
 
+    def _resolve_device(self) -> str:
+        """Resolve the configured device, probing for CUDA when set to "auto".
+
+        RealtimeSTT defaults ``device`` to a hard ``"cuda"``, so on a host or
+        container without a usable GPU the recorder raises during init and voice
+        is dead. Probing keeps one config working in both places. The torch
+        import is local and guarded because torch is a ``[voice]``-extra
+        dependency that the text-only install doesn't have.
+        """
+        configured = (self._settings.device or "auto").strip().lower()
+        if configured in {"cuda", "cpu"}:
+            return configured
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+
     def _create_recorder(self) -> object:
         model = (self._settings.model or "large-v1").strip() or "large-v1"
         language = (self._settings.language or "en").strip() or "en"
+        device = self._resolve_device()
         self._loaded_model = model
         self._loaded_language = language
+        self._loaded_device = device
         return AudioToTextRecorder(
             model=model,
             language=language,
+            device=device,
+            compute_type=(self._settings.compute_type or "default").strip() or "default",
             use_microphone=False,
             on_recording_start=self._on_recording_start or (lambda: None),
             on_recording_stop=self._on_recording_stop or (lambda: None),
             spinner=False,
             realtime_model_type=model,
+            # Use the local Silero backend from the ``silero-onnx-cpu`` extra
+            # rather than a torch.hub download, which otherwise prompts
+            # "snakers4/silero-vad ... not in the list of trusted repositories
+            # (y/N)" and answers *no* on any non-interactive run, killing VAD.
+            #
+            # ``silero_backend="auto"`` is what selects it. Do NOT also pass the
+            # legacy ``silero_use_onnx`` flag: per RealtimeSTT's
+            # ``resolve_silero_backend``, setting it to *either* True or False
+            # pins the backend to LEGACY (= the torch.hub path) and undoes this.
+            silero_backend="auto",
         )
 
     @property

@@ -1,0 +1,28 @@
+# Aiko — text + avatar (the small image). Start here.
+#
+#   docker compose -f docker-compose-slim.yaml up -d --build
+#   open http://localhost:6275
+#
+# You get chat, the Live2D avatar, memory, RAG, tools and proactivity in a
+# ~1-1.5 GB image. Voice is the only thing missing — for that, use
+# docker-compose-full.yaml instead (same data volume, so nothing is lost
+# when you switch).
+#
+# Ollama runs outside this container. Install it on the host and you're
+# done; to run it as a sibling container instead, add
+# `--profile with-ollama` and set AIKO_OLLAMA_BASE_URL=http://ollama:11434
+# in .env so Aiko dials the sibling rather than the host.
+#
+# Everything except the profile lives in docker-compose.yml — ports, the
+# data volume and the env defaults are shared by both variants.
+include:
+  - docker-compose.yml
+
+services:
+  aiko:
+    build:
+      args:
+        # Pinned rather than inherited from $AIKO_PROFILE: a file named
+        # "slim" should build the slim image no matter what is in .env.
+        PROFILE: slim
+    image: aiko:slim

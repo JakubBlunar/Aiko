@@ -5,11 +5,45 @@
     "user_display_name": "",
     "tts_length_scale": 1.0
   },
-  "ollama": {
-    "base_url": "http://127.0.0.1:11434",
-    "chat_model": "qwen3.6:27b",
-    "temperature": 0.6,
-    "think_num_predict_headroom": 2048
+  "llm": {
+    "providers": [
+      {
+        "id": "local_ollama",
+        "name": "Local Ollama",
+        "kind": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "timeout_seconds": 300,
+        "keep_alive": "30m",
+        "think_num_predict_headroom": 2048
+      }
+    ],
+    "routes": {
+      "main_chat": {
+        "provider_id": "local_ollama",
+        "model": "qwen3.5:9b",
+        "context_window": 65536,
+        "max_tokens": 512,
+        "temperature": 0.6
+      },
+      "worker_default": {
+        "provider_id": "local_ollama",
+        "model": "qwen3.5:9b",
+        "context_window": 65536,
+        "max_tokens": 512
+      },
+      "workflow": {
+        "provider_id": "local_ollama",
+        "model": "qwen3.5:9b",
+        "context_window": 65536,
+        "max_tokens": 512
+      }
+    },
+    "embedding": {
+      "provider_id": "local_ollama",
+      "model": "qwen3-embedding:0.6b",
+      "num_ctx": 2048,
+      "num_gpu": 0
+    }
   },
   "agent": {
     "proactive_silence_seconds": 45,
@@ -280,7 +314,9 @@
   },
   "stt": {
     "model": "large-v1",
-    "language": "en"
+    "language": "en",
+    "device": "auto",
+    "compute_type": "default"
   },
   "tts": {
     "provider": "pocket-tts",

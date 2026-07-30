@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 import json
 from typing import Any
 
@@ -712,6 +712,63 @@ class OllamaClient:
             if name:
                 output.append(name)
         return output
+
+    def pull_model(
+        self,
+        model: str,
+        *,
+        on_progress: Callable[[str, int, int], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> None:
+        """Download ``model`` via ``POST /api/pull``, reporting progress.
+
+        Ollama answers with a stream of NDJSON objects — a ``status``
+        line per phase plus ``completed`` / ``total`` byte counts while
+        layers download. ``on_progress`` is invoked with
+        ``(status, completed, total)`` for each line so a caller can
+        drive a progress bar; the byte counts are ``0`` for phases that
+        don't report them (manifest fetch, verification).
+
+        Runs to completion synchronously — a multi-GB pull takes
+        minutes, so callers should drive this from a worker thread. No
+        timeout is applied to the body: the connect timeout still
+        guards an unreachable host, but a slow layer must not abort a
+        download that is making progress. Raises on transport failure
+        or on an ``error`` line from the server.
+        """
+        name = (model or "").strip()
+        if not name:
+            raise ValueError("pull_model needs a non-empty model name")
+        log.info("pulling model %s from %s", name, self._base_url)
+        with requests.post(
+            f"{self._base_url}/api/pull",
+            json={"model": name, "stream": True},
+            stream=True,
+            # (connect, read): no read deadline, see docstring.
+            timeout=(10.0, None),
+            headers=self._request_headers(),
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if should_cancel is not None and should_cancel():
+                    log.info("pull of %s cancelled by caller", name)
+                    return
+                if not raw_line:
+                    continue
+                try:
+                    event = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                error = str(event.get("error", "") or "").strip()
+                if error:
+                    raise RuntimeError(error)
+                if on_progress is not None:
+                    on_progress(
+                        str(event.get("status", "") or ""),
+                        int(event.get("completed", 0) or 0),
+                        int(event.get("total", 0) or 0),
+                    )
+        log.info("pull of %s finished", name)
 
     # ── Model metadata ───────────────────────────────────────────────
 

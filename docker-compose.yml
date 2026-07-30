@@ -1,16 +1,25 @@
 # Aiko — docker compose.
 #
-# Default: runs only the Aiko backend and connects to an Ollama you run on
-# the host (host.docker.internal:11434). Just:
+# This is the shared definition. Most people should pick a variant instead,
+# so the image profile is explicit rather than coming from the environment:
+#
+#   docker compose -f docker-compose-slim.yaml up -d --build   # text + avatar
+#   docker compose -f docker-compose-full.yaml up -d --build   # + voice
+#
+# Both `include` this file, so ports, the data volume and the env defaults
+# below apply to either one. Running this file directly still works and
+# builds whatever $AIKO_PROFILE says (slim if unset).
 #
 #   cp .env.example .env       # optional — tweak profile / port / ollama url
 #   docker compose up -d --build
 #   open http://localhost:6275
 #
-# Optional: run Ollama in a container too (no host install needed):
+# Aiko connects out to an Ollama you run on the host
+# (host.docker.internal:11434). To run Ollama in a container too, add the
+# with-ollama profile to any of the three files:
 #
-#   docker compose --profile with-ollama up -d --build
-#   docker compose exec ollama ollama pull qwen3-coder:30b
+#   docker compose -f docker-compose-slim.yaml --profile with-ollama up -d --build
+#   docker compose exec ollama ollama pull qwen3.5:9b
 #   docker compose exec ollama ollama pull qwen3-embedding:0.6b
 #
 # When using the in-compose Ollama, set AIKO_OLLAMA_BASE_URL in .env to
@@ -23,6 +32,7 @@ services:
       dockerfile: Dockerfile
       args:
         # slim (text + avatar) or full (adds server-side voice). See Dockerfile.
+        # The variant files above override this with a literal value.
         PROFILE: ${AIKO_PROFILE:-slim}
     image: aiko:${AIKO_PROFILE:-slim}
     restart: unless-stopped

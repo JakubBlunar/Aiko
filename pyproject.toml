@@ -3,34 +3,51 @@ name = "english-speaking-assistant"
 version = "0.2.0"
 description = "Aiko: a web-based AI companion with Ollama chat, RealtimeSTT, Pocket-TTS, Live2D avatar, and LanceDB-backed RAG."
 readme = "README.md"
-requires-python = ">=3.11"
+# Upper bound is load-bearing, not cosmetic: ``ctranslate2`` (via
+# faster-whisper) publishes no sdist and no cp314 wheels, so a 3.14
+# install resolves "fine" and then dies at runtime with
+# ``ModuleNotFoundError: No module named 'faster_whisper'``. Capping here
+# turns that into an upfront, readable pip error.
+requires-python = ">=3.11,<3.14"
+# Every entry carries an upper bound so a fresh install can't silently pick up
+# a breaking major. The floors stay where they are (they're the real minimums
+# we support); ``requirements.lock`` holds the exact, known-good resolution.
 dependencies = [
   # HTTP + audio processing
-  "requests>=2.32.3",
-  "numpy>=2.2.3",
-  "scipy>=1.13.0",
-  "soundfile>=0.13.0",
-  "audioop-lts>=0.2.1; python_version>='3.13'",
+  "requests>=2.32.3,<3",
+  "numpy>=2.2.3,<3",
+  "scipy>=1.13.0,<2",
+  "soundfile>=0.13.0,<0.14",
+  "audioop-lts>=0.2.1,<0.3; python_version>='3.13'",
   # Web/MCP servers. FastAPI backs the whole HTTP/WebSocket layer
   # (app/web/server.py + all REST modules); pin it explicitly rather
   # than relying on it arriving transitively through ``mcp`` so a clean
   # install (e.g. a slim Docker image) can't boot without it.
-  "fastapi>=0.110.0",
-  "uvicorn>=0.30.0",
-  "mcp>=1.0.0",
+  "fastapi>=0.110.0,<1",
+  "uvicorn>=0.30.0,<1",
+  # uvicorn's WebSocket support is an optional extra: without a protocol
+  # implementation installed it answers the /ws handshake with a bare 404
+  # and the whole UI (which is WS-driven) silently never connects. It
+  # arrives transitively in a dev checkout, so the failure only shows up
+  # in a clean install such as the slim Docker image. Depend on it
+  # explicitly instead of taking uvicorn[standard] (which also drags in
+  # uvloop / httptools / watchfiles we don't use).
+  "websockets>=12.0,<17",
+  "mcp>=1.0.0,<2",
   # RAG: LanceDB-backed vector store for memories, messages, and documents.
-  "lancedb>=0.13.0",
-  "pyarrow>=16.0.0",
+  # Still pre-1.0 and routinely breaks across minors, so the ceiling is tight.
+  "lancedb>=0.30.2,<0.32",
+  "pyarrow>=16.0.0,<25",
   # K9 topic graph: Louvain community detection over the mutual-k-NN graph.
-  "networkx>=3.0",
+  "networkx>=3.0,<4",
   # Optional document ingestion (PDF). Pure-python; tiny footprint.
-  "pypdf>=4.0.0",
+  "pypdf>=4.0.0,<7",
   # Web search tool (the package formerly published as duckduckgo-search)
-  "ddgs>=9.0.0",
+  "ddgs>=9.0.0,<10",
   # Secure API-key storage in the OS keychain (Windows Credential
   # Manager / macOS Keychain / Freedesktop Secret Service). Falls back
   # to plaintext config when no backend is present.
-  "keyring>=25.0.0",
+  "keyring>=25.0.0,<27",
 ]
 
 [project.optional-dependencies]
@@ -42,14 +59,32 @@ dependencies = [
 # ``pip install .[voice]`` = full voice. The slim Docker image omits
 # this extra; the full image installs it.
 voice = [
-  "realtimestt>=0.3.100",
-  "pocket-tts>=1.1.0",
+  # Both extras are mandatory, for different failure modes:
+  #   * ``faster-whisper`` — 1.x moved the ASR engines behind extras, so a bare
+  #     ``realtimestt`` imports fine and then raises
+  #     ``No module named 'faster_whisper'`` when the transcription worker starts.
+  #   * ``silero-onnx-cpu`` — without it the recorder loads Silero VAD through
+  #     ``torch.hub``, which prompts "does not belong to the list of trusted
+  #     repositories ... (y/N)". That defaults to *no* on any non-interactive
+  #     run (containers, services), so VAD silently fails. This extra ships a
+  #     self-contained local ONNX backend with no Torch Hub download at all.
+  "realtimestt[faster-whisper,silero-onnx-cpu]>=1.0.2,<2",
+  # Imported directly by app/audio/client_mic_source.py. It also arrives
+  # transitively via realtimestt, but that import is guarded by try/except, so
+  # an implicit dependency would degrade mic VAD silently instead of failing.
+  "webrtcvad-wheels>=2.0.14,<3",
+  "pocket-tts>=1.1.1,<2",
 ]
+# Not installable on Linux + Python 3.13: openwakeword pulls tflite-runtime,
+# which only publishes cp38-cp311 Linux wheels. Fine on Windows/macOS (the
+# tflite dependency is Linux-gated), and fine on Linux with Python <=3.11.
+# Deliberately left out of requirements.lock and the Docker image for that
+# reason -- wake-word activation is opt-in and the app boots without it.
 wake-word = [
-  "openwakeword>=0.6.0",
+  "openwakeword>=0.6.0,<0.7",
 ]
 dev = [
-  "pytest>=8.0.0",
+  "pytest>=8.0.0,<10",
 ]
 all = [
   "english-speaking-assistant[voice,wake-word,dev]",

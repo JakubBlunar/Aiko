@@ -4,29 +4,29 @@ import { api } from "../../api";
 import { useAssistantStore } from "../../store";
 import type {
   LlmProvider,
+  LlmProviderPreset,
   LlmProviderTestResult,
   LlmRoute,
 } from "../../types";
 import { Section } from "./SettingsSection";
 
 /**
- * PR 2 — Role -> Provider / Model / Context / Max-tokens table.
+ * Role -> Provider / Model / Context / Max-tokens table.
  *
- * One row per active role (``main_chat``, ``worker_default``, plus
- * any future ``heavy_workers`` etc. introduced server-side). The
- * Model column is a free-text combobox so users can pick from the
- * provider's curated suggestions OR type any custom id (parallels
- * the PR 1 combobox in ``ChatProviderSection``).
+ * One row per active role (``main_chat``, ``worker_default``,
+ * ``workflow``, plus any future roles introduced server-side). The
+ * Model column is a free-text combobox: pick from the provider's live
+ * list and curated suggestions, or type any id the provider accepts.
+ *
+ * This is the only place "which model serves this role" is edited —
+ * ``PATCH /api/llm/routes/{role}`` rebuilds the live clients and
+ * cascades the change. Context window is worth setting explicitly:
+ * left at auto, Ollama reports a model's advertised maximum, and
+ * recent tags advertise 256 k, which won't fit in consumer VRAM.
  *
  * Dirty rows are highlighted; unsaved changes survive tab switches
  * within the drawer because the draft state lives in this
  * component, not in the global store.
- *
- * Note: the legacy ``ChatProviderSection`` is kept alongside this
- * panel for back-compat — both edit ``main_chat``'s settings through
- * mirror-write paths on the backend. Users can stick with the
- * preset-card UX they're used to, or switch to the catalogue + roles
- * UX once they want multiple providers.
  */
 
 interface RouteDraft {
@@ -85,6 +85,7 @@ export function LlmRoutesSection() {
   const [providerModels, setProviderModels] = useState<
     Record<string, string[]>
   >({});
+  const [presets, setPresets] = useState<LlmProviderPreset[]>([]);
   const [savingRole, setSavingRole] = useState<string | null>(null);
   const [testingRole, setTestingRole] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<
@@ -118,6 +119,23 @@ export function LlmRoutesSection() {
     };
   }, [setProviders, setRoutes]);
 
+  // Presets only feed the model suggestions, so a failure here is
+  // cosmetic — the field stays free-text either way.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getLlmPresets()
+      .then((r) => {
+        if (!cancelled) setPresets(r.presets);
+      })
+      .catch(() => {
+        if (!cancelled) setPresets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Seed drafts when routes land. Existing dirty rows are preserved
   // so a refetch (WS broadcast) doesn't clobber in-progress edits.
   useEffect(() => {
@@ -144,9 +162,7 @@ export function LlmRoutesSection() {
       const provider = (providers ?? []).find((p) => p.id === providerId);
       if (!provider) return;
       try {
-        // Reuse the legacy ?provider= shape; the server treats it as
-        // a kind filter, not an id, so we pass the provider's kind.
-        const models = await api.listModels(false, provider.kind);
+        const models = await api.listModels(false, provider.id);
         setProviderModels((cur) => ({ ...cur, [providerId]: models }));
       } catch {
         setProviderModels((cur) => ({ ...cur, [providerId]: [] }));
@@ -290,6 +306,7 @@ export function LlmRoutesSection() {
             providerModels[draft.provider_id] ?? [],
             selectedProvider,
             draft.model,
+            presets,
           );
           const testResult = testResults[role];
           return (
@@ -513,18 +530,26 @@ export function LlmRoutesSection() {
 }
 
 /**
- * Union of (live model list, current draft id) deduplicated. Keeping
- * this exported makes the source-text test happy and matches the
- * pattern used in ``ChatProviderSection.tsx``.
+ * Union of (live model list, the matching preset's curated
+ * suggestions, current draft id) deduplicated.
+ *
+ * The curated names matter for accounts whose ``/v1/models`` response
+ * is incomplete — an unverified OpenAI key won't list ``gpt-5-mini``,
+ * but typing it still works — and for local Ollama, where they double
+ * as "models worth pulling".
  */
 function computeModelOptions(
   liveModels: string[],
-  _selectedProvider: LlmProvider | undefined,
+  selectedProvider: LlmProvider | undefined,
   currentModel: string,
+  presets: LlmProviderPreset[] = [],
 ): string[] {
+  const recommended = selectedProvider
+    ? presetFor(selectedProvider, presets)?.recommended_models ?? []
+    : [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of [...liveModels, currentModel]) {
+  for (const raw of [...liveModels, ...recommended, currentModel]) {
     const id = (raw ?? "").trim();
     if (id && !seen.has(id)) {
       seen.add(id);
@@ -532,4 +557,22 @@ function computeModelOptions(
     }
   }
   return out;
+}
+
+/** Best-effort provider -> preset match: by id first (providers added
+ *  from a template keep the template's id), then by endpoint. */
+function presetFor(
+  provider: LlmProvider,
+  presets: LlmProviderPreset[],
+): LlmProviderPreset | undefined {
+  const normalize = (url: string) =>
+    (url || "").trim().replace(/\/$/, "").toLowerCase();
+  return (
+    presets.find((p) => p.id === provider.id) ??
+    presets.find(
+      (p) =>
+        p.provider === provider.kind &&
+        normalize(p.base_url) === normalize(provider.base_url),
+    )
+  );
 }

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from app.core.infra.settings_basic import VisionSettings
@@ -17,34 +18,26 @@ log = logging.getLogger("app.settings")
 
 @dataclass(slots=True)
 class OllamaSettings:
+    """Transport template for a single Ollama-speaking client.
+
+    **Not a config block.** There is no ``ollama`` section in
+    ``default.json`` any more — the user-facing source of truth is the
+    ``llm`` block (providers + routes + embedding). This dataclass is
+    derived from an :class:`LlmProvider` (plus the route that is about
+    to be served) and handed to :class:`app.llm.ollama_client.OllamaClient`
+    as its transport/default bundle. See :func:`transport_for_provider`.
+    """
+
     base_url: str
-    chat_model: str
-    temperature: float
-    embedding_base_url: str = ""  # empty = use base_url
-    context_window: int | None = None  # None = auto-detect from Ollama API
-    embedding_model: str = "qwen3-embedding:0.6b"
-    timeout: int = 300  # HTTP timeout in seconds (shared by all Ollama clients)
-    # GPU offload for the embedding model. ``None`` (default) leaves
-    # Ollama's own placement untouched; ``0`` forces the embedder onto
-    # CPU (passed as ``options.num_gpu=0`` on every /api/embeddings
-    # call), freeing the ~5.5 GB the small embed model otherwise pins
-    # in VRAM for the chat/worker model. The embedder is used almost
-    # entirely by latency-tolerant background workers, so CPU is a fine
-    # trade for the freed headroom. A positive value pins that many
-    # layers to GPU.
-    embedding_num_gpu: int | None = None
-    # Context window the embedding model is loaded with (passed as
-    # ``options.num_ctx`` on every /api/embeddings call). ``None``
-    # (default) leaves Ollama's model default -- which for
-    # ``qwen3-embedding`` is a 32k window that allocates a large KV
-    # buffer and bloats the resident model to ~5.8 GB. Aiko only ever
-    # embeds short texts (document chunks cap at ~1k chars / ~250
-    # tokens, memories are shorter), so a small window like ``2048`` is
-    # ample and shrinks the embedder's footprint dramatically -- handy
-    # when offloading it to CPU (``embedding_num_gpu=0``) or just to
-    # reclaim VRAM. Texts longer than the window are truncated by
-    # Ollama, so keep it comfortably above the largest chunk.
-    embedding_num_ctx: int | None = None
+    chat_model: str = ""
+    temperature: float = 0.6
+    # Default ``num_ctx`` for calls that don't pass one explicitly.
+    # Sourced from the *route* being served, never from a global
+    # default: leaving it unset makes Ollama load the model with its
+    # own advertised maximum (256k on recent Qwen builds), which
+    # spills the KV cache out of VRAM.
+    context_window: int | None = None
+    timeout: int = 300  # HTTP timeout in seconds
     # Extra ``num_predict`` budget the client adds automatically whenever
     # a call is made with ``think=True``. The historical caps every
     # worker passes as ``num_predict`` were sized for the ANSWER ONLY
@@ -59,70 +52,35 @@ class OllamaSettings:
 
 
 @dataclass(slots=True)
-class ChatLlmSettings:
-    """Chat-LLM provider routing layer.
+class LlmEmbedding:
+    """Embedding configuration — ``llm.embedding``.
 
-    Sits in front of :class:`OllamaSettings`. When ``provider == "ollama"`` and
-    ``base_url``/``model``/``api_key`` are blank the legacy local Ollama chat
-    behaviour is preserved unchanged. Setting ``base_url`` to ``https://ollama.com``
-    plus an ``api_key`` flips the same code path to Ollama Cloud Pro. The
-    ``openai_compatible`` provider routes through
-    :class:`app.llm.openai_compatible_client.OpenAICompatibleClient`
-    and covers OpenAI / Google Gemini / xAI Grok / Groq / OpenRouter /
-    DeepSeek / Together / Mistral via custom ``base_url``.
+    Deliberately *not* an entry in ``llm.routes``: a route resolves to a
+    :class:`app.llm.chat_client.ChatClient`, and the embedder is not a
+    chat client (it POSTs straight to ``/api/embeddings``). It still
+    references the shared provider catalogue by ``provider_id`` so the
+    endpoint and timeout are configured in exactly one place.
     """
 
-    provider: str = "ollama"  # "ollama" | "openai_compatible"
-    model: str = ""  # empty -> falls back to OllamaSettings.chat_model
-    base_url: str = ""  # empty -> falls back to OllamaSettings.base_url for ollama provider
-    api_key: str = ""  # empty -> looked up via api_key_env / inferred from base_url host
-    api_key_env: str = ""  # explicit env var name; empty -> inferred per host
-    context_window: int | None = None  # None -> auto-detect (ollama) or model lookup (openai)
-    temperature: float | None = None  # None -> inherit OllamaSettings.temperature
-    extra_headers: dict[str, str] = field(default_factory=dict)
-    # Hard cap on tokens generated per assistant reply. Without it, models
-    # routinely emit 2k+ tokens of rambling on casual chat. 512 fits ~3
-    # short paragraphs which is plenty for chat AND tool summaries; raise
-    # for long-form code generation. Set to 0 / negative to disable.
-    max_tokens: int = 512
-    # How long Ollama should keep the chat model loaded in VRAM after a
-    # request completes. Default is "5m" upstream; bumping to "30m" keeps
-    # the model warm across the typical idle gap between conversational
-    # turns so we don't pay model-load latency on first token. Accepts any
-    # Ollama duration string ("30m", "1h", "-1" for "until unloaded").
-    # Tune down for shared-GPU setups where holding VRAM is expensive.
-    keep_alive: str = "30m"
-    # UI hint emitted by the curated preset picker. One of
-    # ``""`` (unspecified / Custom), ``"ollama"``, ``"ollama_cloud"``,
-    # ``"openai"``, ``"gemini"``, ``"groq"``, ``"openrouter"``. The
-    # value is round-tripped to the React drawer so it can highlight
-    # the active preset card; the controller does not read it.
-    provider_preset: str = ""
-    # When the chat provider is NOT Ollama and this is True, background
-    # workers (reflection, dream, belief, memory extractor, ...) keep
-    # talking to a local Ollama instance even though the main chat path
-    # goes through the remote provider. Why True by default? Free-tier
-    # remote quotas (Gemini = 1500 req/day) drain fast when the ~25
-    # background workers each fire a few requests per hour. Workers
-    # don't need a frontier model; routing them locally keeps the
-    # remote quota for user-visible turns. Set False to opt workers
-    # into the same provider — burns quota; useful when running
-    # without a local Ollama at all.
-    workers_use_local: bool = True
-    # Reasoning-effort hint for OpenAI Responses-API-family models
-    # (GPT-5 / o-series). Empty string = "auto": the client keeps its
-    # built-in default (``minimal``). Providers disagree on the allowed
-    # vocabulary — OpenAI gpt-5-mini takes ``minimal``; gpt-5.4-mini
-    # rejects ``minimal`` and wants one of ``none`` / ``low`` / ``medium``
-    # / ``high`` / ``xhigh`` — so this is free-text, sent verbatim only
-    # for Responses-API models and ignored everywhere else.
-    reasoning_effort: str = ""
-    # OpenAI-compatible surface selector mirrored from the active
-    # provider (see ``LlmProvider.api_style``): ``"auto"`` (per-model-name
-    # routing), ``"responses"`` (force /v1/responses — xAI Grok), or
-    # ``"chat_completions"``. Threaded into the main-chat client build so
-    # the primary turn path honours it just like the factory routes do.
-    api_style: str = "auto"
+    provider_id: str = "local_ollama"
+    model: str = "qwen3-embedding:0.6b"
+    # Context window the embedding model is loaded with (passed as
+    # ``options.num_ctx`` on every /api/embeddings call). ``None``
+    # leaves Ollama's model default -- which for ``qwen3-embedding`` is
+    # a 32k window that allocates a large KV buffer and bloats the
+    # resident model to ~5.8 GB. Aiko only ever embeds short texts
+    # (document chunks cap at ~1k chars / ~250 tokens, memories are
+    # shorter), so a small window like ``2048`` is ample and shrinks the
+    # footprint dramatically. Texts longer than the window are truncated
+    # by Ollama, so keep it comfortably above the largest chunk.
+    num_ctx: int | None = 2048
+    # GPU offload for the embedding model. ``None`` leaves Ollama's own
+    # placement untouched; ``0`` forces the embedder onto CPU, freeing
+    # the ~5.5 GB the small embed model otherwise pins in VRAM for the
+    # chat/worker model. The embedder is used almost entirely by
+    # latency-tolerant background workers, so CPU is a fine trade for
+    # the freed headroom. A positive value pins that many layers to GPU.
+    num_gpu: int | None = None
 
 
 @dataclass(slots=True)
@@ -135,7 +93,7 @@ class LlmProvider:
     underlying :class:`ChatClient` instance (the cache key is
     ``(kind, base_url, resolved_api_key)``).
 
-    Migrated from the legacy :class:`ChatLlmSettings` + :class:`OllamaSettings`
+    Migrated one-shot from the pre-consolidation ``chat_llm`` + ``ollama``
     blocks by :func:`_migrate_legacy_llm`. See ``docs/llm-providers.md``
     for the user-facing model.
     """
@@ -149,9 +107,16 @@ class LlmProvider:
     extra_headers: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 300
     keep_alive: str = "30m"  # Ollama-only; ignored by openai_compatible
-    # Provider-level reasoning-effort default (see ChatLlmSettings).
-    # A route's own ``reasoning_effort`` overrides this when set.
+    # Provider-level reasoning-effort default: free-text because
+    # providers disagree on the vocabulary (``minimal`` / ``none`` /
+    # ``low`` / ``medium`` / ``high`` / ``xhigh``). Empty = let the
+    # client keep its built-in default. A route's own
+    # ``reasoning_effort`` overrides this when set.
     reasoning_effort: str = ""
+    # See ``OllamaSettings.think_num_predict_headroom``. Lives on the
+    # provider because it is a property of the model host, not of a
+    # single role.
+    think_num_predict_headroom: int = 2048
     # Which OpenAI-compatible surface to speak (openai_compatible only).
     # ``"auto"`` (default) keeps the historical behaviour: the client
     # decides per-model by name (OpenAI GPT-5.x / o-series -> Responses
@@ -171,8 +136,13 @@ class LlmRoute:
     ``"heavy_workers"``…) picks a provider from the catalogue and
     specifies the per-role model + budget. ``context_window`` /
     ``temperature`` of ``None`` mean "let the client decide" — the
-    OpenAI-compat lookup table, Ollama's ``/api/show``, or the
-    inherited ``OllamaSettings.temperature``.
+    OpenAI-compat lookup table, or Ollama's ``/api/show``.
+
+    Leaving ``context_window`` unset on a local Ollama route is rarely
+    what you want: ``/api/show`` reports the model's *advertised
+    maximum* (256k on recent Qwen builds) and Ollama sizes the KV cache
+    from the first call after a cold start, so an unset window spills
+    the model out of VRAM. ``default.json`` pins every shipped route.
     """
 
     provider_id: str  # references ``LlmProvider.id``
@@ -180,8 +150,8 @@ class LlmRoute:
     context_window: int | None = None
     max_tokens: int = 512
     temperature: float | None = None
-    # Per-route reasoning-effort override (see ChatLlmSettings). Empty =
-    # inherit the provider-level value, then the client default.
+    # Per-route reasoning-effort override. Empty = inherit the
+    # provider-level value, then the client default.
     reasoning_effort: str = ""
 
 
@@ -189,13 +159,18 @@ class LlmRoute:
 class LlmSettings:
     """Top-level container for the provider catalogue + role table.
 
+    The single source of truth for everything LLM-shaped: which
+    endpoints exist (``providers``), which model + budget serves each
+    role (``routes``), and how text is embedded (``embedding``).
     Lives on :class:`AppSettings`. When ``providers`` is empty at boot
-    (first run after upgrade), :func:`_migrate_legacy_llm` synthesises
-    one entry from each legacy block and wires the default routes.
+    (a pre-consolidation ``user.json``), :func:`_migrate_legacy_llm`
+    synthesises the catalogue from the old ``chat_llm`` + ``ollama``
+    blocks and :func:`_migrate_legacy_llm_config` persists the result.
     """
 
     providers: list[LlmProvider] = field(default_factory=list)
     routes: dict[str, LlmRoute] = field(default_factory=dict)
+    embedding: LlmEmbedding = field(default_factory=LlmEmbedding)
 
 
 # Canonical role names. New roles can be added (Phase 3:
@@ -209,6 +184,70 @@ LLM_ROLE_WORKER_DEFAULT = "worker_default"
 # Only diverges when a user deliberately repoints it at a remote /
 # bigger-context provider where VRAM is not the constraint.
 LLM_ROLE_WORKFLOW = "workflow"
+
+# Fallback endpoint when the catalogue has no Ollama entry at all
+# (e.g. a hand-edited config that only lists a remote provider).
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+
+# Catalogue id of the local-Ollama entry shipped in ``default.json``
+# and synthesised by the legacy migration.
+_LOCAL_OLLAMA_ID = "local_ollama"
+
+
+def find_provider(llm: LlmSettings, provider_id: str) -> LlmProvider | None:
+    """Look up a catalogue entry by id. ``None`` when absent."""
+    wanted = (provider_id or "").strip()
+    if not wanted:
+        return None
+    for provider in llm.providers:
+        if provider.id == wanted:
+            return provider
+    return None
+
+
+def local_ollama_provider(llm: LlmSettings) -> LlmProvider:
+    """Return the catalogue's local-Ollama entry, synthesising one if absent.
+
+    Used by the pieces that inherently speak Ollama and have no route of
+    their own to follow — the embedder's fallback and the ``/api/tags``
+    model probes. Never raises: a config with no Ollama provider gets a
+    throwaway entry pointing at the default port.
+    """
+    for provider in llm.providers:
+        if provider.kind == "ollama":
+            return provider
+    return LlmProvider(
+        id=_LOCAL_OLLAMA_ID,
+        name="Local Ollama",
+        kind="ollama",
+        base_url=DEFAULT_OLLAMA_BASE_URL,
+    )
+
+
+def transport_for_provider(
+    provider: LlmProvider, *, route: LlmRoute | None = None,
+) -> OllamaSettings:
+    """Build the :class:`OllamaSettings` transport bundle for a client.
+
+    ``route`` supplies the per-role defaults the client falls back on
+    when a caller doesn't pass explicit options — most importantly
+    ``num_ctx``, which must come from the route rather than a global
+    default (see :class:`LlmRoute`).
+    """
+    return OllamaSettings(
+        base_url=(provider.base_url or "").strip() or DEFAULT_OLLAMA_BASE_URL,
+        chat_model=(route.model if route else "") or "",
+        temperature=(
+            route.temperature
+            if route is not None and route.temperature is not None
+            else 0.6
+        ),
+        context_window=(route.context_window if route else None),
+        timeout=max(1, int(provider.timeout_seconds or 300)),
+        think_num_predict_headroom=max(
+            0, int(getattr(provider, "think_num_predict_headroom", 2048)),
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -251,6 +290,21 @@ class AssistantSettings:
 class SttSettings:
     model: str
     language: str | None
+
+    # Compute device handed to RealtimeSTT / faster-whisper. RealtimeSTT's own
+    # default is a hard ``"cuda"``, which makes recorder init *fail outright* on
+    # a machine (or container) without a usable GPU. ``"auto"`` resolves to
+    # ``cuda`` when torch reports a CUDA device and ``cpu`` otherwise, so the
+    # same config works on a GPU workstation and in the CPU-only Docker image.
+    # Force a value ("cuda" / "cpu") to opt out of the probe.
+    # See app/stt/realtime_stt_service.py::_resolve_device.
+    device: str = "auto"
+
+    # Quantisation hint passed through to CTranslate2. ``"default"`` lets
+    # faster-whisper pick per device (float16 on GPU, int8 on CPU). Set
+    # explicitly to trade accuracy for speed/memory: "int8" is much lighter and
+    # noticeably faster on CPU, "float16" is the usual GPU choice.
+    compute_type: str = "default"
 
 
 @dataclass(slots=True)
@@ -694,6 +748,10 @@ class WeatherSettings:
 @dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
+    # Derived transport defaults for the main-chat route, kept here so
+    # the handful of call sites that need an ``OllamaSettings`` bundle
+    # without a route in hand (client cache, probes) have one. Rebuilt
+    # from ``llm`` on every load — editing it does nothing.
     ollama: OllamaSettings
     audio: AudioSettings
     stt: SttSettings
@@ -711,12 +769,9 @@ class AppSettings:
     plugins: PluginsSettings = field(default_factory=PluginsSettings)
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
-    chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
-    # PR 2: provider catalogue + role-assignment table. Populated by
-    # ``_migrate_legacy_llm`` when ``llm.providers`` is missing/empty.
-    # Coexists with the legacy ``chat_llm`` + ``ollama`` blocks; those
-    # are still readable and writable via back-compat shims so a
-    # downgrade still boots.
+    # The single source of truth for LLM routing: provider catalogue,
+    # per-role routes and the embedding config. ``ollama`` above is a
+    # transport template derived from it, not a parsed config block.
     llm: LlmSettings = field(default_factory=LlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
     search: SearchSettings = field(default_factory=SearchSettings)
@@ -727,7 +782,25 @@ class AppSettings:
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "default.json"
-USER_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "user.json"
+
+
+def _resolve_user_config_path() -> Path:
+    """Where runtime-persisted overrides are read from and written to.
+
+    ``AIKO_USER_CONFIG`` relocates the file. The container sets it to a
+    path inside the data volume: everything the user configures after
+    install (their name, the model the first-run wizard picked, API
+    keys with no keychain behind them) is written here, and the repo
+    location lives in the image's writable layer, which is discarded
+    the moment the container is recreated.
+    """
+    override = (os.environ.get("AIKO_USER_CONFIG") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[3] / "config" / "user.json"
+
+
+USER_CONFIG_PATH = _resolve_user_config_path()
 
 
 def _required(section: dict[str, Any], key: str) -> Any:
@@ -1054,86 +1127,6 @@ def _parse_vision_settings(value: Any) -> VisionSettings:
     )
 
 
-def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
-    """Validate the chat_llm config block, falling back to defaults on missing keys."""
-
-    payload = raw if isinstance(raw, dict) else {}
-
-    provider_raw = str(payload.get("provider", "ollama") or "ollama").strip().lower()
-    if provider_raw not in {"ollama", "openai_compatible"}:
-        provider_raw = "ollama"
-
-    headers_raw = payload.get("extra_headers") or {}
-    if isinstance(headers_raw, dict):
-        extra_headers = {
-            str(k).strip(): str(v).strip()
-            for k, v in headers_raw.items()
-            if str(k).strip() and v is not None
-        }
-    else:
-        extra_headers = {}
-
-    ctx_raw = payload.get("context_window")
-    try:
-        context_window = int(ctx_raw) if ctx_raw not in (None, "", 0) else None
-    except (TypeError, ValueError):
-        context_window = None
-
-    temp_raw = payload.get("temperature")
-    try:
-        temperature = float(temp_raw) if temp_raw not in (None, "") else None
-    except (TypeError, ValueError):
-        temperature = None
-
-    max_tokens_raw = payload.get("max_tokens", 512)
-    try:
-        max_tokens = int(max_tokens_raw) if max_tokens_raw not in (None, "") else 512
-    except (TypeError, ValueError):
-        max_tokens = 512
-
-    keep_alive_raw = payload.get("keep_alive", "30m")
-    keep_alive = (
-        str(keep_alive_raw).strip()
-        if keep_alive_raw not in (None, "")
-        else "30m"
-    )
-
-    # ``provider_preset`` is a UI hint only — the controller ignores it.
-    # We still clamp to the known preset names (plus "") so a typo from
-    # the React drawer can't confuse the round-trip.
-    preset_raw = str(
-        payload.get("provider_preset", "") or "",
-    ).strip().lower()
-    _KNOWN_PRESETS: frozenset[str] = frozenset({
-        "", "ollama", "ollama_cloud", "openai", "gemini",
-        "groq", "openrouter", "xai",
-    })
-    if preset_raw not in _KNOWN_PRESETS:
-        preset_raw = ""
-
-    workers_use_local_raw = payload.get("workers_use_local", True)
-    workers_use_local = bool(workers_use_local_raw)
-
-    return ChatLlmSettings(
-        provider=provider_raw,
-        model=str(payload.get("model", "") or "").strip(),
-        base_url=str(payload.get("base_url", "") or "").strip(),
-        api_key=str(payload.get("api_key", "") or "").strip(),
-        api_key_env=str(payload.get("api_key_env", "") or "").strip(),
-        context_window=context_window,
-        temperature=temperature,
-        extra_headers=extra_headers,
-        max_tokens=max_tokens,
-        keep_alive=keep_alive,
-        provider_preset=preset_raw,
-        workers_use_local=workers_use_local,
-        reasoning_effort=_norm_reasoning_effort(
-            payload.get("reasoning_effort")
-        ),
-        api_style=_norm_api_style(payload.get("api_style")),
-    )
-
-
 # PR 2: provider catalogue + role-assignment parsers + legacy migration.
 
 
@@ -1171,8 +1164,7 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
 
     Returns ``None`` when the entry is malformed (missing id, unknown
     kind, etc.) so callers can drop it without aborting the whole
-    load. Trimming + lowercasing matches the legacy ``_parse_chat_llm``
-    contract exactly.
+    load.
     """
     if not isinstance(payload, dict):
         return None
@@ -1212,6 +1204,47 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
             payload.get("reasoning_effort")
         ),
         api_style=_norm_api_style(payload.get("api_style")),
+        think_num_predict_headroom=_opt_int(
+            payload.get("think_num_predict_headroom"), default=2048, minimum=0,
+        )
+        or 0,
+    )
+
+
+def _opt_int(raw: Any, *, default: int | None, minimum: int = 0) -> int | None:
+    """Coerce a JSON scalar to an int, or ``default`` when absent/garbage.
+
+    ``None`` and ``""`` mean "not set" and yield ``default``; anything
+    that parses is clamped to ``minimum``. Used for the optional
+    numeric knobs (context windows, GPU layers, headroom) where a
+    hand-edited string shouldn't abort the whole config load.
+    """
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_llm_embedding(raw: Any) -> LlmEmbedding:
+    """Validate the ``llm.embedding`` block."""
+    payload = raw if isinstance(raw, dict) else {}
+    defaults = LlmEmbedding()
+    return LlmEmbedding(
+        provider_id=(
+            str(payload.get("provider_id", "") or "").strip()
+            or defaults.provider_id
+        ),
+        model=(
+            str(payload.get("model", "") or "").strip() or defaults.model
+        ),
+        num_ctx=_opt_int(
+            payload.get("num_ctx", defaults.num_ctx), default=None, minimum=1,
+        ),
+        num_gpu=_opt_int(
+            payload.get("num_gpu", defaults.num_gpu), default=None, minimum=0,
+        ),
     )
 
 
@@ -1431,10 +1464,10 @@ def _parse_weather_settings(raw: Any) -> WeatherSettings:
 def _parse_llm(raw: Any) -> LlmSettings:
     """Validate the ``llm`` config block.
 
-    Returns an empty :class:`LlmSettings` when the block is missing
-    or malformed; the caller (``load_settings``) then runs
+    Returns an :class:`LlmSettings` with no providers when the block is
+    missing or malformed; the caller (``load_settings``) then runs
     :func:`_migrate_legacy_llm` to synthesise providers + routes from
-    the legacy ``chat_llm`` + ``ollama`` blocks.
+    the pre-consolidation ``chat_llm`` + ``ollama`` blocks.
     """
     if not isinstance(raw, dict):
         return LlmSettings()
@@ -1460,136 +1493,161 @@ def _parse_llm(raw: Any) -> LlmSettings:
             if parsed_route is None:
                 continue
             routes[role_name] = parsed_route
-    return LlmSettings(providers=providers, routes=routes)
+    return LlmSettings(
+        providers=providers,
+        routes=routes,
+        embedding=_parse_llm_embedding(raw.get("embedding")),
+    )
 
 
-_LEGACY_LOCAL_OLLAMA_ID = "local_ollama"
 _LEGACY_CHAT_PROVIDER_ID = "chat_migrated"
+
+# ``user.json`` keys the consolidation retired. Pruned in place by
+# :func:`_migrate_legacy_llm_config` once their content has been folded
+# into the ``llm`` block, so they can't resurface through the deep-merge
+# on the next boot or a settings round-trip.
+_RETIRED_CONFIG_KEYS: tuple[str, ...] = ("chat_llm", "ollama")
 
 
 def _migrate_legacy_llm(
     *,
-    chat_llm: ChatLlmSettings,
-    ollama: OllamaSettings,
-    timeout: int,
+    chat_llm: dict[str, Any],
+    ollama: dict[str, Any],
 ) -> LlmSettings:
-    """Synthesise a :class:`LlmSettings` from the legacy blocks.
+    """Synthesise an :class:`LlmSettings` from the retired config blocks.
 
-    Called by :func:`load_settings` when ``llm.providers`` is empty.
-    Idempotent: subsequent boots see the populated ``llm`` block and
-    skip this path. The legacy blocks remain readable indefinitely
-    so downgrades still boot — the new code also mirror-writes them
-    on every save (see ``persist_user_overrides`` flow in
-    SessionController) so external scripts that read ``chat_llm.*``
-    keep working.
+    Called by :func:`load_settings` when ``llm.providers`` is empty,
+    which happens exactly once: on the first boot after the
+    consolidation, for a ``user.json`` that still carries the old
+    ``chat_llm`` / ``ollama`` blocks.
+    :func:`_migrate_legacy_llm_config` then persists the result and
+    deletes the old blocks, so later boots parse ``llm`` directly.
 
-    Migration rules (from the plan):
+    Migration rules:
 
-    1. Synthesize ``local_ollama`` from the existing ``ollama.*`` block.
-    2. If ``chat_llm.provider == "ollama"`` AND base_url matches local,
-       route ``main_chat -> local_ollama`` with ``chat_llm.model`` /
-       ``chat_llm.context_window``.
+    1. Synthesize ``local_ollama`` from the old ``ollama.*`` block.
+    2. If ``chat_llm.provider == "ollama"`` and its base_url matches the
+       local one, route ``main_chat -> local_ollama``.
     3. Otherwise synthesize a second provider (id from
        ``chat_llm.provider_preset`` when set, else ``chat_migrated``)
-       and route ``main_chat`` to it.
-    4. Route ``worker_default -> local_ollama`` always (workers stay
-       on local by default; user can later flip via UI).
+       and point ``main_chat`` at it.
+    4. Route ``worker_default`` + ``workflow -> local_ollama`` always.
+    5. Fold the ``ollama.embedding_*`` keys into ``llm.embedding``.
     """
-    providers: list[LlmProvider] = []
+    chat_llm = chat_llm if isinstance(chat_llm, dict) else {}
+    ollama = ollama if isinstance(ollama, dict) else {}
 
-    # Step 1: local_ollama from the legacy ``ollama`` block.
+    timeout = _opt_int(ollama.get("timeout"), default=300, minimum=1) or 300
+    legacy_chat_model = str(ollama.get("chat_model", "") or "").strip()
+    legacy_ctx = _opt_int(ollama.get("context_window"), default=None, minimum=1)
+
+    # Step 1: local_ollama from the old ``ollama`` block.
     local_provider = LlmProvider(
-        id=_LEGACY_LOCAL_OLLAMA_ID,
+        id=_LOCAL_OLLAMA_ID,
         name="Local Ollama",
         kind="ollama",
-        base_url=(ollama.base_url or "http://127.0.0.1:11434").strip(),
-        api_key="",
-        api_key_env="",
-        extra_headers={},
-        timeout_seconds=int(timeout) if timeout else 300,
-        keep_alive="30m",
+        base_url=(
+            str(ollama.get("base_url", "") or "").strip()
+            or DEFAULT_OLLAMA_BASE_URL
+        ),
+        timeout_seconds=timeout,
+        keep_alive=str(chat_llm.get("keep_alive", "30m") or "30m").strip(),
+        think_num_predict_headroom=_opt_int(
+            ollama.get("think_num_predict_headroom"), default=2048, minimum=0,
+        )
+        or 0,
     )
-    providers.append(local_provider)
+    providers = [local_provider]
 
     # Steps 2-3: where does ``main_chat`` go?
-    chat_provider_id = _LEGACY_LOCAL_OLLAMA_ID
-    chat_model = (chat_llm.model or ollama.chat_model or "").strip()
-    chat_context_window = chat_llm.context_window
-
-    chat_base = (chat_llm.base_url or "").strip()
-    local_base = local_provider.base_url
-    chat_is_local = (
-        chat_llm.provider == "ollama"
-        and (not chat_base or _urls_match(chat_base, local_base))
+    chat_provider_id = _LOCAL_OLLAMA_ID
+    chat_kind = str(chat_llm.get("provider", "ollama") or "ollama").strip().lower()
+    chat_base = str(chat_llm.get("base_url", "") or "").strip()
+    chat_effort = _norm_reasoning_effort(chat_llm.get("reasoning_effort"))
+    chat_is_local = chat_kind == "ollama" and (
+        not chat_base or _urls_match(chat_base, local_provider.base_url)
     )
 
     if not chat_is_local:
-        # Need a second provider entry for the remote chat path.
-        # Prefer the provider_preset string as the id (stable across
-        # restarts) when it's set to something the user picked.
-        preset = (chat_llm.provider_preset or "").strip().lower()
+        preset = str(chat_llm.get("provider_preset", "") or "").strip().lower()
         candidate_id = preset or _LEGACY_CHAT_PROVIDER_ID
-        # Avoid collisions with the local entry.
-        if candidate_id == _LEGACY_LOCAL_OLLAMA_ID:
+        if candidate_id == _LOCAL_OLLAMA_ID:
             candidate_id = _LEGACY_CHAT_PROVIDER_ID
-        kind = (chat_llm.provider or "openai_compatible").strip().lower()
-        if kind not in {"ollama", "openai_compatible"}:
-            kind = "openai_compatible"
-        # Friendly name from preset id, capitalised; falls back to
-        # the kind label.
-        if preset:
-            name = preset.replace("_", " ").title()
-        else:
-            name = "Chat provider"
+        if chat_kind not in {"ollama", "openai_compatible"}:
+            chat_kind = "openai_compatible"
+        headers_raw = chat_llm.get("extra_headers")
         remote_provider = LlmProvider(
             id=candidate_id,
-            name=name,
-            kind=kind,
+            name=(preset.replace("_", " ").title() if preset else "Chat provider"),
+            kind=chat_kind,
             base_url=chat_base,
-            api_key=chat_llm.api_key or "",
-            api_key_env=chat_llm.api_key_env or "",
-            extra_headers=dict(chat_llm.extra_headers or {}),
-            timeout_seconds=int(timeout) if timeout else 300,
-            keep_alive=chat_llm.keep_alive or "30m",
-            reasoning_effort=(
-                getattr(chat_llm, "reasoning_effort", "") or ""
-            ).strip().lower(),
-            api_style=_norm_api_style(getattr(chat_llm, "api_style", "auto")),
+            api_key=str(chat_llm.get("api_key", "") or "").strip(),
+            api_key_env=str(chat_llm.get("api_key_env", "") or "").strip(),
+            extra_headers=(
+                {str(k): str(v) for k, v in headers_raw.items() if k and v}
+                if isinstance(headers_raw, dict)
+                else {}
+            ),
+            timeout_seconds=timeout,
+            keep_alive=str(chat_llm.get("keep_alive", "30m") or "30m").strip(),
+            reasoning_effort=chat_effort,
+            api_style=_norm_api_style(chat_llm.get("api_style")),
         )
         providers.append(remote_provider)
         chat_provider_id = remote_provider.id
 
-    # Step 4: routes.
+    chat_temp = chat_llm.get("temperature")
+    try:
+        chat_temperature = (
+            float(chat_temp) if chat_temp not in (None, "") else None
+        )
+    except (TypeError, ValueError):
+        chat_temperature = None
+
+    # Step 4: routes. worker_default and workflow are identical so they
+    # resolve to the SAME cached client (the cache key is
+    # (kind, base_url, api_key)) -- one Ollama instance, no extra VRAM.
+    worker_route = LlmRoute(
+        provider_id=_LOCAL_OLLAMA_ID,
+        model=legacy_chat_model,
+        context_window=legacy_ctx,
+        max_tokens=512,
+    )
     routes: dict[str, LlmRoute] = {
         LLM_ROLE_MAIN_CHAT: LlmRoute(
             provider_id=chat_provider_id,
-            model=chat_model,
-            context_window=chat_context_window,
-            max_tokens=int(chat_llm.max_tokens or 512),
-            temperature=chat_llm.temperature,
-            reasoning_effort=(
-                getattr(chat_llm, "reasoning_effort", "") or ""
-            ).strip().lower(),
+            model=(
+                str(chat_llm.get("model", "") or "").strip() or legacy_chat_model
+            ),
+            context_window=_opt_int(
+                chat_llm.get("context_window"), default=None, minimum=1,
+            ),
+            max_tokens=_opt_int(
+                chat_llm.get("max_tokens"), default=512, minimum=0,
+            )
+            or 0,
+            temperature=chat_temperature,
+            reasoning_effort=chat_effort,
         ),
-        LLM_ROLE_WORKER_DEFAULT: LlmRoute(
-            provider_id=_LEGACY_LOCAL_OLLAMA_ID,
-            model=(ollama.chat_model or "").strip(),
-            context_window=ollama.context_window,
-            max_tokens=512,
-            temperature=None,
-        ),
-        # Nested-workflow planner. Mirrors worker_default exactly so it
-        # resolves to the SAME cached client (ClientCache key is
-        # (kind, base_url, key)) -- one Ollama instance, no extra VRAM.
-        LLM_ROLE_WORKFLOW: LlmRoute(
-            provider_id=_LEGACY_LOCAL_OLLAMA_ID,
-            model=(ollama.chat_model or "").strip(),
-            context_window=ollama.context_window,
-            max_tokens=512,
-            temperature=None,
-        ),
+        LLM_ROLE_WORKER_DEFAULT: worker_route,
+        LLM_ROLE_WORKFLOW: replace(worker_route),
     }
-    return LlmSettings(providers=providers, routes=routes)
+
+    # Step 5: embeddings.
+    embedding = LlmEmbedding(
+        provider_id=_LOCAL_OLLAMA_ID,
+        model=(
+            str(ollama.get("embedding_model", "") or "").strip()
+            or LlmEmbedding().model
+        ),
+        num_ctx=_opt_int(
+            ollama.get("embedding_num_ctx"), default=None, minimum=1,
+        ),
+        num_gpu=_opt_int(
+            ollama.get("embedding_num_gpu"), default=None, minimum=0,
+        ),
+    )
+    return LlmSettings(providers=providers, routes=routes, embedding=embedding)
 
 
 def _urls_match(a: str, b: str) -> bool:
@@ -1600,6 +1658,138 @@ def _urls_match(a: str, b: str) -> bool:
     are treated as the same provider entry.
     """
     return (a or "").strip().rstrip("/").lower() == (b or "").strip().rstrip("/").lower()
+
+
+def llm_provider_to_dict(
+    provider: LlmProvider, *, api_key: str | None = None,
+) -> dict[str, Any]:
+    """Serialise one catalogue entry for ``user.json``.
+
+    ``api_key`` overrides the in-memory value so callers can substitute
+    the keychain sentinel (``""``) for a secret that was stashed in the
+    OS keychain instead of written to disk.
+    """
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "kind": provider.kind,
+        "base_url": provider.base_url,
+        "api_key": provider.api_key if api_key is None else api_key,
+        "api_key_env": provider.api_key_env,
+        "extra_headers": dict(provider.extra_headers or {}),
+        "timeout_seconds": int(provider.timeout_seconds or 300),
+        "keep_alive": provider.keep_alive,
+        "reasoning_effort": provider.reasoning_effort,
+        "api_style": provider.api_style,
+        "think_num_predict_headroom": int(
+            provider.think_num_predict_headroom or 0
+        ),
+    }
+
+
+def llm_route_to_dict(route: LlmRoute) -> dict[str, Any]:
+    """Serialise one role assignment for ``user.json``."""
+    return {
+        "provider_id": route.provider_id,
+        "model": route.model,
+        "context_window": route.context_window,
+        "max_tokens": int(route.max_tokens or 0),
+        "temperature": route.temperature,
+        "reasoning_effort": route.reasoning_effort,
+    }
+
+
+def llm_settings_to_dict(
+    llm: LlmSettings, *, api_keys: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Serialise the whole ``llm`` block for ``user.json``.
+
+    ``api_keys`` maps provider id -> the value to write for that
+    provider's key (see :func:`llm_provider_to_dict`); providers absent
+    from the mapping keep their in-memory value.
+    """
+    keys = api_keys or {}
+    return {
+        "providers": [
+            llm_provider_to_dict(p, api_key=keys.get(p.id))
+            for p in llm.providers
+        ],
+        "routes": {
+            role: llm_route_to_dict(route) for role, route in llm.routes.items()
+        },
+        "embedding": {
+            "provider_id": llm.embedding.provider_id,
+            "model": llm.embedding.model,
+            "num_ctx": llm.embedding.num_ctx,
+            "num_gpu": llm.embedding.num_gpu,
+        },
+    }
+
+
+def prune_user_override_keys(
+    *keys: str, path: Path | None = None,
+) -> list[str]:
+    """Delete top-level ``keys`` from ``user.json``; return those removed.
+
+    Retiring a config block is only half the job: as long as the key
+    survives in ``user.json`` it keeps winning the deep-merge and keeps
+    reappearing in settings round-trips. Migrations call this once the
+    block's content has been folded into its replacement. Best-effort —
+    a write failure is logged and swallowed, because the in-memory load
+    already ignores the retired keys.
+    """
+    target = path or USER_CONFIG_PATH
+    if not target.is_file():
+        return []
+    try:
+        existing = _read_config(target)
+    except Exception:
+        return []
+    removed = [key for key in keys if key in existing]
+    if not removed:
+        return []
+    pruned = {k: v for k, v in existing.items() if k not in removed}
+    try:
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(pruned, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(target)
+        _config_cache.pop(str(target), None)
+    except Exception:
+        log.warning("pruning retired config keys failed", exc_info=True)
+        return []
+    return removed
+
+
+def _migrate_legacy_llm_config(llm: LlmSettings, *, path: Path | None = None) -> None:
+    """Persist the migrated ``llm`` block and delete the retired keys.
+
+    Runs at most once per install: after it writes, ``user.json`` has a
+    populated ``llm.providers`` so :func:`load_settings` never calls
+    :func:`_migrate_legacy_llm` again, and the ``chat_llm`` / ``ollama``
+    blocks are gone so they can't shadow it.
+    """
+    target = path or USER_CONFIG_PATH
+    try:
+        existing = _read_config(target) if target.is_file() else {}
+    except Exception:
+        existing = {}
+    if not any(key in existing for key in _RETIRED_CONFIG_KEYS):
+        # Nothing to migrate from — a fresh install running on the
+        # shipped defaults. Don't write anything.
+        return
+    try:
+        persist_user_overrides({"llm": llm_settings_to_dict(llm)}, path=target)
+    except Exception:
+        log.warning("persisting migrated llm block failed", exc_info=True)
+        return
+    removed = prune_user_override_keys(*_RETIRED_CONFIG_KEYS, path=target)
+    log.info(
+        "config migration: folded %s into the llm block",
+        ", ".join(removed) or "(nothing)",
+    )
 
 
 def _migrate_legacy_audio_keys(user_path: Path) -> None:
@@ -1664,7 +1854,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     raw = _deep_merge(base, user)
 
     assistant = raw.get("assistant", {}) or {}
-    ollama = raw.get("ollama", {}) or {}
     audio = raw.get("audio", {}) or {}
     stt = raw.get("stt", {}) or {}
     tts = raw.get("tts", {}) or {}
@@ -1673,7 +1862,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     mcp_server_raw = raw.get("mcp_server", {}) or {}
     web_server_raw = raw.get("web_server", {}) or {}
     memory_raw = raw.get("memory", {}) or {}
-    chat_llm_raw = raw.get("chat_llm", {}) or {}
     llm_raw = raw.get("llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
     search_raw = raw.get("search", {}) or {}
@@ -1689,36 +1877,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             user_display_name=str(assistant.get("user_display_name", "") or "").strip()[:32],
             tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
         ),
-        ollama=OllamaSettings(
-            # The ``ollama`` block is now the "local Ollama base + embeddings"
-            # block, not the chat-routing block (chat/worker models, context
-            # windows and temperatures live in ``llm.routes`` — see
-            # docs/llm-providers.md). These three keys are kept tolerant
-            # (default instead of _required) so the block can be slimmed to
-            # just its infra/embedding keys without crashing the loader.
-            # ``chat_model`` still seeds the legacy migration + the
-            # local-Ollama fresh-install default, so it ships in default.json.
-            base_url=str(ollama.get("base_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434").strip(),
-            embedding_base_url=str(ollama.get("embedding_base_url", "") or "").strip(),
-            chat_model=str(ollama.get("chat_model", "") or "").strip(),
-            temperature=float(ollama.get("temperature", 0.6) if ollama.get("temperature") is not None else 0.6),
-            context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
-            embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
-            timeout=int(ollama.get("timeout", 300)),
-            embedding_num_gpu=(
-                int(ollama["embedding_num_gpu"])
-                if ollama.get("embedding_num_gpu") is not None
-                else None
-            ),
-            embedding_num_ctx=(
-                int(ollama["embedding_num_ctx"])
-                if ollama.get("embedding_num_ctx") is not None
-                else None
-            ),
-            think_num_predict_headroom=max(
-                0, int(ollama.get("think_num_predict_headroom", 2048)),
-            ),
-        ),
+        # Placeholder; rebuilt from the resolved ``llm`` block below,
+        # once the legacy migration + workflow backfill have run.
+        ollama=OllamaSettings(base_url=DEFAULT_OLLAMA_BASE_URL),
         audio=AudioSettings(
             sample_rate=int(_required(audio, "sample_rate")),
             channels=int(_required(audio, "channels")),
@@ -1731,6 +1892,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         stt=SttSettings(
             model=str(stt.get("model", "base")),
             language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
+            # Unknown values fall back to "auto" rather than being passed
+            # through, so a typo can't hard-fail recorder init.
+            device=(
+                str(stt.get("device", "auto")).strip().lower()
+                if str(stt.get("device", "auto")).strip().lower() in {"auto", "cuda", "cpu"}
+                else "auto"
+            ),
+            compute_type=(str(stt.get("compute_type", "default")).strip() or "default"),
         ),
         tts=TtsSettings(
             provider=str(tts.get("provider", "pocket-tts")),
@@ -1778,8 +1947,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             port=max(1, int(web_server_raw.get("port", 6275))),
         ),
         memory=parse_memory_settings(memory_raw),
-        chat_llm=_parse_chat_llm(chat_llm_raw),
-        llm=_parse_llm(llm_raw),  # populated below if empty
+        llm=_parse_llm(llm_raw),  # migrated below when the catalogue is empty
         tools=ToolsSettings(
             enabled=bool(tools_raw.get("enabled", True)),
             get_time=bool(tools_raw.get("get_time", True)),
@@ -1871,19 +2039,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
     )
 
-    # ── PR 2: legacy LLM migration (idempotent) ─────────────────────
+    # ── One-shot migration off the retired chat_llm / ollama blocks ──
     #
-    # If ``llm.providers`` is empty (first boot after upgrade), synthesise
-    # the catalogue + routes from the legacy ``chat_llm`` + ``ollama``
-    # blocks. Subsequent boots see the populated ``llm`` block and skip.
-    # The legacy blocks remain readable indefinitely — back-compat is
-    # the contract, not opt-in.
+    # An empty catalogue means this install predates the consolidation.
+    # Synthesise providers + routes + embedding from the old blocks and
+    # (on a real boot, not a test load of an explicit config file)
+    # persist the result so the next load parses ``llm`` directly.
     if not settings.llm.providers:
         settings.llm = _migrate_legacy_llm(
-            chat_llm=settings.chat_llm,
-            ollama=settings.ollama,
-            timeout=settings.ollama.timeout,
+            chat_llm=raw.get("chat_llm", {}) or {},
+            ollama=raw.get("ollama", {}) or {},
         )
+        if config_path is None:
+            _migrate_legacy_llm_config(settings.llm)
 
     # Backfill the workflow route for installs that migrated before the
     # nested-workflow feature shipped (persisted routes without a
@@ -1893,13 +2061,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         LLM_ROLE_WORKFLOW not in settings.llm.routes
         and LLM_ROLE_WORKER_DEFAULT in settings.llm.routes
     ):
-        worker_route = settings.llm.routes[LLM_ROLE_WORKER_DEFAULT]
-        settings.llm.routes[LLM_ROLE_WORKFLOW] = LlmRoute(
-            provider_id=worker_route.provider_id,
-            model=worker_route.model,
-            context_window=worker_route.context_window,
-            max_tokens=worker_route.max_tokens,
-            temperature=worker_route.temperature,
+        settings.llm.routes[LLM_ROLE_WORKFLOW] = replace(
+            settings.llm.routes[LLM_ROLE_WORKER_DEFAULT],
         )
+
+    # Derive the transport defaults now that ``llm`` is final.
+    main_route = settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)
+    settings.ollama = transport_for_provider(
+        (
+            find_provider(settings.llm, main_route.provider_id)
+            if main_route is not None
+            else None
+        )
+        or local_ollama_provider(settings.llm),
+        route=main_route,
+    )
 
     return settings

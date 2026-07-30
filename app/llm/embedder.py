@@ -1,9 +1,9 @@
 """Thin wrapper around Ollama's ``/api/embeddings`` endpoint.
 
 Used by :mod:`app.core.memory.memory_store` and :mod:`app.core.memory.memory_retriever` to
-turn arbitrary text into a vector for cosine similarity. The model name is
-controlled by :attr:`OllamaSettings.embedding_model` (default
-``qwen3-embedding:0.6b`` -- already wired through ``config/default.json``).
+turn arbitrary text into a vector for cosine similarity. Configured by the
+``llm.embedding`` block (:class:`LlmEmbedding`), which also names the provider
+whose ``base_url`` the embed calls go to.
 
 A small in-memory LRU cache (keyed by sha1 of the text + model) keeps repeated
 retrieval embeds from hitting the GPU on every turn.
@@ -29,7 +29,8 @@ from typing import Iterable
 import numpy as np
 import requests
 
-from app.core.infra.settings import OllamaSettings
+from app.core.infra.settings import LlmEmbedding, LlmSettings
+from app.core.infra.settings import find_provider, local_ollama_provider
 
 
 log = logging.getLogger("app.embedder")
@@ -40,30 +41,28 @@ class Embedder:
 
     def __init__(
         self,
-        settings: OllamaSettings,
+        config: LlmEmbedding,
         *,
+        base_url: str,
         model: str | None = None,
         timeout_seconds: float = 30.0,
         cache_size: int = 256,
     ) -> None:
-        self._settings = settings
-        self._model = (model or settings.embedding_model or "").strip()
+        self._model = (model or config.model or "").strip()
         if not self._model:
             raise ValueError("Embedder needs a non-empty embedding model name")
-        # Embeddings can run on a separate Ollama instance if configured.
-        base = (settings.embedding_base_url or "").strip() or settings.base_url
-        self._base_url = base.rstrip("/")
+        self._base_url = (base_url or "").strip().rstrip("/")
         self._timeout = float(timeout_seconds)
-        # VRAM lever: when ``embedding_num_gpu`` is set we pass it as
+        # VRAM lever: when ``num_gpu`` is set we pass it as
         # ``options.num_gpu`` on every embed call. ``0`` forces CPU,
         # freeing the small embed model's VRAM for the chat/worker
         # model. ``None`` leaves Ollama's placement untouched.
-        self._num_gpu = getattr(settings, "embedding_num_gpu", None)
+        self._num_gpu = config.num_gpu
         # VRAM lever: cap the context window the embed model loads with.
         # ``qwen3-embedding`` defaults to a 32k window (~5.8 GB resident);
         # Aiko only embeds short texts, so a small ``num_ctx`` shrinks the
         # footprint dramatically. ``None`` leaves Ollama's default.
-        self._num_ctx = getattr(settings, "embedding_num_ctx", None)
+        self._num_ctx = config.num_ctx
         self._cache_size = max(0, int(cache_size))
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
@@ -220,6 +219,20 @@ class Embedder:
             self._session.close()
         except Exception:
             pass
+
+
+def build_embedder(llm: LlmSettings, **kwargs) -> Embedder:
+    """Construct an :class:`Embedder` from the ``llm`` block.
+
+    Resolves ``llm.embedding.provider_id`` against the catalogue for the
+    endpoint, falling back to the local-Ollama entry when the referenced
+    provider is missing — embedding is infrastructure, so a stale
+    provider id degrades to "try localhost" rather than disabling
+    memory entirely.
+    """
+    config = llm.embedding
+    provider = find_provider(llm, config.provider_id) or local_ollama_provider(llm)
+    return Embedder(config, base_url=provider.base_url, **kwargs)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

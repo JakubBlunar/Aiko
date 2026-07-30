@@ -17,10 +17,16 @@
 # Host / port / Ollama URL come from env (AIKO_WEB_HOST, AIKO_WEB_PORT,
 # AIKO_OLLAMA_BASE_URL) — see app/web/__main__._apply_env_overrides — so no
 # config file mount is required for a normal run.
+#
+# Runtime settings (the name and model the first-run wizard collects, API
+# keys, avatar tweaks) are written to $AIKO_USER_CONFIG, which points into
+# the volume for the same reason: /app/config lives in the container's
+# writable layer and is discarded on every recreate.
 set -e
 
 DATA_DIR="/app/data"
 SEED_DIR="/opt/aiko/seed"
+USER_CONFIG="${AIKO_USER_CONFIG:-${DATA_DIR}/user.json}"
 
 if [ -d "${SEED_DIR}/persona" ]; then
   mkdir -p "${DATA_DIR}/persona"
@@ -32,6 +38,17 @@ if [ -d "${SEED_DIR}/persona" ]; then
       echo "[entrypoint] seeded persona/${name}"
     fi
   done
+fi
+
+# A mounted /app/config/user.json used to be the only way to configure the
+# container, so treat it as the seed for the volume copy — otherwise an
+# existing deployment's settings would vanish the first time it runs an
+# image that reads from the volume instead. Copy-if-absent, so the volume
+# (which the app keeps writing to) always wins afterwards.
+if [ ! -e "${USER_CONFIG}" ] && [ -f /app/config/user.json ]; then
+  mkdir -p "$(dirname "${USER_CONFIG}")"
+  cp /app/config/user.json "${USER_CONFIG}"
+  echo "[entrypoint] seeded user.json into the data volume"
 fi
 
 exec "$@"

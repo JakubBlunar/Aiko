@@ -1,0 +1,30 @@
+# Aiko — everything in the slim image plus server-side voice.
+#
+#   docker compose -f docker-compose-full.yaml up -d --build
+#   open http://localhost:6275
+#
+# Adds RealtimeSTT (speech in) and Pocket-TTS (speech out), which pull in
+# the PyTorch/whisper stack — expect a ~4-6 GB image and a first build of a
+# few minutes. Two things to check before you run it:
+#
+#   * Memory. The default whisper model needs well over 4 GB available to
+#     the container. Docker Desktop often allocates ~2 GB, which gets the
+#     container OOM-killed mid-boot (`Exited (137)` with nothing logged).
+#     Raise it under Settings -> Resources -> Memory, or pick a smaller
+#     model — see "Memory" in docs/docker.md.
+#   * GPU. `stt.device` is `auto`, so the same image uses CUDA when the
+#     container can see a GPU and CPU when it can't. Nothing to configure.
+#
+# The data volume is shared with docker-compose-slim.yaml, so switching
+# between the two keeps your history, memories and settings.
+include:
+  - docker-compose.yml
+
+services:
+  aiko:
+    build:
+      args:
+        # Pinned rather than inherited from $AIKO_PROFILE: a file named
+        # "full" should build the voice image no matter what is in .env.
+        PROFILE: full
+    image: aiko:full

@@ -177,7 +177,7 @@ class GoalWorkflowHandler:
 
     Dependencies are injected as *providers* (zero-arg callables) where
     they can change at runtime (the worker client + model are rebuilt on
-    ``reconfigure_chat_llm``), and as direct refs where they're stable
+    a route edit), and as direct refs where they're stable
     (the orchestrator + skill registry).
     """
 

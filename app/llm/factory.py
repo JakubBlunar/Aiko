@@ -32,10 +32,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.infra.settings import (
+    DEFAULT_OLLAMA_BASE_URL,
     LlmProvider,
     LlmRoute,
     LlmSettings,
     OllamaSettings,
+    transport_for_provider,
 )
 from app.llm.chat_client import ChatClient
 from app.llm.ollama_client import OllamaClient
@@ -113,8 +115,13 @@ class ClientCache:
     once at startup / route change and stashes the reference.
     """
 
-    def __init__(self, ollama_settings: OllamaSettings) -> None:
-        self._ollama_settings = ollama_settings
+    def __init__(self, ollama_settings: OllamaSettings | None = None) -> None:
+        # Transport defaults for clients built without a route in hand.
+        # Per-provider values (base_url, timeout, think headroom) are
+        # derived from the provider row itself in :meth:`_build`.
+        self._ollama_settings = ollama_settings or OllamaSettings(
+            base_url=DEFAULT_OLLAMA_BASE_URL,
+        )
         self._lock = threading.RLock()
         # cache_key -> (provider_ids, client). ``provider_ids`` is the
         # set of ``LlmProvider.id`` rows that hashed to this key — we
@@ -137,8 +144,8 @@ class ClientCache:
         Gemini quirk-handling, but the *cache* doesn't key on model
         (one client serves all models on a given provider). When the
         caller doesn't have a model yet, pass empty string and the
-        factory falls back to a local Ollama client (parity with
-        :func:`session_controller._build_chat_client`).
+        factory falls back to a local Ollama client so the caller gets
+        a usable object rather than an exception.
         """
         key = self._key_for(provider)
         with self._lock:
@@ -160,6 +167,10 @@ class ClientCache:
     def _build(self, provider: LlmProvider, *, model: str) -> ChatClient:
         """Construct a concrete client from a :class:`LlmProvider`."""
         base_url = (provider.base_url or "").strip() or self._ollama_settings.base_url
+        # Transport defaults come from the provider being built, not
+        # from the cache-wide template — otherwise every client would
+        # inherit the main-chat route's context window.
+        transport = transport_for_provider(provider)
         api_key = _resolve_api_key(provider)
         extra_headers = {
             str(k).strip(): str(v).strip()
@@ -179,14 +190,14 @@ class ClientCache:
                     provider.id,
                 )
                 return OllamaClient(
-                    self._ollama_settings,
+                    transport,
                     base_url=base_url,
                     api_key=api_key or None,
                     extra_headers=extra_headers or None,
                     keep_alive=provider.keep_alive,
                 )
             return OpenAICompatibleClient(
-                self._ollama_settings,
+                transport,
                 base_url=base_url,
                 api_key=api_key or None,
                 model=model.strip(),
@@ -196,7 +207,7 @@ class ClientCache:
                 api_style=getattr(provider, "api_style", "auto") or "auto",
             )
         return OllamaClient(
-            self._ollama_settings,
+            transport,
             base_url=base_url,
             api_key=api_key or None,
             extra_headers=extra_headers or None,
@@ -265,6 +276,20 @@ class ClientCache:
             }
 
 
+def build_probe_client(
+    provider: LlmProvider, *, model: str = "",
+) -> ChatClient:
+    """Build a throwaway client for a connection test / model listing.
+
+    Deliberately bypasses :class:`ClientCache`: the settings drawer
+    tests credentials that have not been saved yet, and caching a
+    client built from an unsaved (possibly wrong) key would poison the
+    entry the live routes share. The caller is expected to drop the
+    result after the probe.
+    """
+    return ClientCache().get(provider, model=model)
+
+
 def build_client_for_route(
     cache: ClientCache,
     *,
@@ -273,7 +298,7 @@ def build_client_for_route(
 ) -> ChatClient:
     """Resolve a route -> provider lookup and hit the cache.
 
-    Convenience entry point: ``SessionController._build_chat_client``
+    Convenience entry point: ``LlmClientsMixin._build_route_client``
     / ``_build_worker_client`` pass their cache + the active
     ``LlmSettings`` snapshot here rather than re-implementing the
     provider lookup. Raises ``KeyError`` when the route points at a

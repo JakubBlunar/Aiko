@@ -144,10 +144,8 @@ export interface SessionRow {
 /** One option in the curated provider preset catalogue.
  *
  * Returned verbatim by ``GET /api/llm/presets`` and rendered as
- * tappable cards in the Settings → Chat → Provider section. The
- * ``id`` doubles as both the React key and the value persisted into
- * ``chat_llm.provider_preset`` so the UI can highlight the active card
- * after a round-trip.
+ * tappable cards when adding a provider to the catalogue. The ``id``
+ * doubles as the React key and the suggested catalogue id.
  */
 export interface LlmProviderPreset {
   id: string;
@@ -159,29 +157,27 @@ export interface LlmProviderPreset {
   api_key_required: boolean;
   free_tier: string;
   docs_url: string;
-  default_workers_use_local: boolean;
   /**
-   * Suggested ``chat_llm.context_window`` value when the preset card
-   * is clicked. ``null`` means "auto-detect" (Ollama / local) — leave
-   * the field blank so the controller falls back to the model's
-   * ``/api/show`` value. A positive integer pre-fills the Advanced
-   * panel's "Context window" input with a conservative cap for cloud
-   * providers (typically 131 072 = 128 k — see the per-model lookup
-   * table in ``app/llm/openai_compatible_client.py``).
+   * Suggested route ``context_window`` when the preset card is
+   * clicked. ``null`` means "auto-detect" — leave the field blank so
+   * the controller falls back to the model's ``/api/show`` value. A
+   * positive integer pre-fills the field with a conservative cap for
+   * cloud providers (typically 131 072 = 128 k — see the per-model
+   * lookup table in ``app/llm/openai_compatible_client.py``).
    */
   default_context_window: number | null;
 }
 
-// ── PR 2: provider catalogue + role-assignment table ─────────────
+// ── Provider catalogue + role-assignment table ───────────────────
 //
-// New shape that supersedes the legacy ``chat_llm`` block (which is
-// kept in sync via mirror-writes server-side). Two roles ship now —
-// ``main_chat`` (the chat path) and ``worker_default`` (the ~24
-// background workers). Future ``heavy_workers`` (browser tools,
-// Playwright agent, …) can be added without a schema migration.
+// The single source of truth for LLM routing. Three roles ship today:
+// ``main_chat`` (the chat path), ``worker_default`` (the ~24
+// background workers) and ``workflow`` (the nested-workflow planner).
+// Future roles (``heavy_workers`` for browser tools, the Playwright
+// agent, …) can be added without a schema migration.
 
 /** Stable identifier for an LLM role. */
-export type LlmRoleId = "main_chat" | "worker_default" | string;
+export type LlmRoleId = "main_chat" | "worker_default" | "workflow" | string;
 
 /**
  * One row in the provider catalogue. ``api_key`` is intentionally
@@ -230,29 +226,42 @@ export interface LlmProviderTestResult {
   error_message?: string;
 }
 
-/** Provider-routing snapshot for ``GET /api/settings``.
+/** Progress of an in-flight ``POST /api/models/pull``.
  *
- * ``has_api_key`` is a boolean placeholder — the raw key is never
- * echoed back through any GET endpoint. To write, use the dedicated
- * ``PUT /api/settings/llm-credentials`` call.
+ * Broadcast as ``model_pull_progress`` while Ollama downloads a model.
+ * ``status`` mirrors Ollama's own phase strings ("pulling manifest",
+ * "verifying sha256 digest", …) plus the two terminal values this app
+ * adds: ``"done"`` and ``"error"``. Byte counts are 0 for phases that
+ * don't report them, in which case ``percent`` is null.
  */
-export interface ChatLlmSnapshot {
-  provider: "ollama" | "openai_compatible";
-  provider_preset: string;
+/** One locally-hosted model the current routes depend on. */
+export interface RequiredModel {
+  /** Route role that names it, or ``"embedding"``. */
+  role: string;
   model: string;
+  provider_id: string;
+  installed: boolean;
+}
+
+/** Response from ``GET /api/models/required``: what the config needs
+ *  versus what the local Ollama actually has. ``reachable`` is false
+ *  when Ollama isn't running, in which case ``installed`` is empty and
+ *  every requirement reads as missing. */
+export interface RequiredModels {
+  provider_id: string;
   base_url: string;
-  has_api_key: boolean;
-  api_key_env: string;
-  max_tokens: number;
-  temperature: number | null;
-  context_window: number | null;
-  keep_alive: string;
-  workers_use_local: boolean;
-  reasoning_effort: string;
-  /** OpenAI-compat surface selector mirrored from the active provider.
-   * See {@link LlmProvider.api_style}. */
-  api_style: "auto" | "responses" | "chat_completions";
-  extra_headers: Record<string, string>;
+  reachable: boolean;
+  installed: string[];
+  required: RequiredModel[];
+}
+
+export interface ModelPullProgress {
+  model: string;
+  status: string;
+  completed?: number;
+  total?: number;
+  percent?: number | null;
+  error?: string;
 }
 
 /** Response shape from ``POST /api/llm/test-connection``.
@@ -320,8 +329,6 @@ export interface AssistantSettings {
     temperature: number;
     max_tokens: number;
   };
-  /** Provider routing snapshot. See :class:`ChatLlmSnapshot`. */
-  chat_llm?: ChatLlmSnapshot;
   tts: {
     provider: string;
     voice: string;
@@ -1653,6 +1660,9 @@ export type WsServerEvent =
       /** First-run identity. Optional only for backwards compatibility
        * with older backends; missing falls back to a REST fetch. */
       identity?: Identity;
+      /** Model named by the ``main_chat`` route that isn't installed on
+       * its local Ollama. Empty / absent when the model is ready. */
+      missing_chat_model?: string;
       /** Server-assigned id for this WebSocket. Used to determine
        * whether we currently own the microphone in multi-client mode. */
       client_id?: string;
@@ -1706,14 +1716,13 @@ export type WsServerEvent =
   | { type: "model_changed"; model: string }
   | {
       type: "llm_settings_changed";
-      // Optional payload (added in PR 2): when present, lets the
-      // store sync the providers + routes slices without a follow-up
-      // fetch. Old broadcasts (pre-PR 2) carry none of these fields,
-      // so the reducer falls back to ``GET /api/llm/{providers,routes}``.
-      chat_llm?: ChatLlmSnapshot;
+      // Carries the new catalogue so the store can sync without a
+      // follow-up fetch; the reducer falls back to
+      // ``GET /api/llm/{providers,routes}`` when they're absent.
       providers?: LlmProvider[];
       routes?: Record<string, LlmRoute>;
     }
+  | ({ type: "model_pull_progress" } & ModelPullProgress)
   | {
       type: "tts_state";
       event: "start" | "end";

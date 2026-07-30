@@ -20,17 +20,19 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "provider": "ollama",
         "base_url": "http://127.0.0.1:11434",
         "recommended_models": [
-            "llama3.1:8b",
-            "qwen2.5:7b",
+            "qwen3.5:9b",
             "jaahas/qwen3.5-uncensored:9b",
+            "qwen3.6:27b",
         ],
         "env_hint": "",
         "api_key_required": False,
         "free_tier": "Unlimited (runs on your machine)",
         "docs_url": "https://ollama.com",
-        "default_workers_use_local": False,
-        # ``None`` -> auto-detect via Ollama's ``/api/show`` per model.
-        "default_context_window": None,
+        # Deliberately *not* None (which means "ask /api/show for the
+        # model's maximum"): recent Qwen tags advertise 256 k, and a KV
+        # cache that size spills off any consumer GPU. 64 k is the
+        # largest window a 9B model fits alongside its weights in 12 GB.
+        "default_context_window": 65_536,
     },
     {
         "id": "ollama_cloud",
@@ -45,7 +47,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Paid plan required",
         "docs_url": "https://ollama.com/cloud",
-        "default_workers_use_local": True,
         "default_context_window": None,
     },
     {
@@ -64,7 +65,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Free tier: ~15 req/min, ~1500 req/day",
         "docs_url": "https://ai.google.dev",
-        "default_workers_use_local": True,
         # 128 k cap from 1-2 M native — see ``_CONTEXT_WINDOW_TABLE``
         # in ``openai_compatible_client.py`` for the rationale.
         "default_context_window": 131_072,
@@ -91,7 +91,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Paid (no free tier)",
         "docs_url": "https://platform.openai.com",
-        "default_workers_use_local": True,
         "default_context_window": 131_072,
     },
     {
@@ -108,7 +107,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Free tier: 30 req/min",
         "docs_url": "https://console.groq.com",
-        "default_workers_use_local": True,
         "default_context_window": 131_072,
     },
     {
@@ -129,7 +127,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Paid (no free tier)",
         "docs_url": "https://docs.x.ai",
-        "default_workers_use_local": True,
         "default_context_window": 131_072,
         # xAI recommends the Responses API for new integrations, and it's
         # where Grok's reasoning-effort + prompt caching live — so force
@@ -155,7 +152,6 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "api_key_required": True,
         "free_tier": "Pay-per-token (some models free)",
         "docs_url": "https://openrouter.ai/docs",
-        "default_workers_use_local": True,
         "default_context_window": 131_072,
     },
 )

@@ -1,32 +1,34 @@
-"""Unit tests for the LLM-provider routing layer in SessionController.
+"""Unit tests for the LLM-routing layer in SessionController.
 
 Covers three surfaces:
 
-1. ``_build_chat_client`` module-level factory — returns the right
-   concrete client for the configured provider + handles the
+1. :func:`app.llm.factory.build_client_for_route` — returns the right
+   concrete client for the route's provider, and handles the
    "openai_compatible but model is empty" fallback.
-2. ``SessionController._chat_llm_public_snapshot`` — masks the saved
-   API key behind a boolean.
-3. ``SessionController.reconfigure_chat_llm`` — mutates the settings
-   in place, rebuilds the clients, calls ``persist_user_overrides``
-   exactly once, and rebinds TurnRunner + ProactiveDirector via their
-   ``update_runtime(client=...)`` paths.
+2. ``SessionController.update_route`` — the single mutation path for
+   role assignments: validates against the catalogue, persists once,
+   rebuilds the live clients, and rebinds TurnRunner + ProactiveDirector
+   via their ``update_runtime(client=...)`` paths.
+3. ``_resolve_context_window`` — the budget the prompt assembler uses.
 """
 
 from __future__ import annotations
 
 import os
 import unittest
-from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from app.core.infra.settings import ChatLlmSettings, load_settings
-from app.core.session.session_controller import (
-    SessionController,
-    _build_chat_client,
+from app.core.infra.settings import (
+    LLM_ROLE_MAIN_CHAT,
+    LLM_ROLE_WORKER_DEFAULT,
+    LlmProvider,
+    LlmRoute,
+    LlmSettings,
+    load_settings,
 )
-from app.llm.factory import ClientCache
+from app.core.session.session_controller import SessionController
+from app.llm.factory import ClientCache, build_client_for_route
 from app.llm.llm_gate import (
     CONVERSATION_WORKER,
     MAINTENANCE_WORKER,
@@ -37,89 +39,94 @@ from app.llm.ollama_client import OllamaClient
 from app.llm.openai_compatible_client import OpenAICompatibleClient
 
 
-@dataclass
-class _ChatLlmStub:
-    """Minimum surface that ``_build_chat_client`` reads.
-
-    Real :class:`ChatLlmSettings` works just as well; using a stub
-    here keeps the tests self-documenting about what fields matter.
-    """
-
-    provider: str = "ollama"
-    model: str = ""
-    base_url: str = ""
-    api_key: str = ""
-    api_key_env: str = ""
-    extra_headers: dict[str, str] = field(default_factory=dict)
-    keep_alive: str = "30m"
-    workers_use_local: bool = True
-    provider_preset: str = ""
-    context_window: int | None = None
-    temperature: float | None = None
-    max_tokens: int = 512
+_REMOTE_ENV_VARS = (
+    "OLLAMA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "GROQ_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY",
+)
 
 
-class BuildChatClientFactoryTests(unittest.TestCase):
+def _provider(
+    provider_id: str, kind: str, base_url: str, **extra: Any,
+) -> LlmProvider:
+    return LlmProvider(
+        id=provider_id,
+        name=provider_id.replace("_", " ").title(),
+        kind=kind,
+        base_url=base_url,
+        **extra,
+    )
+
+
+def _catalogue(*providers: LlmProvider, **routes: LlmRoute) -> LlmSettings:
+    return LlmSettings(providers=list(providers), routes=dict(routes))
+
+
+class BuildClientForRouteTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ollama_settings = load_settings().ollama
         # Ensure no leftover env vars pollute "api_key resolution".
-        for var in (
-            "OLLAMA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-            "GROQ_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY",
-        ):
+        for var in _REMOTE_ENV_VARS:
             os.environ.pop(var, None)
+        self.cache = ClientCache()
 
-    def test_default_ollama_returns_ollama_client(self) -> None:
-        cfg = _ChatLlmStub(provider="ollama")
-        client = _build_chat_client(
-            chat_llm=cfg, ollama_settings=self.ollama_settings, role="chat",
+    def _build(self, provider: LlmProvider, model: str) -> Any:
+        settings = _catalogue(
+            provider,
+            main_chat=LlmRoute(provider_id=provider.id, model=model),
         )
-        self.assertIsInstance(client, OllamaClient)
+        return build_client_for_route(
+            self.cache,
+            route=settings.routes[LLM_ROLE_MAIN_CHAT],
+            settings=settings,
+        )
+
+    def test_ollama_provider_returns_ollama_client(self) -> None:
+        provider = _provider(
+            "local_ollama", "ollama", "http://127.0.0.1:11434",
+        )
+        self.assertIsInstance(self._build(provider, "qwen3.5:9b"), OllamaClient)
 
     def test_openai_compatible_with_model_returns_openai_client(self) -> None:
-        cfg = _ChatLlmStub(
-            provider="openai_compatible",
-            model="gpt-4o-mini",
-            base_url="https://api.openai.com/v1",
+        provider = _provider(
+            "openai", "openai_compatible", "https://api.openai.com/v1",
             api_key="sk-test",
         )
-        client = _build_chat_client(
-            chat_llm=cfg, ollama_settings=self.ollama_settings, role="chat",
+        self.assertIsInstance(
+            self._build(provider, "gpt-4o-mini"), OpenAICompatibleClient,
         )
-        self.assertIsInstance(client, OpenAICompatibleClient)
 
     def test_openai_compatible_with_empty_model_falls_back_to_ollama(
         self,
     ) -> None:
-        cfg = _ChatLlmStub(
-            provider="openai_compatible",
-            model="",
-            base_url="https://api.openai.com/v1",
+        # A half-configured route must not crash boot: the user gets a
+        # meaningful error from the drawer when they try to chat.
+        provider = _provider(
+            "openai", "openai_compatible", "https://api.openai.com/v1",
         )
-        client = _build_chat_client(
-            chat_llm=cfg, ollama_settings=self.ollama_settings, role="chat",
+        self.assertIsInstance(self._build(provider, ""), OllamaClient)
+
+    def test_unknown_provider_id_raises_key_error(self) -> None:
+        settings = _catalogue(
+            _provider("local_ollama", "ollama", "http://127.0.0.1:11434"),
+            main_chat=LlmRoute(provider_id="ghost", model="x"),
         )
-        self.assertIsInstance(client, OllamaClient)
+        with self.assertRaises(KeyError):
+            build_client_for_route(
+                self.cache,
+                route=settings.routes[LLM_ROLE_MAIN_CHAT],
+                settings=settings,
+            )
 
     def test_explicit_api_key_wins_over_env(self) -> None:
-        # Set both an env var and an explicit key; the explicit one
-        # should be the one that lands on the client.
         os.environ["OPENAI_API_KEY"] = "env-key"
         try:
-            cfg = _ChatLlmStub(
-                provider="openai_compatible",
-                model="gpt-4o-mini",
-                base_url="https://api.openai.com/v1",
-                api_key="explicit-key",
+            provider = _provider(
+                "openai", "openai_compatible",
+                "https://api.openai.com/v1", api_key="explicit-key",
             )
-            client = _build_chat_client(
-                chat_llm=cfg, ollama_settings=self.ollama_settings,
-                role="chat",
-            )
+            client = self._build(provider, "gpt-4o-mini")
             assert isinstance(client, OpenAICompatibleClient)
             self.assertEqual(
-                client._headers.get("Authorization"),
-                "Bearer explicit-key",
+                client._headers.get("Authorization"), "Bearer explicit-key",
             )
         finally:
             os.environ.pop("OPENAI_API_KEY", None)
@@ -127,64 +134,17 @@ class BuildChatClientFactoryTests(unittest.TestCase):
     def test_env_var_used_when_explicit_key_blank(self) -> None:
         os.environ["GEMINI_API_KEY"] = "AIza-env"
         try:
-            cfg = _ChatLlmStub(
-                provider="openai_compatible",
-                model="gemini-2.5-flash-lite",
-                base_url=(
-                    "https://generativelanguage.googleapis.com/v1beta/openai/"
-                ),
-                api_key="",
+            provider = _provider(
+                "gemini", "openai_compatible",
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
             )
-            client = _build_chat_client(
-                chat_llm=cfg, ollama_settings=self.ollama_settings,
-                role="chat",
-            )
+            client = self._build(provider, "gemini-2.5-flash-lite")
             assert isinstance(client, OpenAICompatibleClient)
             self.assertEqual(
-                client._headers.get("Authorization"),
-                "Bearer AIza-env",
+                client._headers.get("Authorization"), "Bearer AIza-env",
             )
         finally:
             os.environ.pop("GEMINI_API_KEY", None)
-
-
-class PublicSnapshotTests(unittest.TestCase):
-    def test_snapshot_masks_api_key(self) -> None:
-        controller = SessionController.__new__(SessionController)
-        controller._settings = MagicMock()
-        controller._settings.chat_llm = ChatLlmSettings(
-            provider="openai_compatible",
-            provider_preset="gemini",
-            model="gemini-2.5-flash-lite",
-            base_url=(
-                "https://generativelanguage.googleapis.com/v1beta/openai/"
-            ),
-            api_key="AIza-secret-123",
-            api_key_env="",
-            max_tokens=512,
-            temperature=None,
-            context_window=None,
-            extra_headers={"X-Title": "Aiko"},
-            keep_alive="30m",
-            workers_use_local=True,
-        )
-        snap = controller._chat_llm_public_snapshot()
-        self.assertNotIn("api_key", snap)
-        self.assertTrue(snap["has_api_key"])
-        self.assertEqual(snap["provider"], "openai_compatible")
-        self.assertEqual(snap["provider_preset"], "gemini")
-        self.assertEqual(snap["model"], "gemini-2.5-flash-lite")
-        self.assertTrue(snap["workers_use_local"])
-        self.assertEqual(snap["extra_headers"], {"X-Title": "Aiko"})
-
-    def test_snapshot_has_api_key_false_when_unset(self) -> None:
-        controller = SessionController.__new__(SessionController)
-        controller._settings = MagicMock()
-        controller._settings.chat_llm = ChatLlmSettings(
-            provider="ollama", api_key="",
-        )
-        snap = controller._chat_llm_public_snapshot()
-        self.assertFalse(snap["has_api_key"])
 
 
 class ProviderPresetsTests(unittest.TestCase):
@@ -204,16 +164,20 @@ class ProviderPresetsTests(unittest.TestCase):
             ):
                 self.assertIn(required, preset, f"missing {required} in {preset}")
             self.assertIsInstance(preset["recommended_models"], list)
-            # ``default_context_window`` is ``None`` for Ollama
-            # presets (auto-detect via ``/api/show``) and a positive
-            # int for OpenAI-compat cloud providers (conservative cap).
             ctx = preset["default_context_window"]
             self.assertTrue(ctx is None or (isinstance(ctx, int) and ctx > 0))
 
+    def test_local_ollama_preset_caps_the_context_window(self) -> None:
+        # Auto-detect asks Ollama for the model's advertised maximum,
+        # and current Qwen tags advertise 256 k -- a KV cache that size
+        # spills a 9B model out of any consumer GPU.
+        ollama = next(
+            p for p in SessionController.provider_presets()
+            if p["id"] == "ollama"
+        )
+        self.assertEqual(ollama["default_context_window"], 65_536)
+
     def test_openai_preset_recommends_gpt5_family(self) -> None:
-        """The OpenAI preset's recommended_models lead with the cost-conscious
-        GPT-5 / GPT-4.1 mini-tier shortlist so the dropdown surfaces them
-        even when ``/v1/models`` doesn't include them for an account."""
         openai = next(
             p for p in SessionController.provider_presets() if p["id"] == "openai"
         )
@@ -224,36 +188,45 @@ class ProviderPresetsTests(unittest.TestCase):
         self.assertEqual(openai["default_context_window"], 131_072)
 
 
-class ReconfigureChatLlmTests(unittest.TestCase):
-    """``reconfigure_chat_llm`` is the one chat-LLM mutation entry point.
+class UpdateRouteTests(unittest.TestCase):
+    """``update_route`` is the one role-assignment mutation entry point.
 
     We stub out the heavy machinery (turn_runner, proactive, persist)
-    and only verify the call sequence: settings mutated -> persist
-    called once -> clients rebuilt -> set_chat_model cascade.
+    and only verify the call sequence: route mutated -> persist called
+    -> clients rebuilt -> set_chat_model cascade.
     """
 
-    def _make_stub_controller(
-        self,
-        *,
-        initial_provider: str = "ollama",
-        initial_model: str = "llama3.1:8b",
-    ) -> SessionController:
+    def _make_stub_controller(self) -> SessionController:
         controller = SessionController.__new__(SessionController)
         settings = load_settings()
-        settings.chat_llm.provider = initial_provider
-        settings.chat_llm.model = initial_model
+        settings.llm.providers = [
+            _provider("local_ollama", "ollama", "http://127.0.0.1:11434"),
+            _provider(
+                "openai", "openai_compatible",
+                "https://api.openai.com/v1", api_key="sk-test",
+            ),
+        ]
+        settings.llm.routes = {
+            LLM_ROLE_MAIN_CHAT: LlmRoute(
+                provider_id="local_ollama", model="llama3.1:8b",
+                context_window=32_768,
+            ),
+            LLM_ROLE_WORKER_DEFAULT: LlmRoute(
+                provider_id="local_ollama", model="llama3.1:8b",
+                context_window=32_768,
+            ),
+        }
         controller._settings = settings
-        controller._chat_provider = initial_provider
-        # Build a real initial Ollama client; reconfigure() will replace it.
+        controller._chat_provider = "ollama"
         controller._chat_client = OllamaClient(settings.ollama)
         controller._client_cache = ClientCache(settings.ollama)
-        # Mirror the real constructor's worker-client install (Phase 6):
-        # the worker references are gate proxies around the inner client.
+        # Mirror the real constructor's worker-client install: the
+        # worker references are gate proxies around the inner client.
         controller._install_worker_clients(controller._chat_client)
-        controller._effective_chat_model = initial_model
-        controller._effective_worker_model = initial_model
-        controller._context_window = 8192
-        controller._context_source = "fallback"
+        controller._effective_chat_model = "llama3.1:8b"
+        controller._effective_worker_model = "llama3.1:8b"
+        controller._context_window = 32_768
+        controller._context_source = "config"
         controller._models_cache = ["x"]
         # Stub the runtime objects that ``set_chat_model`` touches.
         controller._turn_runner = MagicMock()
@@ -288,71 +261,53 @@ class ReconfigureChatLlmTests(unittest.TestCase):
             controller._maintenance_client._gate,
         )
 
-    def test_reconfigure_keeps_maintenance_tier_after_retarget(self) -> None:
-        # A provider switch retargets the proxies in place; the
-        # maintenance proxy must keep its tier so idle workers holding
-        # the reference still yield correctly.
-        controller = self._make_stub_controller()
-        maint_before = controller._maintenance_client
-        with patch(
-            "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ), patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
-            return_value=None,
-        ):
-            controller.reconfigure_chat_llm({
-                "provider": "openai_compatible",
-                "model": "gpt-4o-mini",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "sk-test",
-                "workers_use_local": True,
-            })
-        # Same proxy object (retargeted in place), still maintenance tier.
-        self.assertIs(controller._maintenance_client, maint_before)
-        self.assertEqual(
-            controller._maintenance_client._priority, MAINTENANCE_WORKER
-        )
-
-    def test_reconfigure_persists_and_rebuilds_clients(self) -> None:
-        controller = self._make_stub_controller()
+    def _switch_main_chat_to_openai(
+        self, controller: SessionController, model: str = "gpt-5-mini",
+    ) -> Any:
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,
         ):
-            snapshot = controller.reconfigure_chat_llm({
-                "provider": "openai_compatible",
-                "model": "gemini-2.5-flash-lite",
-                "base_url": (
-                    "https://generativelanguage.googleapis.com/v1beta/openai/"
-                ),
-                "api_key": "AIza-test",
-                "workers_use_local": True,
-                "provider_preset": "gemini",
-            })
-        # Settings mutated in place.
-        cfg = controller._settings.chat_llm
-        self.assertEqual(cfg.provider, "openai_compatible")
-        self.assertEqual(cfg.model, "gemini-2.5-flash-lite")
-        self.assertEqual(cfg.api_key, "AIza-test")
-        self.assertEqual(cfg.provider_preset, "gemini")
-        # persist_user_overrides is now called twice: once for the
-        # legacy ``chat_llm`` block (back-compat) and once for the new
-        # ``llm.providers`` + ``llm.routes`` catalogue mirror (PR 2).
-        self.assertEqual(persist.call_count, 2)
-        legacy_call = persist.call_args_list[0]
-        self.assertIn("chat_llm", legacy_call.args[0])
-        catalogue_call = persist.call_args_list[1]
-        self.assertIn("llm", catalogue_call.args[0])
-        self.assertIn("providers", catalogue_call.args[0]["llm"])
-        self.assertIn("routes", catalogue_call.args[0]["llm"])
+            result = controller.update_route(
+                LLM_ROLE_MAIN_CHAT,
+                {"provider_id": "openai", "model": model,
+                 "context_window": 131_072},
+            )
+        return result, persist
+
+    def test_route_switch_keeps_maintenance_tier_after_retarget(self) -> None:
+        # A provider switch retargets the proxies in place; the
+        # maintenance proxy must keep its tier so idle workers holding
+        # the reference still yield correctly.
+        controller = self._make_stub_controller()
+        maint_before = controller._maintenance_client
+        self._switch_main_chat_to_openai(controller)
+        self.assertIs(controller._maintenance_client, maint_before)
+        self.assertEqual(
+            controller._maintenance_client._priority, MAINTENANCE_WORKER
+        )
+
+    def test_route_switch_persists_and_rebuilds_clients(self) -> None:
+        controller = self._make_stub_controller()
+        result, persist = self._switch_main_chat_to_openai(controller)
+        # Route mutated in place.
+        route = controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT]
+        self.assertEqual(route.provider_id, "openai")
+        self.assertEqual(route.model, "gpt-5-mini")
+        self.assertEqual(route.context_window, 131_072)
+        # The whole llm block is persisted -- one write, one shape.
+        self.assertGreaterEqual(persist.call_count, 1)
+        payload = persist.call_args_list[-1].args[0]
+        self.assertIn("llm", payload)
+        self.assertIn("providers", payload["llm"])
+        self.assertIn("routes", payload["llm"])
         # New chat client is the OpenAI-compatible variant.
         self.assertIsInstance(controller._chat_client, OpenAICompatibleClient)
-        # Worker client points at a fresh local OllamaClient because
-        # workers_use_local=True. The public ``_worker_client`` is now a
-        # gate proxy (Phase 6); the underlying client lives on
-        # ``_worker_client_inner``.
+        # Worker route still points at local Ollama, so the workers get
+        # their own client. The public ``_worker_client`` is a gate
+        # proxy; the underlying client lives on ``_worker_client_inner``.
         self.assertIsInstance(controller._worker_client, GatedChatClient)
         self.assertIsInstance(controller._worker_client_inner, OllamaClient)
         self.assertIsNot(controller._worker_client_inner, controller._chat_client)
@@ -367,98 +322,56 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         )
         # Models cache was invalidated.
         self.assertIsNone(controller._models_cache)
-        # Snapshot doesn't leak the api_key.
-        self.assertNotIn("api_key", snapshot)
-        self.assertTrue(snapshot["has_api_key"])
+        # The returned row echoes the saved values.
+        self.assertEqual(result["provider_id"], "openai")
+        self.assertEqual(result["context_window"], 131_072)
 
-    def test_reconfigure_workers_use_local_false_shares_client(self) -> None:
+    def test_matching_routes_share_one_client(self) -> None:
+        # Chat and workers on the same provider + model must resolve to
+        # one client: two would mean two copies of the weights resident.
         controller = self._make_stub_controller()
-        with patch(
-            "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ):
-            controller.reconfigure_chat_llm({
-                "provider": "openai_compatible",
-                "model": "gpt-4o-mini",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "sk-test",
-                "workers_use_local": False,
-            })
-        # When ``workers_use_local=False`` the worker client wraps the
-        # chat client (same inner instance behind the gate proxy).
-        self.assertIs(controller._worker_client_inner, controller._chat_client)
-
-    def test_reconfigure_back_to_ollama_resets_workers(self) -> None:
-        controller = self._make_stub_controller(
-            initial_provider="openai_compatible",
-            initial_model="gpt-4o-mini",
-        )
-        with patch(
-            "app.core.session.llm_settings_mixin.persist_user_overrides",
-        ):
-            controller.reconfigure_chat_llm({
-                "provider": "ollama",
-                "model": "llama3.1:8b",
-            })
-        self.assertIsInstance(controller._chat_client, OllamaClient)
-        # Both clients now share the same Ollama instance (behind the gate).
-        self.assertIs(controller._worker_client_inner, controller._chat_client)
-        self.assertEqual(controller._chat_provider, "ollama")
-
-    def test_remote_chat_keeps_worker_model_on_local_ollama(self) -> None:
-        # Regression: when chat moves to a remote provider AND
-        # ``workers_use_local=True``, the worker model must remain
-        # pinned to ``ollama.chat_model`` — sending the remote
-        # model name (``gpt-5-mini``) to local Ollama 404s with
-        # ``model 'gpt-5-mini' not found``. Symptom in production
-        # was the per-turn ``app.llm.ollama_client`` error cluster
-        # right after a successful chat reply.
-        from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
-
-        controller = self._make_stub_controller()
-        controller._settings.ollama.chat_model = "llama3.1:8b"
-        # P13: the worker model is now resolved route-first. Pin the
-        # worker_default route to the local model so the regression
-        # (remote model name never reaches local Ollama) is exercised
-        # under the route-driven resolution.
-        worker_route = controller._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
-        if worker_route is not None:
-            worker_route.model = "llama3.1:8b"
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,
         ):
-            controller.reconfigure_chat_llm({
-                "provider": "openai_compatible",
-                "model": "gpt-5-mini",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "sk-test",
-                "workers_use_local": True,
-            })
-        # Chat model follows the route; worker model stays on local.
+            controller.update_route(
+                LLM_ROLE_WORKER_DEFAULT,
+                {"provider_id": "local_ollama", "model": "llama3.1:8b"},
+            )
+        self.assertIs(controller._worker_client_inner, controller._chat_client)
+
+    def test_unknown_provider_raises_key_error(self) -> None:
+        controller = self._make_stub_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            with self.assertRaises(KeyError):
+                controller.update_route(
+                    LLM_ROLE_MAIN_CHAT, {"provider_id": "ghost"},
+                )
+
+    def test_remote_chat_keeps_worker_model_on_local_ollama(self) -> None:
+        # Regression: when chat moves to a remote provider, the worker
+        # model must remain whatever the worker route says -- sending
+        # the remote model name (``gpt-5-mini``) to local Ollama 404s
+        # with ``model 'gpt-5-mini' not found``.
+        controller = self._make_stub_controller()
+        self._switch_main_chat_to_openai(controller)
         self.assertEqual(controller._effective_chat_model, "gpt-5-mini")
         self.assertEqual(controller._effective_worker_model, "llama3.1:8b")
         # Worker cascade propagates the WORKER model, not the chat one.
         controller._summary_worker._model = "leftover-old-name"
         controller.set_chat_model("gpt-5-nano")
         self.assertEqual(controller._effective_chat_model, "gpt-5-nano")
-        # Worker model unchanged — gpt-5-nano is a remote-only name
-        # and local Ollama doesn't have it.
         self.assertEqual(controller._effective_worker_model, "llama3.1:8b")
-        # Legacy ``ollama.chat_model`` not stomped by the remote name.
-        self.assertEqual(
-            controller._settings.ollama.chat_model, "llama3.1:8b",
-        )
 
     def test_pure_ollama_chat_model_change_cascades_to_workers(self) -> None:
         # Inverse of the regression above: when chat and workers share
         # the same Ollama client, a chat-model change MUST also flip
         # the worker model — the two are literally the same backend.
-        controller = self._make_stub_controller(
-            initial_provider="ollama",
-            initial_model="llama3.1:8b",
-        )
+        controller = self._make_stub_controller()
         self.assertIs(controller._worker_client_inner, controller._chat_client)
         with patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
@@ -467,9 +380,11 @@ class ReconfigureChatLlmTests(unittest.TestCase):
             controller.set_chat_model("llama3.1:70b")
         self.assertEqual(controller._effective_chat_model, "llama3.1:70b")
         self.assertEqual(controller._effective_worker_model, "llama3.1:70b")
-        # Pure-Ollama: legacy field tracks the chat model.
+        # ``set_chat_model`` writes through to the route, not to a
+        # separate legacy field.
         self.assertEqual(
-            controller._settings.ollama.chat_model, "llama3.1:70b",
+            controller._settings.llm.routes[LLM_ROLE_MAIN_CHAT].model,
+            "llama3.1:70b",
         )
 
 
@@ -508,9 +423,6 @@ class ResolveContextWindowTests(unittest.TestCase):
         client.get_context_length.assert_called_once_with("gpt-5-mini")
 
     def test_none_override_uses_client(self) -> None:
-        """An OpenAI-compat client now returns a positive cap for
-        known cloud models. The source label should be ``client``
-        (not the legacy ``ollama_show``)."""
         client = MagicMock()
         client.get_context_length.return_value = 131_072
         controller = self._make_controller(chat_client=client)

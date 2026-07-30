@@ -28,9 +28,10 @@ web/node_modules
 web/dist
 web/.vite
 
-# Tauri desktop build artifacts (irrelevant to the container)
-web/src-tauri/target
-web/src-tauri/gen
+# Tauri desktop shell — the container serves the web build, never builds the
+# native app. Excluding the whole directory (not just its artifacts) also
+# keeps a Rust-side edit from invalidating the cached `npm run build` layer.
+web/src-tauri
 
 # Tests
 tests

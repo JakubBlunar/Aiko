@@ -13,7 +13,7 @@ groups methods. It carries no ``__init__``; the few attributes it uses
 lazily via ``getattr`` so ``SessionController.__init__`` does not need a
 dedicated assignment. The API key is read from / written to the OS
 keychain (best-effort, inert under pytest) via
-:mod:`app.core.infra.secret_store`, mirroring the ``chat_llm`` path.
+:mod:`app.core.infra.secret_store`, mirroring the provider-catalogue path.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class SearchProviderMixin:
     def _hydrate_search_key(self) -> None:
         """Pull the LangSearch key from the keychain into memory if blank.
 
-        Mirrors the ``chat_llm`` hydrate path: an explicit on-disk key or
+        Mirrors the provider hydrate path: an explicit on-disk key or
         the ``api_key_env`` environment variable still win (resolved later
         in :func:`build_search_provider`); this only fills the in-memory
         ``api_key`` from the OS keychain when nothing else is set. Inert

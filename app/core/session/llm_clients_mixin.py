@@ -3,7 +3,7 @@
 Extracted from :mod:`app.core.session.session_controller`. Owns the
 worker/maintenance/workflow client construction, the worker-model
 cascade, ``set_chat_model``, and context-window resolution. The chat
-client factory ``_build_chat_client`` and ``list_chat_models`` stay in
+model listing ``list_chat_models`` stays in
 the controller / llm-settings group (they touch the secret/route
 machinery and are patched by tests there). State ownership stays on
 ``SessionController.__init__``.
@@ -19,14 +19,18 @@ from app.llm.llm_gate import CONVERSATION_WORKER
 from collections.abc import Callable
 from app.llm.chat_client import ChatClient
 from app.llm.llm_gate import GatedChatClient
+from app.core.infra.settings import find_provider
+from app.core.infra.settings import LLM_ROLE_MAIN_CHAT
 from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
 from app.core.infra.settings import LLM_ROLE_WORKFLOW
+from app.core.infra.settings import LlmRoute
+from app.core.infra.settings import local_ollama_provider
+from app.core.infra.settings import transport_for_provider
 from app.llm.llm_gate import LlmPriorityGate
 from app.llm.llm_gate import MAINTENANCE_WORKER
 from app.llm.ollama_client import OllamaClient
 from app.llm.llm_gate import TASK
 from app.llm.factory import build_client_for_route
-from dataclasses import replace
 from app.llm.llm_gate import tier_from_name
 
 
@@ -95,56 +99,104 @@ class LlmClientsMixin:
             except Exception:
                 log.debug("worker runtime model cascade failed", exc_info=True)
 
-    def _worker_route_model_ctx(self) -> tuple[str, int | None]:
-        """Resolve the background-worker model + context window (P13).
-
-        The ``worker_default`` route is the source of truth: when its
-        ``model`` / ``context_window`` are set they win, falling back to
-        the legacy ``ollama.chat_model`` / ``ollama.context_window`` so
-        an un-customised install behaves exactly as before. Used at both
-        worker-client construction sites (``__init__`` + 
-        ``reconfigure_chat_llm``) so a route edit (which previously only
-        persisted the catalogue) actually retargets the workers.
-        """
-        legacy_model = (self._settings.ollama.chat_model or "").strip()
-        legacy_ctx = getattr(self._settings.ollama, "context_window", None)
+    def _route_or_none(self, role: str) -> "LlmRoute | None":
+        """Look up one role in the route table; ``None`` when unset."""
         try:
-            route = self._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
+            return self._settings.llm.routes.get(role)
         except Exception:
-            route = None
-        model = legacy_model
-        ctx = legacy_ctx
-        if route is not None:
-            route_model = (getattr(route, "model", "") or "").strip()
-            if route_model:
-                model = route_model
-            if getattr(route, "context_window", None):
-                ctx = route.context_window
-        return (model or "llama3.1:8b"), ctx
+            return None
 
-    def _build_worker_ollama_client(self, keep_alive: str) -> "ChatClient":
-        """Construct a dedicated local-Ollama worker client honouring the
-        worker route's context window (P13). The model is passed per-call
-        by each worker via ``_effective_worker_model``; we still seed the
-        client's default ``chat_model`` + ``num_ctx`` from the route so a
-        worker that omits an explicit model/num_ctx inherits the right
-        size.
+    def _build_route_client(
+        self, route: "LlmRoute | None", *, role: str,
+    ) -> ChatClient:
+        """Resolve a route into a cached :class:`ChatClient`.
+
+        Falls back to a bare local-Ollama client when the role has no
+        route or its provider is missing from the catalogue — a
+        hand-edited config must not stop the app from booting into the
+        settings drawer where the user can fix it.
         """
-        worker_model, worker_ctx = self._worker_route_model_ctx()
-        base = self._settings.ollama
-        worker_settings = base
-        if (worker_ctx is not None and worker_ctx != base.context_window) or (
-            worker_model and worker_model != (base.chat_model or "").strip()
-        ):
-            worker_settings = replace(
-                base,
-                context_window=worker_ctx if worker_ctx is not None else base.context_window,
-                chat_model=worker_model or base.chat_model,
+        if route is not None:
+            try:
+                return build_client_for_route(
+                    self._client_cache, route=route, settings=self._settings.llm,
+                )
+            except Exception:
+                log.warning(
+                    "route %s: could not resolve provider %r; falling back to "
+                    "local Ollama. Fix the route in Settings -> LLM.",
+                    role,
+                    getattr(route, "provider_id", ""),
+                )
+        else:
+            log.warning("route %s: not configured; falling back to local Ollama.", role)
+        provider = local_ollama_provider(self._settings.llm)
+        return OllamaClient(
+            transport_for_provider(provider, route=route),
+            base_url=provider.base_url,
+            keep_alive=provider.keep_alive,
+        )
+
+    @staticmethod
+    def _routes_share_client(
+        a: "LlmRoute | None", b: "LlmRoute | None",
+    ) -> bool:
+        """True when two routes can be served by one client instance.
+
+        Same provider AND same context window: the client cache is keyed
+        on the endpoint, so two routes on one provider already share an
+        instance — but the transport carries a default ``num_ctx``, so
+        routes that disagree on the window each need their own.
+        """
+        if a is None or b is None:
+            return False
+        return (
+            a.provider_id == b.provider_id
+            and a.context_window == b.context_window
+        )
+
+    def _worker_route_model_ctx(self) -> tuple[str, int | None]:
+        """Resolve the background-worker model + context window.
+
+        The ``worker_default`` route is the source of truth. Used at both
+        worker-client construction sites (``__init__`` + ``update_route``)
+        so a route edit actually retargets the workers instead of only
+        persisting the catalogue.
+        """
+        route = self._route_or_none(LLM_ROLE_WORKER_DEFAULT)
+        if route is None:
+            return "llama3.1:8b", None
+        return (route.model or "").strip() or "llama3.1:8b", route.context_window
+
+    def _build_worker_client(self) -> "ChatClient":
+        """Construct a dedicated worker client for the ``worker_default`` route.
+
+        Only used when the worker route diverges from ``main_chat``
+        (see :meth:`_routes_share_client`) — otherwise the two roles
+        share one cached client.
+
+        A local worker gets its own uncached :class:`OllamaClient`
+        rather than the shared one: the model is passed per-call by each
+        worker via ``_effective_worker_model``, but the transport's
+        default ``num_ctx`` is what sizes the kv-cache on first load, so
+        a worker route with a different context window can't reuse the
+        chat client's transport. Remote providers carry no such
+        per-route transport state, so those go through the cache.
+        """
+        route = self._route_or_none(LLM_ROLE_WORKER_DEFAULT)
+        provider = (
+            find_provider(self._settings.llm, route.provider_id)
+            if route is not None
+            else None
+        ) or local_ollama_provider(self._settings.llm)
+        if provider.kind != "ollama":
+            return self._build_route_client(
+                route, role=LLM_ROLE_WORKER_DEFAULT,
             )
         return OllamaClient(
-            worker_settings,
-            base_url=base.base_url,
-            keep_alive=keep_alive,
+            transport_for_provider(provider, route=route),
+            base_url=provider.base_url,
+            keep_alive=provider.keep_alive,
         )
 
     def _install_worker_clients(self, raw_worker_client: ChatClient) -> None:
@@ -283,8 +335,7 @@ class LlmClientsMixin:
         """Pick the context window and record the source.
 
         Order of preference:
-        1. Explicit config override (``chat_llm.context_window`` /
-           ``ollama.context_window``).
+        1. The route's explicit ``context_window``.
         2. Active client's ``get_context_length(model)`` — Ollama's
            ``/api/show`` for local models, the static lookup table
            in ``OpenAICompatibleClient`` for known cloud models.
@@ -306,39 +357,31 @@ class LlmClientsMixin:
         return 8192, "fallback"
 
     def set_chat_model(self, model_name: str) -> None:
+        """Point the ``main_chat`` route at a different model.
+
+        Only the model changes — the provider, context window and token
+        budget on the route are left alone, so switching models inside
+        one provider can't silently widen the window back to the
+        model's advertised maximum.
+        """
         normalized = (model_name or "").strip()
         if not normalized:
             return
-        # Write the new model to the field that actually owns it:
-        # ``ollama.chat_model`` for the pure-Ollama setup, and
-        # ``chat_llm.model`` for the remote / OpenAI-compatible
-        # setup. Cross-writing both (the pre-PR2 behaviour) used to
-        # overwrite the WORKER model name on every chat-model change
-        # — when chat moved to ``gpt-5-mini``, ``ollama.chat_model``
-        # also became ``gpt-5-mini``, and on next boot the
-        # background workers tried to hit local Ollama with the
-        # remote model name (HTTP 404).
-        if (self._chat_provider or "ollama").strip().lower() == "ollama":
-            self._settings.ollama.chat_model = normalized
-        else:
-            self._settings.chat_llm.model = normalized
+        route = self._route_or_none(LLM_ROLE_MAIN_CHAT)
+        if route is not None:
+            route.model = normalized
         self._effective_chat_model = normalized
-        # The worker model only follows the chat model when the
-        # worker client IS the chat client (pure-Ollama OR
-        # ``workers_use_local=False``). When workers run on a
-        # separate local Ollama instance, the worker model stays
-        # pinned to whatever ``ollama.chat_model`` was at startup —
-        # it's a different model on a different backend.
+        # The worker model only follows the chat model when the worker
+        # client IS the chat client. When workers run on a separate
+        # Ollama instance their model stays pinned to the
+        # ``worker_default`` route — it's a different model on a
+        # different backend, and sending this name there would 404.
         if self._worker_client_inner is self._chat_client:
             self._effective_worker_model = normalized
-        # Re-resolve the context window for the new model. Honour the explicit
-        # config override if any; otherwise re-query /api/show.
-        chat_llm = self._settings.chat_llm
-        ctx_override = chat_llm.context_window or getattr(
-            self._settings.ollama, "context_window", None,
-        )
+        # Re-resolve the context window for the new model: keep the
+        # route's explicit value if it has one, else re-query /api/show.
         self._context_window, self._context_source = self._resolve_context_window(
-            ctx_override, normalized,
+            route.context_window if route is not None else None, normalized,
         )
         self._turn_runner.update_runtime(
             model=normalized, context_window=self._context_window,

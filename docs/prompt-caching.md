@@ -114,7 +114,7 @@ on sight:
 ## Worked example — pricing impact at 50 k context
 
 A realistic per-turn cost at 50 k input tokens + 250 output tokens
-(typical for `chat_llm.max_tokens=512`), comparing zero cache to a
+(typical for `max_tokens=512`), comparing zero cache to a
 realistic warm cache:
 
 | Model | Cold cache (0 % hit) | Warm cache (90 % hit) | Per 100 warm turns |
@@ -167,8 +167,8 @@ no longer dominated by the main chat.
 
 - [`llm-providers.md`](llm-providers.md#openai-prompt-caching) —
   per-model pricing, cache TTL nuances, ergonomic notes.
-- [`configuration.md`](configuration.md) — the `chat_llm.max_tokens`
-  / `chat_llm.context_window` knobs that bound the input column.
+- [`configuration.md`](configuration.md) — the `llm.routes[role].max_tokens`
+  / `llm.routes[role].context_window` knobs that bound the input column.
 - [`AGENTS.md`](../AGENTS.md) — top-level project conventions,
   including "Debugging via logs" → "Low cache-hit rate on OpenAI".
 - `app/core/session/prompt_assembler.py::_PROMPT_BLOCK_TIERS` —

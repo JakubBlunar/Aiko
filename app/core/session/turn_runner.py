@@ -345,7 +345,7 @@ class TurnRunner:
         skill_router_enabled: bool | None = None,
         brain_core_families: "Iterable[str] | None" = None,
     ) -> None:
-        # ``client`` lets ``SessionController.reconfigure_chat_llm`` swap
+        # ``client`` lets a route edit swap
         # the chat-LLM backend (e.g. Ollama -> Gemini) without recreating
         # the TurnRunner. Existing in-flight turns keep their reference
         # because the attribute is captured into local variables at the

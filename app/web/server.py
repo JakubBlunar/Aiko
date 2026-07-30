@@ -1057,6 +1057,12 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     ),
                     "needs_onboarding": bool(session.needs_onboarding),
                 },
+                # Non-empty when the main_chat route names a local model
+                # that isn't installed. The onboarding flow offers to
+                # pull it; without this the first turn would just 404.
+                "missing_chat_model": getattr(
+                    session, "_missing_chat_model", "",
+                ),
                 # One-shot boot notices (I7): currently the destructive
                 # LanceDB-rebuild warning. Consumed here so only the first
                 # client to connect after boot gets the toast.

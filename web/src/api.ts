@@ -12,7 +12,6 @@ import type {
   AvatarSettingsKnobs,
   Belief,
   BeliefsResponse,
-  ChatLlmSnapshot,
   ChatMessage,
   Identity,
   LlmProvider,
@@ -38,6 +37,7 @@ import type {
   LastSystemPromptResponse,
   PersonaRegressionSnapshot,
   RagDocument,
+  RequiredModels,
   SessionRow,
   SharedMoment,
   SharedMomentsResponse,
@@ -176,23 +176,23 @@ export const api = {
     return jsonFetch<string[]>(`/api/models${qs ? `?${qs}` : ""}`);
   },
   listVoices: () => jsonFetch<string[]>("/api/voices"),
-  // ── Chat LLM provider ────────────────────────────────────────────
-  /** Curated provider preset catalogue. Read-only; renders the
-   *  picker cards in Settings → Chat. */
-  getLlmPresets: () =>
-    jsonFetch<{ presets: LlmProviderPreset[] }>("/api/llm/presets"),
-  /** Write-only credentials path. Returns the masked snapshot. */
-  setLlmCredentials: (payload: {
-    api_key?: string;
-    api_key_env?: string;
-    base_url?: string;
-    extra_headers?: Record<string, string>;
-  }) =>
-    jsonFetch<ChatLlmSnapshot>("/api/settings/llm-credentials", {
-      method: "PUT",
+  /** Which locally-hosted models the current routes need, and whether
+   *  each one is actually downloaded. Backs the first-run model step. */
+  getRequiredModels: () => jsonFetch<RequiredModels>("/api/models/required"),
+  /** Start downloading a model onto an Ollama provider. Returns as
+   *  soon as the download starts (202); watch ``model_pull_progress``
+   *  events for progress and the terminal done/error frame. */
+  pullModel: (payload: { model: string; provider_id?: string }) =>
+    jsonFetch<{ status: string; model: string }>("/api/models/pull", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  // ── LLM provider catalogue + routes ──────────────────────────────
+  /** Curated provider preset catalogue. Read-only; renders the
+   *  picker cards when adding a provider. */
+  getLlmPresets: () =>
+    jsonFetch<{ presets: LlmProviderPreset[] }>("/api/llm/presets"),
   /** Dry-run: ping the candidate provider with a one-token chat call.
    *  Never persists the supplied creds; returns 200 with success=false
    *  on auth/model failure so the UI can show the provider's error. */
@@ -210,7 +210,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  // ── PR 2: provider catalogue + role-assignment ───────────────────
   /** List the saved provider catalogue with credentials masked. */
   listLlmProviders: () =>
     jsonFetch<{ providers: LlmProvider[] }>("/api/llm/providers"),
@@ -279,9 +278,9 @@ export const api = {
   /** List role -> provider assignments. */
   listLlmRoutes: () =>
     jsonFetch<{ routes: Record<string, LlmRoute> }>("/api/llm/routes"),
-  /** Set ``llm.routes[role]`` from a partial draft. For ``main_chat``
-   *  this rebuilds the chat client immediately and broadcasts
-   *  ``llm_settings_changed``. */
+  /** Set ``llm.routes[role]`` from a partial draft. Roles with live
+   *  clients behind them are rebuilt immediately, then
+   *  ``llm_settings_changed`` is broadcast. */
   updateLlmRoute: (role: string, patch: Partial<LlmRoute>) =>
     jsonFetch<LlmRoute>(
       `/api/llm/routes/${encodeURIComponent(role)}`,
