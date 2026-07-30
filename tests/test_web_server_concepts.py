@@ -141,6 +141,41 @@ class ConceptsTimelineTests(unittest.TestCase):
         self.assertFalse(resp.json()["enabled"])
 
 
+class ConceptsQualityTests(unittest.TestCase):
+    def test_returns_quality_report(self) -> None:
+        client, session = _client()
+        session.concept_quality.return_value = {
+            "enabled": True,
+            "totals": {"total": 3},
+            "flow": {"promotion_rate_pct": 91.0, "demotion_events": 0},
+            "register": {"identity/user": {"n": 3, "frame_pct": 72.0}},
+        }
+        resp = client.get("/api/concepts/quality")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["flow"]["promotion_rate_pct"], 91.0)
+        self.assertEqual(body["register"]["identity/user"]["frame_pct"], 72.0)
+
+    def test_disabled_shape(self) -> None:
+        client, session = _client()
+        session.concept_quality.return_value = {"enabled": False}
+        resp = client.get("/api/concepts/quality")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["enabled"])
+
+    def test_quality_route_does_not_shadow_the_delete_path(self) -> None:
+        # "/api/concepts/{concept_id}" is an int path param, so a literal
+        # "/quality" segment must resolve to its own route rather than
+        # 422-ing on the id coercion.
+        client, session = _client()
+        session.concept_quality.return_value = {"enabled": True}
+        self.assertEqual(
+            client.get("/api/concepts/quality").status_code, 200
+        )
+        session.concept_quality.assert_called_once()
+
+
 class ConceptsDeleteTests(unittest.TestCase):
     def test_delete_ok(self) -> None:
         client, session = _client()

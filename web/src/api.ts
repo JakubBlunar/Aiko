@@ -43,6 +43,7 @@ import type {
   SharedMomentsResponse,
   TogetherSummary,
   TopicGraphSnapshot,
+  ConceptQualityReport,
   ConceptsSnapshot,
   ConceptTimeline,
   UploadDocumentResponse,
@@ -455,6 +456,8 @@ export const api = {
     ),
   // ── Higher-order concepts (L1/L2 debug) ──────────────────────────
   getConcepts: () => jsonFetch<ConceptsSnapshot>("/api/concepts"),
+  getConceptQuality: () =>
+    jsonFetch<ConceptQualityReport>("/api/concepts/quality"),
   runConceptSynthesis: () =>
     jsonFetch<{ result: Record<string, unknown> }>("/api/concepts/run", {
       method: "POST",

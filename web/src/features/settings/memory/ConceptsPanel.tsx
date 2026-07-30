@@ -7,6 +7,7 @@ import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
+import { ConceptQualityStrip } from "./ConceptQualityStrip";
 
 const SUBJECT_ALL = "all";
 const STATUS_ALL = "all";
@@ -136,6 +137,8 @@ export function ConceptsPanel() {
           <RefreshButton onClick={() => void refresh()} loading={loading} />
         </div>
       </div>
+
+      <ConceptQualityStrip />
 
       <div className="flex flex-wrap items-center gap-1 text-[10px] uppercase tracking-wide text-ink-100/40">
         <span>subject:</span>

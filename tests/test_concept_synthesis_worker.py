@@ -565,6 +565,224 @@ class ExistingAwarenessTests(unittest.TestCase):
         self.assertEqual(h.store.count(), 0)
 
 
+class ExistingSelectionTests(unittest.TestCase):
+    """The existing-concepts block handed to a proposer is bounded and
+    relevance-selected. It used to pass every stored concept of the
+    (subject, kind), which reached 203 for identity/user -- a recurring
+    token cost, a 200-shot demonstration of the template to imitate, and
+    a list too long to pick a reinforce-by-id target out of."""
+
+    NEEDLE = "topic 0"  # matches the rep-100 memory content below
+
+    def _seed(self, store, label: str, embedding=None) -> int:
+        return store.add(
+            Concept(
+                label=label,
+                kind="identity",
+                subject="user",
+                embedding=(
+                    embedding
+                    if embedding is not None
+                    else FakeEmbedder().embed(label)
+                ),
+                status="candidate",
+            )
+        )
+
+    @staticmethod
+    def _capture(h) -> dict[str, str]:
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            if "IDENTITY concepts about" in system:
+                captured["user"] = user
+            return {"concepts": []}
+
+        h.ollama._responder = responder
+        return captured
+
+    def test_existing_block_is_capped(self) -> None:
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        ids = [self._seed(h.store, f"trait number {i}") for i in range(60)]
+        captured = self._capture(h)
+        h.worker.run()
+
+        listed = sum(1 for cid in ids if f"[{cid}]" in captured["user"])
+        self.assertLessEqual(listed, 40)
+        self.assertGreater(listed, 0)
+
+    def test_selection_prefers_concepts_near_the_focus(self) -> None:
+        # Rep memories carry embeddings, so the pass can rank by relevance.
+        # The needle shares the rep-100 memory's text (cosine 1.0) and is
+        # inserted *last*, so an unranked "first 40" list would miss it.
+        reps = [
+            MemStub(
+                100 + i, f"topic {i}", "fact", 0.5,
+                embedding=FakeEmbedder().embed(f"topic {i}"),
+            )
+            for i in range(6)
+        ]
+        h = WorkerHarness(lambda s, u: {"concepts": []}, shared_moments=reps)
+        for i in range(60):
+            self._seed(h.store, f"unrelated trait {i}")
+        needle = self._seed(h.store, self.NEEDLE)
+
+        captured = self._capture(h)
+        h.worker.run()
+        self.assertIn(f"[{needle}]", captured["user"])
+
+    def test_unranked_fallback_would_have_missed_it(self) -> None:
+        # Same seeding without rep embeddings: no query vector, so the
+        # capped fallback list applies and the last-inserted needle drops
+        # off. Pins down that the previous test is measuring selection
+        # rather than an accident of ordering.
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        for i in range(60):
+            self._seed(h.store, f"unrelated trait {i}")
+        needle = self._seed(h.store, self.NEEDLE)
+
+        captured = self._capture(h)
+        h.worker.run()
+        self.assertNotIn(f"[{needle}]", captured["user"])
+
+    def test_small_graph_is_listed_in_full(self) -> None:
+        # The common case must not change: below the cap, every concept is
+        # still offered, so reinforce-by-id keeps working as before.
+        h = WorkerHarness(lambda s, u: {"concepts": []})
+        ids = [self._seed(h.store, f"trait number {i}") for i in range(5)]
+        captured = self._capture(h)
+        h.worker.run()
+        for cid in ids:
+            self.assertIn(f"[{cid}]", captured["user"])
+
+
+class DedupeThresholdTests(unittest.TestCase):
+    """Creation-time dedupe: a proposal close enough to an existing
+    concept reinforces it rather than minting a twin.
+
+    The bar used to be 0.9, which no pair of concepts in a month of real
+    use ever reached -- so the guard never fired once and every
+    paraphrase landed as its own row. These pin down where it now sits.
+    """
+
+    SEED = "Jacob winds down with a long bath after debugging"
+
+    class _Embedder:
+        """Returns a controlled vector for one label, FakeEmbedder for the
+        rest, so a specific cosine to the seeded concept can be dialled in."""
+
+        def __init__(self, twin_label: str, cosine: float):
+            self._twin = twin_label
+            self._cos = cosine
+            self._fallback = FakeEmbedder()
+
+        def embed(self, text: str) -> np.ndarray:
+            if text == self._twin:
+                vec = np.zeros(16, dtype=np.float32)
+                vec[0] = self._cos
+                vec[1] = float(np.sqrt(max(0.0, 1.0 - self._cos**2)))
+                return vec
+            return self._fallback.embed(text)
+
+    def _run(self, *, twin_label: str, cosine: float):
+        anchor = np.zeros(16, dtype=np.float32)
+        anchor[0] = 1.0
+
+        def responder(system, user):
+            if "IDENTITY concepts about" not in system:
+                return {"concepts": []}
+            return {"concepts": [{
+                "label": twin_label,
+                "evidence_cluster_reps": [100, 101],
+                "rationale": "same behaviour, different words",
+                "confidence": 0.7,
+            }]}
+
+        h = WorkerHarness(responder)
+        seed_id = h.store.add(
+            Concept(
+                label=self.SEED, kind="identity", subject="user",
+                embedding=anchor, status="active",
+            )
+        )
+        h.worker._embedder = self._Embedder(twin_label, cosine)
+        h.worker.run()
+        return h, seed_id
+
+    def test_paraphrase_twin_reinforces_instead_of_adding(self) -> None:
+        h, seed_id = self._run(
+            twin_label="Jacob takes a long bath to decompress after debugging",
+            cosine=0.87,
+        )
+        self.assertEqual(
+            len(h.store.list_by(subject="user", kind="identity")), 1
+        )
+        self.assertIsNotNone(h.store.get(seed_id).last_reinforced_at)
+
+    def test_merely_related_concept_still_gets_its_own_row(self) -> None:
+        # Below the bar is where different subjects share a sentence
+        # template, so this must stay a separate belief.
+        h, _ = self._run(
+            twin_label="Jacob listens to Powerwolf while cooking",
+            cosine=0.80,
+        )
+        self.assertEqual(
+            len(h.store.list_by(subject="user", kind="identity")), 2
+        )
+
+
+class RegisterRuleTests(unittest.TestCase):
+    """The register rules are deliberately per-proposer.
+
+    ``identity``/``user`` collapsed onto one sentence shape -- "<name>
+    treats <mundane activity> as a <engineering metaphor>" -- so its
+    prompt bans that specific move. Several other kinds are interpretive
+    *by design* (``value`` is the normative why under a choice; ``tension``
+    and ``generalization`` are inference), and measured near-zero
+    contamination, so the rule must not leak into the shared bodies they
+    are built on. These tests pin down both halves of that line, because
+    the tempting "fix" is to hoist the rule into ``base.py``.
+    """
+
+    def test_identity_user_bans_the_functional_theory(self) -> None:
+        from app.core.concepts.proposers.identity_user import _system
+
+        prompt = _system("Jacob", "Aiko").lower()
+        self.assertIn("a bath is a bath", prompt)
+        self.assertIn("vocabulary borrowed", prompt)
+        self.assertIn("one claim", prompt)
+
+    def test_identity_user_still_demands_falsifiability(self) -> None:
+        # The rule narrows *how* to be specific; it must not remove the
+        # demand, or the proposer swings back to horoscope traits.
+        from app.core.concepts.proposers.identity_user import _system
+
+        prompt = _system("Jacob", "Aiko").lower()
+        self.assertIn("falsifiable", prompt)
+        self.assertIn("horoscope", prompt)
+
+    def test_value_user_keeps_its_normative_register(self) -> None:
+        # A value concept states a principle. Banning that would gut the
+        # kind, so only the trailing second claim is disallowed.
+        from app.core.concepts.proposers.value_user import _system
+
+        prompt = _system("Jacob", "Aiko")
+        self.assertIn("normative PRINCIPLE", prompt)
+        self.assertIn("values craftsmanship over speed", prompt)
+        self.assertIn("belongs in 'rationale'", prompt)
+
+    def test_shared_proposer_bodies_carry_no_register_ban(self) -> None:
+        # base.py backs value, boundary, generalization and tension --
+        # all interpretive on purpose.
+        from pathlib import Path
+
+        import app.core.concepts.proposers.base as base
+
+        source = Path(base.__file__).read_text(encoding="utf-8").lower()
+        for banned in ("a bath is a bath", "vocabulary borrowed"):
+            self.assertNotIn(banned, source)
+
+
 class IncrementalTests(unittest.TestCase):
     def test_bounded_batches_drain_across_runs(self) -> None:
         # 6 dirty clusters, cap 2 -> drains 2/run over 3 runs, then clean.

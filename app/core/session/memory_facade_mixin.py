@@ -870,6 +870,67 @@ class MemoryFacadeMixin:
                 "concepts": [],
             }
 
+    def concept_quality(self) -> dict[str, Any]:
+        """L22 quality scoreboard for the concept layer.
+
+        Backs ``GET /api/concepts/quality`` and the ``get_concept_quality``
+        MCP tool. Where :meth:`concepts_snapshot` lists what Aiko believes,
+        this measures whether the *layer* is healthy: production vs.
+        pruning rates, confidence and evidence distributions, paraphrase
+        twins under the dedupe bar, per-kind label-template concentration,
+        and the spurious-concept signals.
+
+        Read-only and advisory -- nothing here demotes or deletes; the L3
+        lifecycle worker stays the single writer. Thresholds come from the
+        live settings so the report always measures against what is
+        actually running. Best-effort, collapsing to the disabled shape.
+        """
+        store = getattr(self, "_concept_store", None)
+        memory_store = getattr(self, "_memory_store", None)
+        topic_graph = getattr(self, "_topic_graph", None)
+        event_store = getattr(self, "_concept_event_store", None)
+        try:
+            from app.core.concepts.concept_quality import QualityThresholds
+            from app.core.concepts.concept_snapshot import (
+                build_concept_quality,
+            )
+            from app.core.concepts.concept_synthesis_worker import _DEDUPE_COS
+
+            memory_settings = getattr(self, "_memory_settings", None)
+
+            def _setting(name: str, default: float) -> float:
+                return float(getattr(memory_settings, name, default))
+
+            thresholds = QualityThresholds(
+                promote_min_sources=int(
+                    _setting("concept_promote_min_sources", 2)
+                ),
+                dedupe_cos=float(_DEDUPE_COS),
+                dormant_confidence_floor=_setting(
+                    "concept_dormant_confidence_floor", 0.35
+                ),
+                confidence_halflife_days=_setting(
+                    "concept_confidence_halflife_days", 45.0
+                ),
+            )
+            return build_concept_quality(
+                store,
+                memory_store,
+                topic_graph,
+                event_store,
+                thresholds=thresholds,
+            )
+        except Exception:
+            log.debug("concept quality report failed", exc_info=True)
+            try:
+                from app.core.concepts.concept_quality import (
+                    disabled_quality_report,
+                )
+
+                return disabled_quality_report()
+            except Exception:
+                return {"enabled": False}
+
     def delete_concept(self, concept_id: int) -> int:
         """Delete a single concept (and its edges) -- never any memories.
 

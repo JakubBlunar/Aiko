@@ -12,7 +12,7 @@ Three entry points, all pure SQL / arithmetic (no LLM):
 - :meth:`on_memory_deleted` -- registered as a ``MemoryStore`` delete
   listener. When a memory is hard-deleted, drop every edge touching it and
   recompute the affected concepts' evidence counts so L3 can weaken /
-  demote them on its next tick.
+  demote them when its rolling sweep next reaches them.
 - :meth:`sweep` -- the defence-in-depth pass the L25 idle worker runs.
   ``MemoryStore.prune`` batch-deletes rows *without* firing delete
   listeners, so orphaned edges accumulate; the sweep garbage-collects any
@@ -27,6 +27,16 @@ Three entry points, all pure SQL / arithmetic (no LLM):
 edge table (L2's reinforce does this; so does this reconciler). L3 remains
 the single writer of ``confidence`` / ``plasticity`` / ``status`` -- this
 reconciler never touches those.
+
+That division is why the re-gate itself lives in
+:meth:`ConceptLifecycleWorker._has_any_evidence` rather than here. This
+reconciler only makes the counts truthful; L3's rolling sweep (which
+reaches every concept within a handful of ticks) reads them and demotes an
+active belief left with no evidence at all. For a long time nothing did
+read them, which is how concepts ended up ``active`` on zero sources --
+the status floors looked at confidence alone, so a belief whose support
+had been deleted stayed active until decay caught up with it tens of
+engaged days later.
 """
 from __future__ import annotations
 

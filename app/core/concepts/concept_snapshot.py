@@ -20,6 +20,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_event_store import ConceptEventStore
+    from app.core.concepts.concept_quality import (
+        EvidenceFacts,
+        QualityThresholds,
+    )
     from app.core.concepts.concept_store import ConceptEdge, ConceptStore
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import MemoryStore
@@ -183,4 +188,122 @@ def build_concepts_snapshot(
     }
 
 
-__all__ = ["build_concepts_snapshot", "resolve_evidence_labels"]
+# ── L22 quality report ────────────────────────────────────────────────
+
+
+def _memory_cluster_map(topic_graph: "TopicGraph | None") -> dict[int, str]:
+    """Map every clustered memory id -> its cluster's representative id.
+
+    The inverse of ``_cluster_label_map``, and the join L22 signal A
+    needs: ``memory`` evidence edges name a memory, not the cluster it
+    belongs to, so without this there is no way to tell three memories
+    from one topic apart from three memories spanning three.
+    """
+    out: dict[int, str] = {}
+    if topic_graph is None:
+        return out
+    try:
+        for cluster in topic_graph.topic_clusters():
+            rep = str(cluster.representative_id)
+            for mid in cluster.member_ids:
+                out[int(mid)] = rep
+    except Exception:
+        return out
+    return out
+
+
+def resolve_evidence_facts(
+    store: "ConceptStore",
+    memory_store: "MemoryStore | None",
+    topic_graph: "TopicGraph | None",
+) -> dict[int, "EvidenceFacts"]:
+    """Resolve the L22 A/B signals for every concept.
+
+    The graph-join half of the quality report, kept here because it needs
+    the edge table, the topic graph and the memory mirror -- none of
+    which the pure scorer is allowed to touch.
+
+    - **Cluster span (A)**: ``cluster`` edges contribute their own rep id;
+      ``memory`` edges resolve through the cluster map. ``concept`` edges
+      are skipped, since meta concepts are grounded on other concepts
+      rather than on topics and would otherwise read as span-0.
+    - **Memory confidence (B)**: the confidence of each supporting memory,
+      so a belief resting on shaky recall can be told apart from one
+      resting on firm recall.
+    """
+    from app.core.concepts.concept_quality import EvidenceFacts
+
+    cluster_of_memory = _memory_cluster_map(topic_graph)
+    facts: dict[int, EvidenceFacts] = {}
+
+    for concept in store.all():
+        reps: set[str] = set()
+        confidences: list[float] = []
+        for edge in store.evidence_of(concept.concept_id):
+            try:
+                if edge.src_type == "cluster":
+                    reps.add(str(edge.src_id))
+                elif edge.src_type == "memory":
+                    mid = int(edge.src_id)
+                    rep = cluster_of_memory.get(mid)
+                    if rep is not None:
+                        reps.add(rep)
+                    if memory_store is not None:
+                        mem = memory_store.get(mid)
+                        if mem is not None:
+                            confidences.append(
+                                float(getattr(mem, "confidence", 0.7))
+                            )
+            except (TypeError, ValueError):
+                continue
+        facts[int(concept.concept_id)] = EvidenceFacts(
+            cluster_span=len(reps),
+            memory_confidences=tuple(confidences),
+        )
+    return facts
+
+
+def build_concept_quality(
+    store: "ConceptStore | None",
+    memory_store: "MemoryStore | None",
+    topic_graph: "TopicGraph | None",
+    event_store: "ConceptEventStore | None" = None,
+    *,
+    thresholds: "QualityThresholds | None" = None,
+) -> dict[str, Any]:
+    """Build the L22 quality report for ``GET /api/concepts/quality``.
+
+    Does the I/O -- load concepts, tally the event timeline, resolve the
+    evidence joins -- then hands everything to the pure scorer in
+    :mod:`app.core.concepts.concept_quality`. Returns the disabled shape
+    when the store is absent, matching ``build_concepts_snapshot``.
+    """
+    from app.core.concepts.concept_quality import (
+        build_quality_report,
+        disabled_quality_report,
+    )
+
+    if store is None:
+        return disabled_quality_report()
+
+    event_counts: dict[str, int] = {}
+    if event_store is not None:
+        try:
+            event_counts = event_store.counts_by_type()
+        except Exception:
+            event_counts = {}
+
+    return build_quality_report(
+        store.all(),
+        event_counts=event_counts,
+        evidence_facts=resolve_evidence_facts(store, memory_store, topic_graph),
+        thresholds=thresholds,
+    )
+
+
+__all__ = [
+    "build_concept_quality",
+    "build_concepts_snapshot",
+    "resolve_evidence_facts",
+    "resolve_evidence_labels",
+]

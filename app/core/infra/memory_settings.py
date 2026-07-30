@@ -1087,7 +1087,16 @@ class MemorySettings:
     concept_consolidation_enabled: bool = True
     concept_consolidation_interval_seconds: int = 900
     concept_consolidation_batch_size: int = 40
-    concept_consolidation_merge_cosine: float = 0.88
+    # Was 0.88, which admitted only 12 candidate pairs across a month of
+    # real use -- barely wider than the (never-firing) creation-time bar,
+    # so the retroactive fix had almost nothing to fix. 0.84 sees ~10x
+    # that. Widening is cheap here precisely because the LLM adjudicates:
+    # a false candidate costs one bounded call and a negative-cache entry,
+    # whereas a missed twin is a permanent extra row. Below ~0.82 the
+    # pairs stop being restatements and start being different subjects
+    # sharing a sentence template, which is noise the adjudicator would
+    # have to reject over and over.
+    concept_consolidation_merge_cosine: float = 0.84
     # L25 edge referential integrity. Concept edges (evidence /
     # contradicts) point at memory rows that get deleted, pruned, and
     # merged. Most deletes are reconciled synchronously by the reconciler's
@@ -3140,7 +3149,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     0.0,
                     float(
                         memory_raw.get(
-                            "concept_consolidation_merge_cosine", 0.88
+                            "concept_consolidation_merge_cosine", 0.84
                         )
                     ),
                 ),
