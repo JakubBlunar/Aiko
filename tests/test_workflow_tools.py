@@ -115,13 +115,31 @@ class StartWorkflowSchemaTests(unittest.TestCase):
         self.assertEqual(params["required"], ["goal"])
         self.assertIn("goal", params["properties"])
 
-    def test_schema_signals_multistep_trigger(self) -> None:
-        # The routing fix leans entirely on the description: a forced-choice
-        # model must see an unmissable "more than one step -> me" cue.
+    def test_schema_routes_every_outside_world_action_here(self) -> None:
+        """The description *is* the routing rule; keep its cues intact.
+
+        This used to demand a "more than one step" cue, back when the
+        tool only claimed multi-step goals. It now claims **any** action
+        that leaves the conversation, single-step ones included, so the
+        pair of signals a forced-choice model needs is the broad claim
+        plus the explicit "not inline" prohibition — without the latter
+        the model happily answers as though it had done the work itself.
+        """
         tool = StartWorkflowTool(_FakeSession(orchestrator=_FakeOrchestrator()))
         desc = tool.schema().description.lower()
-        self.assertIn("multi-step", desc)
-        self.assertIn("more than one step", desc)
+        self.assertIn("touches the outside world", desc)
+        self.assertIn("you do not do any of that inline", desc)
+        # Delegation cue: the caller describes a goal, not a plan.
+        self.assertIn("do not need to know which tools exist", desc)
+
+    def test_schema_warns_that_nothing_has_happened_yet(self) -> None:
+        # start_workflow returns as soon as the task is queued. Without
+        # this warning the model narrates the work as already finished
+        # ("I've created the file") on the same turn it dispatched it.
+        tool = StartWorkflowTool(_FakeSession(orchestrator=_FakeOrchestrator()))
+        desc = tool.schema().description.lower()
+        self.assertIn("nothing has happened yet", desc)
+        self.assertIn("do not invent the result", desc)
 
 
 class StartWorkflowRunTests(unittest.TestCase):
