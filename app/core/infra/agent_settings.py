@@ -1258,8 +1258,20 @@ class AgentSettings:
     # concepts get their own, lower bar because a concept LABEL is three
     # to six words, which makes the memory-length threshold a far harsher
     # test of the same thing. Both are a keyword proxy for what F12's
-    # semantic echo would measure properly.
+    # semantic echo would measure properly. Since F12 the memory side is
+    # decided semantically as well; a concept label is too short for a
+    # cosine against a whole reply to mean the same thing, so concepts stay
+    # on this overlap bar.
     surfacing_echo_min_overlap_concept: int = 1
+    # G4 -- cue outcome accounting. Records one row per *armed* cue per
+    # turn (it had material waiting), marking whether it reached the prompt
+    # and, when it did not, why. There are 50-odd workers producing cues
+    # and no way to tell one whose gate never matches from one quietly
+    # doing its job. Like the ledger above this is purely a recorder --
+    # nothing reads the ratio to change behaviour yet (self-tuning
+    # cooldowns are the follow-up), so turning it off costs only the
+    # measurement.
+    cue_accounting_enabled: bool = True
     engagement_latency_z_strong_drop: float = 1.5
     engagement_length_z_strong_drop: float = -1.0
     engagement_closeness_delta_max: float = 0.04

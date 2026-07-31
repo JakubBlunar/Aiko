@@ -74,6 +74,10 @@ log = logging.getLogger("app.surfacing_outcome_store")
 ITEM_KIND_CONCEPT = "concept"
 ITEM_KIND_MEMORY = "memory"
 ITEM_KIND_CLUSTER = "cluster"
+# G4. Identified by NAME rather than row id -- there is no integer cue
+# registry anywhere in the codebase. Cue rows carry ``item_id = 0`` and a
+# non-NULL ``item_key``; see the schema comment in ``chat_database.py``.
+ITEM_KIND_CUE = "cue"
 
 # The engagement label that counts as "this landed". K14's other buckets
 # are ``neutral`` / ``disengaged`` / ``abandoned``; only the top one is
@@ -103,6 +107,11 @@ class SurfacedItem:
     surface_reason: str = ""
     score: float = 0.0
     rank: int = 0
+    # G4: set instead of ``item_id`` for name-keyed kinds (cues). The two
+    # are mutually exclusive by convention, not by constraint -- a CHECK
+    # would have to be added by table rebuild, and the store is the only
+    # writer.
+    item_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,13 +275,17 @@ class SurfacingOutcomeStore:
         for it in items:
             kind = str(it.item_kind or "")
             item_id = int(it.item_id or 0)
-            if not kind or item_id <= 0:
+            item_key = str(getattr(it, "item_key", "") or "")
+            # Identified by id OR by name; a row with neither names nothing
+            # and would be an untraceable entry in a diagnostic table.
+            if not kind or (item_id <= 0 and not item_key):
                 continue
             verdict = marks.get((kind, item_id))
             rows.append((
                 int(assistant_message_id),
                 kind,
                 item_id,
+                (item_key or None),
                 str(it.lane or ""),
                 str(it.surface_reason or ""),
                 float(it.score or 0.0),
@@ -288,10 +301,10 @@ class SurfacingOutcomeStore:
         try:
             conn.executemany(
                 "INSERT INTO surfacing_outcomes "
-                "(assistant_message_id, item_kind, item_id, lane, "
+                "(assistant_message_id, item_kind, item_id, item_key, lane, "
                 " surface_reason, score, rank, echoed, echo_kind, "
                 " echo_score, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             conn.commit()
@@ -406,13 +419,14 @@ class SurfacingOutcomeStore:
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
             rows = conn.execute(
-                "SELECT item_kind, item_id, COUNT(*) AS surfaced, "
+                "SELECT item_kind, item_id, COALESCE(item_key, ''), "
+                "       COUNT(*) AS surfaced, "
                 "       SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled, "
                 "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END) AS engaged, "
                 "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END) AS echoed "
                 "FROM surfacing_outcomes "
                 f"WHERE {' AND '.join(where)} "
-                "GROUP BY item_kind, item_id "
+                "GROUP BY item_kind, item_id, item_key "
                 "HAVING settled >= ? "
                 "ORDER BY (CAST(engaged AS REAL) / settled) DESC, settled DESC "
                 "LIMIT ?",
@@ -424,12 +438,15 @@ class SurfacingOutcomeStore:
         out = []
         for r in rows:
             stats = ItemStats(
-                surfaced=int(r[2] or 0), settled=int(r[3] or 0),
-                engaged=int(r[4] or 0), echoed=int(r[5] or 0),
+                surfaced=int(r[3] or 0), settled=int(r[4] or 0),
+                engaged=int(r[5] or 0), echoed=int(r[6] or 0),
             )
             out.append({
                 "item_kind": str(r[0] or ""),
                 "item_id": int(r[1] or 0),
+                # Name-keyed kinds would otherwise appear as ``item_id: 0``
+                # repeated once per cue, which is unreadable in the view.
+                "item_key": str(r[2] or ""),
                 "surfaced": stats.surfaced,
                 "settled": stats.settled,
                 "engaged": stats.engaged,

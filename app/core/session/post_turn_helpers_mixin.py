@@ -1517,6 +1517,152 @@ class PostTurnHelpersMixin:
                     if v.kind == echo_detector.ECHO_SEMANTIC),
             )
 
+    def _snapshot_armed_cues(self) -> None:
+        """G4: stash which cues have material waiting, pre-assembly.
+
+        Called from the top of the turn rather than during assembly because
+        the T6 providers consume the state this reads -- see
+        :func:`app.core.proactive.cue_accounting.armed_cues`.
+        """
+        self._cue_armed_snapshot = set()
+        self._cue_question_balance_snapshot = False
+        self._last_cue_decisions = None
+        if getattr(self, "_cue_decision_store", None) is None:
+            return
+        try:
+            from app.core.proactive.cue_accounting import armed_cues
+
+            self._cue_armed_snapshot = armed_cues(self)
+        except Exception:
+            log.debug("cue arming snapshot failed", exc_info=True)
+            self._cue_armed_snapshot = set()
+        # K47's countdown has to be read here too, not at attribution
+        # time: ``_update_question_balance`` decrements it during post-turn
+        # and runs BEFORE the cue recorder, so a turn suppressed with one
+        # turn remaining would look unsuppressed by then and its declines
+        # would be misattributed to the providers. Providers only read the
+        # countdown during assembly, so this snapshot stays valid across it.
+        try:
+            self._cue_question_balance_snapshot = bool(
+                self._question_balance_suppressed()
+            )
+        except Exception:
+            log.debug("question-balance snapshot failed", exc_info=True)
+
+    def _record_cue_decisions(
+        self,
+        *,
+        assistant_message_id: int | None,
+        telemetry: Any = None,
+    ) -> None:
+        """G4: record what happened to every cue that was armed this turn.
+
+        Reads ``telemetry.block_chars`` for "did it render", which the
+        assembler has been computing on every turn since P31a -- so no cue
+        provider needs instrumenting to answer it. ``telemetry`` is passed
+        in rather than read from ``get_last_system_prompt()`` because that
+        snapshot is stamped AFTER post-turn runs, and would hand us the
+        previous turn's block sizes: the reach ratio would be silently
+        computed against the wrong assembly.
+
+        Surfaced cues are additionally recorded in the L37 ledger, so a cue
+        that does get through gets the same engagement settle as a concept
+        or memory and the question "which cues actually land?" becomes a
+        leaderboard read.
+        """
+        store = getattr(self, "_cue_decision_store", None)
+        armed = set(getattr(self, "_cue_armed_snapshot", None) or set())
+        suppressed = bool(
+            getattr(self, "_cue_question_balance_snapshot", False)
+        )
+        self._cue_armed_snapshot = set()
+        self._cue_question_balance_snapshot = False
+        if store is None:
+            return
+
+        message_id = int(assistant_message_id or 0)
+        if message_id <= 0:
+            return
+        block_chars = dict(getattr(telemetry, "block_chars", None) or {})
+        if not block_chars:
+            # No assembly recorded (banter / aborted turns take a path that
+            # builds no prompt). Recording declines here would blame the
+            # cues for a prompt that was never assembled.
+            return
+
+        try:
+            from app.core.proactive.cue_accounting import (
+                decisions_from_block_chars,
+            )
+
+            decisions = decisions_from_block_chars(
+                armed,
+                block_chars,
+                question_balance_suppressed=suppressed,
+            )
+        except Exception:
+            log.debug("cue decision derivation failed", exc_info=True)
+            return
+
+        self._last_cue_decisions = decisions
+        self._queue_surfaced_cues_for_ledger(decisions)
+        rows = decisions.rows()
+        if not rows:
+            return
+        written = store.add_many(message_id, rows)
+        if written:
+            surfaced = sorted(decisions.surfaced)
+            log.info(
+                "cue accounting: msg=%d armed=%d surfaced=%s declined=%s",
+                message_id, len(decisions.armed),
+                ",".join(surfaced) or "-",
+                ",".join(
+                    f"{cue}={reason}"
+                    for cue, reason in sorted(decisions.declined.items())
+                ) or "-",
+            )
+    def _queue_surfaced_cues_for_ledger(self, decisions: Any) -> None:
+        """Add surfaced cues to the L37 carry so they settle like any item.
+
+        Appended to ``_last_surfaced_items`` rather than written directly,
+        so cues go through the *same* insert as concepts and memories. A
+        second ``add_many`` would have looked simpler and been wrong: the
+        ledger drops its carry pointer when a turn surfaces nothing, so on a
+        turn that produced a cue but no concepts the cue row would never
+        have been settled -- unsettled forever, in the one column the
+        feature exists to fill.
+
+        Cues are name-keyed (``item_key``); there is no integer cue registry
+        anywhere in the codebase. No echo verdict is attached: a cue is an
+        instruction to Aiko ("you can ask how it went"), not a remembered
+        item she might quote, so echo has no meaning and NULL reads
+        correctly as "not applicable".
+        """
+        if getattr(self, "_surfacing_outcome_store", None) is None:
+            return
+        if not decisions.surfaced:
+            return
+        try:
+            from app.core.memory.surfacing_outcome_store import (
+                ITEM_KIND_CUE,
+                SurfacedItem,
+            )
+
+            carry = list(getattr(self, "_last_surfaced_items", None) or [])
+            carry.extend(
+                SurfacedItem(
+                    item_kind=ITEM_KIND_CUE,
+                    item_id=0,
+                    item_key=str(cue),
+                    lane="cue",
+                    surface_reason="cue",
+                )
+                for cue in sorted(decisions.surfaced)
+            )
+            self._last_surfaced_items = carry
+        except Exception:
+            log.debug("cue ledger queue failed", exc_info=True)
+
     def _estimate_user_affect_for_contagion(
         self, user_text: str | None, tone: Any,
     ) -> tuple[float, float] | None:

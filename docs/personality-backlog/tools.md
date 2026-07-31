@@ -227,11 +227,17 @@ prompt *right now*" and `get_prompt_block_costs` answers "what did this prompt
 cost". Neither answers the question that matters over time: **which of the
 things she surfaces actually go anywhere?** Once L37's `surfacing_outcomes`
 ledger exists, that question is a query — but without a debug surface the data
-is invisible and none of the tuning it enables (L38 standing weights, G4
+is invisible and none of the tuning it enables (L38 standing weights, G5
 cooldowns, P43 block value) can be sanity-checked against reality before being
 made load-bearing. This is the read side of the whole loop, and it should ship
 *with* L37 rather than after it, because the first thing anyone will want to
 know is whether the ledger is recording something sensible.
+
+**Partly shipped.** `get_surfacing_outcomes` landed with L37 (leaderboard +
+per-lane rollup, then F12's echo-kind split and semantic-floor replay), and
+G4 added the sibling `get_cue_outcomes` for the worker-cue side. Still open
+from the sketch below: the per-turn trace and the coverage view, plus the
+wider read surface over the rest of the inner-life state.
 
 **Key files.** A new tool in
 [`app/mcp/server_tools/`](../../app/mcp/server_tools/) alongside the existing

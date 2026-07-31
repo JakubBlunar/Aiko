@@ -45,6 +45,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
         raw_assistant_text: str = "",
         user_message_id: int | None = None,
         assistant_message_id: int | None = None,
+        telemetry: Any = None,
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
@@ -1427,6 +1428,18 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 engagement_clock.record_turn()
             except Exception:
                 log.debug("engagement clock record_turn raised", exc_info=True)
+
+        # G4: account for every cue that was armed this turn. Must run
+        # BEFORE the L37 recorder below, which consumes the carry this
+        # appends surfaced cues to -- reversing the two would write the
+        # cue rows a turn late, against the next reply's id.
+        try:
+            self._record_cue_decisions(
+                assistant_message_id=assistant_message_id,
+                telemetry=telemetry,
+            )
+        except Exception:
+            log.debug("cue accounting raised", exc_info=True)
 
         # L37: settle the previous reply's surfaced items with the
         # engagement just observed, then record this reply's. Placed

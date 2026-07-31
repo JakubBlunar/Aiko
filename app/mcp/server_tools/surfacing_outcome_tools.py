@@ -58,15 +58,15 @@ def build_report(
         "pending_message_id": int(
             getattr(session, "_prev_surfacing_message_id", 0) or 0
         ),
-            "by_lane": store.lane_breakdown(window_days=window_days),
-            "by_echo_kind": store.echo_breakdown(window_days=window_days),
-            "semantic_floor_replay": store.semantic_floor_candidates(
-                window_days=window_days,
-            ),
-            "leaderboard": store.leaderboard(
-                window_days=window_days, min_settled=min_settled, limit=top,
-            ),
-        }
+        "by_lane": store.lane_breakdown(window_days=window_days),
+        "by_echo_kind": store.echo_breakdown(window_days=window_days),
+        "semantic_floor_replay": store.semantic_floor_candidates(
+            window_days=window_days,
+        ),
+        "leaderboard": store.leaderboard(
+            window_days=window_days, min_settled=min_settled, limit=top,
+        ),
+    }
     if total == 0:
         report["hint"] = (
             "No rows yet. The ledger only records turns where something was "

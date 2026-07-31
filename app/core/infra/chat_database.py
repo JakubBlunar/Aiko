@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 
-_SCHEMA_VERSION = 27
+_SCHEMA_VERSION = 28
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -507,11 +507,29 @@ CREATE INDEX IF NOT EXISTS idx_concept_events_concept ON concept_events(concept_
 -- Both are NULL until computed. A row that is never settled is CORRECT
 -- rather than broken: silence after a goodbye is not disengagement, so
 -- ``settled_at IS NULL`` doubles as the health metric.
+--
+-- Schema v28 (G4) adds ``item_key`` for kinds identified by NAME rather
+-- than by row id. Worker cues are the case: a cue is ``"turning_over"``,
+-- and there is no integer cue registry anywhere in the codebase (block
+-- names are strings in ``_PROMPT_BLOCK_TIERS``; ``kv_meta`` journals are
+-- JSON inside one string-keyed row). Cue rows therefore carry
+-- ``item_id = 0`` and a non-NULL ``item_key``; every other kind keeps its
+-- integer id and leaves ``item_key`` NULL. Hashing a name into ``item_id``
+-- was the alternative and was rejected: collisions would silently merge
+-- two cues' histories, and the raw table would stop being readable, which
+-- is most of what a diagnostic ledger is for.
+--
+-- Note what does NOT live here: a cue that was armed and then declined.
+-- Every aggregate over this table means "of the times this reached the
+-- prompt", so admitting rows that never reached it would quietly inflate
+-- the denominator of the ledger's whole purpose. Those go to
+-- ``cue_decisions`` below.
 CREATE TABLE IF NOT EXISTS surfacing_outcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assistant_message_id INTEGER NOT NULL,
     item_kind TEXT NOT NULL,
     item_id INTEGER NOT NULL,
+    item_key TEXT,
     lane TEXT NOT NULL DEFAULT '',
     surface_reason TEXT NOT NULL DEFAULT '',
     score REAL NOT NULL DEFAULT 0.0,
@@ -532,6 +550,47 @@ CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_message
     ON surfacing_outcomes(assistant_message_id);
 CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_created
     ON surfacing_outcomes(created_at);
+-- The matching index for the name-keyed kinds lives in
+-- ``_DEPENDENT_LEDGER_INDICES``, not here: ``item_key`` arrives by ALTER on
+-- upgraded databases and this script runs *before* the migrations.
+
+-- Schema v28 (G4): why a worker cue did NOT reach the prompt.
+--
+-- There are 50-odd workers on the IdleWorkerScheduler, many making LLM
+-- calls, and no way to answer the only question that matters about any of
+-- them: did the cue it produced ever reach Aiko? Today we can see that a
+-- worker RAN (duration EMA, error counts) but not that it MATTERED. A
+-- worker writes a finding to a kv_meta journal; a T6 provider decides
+-- whether to render it, often behind a topic gate that returns "" when
+-- the conversation has moved on; the four gap cues run a priority mutex
+-- where only one may fire; ``_question_balance_suppressed`` vetoes
+-- several more. Every one of those is a legitimate design decision and
+-- every one of them discards work WITHOUT LEAVING A TRACE, so a worker
+-- whose gate never matches looks exactly like one quietly doing its job.
+--
+-- Rows are written only when the cue was ARMED -- i.e. it had material
+-- waiting. "Not armed" is the overwhelmingly common case, carries no
+-- information, and would multiply this table by the number of registered
+-- cues per turn for nothing.
+--
+-- ``outcome`` is ``surfaced`` or ``declined``. Surfaced rows are recorded
+-- here *as well as* in ``surfacing_outcomes`` -- the two answer different
+-- questions (this one is "of the times it was ready, how often did it get
+-- through", that one is "when it got through, did it land") and keeping
+-- the armed denominator out of the outcome ledger is deliberate, see
+-- above.
+CREATE TABLE IF NOT EXISTS cue_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assistant_message_id INTEGER NOT NULL,
+    cue TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cue_decisions_cue
+    ON cue_decisions(cue, created_at);
+CREATE INDEX IF NOT EXISTS idx_cue_decisions_created
+    ON cue_decisions(created_at);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced
@@ -755,6 +814,16 @@ _DEPENDENT_MEMORY_INDICES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_memories_temporal_type ON memories(temporal_type)",
 )
 
+# Same problem, different table, and it needs its own list rather than a
+# place in the tuple above: that one is applied partway through the
+# migration chain (at the v10 step), which is *before* the v28 ALTER that
+# adds ``surfacing_outcomes.item_key``. These run at the END of the chain,
+# and on the fresh / already-current paths alongside the memory indices.
+_DEPENDENT_LEDGER_INDICES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_key "
+    "ON surfacing_outcomes(item_kind, item_key, created_at)",
+)
+
 
 @dataclass(slots=True)
 class MessageRow:
@@ -916,7 +985,7 @@ class ChatDatabase:
             # includes the ``tier`` and v10 ``event_time`` /
             # ``temporal_type`` columns, so all dependent indices can
             # be created here.
-            for stmt in _DEPENDENT_MEMORY_INDICES:
+            for stmt in _DEPENDENT_MEMORY_INDICES + _DEPENDENT_LEDGER_INDICES:
                 try:
                     conn.execute(stmt)
                 except sqlite3.OperationalError:
@@ -928,7 +997,7 @@ class ChatDatabase:
             # Already on current schema -- make sure the dependent
             # indices exist in case a prior partial migration skipped
             # any of them.
-            for stmt in _DEPENDENT_MEMORY_INDICES:
+            for stmt in _DEPENDENT_MEMORY_INDICES + _DEPENDENT_LEDGER_INDICES:
                 try:
                     conn.execute(stmt)
                 except sqlite3.OperationalError:
@@ -1282,14 +1351,26 @@ class ChatDatabase:
         # "recorded before the distinction existed" -- those turns were
         # judged by the lexical test alone, and back-filling ``lexical``
         # would claim a semantic comparison had been made and lost.
+        # v27 -> v28: G4's ``item_key`` on the ledger, plus the
+        # ``cue_decisions`` table (created by the idempotent script above).
+        # Existing rows keep NULL, which is already correct for them --
+        # concepts, memories and clusters are identified by integer id and
+        # only name-keyed kinds populate it.
         for column, decl in (
             ("echo_kind", "TEXT"),
             ("echo_score", "REAL"),
+            ("item_key", "TEXT"),
         ):
             try:
                 conn.execute(
                     f"ALTER TABLE surfacing_outcomes ADD COLUMN {column} {decl}"
                 )
+            except sqlite3.OperationalError:
+                pass
+        # Only now can anything be indexed on the columns just added.
+        for stmt in _DEPENDENT_LEDGER_INDICES:
+            try:
+                conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))

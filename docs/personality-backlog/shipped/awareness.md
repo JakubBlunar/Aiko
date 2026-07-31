@@ -1304,3 +1304,113 @@ went quiet months ago" instead of just "big vs. small". Tests:
 `tests/test_topic_graph_persistent.py::ClusterActivityTests` and
 `RecencyPhraseTests` + `ClusterActivityShapeTests` in
 `tests/test_knowledge_map_reflection.py`.
+
+---
+
+## G4. Cue outcome accounting — which of the 50-odd workers earn their keep?
+
+**Motivation.** `get_idle_workers_status` could say that a worker **ran** —
+overdue seconds, a duration EMA, error counts — but never that it
+**mattered**. Whether the cue it produced reached Aiko was unanswerable,
+because every way of losing one is silent: a topic gate returning `""`, the
+gap-cue priority mutex, the K47 question-balance veto. A worker whose gate
+never matches looked exactly like a worker quietly doing its job, so
+cooldowns stayed hand-picked constants and an LLM-calling worker could burn
+tokens producing cues that were structurally unreachable.
+
+**Armed is the denominator, and it does not mean "a worker ran".** It means
+*there was material waiting*. The distinction is the whole feature: a
+worker that writes a finding every ten minutes and gets one through per day
+is not producing 143 failures, it is producing one delivery and 143
+supersessions. Arming is read back out of the state the providers
+themselves consult —
+[`cue_accounting.py`](../../../app/core/proactive/cue_accounting.py) walks a
+registry of 15 cues, checking either the in-memory `_pending_*_seconds`
+slot (the four gap cues) or the `kv_meta` journal ring against its
+`<feature>.last_surfaced_at` watermark. Using the provider's *own*
+definition of "something to say" is deliberate: the ratio cannot drift away
+from what the provider actually saw. `away_activities` and
+`forward_curiosity` need both a slot and journal content, matching what
+their providers require to fire.
+
+**Surfaced needed no instrumentation at all.** The plan was to touch ~60 T6
+providers; it turned out
+[`PromptTelemetry.block_chars`](../../../app/core/session/prompt_support.py)
+has been recording a character count for every registered block on every
+assembly since P31a, where `0` means "rendered empty". So "was this cue
+surfaced?" was a question the assembler had been answering all along and
+nobody was keeping the answer. The cue names in the registry are the
+`_PROMPT_BLOCK_TIERS` names, and
+`tests/test_cue_accounting.py::RegistryTests` fails if one stops resolving
+— without it, renaming a block would report that cue as declined forever,
+which is a plausible-looking number rather than an error.
+
+**The gap-cue "one-of lottery" is not a lottery.** It is a deterministic
+priority order (`turning_over` → `sleep_return` → `away_activities` →
+`forward_curiosity`) enforced by the shared `_gap_cue_surfaced` flag, so
+the *same* cue loses every time both are armed. That is a systematic bias
+and a far more actionable finding than noise, which is why the decline
+reason names the winner: `lost_priority:turning_over`.
+
+**Two ordering traps, both of which would have produced plausible numbers.**
+Arming is snapshotted at the top of `chat_once_streaming`, not during
+assembly, because the providers *consume* the state it reads — a later
+snapshot would report almost nothing as armed and the reach ratio would
+look perfect exactly when the machinery was busiest. And the K47 veto is
+snapshotted there too: `_update_question_balance` decrements the countdown
+during post-turn and runs *before* the cue recorder, so a suppression
+active during assembly would have read as absent and its declines been
+misattributed to the providers.
+
+**Declines deliberately do not go in `surfacing_outcomes`.** The backlog
+sketch said to reuse that table with `kind="cue"`, but every aggregate over
+it means "of the times this reached the prompt" — admitting rows that never
+reached it would have inflated the denominator of the ledger's entire
+purpose. Declines live in a new `cue_decisions` table (schema v28), and
+only cues that actually rendered are also written to the ledger, so they
+earn the same engagement settle as a concept or memory. Rows exist only for
+*armed* cues: "not armed" is the common case, carries no information, and
+would multiply the table by the cue count every turn.
+
+Those ledger rows are **name-keyed** (`item_key`, also v28) with
+`item_id = 0`. A cue has no integer identity anywhere in the codebase, and
+hashing the name into `item_id` was rejected — collisions would silently
+merge two cues' histories and the raw table would stop being readable,
+which is most of what a diagnostic ledger is for. The surfaced cues ride
+the L37 *carry* rather than taking a second insert, because the ledger
+drops its carry pointer on a turn that surfaced nothing: a cue on a
+concept-less turn would otherwise have sat unsettled forever, in the one
+column the feature exists to fill.
+
+**Found on the way.** Indexing `item_key` from `_CREATE_TABLES` broke
+schema init on every *existing* database — `executescript` runs before the
+migrations, so `CREATE INDEX` referenced a column the ALTER had not added
+yet. `_DEPENDENT_MEMORY_INDICES` exists for exactly this hazard but is
+applied partway through the chain (at the v10 step), before the v28 ALTER,
+so the ledger index needed its own `_DEPENDENT_LEDGER_INDICES` list run at
+the end. The v27→v28 migration test is what caught it.
+
+**Reading it.** `get_cue_outcomes`
+([`cue_outcome_tools.py`](../../../app/mcp/server_tools/cue_outcome_tools.py))
+reports `reach_rate = surfaced / armed` per cue, the decline reasons, and
+`never_armed`. A low rate is *not* automatically a bug — a topic-gated cue
+that stays quiet while the conversation is elsewhere is working correctly;
+what to act on is a rate near zero over a long window. Five cues
+(`interest_drift`, `associative_wander`, `curiosity_gradient`,
+`dormant_interest`, `knowledge_gap_notice`) dedupe by a per-topic key set
+rather than a watermark, so their arming degrades to "the ring is
+non-empty", which over-counts — they are listed in `coarse_arming` so the
+rate is read as a floor rather than an estimate, flagged rather than faked.
+`never_armed` is the loudest signal: a registered cue with no rows either
+never gets written by its worker or is read wrongly by the arming model,
+and neither shows up as a bad rate.
+
+**Not done: per-provider decline attribution.** Everything a cue's own
+gates refuse is currently bucketed as `provider`. Splitting that into topic
+gate / cooldown / no-candidate means editing on the order of a hundred
+`return ""` sites across four files that are already near the size budget,
+so it is parked as **G6** — worth doing once the reach numbers say which
+cues actually need it. `cue_accounting_enabled` (default on) turns the
+whole recorder off; nothing consumes the ratios to change behaviour yet
+(self-tuning cooldowns remain the follow-up). Tests:
+`tests/test_cue_accounting.py`.
