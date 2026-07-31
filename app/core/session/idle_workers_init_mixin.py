@@ -13,7 +13,10 @@ for a symbol used here must patch
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.core.infra.settings import AppSettings
 
 
 log = logging.getLogger("app.session")

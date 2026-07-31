@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.infra.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase, MessageRow
 from app.core.session.prompt_assembler import (
     PromptAssembler,
     PromptTelemetry,

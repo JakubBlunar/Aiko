@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.session_text_utils import (

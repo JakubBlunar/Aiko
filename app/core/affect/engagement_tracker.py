@@ -358,10 +358,6 @@ class EngagementTracker:
         can start scoring even before the latency window has filled
         if the K13 length window is already warm).
         """
-        warmup = max(
-            2,
-            int(self._setting("engagement_warmup_min", _DEFAULT_WARMUP_MIN)),
-        )
         # The z helper returns ``None`` when the baseline is shorter
         # than ``warmup``, so a non-None z implies the baseline crossed
         # warmup. Either signal being warm is enough.

@@ -1299,7 +1299,7 @@ class ConfidenceSampleTests(unittest.TestCase):
         """Pre-event-store concepts have nothing to measure against, so the
         first quiet tick seeds the baseline rather than skipping forever."""
         h = self._harness(concept_confidence_halflife_days=45.0)
-        c = self._quiet_active(h)
+        self._quiet_active(h)
         stats = h.worker.run()
 
         self.assertEqual(stats["confidence_samples"], 1)

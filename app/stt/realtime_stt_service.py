@@ -392,11 +392,9 @@ class RealtimeSttService:
         owns_context = not self._context_active
         try:
             with wave.open(str(path), "rb") as wav:
-                rate = wav.getframerate()
-                nch = wav.getnchannels()
-                width = wav.getsampwidth()
-                chunk_frames = rate // 5
-                chunk_bytes = chunk_frames * nch * width
+                # 200 ms per feed. ``readframes`` counts frames, not bytes, so
+                # channel count and sample width don't enter into it.
+                chunk_frames = wav.getframerate() // 5
                 if owns_context:
                     self.start_context()
                 try:

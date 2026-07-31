@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from app.core.session.inner_life_shared import (
     _circadian,
     _format_running_task_line,
 )
 from app.core.infra import timephrase
+
+if TYPE_CHECKING:
+    from app.core.session.context_budget_selector import RelevantContext
 
 
 log = logging.getLogger("app.session")
@@ -301,7 +304,6 @@ class InnerLifePart1Mixin:
             temp = blob.get("temperature")
             unit = str(blob.get("temp_unit") or "C")
             season = str(blob.get("season") or "").strip()
-            label = str(blob.get("location_label") or "").strip()
             is_day = bool(blob.get("is_day", True))
             name = self.user_display_name
 

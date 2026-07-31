@@ -1129,9 +1129,6 @@ class TaskOrchestrator:
             notify_aiko_default = (
                 active.notify_aiko if active is not None else True
             )
-            visible_to_user = (
-                active.visible_to_user if active is not None else True
-            )
             user_id = active.user_id if active is not None else ""
             handler_name = (
                 active.handler_name if active is not None else ""
