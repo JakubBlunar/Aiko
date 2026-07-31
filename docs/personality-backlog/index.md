@@ -10,6 +10,11 @@ history stays grep-able. Items that have already shipped live in
 [`shipped.md`](shipped.md), one paragraph each with a link to the
 implementation file or detail doc that owns them.
 
+Two series didn't come from a brainstorm and read differently. The
+A-series in [`architecture.md`](architecture.md) is code-quality debt from
+a static audit — no user-visible behaviour in any of it. The P-series in
+[`perf.md`](perf.md) is the same idea for performance and observability.
+
 The K-series in [`patterns.md`](patterns.md) is a separate beast —
 companion-AI design patterns we haven't tried yet, sketched at one
 paragraph each rather than fully scoped. Treat patterns.md as a
@@ -108,6 +113,37 @@ cooldown on information already being gathered.
 ---
 
 ## Open items at a glance
+
+### A. Architecture + code quality — [`architecture.md`](architecture.md)
+
+Structural findings from the audit that adopted ruff. Unlike every other
+series here, an A-item buys no behaviour — it buys the next twenty items
+being cheaper to build, so it competes on that basis and usually loses.
+Pick one when it is actively in your way. The mechanical half of that
+audit already shipped: LF everywhere via `.gitattributes`, ruff green on
+`F`/`E`/`W`/`B`, and `npm run lint` wired up.
+
+- **A1.** A real facade for `web/` and `mcp/` — 294 call sites reach into
+  `session._*` across 68 distinct private names, with no signal when a
+  rename breaks one. The 14 `_force_*` MCP debug slots are a legitimate
+  sub-case needing a different answer from the REST routes. Largest item,
+  and the only one where partial adoption helps.
+- **A2.** Connection ownership — 15 stores reach through
+  `ChatDatabase._get_conn()`, usually with a `# type: ignore` beside the
+  call, so every connection-config change has 15 unaudited callers.
+- **A3.** The 23 Python and 3 TS files over the declared budget, listed
+  with line counts — and the observation that the four settings files are
+  long for a different reason than `prompt_assembler.py` is, so one
+  blanket split pass would be the wrong shape.
+- **A4.** Two layering inversions: `app/core/infra/` imports upward into
+  `session` / `proactive` at module level, and `app/core/` imports
+  `app/mcp/` (deferred, so harmless — but undecided). The audit's claim
+  of 3 static import cycles did **not** survive re-measurement; there are
+  zero.
+- **A5.** What should gate a commit now that ruff is green — a staged-only
+  ruff hook, then CI, then a narrow ESLint for `web/`'s 196 files
+  (currently `tsc -b` only), then the deliberately-deferred `I` / `UP` /
+  `SIM` rule sets.
 
 ### B. Avatar + expressiveness — [`avatar.md`](avatar.md)
 
