@@ -1,5 +1,10 @@
 # New tools / capabilities
 
+Open work only. Shipped entries live in
+[`shipped/tools.md`](shipped/tools.md) (DT1 virtual clock) and
+[`shipped/proactive-tasks.md`](shipped/proactive-tasks.md) (D2 image vision,
+both parts).
+
 ---
 
 ## D-approval. Spoken / Aiko-voiced task approvals
@@ -144,44 +149,6 @@ firing on banter turns, and the 1.1s LangSearch throttle is in place.
 
 ---
 
-## D2. Image vision tool — SHIPPED (Part A: local-vision describe task; Part B: in-chat attachments)
-
-**Status.** Shipped in two parts. **Part A** — a **background workflow skill** (`describe_image`), not a fast brain tool, reusing the **single local worker model already in VRAM** (no second model, no cloud image tokens). The `VisionDescribeHandler` ([`app/core/tasks/handlers/vision_describe.py`](../../app/core/tasks/handlers/vision_describe.py)) resolves an image inside a configured file root, base64-encodes it (extension + byte-cap gated), and calls the worker `OllamaClient.chat(images=[...])`. Gated by `agent.vision.enabled`; the worker model must be multimodal (`qwen3.5:27b` / `qwen3.6:27b`). MCP debug: `get_vision_state()` / `describe_image_now(path)`. **Part B** — in-chat file attachments: the composer accepts image + text files (paperclip / drag-drop / paste), they land in a managed read-only `Attachments` sandbox root (`data/attachments/`), persist on the user message (`messages.attachments`, schema v18), and surface as a per-turn hint that routes Aiko to `start_workflow` (`describe_image` for images, `read_file` for text). See [`shipped.md`](shipped.md). The original sketch is kept below for reference.
-
----
-
-**Motivation.** Ollama supports vision models (`llava`, `qwen2.5-vl`,
-etc.). Letting Jacob drop an image into the chat and have Aiko comment
-on it ("oh, that's a cute desk setup — what's that on your monitor?")
-is a huge presence multiplier and pairs naturally with her curiosity.
-
-**Key files.**
-- [`app/llm/ollama_client.py`](../../app/llm/ollama_client.py) —
-  `chat_with_tools` would need to accept image attachments. Ollama's
-  `/api/chat` already supports `images: [base64]` in the message body.
-- New: `app/llm/tools/vision.py` — `describe_image(path)` tool that
-  routes to a vision model.
-- Existing: web upload path already handles images for documents; would
-  need a new branch that doesn't chunk them.
-
-**Sketched approach.**
-- Frontend: drag-drop image into the chat composer -> POST to
-  `/api/chat/image` -> backend stores it briefly and includes a tool-call
-  hint in the next turn ("Jacob just shared an image — call
-  `describe_image` to see it").
-- Vision tool runs the configured vision model, returns the description
-  as the tool result; Aiko's spoken reply uses it naturally.
-- Image is NOT persisted to memory by default (privacy). Aiko could tag
-  `[[remember:Jacob shared a desk photo]]` if it's notable.
-
-**Open questions.**
-- Vision model size — default to a quantised 3-7 B model so it runs on
-  the same box as the chat model? Or always cloud-route image calls?
-- Fallback when no vision model is available: gracefully skip the tool
-  and let Aiko say "I can't actually see that yet, sorry".
-
----
-
 # Dev / debug tooling (DT-series)
 
 Not capabilities Aiko uses — tooling *we* use to build, test, and debug
@@ -189,79 +156,6 @@ her. The codebase leans hard on the embedded MCP server for
 introspection; these fill the gaps that make personality work slow to
 verify. All DT items are debug-only and must never reach an end-user
 build.
-
----
-
-## DT1. Virtual clock / time-travel for time-gated features — SHIPPED
-
-**Motivation.** A large fraction of Aiko's behaviour is **wall-clock
-gated**, which makes it brutal to verify end-to-end in the live app:
-memory decay + tier promotion (schema v8), anniversaries + milestones
-(J8), the cooldowns on nearly every inner-life cue, reconnection /
-gap-return (J5 / K28 / K36), day colour (K27), routine learning (K3),
-vulnerability-budget regen (K15), the conflict-repair watch window (J6).
-The only way to exercise these in a running instance used to be to **wait
-real hours or days**.
-
-**Status.** Shipped, gated behind `AIKO_DEBUG_CLOCK=1`.
-
-The seam already existed and was built for this:
-[`timephrase.now()`](../../app/core/infra/timephrase.py) routes through a
-swappable `_now_provider` whose docstring names DT1 as its intended
-consumer — but nothing in production ever called `set_now_provider`, and
-only five call sites used `timephrase.now()`. The work was **adopting**
-the seam, not designing one.
-
-[`DebugClock`](../../app/core/infra/debug_clock.py) holds an in-memory
-`timedelta` offset and installs itself as the provider. Offset-based
-rather than absolute, so time keeps *flowing* while shifted and the
-un-virtualised monotonic paths stay coherent. A new `timephrase.utcnow()`
-gives the UTC-normalised twin the rest of the app needs (`now()` stays
-local for its five existing callers), and ~60 per-module `_utcnow()` /
-`_now_iso()` helpers now delegate to it. Two of those redirects carry most
-of the leverage: `IdleWorkerScheduler._utcnow()` is the single `now`
-handed to every worker's `is_ready()`, and the `clock=` constructor
-defaults on ~20 workers.
-
-**Two levers, because wall-clock is not the interesting one.** Concept
-(L3) and memory decay run on
-[`EngagementClock`](../../app/core/infra/engagement_clock.py) —
-accumulated *active-conversation* seconds — so `advance_clock(days=60)`
-does nothing to them at all. `advance_engagement(days)` credits that
-counter instead. It is the one persisted, destructive operation, so it
-stashes an undo anchor (`engagement.debug_anchor`) that `reset_clock`
-restores.
-
-Five MCP tools in
-[`debug_clock_tools.py`](../../app/mcp/server_tools/debug_clock_tools.py):
-`get_clock_status`, `advance_clock`, `set_clock`, `advance_engagement`,
-`reset_clock`. A live offset is echoed into `get_status` and logged at
-WARNING on every advance, so it can never be silently in effect.
-
-**The dividing line:** `datetime`-based *narrative* time moves; every
-`time.monotonic()` / `time.time()` reader stays real. That rule maps
-almost exactly onto the must-not-virtualise list (LLM latency, TTS/STT
-audio, brain loop, HTTP timeouts, tick budgets, worker perf metrics are
-all monotonic), so the safety boundary came nearly for free. Also left on
-real time on purpose: log + crash timestamps, `app/core/tasks/` stall
-detection (a runtime timeout compared against real wall time in
-`task_heartbeat.py` — virtualising the stamps but not the comparison
-would manufacture phantom stalls), and outbound weather API dates.
-
-**Acceptance.** Against a copy of a live `chat_sessions.db`, simulating 60
-engaged days took ~90 seconds and moved mean active-concept confidence
-0.817 → 0.483, with concepts crossing the dormant floor — a transition the
-L22 scoreboard says needs ~54 hours of real conversation to observe.
-
-**Known sharp edges.** Rows written while advanced keep their virtual
-timestamps after a reset; nothing can rewrite them, so run against a
-database copy. And L3 decay is catch-up-clamped per sweep
-(`concept_decay_max_catchup_days`, default 3), so a long simulation means
-interleaving `advance_engagement(3)` with `force_concept_lifecycle`
-rather than one big jump.
-
-**Workflow:** [`rules/debugging.md` §f](../../rules/debugging.md).
-**Tool reference:** [`rules/mcp-server.md`](../../rules/mcp-server.md).
 
 ---
 
