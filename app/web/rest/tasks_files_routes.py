@@ -13,16 +13,6 @@ log = logging.getLogger("app.web.server")
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: tasks files routes."""
-    def _resolve_task_user_id() -> str:
-        """Resolve the task-row user id for REST task queries.
-
-        Lifts ``session._user_id`` (set by the identity layer) so
-        REST + background task rows land on the same user. Falls back
-        to ``"default"`` so a brand-new install before onboarding
-        still has a coherent user_id stamp.
-        """
-        return str(getattr(session, "_user_id", "default") or "default")
-
     # Tracks task IDs whose ``task_started`` was suppressed because
     # ``visible_to_user=false``. ``task_progress`` events for those
     # IDs must also be filtered (the orchestrator dispatches them
@@ -80,7 +70,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             log.debug("task event broadcast failed: kind=%s", kind, exc_info=True)
 
     try:
-        orchestrator = getattr(session, "_task_orchestrator", None)
+        orchestrator = session.tasks.orchestrator
         if orchestrator is not None:
             orchestrator.add_task_listener(_on_task_event)
     except Exception:
@@ -107,7 +97,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         from app.core.tasks import task_snapshot as _snapshot
         from app.core.tasks.task_handler import VALID_STATUSES
 
-        store = getattr(session, "_task_store", None)
+        store = session.tasks.store
         if store is None:
             return JSONResponse(
                 {"tasks": [], "count": 0, "total": 0, "enabled": False}
@@ -124,7 +114,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         f"status must be one of {sorted(VALID_STATUSES)}",
                     )
                 status_norm = candidate
-        user_id = _resolve_task_user_id()
+        user_id = session.user_id
         try:
             rows = store.list_for_user(
                 user_id,
@@ -158,7 +148,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """Single-row snapshot. 404 when row missing or hidden."""
         from app.core.tasks import task_snapshot as _snapshot
 
-        store = getattr(session, "_task_store", None)
+        store = session.tasks.store
         if store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
@@ -174,16 +164,15 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         with ``cancelled=False`` so the UI can render "already done"
         without a noisy error.
         """
-        orch = getattr(session, "_task_orchestrator", None)
-        if orch is None:
+        tasks = session.tasks
+        if tasks.orchestrator is None:
             raise HTTPException(503, "task subsystem unavailable")
-        store = getattr(session, "_task_store", None)
-        if store is not None:
-            row = store.get(int(task_id))
+        if tasks.store is not None:
+            row = tasks.store.get(int(task_id))
             if row is None or not bool(row.visible_to_user):
                 raise HTTPException(404, "task not found")
         try:
-            cancelled = orch.cancel(int(task_id))
+            cancelled = tasks.orchestrator.cancel(int(task_id))
         except Exception as exc:
             log.exception("task cancel failed: task=%d", task_id)
             raise HTTPException(500, f"cancel failed: {exc}") from exc
@@ -210,16 +199,15 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             answer = payload.get("answer")  # forgiving alias
         if not isinstance(answer, str) or not answer.strip():
             raise HTTPException(400, "input must be a non-empty string")
-        orch = getattr(session, "_task_orchestrator", None)
-        if orch is None:
+        tasks = session.tasks
+        if tasks.orchestrator is None:
             raise HTTPException(503, "task subsystem unavailable")
-        store = getattr(session, "_task_store", None)
-        if store is not None:
-            row = store.get(int(task_id))
+        if tasks.store is not None:
+            row = tasks.store.get(int(task_id))
             if row is None or not bool(row.visible_to_user):
                 raise HTTPException(404, "task not found")
         try:
-            accepted = orch.answer(int(task_id), answer)
+            accepted = tasks.orchestrator.answer(int(task_id), answer)
         except Exception as exc:
             log.exception("task answer failed: task=%d", task_id)
             raise HTTPException(500, f"answer failed: {exc}") from exc
@@ -245,8 +233,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         chronological replay) or ``desc`` (newest first).
         Clamped to ``[1, 1000]`` per page.
         """
-        store = getattr(session, "_task_store", None)
-        event_store = getattr(session, "_task_event_store", None)
+        store = session.tasks.store
+        event_store = session.tasks.event_store
         if store is None or event_store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
@@ -298,7 +286,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         from app.core.tasks import task_snapshot as _snapshot
 
-        store = getattr(session, "_task_store", None)
+        store = session.tasks.store
         if store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
@@ -329,8 +317,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         answered / superseded / cancelled). Chronological. No
         pagination — the per-task volume is bounded.
         """
-        store = getattr(session, "_task_store", None)
-        input_store = getattr(session, "_task_input_store", None)
+        store = session.tasks.store
+        input_store = session.tasks.input_store
         if store is None or input_store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
@@ -511,7 +499,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         if not bool(
             getattr(
-                session._settings.agent, "user_reactions_enabled", True,
+                session.settings.agent, "user_reactions_enabled", True,
             ),
         ):
             raise HTTPException(503, "user reactions feature disabled")
@@ -544,7 +532,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         if not bool(
             getattr(
-                session._settings.agent, "user_reactions_enabled", True,
+                session.settings.agent, "user_reactions_enabled", True,
             ),
         ):
             raise HTTPException(503, "user reactions feature disabled")
@@ -723,7 +711,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(400, "uploaded file is empty")
         # Image allow-list mirrors the live vision config; text set uses
         # the module default. Byte cap rides the vision cap when set.
-        vision_cfg = getattr(session._settings.agent, "vision", None)
+        vision_cfg = getattr(session.settings.agent, "vision", None)
         image_exts = tuple(
             getattr(vision_cfg, "allowed_extensions", ()) or ()
         ) or None

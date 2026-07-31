@@ -5,6 +5,8 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from app.core.session.web_facade_mixin import WorkerUnavailable
+
 
 log = logging.getLogger("app.web.server")
 
@@ -219,14 +221,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         the request handler since the worker is already designed to
         be quick (one LLM call + a handful of embeds).
         """
-        worker = getattr(session, "_curiosity_seed_worker", None)
-        if worker is None:
-            raise HTTPException(503, "curiosity seed worker unavailable")
         try:
-            result = worker.run()
+            result = session.run_curiosity_seed_worker_now()
+        except WorkerUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
-        return JSONResponse({"result": result or {}})
+        return JSONResponse({"result": result})
 
     # ── REST: long-term goals (K1) ───────────────────────────────────
 
@@ -242,14 +243,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         respects the worker's own rate limiter, so calling this in a
         loop won't blow past ``agent.goal_worker_per_*_cap``.
         """
-        worker = getattr(session, "_goal_worker", None)
-        if worker is None:
-            raise HTTPException(503, "goal worker unavailable")
         try:
-            result = worker.run()
+            result = session.run_goal_worker_now()
+        except WorkerUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
-        return JSONResponse({"result": result or {}})
+        return JSONResponse({"result": result})
 
     # ── REST: memory conflicts (F5) ──────────────────────────────────
 
@@ -348,17 +348,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         calls stay off the event loop (same shape as
         ``/api/persona-drift/run``).
         """
-        worker = getattr(session, "_concept_synthesis_worker", None)
-        if worker is None:
-            raise HTTPException(503, "concept synthesis worker unavailable")
         try:
-            # Manual trigger: force a full pass so a tester gets output even
-            # when nothing drifted (e.g. right after deleting concepts, the
-            # source-memory signatures are unchanged).
-            result = worker.run(force=True)
+            result = session.run_concept_synthesis_worker_now()
+        except WorkerUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
-        return JSONResponse({"result": result or {}})
+        return JSONResponse({"result": result})
 
     @app.get("/api/concepts/quality")
     def get_concept_quality() -> JSONResponse:

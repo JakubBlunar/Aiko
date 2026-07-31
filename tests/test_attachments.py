@@ -15,7 +15,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -31,6 +30,7 @@ from app.core.tasks.attachments import (
     save_attachment,
 )
 from app.web.server import _sanitize_attachment_refs, create_web_app
+from web_fake_session import FakeSession
 
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
@@ -281,7 +281,7 @@ class SanitizeAttachmentRefsTests(unittest.TestCase):
 class AttachmentEndpointTests(_TmpDirMixin):
     def setUp(self) -> None:
         super().setUp()
-        session = MagicMock()
+        session = FakeSession()
         # ``None`` vision config -> upload uses module defaults for the
         # extension allow-list + byte cap.
         session._settings.agent.vision = None

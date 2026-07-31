@@ -852,7 +852,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             # store's lastTranscript drives the pill; the chat bubble comes
             # from the message event.
             hub.broadcast({"type": "stt_final", "text": text})
-            session._notify_message("You (voice)", text)
+            session.notify_user_message("You (voice)", text)
         elif name == "token":
             chunk = payload.get("chunk", "")
             if chunk:
@@ -1040,7 +1040,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "client_id": client_id,
                 "session": session.session_key,
                 "model": session.effective_chat_model,
-                "tts_enabled": bool(session._settings.tts.enabled),
+                "tts_enabled": bool(session.settings.tts.enabled),
                 "voice_active": bool(live_session.is_active),
                 "voice_owner_id": hub.voice_owner_id,
                 "audio_owner_id": hub.audio_owner_id,
@@ -1053,16 +1053,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "vitality": session.vitality_snapshot(),
                 "identity": {
                     "user_display_name": (
-                        session._settings.assistant.user_display_name or ""
+                        session.settings.assistant.user_display_name or ""
                     ),
                     "needs_onboarding": bool(session.needs_onboarding),
                 },
                 # Non-empty when the main_chat route names a local model
                 # that isn't installed. The onboarding flow offers to
                 # pull it; without this the first turn would just 404.
-                "missing_chat_model": getattr(
-                    session, "_missing_chat_model", "",
-                ),
+                "missing_chat_model": session.missing_chat_model,
                 # One-shot boot notices (I7): currently the destructive
                 # LanceDB-rebuild warning. Consumed here so only the first
                 # client to connect after boot gets the toast.
@@ -1072,25 +1070,25 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 # hardcoded defaults they used before (I5).
                 "companion": {
                     "touch_enabled": bool(
-                        getattr(session._settings.agent, "touch_enabled", True),
+                        getattr(session.settings.agent, "touch_enabled", True),
                     ),
                     "user_reactions_enabled": bool(
                         getattr(
-                            session._settings.agent,
+                            session.settings.agent,
                             "user_reactions_enabled",
                             True,
                         ),
                     ),
                     "persona_touch_banner_enabled": bool(
                         getattr(
-                            session._settings.agent,
+                            session.settings.agent,
                             "persona_touch_banner_enabled",
                             True,
                         ),
                     ),
                     "persona_touch_banner_duration_seconds": int(
                         getattr(
-                            session._settings.agent,
+                            session.settings.agent,
                             "persona_touch_banner_duration_seconds",
                             20,
                         ),
@@ -1194,7 +1192,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     if active_turn is not None:
                         active_turn.set()
                     try:
-                        session._turn_runner.request_stop()
+                        session.request_turn_stop()
                         session.stop_tts()
                     except Exception:
                         log.debug("stop request failed", exc_info=True)
@@ -1442,9 +1440,9 @@ def _spawn_chat_turn(
 
     def _run() -> None:
         try:
-            session._notify_message("You", text)
+            session.notify_user_message("You", text)
             # D2 Part B: the user bubble is created from the
-            # ``_notify_message`` broadcast above (which has no
+            # ``notify_user_message`` broadcast above (which has no
             # attachment channel); follow it with a dedicated event so
             # the live bubble renders the chips/thumbnails. History
             # reloads pick the same data off ``messages.attachments``.
@@ -1477,7 +1475,7 @@ def _spawn_chat_turn(
                 stop_requested=stop_requested,
                 attachments=attachments,
             )
-            session._notify_message("Assistant", reply or "")
+            session.notify_user_message("Assistant", reply or "")
             _metrics = session.get_last_metrics() or {}
             hub.broadcast({
                 "type": "turn_done",

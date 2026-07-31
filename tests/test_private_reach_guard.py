@@ -52,7 +52,7 @@ REFLECTIVE = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 # debug surface whose whole job is poking at internals, so it gets a budget
 # rather than a ban, to be brought down as typed handle accessors arrive.
 BUDGETS: dict[str, int] = {
-    "app/web": 67,
+    "app/web": 0,
     "app/mcp/server_tools": 569,
 }
 
@@ -231,14 +231,13 @@ class PrivateReachGuardTests(unittest.TestCase):
                     f"progress is locked in.",
                 )
 
-    def test_web_budget_is_not_quietly_raised(self) -> None:
-        """The web layer's budget is the one that is meant to reach zero.
+    def test_web_budget_stays_at_zero(self) -> None:
+        """``app/web`` is converted; every route goes through the facade.
 
-        Pinned separately so raising it to make a new reach legal is an obvious
-        edit to a test that says not to, rather than a plausible-looking number
-        change in a dict.
+        Pinned separately so re-opening the door is an obvious edit to a test
+        that says not to, rather than a plausible-looking number in a dict.
         """
-        self.assertLessEqual(BUDGETS["app/web"], 67)
+        self.assertEqual(BUDGETS["app/web"], 0)
 
 
 if __name__ == "__main__":

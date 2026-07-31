@@ -25,11 +25,11 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 from typing import Any, Callable
-from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 class _ReactionState:
@@ -93,7 +93,7 @@ def _build_client(
     *, reactions_enabled: bool = True,
 ) -> tuple[TestClient, _ReactionState]:
     state = _ReactionState()
-    session = MagicMock()
+    session = FakeSession()
     session._settings = SimpleNamespace(
         agent=SimpleNamespace(user_reactions_enabled=reactions_enabled),
     )
