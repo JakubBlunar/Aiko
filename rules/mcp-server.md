@@ -41,6 +41,21 @@ Beyond this core set, the tool surface is grouped by domain under `app/mcp/serve
 | `get_concept_graph` | — | JSON: the live concept graph (`session.concepts_snapshot()`) — every concept with status/confidence/plasticity/rationale + resolved evidence edges + counts. Richer than `get_concepts_state`. |
 | `get_concept_transitions` | `limit: int = 50` | JSON: recent lifecycle transitions (`promoted`/`dormant`/`retired`/`revived`), newest-first, dropping `discovered` births. |
 
+### Performance measurement (P29 / P31a)
+
+Two "where is it actually going" tools. Both are read-only snapshots of the live process, and both exist because the perf backlog kept accumulating items that could only be guessed at.
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `get_memory_breakdown` | — | JSON: process RSS + every child process with its cmdline (`app/mcp/server_tools/memory_breakdown_tools.py`), then per-subsystem attribution — STT loaded/model/device, TTS engine class + whether the PyTorch runtime was avoided, memory-mirror rows × embedding bytes, LanceDB on-disk size, embedder LRU. |
+| `get_prompt_block_costs` | `top: int = 25` | JSON: per-block character + estimated-token cost of the last assembled prompt, joined against the `_PROMPT_BLOCK_TIERS` ladder and ranked by tokens × the tier's cache-miss probability (`app/mcp/server_tools/prompt_cost_tools.py`). |
+
+Reading them:
+
+- **`get_memory_breakdown` counts the process tree, not the model.** The LLM's context window lives in Ollama, which is a different process entirely and does not appear here. `process.tree_rss_mb` is the number Task Manager shows. A large tree with `stt.weights_loaded` true is the usual answer — on Windows the Whisper weights sit in RealtimeSTT's transcription child, so check `process.children` rather than the parent's RSS.
+- **`tts.torch_runtime_avoided`** distinguishes "no model loaded" from "the heavy import never happened". Only booting with `tts.enabled=false` gets you the second one; toggling TTS off at runtime frees the voice weights but cannot un-import PyTorch.
+- **`get_prompt_block_costs` ranks by tier, not by size.** A large block in T0 is paid once per prompt-cache lifetime; a small block in T6 is paid on every turn. The weighting is what makes the list actionable — and a block that renders every turn at 0 chars is a content-gating candidate, so those are reported rather than omitted.
+
 ### Virtual clock (DT1)
 
 `server_tools/debug_clock_tools.py`. **Off unless the process was started with `AIKO_DEBUG_CLOCK=1`** — without it every tool returns a message saying so. Lets you exercise time-gated behaviour (decay, promotion age, anniversaries, gap-return, cue cooldowns) in seconds instead of waiting days.

@@ -65,6 +65,13 @@ Completed work, split by family so each file stays small (the combined log had g
 - [P12. Bulk memory-mirror on startup](shipped/perf.md#p12-bulk-memory-mirror-on-startup)
 - [P14. Heuristic tool-pass gate — skip the forced decision pass on banter turns](shipped/perf.md#p14-heuristic-tool-pass-gate--skip-the-forced-decision-pass-on-banter-turns)
 - [P23. Context-compaction hardening + adaptive token estimator](shipped/perf.md#p23-context-compaction-hardening--adaptive-token-estimator)
+- [P9. Streaming tokens no longer clone the message array](shipped/perf.md#p9-streaming-tokens-no-longer-clone-the-message-array)
+- [P25. Client audio is flushed when speech is cut off](shipped/perf.md#p25-client-audio-is-flushed-when-speech-is-cut-off)
+- [P27. STT loads on use, not at boot (the biggest resident-RAM lever)](shipped/perf.md#p27-stt-loads-on-use-not-at-boot-the-biggest-resident-ram-lever)
+- [P28. TTS respects `tts.enabled`, and the runtime toggle frees the weights](shipped/perf.md#p28-tts-respects-ttsenabled-and-the-runtime-toggle-frees-the-weights)
+- [P29. `get_memory_breakdown` — process-tree RSS + per-subsystem attribution](shipped/perf.md#p29-get_memory_breakdown--process-tree-rss--per-subsystem-attribution)
+- [P31a. `get_prompt_block_costs` — per-block prompt cost, weighted by tier](shipped/perf.md#p31a-get_prompt_block_costs--per-block-prompt-cost-weighted-by-tier)
+- [P41. Two missing `messages` indexes](shipped/perf.md#p41-two-missing-messages-indexes)
 
 ## [Shipped — Companion patterns K1–K15](shipped/patterns-k01-k15.md)
 

@@ -1154,6 +1154,7 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
 
 ## `stt` — `SttSettings`
 
+- `stt.enabled` *(bool, `true`)* — master switch for speech input. `false` means the Whisper recorder is **never** loaded, so the largest single resident cost in the app (weights plus RealtimeSTT's transcription child process, ~0.9 GB together) is never paid; voice input is simply unavailable and text chat is unaffected. Note that `true` does *not* mean "load at boot" — since P27 the model loads lazily, either when voice mode is first switched on (a background prewarm, so the first utterance doesn't wait on it) or on the first audio frame. So this setting is about *never* rather than *when*, and leaving it on costs nothing until you use the mic.
 - `stt.model` *(string, `"large-v1"`)* — whisper model identifier. Larger → more accurate / slower / more VRAM.
 - `stt.language` *(string | null, `"en"`)* — language hint. `null` = autodetect (slower, less accurate on short clips).
 - `stt.device` *(string, `"auto"`, one of `auto` / `cuda` / `cpu`)* — compute device for transcription. `auto` uses the GPU when torch reports a CUDA device and falls back to CPU otherwise, which is what lets the same config boot on a GPU workstation and in the CPU-only Docker image. Pin to `cuda` or `cpu` to skip the probe. Anything unrecognised falls back to `auto`. Note RealtimeSTT's own default is a hard `cuda`, which fails outright without a usable GPU.
@@ -1165,7 +1166,7 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
 
 - `tts.provider` *(string, `"pocket-tts"`)* — TTS engine. Currently `"pocket-tts"` is the supported provider.
 - `tts.voice` *(string, `"aiko1_refined.safetensors"`)* — voice file used by the active engine.
-- `tts.enabled` *(bool, `true`)* — master switch. Off → typed-only output.
+- `tts.enabled` *(bool, `true`)* — master switch. Off → typed-only output. Since P28 this is also a memory setting: booting with it `false` substitutes a no-op engine, so `app.tts.pocket_tts_service` is never imported and the PyTorch CPU runtime (~0.6-1 GB resident) is never pulled in. Toggling it off at runtime is weaker — it releases the ~100M-param voice weights, but a live process cannot un-import PyTorch. Toggling back on loads the engine on a background thread; the first utterance waits on it.
 - `tts.pocket_tts_voice` *(string, `"alba"`)* — Pocket-TTS voice file name (mirrors `tts.voice` for Pocket-TTS specifically). The Settings drawer keeps these in sync.
 - `tts.pocket_tts_temp` *(float, `0.6`)* — Pocket-TTS sampling temperature baseline. Pocket-TTS is sensitive here; ±0.05 can produce audible artefacts. Tune on your voice with `tools/tts_speed_ab.py`.
 - `tts.pocket_tts_custom_voices_dir` *(string, `""`)* — extra directory of custom Pocket-TTS voices (`.safetensors`). Empty → only the bundled ones.
