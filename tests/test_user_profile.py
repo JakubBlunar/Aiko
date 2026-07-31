@@ -355,10 +355,12 @@ class RoutinesFieldTests(unittest.TestCase):
 
 
 class _FakeConcept:
-    def __init__(self, label: str, kind: str, confidence: float = 0.8) -> None:
+    def __init__(self, label: str, kind: str, confidence: float = 0.8,
+                 concept_id: int = 0) -> None:
         self.label = label
         self.kind = kind
         self.confidence = confidence
+        self.concept_id = concept_id
 
 
 class _FakeView:
@@ -383,15 +385,31 @@ class _FakeView:
         return rows
 
 
-def _profile_lines(view, *, max_lines=10, min_confidence=0.5):
-    """Invoke the mixin helper with a lightweight fake ``self``."""
-    fake_self = SimpleNamespace(
+def _profile_host(*, max_lines=10, min_confidence=0.5):
+    """A lightweight fake ``self`` for the mixin helper."""
+    return SimpleNamespace(
         _memory_settings=SimpleNamespace(
             profile_concept_max_lines=max_lines,
             profile_concept_min_confidence=min_confidence,
         )
     )
+
+
+def _profile_lines(view, *, max_lines=10, min_confidence=0.5):
+    """Invoke the mixin helper with a lightweight fake ``self``."""
+    fake_self = _profile_host(
+        max_lines=max_lines, min_confidence=min_confidence,
+    )
     return InnerLifePart1Mixin._profile_concept_lines(fake_self, view)
+
+
+def _profile_claim(view, *, max_lines=10, min_confidence=0.5):
+    """The L39 claim stashed on the host by the same call."""
+    fake_self = _profile_host(
+        max_lines=max_lines, min_confidence=min_confidence,
+    )
+    InnerLifePart1Mixin._profile_concept_lines(fake_self, view)
+    return fake_self._last_profile_concept_ids
 
 
 class RenderBlockMergeTests(unittest.TestCase):
@@ -473,6 +491,60 @@ class ProfileConceptLinesTests(unittest.TestCase):
         ])
         lines, _ = _profile_lines(view)
         self.assertEqual(lines, ["- cares about honesty"])
+
+
+class ProfileConceptClaimTests(unittest.TestCase):
+    """L39: the block stashes which concept ids it rendered, so the T3
+    relevant_context lanes can skip them instead of stating the same claim
+    twice in one assembly."""
+
+    def test_rendered_concepts_are_claimed(self) -> None:
+        view = _FakeView([
+            _FakeConcept("keeps a tidy dev setup", "identity", concept_id=4),
+            _FakeConcept("cares about honesty", "value", concept_id=9),
+        ])
+        self.assertEqual(_profile_claim(view), frozenset({4, 9}))
+
+    def test_duplicate_label_sibling_is_also_claimed(self) -> None:
+        # The second concept contributes no line of its own, but its text *is*
+        # in the prompt via the line that won -- so T3 must skip it too.
+        view = _FakeView([
+            _FakeConcept("cares about honesty", "value", concept_id=9),
+            _FakeConcept("Cares About Honesty", "identity", concept_id=10),
+        ])
+        self.assertEqual(_profile_claim(view), frozenset({9, 10}))
+
+    def test_unrendered_concepts_are_not_claimed(self) -> None:
+        # Beyond the cap, so it never reaches the prompt and T3 stays free to
+        # surface it on relevance.
+        view = _FakeView([
+            _FakeConcept("keeps a tidy dev setup", "identity", concept_id=4),
+            _FakeConcept("cares about honesty", "value", concept_id=9),
+        ])
+        self.assertEqual(_profile_claim(view, max_lines=1), frozenset({4}))
+
+    def test_claim_is_cleared_on_every_early_return(self) -> None:
+        # A cold or disabled layer must not leave a stale claim behind, or T3
+        # would keep suppressing concepts the profile block no longer renders.
+        self.assertEqual(_profile_claim(None), frozenset())
+        self.assertEqual(
+            _profile_claim(_FakeView([_FakeConcept("x", "value", concept_id=1)],
+                                     enabled=False)),
+            frozenset(),
+        )
+        self.assertEqual(
+            _profile_claim(
+                _FakeView([_FakeConcept("x", "value", concept_id=1)]),
+                max_lines=0,
+            ),
+            frozenset(),
+        )
+
+    def test_idless_concept_is_not_claimed(self) -> None:
+        # A concept with no id can't be matched downstream; claiming id 0 would
+        # be a wildcard that suppresses every unidentified candidate.
+        view = _FakeView([_FakeConcept("keeps a tidy dev setup", "identity")])
+        self.assertEqual(_profile_claim(view), frozenset())
 
 
 if __name__ == "__main__":

@@ -1107,3 +1107,76 @@ label with nothing behind it; those land with their features.
 estimated.
 
 **Depends on.** L26 (trace).
+
+---
+
+## L40. Habituation reaches the core lane through order, not relevance
+
+**Status: SHIPPED — with the entry's premise corrected on the way in.** Worth
+reading as much for the wrong diagnosis as the fix: the backlog entry named a
+real symptom, attributed it to the wrong mechanism, and the fix it proposed would
+have been a silent no-op.
+
+**What the entry claimed.** That the L27 core lane computes a habituation factor,
+uses it only to sort fresh candidates ahead of stale ones, then admits the
+winners with `relevance=conf` — raw confidence — so a just-surfaced core belief
+"competes against *memories* with" full strength and takes budget from material
+the user hasn't seen. The proposed fix was to multiply that relevance by the
+habituation factor already in hand.
+
+**Why that was wrong.** `ContextBudgetSelector.select` admits pinned candidates
+in **pass 0**, iterating `pools[name]` sorted by `order`, exempt from
+`min_relevance` and the source `cap`. It never reads a pinned candidate's
+`relevance` for admission — only for the `top_relevance` telemetry field. And a
+pinned candidate that fails pass 0 on budget can never recover: `_admit` returns
+`False` *without* adding it to `admitted_keys`, so it does flow into the
+relevance-sorted greedy remainder, but `used` only ever grows between the passes,
+so every later attempt fails for the same reason. Confirmed empirically —
+selecting the same three pinned candidates with identical `order` and token costs
+but relevance reversed from descending to ascending admits exactly the same two.
+
+So multiplying the pinned relevance by habituation would have changed one
+telemetry number and no behaviour, while the entry, the commit and the test name
+all claimed a repetition fix. Habituation was already reaching the core lane
+completely — through `order`, which is the only thing that governs a pinned item.
+
+**The actual defect, next door.** `habituation_factor` returns a *graded* value
+between the core floor (default 0.8) and 1.0, but the lane consumed only its
+threshold:
+
+```python
+(fresh if hab >= 0.999 else stale).append((concept, cid, label, hab))
+```
+
+Both groups then kept `core_lane`'s native confidence-descending order. So the
+graded factor collapsed to a boolean, and *within* the stale group the ranking
+was pure confidence: a belief surfaced last turn at confidence 0.9 preceded one
+rested for three turns at 0.8. The more-rested belief lost, which is precisely
+the anti-nag outcome L23 exists to prevent — just one level down from where the
+entry was looking.
+
+**What shipped.** One stable sort of the stale group by rest,
+`stale.sort(key=lambda t: -t[3])`, in
+[`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py). Stable, so
+equally-rested concepts keep `core_lane`'s balanced round-robin across
+`(kind, subject)`. The `relevance=conf` construction is left alone, with a
+comment recording *why* damping it there would be inert, so the next reader
+doesn't re-derive the same wrong fix. Regression-tested in
+[`test_context_budget.py`](../../../tests/test_context_budget.py) via
+`test_core_lane_ranks_by_rest_not_confidence`: three core-qualifying concepts
+inside the habituation window (so the binary split cannot separate them) and a
+cap of two, where the most-rested concept takes a slot despite having the lowest
+confidence. The pre-existing `test_core_lane_soft_rotation` still passes, which
+is what confirms the fresh-over-stale rotation is unchanged.
+
+**Open questions, resolved.** (1) *Does this want the full blended
+`surface_score` instead?* — moot; the sort key is rest, and a core pin stays
+justified by how firmly the belief is held rather than by turn-match, which is
+the point of an always-on lane. (2) *Can a habituated core concept still win when
+it is the only candidate?* — yes, unchanged: the stale group still fills the cap
+when fewer than `core_cap` candidates are fresh, so a core belief is never
+suppressed out of contention, only re-ranked within it.
+
+**Effort.** Small, as estimated — though the estimate was for the wrong change.
+
+**Depends on.** Nothing. Shipped alongside L39's dedupe, same code block.
