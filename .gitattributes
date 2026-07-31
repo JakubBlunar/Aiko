@@ -20,13 +20,16 @@
 # rig formats are listed for the same reason `.editorconfig` lists them: the
 # assets live outside git today (`data/`), and a future `git add` of a rig
 # must not be corrupted by normalisation.
+#
+# Note `.cdi3.json` is deliberately absent: despite being a Live2D rig file it
+# is ordinary JSON, and normalising it is what we want -- otherwise whichever
+# tool regenerates it decides the endings and the file flips back and forth.
 *.png   -text
 *.ico   -text
 *.svg   text eol=lf
 *.safetensors -text
 *.moc3  -text
 *.moc   -text
-*.cdi3.json -text
 *.wav   -text
 *.mp3   -text
 *.ogg   -text
