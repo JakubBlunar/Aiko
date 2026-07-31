@@ -96,7 +96,7 @@ class _ProviderHost(InnerLifeProvidersMixin):
         self._settings = _FakeSettings(agent=agent or _agent())
         self._memory_settings = mem or _mem()
         self.user_display_name = "Jacob"
-        self._vitality_force_energy: float | None = None
+        self.debug_overrides.disarm("vitality_force_energy")
 
 
 def _seed(chat_db: _FakeChatDb, energy: float, *, at: datetime | None = None) -> None:
@@ -167,10 +167,10 @@ class ProviderForceTests(unittest.TestCase):
         chat_db = _FakeChatDb()
         _seed(chat_db, 0.9)
         host = _ProviderHost(chat_db=chat_db)
-        host._vitality_force_energy = 0.05
+        host.debug_overrides.arm("vitality_force_energy", 0.05)
         out = host._render_vitality_block()
         self.assertIn("running low", out)
-        self.assertIsNone(host._vitality_force_energy)
+        self.assertIsNone(host.debug_overrides.peek("vitality_force_energy"))
         # Forced energy is persisted.
         stored = v.deserialize(
             chat_db._store[v.KV_VITALITY], baseline=0.5,
@@ -181,7 +181,7 @@ class ProviderForceTests(unittest.TestCase):
     def test_force_high_renders_high(self) -> None:
         chat_db = _FakeChatDb()
         host = _ProviderHost(chat_db=chat_db)
-        host._vitality_force_energy = 0.95
+        host.debug_overrides.arm("vitality_force_energy", 0.95)
         out = host._render_vitality_block()
         self.assertIn("lit up", out)
 

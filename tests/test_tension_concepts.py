@@ -709,7 +709,7 @@ class _Host(InnerLifeProvidersMixin):
         self._chat_db = _FakeChatDb()
         if cues is not None:
             self._chat_db.store[_tc.TENSION_JOURNAL_KEY] = json.dumps(cues)
-        self._tension_force_next = force_next
+        self.debug_overrides.arm("tension_force_next", force_next)
         self.user_display_name = "Jacob"
 
 
@@ -757,7 +757,7 @@ class CueConsumerTests(unittest.TestCase):
         host._chat_db.store["tension_cue.last_surfaced_at"] = _cue()["at"]
         out = host._render_tension_block()
         self.assertIn("He values rest", out)
-        self.assertFalse(host._tension_force_next)
+        self.assertFalse(host.debug_overrides.peek("tension_force_next"))
 
 
 if __name__ == "__main__":

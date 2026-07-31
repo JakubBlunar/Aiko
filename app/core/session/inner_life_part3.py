@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 from app.core.infra import timephrase
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 
 log = logging.getLogger("app.session")
 
 
-class InnerLifePart3Mixin:
+class InnerLifePart3Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 3 of 4)."""
 
     def _render_opinion_injection_block(self, user_text: str) -> str:
@@ -79,10 +80,8 @@ class InnerLifePart3Mixin:
         # this one call. Cleared whether we fire or not so the
         # bypass is strictly one-turn.
         force_next = bool(
-            getattr(self, "_opinion_injection_force_next", False)
+            self._debug_overrides.take("opinion_injection_force_next", False)
         )
-        if force_next:
-            self._opinion_injection_force_next = False
 
         if not force_next:
             if self._opinion_injection_cooldown > 0:
@@ -605,10 +604,8 @@ class InnerLifePart3Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_stance_persistence_force_next", False)
+            self._debug_overrides.take("stance_persistence_force_next", False)
         )
-        if force_next:
-            self._stance_persistence_force_next = False
 
         recent_window = int(getattr(self, "_stance_recent_window", 0) or 0)
         recent_stance = recent_window > 0 or force_next
@@ -700,9 +697,9 @@ class InnerLifePart3Mixin:
             log.debug("long-arc-callback import failed", exc_info=True)
             return ""
 
-        force_next = bool(getattr(self, "_long_arc_callback_force_next", False))
-        if force_next:
-            self._long_arc_callback_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("long_arc_callback_force_next", False)
+        )
 
         mem = self._memory_settings
 
@@ -984,10 +981,9 @@ class InnerLifePart3Mixin:
         if agreement_cd > 0:
             self._self_noticing_agreement_cooldown = agreement_cd - 1
         agreement_force = bool(
-            getattr(self, "_self_noticing_force_agreement", False)
+            self._debug_overrides.take("self_noticing_force_agreement", False)
         )
         if agreement_force:
-            self._self_noticing_force_agreement = False
             agreement_cooldown_for_check = 0
         else:
             agreement_cooldown_for_check = (
@@ -1078,10 +1074,9 @@ class InnerLifePart3Mixin:
         if flat_cd > 0:
             self._self_noticing_flat_affect_cooldown = flat_cd - 1
         flat_force = bool(
-            getattr(self, "_self_noticing_force_flat_affect", False)
+            self._debug_overrides.take("self_noticing_force_flat_affect", False)
         )
         if flat_force:
-            self._self_noticing_force_flat_affect = False
             flat_cooldown_for_check = 0
         else:
             flat_cooldown_for_check = (
@@ -1153,7 +1148,9 @@ class InnerLifePart3Mixin:
 
         # --- Repeated thought (one-shot carry-forward) ------------------
         repeated_force = bool(
-            getattr(self, "_self_noticing_force_repeated_thought", False)
+            self._debug_overrides.take(
+                "self_noticing_force_repeated_thought", False,
+            )
         )
         repeated_flag = bool(
             getattr(self, "_repeated_thought_fired_last_turn", False)
@@ -1173,9 +1170,9 @@ class InnerLifePart3Mixin:
                 " already said -- find a different angle this turn, or"
                 " just don't restate."
             )
-            # One-shot consume both flags regardless of which fired.
+            # The override is already consumed by the take() above; this is
+            # the other half of the pair.
             self._repeated_thought_fired_last_turn = False
-            self._self_noticing_force_repeated_thought = False
             log.info(
                 "self-noticing repeated-thought rendered: cosine=%.3f",
                 float(
@@ -1358,9 +1355,9 @@ class InnerLifePart3Mixin:
                     want_text = None
                     wants_imperative_active = False
 
-            force = bool(getattr(self, "_initiative_force_next", False))
-            if force:
-                self._initiative_force_next = False
+            force = bool(
+                self._debug_overrides.take("initiative_force_next", False)
+            )
 
             decision = director.note_turn_and_decide(
                 base_period=int(
@@ -1545,8 +1542,7 @@ class InnerLifePart3Mixin:
             threshold = float(
                 getattr(agent, "wants_imperative_threshold", 0.7)
             )
-            if getattr(self, "_wants_force_imperative", False):
-                self._wants_force_imperative = False
+            if self._debug_overrides.take("wants_force_imperative", False):
                 threshold = 0.0
             block = _wl.render_block(
                 matured, now,
@@ -1700,10 +1696,8 @@ class InnerLifePart3Mixin:
                 # one-shot MCP flag (force_dere_slip) bypasses both
                 # gates for end-to-end repro.
                 force_slip = bool(
-                    getattr(self, "_mask_force_slip_next", False)
+                    self._debug_overrides.take("mask_force_slip_next", False)
                 )
-                if force_slip:
-                    self._mask_force_slip_next = False
                 cooldown_light = float(
                     getattr(
                         self._settings.agent,
@@ -1773,9 +1767,9 @@ class InnerLifePart3Mixin:
 
             from app.core.relationship import tease_ledger as _tl
 
-            force = bool(getattr(self, "_tease_collection_force_next", False))
-            if force:
-                self._tease_collection_force_next = False
+            force = bool(
+                self._debug_overrides.take("tease_collection_force_next", False)
+            )
 
             agent = self._settings.agent
             now = timephrase.utcnow()
@@ -1940,10 +1934,8 @@ class InnerLifePart3Mixin:
                     want_pressure = 0.0
 
             force = bool(
-                getattr(self, "_topic_appetite_force_next", False)
+                self._debug_overrides.take("topic_appetite_force_next", False)
             )
-            if force:
-                self._topic_appetite_force_next = False
 
             decision = _tap.decide(
                 already_fired=bool(

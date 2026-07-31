@@ -252,10 +252,10 @@ class ProviderTests(unittest.TestCase):
         # Low-sim match + few samples that would normally be silent.
         host = self._host(match=(1, "python", 0.1), score=0.6, samples=1)
         host._user_expertise_cooldown = 4
-        host._user_expertise_force_next = True
+        host.debug_overrides.arm("user_expertise_force_next")
         out = host._render_user_expertise_block("python dinner tonight here")
         self.assertTrue(out)
-        self.assertFalse(host._user_expertise_force_next)
+        self.assertFalse(host.debug_overrides.peek("user_expertise_force_next"))
         self.assertEqual(host._topic_graph.best_calls[-1]["min_sim"], 0.0)
 
 

@@ -178,7 +178,7 @@ class _Host(InnerLifePart2Mixin):
         self._memory_store = _FakeMemoryStore(dreams or [])
         self._world_store = _FakeWorldStore(location_slug)
         self._pending_sleep_return_seconds = pending_seconds
-        self._sleep_return_force_next = force_next
+        self.debug_overrides.arm("sleep_return_force_next", force_next)
         self._gap_cue_surfaced = gap_cue_surfaced
         self._last_sleep_return: Any = None
         self.user_display_name = "Jacob"
@@ -229,7 +229,7 @@ class ProviderTests(unittest.TestCase):
         host = _Host(pending_seconds=None, force_next=True)
         out = host._render_sleep_return_block()
         self.assertIn("dozed off", out)
-        self.assertFalse(host._sleep_return_force_next)
+        self.assertFalse(host.debug_overrides.peek("sleep_return_force_next"))
 
     def test_recent_dream_woven_in(self) -> None:
         dreams = [

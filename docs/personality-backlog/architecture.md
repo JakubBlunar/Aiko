@@ -34,6 +34,32 @@ count differs from what you remember, the one here is the measured one.
 
 ## A1. A real facade for `web/` and `mcp/`, instead of 294 reaches into `session._*`
 
+> **Status: partly shipped.** `app/web/` is converted and pinned at **zero**
+> private reaches behind
+> [`WebFacadeMixin`](../../app/core/session/web_facade_mixin.py). The
+> `_force_*` debug family is gone, replaced by
+> [`DebugOverrides`](../../app/core/session/debug_overrides.py).
+> `app/mcp/server_tools/` is down from 569 reaches to **483** and is
+> ratcheted by [`tests/test_private_reach_guard.py`](../../tests/test_private_reach_guard.py).
+> What remains is bucket 2 below: typed handles for the subsystems.
+>
+> Two corrections to the original numbers, both from the guard rather than a
+> grep. The count was **636**, not 294, once reflective reads
+> (`getattr(session, "_x", …)`) were included. And the `_force_*` family was
+> **43** MCP-armable flags, not 14 — plus five more that a provider consumed
+> but no tool could arm, one of which named in its own docstring a tool that
+> did not exist.
+>
+> The debug flags turned out to be the load-bearing part. Cleanup was two
+> hand-written lists in `lifecycle_mixin`: a session switch cleared 11 of the
+> 43 and a memory wipe cleared 14, and the two disagreed about three more.
+> Anything they missed stayed armed and fired later in an unrelated
+> conversation. `DebugOverrides.clear()` drops the whole dict, so there is no
+> longer a list to drift; `snapshot()` answers what is armed, which nothing
+> could before; and arming an unregistered name now raises instead of writing
+> a dead attribute, which is what a typo used to do. `TurnRunner`'s
+> `_tool_gate_force_next` is the one holdout — same shape, different owner.
+
 **Motivation.** The private state of `SessionController` *is* the API that
 the REST routes and the MCP debug tools are written against: 294 call
 sites reach through a leading underscore — 243 in
@@ -77,23 +103,31 @@ buckets:
    Becomes a single accessor — `session.services.memory` — so that
    *reaching a subsystem* is legitimate and typed, while reaching into
    `SessionController`'s own bookkeeping is not.
-3. **Debug pokes** (the `_force_*` family and friends). Becomes an
-   explicit `session.debug` namespace whose docstring says it is
-   unstable, gated on the same flag as the MCP server. Naming it as debug
-   is the point; the goal isn't to make these attributes public, it's to
-   stop them being *indistinguishable* from the first two buckets.
+3. **Debug pokes** (the `_force_*` family and friends). *Shipped* as
+   `session.debug_overrides`, a registry keyed by name rather than a
+   namespace of attributes. Naming it as debug was the point; keying it
+   by name is what bought the rest — clearing, listing, and rejecting a
+   name nobody consumes are all impossible when each flag is its own
+   attribute.
 
 Convert one attribute at a time with the suite as the net. A single
 sweeping rename is the one way to get this wrong.
 
-**Open questions.** Does the facade live on `SessionController` (already
-22 mixins deep, so adding surface there is not free) or on a separate
-object that holds a reference to it? Should `mcp/` get a deliberately
-wider contract than `web/` — it probably should, since debug tooling has a
-real need the REST API doesn't, and writing that down is most of the
-value. And is a lint rule worth adding once the facade exists, so new
-`session._*` from outside `app/core/session/` fails the lint rather than
-review?
+**Open questions**, now mostly answered by the shipped half. The facade
+lives *on* `SessionController` as one more mixin: a separate object would
+have needed a reference back for every call, and the mixin composition was
+already the file-boundary convention. `mcp/` does get a wider contract than
+`web/` — a budget rather than a ban — because debug tooling has a real need
+the REST API doesn't. The enforcement is a test rather than a lint rule,
+which turned out better than expected: the guard also checks that every
+reached name *exists*, so a rename now fails a test instead of 404-ing a
+route at runtime, and it ratchets in both directions so a package can't
+silently re-earn headroom when an unrelated cleanup removes a reach.
+
+What's left is bucket 2. The 483 remaining reaches are mostly subsystem
+handles (`_memory`, `_rag_store`, `_affect_store`, …), which want a single
+typed accessor — `session.services.memory` — rather than 483 individual
+public methods.
 
 **Effort.** Large, but splittable per attribute — the only A-item where
 partial adoption is genuinely useful.

@@ -253,7 +253,7 @@ class _Host(InnerLifeProvidersMixin):
         self._chat_db = SimpleNamespace(kv_get=kv.get, kv_set=kv.set)
         self._kv = kv
         self._long_arc_callback_session_count = session_count
-        self._long_arc_callback_force_next = force_next
+        self.debug_overrides.arm("long_arc_callback_force_next", force_next)
         self._last_long_arc_callback: Any = None
         self.user_display_name = "Jacob"
 
@@ -309,12 +309,12 @@ class ProviderTests(unittest.TestCase):
         lac.mark_fired(host._kv.set, now=datetime.now(timezone.utc))
         block = host._render_long_arc_callback_block("hi")  # short too
         self.assertNotEqual(block, "")
-        self.assertFalse(host._long_arc_callback_force_next)
+        self.assertFalse(host.debug_overrides.peek("long_arc_callback_force_next"))
 
     def test_force_next_consumed_on_miss(self) -> None:
         host = _Host(candidates=[], force_next=True)
         self.assertEqual(host._render_long_arc_callback_block("hi"), "")
-        self.assertFalse(host._long_arc_callback_force_next)
+        self.assertFalse(host.debug_overrides.peek("long_arc_callback_force_next"))
 
 
 if __name__ == "__main__":

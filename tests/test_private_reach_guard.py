@@ -47,13 +47,14 @@ RECEIVERS = frozenset({"session"})
 REFLECTIVE = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 
 # Reaches permitted per package. Lower these as conversions land; never raise
-# them. ``app/web`` goes to 0 once its public surface exists -- routes have a
-# controller to talk to, so they have no excuse. ``app/mcp/server_tools`` is a
-# debug surface whose whole job is poking at internals, so it gets a budget
-# rather than a ban, to be brought down as typed handle accessors arrive.
+# them. ``app/web`` is at 0: routes have a facade to talk to, so they have no
+# excuse. ``app/mcp/server_tools`` is a debug surface whose whole job is poking
+# at internals, so it gets a budget rather than a ban. It came down from 569
+# when the one-shot ``_force_*`` flags moved into ``session.debug_overrides``;
+# the rest waits on typed handle accessors for the subsystems.
 BUDGETS: dict[str, int] = {
     "app/web": 0,
-    "app/mcp/server_tools": 569,
+    "app/mcp/server_tools": 483,
 }
 
 MAX_REPORTED = 15

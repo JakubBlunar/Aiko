@@ -559,18 +559,10 @@ class SpeakingWorkersInitMixin:
         # current continuous sitting (re-arms the elapsed cue when it
         # changes); ``_fired_band`` is the strongest elapsed band already
         # surfaced this sitting; ``_gap_anchor`` is the latest-message ts
-        # the mid-session pause cue last fired from. ``_force_next`` is the
-        # MCP one-shot bypass.
+        # the mid-session pause cue last fired from.
         self._session_clock_burst_key: str | None = None
         self._session_clock_fired_band: str | None = None
         self._session_clock_gap_anchor: str | None = None
-        self._session_clock_force_next: bool = False
-        # J10: MCP one-shot bypass for the appreciation-beat cooldown.
-        self._appreciation_force_next: bool = False
-        # J9: MCP one-shot bypass for the reciprocal-vulnerability gates.
-        self._reciprocal_vulnerability_force_next: bool = False
-        # J9: MCP one-shot bypass for the reciprocal-vulnerability gates.
-        self._reciprocal_vulnerability_force_next: bool = False
         self._last_turn_promise_kept: bool = False
         self._last_turn_gift_received: bool = False
         # Wire all hot-path providers (each cheap: SQL/mirror reads or

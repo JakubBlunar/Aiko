@@ -290,6 +290,54 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_tool_pass raised: {exc}"
 
     @mcp.tool()
+    def list_debug_overrides(armed_only: bool = False) -> str:
+        """List the one-shot debug overrides: what exists and what is armed.
+
+        Every ``force_*`` tool arms one of these. Before this existed there
+        was no way to ask the question, so an override that never fired was
+        invisible until it went off in some later turn.
+
+        ``armed_only`` narrows the listing to what is currently pending.
+        Reading does not disarm anything.
+        """
+        try:
+            from app.core.session.debug_overrides import KNOWN_OVERRIDES
+
+            armed = session.debug_overrides.snapshot()
+            names = sorted(armed if armed_only else KNOWN_OVERRIDES)
+            return json.dumps(
+                {
+                    "armed_count": len(armed),
+                    "known_count": len(KNOWN_OVERRIDES),
+                    "overrides": [
+                        {
+                            "name": name,
+                            "armed": name in armed,
+                            "payload": armed.get(name),
+                            "description": KNOWN_OVERRIDES.get(name, ""),
+                        }
+                        for name in names
+                    ],
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"list_debug_overrides raised: {exc}"
+
+    @mcp.tool()
+    def clear_debug_overrides() -> str:
+        """Disarm every pending debug override.
+
+        The same call a session switch makes. Useful when a repro left
+        something armed and you want a clean turn without switching sessions.
+        """
+        try:
+            dropped = session.debug_overrides.clear()
+            return json.dumps({"cleared": dropped}, indent=2)
+        except Exception as exc:
+            return f"clear_debug_overrides raised: {exc}"
+
+    @mcp.tool()
     def feed_stt_partial(partial_text: str) -> str:
         """Inject a fake STT partial transcript for testing backchannel hints.
 
@@ -394,7 +442,7 @@ def register(mcp, session: "SessionController") -> None:
             agent = session._settings.agent
             flags = list(getattr(session, "_question_turn_flags", []) or [])
             remaining = int(
-                getattr(session, "_question_balance_suppress_remaining", 0)
+                session.debug_overrides.peek("question_balance_suppress_remaining", 0)
             )
             out = {
                 "enabled": bool(
@@ -437,7 +485,7 @@ def register(mcp, session: "SessionController") -> None:
             turns = max(
                 1, int(getattr(agent, "question_balance_suppress_turns", 2))
             )
-            session._question_balance_suppress_remaining = turns
+            session.debug_overrides.arm("question_balance_suppress_remaining", turns)
             return json.dumps(
                 {"ok": True, "suppress_remaining": turns},
                 indent=2,
@@ -526,7 +574,7 @@ def register(mcp, session: "SessionController") -> None:
                     },
                     indent=2,
                 )
-            session._tease_rhythm_force = norm
+            session.debug_overrides.arm("tease_rhythm_force", norm)
             return json.dumps({"ok": True, "cue": norm}, indent=2)
         except Exception as exc:
             return f"force_tease_rhythm failed: {exc}"

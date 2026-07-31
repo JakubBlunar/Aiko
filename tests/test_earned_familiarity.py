@@ -169,10 +169,10 @@ class ProviderTests(unittest.TestCase):
         # Shallow cluster that would normally be silent; force → deep.
         host = self._host(match=(1, "cooking", 0.1), size=3)
         host._earned_familiarity_cooldown = 4
-        host._earned_familiarity_force_next = True
+        host.debug_overrides.arm("earned_familiarity_force_next")
         out = host._render_earned_familiarity_block("cooking dinner tonight")
         self.assertTrue(out)
-        self.assertFalse(host._earned_familiarity_force_next)
+        self.assertFalse(host.debug_overrides.peek("earned_familiarity_force_next"))
         # min_sim dropped to 0 on the forced call.
         self.assertEqual(host._topic_graph.best_calls[-1]["min_sim"], 0.0)
         self.assertEqual(host._earned_familiarity_last["band"], "deep")

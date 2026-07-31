@@ -288,10 +288,10 @@ class ProviderTests(unittest.TestCase):
             "aiko.tease_last_offer_at",
             datetime.now(timezone.utc).isoformat(),
         )
-        host._tease_collection_force_next = True
+        host.debug_overrides.arm("tease_collection_force_next")
         block = host._render_tease_collection_block()
         self.assertIn("objectively chaotic", block)
-        self.assertFalse(host._tease_collection_force_next)
+        self.assertFalse(host.debug_overrides.peek("tease_collection_force_next"))
 
 
 class PostTurnHookTests(unittest.TestCase):

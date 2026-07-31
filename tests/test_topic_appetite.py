@@ -323,11 +323,11 @@ class ProviderTests(unittest.TestCase):
             comfort=-1.0,
             rows=[_Row("assistant", "x" * 400)] * 4,
         )
-        host._topic_appetite_force_next = True
+        host.debug_overrides.arm("topic_appetite_force_next")
         block = host._render_topic_appetite_block()
         self.assertIn("tapped out", block)
         # The force flag is one-shot.
-        self.assertFalse(host._topic_appetite_force_next)
+        self.assertFalse(host.debug_overrides.peek("topic_appetite_force_next"))
 
     def test_user_rows_ignored_in_share(self) -> None:
         # Plenty of short user rows must not count toward the share.

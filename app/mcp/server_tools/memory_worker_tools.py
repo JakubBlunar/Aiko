@@ -768,7 +768,7 @@ def register(mcp, session: "SessionController") -> None:
                     ),
                     "cooldown_remaining": cooldown,
                     "force_next": bool(
-                        getattr(session, "_misattunement_force_next", False),
+                        session.debug_overrides.peek("misattunement_force_next", False),
                     ),
                     "last_trigger": getattr(
                         session, "_last_misattunement_trigger", None,
@@ -830,7 +830,7 @@ def register(mcp, session: "SessionController") -> None:
         "Heads-up: {user} just gave a short reply..." block.
         """
         try:
-            session._misattunement_force_next = True
+            session.debug_overrides.arm("misattunement_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -900,7 +900,7 @@ def register(mcp, session: "SessionController") -> None:
                         session, "_pending_mood_inertia", None,
                     ),
                     "force_next": bool(
-                        getattr(session, "_mood_inertia_force", False)
+                        session.debug_overrides.peek("mood_inertia_force", False)
                     ),
                     "last_assessment": dict(last) if last else None,
                 },
@@ -924,7 +924,7 @@ def register(mcp, session: "SessionController") -> None:
         line lands via ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._mood_inertia_force = True
+            session.debug_overrides.arm("mood_inertia_force")
             return json.dumps(
                 {
                     "armed": True,
@@ -1013,9 +1013,7 @@ def register(mcp, session: "SessionController") -> None:
                         )
                     ),
                     "force_next": bool(
-                        getattr(
-                            session, "_opinion_injection_force_next", False,
-                        ),
+                        session.debug_overrides.peek("opinion_injection_force_next", False,),
                     ),
                     "last_fire": last_payload,
                     "llm_budget": llm_budget,
@@ -1087,7 +1085,7 @@ def register(mcp, session: "SessionController") -> None:
            really get along") rather than lecturing about health.
         """
         try:
-            session._opinion_injection_force_next = True
+            session.debug_overrides.arm("opinion_injection_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1134,7 +1132,7 @@ def register(mcp, session: "SessionController") -> None:
                 getattr(session, "_stance_recent_text", "") or ""
             ),
             "force_next": bool(
-                getattr(session, "_stance_persistence_force_next", False)
+                session.debug_overrides.peek("stance_persistence_force_next", False)
             ),
             "last_fire": getattr(session, "_last_stance_persistence", None),
         }
@@ -1154,7 +1152,7 @@ def register(mcp, session: "SessionController") -> None:
         ``stance-persistence fire:``.
         """
         try:
-            session._stance_persistence_force_next = True
+            session.debug_overrides.arm("stance_persistence_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1207,7 +1205,7 @@ def register(mcp, session: "SessionController") -> None:
                 getattr(session, "_long_arc_callback_session_count", 0) or 0
             ),
             "force_next": bool(
-                getattr(session, "_long_arc_callback_force_next", False)
+                session.debug_overrides.peek("long_arc_callback_force_next", False)
             ),
             "last_fire": getattr(session, "_last_long_arc_callback", None),
         }
@@ -1242,7 +1240,7 @@ def register(mcp, session: "SessionController") -> None:
         ``long-arc-callback fire:``.
         """
         try:
-            session._long_arc_callback_force_next = True
+            session.debug_overrides.arm("long_arc_callback_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1280,7 +1278,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_knowledge_gap_notice_force_next", False)
+                session.debug_overrides.peek("knowledge_gap_notice_force_next", False)
             ),
         }
         chat_db = getattr(session, "_chat_db", None)
@@ -1365,7 +1363,7 @@ def register(mcp, session: "SessionController") -> None:
         system_prompt.
         """
         try:
-            session._knowledge_gap_notice_force_next = True
+            session.debug_overrides.arm("knowledge_gap_notice_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1401,7 +1399,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_associative_wander_force_next", False)
+                session.debug_overrides.peek("associative_wander_force_next", False)
             ),
         }
         chat_db = getattr(session, "_chat_db", None)
@@ -1489,7 +1487,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._associative_wander_force_next = True
+            session.debug_overrides.arm("associative_wander_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1523,7 +1521,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_interest_drift_force_next", False)
+                session.debug_overrides.peek("interest_drift_force_next", False)
             ),
         }
         chat_db = getattr(session, "_chat_db", None)
@@ -1596,7 +1594,7 @@ def register(mcp, session: "SessionController") -> None:
         lands in ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._interest_drift_force_next = True
+            session.debug_overrides.arm("interest_drift_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1633,7 +1631,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_dormant_interest_force_next", False)
+                session.debug_overrides.peek("dormant_interest_force_next", False)
             ),
         }
         detector = getattr(session, "_topic_stagnation_detector", None)
@@ -1715,7 +1713,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._dormant_interest_force_next = True
+            session.debug_overrides.arm("dormant_interest_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1751,7 +1749,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_curiosity_gradient_force_next", False)
+                session.debug_overrides.peek("curiosity_gradient_force_next", False)
             ),
         }
         chat_db = getattr(session, "_chat_db", None)
@@ -1844,7 +1842,7 @@ def register(mcp, session: "SessionController") -> None:
         line lands in ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._curiosity_gradient_force_next = True
+            session.debug_overrides.arm("curiosity_gradient_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1959,7 +1957,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_topic_temperature_force_next", False)
+                session.debug_overrides.peek("topic_temperature_force_next", False)
             ),
             "cooldown_remaining": int(
                 getattr(session, "_topic_temperature_cooldown", 0) or 0
@@ -2054,7 +2052,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._topic_temperature_force_next = True
+            session.debug_overrides.arm("topic_temperature_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -2116,7 +2114,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_topic_confidence_force_next", False)
+                session.debug_overrides.peek("topic_confidence_force_next", False)
             ),
             "cooldown_remaining": int(
                 getattr(session, "_topic_confidence_cooldown", 0) or 0
@@ -2186,7 +2184,7 @@ def register(mcp, session: "SessionController") -> None:
         system_prompt.
         """
         try:
-            session._topic_confidence_force_next = True
+            session.debug_overrides.arm("topic_confidence_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -2220,7 +2218,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_earned_familiarity_force_next", False)
+                session.debug_overrides.peek("earned_familiarity_force_next", False)
             ),
             "cooldown_remaining": int(
                 getattr(session, "_earned_familiarity_cooldown", 0) or 0
@@ -2281,7 +2279,7 @@ def register(mcp, session: "SessionController") -> None:
         system_prompt.
         """
         try:
-            session._earned_familiarity_force_next = True
+            session.debug_overrides.arm("earned_familiarity_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -2312,7 +2310,7 @@ def register(mcp, session: "SessionController") -> None:
                 getattr(session._settings.agent, "user_expertise_enabled", True)
             ),
             "provider_force_next": bool(
-                getattr(session, "_user_expertise_force_next", False)
+                session.debug_overrides.peek("user_expertise_force_next", False)
             ),
             "cooldown_remaining": int(
                 getattr(session, "_user_expertise_cooldown", 0) or 0
@@ -2395,7 +2393,7 @@ def register(mcp, session: "SessionController") -> None:
         steer lands in ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._user_expertise_force_next = True
+            session.debug_overrides.arm("user_expertise_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -2620,7 +2618,7 @@ def register(mcp, session: "SessionController") -> None:
                 )
             ),
             "provider_force_next": bool(
-                getattr(session, "_upcoming_horizon_force_next", False)
+                session.debug_overrides.peek("upcoming_horizon_force_next", False)
             ),
             "cooldown_remaining": int(
                 getattr(session, "_upcoming_horizon_cooldown", 0) or 0
@@ -2678,7 +2676,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._upcoming_horizon_force_next = True
+            session.debug_overrides.arm("upcoming_horizon_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -2708,7 +2706,7 @@ def register(mcp, session: "SessionController") -> None:
         out: dict[str, Any] = {
             "enabled": bool(getattr(agent, "session_clock_enabled", True)),
             "force_next": bool(
-                getattr(session, "_session_clock_force_next", False)
+                session.debug_overrides.peek("session_clock_force_next", False)
             ),
             "burst_key": getattr(session, "_session_clock_burst_key", None),
             "fired_band": getattr(session, "_session_clock_fired_band", None),
@@ -2778,7 +2776,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail``'s system_prompt.
         """
         try:
-            session._session_clock_force_next = True
+            session.debug_overrides.arm("session_clock_force_next")
             return json.dumps(
                 {
                     "armed": True,

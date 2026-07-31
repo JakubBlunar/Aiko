@@ -187,7 +187,7 @@ class _Host(InnerLifeProvidersMixin):
         self._chat_db = _FakeChatDb()
         if seeds:
             self._chat_db.store[IDLE_SEEDS_KEY] = json.dumps(seeds)
-        self._idle_seed_force_next = force_next
+        self.debug_overrides.arm("idle_seed_force_next", force_next)
         self._gap_cue_surfaced = False
         self.user_display_name = "Jacob"
 
@@ -264,7 +264,7 @@ class ConsumerForceTests(unittest.TestCase):
         ).isoformat(timespec="seconds")
         out = host._render_idle_seed_block()
         self.assertTrue(out.startswith("Earlier"))
-        self.assertFalse(host._idle_seed_force_next)
+        self.assertFalse(host.debug_overrides.peek("idle_seed_force_next"))
 
 
 if __name__ == "__main__":

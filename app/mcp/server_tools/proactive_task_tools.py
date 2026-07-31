@@ -52,7 +52,7 @@ def register(mcp, session: "SessionController") -> None:
                 session, "_pending_turning_over_seconds", None,
             )
             force_next = bool(
-                getattr(session, "_turning_over_force_next", False),
+                session.debug_overrides.peek("turning_over_force_next", False),
             )
             last = getattr(session, "_last_turning_over", None)
             last_payload = None
@@ -247,7 +247,7 @@ def register(mcp, session: "SessionController") -> None:
            aside, not as an announcement.
         """
         try:
-            session._turning_over_force_next = True
+            session.debug_overrides.arm("turning_over_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -308,9 +308,7 @@ def register(mcp, session: "SessionController") -> None:
                         session, "_pending_away_activities_seconds", None
                     ),
                     "force_next": bool(
-                        getattr(
-                            session, "_away_activities_force_next", False
-                        )
+                        session.debug_overrides.peek("away_activities_force_next", False)
                     ),
                     "min_gap_hours": float(
                         getattr(
@@ -376,7 +374,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._away_activities_force_next = True
+            session.debug_overrides.arm("away_activities_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -520,7 +518,7 @@ def register(mcp, session: "SessionController") -> None:
                         )
                     ),
                     "force_next": bool(
-                        getattr(session, "_idle_seed_force_next", False)
+                        session.debug_overrides.peek("idle_seed_force_next", False)
                     ),
                     "ring": ring,
                     "surfaced_at": kv("idle_seed.surfaced_at"),
@@ -549,7 +547,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._idle_seed_force_next = True
+            session.debug_overrides.arm("idle_seed_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -594,7 +592,7 @@ def register(mcp, session: "SessionController") -> None:
                         session, "_pending_sleep_return_seconds", None
                     ),
                     "force_next": bool(
-                        getattr(session, "_sleep_return_force_next", False)
+                        session.debug_overrides.peek("sleep_return_force_next", False)
                     ),
                     "last_fire": getattr(session, "_last_sleep_return", None),
                 },
@@ -619,7 +617,7 @@ def register(mcp, session: "SessionController") -> None:
         dozed off ..." line in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._sleep_return_force_next = True
+            session.debug_overrides.arm("sleep_return_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -925,9 +923,7 @@ def register(mcp, session: "SessionController") -> None:
                         session, "_pending_forward_curiosity_seconds", None
                     ),
                     "force_next": bool(
-                        getattr(
-                            session, "_forward_curiosity_force_next", False
-                        )
+                        session.debug_overrides.peek("forward_curiosity_force_next", False)
                     ),
                     "min_gap_hours": float(
                         getattr(
@@ -994,7 +990,7 @@ def register(mcp, session: "SessionController") -> None:
         wondering ..." line in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._forward_curiosity_force_next = True
+            session.debug_overrides.arm("forward_curiosity_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1048,7 +1044,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                     is not None,
                     "force_next": bool(
-                        getattr(session, "_follow_up_force_next", False)
+                        session.debug_overrides.peek("follow_up_force_next", False)
                     ),
                     "cues": load_follow_up_cues(session._chat_db.kv_get),
                     "last_surfaced_at": kv("follow_up.last_surfaced_at"),
@@ -1100,7 +1096,7 @@ def register(mcp, session: "SessionController") -> None:
         in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._follow_up_force_next = True
+            session.debug_overrides.arm("follow_up_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1179,7 +1175,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                     is not None,
                     "force_next": bool(
-                        getattr(session, "_growth_witness_force_next", False)
+                        session.debug_overrides.peek("growth_witness_force_next", False)
                     ),
                     "sample_count": len(samples),
                     "findings": _gw.load_findings(session._chat_db.kv_get),
@@ -1238,7 +1234,7 @@ def register(mcp, session: "SessionController") -> None:
         in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._growth_witness_force_next = True
+            session.debug_overrides.arm("growth_witness_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1288,7 +1284,7 @@ def register(mcp, session: "SessionController") -> None:
         toward" line in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._aspiration_momentum_force_next = True
+            session.debug_overrides.arm("aspiration_momentum_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1364,7 +1360,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                     is not None,
                     "force_next": bool(
-                        getattr(session, "_self_callback_force_next", False)
+                        session.debug_overrides.peek("self_callback_force_next", False)
                     ),
                     "callbacks": _sc.load_callbacks(session._chat_db.kv_get),
                     "last_fired_at": kv("self_callback.last_fired_at"),
@@ -1410,7 +1406,7 @@ def register(mcp, session: "SessionController") -> None:
         line in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._self_callback_force_next = True
+            session.debug_overrides.arm("self_callback_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1423,6 +1419,77 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"force_self_callback_surface raised: {exc}"
+
+    @mcp.tool()
+    def force_tension_surface() -> str:
+        """Arm a one-shot bypass on the tension-cue watermark.
+
+        The provider has always named this tool in its docstring, but the
+        tool did not exist until the debug overrides were collected into a
+        registry -- the override could only be reached from a unit test.
+
+        The ring still has to be non-empty.
+        """
+        try:
+            session.debug_overrides.arm("tension_force_next")
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the tension watermark; "
+                        "ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_tension_surface raised: {exc}"
+
+    @mcp.tool()
+    def force_appreciation_surface() -> str:
+        """J10 — arm a one-shot bypass on the appreciation-beat cooldown.
+
+        The closeness gate still applies: appreciation only reads right with
+        real warmth behind it, so a cold relationship stays silent even with
+        this armed.
+        """
+        try:
+            session.debug_overrides.arm("appreciation_force_next")
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the appreciation cooldown; "
+                        "the closeness gate still applies"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_appreciation_surface raised: {exc}"
+
+    @mcp.tool()
+    def force_reciprocal_vulnerability_surface() -> str:
+        """J9 — arm a one-shot bypass on the reciprocal-vulnerability gates.
+
+        Bypasses every gate (stage, trust floor, K15 budget, the user's
+        current mood, the long wall-clock cooldown) except the master
+        enable switch.
+        """
+        try:
+            session.debug_overrides.arm("reciprocal_vulnerability_force_next")
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly bypasses every reciprocal-"
+                        "vulnerability gate except the master switch"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_reciprocal_vulnerability_surface raised: {exc}"
 
     @mcp.tool()
     def get_wellbeing_concern_state() -> str:
@@ -1526,9 +1593,7 @@ def register(mcp, session: "SessionController") -> None:
                     ),
                     "worker_registered": worker is not None,
                     "force_next": bool(
-                        getattr(
-                            session, "_wellbeing_concern_force_next", False
-                        )
+                        session.debug_overrides.peek("wellbeing_concern_force_next", False)
                     ),
                     "findings": _wc.load_findings(session._chat_db.kv_get),
                     "last_fired_at": kv("wellbeing_concern.last_fired_at"),
@@ -1578,7 +1643,7 @@ def register(mcp, session: "SessionController") -> None:
         in ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._wellbeing_concern_force_next = True
+            session.debug_overrides.arm("wellbeing_concern_force_next")
             return json.dumps(
                 {
                     "armed": True,
@@ -1655,7 +1720,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                     is not None,
                     "force_next": bool(
-                        getattr(session, "_shared_ritual_force_next", False)
+                        session.debug_overrides.peek("shared_ritual_force_next", False)
                     ),
                     "rituals": rituals,
                     "pending": pending,
@@ -1702,7 +1767,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._shared_ritual_force_next = True
+            session.debug_overrides.arm("shared_ritual_force_next")
             return json.dumps(
                 {
                     "armed": True,

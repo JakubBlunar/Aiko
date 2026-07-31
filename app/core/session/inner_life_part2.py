@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 
 log = logging.getLogger("app.session")
@@ -34,7 +35,7 @@ def _parse_dt_utc(value):
     return dt.astimezone(timezone.utc)
 
 
-class InnerLifePart2Mixin:
+class InnerLifePart2Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 2 of 4)."""
 
     def _render_knowledge_gaps_block(self, user_text: str) -> str:
@@ -524,10 +525,8 @@ class InnerLifePart2Mixin:
         # MCP-debug bypass: ``force_next`` ignores the pending-slot
         # gate for this one call. Cleared whether we fire or not.
         force_next = bool(
-            getattr(self, "_turning_over_force_next", False)
+            self._debug_overrides.take("turning_over_force_next", False)
         )
-        if force_next:
-            self._turning_over_force_next = False
 
         seconds = getattr(self, "_pending_turning_over_seconds", None)
         if not force_next and seconds is None:
@@ -711,9 +710,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_sleep_return_force_next", False))
-        if force_next:
-            self._sleep_return_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("sleep_return_force_next", False)
+        )
 
         # One-of guard: turning_over already surfaced a gap cue this
         # assembly. Stand down (unless explicitly forced).
@@ -884,10 +883,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_away_activities_force_next", False)
+            self._debug_overrides.take("away_activities_force_next", False)
         )
-        if force_next:
-            self._away_activities_force_next = False
 
         # One-of guard: turning_over already surfaced a gap cue this
         # assembly. Stand down (unless explicitly forced).
@@ -998,10 +995,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_forward_curiosity_force_next", False)
+            self._debug_overrides.take("forward_curiosity_force_next", False)
         )
-        if force_next:
-            self._forward_curiosity_force_next = False
 
         # One-of guard: a higher-priority gap cue already surfaced this
         # assembly. Stand down (unless explicitly forced).
@@ -1149,9 +1144,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_idle_seed_force_next", False))
-        if force_next:
-            self._idle_seed_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("idle_seed_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1268,9 +1263,9 @@ class InnerLifePart2Mixin:
         if self._question_balance_suppressed():
             return ""
 
-        force_next = bool(getattr(self, "_follow_up_force_next", False))
-        if force_next:
-            self._follow_up_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("follow_up_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1345,9 +1340,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_growth_witness_force_next", False))
-        if force_next:
-            self._growth_witness_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("growth_witness_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1418,10 +1413,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_aspiration_momentum_force_next", False)
+            self._debug_overrides.take("aspiration_momentum_force_next", False)
         )
-        if force_next:
-            self._aspiration_momentum_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1492,9 +1485,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_tension_force_next", False))
-        if force_next:
-            self._tension_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("tension_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1562,9 +1555,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_self_callback_force_next", False))
-        if force_next:
-            self._self_callback_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("self_callback_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1640,10 +1633,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_wellbeing_concern_force_next", False)
+            self._debug_overrides.take("wellbeing_concern_force_next", False)
         )
-        if force_next:
-            self._wellbeing_concern_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1714,9 +1705,9 @@ class InnerLifePart2Mixin:
         if not bool(getattr(agent, "shared_ritual_enabled", True)):
             return ""
 
-        force_next = bool(getattr(self, "_shared_ritual_force_next", False))
-        if force_next:
-            self._shared_ritual_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("shared_ritual_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -1819,9 +1810,9 @@ class InnerLifePart2Mixin:
         if store is None:
             return ""
 
-        force = bool(getattr(self, "_upcoming_horizon_force_next", False))
-        if force:
-            self._upcoming_horizon_force_next = False
+        force = bool(
+            self._debug_overrides.take("upcoming_horizon_force_next", False)
+        )
 
         try:
             from app.core.conversation.upcoming_horizon import (
@@ -1908,9 +1899,9 @@ class InnerLifePart2Mixin:
         ):
             return ""
 
-        force_next = bool(getattr(self, "_knowledge_gap_notice_force_next", False))
-        if force_next:
-            self._knowledge_gap_notice_force_next = False
+        force_next = bool(
+            self._debug_overrides.take("knowledge_gap_notice_force_next", False)
+        )
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -2008,10 +1999,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_associative_wander_force_next", False)
+            self._debug_overrides.take("associative_wander_force_next", False)
         )
-        if force_next:
-            self._associative_wander_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -2114,10 +2103,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_interest_drift_force_next", False)
+            self._debug_overrides.take("interest_drift_force_next", False)
         )
-        if force_next:
-            self._interest_drift_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -2234,10 +2221,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_dormant_interest_force_next", False)
+            self._debug_overrides.take("dormant_interest_force_next", False)
         )
-        if force_next:
-            self._dormant_interest_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -2375,10 +2360,8 @@ class InnerLifePart2Mixin:
             return ""
 
         force_next = bool(
-            getattr(self, "_curiosity_gradient_force_next", False)
+            self._debug_overrides.take("curiosity_gradient_force_next", False)
         )
-        if force_next:
-            self._curiosity_gradient_force_next = False
 
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None or not hasattr(chat_db, "kv_get"):
@@ -2490,9 +2473,9 @@ class InnerLifePart2Mixin:
         if not bool(getattr(graph, "persistent", False)):
             return ""
 
-        force = bool(getattr(self, "_topic_temperature_force_next", False))
-        if force:
-            self._topic_temperature_force_next = False
+        force = bool(
+            self._debug_overrides.take("topic_temperature_force_next", False)
+        )
 
         cooldown = int(getattr(self, "_topic_temperature_cooldown", 0) or 0)
         if cooldown > 0 and not force:
@@ -2715,9 +2698,9 @@ class InnerLifePart2Mixin:
         if not bool(getattr(graph, "persistent", False)):
             return ""
 
-        force = bool(getattr(self, "_topic_confidence_force_next", False))
-        if force:
-            self._topic_confidence_force_next = False
+        force = bool(
+            self._debug_overrides.take("topic_confidence_force_next", False)
+        )
 
         cooldown = int(getattr(self, "_topic_confidence_cooldown", 0) or 0)
         if cooldown > 0 and not force:
@@ -2833,9 +2816,9 @@ class InnerLifePart2Mixin:
         if not bool(getattr(graph, "persistent", False)):
             return ""
 
-        force = bool(getattr(self, "_earned_familiarity_force_next", False))
-        if force:
-            self._earned_familiarity_force_next = False
+        force = bool(
+            self._debug_overrides.take("earned_familiarity_force_next", False)
+        )
 
         cooldown = int(getattr(self, "_earned_familiarity_cooldown", 0) or 0)
         if cooldown > 0 and not force:
@@ -2936,9 +2919,9 @@ class InnerLifePart2Mixin:
         if not bool(getattr(graph, "persistent", False)):
             return ""
 
-        force = bool(getattr(self, "_user_expertise_force_next", False))
-        if force:
-            self._user_expertise_force_next = False
+        force = bool(
+            self._debug_overrides.take("user_expertise_force_next", False)
+        )
 
         cooldown = int(getattr(self, "_user_expertise_cooldown", 0) or 0)
         if cooldown > 0 and not force:
@@ -3139,8 +3122,7 @@ class InnerLifePart2Mixin:
             getattr(self._settings.agent, "mood_inertia_enabled", True)
         ):
             return ""
-        if getattr(self, "_mood_inertia_force", False):
-            self._mood_inertia_force = False
+        if self._debug_overrides.take("mood_inertia_force", False):
             try:
                 from app.core.affect import mood_inertia
 
@@ -3243,10 +3225,9 @@ class InnerLifePart2Mixin:
         # Cleared whether we fire or not so the bypass is strictly
         # one-turn.
         force_next = bool(
-            getattr(self, "_misattunement_force_next", False)
+            self._debug_overrides.take("misattunement_force_next", False)
         )
         if force_next:
-            self._misattunement_force_next = False
             cooldown_for_detect = 0
         else:
             cooldown_for_detect = self._misattunement_cooldown
@@ -3387,9 +3368,8 @@ class InnerLifePart2Mixin:
             return ""
 
         # MCP-debug bypass: force a specific mode for one turn.
-        force_mode = getattr(self, "_implicit_need_force_mode", None)
+        force_mode = self._debug_overrides.take("implicit_need_force_mode")
         if force_mode is not None:
-            self._implicit_need_force_mode = None
             forced = _need.NeedResult(
                 str(force_mode), 99.0, {}, ("forced",),
             )

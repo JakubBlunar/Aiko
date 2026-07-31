@@ -24,6 +24,11 @@ reads.
 Names are registered in :data:`KNOWN_OVERRIDES`, which doubles as the
 description the ``list_debug_overrides`` MCP tool reports.
 
+Out of scope: ``TurnRunner._tool_gate_force_next``. It is the same kind of
+one-shot flag but it lives on the runner rather than the controller, so it
+would need the runner to hold a reference to this registry. Worth doing; not
+worth widening this change for.
+
 Thread safety: providers consume on the brain-loop and worker threads while the
 MCP server arms from its own. :meth:`take` has to be read-and-disarm as one
 step or "one-shot" is a lie under concurrency, so every operation takes a lock.
@@ -83,6 +88,16 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "mask_force_slip_next": "K60 - make the next masked episode slip once.",
     "vulnerability_budget_force_reset": "Reset the vulnerability budget before the next check.",
     "day_color_force_reroll": "K27 - reroll today's colour once.",
+    # ── consumed by a provider but, until now, unreachable ───────────
+    # Each of these is read and cleared by a provider and described in its
+    # docstring as an MCP bypass -- ``_tension_force_next`` even names the
+    # tool -- but no tool ever armed one, so the documented behaviour could
+    # only be reached from a test. Registering them is what lets the arm
+    # tools below exist.
+    "appreciation_force_next": "J10 - bypass the appreciation-beat cooldown once.",
+    "reciprocal_vulnerability_force_next": "J9 - bypass the reciprocal-vulnerability gates once.",
+    "tension_force_next": "Bypass the tension-cue watermark once (ring must still be non-empty).",
+    "vulnerability_budget_force_spent": "K15 - render the budget cue as if this much were spent.",
     # ── payload-carrying: the value is the override ──────────────────
     "day_color_force_next": "K27 - render this palette name instead of today's roll.",
     "implicit_need_force_mode": "K69 - pin the next turn's response-mode steer to this mode.",
@@ -200,3 +215,36 @@ class DebugOverrides:
 
     def __repr__(self) -> str:
         return f"DebugOverrides({sorted(self.snapshot())!r})"
+
+
+class DebugOverridesHostMixin:
+    """Gives a class a :class:`DebugOverrides`, created on first use.
+
+    Mixed into every provider mixin that consumes an override. The laziness
+    is for the tests: they exercise providers through small hand-built hosts
+    that inherit one mixin and set up only the handful of attributes the
+    provider under test reads. Requiring each of those ~40 hosts to also
+    construct a registry would be pure ceremony, and forgetting one would
+    surface as an ``AttributeError`` in an unrelated assertion.
+
+    :class:`SessionController` still builds its registry explicitly in
+    ``__init__`` -- hence the setter -- so the real object's state is not
+    conjured by a property read.
+    """
+
+    @property
+    def debug_overrides(self) -> DebugOverrides:
+        """The armed one-shot debug overrides. Public for the MCP tools."""
+        return self._debug_overrides
+
+    @property
+    def _debug_overrides(self) -> DebugOverrides:
+        registry = self.__dict__.get("_debug_overrides_registry")
+        if registry is None:
+            registry = DebugOverrides()
+            self.__dict__["_debug_overrides_registry"] = registry
+        return registry
+
+    @_debug_overrides.setter
+    def _debug_overrides(self, registry: DebugOverrides) -> None:
+        self.__dict__["_debug_overrides_registry"] = registry

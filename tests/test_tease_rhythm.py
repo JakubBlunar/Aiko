@@ -155,7 +155,7 @@ class _GateHost(PostTurnMixin):
         self._last_tease_message_id: int | None = None
         self._pending_tease_cue: str | None = None
         self._tease_cue_cooldown = 0
-        self._tease_rhythm_force: str | None = None
+        self.debug_overrides.disarm("tease_rhythm_force")
         self._user_id = "u1"
         self._relationship_axes_store = _FakeAxesStore(humor)
         self._reactions = reactions or {}
@@ -250,7 +250,7 @@ class _ProviderHost(InnerLifeProvidersMixin):
     ) -> None:
         self._settings = SimpleNamespace(agent=agent or _agent())
         self._pending_tease_cue = pending
-        self._tease_rhythm_force = force
+        self.debug_overrides.arm("tease_rhythm_force", force)
         self.user_display_name = "Jacob"
 
 
@@ -271,7 +271,7 @@ class ProviderTests(unittest.TestCase):
         host = _ProviderHost(force=CUE_EASE_OFF)
         out = host._render_tease_rhythm_block()
         self.assertIn("ease off", out.lower())
-        self.assertIsNone(host._tease_rhythm_force)
+        self.assertIsNone(host.debug_overrides.peek("tease_rhythm_force"))
 
     def test_master_switch_off(self) -> None:
         host = _ProviderHost(

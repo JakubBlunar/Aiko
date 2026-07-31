@@ -189,7 +189,7 @@ class _Host(InnerLifePart2Mixin):
     def __init__(self) -> None:
         self._settings = _Settings()
         self._chat_db = _KV()
-        self._knowledge_gap_notice_force_next = False
+        self.debug_overrides.disarm("knowledge_gap_notice_force_next")
 
 
 class ProviderTests(unittest.TestCase):
@@ -246,7 +246,7 @@ class ProviderTests(unittest.TestCase):
     def test_force_next_bypasses_relevance(self) -> None:
         host = _Host()
         self._seed(host)
-        host._knowledge_gap_notice_force_next = True
+        host.debug_overrides.arm("knowledge_gap_notice_force_next")
         # Empty user_text + irrelevant: force still surfaces newest.
         out = host._render_knowledge_gap_notice_block("")
         self.assertIn("python", out.lower())

@@ -16,6 +16,7 @@ import logging
 from typing import Any
 from app.core.infra.settings import AppSettings
 from collections.abc import Callable
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 from app.core.session.session_state import SessionState
 from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.infra.crash_logging import log_event
@@ -29,7 +30,7 @@ import uuid
 log = logging.getLogger("app.session")
 
 
-class LifecycleMixin:
+class LifecycleMixin(DebugOverridesHostMixin):
     """Identity, session switch/clear, model getters, accessors, shutdown."""
 
     @property
@@ -177,35 +178,19 @@ class LifecycleMixin:
         # + don't-repeat ring stay in kv_meta on purpose (a long-arc
         # callback should remain rare across a session switch, not reset).
         self._long_arc_callback_session_count = 0
+        # Every armed MCP debug override, so one that never fired can't go
+        # off in the session the user just switched to. This used to be a
+        # hand-written list that covered 11 of the 43 flags.
+        self._debug_overrides.clear()
         # K28 — wipe any stashed turning-over slot so the new session
-        # doesn't inherit a "this is a comeback" cue from the prior
-        # one. The force-next bypass and last-fire diagnostic also
-        # clear so MCP debug state matches the visible session.
+        # doesn't inherit a "this is a comeback" cue from the prior one.
         self._pending_turning_over_seconds = None
-        self._turning_over_force_next = False
         self._last_turning_over = None
         # K36 — wipe the away-activities slot on session switch too.
         self._pending_away_activities_seconds = None
-        self._away_activities_force_next = False
         # K34 — wipe the forward-curiosity slot on session switch too.
         self._pending_forward_curiosity_seconds = None
-        self._forward_curiosity_force_next = False
-        # Follow-up cue: clear the MCP force-next flag on session switch
-        # (the cue ring + watermark live in kv_meta, not per-session).
-        self._follow_up_force_next = False
-        # K70 growth-witness: clear the MCP force-next flag on switch
-        # (ring + watermark live in kv_meta, not per-session).
-        self._growth_witness_force_next = False
-        # K71 self-callback: clear the MCP force-next flag on switch.
-        self._self_callback_force_next = False
-        # L14 aspiration-momentum: clear the MCP force-next flag on switch.
-        self._aspiration_momentum_force_next = False
-        # K72 wellbeing-concern: clear the MCP force-next flag on switch.
-        self._wellbeing_concern_force_next = False
-        # K73 shared-ritual: clear the MCP force-next flag on switch.
-        self._shared_ritual_force_next = False
-        # K75 user-expertise: clear the provider cooldown + force flag.
-        self._user_expertise_force_next = False
+        # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None
         # K38 — wipe the self-correction slot + cooldown on switch.
@@ -223,8 +208,6 @@ class LifecycleMixin:
         # live episodes intentionally DO (they're kv-backed feelings
         # with wall-clock decay, not per-session state).
         self._pending_emotion_triggers = []
-        # K60 — the one-shot slip bypass doesn't cross sessions.
-        self._mask_force_slip_next = False
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -287,9 +270,12 @@ class LifecycleMixin:
         # K29 — wiping the conversation also resets per-session
         # counters; the cap is about *this conversation*, not the
         # process lifetime.
+        # Every armed MCP debug override. The hand-written list this replaces
+        # covered 14 of the 43 flags, and disagreed with the switch_session
+        # list about three more.
+        self._debug_overrides.clear()
         self._opinion_injection_session_count = 0
         self._opinion_injection_cooldown = 0
-        self._opinion_injection_force_next = False
         self._last_opinion_injection = None
         self._opinion_injection_pending_borderline = None
         self._opinion_injection_pending_cue = None
@@ -297,14 +283,12 @@ class LifecycleMixin:
         # K46 — clear the warm-stance window + diagnostics on a full wipe.
         self._stance_recent_window = 0
         self._stance_recent_text = ""
-        self._stance_persistence_force_next = False
         self._last_stance_persistence = None
         # K63 — a full memory wipe resets everything, including the kv
         # cooldown + don't-repeat ring (the memories they reference are
         # gone). Best-effort kv clear so a stale id can't suppress a
         # fresh callback after the user nukes their history.
         self._long_arc_callback_session_count = 0
-        self._long_arc_callback_force_next = False
         self._last_long_arc_callback = None
         try:
             from app.core.conversation import long_arc_callback as _lac
@@ -314,30 +298,14 @@ class LifecycleMixin:
         except Exception:
             pass
         # K28 — same logic: a full clear should leave no stashed
-        # turning-over slot or force-next bypass.
+        # turning-over slot.
         self._pending_turning_over_seconds = None
-        self._turning_over_force_next = False
         self._last_turning_over = None
         # K36 — clear the away-activities slot on a full history wipe.
         self._pending_away_activities_seconds = None
-        self._away_activities_force_next = False
         # K34 — clear the forward-curiosity slot on a full history wipe.
         self._pending_forward_curiosity_seconds = None
-        self._forward_curiosity_force_next = False
-        # Follow-up cue: clear the MCP force-next flag on a full wipe.
-        self._follow_up_force_next = False
-        # K70 growth-witness: clear the MCP force-next flag on a full wipe.
-        self._growth_witness_force_next = False
-        # K71 self-callback: clear the MCP force-next flag on a full wipe.
-        self._self_callback_force_next = False
-        # L14 aspiration-momentum: clear the MCP force-next flag on a full wipe.
-        self._aspiration_momentum_force_next = False
-        # K72 wellbeing-concern: clear the MCP force-next flag on a wipe.
-        self._wellbeing_concern_force_next = False
-        # K73 shared-ritual: clear the MCP force-next flag on a wipe.
-        self._shared_ritual_force_next = False
-        # K75 user-expertise: clear the provider cooldown + force flag.
-        self._user_expertise_force_next = False
+        # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None
         # K38 — clear the self-correction slot + cooldown on a wipe.
@@ -353,8 +321,6 @@ class LifecycleMixin:
         # K57 — staged triggers die with the history (live episodes
         # persist in kv_meta by design).
         self._pending_emotion_triggers = []
-        # K60 — the one-shot slip bypass dies with the history too.
-        self._mask_force_slip_next = False
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

@@ -986,16 +986,6 @@ class SessionController(
 
         self._init_runtime_and_hooks(settings)
 
-    @property
-    def debug_overrides(self) -> DebugOverrides:
-        """One-shot overrides the MCP debug tools arm for the next turn.
-
-        Public because the tools are the only thing that arms them; the
-        providers that consume them are mixins on this class and reach the
-        registry directly.
-        """
-        return self._debug_overrides
-
     # ── State ─────────────────────────────────────────────────────────
 
     # Session-lifecycle methods (identity, session switch/clear, model

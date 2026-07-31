@@ -74,7 +74,7 @@ class _Host(InnerLifeProvidersMixin):
         self._relationship_axes_store = _AxesStore(closeness)
         self._shared_moments_store = _Store(rows) if store else None
         self._chat_db = _KvDb(kv) if chat_db else None
-        self._appreciation_force_next = False
+        self.debug_overrides.disarm("appreciation_force_next")
         self.relationship_stage_now = lambda: stage  # type: ignore[assignment]
 
 
@@ -147,9 +147,9 @@ class AppreciationProviderTests(unittest.TestCase):
         # Low closeness + fresh cooldown would normally suppress.
         host = _Host(rows=_GOOD, closeness=-1.0,
                      kv={_KV_APPRECIATION_AT: _iso(0.0)})
-        host._appreciation_force_next = True
+        host.debug_overrides.arm("appreciation_force_next")
         self.assertTrue(host._render_appreciation_block())
-        self.assertFalse(host._appreciation_force_next)
+        self.assertFalse(host.debug_overrides.peek("appreciation_force_next"))
 
     def test_close_stage_softer_tone(self) -> None:
         block = _Host(rows=_GOOD, stage="close")._render_appreciation_block()

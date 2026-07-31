@@ -206,10 +206,10 @@ class ProviderTests(unittest.TestCase):
         host = _Host(_rows(70, 50, 30, 12, 2, 0))
         self.assertTrue(host._render_session_clock_block())
         self.assertEqual(host._render_session_clock_block(), "")  # suppressed
-        host._session_clock_force_next = True
+        host.debug_overrides.arm("session_clock_force_next")
         out = host._render_session_clock_block()
         self.assertIn("been talking for", out)
-        self.assertFalse(host._session_clock_force_next)
+        self.assertFalse(host.debug_overrides.peek("session_clock_force_next"))
 
 
 if __name__ == "__main__":
