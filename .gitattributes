@@ -1,6 +1,53 @@
-# Shell scripts and container files must stay LF so they work when copied
-# into a Linux image, regardless of the contributor's core.autocrlf setting.
-*.sh text eol=lf
+# Line endings: LF in the repository AND in the working tree, on every
+# platform. This matches `.editorconfig`'s `end_of_line = lf`, which has
+# declared LF for the whole repo since it was added.
+#
+# Why this file has to say it: without a `text` attribute git stores whatever
+# bytes the authoring tool happened to write, and this repo has
+# `core.autocrlf=false`, so nothing normalises. The result was 1089 CRLF files
+# beside 19 LF ones -- and, worse, a file rewritten by a different tool flips
+# wholesale, so git reports a one-line change as a full-file rewrite. That is
+# the diff noise this fixes.
+#
+# `eol=lf` (rather than bare `text=auto`) also pins the *working tree*, so a
+# Windows checkout matches what `.editorconfig` tells the editor to write and
+# the two can't disagree.
+* text=auto eol=lf
+
+# ── Binary assets: never touch ────────────────────────────────────────
+# `text=auto` already spares these via content detection, but detection reads
+# only the first few KB, so declare the ones we ship explicitly. The Live2D
+# rig formats are listed for the same reason `.editorconfig` lists them: the
+# assets live outside git today (`data/`), and a future `git add` of a rig
+# must not be corrupted by normalisation.
+*.png   -text
+*.ico   -text
+*.svg   text eol=lf
+*.safetensors -text
+*.moc3  -text
+*.moc   -text
+*.cdi3.json -text
+*.wav   -text
+*.mp3   -text
+*.ogg   -text
+*.woff  -text
+*.woff2 -text
+*.ttf   -text
+
+# ── Files where LF is load-bearing, not cosmetic ──────────────────────
+# Redundant under the blanket rule above, and kept anyway: these are the ones
+# whose breakage is silent and remote. A CRLF `entrypoint.sh` copied into a
+# Linux image fails at boot with `/usr/bin/env: 'sh\r': No such file or
+# directory` -- see docs/docker.md. Spelling them out means a future edit to
+# the blanket rule can't quietly reintroduce that.
+*.sh    text eol=lf
 docker/entrypoint.sh text eol=lf
 Dockerfile text eol=lf
 .dockerignore text eol=lf
+
+# ── Generated / vendored: keep out of diffs and merges ────────────────
+package-lock.json -diff linguist-generated
+web/package-lock.json -diff linguist-generated
+web/src-tauri/Cargo.lock -diff linguist-generated
+requirements.lock -diff
+web/public/live2d/*.min.js -diff linguist-vendored
