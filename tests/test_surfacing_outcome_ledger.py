@@ -24,6 +24,12 @@ from tempfile import TemporaryDirectory
 
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
+from app.core.memory.echo_detector import (
+    ECHO_LEXICAL,
+    ECHO_NONE,
+    ECHO_SEMANTIC,
+    EchoVerdict,
+)
 from app.core.memory.surfacing_outcome_store import (
     ITEM_KIND_CLUSTER,
     ITEM_KIND_CONCEPT,
@@ -95,6 +101,7 @@ class SchemaTests(unittest.TestCase):
                 {
                     "assistant_message_id", "item_kind", "item_id", "lane",
                     "surface_reason", "score", "rank", "echoed",
+                    "echo_kind", "echo_score",
                     "engagement_label", "created_at", "settled_at",
                 },
                 cols,
@@ -131,6 +138,82 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(store.add_many(mid, _concepts(7)), 1)
             self.assertEqual(store.count(), 1)
             self.assertEqual(len(f.db.get_messages("s1")), 1)
+        finally:
+            f.close()
+
+    def test_legacy_v26_db_gains_the_echo_columns_in_place(self) -> None:
+        """v27 is the first ledger bump with a real ALTER, so unlike the
+        v26 entry this one has to be exercised: the table already exists,
+        so the idempotent CREATE would not add the new columns.
+
+        Existing rows must keep NULL on both. Back-filling ``lexical``
+        would assert a semantic comparison had been made and lost, when in
+        fact none was ever attempted for those turns.
+        """
+        f = _Fixture()
+        try:
+            conn = f.db._get_conn()
+            conn.execute("ALTER TABLE surfacing_outcomes DROP COLUMN echo_kind")
+            conn.execute("ALTER TABLE surfacing_outcomes DROP COLUMN echo_score")
+            conn.execute(
+                "INSERT INTO surfacing_outcomes "
+                "(assistant_message_id, item_kind, item_id, lane, "
+                " surface_reason, score, rank, echoed, created_at) "
+                "VALUES (5, 'concept', 42, '', '', 0.0, 0, 1, ?)",
+                (timephrase.utcnow().isoformat(),),
+            )
+            conn.execute("UPDATE schema_version SET version = 26")
+            conn.commit()
+            conn.close()
+            f.db._local.conn = None
+
+            f.db = ChatDatabase(f.db_path)
+            conn = f.db._get_conn()
+            self.assertEqual(
+                int(conn.execute(
+                    "SELECT version FROM schema_version LIMIT 1",
+                ).fetchone()[0]),
+                _SCHEMA_VERSION,
+            )
+            row = conn.execute(
+                "SELECT echoed, echo_kind, echo_score FROM surfacing_outcomes"
+            ).fetchone()
+            self.assertEqual(int(row[0]), 1)
+            self.assertIsNone(row[1])
+            self.assertIsNone(row[2])
+
+            # And the widened write path works against the migrated table.
+            store = SurfacingOutcomeStore(f.db)
+            self.assertEqual(
+                store.add_many(
+                    5, _concepts(7),
+                    echoes={(ITEM_KIND_CONCEPT, 7): EchoVerdict(
+                        ECHO_SEMANTIC, 0.71,
+                    )},
+                ),
+                1,
+            )
+        finally:
+            f.close()
+
+    def test_reopening_an_up_to_date_db_does_not_duplicate_columns(
+        self,
+    ) -> None:
+        """The ALTER is guarded by a swallowed OperationalError, so a
+        no-op reopen has to stay a no-op rather than a logged failure.
+        """
+        f = _Fixture()
+        try:
+            f.db._local.conn.close()
+            f.db._local.conn = None
+            f.db = ChatDatabase(f.db_path)
+            cols = [
+                r[1] for r in f.db._get_conn().execute(
+                    "PRAGMA table_info(surfacing_outcomes)"
+                )
+            ]
+            self.assertEqual(cols.count("echo_kind"), 1)
+            self.assertEqual(cols.count("echo_score"), 1)
         finally:
             f.close()
 
@@ -209,20 +292,42 @@ class StoreWriteTests(unittest.TestCase):
                     SurfacedItem(ITEM_KIND_CONCEPT, 2),
                     SurfacedItem(ITEM_KIND_CLUSTER, 3),
                 ],
-                echoed={
-                    (ITEM_KIND_CONCEPT, 1): True,
-                    (ITEM_KIND_CONCEPT, 2): False,
+                echoes={
+                    (ITEM_KIND_CONCEPT, 1): EchoVerdict(ECHO_LEXICAL, 4.0),
+                    (ITEM_KIND_CONCEPT, 2): EchoVerdict(),
                 },
             )
             got = {
-                (r[0], int(r[1])): r[2]
+                (r[0], int(r[1])): (r[2], r[3], r[4])
                 for r in f.db._get_conn().execute(
-                    "SELECT item_kind, item_id, echoed FROM surfacing_outcomes"
+                    "SELECT item_kind, item_id, echoed, echo_kind, echo_score "
+                    "FROM surfacing_outcomes"
                 )
             }
-            self.assertEqual(got[(ITEM_KIND_CONCEPT, 1)], 1)
-            self.assertEqual(got[(ITEM_KIND_CONCEPT, 2)], 0)
-            self.assertIsNone(got[(ITEM_KIND_CLUSTER, 3)])
+            self.assertEqual(got[(ITEM_KIND_CONCEPT, 1)], (1, ECHO_LEXICAL, 4.0))
+            self.assertEqual(got[(ITEM_KIND_CONCEPT, 2)], (0, ECHO_NONE, 0.0))
+            self.assertEqual(got[(ITEM_KIND_CLUSTER, 3)], (None, None, None))
+        finally:
+            f.close()
+
+    def test_a_sub_floor_cosine_is_still_recorded(self) -> None:
+        """The near misses are the calibration data. A floor cannot be
+        re-derived from a table that only kept the rows that cleared the
+        floor we happened to guess first.
+        """
+        f = _Fixture()
+        try:
+            f.store.add_many(
+                13,
+                [SurfacedItem(ITEM_KIND_MEMORY, 7)],
+                echoes={(ITEM_KIND_MEMORY, 7): EchoVerdict(ECHO_NONE, 0.58)},
+            )
+            row = f.db._get_conn().execute(
+                "SELECT echoed, echo_kind, echo_score FROM surfacing_outcomes"
+            ).fetchone()
+            self.assertEqual(int(row[0]), 0)
+            self.assertEqual(row[1], ECHO_NONE)
+            self.assertAlmostEqual(float(row[2]), 0.58, places=6)
         finally:
             f.close()
 
@@ -279,11 +384,12 @@ class StoreReadTests(unittest.TestCase):
         f = _Fixture()
         try:
             f.store.add_many(
-                1, _concepts(1), echoed={(ITEM_KIND_CONCEPT, 1): True},
+                1, _concepts(1),
+                echoes={(ITEM_KIND_CONCEPT, 1): EchoVerdict(ECHO_LEXICAL, 3.0)},
             )
             f.store.settle(1, "engaged")
             f.store.add_many(
-                2, _concepts(1), echoed={(ITEM_KIND_CONCEPT, 1): False},
+                2, _concepts(1), echoes={(ITEM_KIND_CONCEPT, 1): EchoVerdict()},
             )
             f.store.settle(2, "disengaged")
             stats = f.store.stats_for(
@@ -538,6 +644,11 @@ class _FakeSettings:
 class _FakeMemorySettings:
     revival_min_word_overlap = 3
     tiers_enabled = True
+    # Off by default in this harness so the lexical assertions stay about
+    # the lexical test; the semantic tests switch it on explicitly.
+    semantic_revival_enabled = False
+    semantic_revival_min_cosine = 0.62
+    semantic_revival_per_hit = 0.05
 
 
 class _Host(PostTurnHelpersMixin):
@@ -848,15 +959,15 @@ class EchoMarkTests(unittest.TestCase):
         marks = self.host._surfacing_echo_marks(
             items, "you get guarded whenever sourdough comes up",
         )
-        self.assertTrue(marks[(ITEM_KIND_CONCEPT, 3)])
-        self.assertFalse(marks[(ITEM_KIND_MEMORY, 9)])
+        self.assertEqual(marks[(ITEM_KIND_CONCEPT, 3)].kind, ECHO_LEXICAL)
+        self.assertFalse(marks[(ITEM_KIND_MEMORY, 9)].echoed)
 
     def test_a_memory_clears_its_floor_on_real_overlap(self) -> None:
         marks = self.host._surfacing_echo_marks(
             [SurfacedItem(ITEM_KIND_MEMORY, 9)],
             "how is the sourdough starter doing in the fridge",
         )
-        self.assertTrue(marks[(ITEM_KIND_MEMORY, 9)])
+        self.assertEqual(marks[(ITEM_KIND_MEMORY, 9)].kind, ECHO_LEXICAL)
 
     def test_unresolvable_items_are_omitted_rather_than_marked_false(
         self,
@@ -878,7 +989,7 @@ class EchoMarkTests(unittest.TestCase):
         marks = self.host._surfacing_echo_marks(
             [SurfacedItem(ITEM_KIND_CONCEPT, 3)], "ok, yes",
         )
-        self.assertEqual(marks, {(ITEM_KIND_CONCEPT, 3): False})
+        self.assertEqual(marks, {(ITEM_KIND_CONCEPT, 3): EchoVerdict()})
 
     def test_no_assistant_text_yields_no_marks(self) -> None:
         self.assertEqual(
@@ -923,7 +1034,9 @@ class EchoMarkTests(unittest.TestCase):
             ],
             "how is the sourdough starter doing in the fridge",
         )
-        self.assertEqual(marks, {(ITEM_KIND_MEMORY, 9): True})
+        self.assertEqual(
+            marks, {(ITEM_KIND_MEMORY, 9): EchoVerdict(ECHO_LEXICAL, 3.0)},
+        )
 
 
 # ── MCP view ─────────────────────────────────────────────────────────

@@ -155,7 +155,34 @@ only fires when the topic is already live? Cap on resurrections per session?
 
 ---
 
-## F12. Revival is a bag-of-words test, and it credits the wrong party
+## F12. Revival is a bag-of-words test, and it credits the wrong party — ✅ SEMANTIC HALF SHIPPED
+
+The semantic half shipped: see
+[`shipped/awareness.md`](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes).
+Revival now falls back to cosine when the keyword test misses, through a
+shared [`echo_detector`](../../app/core/memory/echo_detector.py) that also
+decides the L37 ledger's `echoed` column.
+
+Two things the implementation learned that this entry got wrong, both worth
+keeping in view:
+
+- **The cosine is measured on an already-topically-filtered set.** Surfaced
+  memories are the top-k *nearest* to the turn and the reply is about that
+  same turn, so a high cosine is close to guaranteed. It partly measures
+  "was on topic" rather than "she used it", which makes the floor much less
+  discriminative than it looks.
+- **Full credit would have switched scratchpad TTL off.** The TTL gate was
+  `revival_score == 0.0` exactly, so *any* bump made a row permanently
+  exempt. A semantic hit therefore earns a smaller bump than a quote, and
+  the gate became a threshold.
+
+**Still open here:** the *user-side credit* half below — rewarding a memory
+for the user's engagement rather than Aiko's own verbosity — plus open
+question (3) on `tiers_enabled=false`. Whether a semantic hit should earn
+full retention credit is now [F17](#f17-should-a-semantic-echo-earn-full-retention-credit).
+
+<details>
+<summary>Original entry (design reasoning for the shipped half)</summary>
 
 **Motivation.** `revival_score` is the closest thing the memory layer has to a
 learning signal — it earns a decay rebate and gates promotion out of
@@ -231,6 +258,76 @@ they switch it on later.
 ledger).
 
 **Depends on.** Nothing for the semantic half. L37 for the user-side half.
+
+</details>
+
+---
+
+## F17. Should a semantic echo earn full retention credit?
+
+**Motivation.** F12 shipped with a deliberate discount: a memory Aiko
+*quoted* earns `revival_per_hit` (0.15) and one she merely came close to in
+embedding space earns `semantic_revival_per_hit` (0.05), which sits below the
+`scratchpad_ttl_min_revival` (0.10) bar that spares a row from cleanup. The
+argument was that surfaced memories were selected for topical similarity to
+the turn in the first place, so cosine against the reply partly measures
+"was on topic" rather than "she used it" — and under full credit nearly every
+scratchpad row would have become permanently exempt from TTL, switching
+cleanup off rather than improving what survived.
+
+That argument is plausible and **untested**. It was the right default
+because it is the conservative one — it preserves existing turnover — but it
+may be wrong in either direction, and the discount currently applies to
+genuine paraphrase as well as to topical coincidence, which is exactly the
+case F12 existed to reward.
+
+**What decides it.** Schema v27 records the cosine of every comparison,
+misses included, so this is a read rather than an experiment:
+
+- `echo_breakdown` — engaged rate per `echo_kind`. If `semantic` rows engage
+  about as often as `lexical` ones, the discount is unjustified and semantic
+  hits should earn full credit. If they engage no better than rows with no
+  echo at all, the signal is topical leakage and the discount was right.
+- `semantic_floor_candidates` — replays each candidate floor over recorded
+  cosines, restricted to rows the lexical test did not already claim. A floor
+  whose engaged rate climbs with strictness is measuring use; one that is
+  flat all the way up is measuring topic.
+
+Both are already in `get_surfacing_outcomes`. **This item is waiting on
+data, not on code** — it needs enough settled rows to read, which means real
+conversation over weeks rather than a synthetic fixture.
+
+**Sketched approach.** Read the two aggregates. Then one of:
+
+1. **Raise the floor** if the rate climbs with strictness — the cheapest
+   outcome, a settings change with the discount left intact.
+2. **Grant full credit** if semantic and lexical engage alike, folding
+   `semantic_revival_per_hit` back into `revival_per_hit`. Note this makes
+   `scratchpad_ttl_min_revival` load-bearing in a new way and the TTL
+   turnover rate should be watched after the change, not assumed.
+3. **Make the credit continuous** in the cosine rather than a step at the
+   floor — the most honest option and the most likely to be right, since the
+   evidence really is graded, but it means the TTL bar becomes a statement
+   about cosine and wants its own look.
+
+Worth checking against `echo_rate` on the same items: high echo with low
+engaged means she takes the bait and the user does not, which is a different
+finding from the memory being useless.
+
+**Open questions.** (1) Should the floor be *relative* to the turn's other
+surfaced memories rather than absolute? A fixed floor inherits the retrieval
+threshold's calibration; a relative one asks "did she use *this* one more
+than the others she was shown", which is closer to the real question and
+immune to the topical-similarity floor effect. (2) Does the answer differ by
+memory `kind` — a one-line `preference` and a multi-sentence `event` are not
+equally comparable to a whole reply. (3) Same question for concepts, which
+F12 deliberately left lexical-only because a short label's embedding sits in
+a different part of the space than prose.
+
+**Effort.** Small (read + settings change) / Medium (option 3).
+
+**Depends on.** F12 (shipped) for the recording; several weeks of ledger
+data before the read means anything.
 
 ---
 

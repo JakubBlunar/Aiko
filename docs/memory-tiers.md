@@ -61,7 +61,10 @@ Run by `MemoryPromotionWorker`
   - `revival_score ≥ memory.scratchpad_promote_min_revival (0.3)`.
 - **Delete scratchpad** when
   `age_days ≥ memory.scratchpad_ttl_days (14)` AND `use_count == 0` AND
-  `revival_score == 0`.
+  `revival_score < memory.scratchpad_ttl_min_revival (0.10)`.
+  This was an exact `revival_score == 0` test until F12 gave revival a
+  semantic fallback; see [Revival drift](#revival-drift-e2) for why a
+  threshold became load-bearing.
 - **Demote long_term → archive** when the row is **not pinned**,
   `revival_score < 0.05`, AND
   `idle_days ≥ memory.archive_demote_idle_days (180)`. Idle is measured
@@ -80,12 +83,29 @@ that grew past its cap during promotion is trimmed back.
 actually cited the memory in her reply.
 
 - After every turn, `SessionController._mark_revived_memories` reads
-  the surfaced-IDs snapshot off the `RagRetriever`, computes a
-  content-word set for Aiko's reply (4-char minimum, stopwords
-  dropped), and bumps `revival_score` by
-  `memory.revival_per_hit (default 0.15)` on memories whose content
-  shares at least `memory.revival_min_word_overlap (3)` words with the
-  reply. Clamped to `[0, 1]`.
+  the surfaced-IDs snapshot off the `RagRetriever` and asks
+  [`app/core/memory/echo_detector.py`](../app/core/memory/echo_detector.py)
+  whether the reply used each surfaced memory. Two verdicts, two bumps,
+  both clamped to `[0, 1]`:
+  - **lexical** — the reply shares at least
+    `memory.revival_min_word_overlap (3)` content words (4-char minimum,
+    stopwords dropped) with the memory. Aiko quoted or closely restated
+    it; earns the full `memory.revival_per_hit (0.15)`.
+  - **semantic** (F12) — no shared words, but cosine between the reply
+    and the stored memory clears
+    `memory.semantic_revival_min_cosine (0.62)`. Earns the smaller
+    `memory.semantic_revival_per_hit (0.05)`.
+
+  The discount is not timidity. A surfaced memory is one of the top-k
+  *nearest* to the turn and the reply is about that same turn, so a high
+  cosine is close to guaranteed and partly measures "was on topic"
+  rather than "she used it". Full credit would have made almost every
+  scratchpad row clear the old `revival_score == 0` TTL test and become
+  effectively immortal — which is why that test is now a threshold. The
+  same detector decides the L37 ledger's `echoed` column, so the memory
+  layer and the ledger cannot disagree about what an echo is, and the
+  ledger records the cosine of every comparison (misses included) so the
+  floor can be re-derived from real data rather than left at a guess.
 - On every decay tick (per-tier), `MemoryStore.decay` applies a
   rebate before the decay step:
   `salience += revival_coefficient * elapsed_days * revival_score`.
@@ -173,7 +193,11 @@ overrides).
   "revival_per_hit": 0.15,             // bump per overlap detection
   "revival_decay_per_day": 0.02,
   "revival_min_word_overlap": 3,
+  "semantic_revival_enabled": true,    // F12 -- cosine fallback for paraphrase
+  "semantic_revival_min_cosine": 0.62, // high on purpose; see Revival drift
+  "semantic_revival_per_hit": 0.05,    // weaker evidence, smaller bump
   "scratchpad_ttl_days": 14,           // delete-if-untouched threshold
+  "scratchpad_ttl_min_revival": 0.1,   // a quote survives TTL, on-topic doesn't
   "scratchpad_promote_min_age_days": 7,
   "scratchpad_promote_min_use_count": 3,
   "scratchpad_promote_min_revival": 0.3,
