@@ -489,9 +489,13 @@ def register(mcp, session: "SessionController") -> None:
 
         Returns the JSON snapshot persisted under
         ``aiko.persona_regression.last_run`` (``{}`` until the first
-        run). Pairs with ``run_persona_regression`` for end-to-end
-        repro: run the eval, then read this to inspect per-turn
-        pass/fail + the failure reasons.
+        run) under ``snapshot``, plus an ``auto`` block describing the
+        K10-followup background worker (both switches + its cadence).
+        Pairs with ``run_persona_regression`` for end-to-end repro: run
+        the eval, then read this to inspect per-turn pass/fail + the
+        failure reasons. The worker's own last result (including which
+        turns newly failed) shows up in ``get_idle_workers_status``
+        under ``persona_regression``.
         """
         try:
             snapshot_fn = getattr(
@@ -499,7 +503,28 @@ def register(mcp, session: "SessionController") -> None:
             )
             if snapshot_fn is None:
                 return json.dumps({"error": "unavailable"})
-            return json.dumps(snapshot_fn(), indent=2)
+            agent = getattr(getattr(session, "_settings", None), "agent", None)
+            out = {
+                "snapshot": snapshot_fn(),
+                "auto": {
+                    "enabled": bool(
+                        getattr(agent, "persona_regression_enabled", True)
+                    ),
+                    "auto_enabled": bool(
+                        getattr(
+                            agent, "persona_regression_auto_enabled", False,
+                        )
+                    ),
+                    "interval_seconds": int(
+                        getattr(
+                            agent,
+                            "persona_regression_interval_seconds",
+                            86400,
+                        )
+                    ),
+                },
+            }
+            return json.dumps(out, indent=2)
         except Exception as exc:
             return f"get_persona_regression_state raised: {exc}"
 
@@ -511,8 +536,8 @@ def register(mcp, session: "SessionController") -> None:
         full live scope per fixture), runs it through the background
         worker LLM, scores the reply against the style markers, and
         persists + returns the aggregated snapshot
-        (``passed/total`` + per-turn failures). On-demand; no
-        background spend.
+        (``passed/total`` + per-turn failures). Runs right now
+        regardless of the K10-followup background cadence.
         """
         try:
             run_fn = getattr(session, "run_persona_regression", None)

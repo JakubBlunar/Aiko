@@ -8,18 +8,28 @@ The controller smoke test exercises ``PersonaRegressionMixin`` via a
 minimal stub host (mirrors ``tests/test_day_color_provider.py``) with a
 fake chat client returning canned replies, asserting kv persistence +
 snapshot shape.
+
+The K10-followup background worker
+(:class:`~app.core.proactive.persona_regression_worker.PersonaRegressionWorker`)
+is covered at the bottom: its gates, its cadence, and the
+regressed/recovered diff it computes against the previous snapshot.
 """
 from __future__ import annotations
 
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from app.core.persona import persona_regression as pr
+from app.core.proactive import persona_regression_worker as prw
 from app.core.session.persona_regression_mixin import PersonaRegressionMixin
+
+
+_NOW = datetime(2026, 7, 31, 3, 0, tzinfo=timezone.utc)
 
 
 # ── pure: parse / load ──────────────────────────────────────────────
@@ -308,6 +318,162 @@ class ControllerSmokeTests(unittest.TestCase):
         host = _Host("As an AI language model, I cannot have feelings.")
         snap = host.run_persona_regression()
         self.assertGreater(snap["failed"], 0)
+
+
+# ── K10-followup: the background worker ─────────────────────────────
+
+
+def _snapshot(*rows: tuple[str, bool]) -> dict[str, Any]:
+    """Minimal snapshot shaped like ``build_snapshot`` output."""
+    results = [
+        {"id": turn_id, "scope": "minimal", "passed": passed}
+        for turn_id, passed in rows
+    ]
+    passed_n = sum(1 for _, p in rows if p)
+    return {
+        "total": len(rows),
+        "passed": passed_n,
+        "failed": len(rows) - passed_n,
+        "results": results,
+    }
+
+
+class FailingIdsTests(unittest.TestCase):
+    def test_reads_failed_ids(self) -> None:
+        self.assertEqual(
+            prw.failing_ids(_snapshot(("a", True), ("b", False))), {"b"},
+        )
+
+    def test_tolerates_junk(self) -> None:
+        self.assertEqual(prw.failing_ids({}), set())
+        self.assertEqual(prw.failing_ids({"results": "nope"}), set())
+        self.assertEqual(
+            prw.failing_ids({"results": ["x", {"passed": False}]}), set(),
+        )
+
+
+class PersonaRegressionWorkerTests(unittest.TestCase):
+    def _worker(
+        self,
+        *,
+        before: dict[str, Any] | None = None,
+        after: dict[str, Any] | None = None,
+        enabled: bool = True,
+        run=None,
+    ) -> prw.PersonaRegressionWorker:
+        self.runs = 0
+
+        def _run() -> dict[str, Any]:
+            self.runs += 1
+            return after if after is not None else _snapshot(("a", True))
+
+        return prw.PersonaRegressionWorker(
+            run_regression=run or _run,
+            snapshot_provider=lambda: before if before is not None else {},
+            enabled_provider=lambda: enabled,
+            interval_seconds=86400.0,
+        )
+
+    def test_disabled_does_not_run(self) -> None:
+        worker = self._worker(enabled=False)
+        self.assertTrue(worker.run().get("disabled"))
+        self.assertEqual(self.runs, 0)
+
+    def test_disabled_is_never_ready(self) -> None:
+        worker = self._worker(enabled=False)
+        self.assertFalse(worker.is_ready(now=_NOW, last_run_at=None))
+
+    def test_ready_when_never_run(self) -> None:
+        self.assertTrue(self._worker().is_ready(now=_NOW, last_run_at=None))
+
+    def test_not_ready_before_the_interval(self) -> None:
+        worker = self._worker()
+        recent = _NOW - timedelta(hours=1)
+        self.assertFalse(worker.is_ready(now=_NOW, last_run_at=recent))
+
+    def test_interval_is_floored_at_an_hour(self) -> None:
+        worker = prw.PersonaRegressionWorker(
+            run_regression=dict,
+            snapshot_provider=dict,
+            interval_seconds=5.0,
+        )
+        self.assertEqual(worker.interval_seconds, 3600.0)
+
+    def test_new_failure_is_reported(self) -> None:
+        worker = self._worker(
+            before=_snapshot(("a", True), ("b", True)),
+            after=_snapshot(("a", True), ("b", False)),
+        )
+        result = worker.run()
+        self.assertEqual(result["ran"], 1)
+        self.assertEqual(result["regressed"], ["b"])
+        self.assertEqual(result["recovered"], [])
+        self.assertEqual(result["passed"], 1)
+
+    def test_standing_failure_is_not_a_new_regression(self) -> None:
+        worker = self._worker(
+            before=_snapshot(("a", True), ("b", False)),
+            after=_snapshot(("a", True), ("b", False)),
+        )
+        result = worker.run()
+        self.assertEqual(result["regressed"], [])
+        self.assertEqual(result["recovered"], [])
+
+    def test_recovery_is_reported(self) -> None:
+        worker = self._worker(
+            before=_snapshot(("a", False)),
+            after=_snapshot(("a", True)),
+        )
+        self.assertEqual(worker.run()["recovered"], ["a"])
+
+    def test_first_ever_run_has_no_baseline(self) -> None:
+        # No previous snapshot: every failure is "new", which is the
+        # honest read -- there's nothing to compare against.
+        worker = self._worker(before={}, after=_snapshot(("a", False)))
+        self.assertEqual(worker.run()["regressed"], ["a"])
+
+    def test_error_snapshot_is_not_counted_as_a_run(self) -> None:
+        worker = self._worker(after={"error": "unavailable", "results": []})
+        result = worker.run()
+        self.assertEqual(result["ran"], 0)
+        self.assertEqual(result["error"], "unavailable")
+
+    def test_raising_core_is_swallowed(self) -> None:
+        def _boom() -> dict[str, Any]:
+            raise RuntimeError("no client")
+
+        worker = self._worker(run=_boom)
+        self.assertEqual(worker.run(), {"ran": 0, "error": "exception"})
+
+    def test_raising_baseline_still_runs(self) -> None:
+        def _boom() -> dict[str, Any]:
+            raise RuntimeError("kv down")
+
+        worker = prw.PersonaRegressionWorker(
+            run_regression=lambda: _snapshot(("a", True)),
+            snapshot_provider=_boom,
+        )
+        self.assertEqual(worker.run()["ran"], 1)
+
+    def test_end_to_end_against_the_real_core(self) -> None:
+        host = _Host("As an AI language model, I cannot have feelings.")
+        worker = prw.PersonaRegressionWorker(
+            run_regression=host.run_persona_regression,
+            snapshot_provider=host.persona_regression_snapshot,
+        )
+        result = worker.run()
+        self.assertEqual(result["ran"], 1)
+        self.assertGreater(len(result["regressed"]), 0)
+        # Second pass over the same failures: no longer *new*.
+        self.assertEqual(worker.run()["regressed"], [])
+
+    def test_master_switch_off_reports_the_error(self) -> None:
+        host = _Host("x", enabled=False)
+        worker = prw.PersonaRegressionWorker(
+            run_regression=host.run_persona_regression,
+            snapshot_provider=host.persona_regression_snapshot,
+        )
+        self.assertEqual(worker.run()["error"], "disabled")
 
 
 if __name__ == "__main__":

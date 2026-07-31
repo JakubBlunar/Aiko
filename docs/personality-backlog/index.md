@@ -113,8 +113,8 @@ see [`shipped/moments.md`](shipped/moments.md).
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
-Still open: K10-followup background auto-eval worker ·
-K12 calendar-linked anticipation · K19 cold-start companion onboarding ·
+Still open: K12 calendar-linked anticipation ·
+K19 cold-start companion onboarding ·
 K26 Aiko-side voice evolution · K33 cozy mode ·
 K40 comfortable silence · K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
