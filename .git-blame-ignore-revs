@@ -1,0 +1,17 @@
+# Commits that changed formatting only, and would otherwise make `git blame`
+# useless by attributing every line in the repo to them.
+#
+# Opt in once per clone (it is a local setting, so it cannot be committed):
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub honours this file automatically in its blame view.
+#
+# Only add a commit here if it changed *no* content. Anything that also fixed
+# a bug or moved code must not be hidden from blame.
+
+# renormalise every tracked text file to LF (1085 files, zero content change)
+c2deb49337e5a2be7a36d5de3d2d8eac671aee2d
+
+# normalise the two .cdi3.json fixtures missed by the commit above
+4d6ad1c80240abf2a352c818abd50da99356c1b8
