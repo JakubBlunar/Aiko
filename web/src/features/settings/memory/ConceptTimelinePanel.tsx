@@ -130,6 +130,9 @@ const EVENT_TONE: Record<string, string> = {
   contradicted: "border-rose-400/30 bg-rose-500/5",
   dormant: "border-white/10 bg-white/[0.02] opacity-80",
   retired: "border-white/10 bg-white/[0.02] opacity-70",
+  // L17a trail markers are the most numerous row type and the least
+  // eventful, so they sit back and let the transitions read.
+  confidence_sample: "border-white/10 bg-white/[0.02] opacity-60",
 };
 
 function TimelineCard({ event }: { event: ConceptEvent }) {

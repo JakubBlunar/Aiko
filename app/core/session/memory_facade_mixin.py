@@ -954,13 +954,16 @@ class MemoryFacadeMixin:
         subject: str | None = None,
         event_type: str | None = None,
         before_id: int | None = None,
+        concept_id: int | None = None,
     ) -> dict[str, Any]:
         """Serialise the concept discovery timeline for the browser.
 
         Backs ``GET /api/concepts/timeline`` -- an append-only feed of
         Aiko's "aha!" moments (see
         :class:`app.core.concepts.concept_event_store.ConceptEventStore`),
-        newest first, paged backwards via ``before_id``. Returns an empty
+        newest first, paged backwards via ``before_id``. Passing
+        ``concept_id`` narrows the feed to one belief's own history, which
+        is the L17a trajectory read seen from the browser. Returns an empty
         ``enabled=False`` shape when the event store is absent so callers
         never special-case the disabled path; best-effort otherwise.
         """
@@ -973,6 +976,7 @@ class MemoryFacadeMixin:
                 subject=subject,
                 event_type=event_type,
                 before_id=before_id,
+                concept_id=concept_id,
             )
             return {
                 "enabled": True,

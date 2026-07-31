@@ -89,6 +89,88 @@ class EventStoreCrudTests(unittest.TestCase):
         got = store.list(limit=1)[0]
         self.assertIsNone(got.concept_id)
 
+    def test_concept_id_filter(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=1))
+        store.add(_event(concept_id=2))
+        store.add(_event(concept_id=2, event_type="promoted"))
+        self.assertEqual(len(store.list(concept_id=2)), 2)
+        self.assertEqual(len(store.list(concept_id=1)), 1)
+        self.assertEqual(len(store.list(concept_id=99)), 0)
+        # Composes with the other filters rather than replacing them.
+        self.assertEqual(
+            len(store.list(concept_id=2, event_type="promoted")), 1
+        )
+
+
+class TrajectoryTests(unittest.TestCase):
+    """L17a: one concept's path, read forwards."""
+
+    def test_trajectory_is_oldest_first_and_scoped(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=7, label="a", created_at="2026-01-01T00:00:00+00:00"))
+        store.add(_event(concept_id=9, label="other", created_at="2026-01-02T00:00:00+00:00"))
+        store.add(_event(concept_id=7, label="b", created_at="2026-02-01T00:00:00+00:00"))
+        store.add(_event(concept_id=7, label="c", created_at="2026-03-01T00:00:00+00:00"))
+        got = store.trajectory(7)
+        self.assertEqual([e.label for e in got], ["a", "b", "c"])
+
+    def test_trajectory_limit_keeps_the_oldest_rows(self) -> None:
+        """A trajectory is read from its start, so truncation drops the
+        recent end -- the inverse of ``list``'s newest-first paging."""
+        store = ConceptEventStore(_db())
+        for i in range(5):
+            store.add(
+                _event(
+                    concept_id=7,
+                    label=f"e{i}",
+                    created_at=f"2026-01-0{i + 1}T00:00:00+00:00",
+                )
+            )
+        got = store.trajectory(7, limit=2)
+        self.assertEqual([e.label for e in got], ["e0", "e1"])
+
+    def test_trajectory_of_unknown_concept_is_empty(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=1))
+        self.assertEqual(store.trajectory(404), [])
+
+    def test_trajectory_carries_confidence_and_reason(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(
+            _event(
+                concept_id=7,
+                event_type="confidence_sample",
+                confidence=0.41,
+                reason="Confidence slid to 0.41 from 0.62, no status change.",
+            )
+        )
+        point = store.trajectory(7)[0]
+        self.assertEqual(point.confidence, 0.41)
+        self.assertEqual(point.event_type, "confidence_sample")
+        self.assertIn("0.62", point.reason)
+
+
+class LatestConfidenceTests(unittest.TestCase):
+    def test_returns_newest_row_per_concept(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=1, confidence=0.5))
+        store.add(_event(concept_id=1, confidence=0.7))
+        store.add(_event(concept_id=2, confidence=0.3))
+        self.assertEqual(
+            store.latest_confidence([1, 2]), {1: 0.7, 2: 0.3}
+        )
+
+    def test_unknown_ids_are_absent_not_zero(self) -> None:
+        """Callers distinguish 'never recorded' from 'recorded at 0.0'."""
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=1, confidence=0.0))
+        got = store.latest_confidence([1, 42])
+        self.assertEqual(got, {1: 0.0})
+
+    def test_empty_input_skips_the_query(self) -> None:
+        self.assertEqual(ConceptEventStore(_db()).latest_confidence([]), {})
+
 
 class BackfillMigrationTests(unittest.TestCase):
     """The v21->v22 upgrade seeds one discovered event per existing

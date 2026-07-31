@@ -126,7 +126,24 @@ class ConceptsTimelineTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         session.concept_timeline.assert_called_once_with(
-            limit=50, subject="aiko", event_type=None, before_id=9
+            limit=50,
+            subject="aiko",
+            event_type=None,
+            before_id=9,
+            concept_id=None,
+        )
+
+    def test_forwards_concept_id_for_one_beliefs_arc(self) -> None:
+        client, session = _client()
+        session.concept_timeline.return_value = _TIMELINE
+        resp = client.get("/api/concepts/timeline?concept_id=42")
+        self.assertEqual(resp.status_code, 200)
+        session.concept_timeline.assert_called_once_with(
+            limit=200,
+            subject=None,
+            event_type=None,
+            before_id=None,
+            concept_id=42,
         )
 
     def test_disabled_shape(self) -> None:

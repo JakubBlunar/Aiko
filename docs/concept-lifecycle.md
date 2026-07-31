@@ -331,12 +331,38 @@ append-only, decoupled from concept deletion) with a generated `reason`.
 | `retired` | L3 | `→ retired` (decayed or stale candidate) |
 | `revived` | L3 | leaving `dormant`/`retired`/`contradicted` back up on fresh evidence |
 | `contradicted` | L3 (L9) | counter-evidence confirmed — emitted **every** confirmed disproof, even when the belief only weakened (status unchanged), so the timeline records the moment. `reason` quotes the disproving memory snippet. |
-| `reinforced` | reserved | L15 |
+| `reinforced` | L3 | fresh distinct evidence landed on an already-`active` belief without shifting its status |
+| `plasticity_shift` | L3 (L16) | relationship modulation moved effective plasticity across a `concept_plasticity_shift_event_delta` band |
+| `confidence_sample` | L3 (L17a) | a **quiet** concept drifted a full `concept_confidence_sample_band` from the confidence at its last recorded event — see below |
 
 The frontend
 [`ConceptTimelinePanel.tsx`](../web/src/features/settings/memory/ConceptTimelinePanel.tsx)
 renders any `event_type` with a per-type tone, so these surface
 automatically.
+
+### Reading one concept's trajectory (L17a)
+
+The table above is a *transition* log, which leaves one blind spot: a
+belief can decay for months, never cross a status floor, and so leave no
+trace of the slide. `confidence_sample` closes it. The sweep loads each
+batched concept's last recorded confidence in one grouped read
+(`ConceptEventStore.latest_confidence`) and, **only** when nothing else
+emitted for that concept this tick, drops a sample once the confidence
+has moved a full band away in either direction. Banded rather than
+per-tick, so the timeline stays a story worth reading; the baseline then
+advances to the sample, so a long fade logs once per band. Off via
+`concept_confidence_sample_enabled`.
+
+Reading it back:
+
+- `ConceptEventStore.trajectory(concept_id)` — that concept's events
+  **oldest-first**, the inverse of `list()`'s newest-first feed, because
+  a trajectory is read forwards. `limit` keeps the *oldest* rows so the
+  start of the story survives.
+- `GET /api/concepts/timeline?concept_id=…` — the same slice from the
+  browser, still newest-first like the rest of the feed.
+
+Both ride `idx_concept_events_concept`, so a per-concept read is cheap.
 
 ## Edge referential integrity (L25)
 

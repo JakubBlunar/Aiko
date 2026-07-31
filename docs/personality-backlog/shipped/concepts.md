@@ -685,6 +685,56 @@ confidence delta?
 
 ---
 
+## L17a. Concept trajectory from the event log (the history read layer)
+
+**Status: SHIPPED.** The first link of the L17 self-drift chain, and the only
+one that needed storage work — the rest of L17 (still open in
+[`concepts.md`](../concepts.md)) reads through this.
+
+**Motivation.** Give the rest of L17 a clean "how this concept moved over time"
+read without inventing new storage. The event stream already carries confidence +
+label at each transition; we just need a reader that turns a concept_id (or a
+subject slice) into an ordered trajectory.
+
+**What shipped.**
+
+- **The read layer.**
+  [`concept_event_store.py`](../../../app/core/concepts/concept_event_store.py)
+  gained `trajectory(concept_id, limit=…)` — one concept's events
+  **oldest-first**, the inverse of `list()`'s newest-first feed, because a
+  trajectory is read forwards; `limit` keeps the *oldest* rows so the start of
+  the story survives on a long-lived concept. `list()` also takes a
+  `concept_id` filter, which composes with the existing `subject` /
+  `event_type` / `before_id` ones and is what
+  `GET /api/concepts/timeline?concept_id=…` forwards. Both ride the existing
+  `idx_concept_events_concept`, so no schema change was needed.
+- **The decay blind spot.** As sketched: L3
+  ([`concept_lifecycle_worker.py`](../../../app/core/concepts/concept_lifecycle_worker.py))
+  appends a `confidence_sample` event when a concept that emitted **nothing
+  else** this tick has drifted a full band from the confidence at its last
+  recorded event. It sits as the final branch of the existing emit chain, so a
+  transition or a `reinforced` beat always wins and the same movement is never
+  double-logged. The baseline advances to the sample, so a long fade logs once
+  per band rather than once per tick.
+- **One read per sweep, not per concept.** `latest_confidence(ids)` resolves
+  the whole batch's baselines in a single grouped query at the top of `run()`,
+  since the sweep already touches up to `concept_lifecycle_batch_size` rows a
+  tick. A concept with no timeline row at all (pre-event-store) samples
+  unconditionally to seed one.
+
+**Open questions, resolved.** (1) *Band size* — **fixed**, via
+`concept_confidence_sample_band` (`0.1`), not plasticity-scaled. Plasticity
+already governs how fast confidence *moves* (`halflife *= 2 - p`), so a sticky
+concept crosses bands more slowly on its own; scaling the band as well would
+double-count the same signal. (2) *Retention* — **keep everything** for now.
+Banding already bounds the row count by *movement* rather than by time, which
+was the actual growth risk; thinning can wait until the table proves it needs
+it.
+
+**Effort.** Small (read helper + one guarded event emit) — as estimated.
+
+---
+
 ## L18. Boundary concepts (SHIPPED — both subjects + anchor sourcing + composite surfacing)
 
 **Kind.** `boundary`, subject `user` (default) and `aiko` (L11), evidence model

@@ -921,6 +921,14 @@ class MemorySettings:
     concept_plasticity_drift_floor: float = 0.15
     concept_plasticity_recheck_slowdown_enabled: bool = True
     concept_plasticity_recheck_stride_k: float = 3.0
+    # L17a concept trajectory: a concept that decays without ever crossing a
+    # status threshold emits no lifecycle event, so its slide is invisible to
+    # the event log. The lifecycle sweep drops a ``confidence_sample`` row
+    # whenever a quiet concept has moved ``sample_band`` away (either
+    # direction) from the confidence at its last recorded event -- banded
+    # rather than per-tick so the timeline stays readable.
+    concept_confidence_sample_enabled: bool = True
+    concept_confidence_sample_band: float = 0.1
     # L23 cognitive surfacing -- habituation (repetition suppression). A concept
     # surfaced recently is damped by a ``[floor, 1]`` multiplier that recovers
     # over ``window_turns`` user-turns (turn clock = ``relationship.total_turns``,
@@ -2827,6 +2835,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_plasticity_recheck_stride_k=max(
                 0.0,
                 float(memory_raw.get("concept_plasticity_recheck_stride_k", 3.0)),
+            ),
+            concept_confidence_sample_enabled=bool(
+                memory_raw.get("concept_confidence_sample_enabled", True)
+            ),
+            concept_confidence_sample_band=min(
+                1.0,
+                max(
+                    0.01,
+                    float(
+                        memory_raw.get("concept_confidence_sample_band", 0.1)
+                    ),
+                ),
             ),
             concept_surfacing_habituation_enabled=bool(
                 memory_raw.get("concept_surfacing_habituation_enabled", True)

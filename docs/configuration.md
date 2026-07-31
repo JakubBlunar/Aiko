@@ -529,6 +529,13 @@ Three further mechanisms let plasticity *move* rather than stay stamped (all def
   - `memory.concept_plasticity_recheck_slowdown_enabled` *(bool, `true`)* — master switch; off → every active concept is eligible each tick as before.
   - `memory.concept_plasticity_recheck_stride_k` *(float, `3.0`, min `0`)* — stride steepness; `0` → stride always `1` (no slowdown) even when enabled.
 
+### L17a — concept trajectory (silent-decay sampling)
+
+The event timeline logs *transitions*, so a belief that decays for months without crossing a status floor leaves no trace of the slide. L3 closes that blind spot by appending a `confidence_sample` event when a concept that emitted nothing else this tick has drifted a full band from the confidence at its last recorded event (either direction). The baseline then advances to the sample, so a long fade logs once per band rather than once per tick. Read back with `ConceptEventStore.trajectory(concept_id)` (oldest-first) or `GET /api/concepts/timeline?concept_id=…`. See [`concept-lifecycle.md`](concept-lifecycle.md#reading-one-concepts-trajectory-l17a).
+
+- `memory.concept_confidence_sample_enabled` *(bool, `true`)* — master switch. Off → only transitions reach the timeline, as before.
+- `memory.concept_confidence_sample_band` *(float, `0.1`, clamped `[0.01, 1]`)* — how far confidence must move from the last recorded event before a sample fires. Smaller = finer trajectory, more rows.
+
 ### L13 — affective concepts (topic → durable affect)
 
 The `affective` concept kind (both subjects) captures the durable topic→emotion signature — what energizes/drains the user, and how topics move Aiko — surfaced as tone guidance via the T3 relevance path (never pinned, never said aloud). It is fed by a post-turn per-cluster affect sampler ([`cluster_affect`](../app/core/concepts/cluster_affect.py) EWMA maps, one per subject, keyed by topic `cluster_id`) plus `metadata.affect` stamping on Aiko's `self`/`reflection`/`diary` writes; a `"affect"` synthesis population + two proposers name the pattern. See [`personality-backlog/concepts.md` → L13](personality-backlog/concepts.md). The `affective` kind uses `plasticity_default=0.5` (the fluid band) and `affective_evidence_gate` (floors the `set` gate at ≥2 sources / ≥0.5 days / ≥0.6 confidence).

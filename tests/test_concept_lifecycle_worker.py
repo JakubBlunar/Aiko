@@ -23,7 +23,7 @@ from app.core.concepts.concept_lifecycle import (
     value_evidence_gate,
 )
 from app.core.concepts.concept_lifecycle_worker import ConceptLifecycleWorker
-from app.core.concepts.concept_event_store import ConceptEventStore
+from app.core.concepts.concept_event_store import ConceptEvent, ConceptEventStore
 from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.engagement_clock import EngagementClock
@@ -63,6 +63,12 @@ def _settings(**over) -> SimpleNamespace:
         concept_plasticity_drift_floor=0.15,
         concept_plasticity_recheck_slowdown_enabled=False,
         concept_plasticity_recheck_stride_k=3.0,
+        # L17a confidence sampling, off in the shared stub for the same
+        # reason as drift above: it adds timeline rows to every quiet tick,
+        # which the event-count assertions elsewhere in this file would see.
+        # ConfidenceSampleTests turns it on.
+        concept_confidence_sample_enabled=False,
+        concept_confidence_sample_band=0.1,
         # engagement clock knobs (for the shared clock instance)
         engagement_clock_enabled=True,
         engagement_seconds_per_day=3600.0,
@@ -1164,6 +1170,141 @@ class ReinforcedEventTests(unittest.TestCase):
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
         self.assertEqual(h.events.count(), 0)
+
+
+class ConfidenceSampleTests(unittest.TestCase):
+    """L17a: a concept that decays without crossing a status threshold
+    still leaves a trail, but only once it has moved a full band."""
+
+    def _harness(self, **over):
+        base = dict(
+            concept_confidence_sample_enabled=True,
+            concept_confidence_sample_band=0.1,
+        )
+        base.update(over)
+        return _harness(_settings(**base))
+
+    def _quiet_active(self, h, **over):
+        """An active concept mid-decay: evidence went stale long ago, the
+        last eval was 3 engaged days back, and nothing else fires."""
+        base = dict(
+            status="active",
+            promoted_at=_iso(40),
+            confidence=0.9,
+            distinct_source_count=3,
+            first_evidence_at=_iso(60),
+            first_evidence_engagement=0.0,
+            last_lifecycle_engagement=0.0,
+            last_lifecycle_at=_iso(30),
+            last_reinforced_at=_iso(40),
+        )
+        base.update(over)
+        c = _add(h.store, **base)
+        _seed_engaged_days(h, 3.0)
+        return c
+
+    def _baseline(self, h, concept, confidence: float) -> None:
+        h.events.add(
+            ConceptEvent(
+                event_type="promoted",
+                kind=concept.kind,
+                subject=concept.subject,
+                label=concept.label,
+                confidence=confidence,
+                novelty=0.0,
+                evidence_count=concept.evidence_count,
+                distinct_source_count=concept.distinct_source_count,
+                source_kinds="",
+                reason="baseline",
+                concept_id=concept.concept_id,
+                created_at=_iso(30),
+            )
+        )
+
+    def test_silent_decay_past_the_band_emits_a_sample(self) -> None:
+        # halflife 3 engaged days + a 3-day catch-up => a big bite out of
+        # confidence this tick, but the concept lands well above the dormant
+        # floor, so without L17a the slide would leave no trace at all.
+        h = self._harness(concept_confidence_halflife_days=3.0)
+        c = self._quiet_active(h)
+        self._baseline(h, c, 0.9)
+        stats = h.worker.run()
+
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+        self.assertEqual(stats["confidence_samples"], 1)
+        sample = h.events.list(limit=1)[0]
+        self.assertEqual(sample.event_type, "confidence_sample")
+        self.assertEqual(sample.concept_id, c.concept_id)
+        self.assertLessEqual(sample.confidence, 0.9 - 0.1)
+        self.assertIn("slid to", sample.reason)
+
+    def test_drift_inside_the_band_stays_silent(self) -> None:
+        # halflife 45 => ~0.04 of decay over the same 3 days, well inside the
+        # band. Sampling every tick would bury the timeline in noise.
+        h = self._harness(concept_confidence_halflife_days=45.0)
+        c = self._quiet_active(h)
+        self._baseline(h, c, 0.9)
+        stats = h.worker.run()
+
+        self.assertEqual(stats["confidence_samples"], 0)
+        self.assertEqual(
+            [e.event_type for e in h.events.list(limit=10)], ["promoted"]
+        )
+
+    def test_status_change_emits_its_own_event_instead(self) -> None:
+        # Same steep decay, but from a low enough start that the concept
+        # crosses the dormant floor: the transition is the better row, and
+        # the sampler must not double-log the same movement.
+        h = self._harness(concept_confidence_halflife_days=3.0)
+        c = self._quiet_active(h, confidence=0.5)
+        self._baseline(h, c, 0.5)
+        stats = h.worker.run()
+
+        self.assertEqual(h.store.get(c.concept_id).status, "dormant")
+        self.assertEqual(stats["confidence_samples"], 0)
+        self.assertEqual(
+            [e.event_type for e in h.events.list(limit=10)],
+            ["dormant", "promoted"],
+        )
+
+    def test_concept_with_no_timeline_gets_a_checkpoint(self) -> None:
+        """Pre-event-store concepts have nothing to measure against, so the
+        first quiet tick seeds the baseline rather than skipping forever."""
+        h = self._harness(concept_confidence_halflife_days=45.0)
+        c = self._quiet_active(h)
+        stats = h.worker.run()
+
+        self.assertEqual(stats["confidence_samples"], 1)
+        sample = h.events.list(limit=1)[0]
+        self.assertEqual(sample.event_type, "confidence_sample")
+        self.assertIn("checkpoint", sample.reason)
+
+    def test_sample_moves_the_baseline_forward(self) -> None:
+        """After a sample the next band is measured from *it*, so a slow
+        decay logs once per band rather than once per tick."""
+        h = self._harness(concept_confidence_halflife_days=3.0)
+        c = self._quiet_active(h)
+        self._baseline(h, c, 0.9)
+        h.worker.run()
+        # Second tick: the decay anchor advanced with the first run, so no
+        # further engaged time has passed and confidence is unchanged.
+        stats = h.worker.run()
+        self.assertEqual(stats["confidence_samples"], 0)
+        self.assertEqual(
+            [e.event_type for e in h.events.list(limit=10)],
+            ["confidence_sample", "promoted"],
+        )
+
+    def test_disabled_setting_skips_sampling(self) -> None:
+        h = self._harness(
+            concept_confidence_halflife_days=3.0,
+            concept_confidence_sample_enabled=False,
+        )
+        c = self._quiet_active(h)
+        self._baseline(h, c, 0.9)
+        stats = h.worker.run()
+        self.assertEqual(stats["confidence_samples"], 0)
+        self.assertEqual(h.events.count(), 1)
 
 
 if __name__ == "__main__":
