@@ -1183,6 +1183,8 @@ identity's 2.73.
   a 7-day `promoted_recent` / `unreinforced_recent` cohort, and an
   `unreinforced_sample` id list (signal C was the only spurious signal without
   one, which left it countable but not actionable).
+- **[`scripts/concept_sweep_unreinforced.py`](../../scripts/concept_sweep_unreinforced.py)**
+  — the signal-C enforcement arm, dry-run by default (see "Still open" below).
 - **[`scripts/concept_intake_report.py`](../../scripts/concept_intake_report.py)**
   — a read-only, re-runnable diagnostic (per-kind actives and stall rates,
   promotion cohorts, the source histogram with the "a bar here would have
@@ -1245,24 +1247,35 @@ time, which is exactly why the baseline above is dated.
   `drift_plasticity` pushes active concepts' plasticity *down* toward 0.15 over
   time, so survivors get stickier and the backlog gets harder to drain the
   longer it sits.
-- **Enforcement of signal C — the one-off sweep. Now the top item.** 374
-  concepts minted before reinforcement had ever fired are sitting `active` at a
-  median confidence of ~0.8, competing for surfacing slots against concepts that
-  earned their place, and decay cannot clear them: ~86 engaged days each against
-  **12.9 engaged days accumulated in total**. Scope it to the pre-Jul-13 cohort
-  rather than "all never-reinforced" — the 28 newer ones may simply not have been
-  re-observed yet — and demote to `dormant` rather than `retired`, so a genuine
-  reinforcement revives them. Cheap to target now:
-  `pruning.unreinforced_sample` carries the ids and
-  `unreinforced_since_promotion` is exported.
-- **The dormant revival path bypasses the kind gates.** `_transition` revives
-  `dormant -> active` on `concept_promote_min_confidence` alone, without
-  consulting the promotion gate (unlike the `retired` path, which does). A
-  demoted 2-source identity trait could therefore return without facing the
-  new floor. Currently unreachable in practice — reviving needs confidence to
-  have recovered, which needs reinforcement — and arguably correct, since it is
-  restoring something that already earned its place. Recorded so the choice is
-  deliberate rather than accidental.
+- **Enforcement of signal C — the one-off sweep. SHIPPED as a script,
+  not yet run.** 374 concepts minted before reinforcement had ever fired are
+  sitting `active` at a median confidence of ~0.8, competing for surfacing slots
+  against concepts that earned their place, and decay cannot clear them: ~86
+  engaged days each against **12.9 engaged days accumulated in total**.
+  [`scripts/concept_sweep_unreinforced.py`](../../scripts/concept_sweep_unreinforced.py)
+  demotes them to `dormant` (never `retired`, and it touches neither confidence
+  nor evidence, so a genuine reinforcement brings any of them straight back),
+  appending a `dormant` row to the timeline for each so the sweep reads as
+  lifecycle history rather than a silent rewrite. Scoped to the pre-Jul-13
+  cohort via `--before` rather than "all never-reinforced" — the newer ones may
+  simply not have been re-observed yet. **Dry-run by default**: without
+  `--apply` the database is opened read-only, so the reporting path cannot
+  mutate anything. Still to do: stop the app and actually run it, then re-run
+  `concept_intake_report.py` against the dated baseline above.
+- **The dormant revival path.** ~~Bypasses the kind gates.~~ Half fixed, and
+  the sweep is what forced it. `_transition` used to revive `dormant -> active`
+  on `concept_promote_min_confidence` **alone**, with no reinforcement check —
+  safe only because decay was the sole route into `dormant`, so recovered
+  confidence implied reinforcement. The sweep breaks that assumption: it parks
+  concepts still sitting at ~0.8, which would have bounced back to `active` on
+  the very next L3 tick and logged a `revived` event for a belief nothing had
+  re-observed. The branch now requires `_reinforced_since_last` as well,
+  matching the `contradicted` and `retired` branches, which costs nothing on
+  the decay path and makes `dormant` mean "quiet until something actually
+  reinforces you". **Still open:** revival does not consult the kind's
+  `promotion_gate`, so a swept 2-source identity trait can return without
+  facing the new floor. Arguably correct for a genuinely re-observed belief
+  that already earned its place once; recorded so the choice stays deliberate.
 - **Offline eval harness** — a fixture corpus with expected/forbidden concepts,
   scored precision-over-recall in CI like the K10 persona regression. Held back
   on purpose: hand-authoring goldens before the proposer emits the register we

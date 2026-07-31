@@ -476,6 +476,34 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(got.status, "active")
         self.assertIn("revived", [e.event_type for e in h.events.list()])
 
+    def test_dormant_revives_on_fresh_evidence(self) -> None:
+        h = _harness(with_clock=False)
+        c = _add(
+            h.store, status="dormant", confidence=0.7, distinct_source_count=4,
+            first_evidence_at=_iso(20), last_lifecycle_at=_iso(2),
+            last_reinforced_at=_iso(1), promoted_at=_iso(15),
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "active")
+        self.assertIn("revived", [e.event_type for e in h.events.list()])
+
+    def test_dormant_confidence_alone_does_not_revive(self) -> None:
+        """A concept parked at high confidence with no fresh evidence stays
+        quiet. This is what makes the L22 sweep stick: a demoted
+        never-reinforced belief at ~0.8 would otherwise bounce straight back
+        to active on the next tick, logging a revival nothing had earned."""
+        h = _harness(with_clock=False)
+        c = _add(
+            h.store, status="dormant", confidence=0.8, distinct_source_count=4,
+            first_evidence_at=_iso(20), last_lifecycle_at=_iso(2),
+            last_reinforced_at=_iso(9),  # predates the last eval
+            promoted_at=_iso(15),
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "dormant")
+        self.assertEqual(h.events.count(), 0)
+
 
 class DisciplineTests(unittest.TestCase):
     def test_single_writer_leaves_evidence_counts(self) -> None:

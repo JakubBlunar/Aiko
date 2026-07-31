@@ -710,8 +710,24 @@ class ConceptLifecycleWorker:
             return "contradicted", ""
 
         if status == "dormant":
+            # Revival needs *fresh evidence* plus recovered confidence, the
+            # same pairing the contradicted and retired branches use. The
+            # confidence half was long the only check, on the reasoning that
+            # confidence can only climb via reinforcement so the evidence
+            # half was implied. That holds while decay is the only route
+            # into `dormant` -- it isn't any more: the L22 sweep demotes
+            # never-reinforced actives that are still sitting at ~0.8, and
+            # without this they would bounce straight back to `active` on
+            # the next tick, logging a `revived` event for a belief nothing
+            # had re-observed. Making the implied half explicit costs
+            # nothing on the decay path (a faded concept that recovers has
+            # by definition been reinforced) and makes `dormant` mean
+            # "quiet until something actually reinforces you".
             promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
-            if conf >= promote_min_conf:
+            if (
+                self._reinforced_since_last(concept, False)
+                and conf >= promote_min_conf
+            ):
                 return "active", "revived"
             if conf < retire_floor:
                 return "retired", "retired"
