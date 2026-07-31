@@ -1264,6 +1264,17 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     "data/persona/golden_turns.jsonl",
                 ),
             ),
+            persona_regression_auto_enabled=bool(
+                agent_raw.get("persona_regression_auto_enabled", False),
+            ),
+            persona_regression_interval_seconds=max(
+                3600,
+                int(
+                    agent_raw.get(
+                        "persona_regression_interval_seconds", 86400,
+                    )
+                ),
+            ),
             tasks_enabled=bool(agent_raw.get("tasks_enabled", True)),
             tasks_per_user_cap=max(
                 1, int(agent_raw.get("tasks_per_user_cap", 8))

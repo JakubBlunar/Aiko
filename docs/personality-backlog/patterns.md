@@ -25,7 +25,7 @@ on top of already-shipped infrastructure.
 | K7 | Forgetting protocol | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
 | K8 | Affect rupture-and-repair detector | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
 | K9 | Topic-graph browser + clustering | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface) + [awareness.md → F10](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration) (multi-hop retrieval deferred as **F10c**) |
-| K10 | Persona regression tests | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped-on-demand) · ⏳ background auto-eval worker [open below](#k10-followup--background-auto-eval-worker-deferred) |
+| K10 | Persona regression tests | ✅ shipped (incl. the background auto-eval worker) — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped) |
 | K11 | Counterfactual / pre-thought cache | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped) |
 | K12 | Calendar-linked anticipation | ❌ open |
 | K13 | Stylometric mirror | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
@@ -96,21 +96,6 @@ on top of already-shipped infrastructure.
 | K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |
 | K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ❌ open |
-
----
-
-## K10-followup — background auto-eval worker (deferred)
-
-The on-demand path is the whole eval engine; the only missing piece is
-a scheduler. Register a thin `IdleWorker` that calls the same
-`SessionController.run_persona_regression()` core on a slow cadence
-(e.g. daily) during quiet windows, gated by the existing
-`IdleWorkerScheduler` quiet predicate so it never competes with a live
-turn and never spends tokens while the user is active. The snapshot
-already persists to `kv_meta` and renders in the panel, so the worker
-needs no new surface — just a cadence + `is_ready` clock and a
-`last_run_at` kv key. Deferred to avoid continuous background token
-spend until there's demand for unattended drift alerts.
 
 ---
 

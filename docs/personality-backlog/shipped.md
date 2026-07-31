@@ -80,7 +80,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K-time1. Wall-clock prefixes on chat history](shipped/patterns-k01-k15.md#k-time1-wall-clock-prefixes-on-chat-history)
 - [K15. Self-disclosure / vulnerability budget](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget)
 - [K9. Topic-graph browser — observability surface](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface)
-- [K10. Persona regression tests — SHIPPED (on-demand)](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped-on-demand)
+- [K10. Persona regression tests — SHIPPED](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped)
 - [K11. Counterfactual / pre-thought cache — SHIPPED](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped)
 
 ## [Shipped — Companion patterns K16–K30](shipped/patterns-k16-k30.md)

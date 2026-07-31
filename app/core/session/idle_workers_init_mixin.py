@@ -891,6 +891,51 @@ class IdleWorkersInitMixin:
                     "KnowledgeMapReflectionWorker init failed", exc_info=True
                 )
 
+        # K10-followup PersonaRegressionWorker — the clock K10's on-demand
+        # golden-turn eval never had. Replays the fixture on a slow cadence
+        # during quiet windows and logs a WARNING when a turn that used to
+        # pass starts failing. Off unless persona_regression_auto_enabled,
+        # since each run costs one worker-LLM call per golden turn.
+        self._persona_regression_worker = None
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.proactive.persona_regression_worker import (
+                    PersonaRegressionWorker,
+                )
+
+                agent = settings.agent
+                self._persona_regression_worker = PersonaRegressionWorker(
+                    run_regression=self.run_persona_regression,
+                    snapshot_provider=self.persona_regression_snapshot,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "persona_regression_enabled",
+                            True,
+                        )
+                    ) and bool(
+                        getattr(
+                            self._settings.agent,
+                            "persona_regression_auto_enabled",
+                            False,
+                        )
+                    ),
+                    interval_seconds=float(
+                        getattr(
+                            agent,
+                            "persona_regression_interval_seconds",
+                            86400,
+                        )
+                    ),
+                )
+                self._idle_scheduler.register(
+                    self._persona_regression_worker
+                )
+            except Exception:
+                log.warning(
+                    "PersonaRegressionWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop
