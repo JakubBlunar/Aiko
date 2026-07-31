@@ -2123,7 +2123,8 @@ latency figures are the *flow* and should.
 | identity mean distinct sources | 2.73 |
 | identity promoted within 1h of first evidence | 167 of 240 (69.6%), median 3.6 min |
 | promotions, last 3 days | 29 (9.7/day) |
-| `reinforced` events, all time | 60 |
+| `reinforced` events, all time | 60 (0 before Jul 12; 16 vs 4 `discovered` on Jul 30) |
+| engaged time accumulated, all time | 12.9 engaged days |
 
 Read the recent-cohort stall percentage with care: a concept promoted yesterday
 has had almost no opportunity to be reinforced, so it reads high by
@@ -2132,17 +2133,23 @@ time, which is exactly why the baseline above is dated.
 
 ### Still open
 
-- **Reinforcement fires far too rarely, and that — not the gate — is the
-  larger half of signal C.** The timeline carries 553 `discovered` and 504
-  `promoted` events against **60 `reinforced`**. Every concept has a
-  `last_reinforced_at` (L2 stamps it at creation), but only 84 actives have one
-  *after* promotion. So "82.7% never reinforced" is substantially a statement
-  that the reinforce path under-fires, not only that intake is loose. Tightening
-  intake helps by arithmetic — fewer concepts competing for the same 60
-  reinforcements — but the ceiling is the reinforce path itself. Worth its own
-  investigation before any further gate tuning. `value` is the tell: 86%
-  stalled at a mean of 4.31 sources, i.e. well-evidenced concepts that still
-  never get re-observed.
+- **The never-reinforced set is a bootstrap-era backlog, not an ongoing leak.**
+  The lifetime ratio looks alarming — 553 `discovered` against 60 `reinforced`
+  — but it is dominated by the first nine days. Broken down by day, `reinforced`
+  was **zero from Jul 3 to Jul 11** while 481 concepts were minted into an
+  almost-empty graph (with nothing to reinforce, every proposal was necessarily
+  new, and `_existing_for` was still dumping the entire concept list into the
+  prompt — "too long to pick a reinforce-by-id target from"). It switched on at
+  **44 events on Jul 12**, and on **Jul 30 — the first day of use after the L22
+  `_existing_for` fix — it ran 16 `reinforced` and 3 `merged` against only 4
+  `discovered`**, i.e. reinforcement outpacing discovery 4:1, which is the
+  healthy signature for a mature graph.
+
+  So the reinforce path works, and **374 of the 402** never-reinforced actives
+  (93%) were promoted before Jul 13 — before reinforcement had ever fired once.
+  One day of post-fix data is not enough to declare it *fixed*, but it is
+  enough to say the priority is the **backlog**, not the mechanism. The next
+  measurement should just be more use, not more code.
 - **Threshold tuning, pass 2: per-kind decay rates.** Worth knowing before
   starting: per-kind decay **already exists** via `plasticity_default`, and its
   ordering is already right — `value` 0.2 (81 effective days, stickiest),
@@ -2153,10 +2160,16 @@ time, which is exactly why the baseline above is dated.
   `drift_plasticity` pushes active concepts' plasticity *down* toward 0.15 over
   time, so survivors get stickier and the backlog gets harder to drain the
   longer it sits.
-- **Enforcement of signal C** — demote the never-reinforced set. Needs a
-  chosen threshold and a one-off sweep over the concepts minted before the
-  proposer was disciplined. Now cheap to target: `pruning.unreinforced_sample`
-  carries the ids, and `unreinforced_since_promotion` is exported.
+- **Enforcement of signal C — the one-off sweep. Now the top item.** 374
+  concepts minted before reinforcement had ever fired are sitting `active` at a
+  median confidence of ~0.8, competing for surfacing slots against concepts that
+  earned their place, and decay cannot clear them: ~86 engaged days each against
+  **12.9 engaged days accumulated in total**. Scope it to the pre-Jul-13 cohort
+  rather than "all never-reinforced" — the 28 newer ones may simply not have been
+  re-observed yet — and demote to `dormant` rather than `retired`, so a genuine
+  reinforcement revives them. Cheap to target now:
+  `pruning.unreinforced_sample` carries the ids and
+  `unreinforced_since_promotion` is exported.
 - **The dormant revival path bypasses the kind gates.** `_transition` revives
   `dormant -> active` on `concept_promote_min_confidence` alone, without
   consulting the promotion gate (unlike the `retired` path, which does). A

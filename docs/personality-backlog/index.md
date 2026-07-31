@@ -254,14 +254,16 @@ Open — quality and pruning:
   pruning section grew intake-*rate* metrics plus
   `scripts/concept_intake_report.py`, since the standing never-reinforced
   count is far too slow to show whether a threshold change worked.
-  Still open: **the reinforce path, which fires ~10x less often than
-  discovery (60 events against 553) and is the larger half of the
-  never-reinforced signal**; tuning pass 2 (per-kind decay — the ordering
-  is already right via `plasticity_default`, the absolute scale is ~6x too
-  slow); enabling demotion for the never-reinforced signal plus a one-off
-  sweep over the concepts minted before the proposer was disciplined; and
-  the offline eval harness (deliberately last: hand-authoring goldens
-  before the register settles would enshrine the output we are fixing).
+  Still open, in priority order: **the one-off sweep of the 374 concepts
+  minted before reinforcement had ever fired** (a bootstrap-era backlog —
+  `reinforced` was zero for the graph's first nine days, and on the most
+  recent day of use it outpaced discovery 4:1, so the mechanism is fine and
+  the backlog is the problem; decay cannot clear it at ~86 engaged days a
+  head against 12.9 accumulated); tuning pass 2 (per-kind decay — the
+  ordering is already right via `plasticity_default`, the absolute scale is
+  ~6x too slow); and the offline eval harness (deliberately last:
+  hand-authoring goldens before the register settles would enshrine the
+  output we are fixing).
 
 Open — self-history:
 
