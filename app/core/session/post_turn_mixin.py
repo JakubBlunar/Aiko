@@ -871,6 +871,25 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("clarification detector raised", exc_info=True)
 
+        # K80 — inside-joke birth. Runs against the *previous* assistant
+        # turns (the ring below is rolled after this), because the phrase
+        # the user just echoed came from a reply that already went out.
+        # Arms a one-shot cue and, on a hit, persists the bit so it
+        # outlives the moment. Cheap: regex + n-gram set intersection.
+        try:
+            self._maybe_bless_inside_joke(
+                user_text=user_text,
+                user_message_id=user_message_id,
+            )
+        except Exception:
+            log.debug("inside-joke birth detector raised", exc_info=True)
+        try:
+            ring = getattr(self, "_recent_assistant_turns", None)
+            if ring is not None and (assistant_text or "").strip():
+                ring.appendleft((assistant_message_id, assistant_text))
+        except Exception:
+            log.debug("recent-assistant ring append failed", exc_info=True)
+
         # Phase 4a: inline [[agenda:...]] tags in raw assistant output.
         agenda_store = getattr(self, "_agenda_store", None)
         if agenda_store is not None and raw_assistant_text:

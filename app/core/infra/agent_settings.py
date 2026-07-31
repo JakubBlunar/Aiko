@@ -2266,6 +2266,20 @@ class AgentSettings:
     catchphrase_miner_min_seconds_between: float = 600.0
     catchphrase_miner_min_new_user_turns: int = 6
     catchphrase_miner_min_total_count: int = 3
+
+    # ── K80: inside-joke birth ────────────────────────────────────────
+    # The miner's fast path: the user echoing one of Aiko's own phrases
+    # back at her, laughing, is the moment a bit is *born*. Arms a
+    # one-shot "that's officially a thing now" cue and promotes the
+    # phrase into the same catchphrase registry the slow miner feeds.
+    # Off → no detection, no cue, no write.
+    inside_joke_birth_enabled: bool = True
+    # Wall-clock gap between blessings. Rarity is the point: a genuinely
+    # funny hour should produce one blessed bit, not a run of them.
+    inside_joke_birth_cooldown_hours: float = 24.0
+    # Shortest echo that can count as a bit. Below 3 words the "phrase"
+    # is usually just shared vocabulary.
+    inside_joke_birth_min_words: int = 3
     # Phase 4c: CuriosityWorker — emits a one-line "next-turn"
     # follow-up question when the recent conversation has gone shallow.
     curiosity_worker_enabled: bool = True

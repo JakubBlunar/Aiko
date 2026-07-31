@@ -2413,6 +2413,115 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_user_expertise_surface raised: {exc}"
 
     @mcp.tool()
+    def get_inside_joke_state() -> str:
+        """K80 — dump the inside-joke-birth detector state.
+
+        Shows the master switch + knobs, the wall-clock watermark (when
+        the last bit was blessed and how much cooldown is left), the
+        recent-assistant-turn ring the detector matches the user's echo
+        against, any armed one-shot cue, and the phrases already in the
+        catchphrase registry (which the detector refuses to re-bless).
+        First stop for "why didn't she notice that just became a bit?".
+        """
+        agent = session._settings.agent
+        cooldown_h = float(
+            getattr(agent, "inside_joke_birth_cooldown_hours", 24.0)
+        )
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(agent, "inside_joke_birth_enabled", True)
+            ),
+            "cooldown_hours": cooldown_h,
+            "min_words": int(
+                getattr(agent, "inside_joke_birth_min_words", 3)
+            ),
+        }
+        pending = getattr(session, "_pending_inside_joke", None)
+        out["pending_cue"] = (
+            None
+            if pending is None
+            else {
+                "phrase": pending.phrase,
+                "origin_message_id": pending.origin_message_id,
+                "lag_turns": pending.lag_turns,
+                "laughed": pending.laughed,
+                "amused": pending.amused,
+            }
+        )
+        try:
+            from app.core.session.post_turn_helpers_mixin import (
+                _KV_INSIDE_JOKE_AT,
+            )
+
+            last = session._chat_db.kv_get(_KV_INSIDE_JOKE_AT)
+            out["last_blessed_at"] = last
+            if last:
+                from datetime import datetime, timezone
+
+                ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                elapsed_h = (
+                    timephrase.utcnow() - ts
+                ).total_seconds() / 3600.0
+                out["cooldown_remaining_hours"] = round(
+                    max(0.0, cooldown_h - elapsed_h), 2,
+                )
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["watermark_error"] = str(exc)
+        ring = getattr(session, "_recent_assistant_turns", None) or ()
+        out["recent_assistant_turns"] = [
+            {"message_id": mid, "text": (text or "")[:200]}
+            for mid, text in ring
+        ]
+        try:
+            out["known_catchphrases"] = session._known_catchphrases()
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["known_catchphrases_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_inside_joke_birth(user_text: str) -> str:
+        """K80 — run the birth detector against ``user_text`` right now.
+
+        Bypasses the wall-clock watermark (it is cleared first) but not
+        the echo + amusement gate: ``user_text`` must actually repeat a
+        phrase from one of Aiko's recent replies *and* carry an amusement
+        marker (or sit on a laugh-reacted message). Send a distinctive
+        line via ``send_message`` first so the ring has something to
+        echo, then call this with the echo. On a hit the one-shot cue is
+        armed and the phrase is persisted — verify with the next
+        ``send_message`` + ``get_last_response_detail``.
+        """
+        try:
+            from app.core.session.post_turn_helpers_mixin import (
+                _KV_INSIDE_JOKE_AT,
+            )
+
+            session._chat_db.kv_set(_KV_INSIDE_JOKE_AT, "")
+            session._maybe_bless_inside_joke(
+                user_text=user_text, user_message_id=None,
+            )
+            birth = getattr(session, "_pending_inside_joke", None)
+            return json.dumps(
+                {
+                    "detected": birth is not None,
+                    "phrase": None if birth is None else birth.phrase,
+                    "lag_turns": None if birth is None else birth.lag_turns,
+                    "laughed": None if birth is None else birth.laughed,
+                    "amused": None if birth is None else birth.amused,
+                    "note": (
+                        "cue armed; it renders once on the next turn"
+                        if birth is not None
+                        else "no echo+amusement match against the recent ring"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_inside_joke_birth raised: {exc}"
+
+    @mcp.tool()
     def get_upcoming_horizon_state() -> str:
         """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
 

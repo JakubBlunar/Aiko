@@ -962,3 +962,94 @@ pending cue + text, cooldown) and `force_tease_rhythm(cue)`
 Tests: `tests/test_tease_rhythm.py`, `TeaseRhythmSettingsTests` in
 `tests/test_settings.py`, `TeaseRhythmProviderSlotTests` in
 `tests/test_prompt_assembler.py`.
+---
+
+## K80. Inside-joke birth — bless the moment a bit becomes "ours"
+
+K22 detects and *reuses* an existing callback; the slow
+[`CatchphraseMiner`](../../../app/core/memory/catchphrase_miner.py) only
+notices a phrase once it has already recurred across a window. Neither can
+see the **birth** — the live moment a throwaway line clearly just became a
+recurring bit between the two. Naming that formation is a distinct intimacy
+beat: the relationship noticing itself. K80 is the miner's **fast path**:
+a pure detector, a one-shot cue, and two persistence writes so the bit
+outlives the turn it was born in. Distinct from K22 (reuse) and K73
+(recurring *ritual*, not a *phrase*).
+
+**The gate (two signals, both required).** A birth needs the user to *echo*
+one of Aiko's own recent phrases **and** for the moment to be funny. Echo
+alone is not a joke — that's just how conversations work, and it's exactly
+what the slow miner already covers. Amusement is read from either a K32
+`laugh` reaction on the echoed message or a narrow in-text marker in the
+echo itself (`_AMUSED_RE`; deliberately not general positivity, since a
+false positive spends the one blessing the cooldown allows).
+
+**Pure detector ([`catchphrase_miner.py`](../../../app/core/memory/catchphrase_miner.py)).**
+`detect_inside_joke_birth(user_text, origins, laughed_ids, known_phrases,
+min_n, max_n) -> InsideJokeBirth | None` intersects the user's meaningful
+n-grams with those of each recent assistant turn (`origins`, newest first),
+returning the **most recent** qualifying echo and, within that turn, the
+**longest** phrase (“the fish-shaped cookie incident” is the bit, not the
+“fish-shaped cookie” inside it). Phrases already in `known_phrases` are
+skipped via the miner's existing `_is_subsumed` — a bit can only be born
+once, and reusing an established one is K22's territory. Reuses the miner's
+`_normalise_text` / `_ngram_is_meaningful` ladder, so stop-word soup and
+boilerplate can't be a bit. No store, no clock, no I/O.
+`render_inner_life_block`'s sibling `render_inside_joke_block(birth,
+user_display_name)` renders the cue; `bless_inside_joke(...)` does the two
+best-effort writes: a `kind="catchphrase"` memory (`tier="long_term"` —
+born in front of us with a laugh behind it is at least as vetted as a phrase
+counted three times) that joins the running-jokes block and becomes a K22
+callback target, and a `shared_moment` (`vibe="playful"`, `source="birth"`)
+for the *event* of it becoming theirs, which anniversaries and long-arc
+callbacks reach for later.
+
+**Detection wiring
+([`post_turn_helpers_mixin.py`](../../../app/core/session/post_turn_helpers_mixin.py)).**
+`_maybe_bless_inside_joke` runs inline from `_post_turn_inner_life`
+(cheap: regex + n-gram set intersection, no embed, no LLM) *before* the
+turn is rolled into the ring — the phrase the user just echoed came from a
+reply that already went out. It reads the `_recent_assistant_turns` deque
+(`maxlen=3`, newest-first, appended post-turn in
+[`post_turn_mixin.py`](../../../app/core/session/post_turn_mixin.py)),
+resolves `laughed_ids` through `_load_message_reactions`, and passes the
+existing catchphrase registry via `_known_catchphrases()`. Rate-limited by
+a `kv_meta` wall-clock watermark (`inside_joke_birth.last_recorded_at`) —
+blessing everything is the fastest way to make the beat worthless. On a hit
+it arms `_pending_inside_joke`, persists, stamps the watermark, and logs
+`K80 inside-joke born: phrase=… lag=… laughed=…`.
+
+**Consumer
+([`inner_life_part4.py`](../../../app/core/session/inner_life_part4.py)
+`_render_inside_joke_block`).** Consumes the slot (clearing *before* the
+render, so a render failure still resets it) — a sticky cue would have her
+blessing the same phrase every turn, which is precisely how a real moment
+turns into a tic. The copy tells her to notice it out loud **once**,
+lightly, and to drop it if the moment has moved on; never to explain the
+joke or promise to keep using it. Registered as `inside_joke_block` in
+**T6** right after `shared_ritual_block` (the phrase-sized sibling of the
+ritual beat, so both “this is ours now” cues read as one thought) and
+enrolled in the K51 cue-register rotation.
+
+**Settings.** `agent.inside_joke_birth_enabled` (true) /
+`_cooldown_hours` (24.0) / `_min_words` (3, floor 2). **MCP**
+([`memory_worker_tools.py`](../../../app/mcp/server_tools/memory_worker_tools.py)):
+`get_inside_joke_state` (switch + knobs, watermark and cooldown remaining,
+the recent-assistant ring, any armed cue, the known-phrase block list),
+`force_inside_joke_birth(user_text)` (clears the watermark and runs the
+detector against `user_text` — the echo + amusement gate still applies).
+Repro: `send_message` something distinctive →
+`force_inside_joke_birth("lmao <that phrase>, exactly")` → `send_message`
+→ confirm the "is turning into a bit between you two" line in
+`get_last_response_detail.system_prompt`. Grep `K80 inside-joke born` on
+the `app.session` logger.
+
+**Tests:** `InsideJokeBirthTests` / `InsideJokeRenderTests` /
+`BlessInsideJokeTests` in
+[`tests/test_catchphrase_miner.py`](../../../tests/test_catchphrase_miner.py)
+(echo without laughter, laughter without echo, longest-phrase and
+most-recent-turn preference, known-phrase skip, cue copy, both writes),
+[`tests/test_post_turn_inside_joke.py`](../../../tests/test_post_turn_inside_joke.py)
+(the session seam: master switch, watermark suppress / stale-allow /
+refresh, empty ring, reaction lookup, slot arming, and the one-shot
+render-then-clear contract).

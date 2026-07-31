@@ -386,6 +386,14 @@ Bootstrap-time reflection that fires once per app start when the gap since the l
 - `agent.catchphrase_miner_min_new_user_turns` *(int, `6`, min `1`)* — minimum new user turns since the last run.
 - `agent.catchphrase_miner_min_total_count` *(int, `3`, min `2`)* — minimum total occurrences of a phrase before it's promoted to a catchphrase.
 
+### Inside-joke birth (K80)
+
+The miner's fast path. The slow miner above only sees a phrase once it has *recurred* across a window; K80 catches the live moment a bit is born — the user handing one of Aiko's own phrases back to her, laughing — arms a one-shot "that's officially a thing now" cue, and promotes the phrase into the same catchphrase registry.
+
+- `agent.inside_joke_birth_enabled` *(bool, `true`)* — master switch. Off → no detection, no cue, no write.
+- `agent.inside_joke_birth_cooldown_hours` *(float, `24.0`, min `0`)* — wall-clock gap between blessings. Rarity is the point: a genuinely funny hour should produce one blessed bit, not a run of them.
+- `agent.inside_joke_birth_min_words` *(int, `3`, min `2`)* — shortest echo that can count as a bit. Below three words the "phrase" is usually just shared vocabulary.
+
 ### Phase-4c curiosity worker
 
 One-line follow-up question prep when the recent conversation has gone shallow.
