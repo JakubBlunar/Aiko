@@ -1,7 +1,6 @@
 """Worker-level tests for K72 WellbeingConcernWorker."""
 from __future__ import annotations
 
-import json
 import unittest
 from datetime import datetime, timedelta, timezone
 

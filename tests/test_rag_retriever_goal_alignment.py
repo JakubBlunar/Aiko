@@ -24,7 +24,6 @@ from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PRIOR,
     _RAG_GOAL_ALIGNMENT_BOOST,
-    _RAG_GOAL_ALIGNMENT_THRESHOLD,
     _MEMORY_TIER_OFFSET,
 )
 from app.core.rag.rag_store import MemoryRecord, RagHit

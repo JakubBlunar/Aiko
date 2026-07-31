@@ -17,16 +17,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
-from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
-from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
+from app.core.infra.chat_database import ChatDatabase
+from app.llm.token_utils import estimate_tokens
 
 if TYPE_CHECKING:
     from app.core.memory.memory_retriever import MemoryRetriever
@@ -39,7 +36,6 @@ from app.core.session.prompt_support import (
     clip_text_to_tokens,
     build_speech_grammar_addendum,
     build_learned_style_addendum,
-    _SPEECH_GRAMMAR_ADDENDUM,
     _TOUCH_GRAMMAR_ADDENDUM,
     _build_overlay_grammar_addendum,
     _build_outfit_grammar_addendum,

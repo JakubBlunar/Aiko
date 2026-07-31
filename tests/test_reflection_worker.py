@@ -1,14 +1,12 @@
 """Tests for the post-turn ReflectionWorker (Phase 2c)."""
 from __future__ import annotations
 
-import time
 import unittest
 from dataclasses import dataclass
 
 import numpy as np
 
 from app.core.proactive.reflection_worker import (
-    Reflection,
     ReflectionWorker,
     _parse_reflection_payload,
 )

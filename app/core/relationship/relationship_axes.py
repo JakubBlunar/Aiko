@@ -343,7 +343,6 @@ class RelationshipAxesUpdater:
 
         Persistence + clamping match :meth:`apply_turn` exactly.
         """
-        from datetime import datetime, timezone
 
         from app.core.relationship import user_reactions as _ur
 

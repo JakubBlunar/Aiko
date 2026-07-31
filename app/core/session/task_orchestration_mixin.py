@@ -102,7 +102,6 @@ from app.core.tasks.handlers import (
 )
 from app.core.tasks.report_decision import (
     ACTION_DROP,
-    ACTION_PARK,
     ACTION_SURFACE,
     PROVENANCE_SELF,
     PROVENANCE_USER,
@@ -129,7 +128,7 @@ _USER_MESSAGE_MODE_MAP: dict[str, str] = {
 
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
-    from app.core.tasks.task_cue_store import TaskCue
+    pass
 
 
 log = logging.getLogger("app.session")

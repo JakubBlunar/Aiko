@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient

@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import default_is_ready

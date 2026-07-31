@@ -24,7 +24,6 @@ from app.core.tasks.task_handler import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_INTERRUPTED,
-    STATUS_PAUSED,
     STATUS_RUNNING,
 )
 from app.core.tasks.task_store import TaskRow, TaskStore

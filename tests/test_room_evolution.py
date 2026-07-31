@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 

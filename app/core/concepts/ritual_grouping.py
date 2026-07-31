@@ -93,7 +93,7 @@ def moment_from_memory(mem: Any) -> MomentInput | None:
     ``what`` from the metadata bag, falling back to the row content /
     ``created_at`` when a field is absent."""
     try:
-        mid = int(getattr(mem, "id"))
+        mid = int(mem.id)
     except (TypeError, ValueError, AttributeError):
         return None
     emb = getattr(mem, "embedding", None)

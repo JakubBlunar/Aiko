@@ -16,7 +16,6 @@ Covers the full vertical slice:
 from __future__ import annotations
 
 import tempfile
-import threading
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -43,7 +42,6 @@ from tests.test_concept_synthesis_worker import (
     ClusterStub,
     MemStub,
     WorkerHarness,
-    _agent,
     _mem_settings,
 )
 

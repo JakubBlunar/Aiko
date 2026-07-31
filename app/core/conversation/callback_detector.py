@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable, Iterable
 
 import numpy as np

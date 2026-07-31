@@ -8,7 +8,6 @@ consumer
 from __future__ import annotations
 
 import unittest
-from typing import Any
 
 from app.core.conversation.topic_confidence import (
     ClusterConfidence,

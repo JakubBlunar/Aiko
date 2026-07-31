@@ -156,7 +156,7 @@ def _coerce_labels(raw: Any) -> list[str]:
         if isinstance(item, str):
             label = item
         elif hasattr(item, "label"):
-            label = getattr(item, "label")
+            label = item.label
         elif isinstance(item, (tuple, list)) and item:
             label = item[0]
         text = str(label or "").strip()

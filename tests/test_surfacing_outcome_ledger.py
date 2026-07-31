@@ -15,7 +15,6 @@ on legacy databases, and no failure in the ledger can reach the turn.
 """
 from __future__ import annotations
 
-import sqlite3
 import unittest
 from dataclasses import dataclass
 from datetime import timedelta

@@ -27,8 +27,6 @@ The orchestrator is where every important contract lives:
 """
 from __future__ import annotations
 
-import contextvars
-import logging
 import threading
 import time
 import unittest
@@ -50,7 +48,6 @@ from app.core.tasks import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_INTERRUPTED,
-    STATUS_RUNNING,
     TaskCompleted,
     TaskFailed,
     TaskInputNeeded,

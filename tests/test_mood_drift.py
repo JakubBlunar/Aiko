@@ -7,7 +7,6 @@ priority order, and the rendered copy.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
 
 from app.core.affect import mood_drift as md
 

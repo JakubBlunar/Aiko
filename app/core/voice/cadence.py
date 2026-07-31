@@ -54,8 +54,7 @@ from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.core.affect.affect_state import AffectState
-    from app.core.affect.circadian import CircadianState
+    pass
 
 
 log = logging.getLogger("app.cadence")

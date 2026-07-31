@@ -20,7 +20,6 @@ import threading
 import time
 import unittest
 from dataclasses import dataclass
-from typing import Any
 
 from app.core.session.session_controller import SessionController
 

@@ -30,7 +30,6 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.infra import timephrase

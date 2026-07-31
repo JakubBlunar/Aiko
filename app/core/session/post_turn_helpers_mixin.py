@@ -241,7 +241,6 @@ class PostTurnHelpersMixin:
         if not body:
             return 0
         try:
-            from datetime import datetime, timezone
 
             from app.core.memory import promise_lifecycle as lifecycle
 
@@ -405,7 +404,6 @@ class PostTurnHelpersMixin:
         if chat_db is None:
             return False
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import tease_ledger as _tl
 
@@ -479,7 +477,6 @@ class PostTurnHelpersMixin:
         reflects the carried emotional weight). Best-effort -> 0.0.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import emotion_episodes as _ee
 
@@ -566,7 +563,6 @@ class PostTurnHelpersMixin:
         if len(text) < 8:
             return
 
-        from datetime import datetime, timezone
 
         from app.core.concepts import cluster_affect as _ca
 
@@ -634,7 +630,6 @@ class PostTurnHelpersMixin:
         delta, persists, and broadcasts the new energy so the avatar
         embodiment (gesture/breath amplitude) updates. Best-effort.
         """
-        from datetime import datetime
 
         from app.core.affect import vitality as _vit
         from app.core.affect import vitality_rhythm as _vr
@@ -762,7 +757,6 @@ class PostTurnHelpersMixin:
         chat_db = getattr(self, "_chat_db", None)
         if chat_db is None:
             return
-        from datetime import datetime, timezone
 
         from app.core.affect import emotion_episodes as _ee
 
@@ -1064,7 +1058,6 @@ class PostTurnHelpersMixin:
                 0.50,
             )
         )
-        from datetime import datetime, timezone
         now_iso = timephrase.utcnow().isoformat()
         for seed in active:
             try:

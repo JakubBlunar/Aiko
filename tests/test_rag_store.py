@@ -17,7 +17,6 @@ import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.rag.message_indexer import MessageIndexer
-from app.core.memory.memory_store import MemoryStore
 from app.core.rag.rag_retriever import RagRetriever
 from app.core.rag.rag_store import RagStore
 

@@ -15,12 +15,10 @@ for the kv_meta round-trip. Runs in milliseconds.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from app.core.relationship import user_reactions as ur
 from app.core.relationship.user_reactions import (
     DailyCapState,
-    DailyCapVerdict,
     KV_USER_REACTIONS_DAILY,
     REACTION_KINDS,
     apply_daily_cap,

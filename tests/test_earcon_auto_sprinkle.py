@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import random
 import unittest
-from typing import Any
 
 from app.core.voice.cadence import (
     CadenceContext,
     ProsodyDispatcher,
     ProsodyParams,
-    analyze_sentence,
 )
 
 

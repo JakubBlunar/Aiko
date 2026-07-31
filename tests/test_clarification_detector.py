@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.conversation import clarification_detector
 from app.core.conversation.clarification_detector import (
     ClarificationResult,
     detect,

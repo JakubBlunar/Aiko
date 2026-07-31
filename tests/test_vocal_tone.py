@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.affect.vocal_tone import VocalTone, analyse_wav
+from app.core.affect.vocal_tone import analyse_wav
 
 
 SR = 16000

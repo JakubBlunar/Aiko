@@ -12,7 +12,6 @@ from __future__ import annotations
 import random
 import unittest
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from app.core.proactive.forward_curiosity_worker import (
     FORWARD_CURIOSITY_JOURNAL_KEY,

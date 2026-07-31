@@ -431,7 +431,6 @@ def register(mcp, session: "SessionController") -> None:
         ``None`` if everything is on cooldown / already researched).
         First stop for "why isn't Aiko learning anything new?".
         """
-        from datetime import datetime, timezone
 
         worker = getattr(session, "_idle_knowledge", None)
         out: dict = {
@@ -513,7 +512,6 @@ def register(mcp, session: "SessionController") -> None:
             )
         try:
             from app.core.affect import calibration_detector
-            from datetime import datetime, timezone
             import numpy as np
 
             state = store.get(session._user_id)
@@ -1182,7 +1180,6 @@ def register(mcp, session: "SessionController") -> None:
         qualify for the current turn. First stop for "why didn't Aiko reach
         back to that thing from months ago?".
         """
-        from datetime import datetime, timezone
 
         mem = session._memory_settings
         out: dict[str, Any] = {

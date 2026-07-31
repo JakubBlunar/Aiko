@@ -11,12 +11,10 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
 from app.core.proactive.associative_wander_worker import (
-    ASSOCIATIVE_WANDER_JOURNAL_KEY,
     AssociativeWanderWorker,
     _KV_PAIR_COOLDOWNS,
     append_wander,

@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 
 import numpy as np
 

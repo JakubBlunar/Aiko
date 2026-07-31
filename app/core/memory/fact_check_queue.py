@@ -121,7 +121,6 @@ class FactCheckQueue:
         cleaned = (claim_text or "").strip()
         if not cleaned:
             return
-        from datetime import datetime, timezone
 
         item = ClaimItem(
             memory_id=int(memory_id),

@@ -20,11 +20,9 @@ What we cover here:
 """
 from __future__ import annotations
 
-import json
 import logging
 import unittest
 from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient

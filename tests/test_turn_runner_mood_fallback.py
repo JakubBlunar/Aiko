@@ -21,7 +21,6 @@ a controlled token stream.
 from __future__ import annotations
 
 import unittest
-from typing import Any
 from unittest.mock import MagicMock
 
 from app.core.session.prompt_assembler import PromptTelemetry

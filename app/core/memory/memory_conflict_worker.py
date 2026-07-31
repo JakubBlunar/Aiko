@@ -59,7 +59,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from app.core.memory.conflict_heuristics import (
-    HEURISTIC_BORDERLINE,
     HEURISTIC_DEFINITE,
     HEURISTIC_NO,
     HeuristicResult,

@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.world.idle_activity_worker import (
-    AWAY_ACTIVITIES_JOURNAL_KEY,
     append_journal,
 )
 from app.core.infra import timephrase

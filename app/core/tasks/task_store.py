@@ -601,7 +601,7 @@ class TaskStore:
         params: list[Any] = list(status_list)
         where = f"status IN ({placeholders})"
         if user_id is not None and str(user_id).strip():
-            where = f"user_id = ? AND " + where
+            where = "user_id = ? AND " + where
             params.insert(0, str(user_id).strip())
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         rows = conn.execute(

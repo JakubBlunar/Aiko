@@ -8,7 +8,6 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
-import sqlite3
 import tempfile
 import threading
 import time
@@ -40,11 +39,6 @@ from pathlib import Path
 from typing import Any
 
 from app.core.brain import (
-    KIND_PROACTIVE,
-    KIND_TASK_INPUT_NEEDED,
-    KIND_TASK_PROGRESS,
-    KIND_TASK_RESULT,
-    KIND_USER_MESSAGE,
     ProactiveEvent,
     TaskInputNeededEvent,
     TaskProgressEvent,
@@ -57,7 +51,6 @@ from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
 from app.core.tasks import (
     CUE_KIND_RESULT,
     STATUS_AWAITING_INPUT,
-    STATUS_RUNNING,
     TaskStore,
 )
 

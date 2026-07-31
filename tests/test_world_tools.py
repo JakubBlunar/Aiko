@@ -5,7 +5,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.world.world_store import WorldStore

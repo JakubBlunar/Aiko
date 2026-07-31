@@ -32,7 +32,6 @@ from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 from app.core.memory.memory_store import MemoryStore
 from app.core.proactive.idle_knowledge_worker import (
     IdleKnowledgeWorker,
-    KnowledgeFact,
 )
 
 

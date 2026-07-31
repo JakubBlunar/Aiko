@@ -22,7 +22,6 @@ crash_logging adapter would also surface here.
 from __future__ import annotations
 
 import logging
-import re
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor

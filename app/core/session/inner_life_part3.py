@@ -705,7 +705,6 @@ class InnerLifePart3Mixin:
             self._long_arc_callback_force_next = False
 
         mem = self._memory_settings
-        from datetime import datetime, timezone
 
         now = timephrase.utcnow()
         kv_get = self._chat_db.kv_get
@@ -1336,7 +1335,6 @@ class InnerLifePart3Mixin:
             chat_db = getattr(self, "_chat_db", None)
             if chat_db is not None:
                 try:
-                    from datetime import datetime, timezone
 
                     from app.core.conversation import wants_ledger as _wl
 
@@ -1520,7 +1518,6 @@ class InnerLifePart3Mixin:
         if chat_db is None:
             return ""
         try:
-            from datetime import datetime, timezone
 
             from app.core.conversation import wants_ledger as _wl
 
@@ -1593,7 +1590,6 @@ class InnerLifePart3Mixin:
         if chat_db is None:
             return ""
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import emotion_episodes as _ee
 
@@ -1774,7 +1770,6 @@ class InnerLifePart3Mixin:
         if chat_db is None:
             return ""
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import tease_ledger as _tl
 

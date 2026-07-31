@@ -341,7 +341,6 @@ def register(mcp, session: "SessionController") -> None:
             }
             limiter = getattr(session, "_pre_thought_rate_limiter", None)
             if limiter is not None:
-                from datetime import datetime, timezone
 
                 try:
                     out["rate"] = limiter.snapshot(
@@ -440,7 +439,6 @@ def register(mcp, session: "SessionController") -> None:
                 out["message_count"] = None
             limiter = getattr(session, "_thread_resummary_rate_limiter", None)
             if limiter is not None:
-                from datetime import datetime, timezone
 
                 try:
                     out["rate"] = limiter.snapshot(timephrase.utcnow())
@@ -745,7 +743,6 @@ def register(mcp, session: "SessionController") -> None:
            broadcast ``expressiveness_mult`` < 1 (avatar droops).
         """
         try:
-            from datetime import datetime
 
             from app.core.affect import vitality as _vit
             from app.core.affect import vitality_rhythm as _vr
@@ -880,7 +877,6 @@ def register(mcp, session: "SessionController") -> None:
         wired. Unknown names return the palette without writing.
         """
         try:
-            from datetime import datetime
 
             from app.core.affect import vitality_rhythm as _vr
 
@@ -1186,7 +1182,6 @@ def register(mcp, session: "SessionController") -> None:
         Returns whether a write happened + the new ring count.
         """
         try:
-            from datetime import datetime
 
             from app.core.affect.mood_drift_worker import record_daily_sample
 
@@ -1369,7 +1364,6 @@ def register(mcp, session: "SessionController") -> None:
         in ``get_last_response_detail.system_prompt``.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.conversation import wants_ledger as _wl
 
@@ -1454,7 +1448,6 @@ def register(mcp, session: "SessionController") -> None:
         snapshot. Dedup / cap rules apply — a refusal reports why.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.conversation import wants_ledger as _wl
 
@@ -1840,7 +1833,6 @@ def register(mcp, session: "SessionController") -> None:
         weights.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import affection_style as _af
 
@@ -2014,7 +2006,6 @@ def register(mcp, session: "SessionController") -> None:
     def set_humor_style(kind: str, weight: float) -> str:
         """K74 — force one humour kind's raw weight, then renormalise."""
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import humor_style as _hs
 
@@ -2216,7 +2207,6 @@ def register(mcp, session: "SessionController") -> None:
         the next turn's cue + caps read it. Returns the new pace.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import intimacy_pacing as _ip
 

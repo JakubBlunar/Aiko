@@ -34,7 +34,6 @@ from tests.test_concept_synthesis_worker import (
     ClusterStub,
     MemStub,
     WorkerHarness,
-    _mem_settings,
 )
 
 

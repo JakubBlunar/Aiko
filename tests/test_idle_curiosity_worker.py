@@ -39,7 +39,6 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 from app.core.proactive.idle_curiosity_worker import (
     IdleCuriosityWorker,
-    CuriosityAnswer,
 )
 from app.core.memory.memory_store import MemoryStore
 

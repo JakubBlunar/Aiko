@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from app.core.infra import timephrase
-from app.core.memory.echo_detector import ECHO_SEMANTIC, EchoVerdict
+from app.core.memory.echo_detector import EchoVerdict
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase

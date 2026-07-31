@@ -38,7 +38,7 @@ from app.core.tasks.task_handler import (
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.tasks.task_orchestrator import TaskOrchestrator
-    from app.core.tasks.task_store import TaskRow, TaskStore
+    from app.core.tasks.task_store import TaskStore
 
 
 log = logging.getLogger("app.task_orchestrator")

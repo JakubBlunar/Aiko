@@ -18,7 +18,6 @@ from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 from app.core.memory.memory_conflict_store import (
     MemoryConflictStore,
     STATUS_AUTO_RESOLVED,
-    STATUS_OPEN,
 )
 from app.core.memory.memory_conflict_worker import MemoryConflictWorker
 from app.core.memory.memory_store import MemoryStore

@@ -9,17 +9,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from app.core.conversation import cue_register
 from app.core.infra import timephrase
 from app.core.infra import timephrase as _timephrase
-from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
+from app.core.infra.chat_database import MessageRow, SummaryRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
 if TYPE_CHECKING:
@@ -29,18 +25,10 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.prompt_assembler")
 
 from app.core.session.prompt_support import (
-    DEFAULT_PERSONA_PATH,
-    _SAFETY_TOKENS,
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
-    _SPEECH_GRAMMAR_ADDENDUM,
     _TOUCH_GRAMMAR_ADDENDUM,
-    _build_overlay_grammar_addendum,
-    _build_outfit_grammar_addendum,
-    _build_motion_grammar_addendum,
     _safe_provider,
-    _timed_phase,
-    PromptTelemetry,
     _StaticSlices,
 )
 

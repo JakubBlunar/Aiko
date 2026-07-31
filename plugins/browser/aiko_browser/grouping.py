@@ -4,7 +4,7 @@ All pure functions over the normalized schema — no MCP, no I/O.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .accessibility import A11yNode
 

@@ -66,11 +66,6 @@ VALID_ACTIONS: frozenset[str] = frozenset((ACTION_DEMOTE, ACTION_DELETE, ACTION_
 
 # Heuristic labels emitted by ``app.core.memory.conflict_heuristics.classify_pair``.
 # Re-exported here so callers that only import the store still see them.
-from app.core.memory.conflict_heuristics import (  # noqa: E402
-    HEURISTIC_BORDERLINE,
-    HEURISTIC_DEFINITE,
-    HEURISTIC_NO,
-)
 from app.core.infra import timephrase
 
 # Origin of the conflict flag.

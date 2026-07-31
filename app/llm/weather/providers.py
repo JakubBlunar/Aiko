@@ -52,7 +52,7 @@ _GEO_STOPWORDS = frozenset({
     "region", "district", "province", "county", "state", "area", "the",
     "okres", "kraj", "oblast", "obec", "mesto",  # sk / cz
     "bezirk", "kreis", "land",                    # de
-    "departement", "departement",                 # fr
+    "departement",                 # fr
 })
 
 # Coarse condition buckets. These drive both the prompt cue wording and the

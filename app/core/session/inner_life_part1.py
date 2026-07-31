@@ -383,7 +383,6 @@ class InnerLifePart1Mixin:
             return ""
 
         try:
-            from datetime import datetime
 
             from app.core.affect import day_color
             from app.core.affect.day_color_worker import (
@@ -482,7 +481,6 @@ class InnerLifePart1Mixin:
             return ""
 
         try:
-            from datetime import datetime
 
             from app.core.affect import vitality as _vit
             from app.core.affect import vitality_rhythm as _vr
@@ -707,7 +705,6 @@ class InnerLifePart1Mixin:
             return ""
 
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import vulnerability_budget as _vb
 
@@ -1175,7 +1172,6 @@ class InnerLifePart1Mixin:
         if tracker is None:
             return ""
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship.relationship import render_petname_block
 
@@ -1530,7 +1526,6 @@ class InnerLifePart1Mixin:
         # + subjects. They bypass the relevance floor + concept cap in the
         # selector and are rendered first, deduped against the turn-relevant
         # pool below by concept_id.
-        from datetime import datetime, timezone
 
         from app.core.concepts.concept_kinds import (
             DEFAULT_SURFACE_WEIGHTS,

@@ -44,7 +44,6 @@ from app.core.relationship.belief_store import (
     BeliefStore,
     KIND_MOOD,
     KIND_OPINION,
-    STATUS_ACTIVE,
 )
 from app.core.memory.conflict_heuristics import (
     HEURISTIC_DEFINITE,

@@ -78,7 +78,6 @@ def register(mcp, session: "SessionController") -> None:
             dry_run = None
             reflections_in_window = 0
             try:
-                from datetime import datetime, timezone
                 from app.core.session.inner_life import turning_over as _to
 
                 memory_store = getattr(session, "_memory_store", None)
@@ -1459,7 +1458,6 @@ def register(mcp, session: "SessionController") -> None:
             dry: dict[str, Any] | None = None
             if worker is not None:
                 try:
-                    from datetime import datetime, timezone
 
                     now = timephrase.utcnow()
                     late, neg_days, neg_cats = worker._collect_message_signal(
@@ -2590,7 +2588,7 @@ def register(mcp, session: "SessionController") -> None:
         if store is None:
             return json.dumps({"enabled": False, "error": "no memory_store"})
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from app.core.rag.rag_retriever import (
                 _compute_effective_confidence,

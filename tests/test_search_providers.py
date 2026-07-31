@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import time
 import types
 import unittest
 from typing import Any

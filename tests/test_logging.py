@@ -64,14 +64,14 @@ class TurnIdContextVarTests(unittest.TestCase):
         try:
             record = _make_record("app.core.test", logging.INFO, "hi")
             _TurnIdFilter().filter(record)
-            self.assertEqual(getattr(record, "turn"), "deadbeef")
+            self.assertEqual(record.turn, "deadbeef")
         finally:
             reset_turn_id(token)
 
     def test_filter_falls_back_to_dash(self) -> None:
         record = _make_record("app.core.test", logging.INFO, "hi")
         _TurnIdFilter().filter(record)
-        self.assertEqual(getattr(record, "turn"), "-")
+        self.assertEqual(record.turn, "-")
 
 
 class RingBufferTests(unittest.TestCase):
