@@ -9,7 +9,11 @@
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
     "desktop": "concurrently --kill-others-on-fail --names api,web,tauri --prefix-colors magenta,cyan,green \"python -m app.web\" \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\"",
-    "tauri": "concurrently --kill-others-on-fail --names web,tauri --prefix-colors cyan,green \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\""
+    "tauri": "concurrently --kill-others-on-fail --names web,tauri --prefix-colors cyan,green \"npm --prefix web run dev\" \"npm --prefix web run tauri:dev\"",
+    "lint": "npm run lint:py && npm run lint:web",
+    "lint:py": "python -m ruff check app tests scripts",
+    "lint:py:fix": "python -m ruff check --fix app tests scripts",
+    "lint:web": "npm --prefix web run typecheck"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

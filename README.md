@@ -231,6 +231,18 @@ one-time LF renormalisation doesn't sit on top of every `git blame`:
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
+Linting is one command, and there is no CI behind it — running it is on you:
+
+```powershell
+npm run lint          # both halves
+npm run lint:py       # ruff over app/ tests/ scripts/
+npm run lint:py:fix   # the same, applying the autofixable subset
+npm run lint:web      # tsc -b over web/
+```
+
+`ruff` comes from the `dev` extra (`pip install -e ".[dev]"`); its rule
+selection and the reasoning behind it live in [`pyproject.toml`](pyproject.toml).
+
 ## Notes
 
 - Everything runs locally by default — Ollama, faster-whisper, Pocket-TTS, LanceDB.

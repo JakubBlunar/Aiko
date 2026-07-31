@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "serve:prod:web": "node scripts/serve-prod.mjs",
     "serve:prod:web:tailscale": "node scripts/serve-prod.mjs --tailscale",
