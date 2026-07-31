@@ -525,7 +525,9 @@ class OllamaClient:
                         usage.completion_tokens = int(chunk.get("eval_count", 0) or 0)
                         usage.total_duration_ms = float(chunk.get("total_duration", 0) or 0) / 1e6
                         usage.eval_duration_ms = float(chunk.get("eval_duration", 0) or 0) / 1e6
-                        usage.prompt_eval_duration_ms = float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
+                        usage.prompt_eval_duration_ms = (
+                            float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
+                        )
                         usage.done_reason = _extract_done_reason(chunk)
                     token = chunk.get("message", {}).get("content", "")
                     if token:

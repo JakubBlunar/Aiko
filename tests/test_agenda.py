@@ -290,7 +290,9 @@ class AgendaWorkerTests(unittest.TestCase):
             f.close()
 
     def test_runs_and_applies_diff(self):
-        f, ollama, worker = self._make(response='{"complete":[],"add":[{"goal":"new from llm","importance":0.7}]}')
+        f, ollama, worker = self._make(
+            response='{"complete":[],"add":[{"goal":"new from llm","importance":0.7}]}'
+        )
         try:
             f.store.add("u4", goal="seed", importance=0.5)
             for _ in range(2):

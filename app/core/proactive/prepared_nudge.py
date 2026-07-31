@@ -771,7 +771,9 @@ def _clean_weave_output(raw: str) -> str:
     return text
 
 
-def gather_history(provider: Callable[[], Iterable[tuple[str, str]]] | None) -> list[tuple[str, str]]:
+def gather_history(
+    provider: Callable[[], Iterable[tuple[str, str]]] | None,
+) -> list[tuple[str, str]]:
     if provider is None:
         return []
     try:

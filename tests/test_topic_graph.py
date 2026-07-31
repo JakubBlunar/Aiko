@@ -66,7 +66,10 @@ def _build_two_cluster_store() -> _StubMemoryStore:
     store = _StubMemoryStore()
     cluster_a = [
         _StubMemory(id=1, content="cat naps in sunbeams", embedding=_vec([0.95, 0.30, 0.0, 0.0])),
-        _StubMemory(id=2, content="kittens like windowsills", embedding=_vec([0.92, 0.39, 0.0, 0.0])),
+        _StubMemory(
+            id=2, content="kittens like windowsills",
+            embedding=_vec([0.92, 0.39, 0.0, 0.0]),
+        ),
         _StubMemory(id=3, content="cats and warm spots", embedding=_vec([0.97, 0.25, 0.0, 0.0])),
     ]
     cluster_b = [

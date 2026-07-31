@@ -98,9 +98,15 @@ _NEGLECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (CATEGORY_SLEEP, re.compile(r"\bno\s+sleep\b|\bzero\s+sleep\b", re.I)),
     (CATEGORY_SLEEP, re.compile(r"barely\s+slept|hardly\s+slept", re.I)),
     (CATEGORY_SLEEP, re.compile(r"all.?nighter|been\s+up\s+all\s+night", re.I)),
-    (CATEGORY_SLEEP, re.compile(r"running\s+on\s+(?:no\s+sleep|fumes|empty|caffeine|coffee)", re.I)),
+    (
+        CATEGORY_SLEEP,
+        re.compile(r"running\s+on\s+(?:no\s+sleep|fumes|empty|caffeine|coffee)", re.I),
+    ),
     (CATEGORY_SLEEP, re.compile(r"\binsomnia\b", re.I)),
-    (CATEGORY_SLEEP, re.compile(r"only\s+(?:got\s+)?(?:a\s+couple|\d+)\s+hours?\s+(?:of\s+)?sleep", re.I)),
+    (
+        CATEGORY_SLEEP,
+        re.compile(r"only\s+(?:got\s+)?(?:a\s+couple|\d+)\s+hours?\s+(?:of\s+)?sleep", re.I),
+    ),
     # ── food ──
     (CATEGORY_FOOD, re.compile(r"haven'?t\s+eaten|did\s?n'?t\s+eat", re.I)),
     (CATEGORY_FOOD, re.compile(r"forgot\s+to\s+eat|forgetting\s+to\s+eat", re.I)),

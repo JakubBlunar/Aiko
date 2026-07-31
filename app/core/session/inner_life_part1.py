@@ -1256,7 +1256,8 @@ class InnerLifePart1Mixin:
                 recent_progress_goal_id = int(goal.id)
                 recent_progress_text = note
         lines: list[str] = [
-            f"Aiko's quiet long-term goals ({self.user_display_name} hasn't asked her about these — these are her own):"
+            f"Aiko's quiet long-term goals ({self.user_display_name} hasn't "
+            "asked her about these — these are her own):"
         ]
         for goal in active[:max_rendered]:
             meta = goal.metadata or {}

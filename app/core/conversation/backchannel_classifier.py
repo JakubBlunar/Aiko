@@ -44,19 +44,40 @@ _PATTERNS: tuple[tuple[re.Pattern[str], BackchannelHint], ...] = (
     (re.compile(r"\b(?:that'?s funny|hilarious)\b", re.IGNORECASE), "amusement"),
     # Disagreement BEFORE surprise: "not really" must beat "really".
     (re.compile(r"\b(?:i don'?t (?:think|agree|believe))\b", re.IGNORECASE), "disagreement"),
-    (re.compile(r"\b(?:not really|nope+|nah|that'?s wrong|incorrect)\b", re.IGNORECASE), "disagreement"),
+    (
+        re.compile(r"\b(?:not really|nope+|nah|that'?s wrong|incorrect)\b", re.IGNORECASE),
+        "disagreement",
+    ),
     # Surprise (interjections + clear lexical markers).
     (re.compile(r"\b(?:wow|whoa+|woah|oh my|holy cow|no way)\b", re.IGNORECASE), "surprise"),
     (re.compile(r"\b(?:really\??|are you serious|seriously\??)\b", re.IGNORECASE), "surprise"),
     # Agreement.
-    (re.compile(r"\b(?:exactly|precisely|absolutely|for sure|totally)\b", re.IGNORECASE), "agreement"),
-    (re.compile(r"\b(?:yeah|yep+|yup|right|that'?s right|true|correct)\b", re.IGNORECASE), "agreement"),
+    (
+        re.compile(r"\b(?:exactly|precisely|absolutely|for sure|totally)\b", re.IGNORECASE),
+        "agreement",
+    ),
+    (
+        re.compile(r"\b(?:yeah|yep+|yup|right|that'?s right|true|correct)\b", re.IGNORECASE),
+        "agreement",
+    ),
     (re.compile(r"\b(?:i agree|i think so too|same)\b", re.IGNORECASE), "agreement"),
     # Concern.
-    (re.compile(r"\b(?:worried|stressed|tired|exhausted|sad|upset|frustrated|annoyed)\b", re.IGNORECASE), "concern"),
+    (
+        re.compile(
+            r"\b(?:worried|stressed|tired|exhausted|sad|upset|frustrated|annoyed)\b",
+            re.IGNORECASE,
+        ),
+        "concern",
+    ),
     (re.compile(r"\b(?:that'?s (?:terrible|awful|bad)|i'?m sorry)\b", re.IGNORECASE), "concern"),
     # Confused.
-    (re.compile(r"\b(?:wait,? what|i don'?t (?:understand|get it)|confused|huh\??)\b", re.IGNORECASE), "confused"),
+    (
+        re.compile(
+            r"\b(?:wait,? what|i don'?t (?:understand|get it)|confused|huh\??)\b",
+            re.IGNORECASE,
+        ),
+        "confused",
+    ),
     (re.compile(r"\b(?:what do you mean|how come|why)\b", re.IGNORECASE), "confused"),
     # Thinking (explicit verbal stalls — rare but useful).
     (re.compile(r"\b(?:hmm+|let me think|let'?s see|thinking)\b", re.IGNORECASE), "thinking"),

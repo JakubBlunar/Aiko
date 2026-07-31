@@ -52,7 +52,12 @@ class _TogetherState:
             "total_turns": 999,
             "total_sessions": 17,
             "axes": dict(self._axes),
-            "milestones": [{"id": "first_week", "label": "first week", "reached_at": "2026-04-01T00:00:00Z"}],
+            "milestones": [
+                {
+                    "id": "first_week", "label": "first week",
+                    "reached_at": "2026-04-01T00:00:00Z",
+                },
+            ],
             "anniversary_today": None,
             "recent_moments_count": len(self.moments),
         }

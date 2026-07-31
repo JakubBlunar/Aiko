@@ -1443,7 +1443,9 @@ def _parse_weather_settings(raw: Any) -> WeatherSettings:
     if units not in ("metric", "imperial"):
         units = defaults.units
     try:
-        interval = max(15, int(raw.get("refresh_interval_minutes", defaults.refresh_interval_minutes)))
+        interval = max(
+            15, int(raw.get("refresh_interval_minutes", defaults.refresh_interval_minutes))
+        )
     except (TypeError, ValueError):
         interval = defaults.refresh_interval_minutes
     try:
@@ -1899,7 +1901,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         stt=SttSettings(
             model=str(stt.get("model", "base")),
-            language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
+            language=(
+                str(stt.get("language")).strip() if stt.get("language") is not None else None
+            ),
             # Unknown values fall back to "auto" rather than being passed
             # through, so a typo can't hard-fail recorder init.
             device=(
@@ -2032,12 +2036,21 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ],
         ),
         avatar=AvatarSettings(
-            root_dir=str(avatar_raw.get("root_dir", "data/personas/active/Alexia") or "data/personas/active/Alexia").strip(),
-            entry_filename=str(avatar_raw.get("entry_filename", "Alexia.model3.json") or "Alexia.model3.json").strip(),
-            scale_multiplier=max(0.1, min(8.0, float(avatar_raw.get("scale_multiplier", 1.0) or 1.0))),
+            root_dir=str(
+                avatar_raw.get("root_dir", "data/personas/active/Alexia")
+                or "data/personas/active/Alexia"
+            ).strip(),
+            entry_filename=str(
+                avatar_raw.get("entry_filename", "Alexia.model3.json")
+                or "Alexia.model3.json"
+            ).strip(),
+            scale_multiplier=max(
+                0.1, min(8.0, float(avatar_raw.get("scale_multiplier", 1.0) or 1.0))
+            ),
             auto_outfit=(
                 str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower()
-                if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower() in OUTFIT_MODES
+                if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower()
+                in OUTFIT_MODES
                 else "auto"
             ),
             expressiveness=max(0.0, min(1.5, float(avatar_raw.get("expressiveness", 1.0) or 1.0))),

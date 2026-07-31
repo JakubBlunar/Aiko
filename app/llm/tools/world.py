@@ -296,7 +296,10 @@ class InspectItemTool:
                 "properties": {
                     "item": {
                         "type": "string",
-                        "description": "Slug or short name of the item, e.g. 'cookies', 'plush_blanket'.",
+                        "description": (
+                            "Slug or short name of the item, e.g. 'cookies', "
+                            "'plush_blanket'."
+                        ),
                     },
                 },
                 "required": ["item"],

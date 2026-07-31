@@ -264,7 +264,11 @@ class SharedMomentsStore:
         if existing is None or existing.kind != "shared_moment":
             return None
         meta = dict(existing.metadata or {})
-        new_summary = summary.strip() if summary is not None else str(meta.get("what") or _strip_summary_prefix(existing.content))
+        new_summary = (
+            summary.strip()
+            if summary is not None
+            else str(meta.get("what") or _strip_summary_prefix(existing.content))
+        )
         if len(new_summary) < 4:
             return None
         new_vibe = normalise_vibe(vibe) if vibe is not None else normalise_vibe(meta.get("vibe"))

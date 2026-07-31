@@ -1628,7 +1628,9 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             max_memories=max(50, int(memory_raw.get("max_memories", 5000))),
             dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
             extractor_enabled=bool(memory_raw.get("extractor_enabled", True)),
-            self_tagged_salience=max(0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))),
+            self_tagged_salience=max(
+                0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))
+            ),
             tiers_enabled=bool(memory_raw.get("tiers_enabled", True)),
             decay_rate_scratchpad=max(
                 0.0, min(1.0, float(memory_raw.get("decay_rate_scratchpad", 0.05)))

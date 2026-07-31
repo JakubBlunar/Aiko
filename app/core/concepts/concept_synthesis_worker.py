@@ -1874,7 +1874,11 @@ class ConceptSynthesisWorker:
         if not parts:
             return ""
 
-        who = "How he writes / what he responds to" if subject == "aiko" else "How the user writes lately"
+        who = (
+            "How he writes / what he responds to"
+            if subject == "aiko"
+            else "How the user writes lately"
+        )
         return who + " -- " + "; ".join(parts)
 
     @staticmethod

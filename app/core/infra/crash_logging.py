@@ -131,7 +131,8 @@ def get_log_file_path() -> Path | None:
 
 
 def configure_logging(level_name: str | None = None) -> None:
-    """Configure app logger: stderr handler with level from env LOG_LEVEL or argument. Call once at startup.
+    """Configure app logger: stderr handler with level from env LOG_LEVEL or
+    argument. Call once at startup.
 
     For richer setups (rotating file, ring buffer, per-module overrides)
     use :func:`configure_logging_full`. This thin wrapper exists for
@@ -409,7 +410,13 @@ def log_exception(
     except Exception:
         pass
     if _logger is not None:
-        _logger.error("[%s] %s: %s", context, exc_type.__name__, exc_value, exc_info=(exc_type, exc_value, exc_traceback))
+        _logger.error(
+            "[%s] %s: %s",
+            context,
+            exc_type.__name__,
+            exc_value,
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
 
 
 def log_handled_exception(exc: BaseException, *, context: str) -> None:

@@ -33,7 +33,8 @@ except Exception:
 
 
 class RealtimeSttService:
-    """Real-time speech-to-text via RealtimeSTT. Supports feed_audio() and record_until_silence()."""
+    """Real-time speech-to-text via RealtimeSTT. Supports ``feed_audio()`` and
+    ``record_until_silence()``."""
 
     def __init__(
         self,

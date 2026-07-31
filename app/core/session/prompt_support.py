@@ -165,7 +165,10 @@ _OVERLAY_EMOTIONAL_DESCRIPTIONS: dict[str, str] = {
     # the hair).
     "lollipop": "[[overlay:lollipop]] — a lollipop appears in her mouth (snacking, playful aside)",
     "eyeglasses": "[[overlay:eyeglasses]] — slipping on regular glasses (focus mode)",
-    "head_sunglasses": "[[overlay:head_sunglasses]] — sunglasses on top of her head (cool / fashion moment)",
+    "head_sunglasses": (
+        "[[overlay:head_sunglasses]] — sunglasses on top of her head "
+        "(cool / fashion moment)"
+    ),
 }
 
 # Direct-action gestures — the user explicitly asked for a body
