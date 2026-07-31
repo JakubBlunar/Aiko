@@ -414,7 +414,7 @@ cluster-aware re-anchor, kept not retired). K65d ✅ shipped. K65e ✅ shipped.
   `SelfImageWorker` / `self_image.txt` / T0 `self_image_block` path has since
   been removed** — Aiko's self-model is now carried entirely by `subject=aiko`
   concepts surfacing through the T3 `relevant_context` core lane. See L24 in
-  [`concepts.md`](concepts.md).
+  [`concepts.md`](../concepts.md).
   See [shipped doc](#k65d-seed-self-image-from-the-interest-map).
 
 - **K65e. ✅ shipped.** Ground the DreamWorker in the day's hot cluster.
