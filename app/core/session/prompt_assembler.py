@@ -93,6 +93,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "profile_block",
         "petname_block",
         "catchphrase_block",
+        # K26: the handful of his phrases that have drifted into her own
+        # speech. Sits with catchphrase / petname (the "how the two of
+        # them talk" cluster) and moves on a scale of weeks.
+        "voice_adoption_block",
     ),
     # T1 — per-arc / per-day. Changes a few times a day at most.
     "T1_semi_stable": (
@@ -885,6 +889,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # speaking-window mining job.
         self._vocal_tone_provider: Callable[[], str] | None = None
         self._catchphrase_provider: Callable[[], str] | None = None
+        # K26 — the slow sibling of ``catchphrase``: which of *his*
+        # phrases Aiko has taken on as her own.
+        self._voice_adoption_provider: Callable[[], str] | None = None
         self._petname_provider: Callable[[], str] | None = None
         self._ambient_noise_provider: Callable[[], str] | None = None
         # Alexia bundle: capability lookup → drives the dynamic overlay
@@ -1119,6 +1126,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         catchphrase_block = _safe_provider(
             self._catchphrase_provider,
             timing_sink=provider_ms, timing_name="catchphrase",
+        )
+        voice_adoption_block = _safe_provider(
+            self._voice_adoption_provider,
+            timing_sink=provider_ms, timing_name="voice_adoption",
         )
         petname_block = _safe_provider(
             self._petname_provider,
@@ -2469,6 +2480,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # next to petname because both encode "how this person talks".
         if catchphrase_block:
             system_parts.append(catchphrase_block)
+        # K26: the phrases of his she's picked up. Right after the running
+        # jokes — same "how the two of them talk" cluster — and just as
+        # stable: it only changes when the voice-adoption worker promotes
+        # or retires one, which is a matter of weeks.
+        if voice_adoption_block:
+            system_parts.append(voice_adoption_block)
 
         # ── T1: SEMI-STABLE (per-arc / per-day) ──────────────────────
         # Relationship / axes / arc / agenda / goals / day_color /

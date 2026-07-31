@@ -394,6 +394,17 @@ The miner's fast path. The slow miner above only sees a phrase once it has *recu
 - `agent.inside_joke_birth_cooldown_hours` *(float, `24.0`, min `0`)* — wall-clock gap between blessings. Rarity is the point: a genuinely funny hour should produce one blessed bit, not a run of them.
 - `agent.inside_joke_birth_min_words` *(int, `3`, min `2`)* — shortest echo that can count as a bit. Below three words the "phrase" is usually just shared vocabulary.
 
+### Voice adoption (K26)
+
+The slow counterpart to K13 (register calibration): phrases that started as *his* drift into Aiko's own speech over months. A daily worker reads the catchphrase registry, keeps only rows whose provenance says the user said it first, and — rarely — promotes one into a small prompt block. Defaults are deliberately slow; the beat only works if it is invisible per session and obvious over months.
+
+- `agent.voice_adoption_enabled` *(bool, `true`)* — master switch. Off → the worker never runs and the block stays empty (already-adopted phrases are kept, just not surfaced).
+- `agent.voice_adoption_interval_seconds` *(int, `86400`, min `60`)* — sweep cadence.
+- `memory.voice_adoption_min_age_days` *(float, `14.0`, min `0`)* — how long a phrase must have been in the catchphrase registry before Aiko can take it on. A phrase from one intense evening is a mood, not a habit.
+- `memory.voice_adoption_min_days_between` *(float, `10.0`, min `0`)* — minimum wall-clock between two adoptions. Picking up three phrases in a week is mimicry, not absorption.
+- `memory.voice_adoption_max_adopted` *(int, `3`, min `1`)* — ceiling on the active adopted set. Past a handful she stops sounding like herself.
+- `memory.voice_adoption_max_rendered` *(int, `2`, min `1`)* — how many of them the prompt block names at once (newest first).
+
 ### Phase-4c curiosity worker
 
 One-line follow-up question prep when the recent conversation has gone shallow.

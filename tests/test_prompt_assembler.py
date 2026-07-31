@@ -1890,6 +1890,89 @@ class SharedRitualProviderSlotTests(unittest.TestCase):
         )
 
 
+class VoiceAdoptionProviderSlotTests(unittest.TestCase):
+    """K26 voice-adoption block lands in the system prompt, is silent when
+    nothing has been adopted, RETAINED under aggressive mode (it's a T0
+    identity block, not a cue), swallows provider exceptions, and is
+    registered in T0 right after catchphrase (the "how the two of them
+    talk" cluster)."""
+
+    _CUE = "Turns of phrase you've picked up"
+
+    def _block(self) -> str:
+        return (
+            "Turns of phrase you've picked up from Jacob: \"fair enough\". "
+            "They started as his."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="va1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                voice_adoption=lambda: self._block(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "va1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_nothing_adopted(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="va2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(voice_adoption=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "va2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="va3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                voice_adoption=lambda: self._block(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "va3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="va4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(voice_adoption=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "va4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t0_after_catchphrase(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t0 = _PROMPT_BLOCK_TIERS["T0_stable"]
+        self.assertIn("voice_adoption_block", t0)
+        self.assertEqual(
+            t0.index("voice_adoption_block"),
+            t0.index("catchphrase_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

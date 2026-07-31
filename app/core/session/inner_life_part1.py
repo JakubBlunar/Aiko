@@ -179,6 +179,36 @@ class InnerLifePart1Mixin:
             f"Aiko's running jokes with {self.user_display_name}:\n" + bullets
         )
 
+    def _render_voice_adoption_block(self) -> str:
+        """K26: the phrases of his that have become hers.
+
+        Pure kv read on the hot path — the deciding is done weeks earlier
+        by :class:`~app.core.proactive.voice_adoption_worker.VoiceAdoptionWorker`.
+        Empty for the first weeks of any relationship, which is correct:
+        nobody picks up someone's turns of phrase on day three.
+        """
+        if not bool(
+            getattr(self._settings.agent, "voice_adoption_enabled", True)
+        ):
+            return ""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return ""
+        from app.core.relationship import voice_adoption as _va
+
+        adopted = _va.load_state(chat_db.kv_get)
+        if not adopted:
+            return ""
+        return _va.render_block(
+            adopted,
+            user_display_name=self.user_display_name,
+            max_phrases=int(
+                getattr(
+                    self._memory_settings, "voice_adoption_max_rendered", 2,
+                )
+            ),
+        )
+
     def _avatar_capabilities(self) -> dict[str, bool] | None:
         """Hot-path: hand the prompt-assembler the loaded avatar's
         capability flags so it can build the dynamic ``[[overlay:X]]``

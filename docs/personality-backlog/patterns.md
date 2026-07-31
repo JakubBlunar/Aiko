@@ -41,7 +41,7 @@ on top of already-shipped infrastructure.
 | K23 | Subtle misattunement detection | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection) |
 | K24 | Sensory anchoring layer | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix) |
 | K25 | Memory confidence time-decay | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay) |
-| K26 | Aiko-side voice evolution | ❌ open |
+| K26 | Aiko-side voice evolution | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little) |
 | K27 | Aiko's day — daily personality colour | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour) |
 | K28 | "What I've been turning over" | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread) |
 | K29 | Opinion injection — push back on a stance | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance) |
@@ -131,23 +131,7 @@ optionally `UserProfile` seed fields.
 
 ## K26. Aiko-side voice evolution
 
-K13 reads Jacob's style and calibrates Aiko's register; nothing
-symmetric exists for Aiko's *own* voice slowly absorbing the
-shared lexicon. The `CatchphraseMiner` already detects phrases
-that recur across *both* speakers — that's the right signal,
-but today it only surfaces them as a "running jokes" block.
-A slow, additive worker would let Aiko pick up 1-2 of those
-phrases into her own toolkit over weeks (writes a
-`voice_adoption` memory or `UserProfile` field). The persona
-block then renders "phrases you've started to use yourself: …"
-so the LLM can lean on them naturally without us hard-coding the
-lexicon. Tiny effect per session, compounding over months — the
-authenticity beat is "she's been around me long enough to talk
-like me a little." Key files:
-[`app/core/memory/catchphrase_miner.py`](../../app/core/memory/catchphrase_miner.py)
-(extend to track *who* introduced each shared phrase first),
-new `app/core/voice_adoption.py` (slow promotion rule), persona
-block consumer.
+✅ **Shipped** — see [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little).
 
 ---
 

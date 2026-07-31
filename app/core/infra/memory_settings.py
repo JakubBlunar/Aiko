@@ -1297,6 +1297,16 @@ class MemorySettings:
     shared_ritual_min_share: float = 0.34
     shared_ritual_max_active: int = 6
     shared_ritual_min_messages: int = 30
+    # K26 voice adoption. A catchphrase that started as *his* becomes
+    # adoptable once it has been in the registry ``min_age_days``; at most
+    # one adoption per ``min_days_between``, ``max_adopted`` active at a
+    # time, ``max_rendered`` named in the prompt block. The defaults are
+    # deliberately slow — the beat only works if it's invisible per
+    # session and obvious over months.
+    voice_adoption_min_age_days: float = 14.0
+    voice_adoption_min_days_between: float = 10.0
+    voice_adoption_max_adopted: int = 3
+    voice_adoption_max_rendered: int = 2
     # K76 flashbulb encoding. At memory-write time the live AffectState
     # arousal + any active K57 episode intensity fold into a [0,1] charge;
     # ``flashbulb_max_boost`` is the most salience a fully-charged moment
@@ -3459,6 +3469,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             shared_ritual_min_messages=max(
                 1,
                 int(memory_raw.get("shared_ritual_min_messages", 30)),
+            ),
+            voice_adoption_min_age_days=max(
+                0.0,
+                float(memory_raw.get("voice_adoption_min_age_days", 14.0)),
+            ),
+            voice_adoption_min_days_between=max(
+                0.0,
+                float(
+                    memory_raw.get("voice_adoption_min_days_between", 10.0)
+                ),
+            ),
+            voice_adoption_max_adopted=max(
+                1,
+                int(memory_raw.get("voice_adoption_max_adopted", 3)),
+            ),
+            voice_adoption_max_rendered=max(
+                1,
+                int(memory_raw.get("voice_adoption_max_rendered", 2)),
             ),
             flashbulb_enabled=bool(
                 memory_raw.get("flashbulb_enabled", True),

@@ -2303,6 +2303,64 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.wellbeing_concern_late_night_min, 1)
         self.assertEqual(result.memory.wellbeing_concern_journal_max, 1)
 
+    def test_inside_joke_birth_round_trip(self) -> None:
+        # K80: agent master switch + cooldown + min phrase length.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.inside_joke_birth_enabled)
+        self.assertAlmostEqual(
+            result.agent.inside_joke_birth_cooldown_hours, 24.0,
+        )
+        self.assertEqual(result.agent.inside_joke_birth_min_words, 3)
+        path = self._write_config(
+            agent_extra={
+                "inside_joke_birth_enabled": False,
+                "inside_joke_birth_cooldown_hours": -5.0,  # floor 0
+                "inside_joke_birth_min_words": 1,  # floor 2
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.inside_joke_birth_enabled)
+        self.assertAlmostEqual(
+            result.agent.inside_joke_birth_cooldown_hours, 0.0,
+        )
+        self.assertEqual(result.agent.inside_joke_birth_min_words, 2)
+
+    def test_voice_adoption_round_trip(self) -> None:
+        # K26: agent master switch + cadence, memory-side slow knobs.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.voice_adoption_enabled)
+        self.assertEqual(result.agent.voice_adoption_interval_seconds, 86400)
+        self.assertAlmostEqual(result.memory.voice_adoption_min_age_days, 14.0)
+        self.assertAlmostEqual(
+            result.memory.voice_adoption_min_days_between, 10.0,
+        )
+        self.assertEqual(result.memory.voice_adoption_max_adopted, 3)
+        self.assertEqual(result.memory.voice_adoption_max_rendered, 2)
+        path = self._write_config(
+            agent_extra={
+                "voice_adoption_enabled": False,
+                "voice_adoption_interval_seconds": 5,  # floor 60
+            },
+        )
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["memory"] = {
+            **cfg.get("memory", {}),
+            "voice_adoption_min_age_days": -1.0,  # floor 0
+            "voice_adoption_min_days_between": -1.0,  # floor 0
+            "voice_adoption_max_adopted": 0,  # floor 1
+            "voice_adoption_max_rendered": 0,  # floor 1
+        }
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.voice_adoption_enabled)
+        self.assertEqual(result.agent.voice_adoption_interval_seconds, 60)
+        self.assertAlmostEqual(result.memory.voice_adoption_min_age_days, 0.0)
+        self.assertAlmostEqual(
+            result.memory.voice_adoption_min_days_between, 0.0,
+        )
+        self.assertEqual(result.memory.voice_adoption_max_adopted, 1)
+        self.assertEqual(result.memory.voice_adoption_max_rendered, 1)
+
     def test_shared_ritual_round_trip(self) -> None:
         # K73: agent master switch + cadence/cooldown + memory thresholds.
         result = load_settings(config_path=self._write_config())

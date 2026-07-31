@@ -1691,6 +1691,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             inside_joke_birth_min_words=max(
                 2, int(agent_raw.get("inside_joke_birth_min_words", 3)),
             ),
+            voice_adoption_enabled=bool(
+                agent_raw.get("voice_adoption_enabled", True),
+            ),
+            voice_adoption_interval_seconds=max(
+                60,
+                int(agent_raw.get("voice_adoption_interval_seconds", 86400)),
+            ),
             curiosity_worker_enabled=bool(
                 agent_raw.get("curiosity_worker_enabled", True),
             ),

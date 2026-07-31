@@ -1520,3 +1520,96 @@ gate; min-message + trigger gates still apply). Logs:
 `tests/test_settings.py`.
 
 ---
+
+## K26. Aiko-side voice evolution — she starts to talk like him a little
+
+K13 reads the user's style and calibrates Aiko's *register* (how formal,
+how long, how playful). Nothing was symmetric for her **lexicon**: no
+matter how many months of "that's cursed" and "fair enough" went by, none
+of it ever became hers. Long relationships don't work that way — people
+lift each other's turns of phrase, slowly, without deciding to. K26 is
+that drift, made deliberate and *slow*: measured in weeks, invisible in
+any single session, unmistakable over months.
+
+**Provenance
+([`catchphrase_miner.py`](../../../app/core/memory/catchphrase_miner.py)).**
+The miner already finds phrases that recur across *both* speakers; it now
+also records **who said it first** within the mined window
+(`CatchphraseCandidate.first_speaker`, computed as the n-gram counter
+rolls forward) and stamps it as `metadata.origin` on the catchphrase
+memory. The K80 fast path stamps `{"origin": "assistant", "born": True}`
+for the same reason. Provenance is the whole gate: Aiko "adopting" a
+phrase that was hers all along is the one failure mode that reads as
+broken.
+
+**Pure rule
+([`voice_adoption.py`](../../../app/core/relationship/voice_adoption.py)).**
+`eligible_candidates(candidates, adopted, now, min_age_days)` keeps
+registry rows that started as his, are old enough to be more than a fad,
+and aren't already adopted — ranked oldest-first (the longest-shared
+phrase has most earned its way into her mouth). `promote(...)` takes **at
+most one**, and only if `min_days_between` has passed since the last
+adoption and the active set is below `max_adopted`. `retire(adopted,
+live_phrases)` drops phrases whose backing catchphrase has left the
+registry — it stopped recurring, and her voice moves on too.
+`render_block(...)` renders the prompt block. Deliberately **not** a
+tracker of how often she actually uses a phrase: the LLM decides that
+turn by turn, and instrumenting it would invite exactly the "use the
+phrase to satisfy the metric" behaviour that makes this beat feel fake.
+
+**Worker
+([`voice_adoption_worker.py`](../../../app/core/proactive/voice_adoption_worker.py)).**
+`VoiceAdoptionWorker` is an `IdleWorker` on a daily cadence that reads the
+catchphrase registry, resolves each row's origin, retires, promotes, and
+persists to `aiko.voice_adoption` in `kv_meta`. It never speaks and
+writes nothing on a quiet run. Rows mined before K26 carry no origin, so
+an optional `origin_resolver`
+(`SessionController._first_speaker_of_phrase`, one indexed-free
+`LIKE`-scan for the earliest message containing the phrase) backfills
+them; a miss is treated as *unknown* and never adopted on a guess.
+`force_next()` drops the two **time** gates (age + spacing) so a
+month-long mechanic stays testable — never the provenance gate or the
+ceiling. Logs `voice adoption: picked up …`.
+
+**Consumer
+([`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py)
+`_render_voice_adoption_block`).** A pure kv read on the hot path — all
+the deciding happened weeks earlier. Registered as `voice_adoption_block`
+in **T0** right after `catchphrase_block` (the "how the two of them talk"
+cluster, and just as prompt-cache-stable: it only changes when the worker
+promotes or retires). The copy frames the phrases as hers now and forbids
+the two failure modes: forcing one in, and pointing out where she got it.
+Empty for the first weeks of any relationship, which is correct.
+
+**Settings.** `agent.voice_adoption_enabled` (true) /
+`_interval_seconds` (86400, floor 60) + `memory.voice_adoption_min_age_days`
+(14) / `_min_days_between` (10) / `_max_adopted` (3) / `_max_rendered`
+(2). **MCP**
+([`memory_worker_tools.py`](../../../app/mcp/server_tools/memory_worker_tools.py)):
+`get_voice_adoption_state` (switches + knobs, what she's adopted and
+when, the rendered block, and the full registry with each row's resolved
+provenance and age — first stop for "why hasn't she picked anything up
+yet?"), `force_voice_adoption_sweep` (runs now without the time gates).
+Repro: `force_voice_adoption_sweep()` → `send_message(skip_tts=true)` →
+confirm the "Turns of phrase you've picked up from …" line in
+`get_last_response_detail.system_prompt`. Grep `voice adoption` on the
+`app.voice_adoption_worker` logger.
+
+**Tests:**
+[`tests/test_voice_adoption.py`](../../../tests/test_voice_adoption.py)
+(the pure rule: age floor, already-adopted skip, oldest-first ranking,
+one-per-run, spacing block/allow, full-set refusal, retirement, render
+newest-first + cap + the forbidding copy, kv round-trip/garbage; the
+worker: adopts his phrase, **never** adopts hers, unknown provenance is
+not a guess, resolver backfill + failure, young phrase waits, `force_next`
+drops only the time gates, retirement, disabled, quiet run doesn't
+rewrite the store, interval floor, readiness), provenance coverage in
+[`tests/test_catchphrase_miner.py`](../../../tests/test_catchphrase_miner.py)
+(`first_speaker` + the `metadata.origin` write),
+`VoiceAdoptionProviderSlotTests` in
+[`tests/test_prompt_assembler.py`](../../../tests/test_prompt_assembler.py)
+(lands, silent-when-empty, retained-under-aggressive, exception swallow,
+T0-after-catchphrase registration), `test_voice_adoption_round_trip` in
+[`tests/test_settings.py`](../../../tests/test_settings.py).
+
+---

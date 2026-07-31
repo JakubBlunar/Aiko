@@ -132,6 +132,28 @@ class HarvestCandidatesTests(unittest.TestCase):
     def test_empty_history_returns_empty(self) -> None:
         self.assertEqual(_harvest_candidates([], min_total_count=2), [])
 
+    def test_records_who_said_it_first(self) -> None:
+        """K26 provenance: whoever used the phrase first in the window."""
+        rows = [
+            _Row("user", "that is deeply cursed behaviour"),
+            _Row("assistant", "deeply cursed behaviour indeed"),
+            _Row("user", "more deeply cursed behaviour today"),
+        ]
+        cands = _harvest_candidates(rows, min_total_count=3)
+        match = [c for c in cands if "deeply cursed behaviour" in c.phrase]
+        self.assertTrue(match, f"got: {[c.phrase for c in cands]}")
+        self.assertEqual(match[0].first_speaker, "user")
+
+    def test_provenance_follows_the_earlier_speaker(self) -> None:
+        rows = [
+            _Row("assistant", "deeply cursed behaviour indeed"),
+            _Row("user", "that is deeply cursed behaviour"),
+            _Row("user", "more deeply cursed behaviour today"),
+        ]
+        cands = _harvest_candidates(rows, min_total_count=3)
+        match = [c for c in cands if "deeply cursed behaviour" in c.phrase]
+        self.assertEqual(match[0].first_speaker, "assistant")
+
 
 class CatchphraseMinerPersistenceTests(unittest.TestCase):
     def _make_miner(self, fx: _Fixture, **overrides) -> CatchphraseMiner:
@@ -169,6 +191,27 @@ class CatchphraseMinerPersistenceTests(unittest.TestCase):
                 any("fish-shaped cookie time" in p for p in phrases),
                 f"got: {phrases}",
             )
+        finally:
+            f.close()
+
+    def test_write_carries_provenance_metadata(self) -> None:
+        """K26 reads ``metadata.origin`` to decide what Aiko may adopt."""
+        f = _Fixture()
+        try:
+            f.add_messages([
+                ("user", "fish-shaped cookie time again"),
+                ("assistant", "yes fish-shaped cookie time again"),
+                ("user", "still going for fish-shaped cookie time"),
+                ("assistant", "always fish-shaped cookie time around here"),
+            ])
+            self._make_miner(f).maybe_run(session_key="s1")
+            catch = [
+                m for m in f.memory.list_top(limit=10)
+                if m.kind == "catchphrase"
+            ]
+            self.assertTrue(catch)
+            for mem in catch:
+                self.assertEqual(mem.metadata.get("origin"), "user")
         finally:
             f.close()
 
