@@ -22,8 +22,6 @@ prompt for the next brainstorm, not a queue.
 ### B. Avatar + expressiveness — [`avatar.md`](avatar.md)
 
 - **B3.** Blink-rate modulation by arousal (deferred follow-up to B1).
-- **B4.** Phase 5 reaction polish — mint `embarrassed` / `nervous` /
-  `defiant`; teach the persona the stacked-overlay idiom.
 - **B7.** Open-vocabulary touch gestures — let Aiko invent new
   `[[touch:...]]` kinds (model-supplied, no config, emoji optional).
 
@@ -35,16 +33,14 @@ prompt for the next brainstorm, not a queue.
 
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
+- **D-approval.** Spoken / Aiko-voiced task approvals.
 - **D1.** Calendar / reminders tool.
-- **D2.** Image vision tool. **Shipped.**
 - **D3.** Fast synchronous web-search brain tool (+ knowledge-DB
   write-back).
+- **D7.** Anticipatory routine assistance — act on what she's learned.
 
 Dev / debug tooling (DT-series):
 
-- **DT1.** ~~Virtual clock / time-travel for time-gated features~~ —
-  **shipped**, behind `AIKO_DEBUG_CLOCK=1`. Five MCP tools; note the two
-  separate levers (wall-clock vs. engaged time).
 - **DT2.** Relationship state inspector — one-shot consolidated snapshot.
 - **DT3.** Feature-flag catalog + "minimal mode" preset.
 - **DT4.** Scenario / conversation replay harness (the deterministic-clock
@@ -53,36 +49,15 @@ Dev / debug tooling (DT-series):
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
 - **F4.** Source-cited memories (`metadata.source_url`).
-- **F5.** Conflicting-memory detector.
 - **F11.** Relevance-driven memory resurrection — proactively recall a
   stale `archive` memory when a dormant topic re-activates, as a hedged
   callback ("vaguely remember you mentioning macro photography..."),
   driven by latent relevance rather than age.
-- **F10.** Topic-graph utilisation. **Fully shipped (F10a-l)** (LLM cluster
-  labels, RAG diversity, multi-hop expansion, cluster-scoped
-  `recall_topic`, interest-map prompt block, self-aware knowledge-gap
-  notice, per-cluster topic temperature from shared-moment vibes,
-  per-topic confidence self-model, cluster-scoped memory hygiene for the
-  F5 conflict + K35 consolidation sweeps, semantic topic tracking that
-  names K6/K18 topic shifts + return-to-known, per-cluster rolling
-  `topic_digest` memory surfaced as the coarse RAG line, and cluster
-  management UX — rename / pin / forget per cluster in the Memory tab).
 
-Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
-
-- **K-time1.** Wall-clock prefixes on chat history. **Shipped.**
-- **K-time2.** Date-anchored retrieval for relative-time queries
-  (`time_expr.parse_time_window` + RAG date-window boost + empty-window
-  anti-confabulation guard, plus the direct `[start, end]` message-recall
-  fallback for verbatim "what did we say then"). **Shipped.**
-- **K-time3.** Upcoming-horizon block — pre-computed future relative
-  times. **Shipped.**
-- **K-time4.** Session-elapsed & mid-session gap awareness. **Shipped.**
-- **K-time5–9.** Canonical `timephrase` module + single "now" seam,
-  richer ISO now-anchor, worker time toolkit, "today" anchor in the
-  extract workers, memory ages fed to the consolidation merge, and
-  per-cluster recency (`TopicGraph.cluster_activity`) in the knowledge-map
-  reflection so "hot vs. gone quiet" territory reads through. **Shipped.**
+**F7** is obsolete — domain-aware source routing was superseded by the
+pluggable LangSearch / DuckDuckGo backend. F1-F3, F5, F6, F8-F10 and the
+whole **K-time** family shipped; see
+[`shipped/awareness.md`](shipped/awareness.md).
 
 ### G. Background workers — [`workers.md`](workers.md)
 
@@ -97,70 +72,59 @@ earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
 Shipped-but-under-wired features (no UI, no live WS update, or a
 silent failure path). Cheap individually, compounding in aggregate.
 
-- ~~**I1.** Beliefs tab doesn't live-update (WS handlers missing).~~ **Shipped** → [`shipped.md`](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
-- ~~**I2.** MessageIndexer silently drops messages on embed failure.~~ **Shipped**.
-- **I3.** Agenda has no REST endpoint or UI.
-- ~~**I4.** Settings-drawer coverage gaps for shipped knobs.~~ **Shipped**.
-- ~~**I5.** Persona-window banners ignore their master switches.~~ **Shipped**.
-- **I6.** Chat history hard-capped at 200 with no "load older".
-- **I7.** Embedding-model swap wipes LanceDB with only a log line.
-- **I8.** No React error boundary.
 - **I9.** Mobile responsiveness + PWA installability (LAN-responsive
   is cheap; full installable auto-updating PWA needs an HTTPS origin).
-- ~~**I10.** Make `llm.routes` the single runtime source; retire the
-  legacy `chat_llm` mirror.~~ **Shipped** — full removal (`chat_llm`,
-  `workers_use_local` and `ChatProviderSection` deleted; embeddings moved
-  to `llm.embedding`; one-shot persisted migration; first-run model
-  picker + pull).
+
+Everything else in the series has landed: I1, I2, I4 and I5 in the
+reliability pass ([`features.md`](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch)),
+and I3, I6, I7, I8, I10 in
+[`shipped/integration.md`](shipped/integration.md).
 
 ### H. Immersion polish — [`immersion.md`](immersion.md)
 
-- **H1.** Conversation-arc surfacing via `[[arc:...]]` tag.
-- **H2.** Calendar / time context block.
-- **H3.** Mood drift narrator.
-- **H4.** Document-recall recency boost.
+- **H2.** Calendar / time context block. *Partly superseded* — circadian
+  and K3 cover most of it; holiday proximity + user birthday remain.
 - **H5.** Second scene / travel semantics.
 - **H6.** Audible backchannels ("mm-hm" while the user speaks).
 - **H7.** Listen-while-speaking — soften the half-duplex voice lock.
-- *Minor polish* — second TTS provider, SSML prosody, barge-in
-  default flip (do P25 first).
+- **H10.** Autonomous idle-life on the avatar.
+- **H12.** Aiko-initiated intentional gifts.
+- **H23.** Avatar shared-moment snapshot.
+- **H24.** Occasion- / season-aware outfits.
+- **H25.** Show-and-tell.
+- *Minor polish* — second TTS provider, barge-in default flip (do P25
+  first). SSML prosody shipped.
+
+H0, H1, H3, H4, H8, H9, H11 and H13-H22 have shipped — see
+[`shipped/immersion.md`](shipped/immersion.md).
 
 ### J. Shared-moments follow-ups — [`moments.md`](moments.md)
 
 - **J1.** Multi-user moments / participant attribution.
 - **J2.** Exportable timeline (markdown / PDF).
 - **J3.** Axes-aware proactive nudges.
-- **J4.** Relationship-stage register.
-- **J5.** Reconnection ritual after a long absence. **Shipped.**
-- **J6.** Conflict-repair memory. **Shipped.**
 - **J7.** Moment-detection tuning (+ gift/promise ordering bug).
 - **J8.** Milestone celebration beats.
-- **J9.** Reciprocal vulnerability. **Shipped.**
-- **J10.** Appreciation beats. **Shipped.**
-- **J11.** Affection-style learning ("how he likes to be cared for").
 - **J12.** Intimacy pacing & boundary calibration.
 - **J13.** Pet-name reciprocity & evolution.
 
+J4 (relationship-stage register), J5, J6, J9, J10 and J11 have shipped —
+see [`shipped/moments.md`](shipped/moments.md).
+
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
-K10 persona regression tests (SHIPPED, on-demand; background worker deferred) ·
-K11 counterfactual cache (SHIPPED) · K12 calendar-linked anticipation ·
-K19 cold-start companion onboarding ·
-K21 fresh-eyes thread re-summary (SHIPPED) ·
-K26 Aiko-side voice evolution ·
-K33 cozy mode · K37 emotional contagion (SHIPPED) ·
-K39 energy / spoons model · K40 comfortable silence ·
-K41 mid-stream self-correction ·
+Still open: K10-followup background auto-eval worker ·
+K12 calendar-linked anticipation · K19 cold-start companion onboarding ·
+K26 Aiko-side voice evolution · K33 cozy mode ·
+K40 comfortable silence · K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
-K46 stance persistence (don't cave on taste pushback) ·
-K47 question/share balance (stop interviewing) (SHIPPED) ·
-K48 tease rhythm budget (SHIPPED) ·
 K49 messiness permission (typed imperfection) ·
-K50 typed-mode delivery pacing ·
-K62 co-experience companion · K63 long-arc callbacks ·
-K64 freedom of thought (mind-wandering over the topic graph —
-associative wandering, interest drift, curiosity gradient,
-knowledge-map reflection).
+K50 typed-mode delivery pacing · K62 co-experience companion ·
+K77 candor gate · K78 vocal-affect read (prosody-in) ·
+K79 hesitation tell (typing latency) · K80 inside-joke birth.
+
+K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
+same mechanic, broader framing.
 
 **The "will" family (K52–K56)** — Aiko follows every topic the user
 sets and never opens her own; every initiative cue is hedged into
@@ -205,8 +169,16 @@ K31 + K32 soft physicality, K34 forward curiosity worker,
 K35 memory consolidation worker, K36 "things I did
 while you were away", K38 self-correction cue,
 K43 promise follow-through, K44 felt-language affect
-block, K45 mood inertia, and K51 cue-register rotation
-have shipped — see [`shipped.md`](shipped.md).)
+block, K45 mood inertia, K46 stance persistence,
+K47 question/share balance, K48 tease rhythm,
+K51 cue-register rotation, K61 knowledge grounding,
+K63 long-arc callbacks, K64 freedom of thought,
+K65 worker modernization, and K66-K76 — earned familiarity,
+dormant-interest re-opener, embodied vitality, implicit-need
+reading, growth witness, self-callback, wellbeing concern,
+shared ritual formation, humor-style calibration,
+user-expertise calibration and flashbulb encoding —
+have shipped; see [`shipped.md`](shipped.md).)
 
 ### L. Higher-order concepts — [`concepts.md`](concepts.md)
 
@@ -233,9 +205,10 @@ single-writer lifecycle engine, ten concept kinds across three subjects
 (including the two meta kinds), plasticity, belief revision, the UI and
 MCP debug surface, and the trace. It ships **off** by default
 (`agent.concepts_enabled`) because synthesis is a recurring
-maintenance-LLM cost that wants a mature topic graph behind it. Per-item
-status lives in [`concepts.md`](concepts.md); what follows is only what
-is still open.
+maintenance-LLM cost that wants a mature topic graph behind it. The
+finished write-ups live in [`shipped/concepts.md`](shipped/concepts.md);
+[`concepts.md`](concepts.md) keeps the design preamble plus the items
+that still carry open work. What follows is only what is still open.
 
 Open — quality and pruning:
 
@@ -288,28 +261,11 @@ a richer edge taxonomy, surface-reason labels, and a strategy layer.
 Cross-cutting gaps that aren't features in their own right but
 compound across every K-series entry:
 
-- **P3.** Slice-cache validation cost.
-- **P4.** RAG memory-hit batch lookups.
-- **P5.** Novelty warm-up Lance scan.
-- **P6.** MessageIndexer queue visibility.
 - **P7.** Typed-mode prefetch parity with voice.
 - **P9.** Frontend streaming token append cost.
-- **P10.** Schedule-learner missing index.
 - **P11.** Reclaim background-worker `num_predict` from reasoning
   leakage (try `/no_think` on qwen3-family workers).
-- **P15.** One user-text embed per turn, shared across RAG /
-  novelty / opinion / gaps + the post-turn burst.
 - **P16.** Post-turn inner-life blocks the brain loop.
-- **P17.** K22 callback detector scans the full memory mirror
-  every turn.
-- **P18.** Streaming accumulator rebuilds the full reply per delta
-  (O(n²)).
-- **P19.** RAG: one global lock + three sequential Lance searches.
-- **P20.** Synchronous LLM compaction stalls the turn mid-flight.
-- **P21.** K29 borderline LLM gate runs during prompt assembly.
-- **P22.** Inner-life provider sweep: tiering + shared reads.
-- **P23.** K28 turning-over full Lance scan on the hot path
-  (P5 sibling).
 - **P24.** Voice latency batch: reaction-tag TTS gate, double STT
   pass, first-chunk threshold.
 - **P25.** Client audio flush on TTS stop (barge-in prerequisite).
@@ -331,11 +287,11 @@ compound across every K-series entry:
   lifecycle walks, snapshot thinning, per-turn cost limited to L23
   selection.
 
-(P1 per-turn embed budget + timing, P2 prompt-build phase
-telemetry, P8 idle-worker queue visibility + multi-worker drain,
-P12 bulk memory-mirror on startup, P13 route-driven worker
-model + context, and P14 heuristic tool-pass gate have shipped —
-see [`shipped.md`](shipped.md).)
+(P1-P6, P8, P10, P12-P15 and P17-P23 have shipped — the embed budget and
+prompt-build telemetry, the slice-cache and RAG batch-lookup work, the
+Lance scan push-downs, the streaming accumulator, the RAG reader-writer
+lock, async compaction, and the heuristic tool-pass gate. See
+[`shipped/perf.md`](shipped/perf.md).)
 
 ### T. Testing + evaluation — [`testing.md`](testing.md)
 
@@ -369,10 +325,12 @@ counterpart to the live DT-series debug tooling.
    nothing here needs a multi-phase rollout.
 3. Validate the same way the depth passes did: focused suite ->
    full `pytest -q` -> spot-check the running app.
-4. When the work lands, move the entry from its domain file into
-   [`shipped.md`](shipped.md) (one paragraph) and update any inbound
-   links in [`AGENTS.md`](../../AGENTS.md), the relevant `docs/`
-   detail doc, or code comments.
+4. When the work lands, move the entry out of its domain file into the
+   matching [`shipped/<area>.md`](shipped/) and add a bullet for it in the
+   [`shipped.md`](shipped.md) index. Keep the body verbatim and add one
+   `../` to its relative links — the file sits a directory deeper. Then
+   update any inbound links in [`AGENTS.md`](../../AGENTS.md), the
+   relevant `docs/` detail doc, or code comments.
 
 ---
 
