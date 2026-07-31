@@ -328,6 +328,12 @@ Latency baseline is voice-only (typed turns never touch the latency window); len
 - `agent.engagement_absence_curiosity_min_seconds` *(float, `1800.0`, min `60`)* — lower bound on the typed gap (default 30 min). The upper bound is `agent.resume_opener_min_hours` × 3600 (default 4 h) — gaps larger than that route through the existing resume-opener path instead.
 - `agent.engagement_proactive_gate` *(bool, `true`)* — when on, an `"abandoned"` engagement label hard-skips the typed silence-break nudge (the absence-curiosity cue handles it on the next user turn instead). Set to `false` to ignore the engagement label on the proactive path.
 
+### G4 — cue outcome accounting
+
+Records one row per *armed* worker cue per turn — armed meaning it had material waiting, not that a worker ran — marking whether it reached the prompt and, when it did not, which mechanism refused it. Read it with the `get_cue_outcomes` MCP tool. Purely a recorder: nothing consumes the ratio to change behaviour (that is G5).
+
+- `agent.cue_accounting_enabled` *(bool, `true`)* — master switch. Off → the `cue_decisions` table stops growing and surfaced cues stop appearing in the L37 ledger; no behavioural change beyond losing the measurement.
+
 ### K5 — mood shell tilt
 
 Per-turn one-line emotional directive derived from the live [`AffectState`](../app/core/affect/affect_state.py) (valence + arousal) and [`RelationshipAxesState`](../app/core/relationship/relationship_axes.py) (closeness / humor / trust / comfort). Output reads like a stage direction — *"Lean affectionate and unhurried; let warmth show."* / *"Stay playful and quick; the room is laughing."* / *"Slow your tempo; let the words land before pushing forward."* — and colours Aiko's delivery (pacing, sentence length, warmth, word choice) **without** dictating content.

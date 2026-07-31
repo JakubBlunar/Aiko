@@ -56,6 +56,23 @@ Reading them:
 - **`tts.torch_runtime_avoided`** distinguishes "no model loaded" from "the heavy import never happened". Only booting with `tts.enabled=false` gets you the second one; toggling TTS off at runtime frees the voice weights but cannot un-import PyTorch.
 - **`get_prompt_block_costs` ranks by tier, not by size.** A large block in T0 is paid once per prompt-cache lifetime; a small block in T6 is paid on every turn. The weighting is what makes the list actionable — and a block that renders every turn at 0 chars is a content-gating candidate, so those are reported rather than omitted.
 
+### Outcome measurement (L37 / G4)
+
+Both answer "did any of this inner life *do* anything", which was unanswerable before them — surfacing left no trace but a habituation timestamp, and a worker cue left none at all.
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `get_surfacing_outcomes` | `window_days: int = 30`, `min_settled: int = 1`, `top: int = 20` | JSON: per-item leaderboard of surfaced concepts / memories / cues with engaged + echo counts *and* denominators, a per-lane rollup, echo-kind split, and the semantic-floor replay (`app/mcp/server_tools/surfacing_outcome_tools.py`). |
+| `get_cue_outcomes` | `window_days: int = 30`, `cue: str = ""` | JSON: per-cue armed-to-surfaced ratio, decline reasons, and the registered cues never armed at all (`app/mcp/server_tools/cue_outcome_tools.py`). |
+
+Reading them:
+
+- **Read the denominators, not the rates.** Every rate is over settled rows only, and a 1-for-1 item shows the same 100% as a 40-of-50 one. `rows_unsettled` is *expected* to hold about one turn per session — the engagement label comes from the user's next message, so the last turn of a session never settles. A number climbing in step with `rows_total` means the settle path has stopped.
+- **`armed` is not "a worker ran".** It counts turns the cue had material waiting, so a worker writing ten findings before one gets through is one delivery and nine supersessions, not ten failures.
+- **A low `reach_rate` is not automatically a bug.** A topic-gated cue that stays quiet while the conversation is elsewhere is working. Act on a rate near zero over a long window — that is a gate that never matches, and for an LLM-calling worker it is wasted tokens.
+- **`never_armed` is the loudest signal**, and the easiest to miss because it is an absence: a registered cue with no rows either never gets written by its worker or is read wrongly by the arming model, and neither shows up as a bad rate.
+- **`coarse_arming` cues report a floor, not an estimate.** Those five dedupe by a per-topic key set rather than a watermark, so arming degrades to "the journal is non-empty" and over-counts.
+
 ### Virtual clock (DT1)
 
 `server_tools/debug_clock_tools.py`. **Off unless the process was started with `AIKO_DEBUG_CLOCK=1`** — without it every tool returns a message saying so. Lets you exercise time-gated behaviour (decay, promotion age, anniversaries, gap-return, cue cooldowns) in seconds instead of waiting days.

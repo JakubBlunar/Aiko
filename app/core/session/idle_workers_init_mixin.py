@@ -1119,6 +1119,28 @@ class IdleWorkersInitMixin:
                 )
                 self._surfacing_outcome_store = None
 
+        # G4 — cue outcome accounting. Same shape as the ledger above: a
+        # recorder with no worker, written post-turn and read by MCP.
+        # Separate store because a declined cue must not land in
+        # ``surfacing_outcomes``, where every aggregate means "of the times
+        # this reached the prompt".
+        self._cue_decision_store = None
+        # Snapshot of which cues had material at assembly time, plus the
+        # decisions derived from it. Taken BEFORE the T6 providers run,
+        # since several of them consume the very state arming is read from.
+        self._cue_armed_snapshot = set()
+        self._last_cue_decisions = None
+        if self._chat_db is not None and bool(
+            getattr(settings.agent, "cue_accounting_enabled", True)
+        ):
+            try:
+                from app.core.memory.cue_decision_store import CueDecisionStore
+
+                self._cue_decision_store = CueDecisionStore(self._chat_db)
+            except Exception:
+                log.warning("CueDecisionStore init failed", exc_info=True)
+                self._cue_decision_store = None
+
         # F5 — conflicting-memory detector. Always builds the store
         # (REST endpoints and the ``[[conflict:reason]]`` tag dispatch
         # need it even when the worker is disabled), then conditionally

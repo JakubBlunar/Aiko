@@ -79,6 +79,14 @@ class ChatTurnMixin:
         # chatting (typed turns also count; voice paths touch the gate
         # through the Live-mode short-circuit in :meth:`_is_user_idle`).
         self._touch_user_activity()
+        # G4: snapshot which cues have material waiting, BEFORE prompt
+        # assembly. It has to be here rather than during assembly: the T6
+        # providers *consume* the state arming is read from -- turning_over
+        # clears its pending slot, the journal-backed cues advance their
+        # watermark -- so a snapshot taken later would report almost
+        # nothing as armed and the reach ratio would look perfect exactly
+        # when the machinery was busiest.
+        self._snapshot_armed_cues()
 
         if on_generation_status:
             on_generation_status("AI is generating response...")
@@ -239,6 +247,11 @@ class ChatTurnMixin:
                 raw_assistant_text=getattr(result, "raw_text", "") or "",
                 user_message_id=user_message_id,
                 assistant_message_id=getattr(result, "assistant_message_id", None),
+                # G4 needs this turn's block sizes. Passed explicitly
+                # because ``_last_system_prompt`` is not stamped until
+                # after this call returns, so reading it from there would
+                # measure the PREVIOUS assembly.
+                telemetry=telemetry,
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)

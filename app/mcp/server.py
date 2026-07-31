@@ -40,6 +40,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         proactive_task_tools,
         resource_file_tools,
         surfacing_outcome_tools,
+        cue_outcome_tools,
     )
 
     core_tools.register(mcp, session)
@@ -52,5 +53,6 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
     proactive_task_tools.register(mcp, session)
     resource_file_tools.register(mcp, session)
     surfacing_outcome_tools.register(mcp, session)
+    cue_outcome_tools.register(mcp, session)
     return mcp
 

@@ -31,6 +31,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [F3. Confidence column on memories](shipped/awareness.md#f3-confidence-column-on-memories)
 - [F5. Conflicting-memory detector (schema v11)](shipped/awareness.md#f5-conflicting-memory-detector-schema-v11)
 - [G2. Schedule-learning worker](shipped/awareness.md#g2-schedule-learning-worker)
+- [G4. Cue outcome accounting — which of the 50-odd workers earn their keep?](shipped/awareness.md#g4-cue-outcome-accounting--which-of-the-50-odd-workers-earn-their-keep)
 - [G3. Idle curiosity worker](shipped/awareness.md#g3-idle-curiosity-worker)
 - [F6. Privacy-preserving query *reformulation* (not reject) — SHIPPED](shipped/awareness.md#f6-privacy-preserving-query-reformulation-not-reject--shipped)
 - [F10. Topic-graph utilisation (RAG / prompt / knowledge integration)](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration)

@@ -51,12 +51,19 @@ ledger before building any of them:
   on topic"), and full credit would have switched scratchpad TTL off, since
   its gate was an exact `revival_score == 0.0`. Whether the resulting discount
   is right is **F17**, which is waiting on ledger data rather than on code.
-- **G4** cue outcome accounting and self-tuning cooldowns. Needs a **TEXT key
-  column** — the note here used to say `kind="cue"` was a value rather than a
-  migration, which was wrong: `item_id` is `INTEGER NOT NULL` and a cue has no
-  integer identity anywhere in the codebase. The cheap half is already
-  computed, though — `PromptTelemetry.block_chars` records per-block char
-  counts every turn, so "was it surfaced?" needs persisting, not instrumenting.
+- **G4** ✅ **shipped** — the armed-to-surfaced ratio now exists per cue, via
+  `get_cue_outcomes`. Three of the sketch's assumptions were wrong and are
+  worth carrying into the follow-ups: the gap-cue "one-of lottery" is a
+  deterministic priority order (so the same cue loses every time, which is a
+  bias rather than noise); "surfaced" needed no provider instrumentation
+  because `PromptTelemetry.block_chars` already had it; and declines could
+  **not** reuse `surfacing_outcomes`, since every aggregate over that table
+  means "of the times this reached the prompt" and admitting rows that never
+  did would inflate its own denominator. Cues in the ledger are name-keyed
+  (`item_key`, v28) because `item_id` is `INTEGER NOT NULL` and a cue has no
+  integer identity anywhere. Left open: **G5** self-tuning cooldowns (wants a
+  few weeks of data first) and **G6** per-provider decline attribution (~100
+  edit sites, worth spending per cue once the rates say which need it).
 - **P43** value-aware block arbitration instead of the hand-kept denylist.
 - **K81** taste formation — topics she likes, not topics she's seen.
 - **DT5** the rest of the debug surface (the ledger view itself has shipped).
