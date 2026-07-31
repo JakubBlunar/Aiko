@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 from app.core.concepts.concept_lifecycle import (
     accrual_alpha,
+    identity_evidence_gate,
     next_confidence,
     set_evidence_gate,
     value_evidence_gate,
@@ -146,15 +147,28 @@ def _add(store: ConceptStore, **over) -> Concept:
     return c
 
 
+def _seed_engaged_days(h, days: float) -> None:
+    """Put ``days`` of engaged time on the shared clock.
+
+    ``engagement_seconds_per_day=3600`` => 1 engaged day == 3600 units. A
+    concept anchored at ``first_evidence_engagement=0.0`` then reads exactly
+    ``days`` as its age. Promotion tests need this because the age floor is
+    measured in *engaged* days whenever the clock is live -- an old
+    ``first_evidence_at`` alone buys nothing.
+    """
+    h.kv.set("engagement.total_units", str(days * 3600.0))
+
+
 class PromotionTests(unittest.TestCase):
     def test_promotes_when_gate_clears(self) -> None:
         h = _harness()
+        _seed_engaged_days(h, 3)
         # Seed at the confidence bar: with L16's plasticity-damped accrual
         # a reinforced first eval keeps the seed (accrual never lowers), so
         # this isolates the gate from the accrual ramp.
         c = _add(
-            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
-            confidence=0.7,
+            h.store, distinct_source_count=3, first_evidence_at=_iso(3),
+            first_evidence_engagement=0.0, confidence=0.7,
         )
         h.worker.run()
         got = h.store.get(c.concept_id)
@@ -195,10 +209,10 @@ class EngagementAgeTests(unittest.TestCase):
         # though the concept is only ~2.4h old on the calendar. Engaged
         # age (3) clears the 2-day floor -> promotes.
         h = _harness()
-        h.kv.set("engagement.total_units", str(3 * 3600.0))
+        _seed_engaged_days(h, 3)
         c = _add(
             h.store,
-            distinct_source_count=2,
+            distinct_source_count=3,
             first_evidence_at=_iso(0.1),
             first_evidence_engagement=0.0,
             confidence=0.7,
@@ -223,11 +237,10 @@ class EngagementAgeTests(unittest.TestCase):
         self.assertEqual(h.events.count(), 0)
 
     def test_new_concept_anchors_on_first_eval(self) -> None:
-        # Un-anchored (brand-new): the gate falls back to wall-clock this
-        # tick (young -> no promote), and the worker stamps the engagement
-        # anchor so age accrues in engaged time from here on.
+        # Un-anchored (brand-new): the worker stamps the engagement anchor at
+        # the current total, so age accrues in engaged time from here on.
         h = _harness()
-        h.kv.set("engagement.total_units", str(5 * 3600.0))
+        _seed_engaged_days(h, 5)
         c = _add(
             h.store,
             distinct_source_count=2,
@@ -239,13 +252,60 @@ class EngagementAgeTests(unittest.TestCase):
         self.assertEqual(got.status, "candidate")
         self.assertAlmostEqual(got.first_evidence_engagement, 5 * 3600.0)
 
+    def test_first_eval_age_is_zero_not_wallclock(self) -> None:
+        # The offline-gap case. A candidate minted just before a long
+        # shutdown is 30 *calendar* days old on its first evaluation but has
+        # lived through no engaged time at all. The anchor is stamped before
+        # the gate reads it, so age is 0 and the 2-day floor holds -- were it
+        # stamped afterwards the gate would fall back to wall-clock and let
+        # idle downtime mature the candidate.
+        h = _harness()
+        _seed_engaged_days(h, 9)
+        c = _add(
+            h.store,
+            distinct_source_count=5,
+            first_evidence_at=_iso(30),
+            first_evidence_engagement=None,
+            confidence=0.9,
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "candidate")
+        self.assertAlmostEqual(got.first_evidence_engagement, 9 * 3600.0)
+        # Two engaged days later the same candidate clears the floor, so it
+        # was the age gate holding it, not the source or confidence bars.
+        _seed_engaged_days(h, 11)
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_unanchored_reeval_keeps_wallclock_age(self) -> None:
+        # A concept that predates the v24 anchor backfill: already evaluated
+        # (``last_lifecycle_at`` set) but still un-anchored. Re-anchoring it
+        # would silently reset its accrued age to zero, so the wall-clock
+        # fallback stays in force and its 30 days of age still count.
+        h = _harness()
+        _seed_engaged_days(h, 0)
+        c = _add(
+            h.store,
+            distinct_source_count=3,
+            first_evidence_at=_iso(30),
+            first_evidence_engagement=None,
+            last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0,
+            confidence=0.7,
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "active")
+        self.assertIsNone(got.first_evidence_engagement)
+
     def test_wallclock_fallback_when_clock_disabled(self) -> None:
         # Clock unwired -> age is wall-clock regardless of the anchor, so a
         # 3-day-old candidate promotes exactly as before.
         h = _harness(with_clock=False)
         c = _add(
             h.store,
-            distinct_source_count=2,
+            distinct_source_count=3,
             first_evidence_at=_iso(3),
             first_evidence_engagement=0.0,
             confidence=0.7,
@@ -822,6 +882,75 @@ class GateUnitTests(unittest.TestCase):
             )
         )
 
+    def test_identity_gate_floors_sources_and_age(self) -> None:
+        # The live global settings identity used to ride alone: a 2-source
+        # bar and *no* stability delay at all, which is what let 70% of
+        # identity concepts promote within an hour of first evidence.
+        kw = dict(min_sources=2, min_age_days=0.0, min_confidence=0.6)
+        self.assertTrue(  # the bare gate waves this through
+            set_evidence_gate(
+                distinct_source_count=2, age_days=0.0, confidence=0.7, **kw
+            )
+        )
+        self.assertFalse(  # identity now needs a third source
+            identity_evidence_gate(
+                distinct_source_count=2, age_days=3.0, confidence=0.7, **kw
+            )
+        )
+        self.assertFalse(  # ... and a real stability delay
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=0.0, confidence=0.7, **kw
+            )
+        )
+        self.assertTrue(
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.7, **kw
+            )
+        )
+
+    def test_identity_gate_keeps_the_ordinary_confidence_bar(self) -> None:
+        # Deliberately *not* raised to value's 0.72: the live histogram put
+        # these rows at 0.773 mean confidence, so the leak was structural
+        # (sources and age), and a higher bar would only suppress good
+        # concepts without touching the mechanism at fault.
+        kw = dict(min_sources=2, min_age_days=0.0, min_confidence=0.6)
+        self.assertTrue(
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.6, **kw
+            )
+        )
+        self.assertFalse(
+            value_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.6, **kw
+            )
+        )
+        self.assertFalse(  # still refuses confidence under the global bar
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.59, **kw
+            )
+        )
+
+    def test_identity_gate_honours_higher_caller_thresholds(self) -> None:
+        # L21's young-graph bar wins via max() when it is the stricter one.
+        self.assertFalse(
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.7,
+                min_sources=4, min_age_days=1.0, min_confidence=0.6,
+            )
+        )
+        self.assertFalse(
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.0, confidence=0.7,
+                min_sources=2, min_age_days=1.0, min_confidence=0.72,
+            )
+        )
+        self.assertFalse(
+            identity_evidence_gate(
+                distinct_source_count=3, age_days=1.5, confidence=0.7,
+                min_sources=2, min_age_days=2.0, min_confidence=0.6,
+            )
+        )
+
 
 class ValueKindWorkerTests(unittest.TestCase):
     """L10: a value concept uses the stricter registry gate + low plasticity
@@ -829,18 +958,29 @@ class ValueKindWorkerTests(unittest.TestCase):
 
     def test_value_does_not_promote_at_identity_thresholds(self) -> None:
         h = _harness()
-        # 2 distinct sources + 0.7 confidence would promote an identity
-        # candidate, but the value gate needs >=3 sources.
+        _seed_engaged_days(h, 3)
+        # Identity and value now share their structural floors (3 sources, a
+        # real stability delay); what still separates them is confidence. Seed
+        # sticky so the accrual half-step lands this candidate *between* the
+        # two bars: above identity's 0.6, below value's 0.72.
         c = _add(
-            h.store, kind="value", distinct_source_count=2, confidence=0.7,
+            h.store, kind="value", distinct_source_count=3, confidence=0.62,
+            plasticity=0.0, first_evidence_engagement=0.0,
         )
         h.worker.run()
-        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "candidate")
+        # Assert the setup still straddles the bars, so a retuned accrual
+        # curve fails here instead of quietly making the test vacuous.
+        self.assertGreater(got.confidence, 0.6)
+        self.assertLess(got.confidence, 0.72)
 
     def test_value_promotes_once_value_bar_clears(self) -> None:
         h = _harness()
+        _seed_engaged_days(h, 3)
         c = _add(
             h.store, kind="value", distinct_source_count=3, confidence=0.75,
+            first_evidence_engagement=0.0,
         )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
@@ -850,6 +990,79 @@ class ValueKindWorkerTests(unittest.TestCase):
         c = _add(h.store, kind="value", plasticity=0.9)
         h.worker.run()
         self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.2)
+
+
+class IdentityKindWorkerTests(unittest.TestCase):
+    """The identity intake tightening, end to end through the worker.
+
+    Identity was the only kind with no floors of its own, riding the global
+    promote settings (2 sources, zero age). It is also the largest kind, so
+    that combination produced most of the never-reinforced backlog.
+    """
+
+    def test_two_source_identity_no_longer_promotes(self) -> None:
+        # The exact live pattern: two distinct sources, comfortable
+        # confidence, plenty of engaged age. Used to promote on sight.
+        h = _harness()
+        _seed_engaged_days(h, 5)
+        c = _add(
+            h.store, distinct_source_count=2, confidence=0.8,
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+        self.assertEqual(h.events.count(), 0)
+
+    def test_third_source_lets_it_through(self) -> None:
+        h = _harness()
+        _seed_engaged_days(h, 5)
+        c = _add(
+            h.store, distinct_source_count=3, confidence=0.8,
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_zero_age_identity_waits_even_with_enough_sources(self) -> None:
+        # The stability delay, which identity previously had none of: the
+        # global floor was 0.0, so a well-sourced trait promoted instantly.
+        h = _harness(_settings(concept_promote_min_age_days=0.0))
+        _seed_engaged_days(h, 0)
+        c = _add(
+            h.store, distinct_source_count=4, confidence=0.8,
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "candidate")
+        # One engaged day (~an hour of conversation) later it clears.
+        _seed_engaged_days(h, 1)
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
+
+    def test_existing_actives_are_not_retroactively_demoted(self) -> None:
+        # The tightening must only gate *future* promotions. A concept that
+        # already promoted under the old two-source bar stays active: the
+        # worker re-gates only candidate/retired rows, and demotion is driven
+        # by confidence, not by the promotion gate.
+        h = _harness()
+        _seed_engaged_days(h, 5)
+        c = _add(
+            h.store,
+            status="active",
+            distinct_source_count=2,
+            confidence=0.8,
+            promoted_at=_iso(10),
+            last_reinforced_at=_iso(9),
+            last_lifecycle_at=_iso(1),
+            last_lifecycle_engagement=0.0,
+            first_evidence_engagement=0.0,
+        )
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "active")
+        self.assertEqual(
+            [e.event_type for e in h.events.list(limit=10)], []
+        )
 
 
 class YoungGraphGateTests(unittest.TestCase):
@@ -866,9 +1079,10 @@ class YoungGraphGateTests(unittest.TestCase):
 
     def test_mature_graph_allows_promotion(self) -> None:
         h = _harness(graph_mature=lambda: True)
+        _seed_engaged_days(h, 3)
         c = _add(
-            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
-            confidence=0.7,
+            h.store, distinct_source_count=3, first_evidence_at=_iso(3),
+            first_evidence_engagement=0.0, confidence=0.7,
         )
         h.worker.run()
         got = h.store.get(c.concept_id)
@@ -877,9 +1091,10 @@ class YoungGraphGateTests(unittest.TestCase):
     def test_no_provider_uses_normal_bar(self) -> None:
         # Default (no provider) treats the graph as mature.
         h = _harness()
+        _seed_engaged_days(h, 3)
         c = _add(
-            h.store, distinct_source_count=2, first_evidence_at=_iso(3),
-            confidence=0.7,
+            h.store, distinct_source_count=3, first_evidence_at=_iso(3),
+            first_evidence_engagement=0.0, confidence=0.7,
         )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")
@@ -889,9 +1104,10 @@ class YoungGraphGateTests(unittest.TestCase):
         # the young confidence bar so the plasticity-damped accrual ramp
         # isn't the binding factor (this test is about the source count).
         h = _harness(graph_mature=lambda: False)
+        _seed_engaged_days(h, 3)
         c = _add(
             h.store, distinct_source_count=3, first_evidence_at=_iso(3),
-            confidence=0.8,
+            first_evidence_engagement=0.0, confidence=0.8,
         )
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "active")

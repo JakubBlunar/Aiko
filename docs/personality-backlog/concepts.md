@@ -1986,7 +1986,8 @@ seed anything at onboarding (K19 cold-start companion), or stay fully emergent?
 
 ## L22. Concept-quality evaluation + observability
 
-**Status: MEASUREMENT SHIPPED; enforcement and the offline harness deferred.**
+**Status: MEASUREMENT SHIPPED; intake tuning pass 1 SHIPPED; decay tuning,
+enforcement and the offline harness deferred.**
 
 **Motivation.** Confidence gates (L3) and the optional human-in-loop (L6) keep
 *individual* concepts honest, but nothing measured whether the layer as a whole
@@ -2017,10 +2018,14 @@ panel. Four families of metric:
   This is what localised the template collapse to *one* proposer
   (`identity`/`user`: 72% frame, 52% jargon) while `value`/`aiko`,
   `boundary`/`aiko`, `affective`, `narrative` and `aspiration` measured clean.
-- **Pruning** — the never-reinforced count and how many *engaged* days
-  (≈ conversation hours) decay would need to demote them at the current
-  half-life. On the shipped defaults that is a median of ~54, which is why
-  production outran pruning.
+- **Pruning** — the never-reinforced count, the *rate* at which more arrive,
+  and how many *engaged* days (≈ conversation hours) decay would need to
+  demote them at the current half-life. That horizon reads a median of **~86**
+  on the shipped defaults, which is why production outran pruning. (It was
+  originally reported as ~54: the first cut fed `engaged_days_to_floor` the
+  raw half-life, but real decay runs on the plasticity-damped *effective*
+  half-life — `halflife * (2 - plasticity)` — so every horizon was understated
+  by up to 2x. Corrected during the intake pass below.)
 
 All three spurious-concept signals are computed as read-only per-concept fields:
 **(A)** distinct cluster span, resolving memory edges through to their clusters
@@ -2041,14 +2046,125 @@ specific collapse without touching the shared interpretive bodies in
 0.88 → 0.84; and L3 now demotes an active concept whose evidence was reconciled
 away to nothing, which the confidence-only status floors could not see.
 
+### Threshold tuning, pass 1: intake (shipped)
+
+The first tuning pass the scoreboard paid for. It deliberately touched
+**intake only** — no decay-rate change, no sweep of the existing backlog.
+
+**What the numbers said.** Four queries against the live graph (544 concepts,
+486 active, 402 never reinforced) located the cause, and it was not the decay
+curve:
+
+- `identity` was **the only one of the nine kinds with no promotion floors of
+  its own**, riding the global settings alone. Every other kind declared
+  `_X_MIN_SOURCES` / `_X_MIN_AGE_DAYS` / `_X_MIN_CONFIDENCE` in
+  [`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py).
+- It is also the biggest kind: **265 of 486 actives, 240 of 402**
+  never-reinforced rows. The largest kind was the unguarded one.
+- Global `concept_promote_min_age_days` was **0.0**, so there was no stability
+  delay at all: **167 of 240** never-reinforced identity rows promoted within
+  an hour of first evidence, at a **median of 3.6 minutes**.
+- The L21 young-graph tightening (3 sources / 0.72 confidence) was the only
+  thing holding the line, and it switches off at `concept_min_clusters = 6`.
+  The graph has 35 clusters, so it had been off approximately forever.
+- Source histogram of those rows: 107 at exactly 2 sources, 107 at 3, 16 at 4.
+  **A 3-source floor would have refused 116 of 240 (48%).**
+
+The contrast that proved the mechanism works: `value` carries
+`_VALUE_MIN_SOURCES = 3` and sits at a mean of 4.31 distinct sources against
+identity's 2.73.
+
+**What shipped.**
+
+- **`identity_evidence_gate`** — 3 sources, a 1.0-day stability delay, and the
+  ordinary 0.6 confidence bar. Confidence was left alone on purpose: those
+  rows average 0.773 confidence, so the leak was structural (sources and age),
+  and raising it would suppress good concepts without touching the mechanism
+  at fault. If a week of data says 3/1.0 was not enough, raise
+  `_IDENTITY_MIN_AGE_DAYS` to 2.0 rather than the source floor — 4 sources
+  starts refusing legitimately well-evidenced traits.
+- **The age floor is now real on a concept's first evaluation.** Promotion age
+  was already measured in engaged days, but `first_evidence_engagement` was
+  stamped *after* `_transition` had run the gate, so the first evaluation fell
+  back to wall-clock. Harmless while the floor was 0.0; with a 1.0 floor it
+  would have let an offline gap carry a candidate past the stability delay on
+  idle time alone. The stamp moved ahead of the gate (step 0 of `_process`),
+  restricted to genuine first evaluations — an already-evaluated row that is
+  still un-anchored predates the v24 backfill, and re-anchoring it would reset
+  its accrued age to zero.
+- **Intake-rate metrics** in the pruning section, because the standing count
+  cannot show whether any of this worked: at an ~86-engaged-day horizon the
+  402 will be almost exactly 402 a week later regardless. `promotions_per_day`,
+  a 7-day `promoted_recent` / `unreinforced_recent` cohort, and an
+  `unreinforced_sample` id list (signal C was the only spurious signal without
+  one, which left it countable but not actionable).
+- **[`scripts/concept_intake_report.py`](../../scripts/concept_intake_report.py)**
+  — a read-only, re-runnable diagnostic (per-kind actives and stall rates,
+  promotion cohorts, the source histogram with the "a bar here would have
+  refused N" column, promotion latency). Run it before and after a gate change
+  and diff.
+
+**Blast radius.** Nothing existing was disturbed: `_gate` is consulted only
+for `candidate` and `retired` rows, so no active can be retroactively demoted,
+and there were **zero identity candidates in the queue** at the time of the
+change — every identity concept ever proposed had already promoted, which is
+its own indictment. 118 identity actives do stand on less than the new bar;
+they are grandfathered, and they are what the deferred sweep targets.
+
+**Baseline, 2026-07-31 (immediately pre-change).** Re-run
+`scripts/concept_intake_report.py` and compare against this. The per-kind stall
+rates are the *stock* and will barely move; the promotion rate and the identity
+latency figures are the *flow* and should.
+
+| | at baseline |
+| --- | --- |
+| active / never-reinforced | 486 / 402 (82.7%) |
+| identity active / stalled | 265 / 240 (90.6%) |
+| identity mean distinct sources | 2.73 |
+| identity promoted within 1h of first evidence | 167 of 240 (69.6%), median 3.6 min |
+| promotions, last 3 days | 29 (9.7/day) |
+| `reinforced` events, all time | 60 |
+
+Read the recent-cohort stall percentage with care: a concept promoted yesterday
+has had almost no opportunity to be reinforced, so it reads high by
+construction. It is only meaningful against the same window measured at another
+time, which is exactly why the baseline above is dated.
+
 ### Still open
 
-- **Threshold tuning against the numbers** — half-life, dormant floor,
-  promotion gate. Deliberately deferred until there is a scoreboard to tune
-  against, which there now is.
+- **Reinforcement fires far too rarely, and that — not the gate — is the
+  larger half of signal C.** The timeline carries 553 `discovered` and 504
+  `promoted` events against **60 `reinforced`**. Every concept has a
+  `last_reinforced_at` (L2 stamps it at creation), but only 84 actives have one
+  *after* promotion. So "82.7% never reinforced" is substantially a statement
+  that the reinforce path under-fires, not only that intake is loose. Tightening
+  intake helps by arithmetic — fewer concepts competing for the same 60
+  reinforcements — but the ceiling is the reinforce path itself. Worth its own
+  investigation before any further gate tuning. `value` is the tell: 86%
+  stalled at a mean of 4.31 sources, i.e. well-evidenced concepts that still
+  never get re-observed.
+- **Threshold tuning, pass 2: per-kind decay rates.** Worth knowing before
+  starting: per-kind decay **already exists** via `plasticity_default`, and its
+  ordering is already right — `value` 0.2 (81 effective days, stickiest),
+  `identity` 0.3 (76), `boundary` 0.45 (70), `affective` 0.5 (67.5, fastest).
+  The order is correct and **the absolute scale is roughly 6x too slow**. So
+  that pass is "lower the base `concept_confidence_halflife_days` and widen the
+  per-kind plasticity spread", not a new mechanism. Note the compounding trap:
+  `drift_plasticity` pushes active concepts' plasticity *down* toward 0.15 over
+  time, so survivors get stickier and the backlog gets harder to drain the
+  longer it sits.
 - **Enforcement of signal C** — demote the never-reinforced set. Needs a
   chosen threshold and a one-off sweep over the concepts minted before the
-  proposer was disciplined.
+  proposer was disciplined. Now cheap to target: `pruning.unreinforced_sample`
+  carries the ids, and `unreinforced_since_promotion` is exported.
+- **The dormant revival path bypasses the kind gates.** `_transition` revives
+  `dormant -> active` on `concept_promote_min_confidence` alone, without
+  consulting the promotion gate (unlike the `retired` path, which does). A
+  demoted 2-source identity trait could therefore return without facing the
+  new floor. Currently unreachable in practice — reviving needs confidence to
+  have recovered, which needs reinforcement — and arguably correct, since it is
+  restoring something that already earned its place. Recorded so the choice is
+  deliberate rather than accidental.
 - **Offline eval harness** — a fixture corpus with expected/forbidden concepts,
   scored precision-over-recall in CI like the K10 persona regression. Held back
   on purpose: hand-authoring goldens before the proposer emits the register we

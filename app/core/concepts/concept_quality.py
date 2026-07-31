@@ -34,8 +34,9 @@ Four families of signal:
   opening is *correct* for ``value`` ("Jacob values ...") and pathological
   for ``identity`` ("Jacob treats the ..."), so one global number would
   average the signal away to nothing.
-- **Pruning** (:func:`_pruning`) -- the L22 spurious-concept signals and
-  how long the current decay settings would actually take to act.
+- **Pruning** (:func:`_pruning`) -- the L22 spurious-concept signals, the
+  *rate* at which more are arriving, and how long the current decay
+  settings would actually take to act on the ones already there.
 
 Everything here is read-only and advisory. Nothing in this module
 demotes, retires or deletes a concept; the L3 lifecycle worker remains
@@ -48,10 +49,11 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.concepts.concept_lifecycle import effective_halflife
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -108,6 +110,11 @@ _MAX_DUPLICATE_PAIRS = 40
 
 # Label preview length in sampled output (keeps the payload small).
 _PREVIEW_CHARS = 120
+
+# Window for the pruning section's *flow* figures. Short enough that a
+# threshold change shows up in it within days, long enough to survive a
+# couple of quiet days without reading as zero.
+_RECENT_WINDOW_DAYS = 7.0
 
 
 # ── inputs ────────────────────────────────────────────────────────────
@@ -253,6 +260,10 @@ def engaged_days_to_floor(
     note in ``concept_lifecycle_worker``), so the returned figure is
     conversation hours, not calendar days. Returns ``0.0`` when already
     at or below the floor, and ``None`` when the maths does not apply.
+
+    Pass the *effective* (plasticity-damped) half-life, not the raw
+    setting -- that is what the lifecycle worker decays against, and the
+    two differ by up to 2x for a sticky kind.
     """
     if halflife_days <= 0 or floor <= 0:
         return None
@@ -521,33 +532,108 @@ def _register(concepts: Sequence["Concept"]) -> dict[str, Any]:
 
 
 def _pruning(
-    concepts: Sequence["Concept"], thresholds: QualityThresholds
+    concepts: Sequence["Concept"],
+    thresholds: QualityThresholds,
+    *,
+    now: datetime,
 ) -> dict[str, Any]:
-    """How much is standing still, and how long decay would take to act."""
+    """How much is standing still, how fast more arrives, and how long
+    decay would take to act.
+
+    The standing count (``unreinforced_since_promotion``) is a *stock*, and
+    a slow-moving one: on the current settings a stalled concept needs tens
+    of hours of conversation to reach the dormant floor, so the stock barely
+    responds to an intake change inside a week. The window figures below are
+    the *flow*, which does respond immediately -- they are what to compare
+    across a threshold change.
+
+    Caveat on ``unreinforced_recent_pct``: a concept promoted yesterday has
+    had almost no opportunity to be reinforced, so this reads high in
+    absolute terms by construction. It is only meaningful compared against
+    the same window measured at another time.
+    """
     actives = [c for c in concepts if c.status == "active"]
     stalled = [c for c in actives if unreinforced_since_promotion(c)]
 
+    # Per-concept plasticity matters: real decay runs on the *effective*
+    # half-life (``halflife * (2 - plasticity)``), so a sticky identity trait
+    # takes far longer to fade than the base setting suggests. Using the raw
+    # half-life here understated the horizon by up to 2x and made the decay
+    # settings look far more active than they are.
     horizons = [
         h
         for h in (
             engaged_days_to_floor(
                 float(c.confidence),
                 floor=thresholds.dormant_confidence_floor,
-                halflife_days=thresholds.confidence_halflife_days,
+                halflife_days=effective_halflife(
+                    thresholds.confidence_halflife_days, float(c.plasticity)
+                ),
             )
             for c in stalled
         )
         if h is not None
     ]
 
+    cutoff = now - timedelta(days=_RECENT_WINDOW_DAYS)
+    promoted_dates = [
+        d for d in (_parse_iso(c.promoted_at) for c in concepts) if d
+    ]
+    recent = [
+        c
+        for c in concepts
+        if (d := _parse_iso(c.promoted_at)) is not None and d >= cutoff
+    ]
+    recent_stalled = [c for c in recent if unreinforced_since_promotion(c)]
+
+    # Lifetime promotion rate, the companion to ``flow.concepts_per_day``:
+    # measured over first-promotion to now rather than the concept-creation
+    # span, so it is not diluted by a long pre-promotion history.
+    span_days = 0.0
+    if promoted_dates:
+        span_days = max(
+            0.0, (now - min(promoted_dates)).total_seconds() / 86400.0
+        )
+    per_day = (
+        round(len(promoted_dates) / span_days, 2) if span_days >= 1.0 else None
+    )
+
     return {
         "active": len(actives),
         "unreinforced_since_promotion": len(stalled),
         "unreinforced_pct": _pct(len(stalled), len(actives)),
+        # Signal C was the only spurious signal without an id list (A and B
+        # both sample), which left it countable but not inspectable -- and
+        # made any targeted sweep of the backlog a fresh query.
+        "unreinforced_sample": [
+            {
+                "id": int(c.concept_id),
+                "kind": c.kind,
+                "subject": c.subject,
+                "confidence": round(float(c.confidence), 3),
+                "promoted_at": c.promoted_at or "",
+                "label": _preview(c.label),
+            }
+            for c in sorted(
+                stalled, key=lambda c: str(c.promoted_at or ""), reverse=True
+            )[:_MAX_DUPLICATE_PAIRS]
+        ],
+        "promotions_per_day": per_day,
+        "recent_window_days": _RECENT_WINDOW_DAYS,
+        "promoted_recent": len(recent),
+        "promotions_per_day_recent": round(
+            len(recent) / _RECENT_WINDOW_DAYS, 2
+        ),
+        # The intake-quality number: of what was promoted inside the window,
+        # how much has already gone quiet. This is what a tighter promotion
+        # gate is supposed to move.
+        "unreinforced_recent": len(recent_stalled),
+        "unreinforced_recent_pct": _pct(len(recent_stalled), len(recent)),
         "dormant_confidence_floor": thresholds.dormant_confidence_floor,
         "confidence_halflife_days": thresholds.confidence_halflife_days,
         # Engaged days ~= hours of active conversation. Presented as the
-        # median so one sticky outlier does not distort the picture.
+        # median so one sticky outlier does not distort the picture, and
+        # computed per-concept against the plasticity-damped half-life.
         "median_engaged_days_to_dormant": (
             round(float(np.median(horizons)), 1) if horizons else None
         ),
@@ -597,7 +683,7 @@ def build_quality_report(
         "evidence": _evidence(rows, limits, facts),
         "duplicates": _duplicates(rows, limits),
         "register": _register(rows),
-        "pruning": _pruning(rows, limits),
+        "pruning": _pruning(rows, limits, now=when),
     }
 
 

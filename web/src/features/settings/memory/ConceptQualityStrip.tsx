@@ -118,6 +118,10 @@ function Stat({
 function QualityDetail({ report }: { report: ConceptQualityReport }) {
   const registerRows = Object.entries(report.register);
   const horizon = report.pruning.median_engaged_days_to_dormant;
+  const windowDays = report.pruning.recent_window_days;
+  const promotedRecent = report.pruning.promoted_recent;
+  const stalledRecent = report.pruning.unreinforced_recent ?? 0;
+  const stalledRecentPct = report.pruning.unreinforced_recent_pct ?? 0;
 
   return (
     <div className="mt-2 space-y-2 border-t border-white/5 pt-2 text-[10px]">
@@ -135,6 +139,33 @@ function QualityDetail({ report }: { report: ConceptQualityReport }) {
         ) : null}
         .
       </div>
+
+      {/* The stock figure above is slow by construction, so it cannot show
+          whether a threshold change worked. This is the flow that can. */}
+      {windowDays != null && promotedRecent != null ? (
+        <div
+          className="text-ink-100/45"
+          title="Recently promoted concepts that have already gone quiet. Reads high in absolute terms — a concept promoted yesterday has barely had a chance to be reinforced — so compare it against the same figure measured before a threshold change, not against zero."
+        >
+          Last {windowDays} days: {promotedRecent} promoted
+          {promotedRecent > 0 ? (
+            <>
+              ,{" "}
+              <span
+                className={
+                  stalledRecentPct >= 60
+                    ? "text-amber-200/80"
+                    : "text-ink-100/70"
+                }
+              >
+                {stalledRecent} ({stalledRecentPct.toFixed(0)}%)
+              </span>{" "}
+              already unreinforced
+            </>
+          ) : null}
+          .
+        </div>
+      ) : null}
 
       {evidenceNotes(report).map((note) => (
         <div key={note} className="text-ink-100/45">

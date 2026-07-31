@@ -39,6 +39,7 @@ def _concept(
     subject: str = "user",
     status: str = "active",
     confidence: float = 0.8,
+    plasticity: float = 0.5,
     sources: int = 3,
     created_days_ago: float = 10.0,
     promoted_days_ago: float | None = 9.0,
@@ -51,6 +52,7 @@ def _concept(
         subject=subject,
         status=status,
         confidence=confidence,
+        plasticity=plasticity,
         evidence_count=sources,
         distinct_source_count=sources,
         created_at=_iso(created_days_ago),
@@ -481,13 +483,98 @@ class PruningTests(unittest.TestCase):
         self.assertEqual(pruning["active"], 3)
         self.assertEqual(pruning["unreinforced_since_promotion"], 2)
         self.assertAlmostEqual(pruning["unreinforced_pct"], 66.7, places=1)
-        self.assertGreater(pruning["median_engaged_days_to_dormant"], 50.0)
+        # 45-day base at plasticity 0.5 => a 67.5-day effective half-life,
+        # and 0.85 -> 0.35 is ~1.28 half-lives.
+        self.assertAlmostEqual(
+            pruning["median_engaged_days_to_dormant"], 86.4, places=1
+        )
+
+    def test_horizon_uses_the_plasticity_damped_halflife(self) -> None:
+        # The number the decay pass will be argued from, so it has to be the
+        # one the lifecycle worker actually decays against. A sticky concept
+        # (low plasticity) takes up to 2x the base half-life to fade; reading
+        # the raw setting understated every horizon in the report.
+        sticky = _report(
+            [_concept(cid=1, confidence=0.8, plasticity=0.0)],
+            thresholds=QualityThresholds(
+                dormant_confidence_floor=0.4, confidence_halflife_days=45.0
+            ),
+        )["pruning"]
+        fluid = _report(
+            [_concept(cid=1, confidence=0.8, plasticity=1.0)],
+            thresholds=QualityThresholds(
+                dormant_confidence_floor=0.4, confidence_halflife_days=45.0
+            ),
+        )["pruning"]
+        # 0.8 -> 0.4 is exactly one half-life: 2x the base when p=0, 1x at p=1.
+        self.assertAlmostEqual(
+            sticky["median_engaged_days_to_dormant"], 90.0, places=1
+        )
+        self.assertAlmostEqual(
+            fluid["median_engaged_days_to_dormant"], 45.0, places=1
+        )
 
     def test_healthy_graph_reports_no_horizon(self) -> None:
         report = _report([_concept(reinforced_days_ago=1.0)])
         pruning = report["pruning"]
         self.assertEqual(pruning["unreinforced_since_promotion"], 0)
         self.assertIsNone(pruning["median_engaged_days_to_dormant"])
+
+    def test_recent_window_separates_new_intake_from_the_backlog(self) -> None:
+        # The standing count cannot move inside a week (the horizons above
+        # are tens of hours of conversation), so the window figures are what
+        # a tightened promotion gate is measured by.
+        report = _report([
+            _concept(cid=1, promoted_days_ago=60.0, reinforced_days_ago=None),
+            _concept(cid=2, promoted_days_ago=40.0, reinforced_days_ago=None),
+            _concept(cid=3, promoted_days_ago=2.0, reinforced_days_ago=None),
+            _concept(cid=4, promoted_days_ago=1.0, reinforced_days_ago=0.5),
+        ])
+        pruning = report["pruning"]
+        self.assertEqual(pruning["unreinforced_since_promotion"], 3)
+        self.assertEqual(pruning["recent_window_days"], 7.0)
+        self.assertEqual(pruning["promoted_recent"], 2)
+        self.assertEqual(pruning["unreinforced_recent"], 1)
+        self.assertAlmostEqual(pruning["unreinforced_recent_pct"], 50.0)
+
+    def test_promotions_per_day_spans_first_promotion_to_now(self) -> None:
+        # Four promotions over a 20-day promotion history => 0.2/day.
+        report = _report([
+            _concept(cid=1, promoted_days_ago=20.0),
+            _concept(cid=2, promoted_days_ago=15.0),
+            _concept(cid=3, promoted_days_ago=10.0),
+            _concept(cid=4, promoted_days_ago=5.0),
+        ])
+        self.assertAlmostEqual(report["pruning"]["promotions_per_day"], 0.2)
+
+    def test_promotions_per_day_is_none_below_a_day(self) -> None:
+        # Same guard as flow.concepts_per_day: no rate from a sub-day span.
+        report = _report([_concept(cid=1, promoted_days_ago=0.2)])
+        self.assertIsNone(report["pruning"]["promotions_per_day"])
+
+    def test_candidates_are_excluded_from_the_window(self) -> None:
+        # A candidate has no promotion to count, even if it carries a stale
+        # promoted_at from an earlier active spell that was demoted.
+        report = _report([
+            _concept(cid=1, status="candidate", promoted_days_ago=None),
+            _concept(cid=2, promoted_days_ago=1.0, reinforced_days_ago=None),
+        ])
+        pruning = report["pruning"]
+        self.assertEqual(pruning["promoted_recent"], 1)
+        self.assertEqual(pruning["unreinforced_recent"], 1)
+
+    def test_stalled_sample_is_inspectable_and_newest_first(self) -> None:
+        # Signal C had no id list, which left it countable but not
+        # actionable -- a targeted sweep needed a fresh query every time.
+        report = _report([
+            _concept(cid=1, promoted_days_ago=30.0, reinforced_days_ago=None),
+            _concept(cid=2, promoted_days_ago=3.0, reinforced_days_ago=None),
+            _concept(cid=3, promoted_days_ago=5.0, reinforced_days_ago=1.0),
+        ])
+        sample = report["pruning"]["unreinforced_sample"]
+        self.assertEqual([row["id"] for row in sample], [2, 1])
+        self.assertEqual(sample[0]["kind"], "identity")
+        self.assertIn("cold brew", sample[0]["label"])
 
 
 class ReportShapeTests(unittest.TestCase):
