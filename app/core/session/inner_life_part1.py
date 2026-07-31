@@ -7,6 +7,7 @@ from app.core.session.inner_life_shared import (
     _format_running_task_line,
 )
 from app.core.infra import timephrase
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 if TYPE_CHECKING:
     from app.core.session.context_budget_selector import RelevantContext
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.session")
 
 
-class InnerLifePart1Mixin:
+class InnerLifePart1Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 1 of 4)."""
 
     # P22: floor for the shared recent-history fetch. K30 self-noticing
@@ -394,12 +395,10 @@ class InnerLifePart1Mixin:
 
             now = timephrase.now()
 
-            forced = getattr(self, "_day_color_force_next", None)
+            # One-shot override: render the requested colour without
+            # touching kv_meta so the persisted roll survives the test.
+            forced = self._debug_overrides.take("day_color_force_next")
             if forced:
-                # One-shot override: render the requested colour
-                # without touching kv_meta so the persisted roll
-                # survives the test.
-                self._day_color_force_next = None
                 chosen = day_color.get_color_by_name(forced)
                 if chosen is not None:
                     return day_color.render_inner_life_block(chosen)
@@ -407,7 +406,7 @@ class InnerLifePart1Mixin:
                 # path rather than rendering a confusing empty cue.
 
             force_reroll = bool(
-                getattr(self, "_day_color_force_reroll", False)
+                self._debug_overrides.take("day_color_force_reroll", False)
             )
 
             chat_db = getattr(self, "_chat_db", None)
@@ -425,7 +424,6 @@ class InnerLifePart1Mixin:
                 # since the local-date rollover (or a tester just
                 # armed force_reroll). Roll + write + log so the
                 # next provider call hits the stable-read path.
-                self._day_color_force_reroll = False
                 try:
                     chosen = day_color.roll_for_today(
                         now=now, weights=self._day_color_weather_weights(),
@@ -500,11 +498,10 @@ class InnerLifePart1Mixin:
                 ),
             )
 
-            forced = getattr(self, "_vitality_force_energy", None)
+            # One-shot override: render the requested energy's band and
+            # persist it so the embodiment broadcast picks it up.
+            forced = self._debug_overrides.take("vitality_force_energy")
             if forced is not None:
-                # One-shot override: render the requested energy's band
-                # and persist it so the embodiment broadcast picks it up.
-                self._vitality_force_energy = None
                 energy = max(0.0, min(1.0, float(forced)))
                 state = _vit.VitalityState(
                     energy=energy, last_update_at=now.isoformat(),
@@ -601,10 +598,9 @@ class InnerLifePart1Mixin:
 
             verdict = _md.detect_drift(samples)
 
-            if bool(getattr(self, "_mood_drift_force_surface", False)):
-                # One-shot MCP override: render the live verdict (if any)
-                # without touching the cooldown / watermark.
-                self._mood_drift_force_surface = False
+            # One-shot MCP override: render the live verdict (if any)
+            # without touching the cooldown / watermark.
+            if bool(self._debug_overrides.take("mood_drift_force_surface", False)):
                 if verdict is None:
                     return ""
                 return _md.render_block(
@@ -741,8 +737,11 @@ class InnerLifePart1Mixin:
             # through to the read path so the cue still renders
             # (capacity > 0, spent = 0 -> silent, which is the
             # expected post-reset render).
-            if bool(getattr(self, "_vulnerability_budget_force_reset", False)):
-                self._vulnerability_budget_force_reset = False
+            if bool(
+                self._debug_overrides.take(
+                    "vulnerability_budget_force_reset", False,
+                )
+            ):
                 try:
                     fresh = _vb.BudgetState(
                         spent=0.0, last_decay_at=now.isoformat(),
@@ -757,11 +756,10 @@ class InnerLifePart1Mixin:
             # the forced ``spent`` value WITHOUT touching kv_meta so
             # the real persisted bucket survives the test. Consumed
             # one-shot.
-            forced_spent = getattr(
-                self, "_vulnerability_budget_force_spent", None,
+            forced_spent = self._debug_overrides.take(
+                "vulnerability_budget_force_spent",
             )
             if forced_spent is not None:
-                self._vulnerability_budget_force_spent = None
                 # Use min(capacity, max_cap) so the forced render
                 # still respects the axes-derived ceiling (low
                 # closeness + forced spent should still trigger the
@@ -2671,8 +2669,11 @@ class InnerLifePart1Mixin:
             getattr(self._settings.agent, "question_balance_enabled", True)
         ):
             return False
+        # peek, not take: this is a turn countdown rather than a one-shot,
+        # and the guard must stay side-effect-free so a same-turn re-render
+        # agrees with itself. The decrement happens post-turn.
         return int(
-            getattr(self, "_question_balance_suppress_remaining", 0)
+            self._debug_overrides.peek("question_balance_suppress_remaining", 0)
         ) > 0
 
     def _render_question_balance_block(self) -> str:
@@ -2699,9 +2700,8 @@ class InnerLifePart1Mixin:
             return ""
         from app.core.conversation.tease_rhythm import render_cue
 
-        forced = getattr(self, "_tease_rhythm_force", None)
+        forced = self._debug_overrides.take("tease_rhythm_force")
         if forced:
-            self._tease_rhythm_force = None
             return render_cue(
                 forced, user_name=self.user_display_name,
             ) + self._humor_register_hint()

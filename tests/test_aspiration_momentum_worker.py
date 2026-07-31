@@ -206,7 +206,7 @@ class _Host(InnerLifeProvidersMixin):
         self._chat_db = _FakeChatDb()
         if cues is not None:
             self._chat_db.store[_am.MOMENTUM_JOURNAL_KEY] = json.dumps(cues)
-        self._aspiration_momentum_force_next = force_next
+        self.debug_overrides.arm("aspiration_momentum_force_next", force_next)
         self.user_display_name = "Jacob"
 
 
@@ -254,7 +254,7 @@ class ConsumerTests(unittest.TestCase):
         )
         out = host._render_aspiration_momentum_block()
         self.assertIn("Building toward", out)
-        self.assertFalse(host._aspiration_momentum_force_next)
+        self.assertFalse(host.debug_overrides.peek("aspiration_momentum_force_next"))
 
 
 # ── settings parse ───────────────────────────────────────────────────────

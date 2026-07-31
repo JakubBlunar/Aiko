@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 from app.core.session.inner_life_shared import (
     _circadian,
     _MILESTONE_PHRASES,
@@ -17,7 +18,7 @@ from app.core.session.inner_life_shared import (
 log = logging.getLogger("app.session")
 
 
-class InnerLifePart4Mixin:
+class InnerLifePart4Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 4 of 4)."""
 
     def _build_grounding_context(self) -> "Any":
@@ -598,9 +599,9 @@ class InnerLifePart4Mixin:
             gap_max_seconds=float(getattr(agent, "session_clock_gap_max_minutes", 30.0)) * 60.0,
         )
 
-        force = bool(getattr(self, "_session_clock_force_next", False))
-        if force:
-            self._session_clock_force_next = False
+        force = bool(
+            self._debug_overrides.take("session_clock_force_next", False)
+        )
 
         # ── elapsed one-shot: per band, re-armed when the sitting changes ──
         elapsed_band = signal.elapsed_band
@@ -715,9 +716,9 @@ class InnerLifePart4Mixin:
         from datetime import datetime, timezone
 
         now = timephrase.utcnow()
-        force = bool(getattr(self, "_appreciation_force_next", False))
-        if force:
-            self._appreciation_force_next = False
+        force = bool(
+            self._debug_overrides.take("appreciation_force_next", False)
+        )
 
         # Closeness gate — appreciation only reads right with real warmth.
         if not force:
@@ -929,10 +930,8 @@ class InnerLifePart4Mixin:
 
         now = timephrase.utcnow()
         force = bool(
-            getattr(self, "_reciprocal_vulnerability_force_next", False)
+            self._debug_overrides.take("reciprocal_vulnerability_force_next", False)
         )
-        if force:
-            self._reciprocal_vulnerability_force_next = False
 
         if not force:
             # 1) Long cooldown — the cheapest, most-selective gate first.
@@ -1112,9 +1111,9 @@ class InnerLifePart4Mixin:
         from datetime import datetime, timezone
 
         now = timephrase.utcnow()
-        force = bool(getattr(self, "_reciprocal_vulnerability_force_next", False))
-        if force:
-            self._reciprocal_vulnerability_force_next = False
+        force = bool(
+            self._debug_overrides.take("reciprocal_vulnerability_force_next", False)
+        )
 
         if not force:
             from app.core.relationship.relationship_axes import (

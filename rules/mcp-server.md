@@ -43,6 +43,25 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 | `list_agent_tools` | — | JSON array of `{name, description}` for every agent tool currently registered. |
 | `get_last_response_detail` | — | JSON timing breakdown for the last turn (`llm_ms`, `tts_ms`, etc.). |
 | `clear_history` | — | Clears the active session in `chat_sessions.db`. |
+| `list_debug_overrides` | `armed_only: bool = false` | JSON: every one-shot override, whether it is armed, its payload, and what it does. |
+| `clear_debug_overrides` | — | Disarms everything pending. Same call a session switch makes. |
+
+#### One-shot debug overrides
+
+Every `force_*` tool arms an entry in
+[`session.debug_overrides`](../app/core/session/debug_overrides.py) that the
+next matching provider consumes and drops. Three things follow:
+
+- **Ask what is pending** with `list_debug_overrides`. An override that never
+  fired used to be invisible until it went off in some later turn.
+- **They all clear together** on a session switch or a memory wipe. There is no
+  per-flag cleanup list to keep in step, which is what used to leak overrides
+  between conversations.
+- **Names are registered.** Arming one that isn't in `KNOWN_OVERRIDES` raises,
+  so a typo fails loudly rather than writing an attribute no provider reads.
+
+Adding one: register the name and a one-line description in `KNOWN_OVERRIDES`,
+`take(...)` it in the provider, and `arm(...)` it from your tool.
 
 Beyond this core set, the tool surface is grouped by domain under `app/mcp/server_tools/*.py` (each a `register(mcp, session)` module). Concept-layer observability (L26), in `server_tools/proactive_task_tools.py`:
 

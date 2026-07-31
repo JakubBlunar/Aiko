@@ -118,7 +118,7 @@ class _Host(InnerLifeProvidersMixin):
         self._rag_store = _FakeRagStore(recent_user_vecs or [])
         self._user_id = user_id
         self._pending_turning_over_seconds = pending_seconds
-        self._turning_over_force_next = force_next
+        self.debug_overrides.arm("turning_over_force_next", force_next)
         self._last_turning_over: Any = None
         self.user_display_name = "Jacob"
 
@@ -216,7 +216,7 @@ class ForceNextTests(unittest.TestCase):
         out = host._render_turning_over_block()
         self.assertTrue(out.startswith("Turning over:"))
         # Bypass consumed.
-        self.assertFalse(host._turning_over_force_next)
+        self.assertFalse(host.debug_overrides.peek("turning_over_force_next"))
 
     def test_force_next_consumed_even_on_silent(self) -> None:
         # Empty reflections corpus → silent.
@@ -228,7 +228,7 @@ class ForceNextTests(unittest.TestCase):
         )
         self.assertEqual(host._render_turning_over_block(), "")
         # The bypass is still consumed -- it's strictly one-turn.
-        self.assertFalse(host._turning_over_force_next)
+        self.assertFalse(host.debug_overrides.peek("turning_over_force_next"))
 
 
 # ── Threshold double-check ─────────────────────────────────────────────

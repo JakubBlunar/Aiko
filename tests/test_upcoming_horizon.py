@@ -177,10 +177,10 @@ class ProviderTests(unittest.TestCase):
     def test_force_bypasses_cooldown(self) -> None:
         host = self._host([_mem(1, "dentist", "2026-06-27T09:00:00+00:00")])
         self.assertTrue(host._render_upcoming_horizon_block())
-        host._upcoming_horizon_force_next = True
+        host.debug_overrides.arm("upcoming_horizon_force_next")
         out = host._render_upcoming_horizon_block()
         self.assertTrue(out)
-        self.assertFalse(host._upcoming_horizon_force_next)
+        self.assertFalse(host.debug_overrides.peek("upcoming_horizon_force_next"))
 
 
 if __name__ == "__main__":

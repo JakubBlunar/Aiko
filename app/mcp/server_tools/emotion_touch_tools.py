@@ -218,7 +218,7 @@ def register(mcp, session: "SessionController") -> None:
                     getattr(agent, "mask_slip_cooldown_days", 2.0)
                 ),
                 "force_slip_armed": bool(
-                    getattr(session, "_mask_force_slip_next", False)
+                    session.debug_overrides.peek("mask_force_slip_next", False)
                 ),
             }
             return json.dumps(payload)
@@ -252,7 +252,7 @@ def register(mcp, session: "SessionController") -> None:
         ``force_emotion_episode(kind='lonely', intensity=0.8)`` and a
         non-off mask mode."""
         try:
-            session._mask_force_slip_next = True
+            session.debug_overrides.arm("mask_force_slip_next")
             return json.dumps({"armed": True})
         except Exception as exc:
             return f"force_dere_slip raised: {exc}"
@@ -302,9 +302,7 @@ def register(mcp, session: "SessionController") -> None:
                     getattr(agent, "tease_collect_cooldown_hours", 12.0)
                 ),
                 "force_armed": bool(
-                    getattr(
-                        session, "_tease_collection_force_next", False,
-                    )
+                    session.debug_overrides.peek("tease_collection_force_next", False,)
                 ),
                 "debts": [
                     {
@@ -354,7 +352,7 @@ def register(mcp, session: "SessionController") -> None:
         """K59 — arm a one-shot bypass of the humor / cooldown / age
         gates so the next turn's provider offers the oldest debt."""
         try:
-            session._tease_collection_force_next = True
+            session.debug_overrides.arm("tease_collection_force_next")
             return json.dumps({"armed": True})
         except Exception as exc:
             return f"force_tease_collection raised: {exc}"
@@ -493,17 +491,11 @@ def register(mcp, session: "SessionController") -> None:
                     ),
                 },
                 "force_state": {
-                    "force_spent": getattr(
-                        session,
-                        "_vulnerability_budget_force_spent",
-                        None,
+                    "force_spent": session.debug_overrides.peek(
+                        "vulnerability_budget_force_spent", None,
                     ),
                     "force_reset": bool(
-                        getattr(
-                            session,
-                            "_vulnerability_budget_force_reset",
-                            False,
-                        )
+                        session.debug_overrides.peek("vulnerability_budget_force_reset", False)
                     ),
                 },
             }
@@ -629,7 +621,7 @@ def register(mcp, session: "SessionController") -> None:
         One-shot: the flag is consumed by the next provider call.
         """
         try:
-            session._vulnerability_budget_force_reset = True
+            session.debug_overrides.arm("vulnerability_budget_force_reset")
             return json.dumps(
                 {
                     "armed": True,
@@ -642,6 +634,39 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"reset_vulnerability_budget raised: {exc}"
+
+    @mcp.tool()
+    def force_vulnerability_spent(spent: float) -> str:
+        """K15 — render the next budget cue as if ``spent`` tokens were used.
+
+        Unlike :func:`spend_vulnerability`, this does not touch ``kv_meta``:
+        the real persisted bucket survives, so you can look at any band --
+        healthy, at-cap, over-cap -- and leave the session's actual state
+        alone. ``get_vulnerability_budget_state`` has reported this override
+        since it was written, but nothing could arm it until now.
+
+        One-shot: consumed by the next provider call.
+        """
+        try:
+            value = float(spent)
+            if value < 0:
+                return json.dumps({"error": "spent must be >= 0"})
+            session.debug_overrides.arm(
+                "vulnerability_budget_force_spent", value,
+            )
+            return json.dumps(
+                {
+                    "armed": True,
+                    "spent": value,
+                    "note": (
+                        "next provider call renders as if this much were "
+                        "spent; kv_meta untouched; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_vulnerability_spent raised: {exc}"
 
     @mcp.tool()
     def get_touch_state() -> str:

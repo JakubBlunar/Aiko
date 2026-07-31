@@ -294,7 +294,7 @@ class _Host(InnerLifePart2Mixin):
     def __init__(self) -> None:
         self._settings = _Settings()
         self._chat_db = _KV()
-        self._associative_wander_force_next = False
+        self.debug_overrides.disarm("associative_wander_force_next")
 
 
 class ProviderTests(unittest.TestCase):
@@ -349,7 +349,7 @@ class ProviderTests(unittest.TestCase):
     def test_force_next_bypasses_relevance(self) -> None:
         host = _Host()
         self._seed(host)
-        host._associative_wander_force_next = True
+        host.debug_overrides.arm("associative_wander_force_next")
         out = host._render_associative_wander_block("")
         self.assertIn("hiking trails", out)
 

@@ -88,7 +88,7 @@ class _GateHost(PostTurnMixin):
         self._settings = SimpleNamespace(agent=agent or _agent())
         window = self._settings.agent.question_balance_window
         self._question_turn_flags: deque[bool] = deque(maxlen=window)
-        self._question_balance_suppress_remaining = 0
+        self.debug_overrides.arm("question_balance_suppress_remaining", 0)
 
 
 class PostTurnGateTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class PostTurnGateTests(unittest.TestCase):
         # 6 question turns out of 6 -> ratio 1.0 > 0.55, samples >= 5.
         for _ in range(6):
             host._update_question_balance("how's that going?")
-        self.assertEqual(host._question_balance_suppress_remaining, 2)
+        self.assertEqual(host.debug_overrides.peek("question_balance_suppress_remaining"), 2)
 
     def test_stays_silent_below_threshold(self) -> None:
         host = _GateHost()
@@ -105,27 +105,35 @@ class PostTurnGateTests(unittest.TestCase):
         host._update_question_balance("anyway?")
         for _ in range(5):
             host._update_question_balance("that's wild.")
-        self.assertEqual(host._question_balance_suppress_remaining, 0)
+        # Default 0, the same way the provider guard reads it: the countdown
+        # is dropped rather than stored as 0, so absent means "not suppressed".
+        self.assertEqual(
+            host.debug_overrides.peek("question_balance_suppress_remaining", 0), 0,
+        )
 
     def test_decays_when_ratio_drops(self) -> None:
         host = _GateHost()
         for _ in range(6):
             host._update_question_balance("really?")
-        self.assertEqual(host._question_balance_suppress_remaining, 2)
+        self.assertEqual(host.debug_overrides.peek("question_balance_suppress_remaining"), 2)
         # Now flood the window with statements so ratio falls under
         # threshold; the countdown should decay 2 -> 1 -> 0.
         host._update_question_balance("here's a thought.")  # decay, recompute
-        first = host._question_balance_suppress_remaining
+        first = host.debug_overrides.peek("question_balance_suppress_remaining")
         for _ in range(20):
             host._update_question_balance("statement.")
-        self.assertEqual(host._question_balance_suppress_remaining, 0)
+        self.assertEqual(
+            host.debug_overrides.peek("question_balance_suppress_remaining", 0), 0,
+        )
         self.assertLessEqual(first, 2)
 
     def test_disabled_when_suppress_turns_zero(self) -> None:
         host = _GateHost(_agent(question_balance_suppress_turns=0))
         for _ in range(8):
             host._update_question_balance("why?")
-        self.assertEqual(host._question_balance_suppress_remaining, 0)
+        self.assertEqual(
+            host.debug_overrides.peek("question_balance_suppress_remaining", 0), 0,
+        )
 
 
 # ── 3. provider plumbing ───────────────────────────────────────────
@@ -148,7 +156,7 @@ class _ProviderHost(InnerLifeProvidersMixin):
         ):
             setattr(agent, flag, True)
         self._settings = SimpleNamespace(agent=agent)
-        self._question_balance_suppress_remaining = suppress_remaining
+        self.debug_overrides.arm("question_balance_suppress_remaining", suppress_remaining)
         self.user_display_name = "Jacob"
         # Stores the guarded providers would reach for *after* the guard;
         # they should never be touched while suppressed.
@@ -190,7 +198,7 @@ class ProviderTests(unittest.TestCase):
         host = _ProviderHost(suppress_remaining=2)
         host._render_question_balance_block()
         host._render_question_balance_block()
-        self.assertEqual(host._question_balance_suppress_remaining, 2)
+        self.assertEqual(host.debug_overrides.peek("question_balance_suppress_remaining"), 2)
 
 
 if __name__ == "__main__":

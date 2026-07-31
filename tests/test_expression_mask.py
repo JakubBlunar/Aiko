@@ -319,10 +319,10 @@ class ProviderMaskIntegrationTests(unittest.TestCase):
             em.KV_LAST_SLIP_AT,
             datetime.now(timezone.utc).isoformat(),
         )
-        host._mask_force_slip_next = True
+        host.debug_overrides.arm("mask_force_slip_next")
         block = host._render_emotion_episode_block("back!")
         self.assertIn("SLIP earned", block)
-        self.assertFalse(host._mask_force_slip_next)
+        self.assertFalse(host.debug_overrides.peek("mask_force_slip_next"))
 
     def test_eroded_axes_render_token_protest(self) -> None:
         host = _Host(

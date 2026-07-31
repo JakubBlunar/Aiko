@@ -183,10 +183,10 @@ class ProviderTests(unittest.TestCase):
         # Mid cluster that would normally be silent; force splits at 0.5.
         host = self._host(match=(1, "cooking", 0.1), stats=(6, 0))
         host._topic_confidence_cooldown = 4
-        host._topic_confidence_force_next = True
+        host.debug_overrides.arm("topic_confidence_force_next")
         out = host._render_topic_confidence_block("cooking dinner tonight")
         self.assertTrue(out)
-        self.assertFalse(host._topic_confidence_force_next)
+        self.assertFalse(host.debug_overrides.peek("topic_confidence_force_next"))
         # min_sim dropped to 0 on the forced call.
         self.assertEqual(host._topic_graph.best_calls[-1]["min_sim"], 0.0)
         self.assertIn(host._topic_confidence_last["band"], {"thin", "familiar"})

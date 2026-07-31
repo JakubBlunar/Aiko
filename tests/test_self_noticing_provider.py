@@ -116,9 +116,9 @@ class _Host(InnerLifeProvidersMixin):
             for s in affect_samples:
                 self._self_noticing_affect_samples.append(s)
         self._self_noticing_aiko_vecs: deque[Any] = deque(maxlen=vec_ring_size)
-        self._self_noticing_force_agreement = force_agreement
-        self._self_noticing_force_flat_affect = force_flat
-        self._self_noticing_force_repeated_thought = force_repeated
+        self.debug_overrides.arm("self_noticing_force_agreement", force_agreement)
+        self.debug_overrides.arm("self_noticing_force_flat_affect", force_flat)
+        self.debug_overrides.arm("self_noticing_force_repeated_thought", force_repeated)
         self._self_noticing_agreement_cooldown = agreement_cooldown
         self._self_noticing_flat_affect_cooldown = flat_cooldown
         self._repeated_thought_fired_last_turn = repeated_thought_fired
@@ -141,9 +141,9 @@ class MasterSwitchTests(unittest.TestCase):
         )
         self.assertEqual(host._render_self_noticing_block(), "")
         # The force flags shouldn't bypass the master gate either.
-        host._self_noticing_force_agreement = True
-        host._self_noticing_force_flat_affect = True
-        host._self_noticing_force_repeated_thought = True
+        host.debug_overrides.arm("self_noticing_force_agreement")
+        host.debug_overrides.arm("self_noticing_force_flat_affect")
+        host.debug_overrides.arm("self_noticing_force_repeated_thought")
         self.assertEqual(host._render_self_noticing_block(), "")
 
 
@@ -294,7 +294,7 @@ class ForceFlagTests(unittest.TestCase):
         block = host._render_self_noticing_block()
         self.assertIn("agreeing with everything", block)
         # Force flag was consumed (one-shot).
-        self.assertFalse(host._self_noticing_force_agreement)
+        self.assertFalse(host.debug_overrides.peek("self_noticing_force_agreement"))
 
     def test_force_agreement_with_empty_history_no_fire(self) -> None:
         # The force flag is consumed when there's no eligible history
@@ -312,7 +312,7 @@ class ForceFlagTests(unittest.TestCase):
         )
         block = host._render_self_noticing_block()
         self.assertIn("even-keel", block)
-        self.assertFalse(host._self_noticing_force_flat_affect)
+        self.assertFalse(host.debug_overrides.peek("self_noticing_force_flat_affect"))
 
     def test_force_repeated_thought(self) -> None:
         # Even without the carry-forward flag, force should fire.
@@ -322,7 +322,7 @@ class ForceFlagTests(unittest.TestCase):
         )
         block = host._render_self_noticing_block()
         self.assertIn("close to something you already said", block)
-        self.assertFalse(host._self_noticing_force_repeated_thought)
+        self.assertFalse(host.debug_overrides.peek("self_noticing_force_repeated_thought"))
 
 
 # ── fan-out (multiple cues in one block) ──────────────────────────

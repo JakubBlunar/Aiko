@@ -522,7 +522,7 @@ class _Host(PostTurnHelpersMixin, InnerLifePart1Mixin):
         self._last_cue_decisions = None
         self._last_surfaced_items = []
         self._prev_surfacing_message_id = 0
-        self._question_balance_suppress_remaining = 0
+        self.debug_overrides.arm("question_balance_suppress_remaining", 0)
         self._settings = SimpleNamespace(
             agent=SimpleNamespace(question_balance_enabled=True),
         )
@@ -540,7 +540,7 @@ class WiringTests(unittest.TestCase):
 
     def test_snapshot_captures_arming_and_the_veto(self) -> None:
         host = _Host(self.fx, _pending_turning_over_seconds=60.0)
-        host._question_balance_suppress_remaining = 2
+        host.debug_overrides.arm("question_balance_suppress_remaining", 2)
         host._snapshot_armed_cues()
         self.assertEqual(host._cue_armed_snapshot, {"turning_over"})
         self.assertTrue(host._cue_question_balance_snapshot)
@@ -569,9 +569,10 @@ class WiringTests(unittest.TestCase):
         # suppression that was active during assembly and blame the
         # provider instead.
         host = _Host(self.fx, _pending_turning_over_seconds=60.0)
-        host._question_balance_suppress_remaining = 1
+        host.debug_overrides.arm("question_balance_suppress_remaining", 1)
         host._snapshot_armed_cues()
-        host._question_balance_suppress_remaining = 0  # post-turn decay
+        # post-turn decay
+        host.debug_overrides.arm("question_balance_suppress_remaining", 0)
         host._record_cue_decisions(
             assistant_message_id=11,
             telemetry=SimpleNamespace(block_chars={"turning_over_block": 0}),

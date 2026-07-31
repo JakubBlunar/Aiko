@@ -162,7 +162,7 @@ class _RenderHost(InnerLifeProvidersMixin):
             ["excited"], maxlen=3,
         )
         self._pending_mood_inertia: Any = pending
-        self._mood_inertia_force = force
+        self.debug_overrides.arm("mood_inertia_force", force)
 
 
 class RenderMoodInertiaBlockTests(unittest.TestCase):
@@ -186,7 +186,7 @@ class RenderMoodInertiaBlockTests(unittest.TestCase):
         host = _RenderHost(force=True)
         first = host._render_mood_inertia_block()
         self.assertIn("your face just jumped to excited", first)
-        self.assertFalse(host._mood_inertia_force)
+        self.assertFalse(host.debug_overrides.peek("mood_inertia_force"))
         # Consumed: the next call has neither force nor pending.
         self.assertEqual(host._render_mood_inertia_block(), "")
 

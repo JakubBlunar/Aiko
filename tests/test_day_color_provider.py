@@ -88,8 +88,8 @@ class _Host(InnerLifeProvidersMixin):
         self._settings = _FakeSettings(
             agent=agent_settings or _make_agent_settings(),
         )
-        self._day_color_force_next: str | None = None
-        self._day_color_force_reroll: bool = False
+        self.debug_overrides.disarm("day_color_force_next")
+        self.debug_overrides.disarm("day_color_force_reroll")
 
 
 # ── master switch ────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ class ForceNextTests(unittest.TestCase):
         chat_db._store[KV_DAY_COLOR] = "cozy"
         chat_db._store[KV_DAY_COLOR_SET_AT] = now.isoformat()
         host = _Host(chat_db=chat_db)
-        host._day_color_force_next = "mischievous"
+        host.debug_overrides.arm("day_color_force_next", "mischievous")
 
         rendered = host._render_day_color_block()
         self.assertIn("mischievous", rendered)
@@ -206,7 +206,7 @@ class ForceNextTests(unittest.TestCase):
         self.assertEqual(chat_db._store[KV_DAY_COLOR], "cozy")
         # And the force flag is one-shot -- next call falls back to
         # the stable-read path.
-        self.assertIsNone(host._day_color_force_next)
+        self.assertIsNone(host.debug_overrides.peek("day_color_force_next"))
         next_rendered = host._render_day_color_block()
         self.assertIn("cozy", next_rendered)
 
@@ -216,13 +216,13 @@ class ForceNextTests(unittest.TestCase):
         chat_db._store[KV_DAY_COLOR] = "cozy"
         chat_db._store[KV_DAY_COLOR_SET_AT] = now.isoformat()
         host = _Host(chat_db=chat_db)
-        host._day_color_force_next = "not_a_real_colour"
+        host.debug_overrides.arm("day_color_force_next", "not_a_real_colour")
 
         rendered = host._render_day_color_block()
         # Unknown name -> fall through to the normal read path.
         self.assertIn("cozy", rendered)
         # Flag was consumed regardless.
-        self.assertIsNone(host._day_color_force_next)
+        self.assertIsNone(host.debug_overrides.peek("day_color_force_next"))
 
 
 class ForceRerollTests(unittest.TestCase):
@@ -232,7 +232,7 @@ class ForceRerollTests(unittest.TestCase):
         chat_db._store[KV_DAY_COLOR] = "cozy"
         chat_db._store[KV_DAY_COLOR_SET_AT] = now.isoformat()
         host = _Host(chat_db=chat_db)
-        host._day_color_force_reroll = True
+        host.debug_overrides.arm("day_color_force_reroll")
 
         rendered = host._render_day_color_block()
         # Reroll writes a fresh colour to kv_meta.
@@ -244,7 +244,7 @@ class ForceRerollTests(unittest.TestCase):
             {c.name for c in day_color.PALETTE},
         )
         # Force flag consumed.
-        self.assertFalse(host._day_color_force_reroll)
+        self.assertFalse(host.debug_overrides.peek("day_color_force_reroll"))
 
 
 # ── exception swallow ───────────────────────────────────────────────

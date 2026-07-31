@@ -54,7 +54,7 @@ class _Host(InnerLifeProvidersMixin):
         self._chat_db = _FakeChatDb()
         if cues:
             self._chat_db.store[FOLLOW_UP_JOURNAL_KEY] = json.dumps(cues)
-        self._follow_up_force_next = force_next
+        self.debug_overrides.arm("follow_up_force_next", force_next)
         self.user_display_name = "Jacob"
 
 
@@ -128,7 +128,7 @@ class ForceNextTests(unittest.TestCase):
         out = host._render_follow_up_block()
         self.assertTrue(out.startswith("Earlier"))
         # Force flag consumed.
-        self.assertFalse(host._follow_up_force_next)
+        self.assertFalse(host.debug_overrides.peek("follow_up_force_next"))
 
 
 if __name__ == "__main__":

@@ -229,7 +229,7 @@ class _Host(InnerLifePart2Mixin):
         )
         self._chat_db = _KV()
         self._topic_stagnation_detector = _Detector(last_mean)
-        self._dormant_interest_force_next = False
+        self.debug_overrides.disarm("dormant_interest_force_next")
 
 
 class ProviderTests(unittest.TestCase):
@@ -291,7 +291,7 @@ class ProviderTests(unittest.TestCase):
     def test_force_next_bypasses_all_gates(self) -> None:
         host = _Host(last_mean=0.40)  # no lull
         self._seed(host)
-        host._dormant_interest_force_next = True
+        host.debug_overrides.arm("dormant_interest_force_next")
         self.assertIn(
             "garage band", host._render_dormant_interest_block()
         )

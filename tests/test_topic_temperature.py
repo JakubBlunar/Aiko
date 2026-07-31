@@ -246,11 +246,11 @@ class ProviderTests(unittest.TestCase):
             vibes={10: "silly"},  # weak warm, below default threshold
         )
         host._topic_temperature_cooldown = 4
-        host._topic_temperature_force_next = True
+        host.debug_overrides.arm("topic_temperature_force_next")
         out = host._render_topic_temperature_block("guitar stuff here")
         self.assertIn("warm spot", out)
         # Force consumed; min_sim dropped to 0 on the bypass call.
-        self.assertFalse(host._topic_temperature_force_next)
+        self.assertFalse(host.debug_overrides.peek("topic_temperature_force_next"))
         self.assertEqual(host._topic_temperature_last["dominant"], "warm")
 
 

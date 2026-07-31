@@ -108,7 +108,7 @@ class _Host(InnerLifeProvidersMixin):
         self._memory_settings = SimpleNamespace(stance_persistence_window=3)
         self._stance_recent_window = window
         self._stance_recent_text = stance_text
-        self._stance_persistence_force_next = force_next
+        self.debug_overrides.arm("stance_persistence_force_next", force_next)
         self._last_stance_persistence: Any = None
         self.user_display_name = "Jacob"
 
@@ -149,13 +149,13 @@ class ProviderTests(unittest.TestCase):
         block = host._render_stance_persistence_block(MILD_MSG)
         self.assertNotEqual(block, "")
         # One-shot consumed.
-        self.assertFalse(host._stance_persistence_force_next)
+        self.assertFalse(host.debug_overrides.peek("stance_persistence_force_next"))
 
     def test_force_next_consumed_even_on_miss(self) -> None:
         host = _Host(window=0, force_next=True)
         # Forced but the band is neutral -> no fire, flag still consumed.
         self.assertEqual(host._render_stance_persistence_block(NEUTRAL_MSG), "")
-        self.assertFalse(host._stance_persistence_force_next)
+        self.assertFalse(host.debug_overrides.peek("stance_persistence_force_next"))
 
 
 if __name__ == "__main__":

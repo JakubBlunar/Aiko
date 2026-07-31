@@ -240,7 +240,7 @@ class _Host(InnerLifePart2Mixin):
     def __init__(self) -> None:
         self._settings = _Settings()
         self._chat_db = _KV()
-        self._curiosity_gradient_force_next = False
+        self.debug_overrides.disarm("curiosity_gradient_force_next")
 
 
 class ProviderTests(unittest.TestCase):
@@ -300,7 +300,7 @@ class ProviderTests(unittest.TestCase):
     def test_force_next_bypasses_relevance(self) -> None:
         host = _Host()
         self._seed(host)
-        host._curiosity_gradient_force_next = True
+        host.debug_overrides.arm("curiosity_gradient_force_next")
         self.assertIn(
             "trail navigation", host._render_curiosity_gradient_block("")
         )

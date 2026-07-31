@@ -114,7 +114,7 @@ class _Host(InnerLifeProvidersMixin):
         self._fact_check_cancel = None
         self._opinion_injection_cooldown = cooldown
         self._opinion_injection_session_count = session_count
-        self._opinion_injection_force_next = force_next
+        self.debug_overrides.arm("opinion_injection_force_next", force_next)
         self._last_opinion_injection: Any = None
         self._opinion_injection_rate_limiter = rate_limiter
         self._opinion_injection_pending_borderline: Any = None
@@ -266,7 +266,7 @@ class ForceNextTests(unittest.TestCase):
         # Cooldown re-armed to configured value after fire.
         self.assertEqual(host._opinion_injection_cooldown, 5)
         # Force flag consumed (one-shot semantics).
-        self.assertFalse(host._opinion_injection_force_next)
+        self.assertFalse(host.debug_overrides.peek("opinion_injection_force_next"))
 
     def test_force_next_bypasses_session_cap(self) -> None:
         host = _Host(
@@ -279,7 +279,7 @@ class ForceNextTests(unittest.TestCase):
         # Session count still bumped (the bypass is for the GATE,
         # not for the counter -- accurate debug telemetry).
         self.assertEqual(host._opinion_injection_session_count, 100)
-        self.assertFalse(host._opinion_injection_force_next)
+        self.assertFalse(host.debug_overrides.peek("opinion_injection_force_next"))
 
     def test_force_next_consumed_when_trigger_misses(self) -> None:
         # Force-next on an unrelated message -- the flag must still
@@ -291,7 +291,7 @@ class ForceNextTests(unittest.TestCase):
         )
         block = host._render_opinion_injection_block(NON_FIRING_USER_MSG)
         self.assertEqual(block, "")
-        self.assertFalse(host._opinion_injection_force_next)
+        self.assertFalse(host.debug_overrides.peek("opinion_injection_force_next"))
 
 
 class DependencySurfaceTests(unittest.TestCase):

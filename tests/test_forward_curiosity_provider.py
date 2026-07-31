@@ -66,7 +66,7 @@ class _Host(InnerLifeProvidersMixin):
                 questions
             )
         self._pending_forward_curiosity_seconds = pending_seconds
-        self._forward_curiosity_force_next = force_next
+        self.debug_overrides.arm("forward_curiosity_force_next", force_next)
         self._gap_cue_surfaced = gap_cue_surfaced
         self.user_display_name = "Jacob"
 
@@ -144,7 +144,7 @@ class OneOfGuardTests(unittest.TestCase):
         out = host._render_forward_curiosity_block()
         self.assertTrue(out.startswith("You've been wondering"))
         # Force flag consumed.
-        self.assertFalse(host._forward_curiosity_force_next)
+        self.assertFalse(host.debug_overrides.peek("forward_curiosity_force_next"))
 
 
 class WatermarkTests(unittest.TestCase):

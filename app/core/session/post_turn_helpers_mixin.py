@@ -12,6 +12,7 @@ import logging
 from typing import Any
 from app.core.infra import timephrase
 from app.core.memory import echo_detector
+from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 
 log = logging.getLogger("app.session")
@@ -26,7 +27,7 @@ _KV_CONFLICT_REPAIR_AT = "conflict_repair.last_recorded_at"
 _KV_INSIDE_JOKE_AT = "inside_joke_birth.last_recorded_at"
 
 
-class PostTurnHelpersMixin:
+class PostTurnHelpersMixin(DebugOverridesHostMixin):
     """Slot-arming, promise/tease/emotion, curiosity + knowledge-gap
     resolution, revival detection, and the per-turn affect/balance updates
     that ``_post_turn_inner_life`` orchestrates."""
@@ -1722,7 +1723,9 @@ class PostTurnHelpersMixin:
             return
         ring.append(is_question_turn(assistant_text))
 
-        remaining = int(getattr(self, "_question_balance_suppress_remaining", 0))
+        remaining = int(
+            self._debug_overrides.peek("question_balance_suppress_remaining", 0)
+        )
         if remaining > 0:
             remaining -= 1
 
@@ -1739,7 +1742,16 @@ class PostTurnHelpersMixin:
         ):
             remaining = suppress_turns
 
-        self._question_balance_suppress_remaining = remaining
+        # Drop the entry at zero rather than re-arming with 0. The guard reads
+        # `peek(..., 0) > 0`, so absent and zero mean the same thing to it --
+        # but leaving a 0 behind would put a permanent entry in
+        # `list_debug_overrides`, whose whole job is answering what is pending.
+        if remaining > 0:
+            self._debug_overrides.arm(
+                "question_balance_suppress_remaining", remaining,
+            )
+        else:
+            self._debug_overrides.disarm("question_balance_suppress_remaining")
 
     def _update_tease_rhythm(
         self,

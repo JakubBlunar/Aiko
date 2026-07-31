@@ -97,11 +97,7 @@ def register(mcp, session: "SessionController") -> None:
                             ) or 0
                         ),
                         "force_next": bool(
-                            getattr(
-                                session,
-                                "_self_noticing_force_agreement",
-                                False,
-                            )
+                            session.debug_overrides.peek("self_noticing_force_agreement", False)
                         ),
                         "last_verdict": _verdict_payload(
                             getattr(
@@ -120,11 +116,7 @@ def register(mcp, session: "SessionController") -> None:
                             ) or 0
                         ),
                         "force_next": bool(
-                            getattr(
-                                session,
-                                "_self_noticing_force_flat_affect",
-                                False,
-                            )
+                            session.debug_overrides.peek("self_noticing_force_flat_affect", False)
                         ),
                         "affect_ring_size": (
                             len(affect_ring) if affect_ring is not None else 0
@@ -146,10 +138,8 @@ def register(mcp, session: "SessionController") -> None:
                             )
                         ),
                         "force_next": bool(
-                            getattr(
-                                session,
-                                "_self_noticing_force_repeated_thought",
-                                False,
+                            session.debug_overrides.peek(
+                                "self_noticing_force_repeated_thought", False,
                             )
                         ),
                         "last_cosine": round(
@@ -240,7 +230,7 @@ def register(mcp, session: "SessionController") -> None:
         for the cue in ``system_prompt``).
         """
         try:
-            session._self_noticing_force_agreement = True
+            session.debug_overrides.arm("self_noticing_force_agreement")
             return json.dumps(
                 {
                     "armed": True,
@@ -266,7 +256,7 @@ def register(mcp, session: "SessionController") -> None:
         line; consume by sending one user message.
         """
         try:
-            session._self_noticing_force_flat_affect = True
+            session.debug_overrides.arm("self_noticing_force_flat_affect")
             return json.dumps(
                 {
                     "armed": True,
@@ -291,7 +281,7 @@ def register(mcp, session: "SessionController") -> None:
         cue fires or not -- strictly one-turn.
         """
         try:
-            session._self_noticing_force_repeated_thought = True
+            session.debug_overrides.arm("self_noticing_force_repeated_thought")
             return json.dumps(
                 {
                     "armed": True,
@@ -631,13 +621,9 @@ def register(mcp, session: "SessionController") -> None:
                         "is_stale": stale,
                     },
                     "force_flags": {
-                        "force_next": getattr(
-                            session, "_day_color_force_next", None,
-                        ),
+                        "force_next": session.debug_overrides.peek("day_color_force_next", None,),
                         "force_reroll": bool(
-                            getattr(
-                                session, "_day_color_force_reroll", False,
-                            )
+                            session.debug_overrides.peek("day_color_force_reroll", False,)
                         ),
                     },
                     "palette": [c.name for c in day_color.PALETTE],
@@ -674,7 +660,7 @@ def register(mcp, session: "SessionController") -> None:
                     },
                     indent=2,
                 )
-            session._day_color_force_next = chosen.name
+            session.debug_overrides.arm("day_color_force_next", chosen.name)
             return json.dumps(
                 {
                     "armed": True,
@@ -707,7 +693,7 @@ def register(mcp, session: "SessionController") -> None:
         normal stable-read path until midnight.
         """
         try:
-            session._day_color_force_reroll = True
+            session.debug_overrides.arm("day_color_force_reroll")
             return json.dumps(
                 {
                     "armed": True,
@@ -812,9 +798,7 @@ def register(mcp, session: "SessionController") -> None:
                             getattr(mem, "vitality_expressiveness_ceil", 1.2)
                         ),
                     ),
-                    "force_energy": getattr(
-                        session, "_vitality_force_energy", None,
-                    ),
+                    "force_energy": session.debug_overrides.peek("vitality_force_energy", None,),
                     "settings": {
                         "low_threshold": low,
                         "high_threshold": high,
@@ -843,7 +827,7 @@ def register(mcp, session: "SessionController") -> None:
         """
         try:
             e = max(0.0, min(1.0, float(energy)))
-            session._vitality_force_energy = e
+            session.debug_overrides.arm("vitality_force_energy", e)
             return json.dumps(
                 {
                     "armed": True,
@@ -1011,9 +995,7 @@ def register(mcp, session: "SessionController") -> None:
                         getattr(mem, "implicit_need_min_confidence", 2.0)
                     ),
                     "last": getattr(session, "_last_implicit_need", None),
-                    "force_mode": getattr(
-                        session, "_implicit_need_force_mode", None
-                    ),
+                    "force_mode": session.debug_overrides.peek("implicit_need_force_mode", None),
                     "modes": [
                         "witness",
                         "problem_solve",
@@ -1048,7 +1030,7 @@ def register(mcp, session: "SessionController") -> None:
             }
             m = (mode or "").strip().lower()
             if m not in valid:
-                session._implicit_need_force_mode = None
+                session.debug_overrides.arm("implicit_need_force_mode", None)
                 return json.dumps(
                     {
                         "cleared": True,
@@ -1057,7 +1039,7 @@ def register(mcp, session: "SessionController") -> None:
                     },
                     indent=2,
                 )
-            session._implicit_need_force_mode = m
+            session.debug_overrides.arm("implicit_need_force_mode", m)
             return json.dumps(
                 {
                     "armed": True,
@@ -1164,7 +1146,7 @@ def register(mcp, session: "SessionController") -> None:
                     "last_signature": last_sig,
                     "would_surface": would,
                     "force_surface_armed": bool(
-                        getattr(session, "_mood_drift_force_surface", False)
+                        session.debug_overrides.peek("mood_drift_force_surface", False)
                     ),
                 },
                 indent=2,
@@ -1222,7 +1204,7 @@ def register(mcp, session: "SessionController") -> None:
         still empty — seed it with ``force_mood_drift_sample`` first.
         """
         try:
-            session._mood_drift_force_surface = True
+            session.debug_overrides.arm("mood_drift_force_surface")
             return json.dumps(
                 {
                     "armed": True,
@@ -1406,7 +1388,7 @@ def register(mcp, session: "SessionController") -> None:
                     ),
                 ) or None,
                 "force_imperative_armed": bool(
-                    getattr(session, "_wants_force_imperative", False)
+                    session.debug_overrides.peek("wants_force_imperative", False)
                 ),
                 "settings": {
                     "growth_per_day": float(
@@ -1496,7 +1478,7 @@ def register(mcp, session: "SessionController") -> None:
         No-op when the ledger is empty.
         """
         try:
-            session._wants_force_imperative = True
+            session.debug_overrides.arm("wants_force_imperative")
             return json.dumps({"armed": True})
         except Exception as exc:
             return f"force_want_imperative raised: {exc}"
@@ -1537,7 +1519,7 @@ def register(mcp, session: "SessionController") -> None:
                     if last is not None else None
                 ),
                 "force_armed": bool(
-                    getattr(session, "_initiative_force_next", False)
+                    session.debug_overrides.peek("initiative_force_next", False)
                 ),
                 "settings": {
                     "base_period": int(
@@ -1566,7 +1548,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._initiative_force_next = True
+            session.debug_overrides.arm("initiative_force_next")
             return json.dumps({"armed": True})
         except Exception as exc:
             return f"force_initiative_turn raised: {exc}"
@@ -1676,7 +1658,7 @@ def register(mcp, session: "SessionController") -> None:
                     getattr(session, "_topic_appetite_fired", False)
                 ),
                 "force_armed": bool(
-                    getattr(session, "_topic_appetite_force_next", False)
+                    session.debug_overrides.peek("topic_appetite_force_next", False)
                 ),
                 "lull_mean": getattr(detector, "last_mean", None),
                 "settings": {
@@ -1712,7 +1694,7 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            session._topic_appetite_force_next = True
+            session.debug_overrides.arm("topic_appetite_force_next")
             return json.dumps({"armed": True})
         except Exception as exc:
             return f"force_topic_appetite raised: {exc}"

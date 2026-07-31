@@ -80,7 +80,7 @@ class _Host(InnerLifeProvidersMixin):
         self.session_key = "stub-session"
         self._novelty_detector = novelty
         self._misattunement_cooldown = cooldown
-        self._misattunement_force_next = force_next
+        self.debug_overrides.arm("misattunement_force_next", force_next)
         self._last_misattunement_trigger: str | None = None
         self._last_misattunement_fire_turn: int | None = None
         self.user_display_name = "Jacob"
@@ -185,7 +185,7 @@ class CooldownPlumbingTests(unittest.TestCase):
         self.assertNotEqual(block, "")
         self.assertEqual(host._last_misattunement_trigger, "shrink")
         # Force flag is consumed after the call (one-shot).
-        self.assertFalse(host._misattunement_force_next)
+        self.assertFalse(host.debug_overrides.peek("misattunement_force_next"))
 
     def test_force_next_consumed_even_when_trigger_misses(self) -> None:
         # The force flag is strictly one-turn: even if the next
@@ -201,7 +201,7 @@ class CooldownPlumbingTests(unittest.TestCase):
             "a perfectly substantive multi-word reply"
         )
         self.assertEqual(block, "")
-        self.assertFalse(host._misattunement_force_next)
+        self.assertFalse(host.debug_overrides.peek("misattunement_force_next"))
 
 
 class MasterSwitchTests(unittest.TestCase):

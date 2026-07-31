@@ -47,13 +47,11 @@ class DetectorsInitMixin:
         # slot (post-turn detector fills, next-turn provider clears);
         # the cooldown counter keeps one big mood swing from nagging
         # on consecutive turns. ``_mood_inertia_last`` is a debug
-        # snapshot for the MCP state dump. ``_mood_inertia_force``
-        # mirrors the K23/K29 one-shot bypass for MCP repro.
+        # snapshot for the MCP state dump.
         self._mood_inertia_reactions: deque[str] = deque(maxlen=3)
         self._pending_mood_inertia: Any = None
         self._mood_inertia_cooldown_remaining: int = 0
         self._mood_inertia_last: dict[str, Any] | None = None
-        self._mood_inertia_force: bool = False
         # K80 — inside-joke birth. ``_recent_assistant_turns`` is a short
         # newest-first ring of ``(message_id, text)`` so the post-turn
         # detector can see which of Aiko's own lines the user just handed
@@ -79,13 +77,11 @@ class DetectorsInitMixin:
         # diagnostic-only (read by the MCP debug tool); no behaviour
         # depends on them.
         self._misattunement_cooldown: int = 0
-        self._misattunement_force_next: bool = False
         self._last_misattunement_trigger: str | None = None
         self._last_misattunement_fire_turn: int | None = None
         # K69 implicit-need reading — stateless classifier; these just
         # hold the last verdict (MCP debug) + a one-shot force flag.
         self._last_implicit_need: dict | None = None
-        self._implicit_need_force_mode: str | None = None
         # P22 — shared recent-history memo. K23 misattunement, K30
         # self-noticing and K54 topic-appetite each need the last N
         # rows within one assembly; they route through
@@ -106,7 +102,6 @@ class DetectorsInitMixin:
         # behaviour does not depend on it.
         self._opinion_injection_cooldown: int = 0
         self._opinion_injection_session_count: int = 0
-        self._opinion_injection_force_next: bool = False
         self._last_opinion_injection: Any = None
         self._opinion_injection_rate_limiter = None
         # P21 — deferred borderline verdict. The hot-path provider stashes a
@@ -124,33 +119,25 @@ class DetectorsInitMixin:
         # the turns during which a just-stated taste stays "warm" (armed
         # post-turn when a K29 cue fired, decremented once per turn);
         # ``_stance_recent_text`` is the stance snippet for the cue;
-        # ``_last_stance_persistence`` / ``_stance_persistence_force_next``
-        # back the MCP debug tools.
+        # ``_last_stance_persistence`` backs the MCP debug tools.
         self._stance_recent_window: int = 0
         self._stance_recent_text: str = ""
-        self._stance_persistence_force_next: bool = False
         self._last_stance_persistence: dict[str, Any] | None = None
         # K63 — long-arc callbacks ("weeks ago you said…").
         # ``_long_arc_callback_session_count`` caps how many callbacks may
         # fire this session (reset on switch_session); the wall-clock
         # cooldown + don't-repeat ring live in kv_meta so the rarity
-        # survives a restart. ``_long_arc_callback_force_next`` is the MCP
-        # one-shot bypass; ``_last_long_arc_callback`` backs the debug dump.
+        # survives a restart. ``_last_long_arc_callback`` backs the debug dump.
         self._long_arc_callback_session_count: int = 0
-        self._long_arc_callback_force_next: bool = False
         self._last_long_arc_callback: dict[str, Any] | None = None
         # K28 — "What I've been turning over" between-session cue.
         # ``_pending_turning_over_seconds`` is armed by the post-turn
         # engagement tracker when a typed turn lands after a gap of
         # at least ``memory.turning_over_min_gap_minutes``. The next
         # prompt assembly's provider reads + clears the slot and
-        # runs the picker. ``_turning_over_force_next`` is the MCP
-        # debug bypass (set by ``force_turning_over``); cleared
-        # whether the picker fires or not so the bypass is strictly
-        # one-turn. ``_last_turning_over`` carries the most recent
+        # runs the picker. ``_last_turning_over`` carries the most recent
         # :class:`TurningOverResult` for the MCP debug tool.
         self._pending_turning_over_seconds: float | None = None
-        self._turning_over_force_next: bool = False
         self._last_turning_over: Any = None
         # K36 — "things I did while you were away". ``_pending_away_
         # activities_seconds`` is armed by the post-turn tracker on a
@@ -160,7 +147,6 @@ class DetectorsInitMixin:
         # the shared ``_gap_cue_surfaced`` flag. ``_away_activities_
         # force_next`` is the MCP debug bypass.
         self._pending_away_activities_seconds: float | None = None
-        self._away_activities_force_next: bool = False
         self._gap_cue_surfaced: bool = False
         self._away_activity_worker: Any = None
         # H21 — "I dozed off while you were away". ``_pending_sleep_
@@ -173,11 +159,9 @@ class DetectorsInitMixin:
         # force_next`` is the MCP debug bypass; ``_last_sleep_return``
         # holds diagnostics for ``get_sleep_return_state``.
         self._pending_sleep_return_seconds: float | None = None
-        self._sleep_return_force_next: bool = False
         self._last_sleep_return: Any = None
         # H17 — idle-seed surfacing MCP debug bypass (consumed by
         # ``_render_idle_seed_block`` on the next assembly).
-        self._idle_seed_force_next: bool = False
         # H19 — the hobby worker (ongoing personal project). ``None`` until
         # registered in ``idle_workers_init_mixin``. MCP ``get_hobby_state``
         # / ``force_hobby_advance`` / ``force_hobby_rotate`` read it.
@@ -199,31 +183,22 @@ class DetectorsInitMixin:
         # the shared ``_gap_cue_surfaced`` flag. ``_forward_curiosity_
         # force_next`` is the MCP debug bypass.
         self._pending_forward_curiosity_seconds: float | None = None
-        self._forward_curiosity_force_next: bool = False
         self._forward_curiosity_worker: Any = None
         # K70 growth-witness — watermark-gated cue-producer. The worker
-        # (set in idle_workers_init) drafts a rare "you've grown" finding;
-        # ``_growth_witness_force_next`` is the MCP debug bypass.
-        self._growth_witness_force_next: bool = False
+        # (set in idle_workers_init) drafts a rare "you've grown" finding.
         self._growth_witness_worker: Any = None
         # L14 aspiration-momentum — watermark-gated cue-producer. The worker
         # (set in speaking_workers_init) drafts an occasional "check in on
-        # where they're heading" cue; ``_aspiration_momentum_force_next`` is
-        # the MCP debug bypass.
-        self._aspiration_momentum_force_next: bool = False
+        # where they're heading" cue.
         self._aspiration_momentum_worker: Any = None
         # K72 wellbeing-concern producer + MCP surfacing bypass.
-        self._wellbeing_concern_force_next: bool = False
         self._wellbeing_concern_worker: Any = None
         # K73 shared-ritual producer + MCP surfacing bypass.
-        self._shared_ritual_force_next: bool = False
         self._shared_ritual_worker: Any = None
         # K75 user-expertise depth steer: provider cooldown + MCP bypass.
-        self._user_expertise_force_next: bool = False
         self._user_expertise_cooldown: int = 0
         self._user_expertise_last: Any = None
         # K71 self-callback — watermark-gated cue-producer (her continuity).
-        self._self_callback_force_next: bool = False
         self._self_callback_worker: Any = None
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
@@ -245,14 +220,11 @@ class DetectorsInitMixin:
             tuple[float, float, str | None]
         ] = deque(maxlen=max(12, self_noticing_window * 2))
         self._self_noticing_aiko_vecs: deque[Any] = deque(maxlen=3)
-        self._self_noticing_force_agreement: bool = False
-        self._self_noticing_force_flat_affect: bool = False
-        self._self_noticing_force_repeated_thought: bool = False
 
         # K47 — question/share balance. Rolling ring of "did this reply
         # contain a question" flags + a suppress countdown. The post-turn
-        # hook appends + arms; the provider-time guards read
-        # ``_question_balance_suppress_remaining`` to mute the
+        # hook appends + arms; the provider-time guards read the
+        # ``question_balance_suppress_remaining`` override to mute the
         # question-pushing cues and surface a share-first cue instead.
         question_balance_window = max(
             2, int(getattr(settings.agent, "question_balance_window", 10))
@@ -260,7 +232,6 @@ class DetectorsInitMixin:
         self._question_turn_flags: deque[bool] = deque(
             maxlen=question_balance_window
         )
-        self._question_balance_suppress_remaining: int = 0
 
         # K48 — tease rhythm (banter budget). Rolling ring of "was this
         # reply a tease" flags + the id of the most recent tease so the
@@ -274,7 +245,6 @@ class DetectorsInitMixin:
         self._last_tease_message_id: int | None = None
         self._pending_tease_cue: str | None = None
         self._tease_cue_cooldown: int = 0
-        self._tease_rhythm_force: str | None = None
         self._self_noticing_agreement_cooldown: int = 0
         self._self_noticing_flat_affect_cooldown: int = 0
         self._repeated_thought_fired_last_turn: bool = False
@@ -285,46 +255,10 @@ class DetectorsInitMixin:
         # no behaviour depends on them.
         self._last_self_noticing_agreement: Any = None
         self._last_self_noticing_flat_affect: Any = None
-        # K27 — daily personality colour MCP debug flags. The canonical
-        # roll is performed by :class:`DayColorWorker` (registered on
-        # the idle scheduler above) and by the lazy fallback in
-        # :meth:`_render_day_color_block` for the first-turn-after-
-        # midnight case. These flags only exist to let MCP debug tools
-        # override the next provider call without waiting for natural
-        # cadence:
-        #
-        # * ``_day_color_force_next``: name of a palette colour to
-        #   render on the next call regardless of kv_meta state. Does
-        #   NOT touch ``kv_meta`` (so the persisted roll survives).
-        #   Consumed one-shot.
-        # * ``_day_color_force_reroll``: when True, the next provider
-        #   call rolls a fresh colour and writes it to ``kv_meta``
-        #   (useful for repro without shifting the OS clock).
-        #   Consumed one-shot.
-        self._day_color_force_next: str | None = None
-        self._day_color_force_reroll: bool = False
-        # K60 — one-shot MCP bypass (``force_dere_slip``) of the
-        # dere-slip intensity + cooldown gates. Consumed by the next
-        # emotion-episode provider call that hits a masked episode.
-        self._mask_force_slip_next: bool = False
-        # K15 -- vulnerability budget MCP debug flags. The persisted
-        # bucket lives in ``kv_meta`` (``aiko.vulnerability_budget``)
-        # and is read+decayed lazily on every provider call; these
-        # flags only exist so MCP debug tools can override the next
-        # render or wipe the persisted state without crafting real
-        # self-tags:
-        #
-        # * ``_vulnerability_budget_force_spent``: when set, the
-        #   next provider call renders the cue as if ``state.spent``
-        #   equalled this value. Does NOT touch ``kv_meta`` (so the
-        #   real persisted bucket survives the test). Consumed
-        #   one-shot.
-        # * ``_vulnerability_budget_force_reset``: when True, the
-        #   next provider call writes a fresh
-        #   ``BudgetState(spent=0)`` to ``kv_meta``. Consumed
-        #   one-shot.
-        self._vulnerability_budget_force_spent: float | None = None
-        self._vulnerability_budget_force_reset: bool = False
+        # The one-shot MCP debug overrides that used to be declared here
+        # (K27 day colour, K60 dere-slip, K15 vulnerability budget, and the
+        # rest) now live in ``self._debug_overrides``; see
+        # ``debug_overrides.KNOWN_OVERRIDES`` for what each one does.
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))
