@@ -502,3 +502,333 @@ Three classes of fix to make the context-squash path correct, robust, and observ
 **Observability.** MCP `get_compaction_state()` dumps the current summary (present / size / messages-summarized), the compaction counter + last-run age, the unsummarized backlog, and the live `token_calibration` snapshot; `force_compaction()` runs an immediate synchronous pass (bar lowered to 2 unsummarized msgs). Tests: [`tests/test_token_utils.py`](../../../tests/test_token_utils.py) (EMA convergence, band clamp, sample gating, reset), `HardeningClipTests` in [`tests/test_prompt_assembler.py`](../../../tests/test_prompt_assembler.py) (user-message + RAG clip, normal message untouched), `ToolPassRetrimTests` + `test_overflow_refits_even_without_summary_worker` in [`tests/test_turn_runner_telemetry.py`](../../../tests/test_turn_runner_telemetry.py), and the existing `test_compact_now_*` in [`tests/test_summary_worker.py`](../../../tests/test_summary_worker.py) (counter still 1 per successful pass).
 
 ---
+
+## P9. Streaming tokens no longer clone the message array
+
+Shipped as part of the streaming-bubble rework; the backlog entry was
+never retired, so a later audit found it still describing the old shape.
+
+The `token` WS frame handler used to call an `appendAssistantToken` that
+rebuilt the whole `messages` array per chunk — every subscriber of
+`messages` re-rendered on every token, and the JS cost grew with history
+length even after Virtuoso fixed the *render* cost. The store now keeps
+mid-stream text in a separate `streamingDraft` field
+([`web/src/stores/slices/chat.ts`](../../../web/src/stores/slices/chat.ts)):
+`appendAssistantBubble` pushes **one** placeholder row with empty
+`content` and `streaming: true` and seeds the draft;
+`appendAssistantToken` writes *only* `{id, content, reaction}` on the
+draft; `finishAssistantBubble` commits the accumulated text into the
+placeholder **once** at stream end (and absorbs the two edge cases —
+`turn_done` with zero tokens, and an error mid-stream where the partial
+text should stick). `messages` is therefore byte-stable for the entire
+turn, so finalised bubbles never re-render mid-stream.
+
+Read side matches:
+[`MessageBubble`](../../../web/src/features/chat/MessageBubble.tsx) is
+`memo`'d and selects the draft *only* when `streamingDraft.id === id`, so
+every other bubble's selector returns a stable `null`. Reaction parsing
+moved onto the draft merge, which keeps the `[[reaction:…]]` tag out of
+the committed transcript without a second pass. Pinned by
+[`web/src/stores/slices/chat.streaming.test.ts`](../../../web/src/stores/slices/chat.streaming.test.ts),
+which asserts the `messages` array identity is unchanged across token
+appends — the actual contract, not just the visible text.
+
+Two costs the rework deliberately left in place, since they're bounded by
+reply length rather than history length: `stripMetaMarkers` still runs
+over the accumulated draft per chunk (idempotent, and needed so a marker
+split across two chunks still resolves), and `ChatView` still re-renders
+per token to re-pin the scroll. The latter turned out to be the larger of
+the two and is tracked separately as **P37**.
+
+---
+
+## P25. Client audio is flushed when speech is cut off
+
+Audio is scheduled on the **client** — the browser holds a chain of
+`AudioBufferSourceNode`s — so a server-side `TtsQueue.stop()` only
+silenced what hadn't been sent yet. Whatever had already crossed the wire
+played to the end of its buffer, which put interrupt latency at
+"whatever is already scheduled", typically 0.5-3 s. `flush()` existed on
+[`AudioOutputManager`](../../../web/src/audio/AudioOutputManager.ts) and
+was wired to `dispose()` and `onForeground()`, but not to any stop — the
+one case that matters, and the reason server-side barge-in still talked
+over the user.
+
+The fix had to distinguish two things the protocol previously conflated.
+Both a natural finish and an abort emit `tts_state: end`, and the client
+must react to them in *opposite* ways: drop the buffer on an abort, let it
+play out on a natural end (flushing there would clip the tail off every
+single reply). So
+[`TtsQueue.stop`](../../../app/core/voice/tts_queue.py) now tags its end
+event with `aborted: True`, and the `tts_state` handler in
+[`useAssistantSocket`](../../../web/src/hooks/useAssistantSocket.ts)
+flushes only on that flag. Same event type, so no client is forced to
+handle a new frame, and `aborted` is simply absent on the natural path.
+
+Two ownership cases flush as well, for the same "audio already in the
+client" reason: taking the mic (`voice_owner_changed` naming this client
+while TTS is speaking — the user wants the floor) and *losing* playback
+ownership (`audio_owner_changed`, where the incoming owner starts
+scheduling the same stream and two windows a few hundred ms apart is the
+audible failure).
+
+Writing the tests turned up a related bug worth more than the flush: a
+late `on_done` from the engine — it finished synthesising the chunk we'd
+abandoned — ran `_on_chunk_done`, which emitted a **second**, un-aborted
+`end`. Under the new flag that reads as "she finished normally" a beat
+after the barge-in. `_on_chunk_done` now returns early when `stop()`
+already cleared `_playing`. Pinned by
+`tests/test_tts_abort_signal.py`, including the natural-end case (must
+*not* be marked aborted) and the stop-while-idle case (no end event at
+all — nothing was playing, so there is no buffer to flush).
+
+Deliberately left out: the `audio.barge_in_enabled` default is still
+`false`. Flipping it is an immersion decision, not a performance one.
+
+---
+
+## P27. STT loads on use, not at boot (the biggest resident-RAM lever)
+
+The largest ML weight in the process was loaded by **every** install
+regardless of whether voice was ever used.
+`RealtimeSttService.__init__` built the `AudioToTextRecorder`
+synchronously and eagerly, and nothing consulted an enable flag because
+`SttSettings` had no on-off switch — `model` / `language` / `device` /
+`compute_type` only. With the shipped `large-v1` default that is on the
+order of 0.9-1.5 GB and a multi-second blocking load, paid in full by a
+typed-only user with no mic.
+
+Where the weights actually live matters for reading any measurement of
+this: on Windows, RealtimeSTT spawns a `torch.multiprocessing.Process`
+for transcription and constructs `faster_whisper.WhisperModel` **in that
+child**. So most of the footprint is not in the parent PID — which also
+identifies the "unaccounted ~946 MB second `python.exe`" that P29 was
+chasing. The parent still paid the `torch` / `faster_whisper` /
+`openwakeword` imports and *blocked* in `__init__` until the child
+signalled ready, so eager construction was a real startup cost even
+where it wasn't parent RSS.
+
+**What shipped.** `stt.enabled` (default `true`), and a lazy load: all
+recorder access in
+[`realtime_stt_service.py`](../../../app/stt/realtime_stt_service.py)
+funnels through `_ensure_recorder()`, called from `feed_audio` /
+`start_context` / `transcribe` / `record_until_silence`. A failed load
+latches into `_last_error` so a broken install doesn't retry a
+multi-second import on every audio chunk, and `shutdown()` sets a
+`_shut_down` latch — without it, an audio frame arriving during teardown
+would helpfully reload the model being torn down.
+
+The subtle part was **`is_available`**, which had to change meaning. It
+used to be "a recorder object exists", equivalent to "can transcribe"
+only because the load happened in `__init__`. Five gate sites in
+[`voice_capture_mixin.py`](../../../app/core/session/voice_capture_mixin.py)
+consult it *before* any audio exists, so keeping the old meaning would
+have refused every voice turn forever. It now means "could load"
+(engine importable, enabled, no latched failure, not shut down), with
+`is_loaded` as the separate "resident right now" question that
+`get_memory_breakdown` reports.
+
+`text()` deliberately does **not** trigger a load: a transcript read
+with no recorder means nothing was fed, and loading Whisper to return
+`""` would stall the caller for seconds.
+
+The entry's open question — "does lazy-load add an unacceptable
+cold-start delay on the first voice turn?" — is answered by
+`prewarm_stt()`, hung off the WS `voice_start` handler rather than
+`prewarm_runtime`. Boot is exactly the moment we are trying to stop
+paying for Whisper, so warming there would have undone the whole change;
+warming when the user reaches for the mic overlaps the load with their
+click instead. It runs on a daemon thread because the caller is the event
+loop.
+
+One consequence worth knowing: `set_stt_model` used to validate a model
+name implicitly, because construction loaded it. Now it only forces the
+load when the outgoing service already had weights resident (voice is in
+use, so the swap must be verified now rather than failing on the user's
+next utterance) — editing the setting with voice cold stays free.
+
+Sketch item (a), documenting `stt.model: "small"`, and (c)'s
+`compute_type` exposure were already done before this pass. Tests:
+`tests/test_stt_lazy_load.py` (construction loads nothing but still
+reports available; first feed loads exactly once; disabled never loads;
+a failing load latches; a feed after shutdown doesn't reload).
+
+**Still open:** idle release. There is still no way to free the STT
+weights while the process runs — only "never load them".
+
+---
+
+## P28. TTS respects `tts.enabled`, and the runtime toggle frees the weights
+
+`_build_tts_service` constructed `PocketTtsService(settings.tts)`
+unconditionally — it never consulted `settings.tts.enabled`. The import
+alone pulls in the PyTorch CPU runtime (~0.6-1 GB resident) and the
+constructor immediately started a daemon thread loading the ~100M-param
+voice model, so a TTS-off install paid both for an engine it would never
+call.
+
+This one was easy to mistake for already-fixed, which is why it sat: the
+*playback* path was gated correctly. `TtsQueue` was constructed with
+`enabled=bool(settings.tts.enabled)`, and `get_status` / `warmup_sync`
+both early-returned when disabled. All of those checks run after the load
+thread has already started.
+
+**What shipped.** `_build_tts_service` in
+[`lifecycle_mixin.py`](../../../app/core/session/lifecycle_mixin.py)
+returns a [`NullTtsService`](../../../app/tts/null_tts_service.py) when
+disabled — a stdlib-only no-op whose value is what it *doesn't* do:
+importing `app.tts.pocket_tts_service` never happens, so PyTorch is never
+pulled in. Every method returns the "nothing to say" value for its slot,
+so call sites that don't check `tts.enabled` first still behave, and
+`get_status` reports `disabled` rather than `error` — in the UI those mean
+different things, one a configuration and one a fault. `prewarm_tts` also
+returns early when disabled, which additionally avoids a `warmup_sync`
+that would block up to 60 s waiting for a load nobody started.
+
+The runtime toggle is now real rather than cosmetic.
+`SessionController.set_tts_enabled` (which the REST route calls instead
+of poking `_settings` and the queue directly) releases the voice weights
+on the way off via a new `PocketTtsService.release_model()` — `stop()`
+only ever cleared the 8-entry audio cache, so "turn TTS off to free
+memory" previously did nothing. On the way on it either upgrades a null
+engine to the real one (booted with TTS off) or re-loads a released model
+in place.
+
+The honest limit, documented in both the code and
+[`docs/configuration.md`](../../../docs/configuration.md): a live process
+cannot un-import PyTorch. Toggling off recovers the voice weights;
+avoiding the runtime entirely requires booting with `tts.enabled=false`.
+`get_memory_breakdown` reports the difference as
+`tts.torch_runtime_avoided` so the two states aren't confused — both show
+`weights_loaded: false`.
+
+Tests: `tests/test_tts_enabled_gate.py`, including an assertion that
+`app.tts.pocket_tts_service` is absent from `sys.modules` after building
+the disabled engine (the import is the expensive half, so it has to stay
+inside the enabled branch), and that a missing `enabled` attribute
+defaults to *on* rather than silently killing TTS for an unexpected
+config shape.
+
+**Still open:** (c), Pocket-TTS int8 quantisation (~230 MB vs ~450 MB per
+upstream), which depends on upstream support.
+
+---
+
+## P29. `get_memory_breakdown` — process-tree RSS + per-subsystem attribution
+
+The RAM investigation that produced P27 and P28 was pure static code
+reading; there was no runtime surface that said "STT is holding X, TTS Y,
+the mirror Z". `get_status` reported model names and metrics, not
+resident memory. Separately, a Task-Manager screenshot showed **three**
+`python.exe` under one tree (~6.2 GB, ~946 MB, ~0.6 MB) and nothing in
+the codebase explained the second one.
+
+[`memory_breakdown_tools.py`](../../../app/mcp/server_tools/memory_breakdown_tools.py)
+answers both in one MCP call. It reports process RSS plus
+`children(recursive=True)` with each child's cmdline — which is what
+confirms the RealtimeSTT-transcription-child theory for the ~946 MB
+rather than leaving it inferred — then best-effort per-subsystem
+attribution: STT loaded/model/device, TTS engine class and whether the
+PyTorch runtime was avoided at all, memory-mirror rows × embedding bytes,
+LanceDB on-disk size, embedder LRU. Every section is wrapped
+independently, so one unavailable subsystem degrades to
+`{"error": ...}` instead of failing the call.
+
+`psutil` is a new dependency (`>=5.9,<8`), imported defensively: a slim
+install without it loses the process section of this one tool and nothing
+else. `/proc` isn't available on the primary Windows target, so a stdlib
+path wasn't an option.
+
+The tool carries its own `reading_guide`, because the numbers are easy to
+misread in two specific ways: the LLM context window is **not** in them
+(it lives in Ollama, a different process entirely), and
+`tts.weights_loaded: true` alongside `tts.enabled_setting: false` is
+precisely the P28 bug — so the tool names it.
+
+Tests: `tests/test_memory_breakdown_tools.py`. The remaining ~0.6 MB
+third process is still unexplained (plausibly a transient plugin
+`subprocess.run`, or unrelated tooling caught in the same tree) — the
+tool now makes it a one-call question instead of an archaeology session.
+
+---
+
+## P31a. `get_prompt_block_costs` — per-block prompt cost, weighted by tier
+
+P2 shipped per-block *timing* (`provider_ms`), which answers "what made
+this turn slow". P31 needs a different question — "what makes **every**
+turn expensive" — and there was no way to ask it. A block can be free to
+build and still cost 400 tokens on every single turn, and that is the
+kind that matters, because past the prompt-cache prefix a volatile block
+pays full price forever.
+
+Rather than thread a size sink through ~90 append sites,
+`block_char_table` in
+[`prompt_assembler.py`](../../../app/core/session/prompt_assembler.py)
+reads the assembler's block locals by the names the `_PROMPT_BLOCK_TIERS`
+ladder already registers, trying `<name>`, `<name>_block`, then
+`<name>_text` — the three shapes the assembler actually uses. That
+constant used to describe itself as "purely documentation/audit"; this
+makes the audit load-bearing, and
+`tests/test_prompt_assembler.py::BlockCharTableTests` now fails if a
+registered name stops resolving, which a rename or typo previously broke
+silently.
+
+Blocks that rendered empty report as `0` rather than being omitted, so
+"renders every turn, always empty" is *visible* — exactly the
+content-gating candidate P31 is hunting.
+
+The numbers ride `PromptTelemetry.block_chars` and travel with the
+out-of-band `_last_system_prompt` snapshot rather than the per-turn WS
+metrics broadcast: it's ~90 debug keys, and the metrics dict goes over the
+wire every turn. Characters rather than tokens because the char count is
+exact while the token estimate is a moving EMA; the MCP tool
+([`prompt_cost_tools.py`](../../../app/mcp/server_tools/prompt_cost_tools.py))
+does the conversion and ranks by tokens × the tier's cache-miss
+probability. That weighting is the point: a large T0 block is paid once
+per cache lifetime, a small T6 block on every turn, and a raw size
+ranking would point at the wrong ones.
+
+Tests: `tests/test_prompt_cost_tools.py`,
+`tests/test_prompt_assembler.py::BlockCharTableTests`.
+
+**Still open:** P31 itself — the persona is ~78k chars (~19.5k estimated
+tokens) and dominates everything else, but it is user-editable content
+and deserves its own pass.
+
+---
+
+## P41. Two missing `messages` indexes
+
+Found while auditing the P-series, not from a symptom.
+[`chat_database.py`](../../../app/core/infra/chat_database.py) had
+indexes on `messages(session_id, created_at)` and
+`messages(role, created_at)` — both left-prefixed by a column two hot
+reads don't filter on:
+
+- **`messages_in_range`** filters on `created_at` **alone** (the
+  K-time2 day/week window recall). Neither existing index can serve
+  that, so it full-scanned `messages` — the fastest-growing table in the
+  database. The entry's own docstring claimed
+  `idx_messages_role_created` covered it, which was wrong.
+- **`list_sessions`** runs a correlated subquery per session picking the
+  first user message by `id` order; under `(session_id, created_at)`
+  SQLite had to sort each group.
+
+Added `messages(created_at, id)` and `messages(session_id, role, id)`.
+The trailing `id` on the first is what lets `ORDER BY created_at DESC,
+id DESC` be satisfied by walking the index backwards instead of
+materialising and sorting the matched rows. Both are base columns, so
+they live in the `_CREATE_TABLES` script (`CREATE INDEX IF NOT EXISTS`
+re-runs on every open — existing databases pick them up with no
+version bump), following P10's precedent. Also removed the
+`idx_messages_role_created` DDL, which had been declared **twice** with
+two different comments explaining the same index.
+
+Tests: `tests/test_chat_database_indexes.py` asserts against
+`EXPLAIN QUERY PLAN` rather than timings — an index the planner declines
+to use is worth nothing, and a wall-clock assertion on a test-sized table
+proves neither. Includes a `TEMP B-TREE` check (the sort actually
+disappeared), a DROP-then-reopen test (the migration path an existing
+install takes), and a guard that P10's index isn't shadowed.
+
+---

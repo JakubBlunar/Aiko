@@ -137,9 +137,19 @@ class VoiceMixin:
             return False
         if normalized == self.stt_model:
             return True
+        previous_loaded = bool(getattr(self._realtime_stt, "is_loaded", False))
         self._settings.stt.model = normalized
         candidate = RealtimeSttService(self._settings.stt, self._settings.audio)
         if not candidate.is_available:
+            log.warning("STT unavailable, cannot switch model: %s", normalized)
+            return False
+        # P27: construction no longer validates the model name, because it
+        # no longer loads anything. Only force the load here when the
+        # outgoing service already had weights resident — i.e. voice is in
+        # use, so the swap has to be verified now rather than failing on
+        # the user's next utterance. Editing the setting with voice cold
+        # stays free.
+        if previous_loaded and not candidate.prewarm():
             log.warning("Failed to load STT model: %s", normalized)
             return False
         # Tear down the outgoing recorder's subprocesses before swapping
@@ -217,15 +227,60 @@ class VoiceMixin:
         self._tts.enqueue(prepared, reaction=reaction)
         return True
 
-    def set_tts_provider(self, provider: str) -> None:
-        normalized = (provider or "").strip().lower() or "pocket-tts"
-        if normalized == self.tts_provider:
-            return
+    def set_tts_enabled(self, enabled: bool) -> bool:
+        """Flip TTS on/off at runtime, loading or freeing the weights (P28).
+
+        The old path only called ``TtsQueue.set_enabled``, which stops
+        playback but leaves the model resident — so "turn TTS off to free
+        memory" did nothing. Now:
+
+        * **off** — release the voice weights (the PyTorch runtime itself
+          stays imported; only a restart with ``tts.enabled=false``
+          avoids that).
+        * **on** — upgrade a :class:`NullTtsService` to the real engine, or
+          re-load a released model. The load runs on the engine's own
+          daemon thread, so this returns immediately and the first
+          utterance waits on it.
+
+        Returns the resulting enabled state.
+        """
+        want = bool(enabled)
+        self._settings.tts.enabled = want
         try:
-            self._tts.stop()
+            self._tts.set_enabled(want)
         except Exception:
-            pass
-        self._settings.tts.provider = normalized
+            log.debug("tts queue enable toggle failed", exc_info=True)
+        engine = self._tts_engine
+        if not want:
+            release = getattr(engine, "release_model", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception:
+                    log.debug("tts model release failed", exc_info=True)
+            return False
+        if getattr(engine, "is_null_engine", False):
+            # Boot happened with TTS off, so there is no real engine yet.
+            # Rebuilding also rewires the PCM listener + queue + prosody.
+            self._rebuild_tts_engine()
+            return True
+        load = getattr(engine, "load_model_now", None)
+        if callable(load):
+            try:
+                load()
+            except Exception:
+                log.debug("tts model reload failed", exc_info=True)
+        return True
+
+    def _rebuild_tts_engine(self) -> None:
+        """Construct a fresh engine and rewire everything hanging off it.
+
+        Shared by :meth:`set_tts_provider` (different engine wanted) and
+        :meth:`set_tts_enabled` (no real engine exists yet). Releases the
+        outgoing engine's weights first — P40: the swap used to drop the
+        old reference without shutting it down.
+        """
+        old = getattr(self, "_tts_engine", None)
         self._tts_engine = self._build_tts_service(self._settings)
         # Rewire the PCM listener so the new engine still pushes
         # audio to whichever WS hub callback is currently installed.
@@ -248,9 +303,32 @@ class VoiceMixin:
             except Exception:
                 log.debug("prosody rebind failed", exc_info=True)
         self._apply_assistant_preferences()
+        if old is not None and old is not self._tts_engine:
+            release = getattr(old, "release_model", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception:
+                    log.debug("outgoing tts engine release failed", exc_info=True)
+
+    def set_tts_provider(self, provider: str) -> None:
+        normalized = (provider or "").strip().lower() or "pocket-tts"
+        if normalized == self.tts_provider:
+            return
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
+        self._settings.tts.provider = normalized
+        self._rebuild_tts_engine()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
 
     def prewarm_tts(self) -> None:
+        # P28: with TTS off there is nothing to warm, and on the real
+        # engine ``warmup_sync`` blocks up to 60s waiting for a load we
+        # deliberately never started.
+        if not bool(getattr(self._settings.tts, "enabled", True)):
+            return
         warmup_sync = getattr(self._tts_engine, "warmup_sync", None)
         if callable(warmup_sync):
             try:
@@ -264,6 +342,47 @@ class VoiceMixin:
                 warmup_async()
             except Exception:
                 log.debug("tts warmup_async failed", exc_info=True)
+
+    def prewarm_stt(self, *, background: bool = True) -> bool:
+        """Start loading the STT model, if it isn't loaded already (P27).
+
+        Deliberately **not** called from :meth:`prewarm_runtime`. Boot is
+        exactly the moment we're trying to stop paying for Whisper: a
+        text-only session should never load it. This is the voice-enable
+        hook instead — the WS ``voice_start`` handler calls it, so the
+        multi-second load overlaps with the user releasing the mic button
+        rather than landing inside their first sentence.
+
+        Returns True when a load was started or the model is already
+        resident; False when STT can't load at all (disabled, or the
+        engine isn't installed).
+        """
+        stt = getattr(self, "_realtime_stt", None)
+        if stt is None or not stt.is_available:
+            return False
+        if getattr(stt, "is_loaded", False):
+            return True
+        if not background:
+            return bool(stt.prewarm())
+        # A daemon thread rather than the caller's: on the WS path the
+        # caller is the event loop, and a blocking model load there stalls
+        # every other client.
+        threading.Thread(
+            target=self._prewarm_stt_blocking, daemon=True, name="stt-prewarm",
+        ).start()
+        return True
+
+    def _prewarm_stt_blocking(self) -> None:
+        try:
+            t0 = time.monotonic()
+            ok = self._realtime_stt.prewarm()
+            log.info(
+                "STT prewarm %s: load_ms=%.0f",
+                "ok" if ok else "failed",
+                (time.monotonic() - t0) * 1000.0,
+            )
+        except Exception:
+            log.debug("stt prewarm failed", exc_info=True)
 
     def prewarm_runtime(self, on_status: Callable[[str], None] | None = None) -> None:
         def report(message: str) -> None:

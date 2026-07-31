@@ -92,8 +92,10 @@ and I3, I6, I7, I8, I10 in
 - **H23.** Avatar shared-moment snapshot.
 - **H24.** Occasion- / season-aware outfits.
 - **H25.** Show-and-tell.
-- *Minor polish* — second TTS provider, barge-in default flip (do P25
-  first). SSML prosody shipped.
+- *Minor polish* — second TTS provider, barge-in default flip (**now
+  unblocked**: P25 shipped, so the client drops its scheduled audio when
+  speech is cut off — an interrupt is actually silent). SSML prosody
+  shipped.
 
 H0, H1, H3, H4, H8, H9, H11 and H13-H22 have shipped — see
 [`shipped/immersion.md`](shipped/immersion.md).
@@ -271,36 +273,68 @@ Cross-cutting gaps that aren't features in their own right but
 compound across every K-series entry:
 
 - **P7.** Typed-mode prefetch parity with voice.
-- **P9.** Frontend streaming token append cost.
 - **P11.** Reclaim background-worker `num_predict` from reasoning
   leakage (try `/no_think` on qwen3-family workers).
-- **P16.** Post-turn inner-life blocks the brain loop.
+- **P16.** Post-turn inner-life blocks the brain loop — now
+  **measurable** (`post_turn_ms`); collect numbers before attempting
+  the Large fast/slow-lane split.
 - **P24.** Voice latency batch: reaction-tag TTS gate, double STT
   pass, first-chunk threshold.
-- **P25.** Client audio flush on TTS stop (barge-in prerequisite).
-- **P26.** Lip-sync rides the server clock, not the playback clock.
-- **P27.** STT Whisper model loaded eagerly + unconditionally
-  (biggest resident-RAM lever).
-- **P28.** TTS engine + PyTorch load even when `tts.enabled=false`;
-  never released.
-- **P29.** No process-memory observability (RSS breakdown + the
-  unidentified second python process).
+- **P26.** Lip-sync rides the server clock, not the playback clock —
+  **partly shipped**: the client-side analyser path exists but is
+  wired for mobile audio-owners only; extend it to desktop.
 - **P30.** Raise / disable the `memory.max_memories` cap (topic-graph
   persistence removed the `O(n²)` wall; mirror sweeps P5/P17 are the
   remaining blockers).
 - **P31.** Audit + trim the baseline system prompt (~25-30k resting
-  floor; rank inner-life blocks by token × frequency × tier, trim
-  persona/grammar duplication, lazy-render the occasional blocks).
+  floor). The **measurement shipped as P31a** — `get_prompt_block_costs`
+  ranks blocks by tokens × tier — and its first finding is that the
+  persona (~19.5k estimated tokens) dominates everything else, so the
+  remaining work is the persona/grammar trim and lazy-rendering the
+  occasional blocks.
 - **P32.** Concept layer (L-series) worker budget + unbounded graph
-  growth — proposer cadence in the idle budget, dirty-subgraph-only
-  lifecycle walks, snapshot thinning, per-turn cost limited to L23
-  selection.
+  growth — proposer cadence in the idle budget, snapshot thinning,
+  per-turn cost limited to L23 selection. The "dirty-subgraph-only
+  lifecycle walk" line is **already satisfied** by L3's batched
+  round-robin; what's left is making it dirty-*triggered*.
+- **P33.** Inner-life providers walk the whole memory mirror every
+  turn — the kind-filtered `list_top` / `list_recent` fix **shipped**
+  (along with the correctness bug it was hiding: catchphrase blocks
+  silently never surfaced). Still open: a kind index for the unbounded
+  `iter_by_kind` walks, and F9's whole-corpus concatenation. Becomes the
+  wall the moment P30 lifts the cap.
+- **P34.** Unbounded tables — `messages`, its LanceDB mirror, and the
+  append-only `concept_events`; retention posture per table.
+- **P35.** The Lance ANN index is built once and never refreshed
+  (silent degradation to flat scan; hard prerequisite for P30).
+- **P36.** Idle-worker LLM pile-up — ~22-28 LLM-capable workers
+  draining sequentially under a 6 s soft budget, with no starvation
+  reporting and no LLM-specific ceiling.
+- **P37.** Residual React re-renders — the per-token and per-mic-frame
+  subscriptions **shipped** (bucketed streaming signature; `audioLevel`
+  moved to the leaves). Left: hoisting the Virtuoso `itemContent` /
+  `Footer` closures so their identity is stable.
+- **P38.** Live2D channels allocate a fresh store snapshot 5-8x per
+  frame; cache one per tick.
+- **P39.** Concept snapshot + quality report N+1 the evidence edges
+  (and the quality report is O(n²) pairwise on embeddings).
 
-(P1-P6, P8, P10, P12-P15 and P17-P23 have shipped — the embed budget and
-prompt-build telemetry, the slice-cache and RAG batch-lookup work, the
-Lance scan push-downs, the streaming accumulator, the RAG reader-writer
-lock, async compaction, and the heuristic tool-pass gate. See
+(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P40 and P41 have
+shipped — the embed budget and prompt-build telemetry, the slice-cache
+and RAG batch-lookup work, the Lance scan push-downs, the streaming
+accumulator and the streaming-draft rework, the RAG reader-writer lock,
+async compaction, the heuristic tool-pass gate, then the memory pass:
+lazy STT loading behind `stt.enabled`, TTS gated on `tts.enabled` with a
+real release path, the `get_memory_breakdown` and
+`get_prompt_block_costs` measurement tools, client audio flush on abort,
+and the two missing `messages` indexes. See
 [`shipped/perf.md`](shipped/perf.md).)
+
+The two measurement tools are the load-bearing part of that list: most of
+what remains open here (P16's split, P30's cap raise, P31's trim, P36's
+worker ceiling) was being argued from static code reading, and the audit
+that produced P33-P41 found several such arguments to be wrong. Measure
+first.
 
 ### T. Testing + evaluation — [`testing.md`](testing.md)
 

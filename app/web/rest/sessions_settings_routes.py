@@ -415,8 +415,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if "voice" in tts:
             session.set_tts_voice(str(tts["voice"]))
         if "enabled" in tts:
-            session._settings.tts.enabled = bool(tts["enabled"])
-            session._tts.set_enabled(bool(tts["enabled"]))
+            # P28: goes through the session so switching off actually frees
+            # the voice weights, and switching on can build a real engine
+            # when the app booted with TTS disabled.
+            session.set_tts_enabled(bool(tts["enabled"]))
         audio = payload.get("audio") or {}
         if "vad_level_threshold" in audio:
             session.set_vad_level_threshold(float(audio["vad_level_threshold"]))

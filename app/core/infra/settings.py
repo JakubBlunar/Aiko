@@ -306,6 +306,14 @@ class SttSettings:
     # noticeably faster on CPU, "float16" is the usual GPU choice.
     compute_type: str = "default"
 
+    # P27: master switch, mirroring ``tts.enabled``. False means the
+    # recorder is never loaded, so the ~0.9 GB Whisper footprint (weights
+    # plus RealtimeSTT's transcription child process) is never paid. Voice
+    # input is simply unavailable; text chat is unaffected. When true the
+    # model still loads lazily -- on the voice-enable prewarm, or on the
+    # first audio frame -- so this is about "never", not "when".
+    enabled: bool = True
+
 
 @dataclass(slots=True)
 class TtsSettings:
@@ -1900,6 +1908,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 else "auto"
             ),
             compute_type=(str(stt.get("compute_type", "default")).strip() or "default"),
+            enabled=bool(stt.get("enabled", True)),
         ),
         tts=TtsSettings(
             provider=str(tts.get("provider", "pocket-tts")),
