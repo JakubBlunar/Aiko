@@ -270,7 +270,10 @@ forgotten.
   `audio.barge_in_enabled: false` in [`config/default.json`](../../config/default.json).
   The plumbing is there in [`app/core/session/live_session.py`](../../app/core/session/live_session.py);
   flip the flag and validate against the existing
-  `barge_in_min_speech_seconds` floor. **Do P25 first** (client-side
-  audio flush, see [`perf.md`](perf.md#p25-client-keeps-playing-scheduled-audio-after-server-side-tts-stop)) —
-  server-side barge-in without the client flush still talks over
-  the user for up to a few seconds of already-scheduled audio.
+  `barge_in_min_speech_seconds` floor. The prerequisite is **done**: P25
+  shipped the client-side audio flush
+  ([`shipped/perf.md`](shipped/perf.md#p25-client-audio-is-flushed-when-speech-is-cut-off)),
+  so an interrupt is now actually silent instead of talking over the user
+  for up to a few seconds of already-scheduled audio. That was
+  deliberately kept out of the P25 change — flipping the default is an
+  immersion decision, and it belongs here.
