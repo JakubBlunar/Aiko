@@ -140,6 +140,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K75. User-expertise calibration — match explanation depth](shipped/patterns-k31-k60.md#k75-user-expertise-calibration--match-explanation-depth)
 - [K76. Affective memory salience — flashbulb encoding](shipped/patterns-k31-k60.md#k76-affective-memory-salience--flashbulb-encoding)
 - [K74. Humor-style calibration — what kind of funny lands](shipped/patterns-k31-k60.md#k74-humor-style-calibration--what-kind-of-funny-lands)
+- [K80. Inside-joke birth — bless the moment a bit becomes "ours"](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours)
 
 ## [Shipped — Immersion polish (H-series)](shipped/immersion.md)
 

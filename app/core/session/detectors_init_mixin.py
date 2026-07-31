@@ -51,6 +51,15 @@ class DetectorsInitMixin:
         self._mood_inertia_cooldown_remaining: int = 0
         self._mood_inertia_last: dict[str, Any] | None = None
         self._mood_inertia_force: bool = False
+        # K80 — inside-joke birth. ``_recent_assistant_turns`` is a short
+        # newest-first ring of ``(message_id, text)`` so the post-turn
+        # detector can see which of Aiko's own lines the user just handed
+        # back; ``_pending_inside_joke`` is the one-shot cue slot
+        # (post-turn detector fills, next-turn provider clears).
+        self._recent_assistant_turns: deque[tuple[int | None, str]] = deque(
+            maxlen=3,
+        )
+        self._pending_inside_joke: Any = None
         # K38 — one-shot self-correction slot + per-fire cooldown.
         # Post-turn detector fills the slot when Aiko's reply
         # contradicted one of her own high-confidence fact/preference

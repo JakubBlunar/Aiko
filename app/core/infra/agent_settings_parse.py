@@ -1681,6 +1681,16 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             catchphrase_miner_min_total_count=max(
                 2, int(agent_raw.get("catchphrase_miner_min_total_count", 3)),
             ),
+            inside_joke_birth_enabled=bool(
+                agent_raw.get("inside_joke_birth_enabled", True),
+            ),
+            inside_joke_birth_cooldown_hours=max(
+                0.0,
+                float(agent_raw.get("inside_joke_birth_cooldown_hours", 24.0)),
+            ),
+            inside_joke_birth_min_words=max(
+                2, int(agent_raw.get("inside_joke_birth_min_words", 3)),
+            ),
             curiosity_worker_enabled=bool(
                 agent_raw.get("curiosity_worker_enabled", True),
             ),

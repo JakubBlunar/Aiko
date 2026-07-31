@@ -19,6 +19,11 @@ log = logging.getLogger("app.session")
 # repair moments in quick succession.
 _KV_CONFLICT_REPAIR_AT = "conflict_repair.last_recorded_at"
 
+# K80: kv_meta watermark so a genuinely funny stretch of conversation
+# yields one blessed bit, not a run of them. Blessing everything is the
+# fastest way to make the beat worthless.
+_KV_INSIDE_JOKE_AT = "inside_joke_birth.last_recorded_at"
+
 
 class PostTurnHelpersMixin:
     """Slot-arming, promise/tease/emotion, curiosity + knowledge-gap
@@ -1610,5 +1615,113 @@ class PostTurnHelpersMixin:
             self._notify_shared_moment_added(row)
         except Exception:
             log.debug("conflict-repair notify failed", exc_info=True)
+
+    # ── K80: inside-joke birth ────────────────────────────────────────
+
+    def _maybe_bless_inside_joke(
+        self, *, user_text: str, user_message_id: int | None,
+    ) -> None:
+        """K80: notice the turn a throwaway line becomes a running bit.
+
+        The user handing one of Aiko's own phrases back to her, laughing,
+        is the moment a bit is born. The slow
+        :class:`~app.core.memory.catchphrase_miner.CatchphraseMiner` only
+        sees a phrase once it has *recurred* across a window; this catches
+        the live beat, when noticing it out loud still means something.
+
+        On a hit: arms the one-shot cue the next turn's provider renders,
+        and persists the phrase (catchphrase + playful shared moment) so
+        K22 and the running-jokes block carry it forward. Rate-limited by
+        a wall-clock watermark -- rarity is the whole point.
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "inside_joke_birth_enabled", True)):
+            return
+        origins = list(getattr(self, "_recent_assistant_turns", None) or ())
+        if not origins:
+            return
+
+        from datetime import datetime, timezone
+
+        now = timephrase.utcnow()
+        chat_db = getattr(self, "_chat_db", None)
+        cooldown_h = float(
+            getattr(agent, "inside_joke_birth_cooldown_hours", 24.0)
+        )
+        if chat_db is not None and cooldown_h > 0:
+            try:
+                last = chat_db.kv_get(_KV_INSIDE_JOKE_AT)
+            except Exception:
+                last = None
+            if last:
+                try:
+                    last_ts = datetime.fromisoformat(
+                        str(last).replace("Z", "+00:00")
+                    )
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                    if (now - last_ts).total_seconds() < cooldown_h * 3600.0:
+                        return
+                except Exception:
+                    pass
+
+        from app.core.memory import catchphrase_miner as _cm
+
+        laughed_ids: set[int] = set()
+        for mid, _text in origins:
+            if mid is None:
+                continue
+            try:
+                reactions = self._load_message_reactions(int(mid))
+            except Exception:
+                continue
+            if int((reactions or {}).get("laugh", 0)) > 0:
+                laughed_ids.add(int(mid))
+
+        birth = _cm.detect_inside_joke_birth(
+            user_text=user_text,
+            origins=origins,
+            laughed_ids=laughed_ids,
+            known_phrases=self._known_catchphrases(),
+            min_n=max(2, int(getattr(agent, "inside_joke_birth_min_words", 3))),
+        )
+        if birth is None:
+            return
+
+        self._pending_inside_joke = birth
+        written = _cm.bless_inside_joke(
+            birth,
+            memory_store=getattr(self, "_memory_store", None),
+            embedder=getattr(self, "_embedder", None),
+            moments_store=getattr(self, "_shared_moments_store", None),
+            session_key=getattr(self, "session_key", None),
+            source_message_id=user_message_id,
+        )
+        if chat_db is not None:
+            try:
+                chat_db.kv_set(_KV_INSIDE_JOKE_AT, now.isoformat())
+            except Exception:
+                log.debug("inside-joke watermark write failed", exc_info=True)
+        log.info(
+            "K80 inside-joke born: phrase=%r lag=%d laughed=%s "
+            "catchphrase_id=%s moment_id=%s",
+            birth.phrase, birth.lag_turns, birth.laughed,
+            written.get("catchphrase_id"), written.get("moment_id"),
+        )
+
+    def _known_catchphrases(self) -> list[str]:
+        """Phrases already in the running-jokes registry (lowercased)."""
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return []
+        try:
+            top = store.list_top(limit=64)
+        except Exception:
+            return []
+        return [
+            (m.content or "").strip().lower()
+            for m in top
+            if (m.kind or "").lower() == "catchphrase" and m.content
+        ]
 
 

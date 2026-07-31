@@ -9,6 +9,10 @@ Three contract surfaces:
     as ``kind="catchphrase"`` :class:`Memory` rows and respects its
     throttle.
   * The miner is a no-op without a memory store / embedder.
+
+K80's fast path (``detect_inside_joke_birth`` / ``bless_inside_joke`` /
+``render_inside_joke_block``) is covered at the bottom: the echo + laugh
+gate, the once-per-bit rule, and the two writes a birth produces.
 """
 from __future__ import annotations
 
@@ -23,6 +27,9 @@ import numpy as np
 
 from app.core.memory.catchphrase_miner import (
     CatchphraseMiner,
+    bless_inside_joke,
+    detect_inside_joke_birth,
+    render_inside_joke_block,
     _harvest_candidates,
 )
 from app.core.infra.chat_database import ChatDatabase
@@ -238,6 +245,189 @@ class CatchphraseMinerPersistenceTests(unittest.TestCase):
             self.assertFalse(bool(short) and bool(long_), msg=str(phrases))
         finally:
             f.close()
+
+
+# ── K80: inside-joke birth (the fast path) ──────────────────────────
+
+
+_AIKO_LINE = "that is peak fish-shaped cookie energy right there"
+
+
+class InsideJokeBirthTests(unittest.TestCase):
+    def _detect(self, user_text: str, **kw):
+        params = dict(
+            user_text=user_text,
+            origins=[(11, _AIKO_LINE)],
+            laughed_ids=frozenset(),
+        )
+        params.update(kw)
+        return detect_inside_joke_birth(**params)
+
+    def test_echo_with_laughter_in_text_is_a_birth(self) -> None:
+        birth = self._detect("lol fish-shaped cookie energy, I'm dying")
+        self.assertIsNotNone(birth)
+        self.assertIn("fish-shaped cookie energy", birth.phrase)
+        self.assertTrue(birth.amused)
+        self.assertFalse(birth.laughed)
+        self.assertEqual(birth.origin_message_id, 11)
+        self.assertEqual(birth.lag_turns, 0)
+
+    def test_echo_with_a_laugh_reaction_is_a_birth(self) -> None:
+        birth = self._detect(
+            "fish-shaped cookie energy it is", laughed_ids={11},
+        )
+        self.assertIsNotNone(birth)
+        self.assertTrue(birth.laughed)
+
+    def test_echo_without_amusement_is_not_a_birth(self) -> None:
+        # Repeating a phrase back is just how conversations work; the
+        # slow miner handles anything that genuinely recurs.
+        self.assertIsNone(self._detect("fish-shaped cookie energy, sure"))
+
+    def test_laughter_without_an_echo_is_not_a_birth(self) -> None:
+        self.assertIsNone(self._detect("lol that's so true"))
+
+    def test_already_known_phrase_is_not_reborn(self) -> None:
+        self.assertIsNone(
+            self._detect(
+                "haha fish-shaped cookie energy again",
+                known_phrases=["fish-shaped cookie energy"],
+            )
+        )
+
+    def test_subsumed_known_phrase_blocks_the_longer_form(self) -> None:
+        self.assertIsNone(
+            self._detect(
+                "haha peak fish-shaped cookie energy",
+                known_phrases=["fish-shaped cookie"],
+            )
+        )
+
+    def test_prefers_the_longest_echoed_phrase(self) -> None:
+        birth = self._detect("lol peak fish-shaped cookie energy right there")
+        self.assertIsNotNone(birth)
+        self.assertGreaterEqual(len(birth.phrase.split()), 4)
+
+    def test_prefers_the_most_recent_origin(self) -> None:
+        birth = detect_inside_joke_birth(
+            user_text="haha fish-shaped cookie energy and level up time",
+            origins=[
+                (22, "pure fish-shaped cookie energy honestly"),
+                (11, "classic level up time for you"),
+            ],
+            laughed_ids=frozenset(),
+        )
+        self.assertIsNotNone(birth)
+        self.assertEqual(birth.origin_message_id, 22)
+        self.assertEqual(birth.lag_turns, 0)
+
+    def test_reaches_back_a_turn_when_the_laugh_is_there(self) -> None:
+        birth = detect_inside_joke_birth(
+            user_text="okay but level up time though",
+            origins=[(22, "anyway how did the deploy go"), (11, "classic level up time")],
+            laughed_ids={11},
+        )
+        self.assertIsNotNone(birth)
+        self.assertEqual(birth.lag_turns, 1)
+        self.assertEqual(birth.origin_message_id, 11)
+
+    def test_stopword_echo_is_rejected(self) -> None:
+        self.assertIsNone(
+            detect_inside_joke_birth(
+                user_text="haha yeah right okay so but and",
+                origins=[(11, "yeah right okay so but and")],
+                laughed_ids=frozenset(),
+            )
+        )
+
+    def test_empty_inputs(self) -> None:
+        self.assertIsNone(
+            detect_inside_joke_birth(
+                user_text="", origins=[(11, _AIKO_LINE)],
+            )
+        )
+        self.assertIsNone(
+            detect_inside_joke_birth(user_text="lol whatever", origins=[]),
+        )
+
+    def test_amusement_marker_must_be_a_word(self) -> None:
+        # "hallo" / "shall" contain "ha"/"hal" but nobody is laughing.
+        self.assertIsNone(
+            self._detect("shall we do fish-shaped cookie energy again"),
+        )
+
+
+class InsideJokeRenderTests(unittest.TestCase):
+    def _birth(self, **kw):
+        return detect_inside_joke_birth(
+            user_text=kw.pop("user_text", "lol fish-shaped cookie energy"),
+            origins=[(11, _AIKO_LINE)],
+            **kw,
+        )
+
+    def test_names_the_phrase_and_the_user(self) -> None:
+        out = render_inside_joke_block(self._birth(), user_display_name="Jacob")
+        self.assertIn("fish-shaped cookie energy", out)
+        self.assertIn("Jacob", out)
+        self.assertIn("officially a thing", out)
+
+    def test_mentions_the_reaction_when_he_laughed(self) -> None:
+        birth = self._birth(
+            user_text="fish-shaped cookie energy it is", laughed_ids={11},
+        )
+        self.assertIn("laughed", render_inside_joke_block(birth))
+
+
+class BlessInsideJokeTests(unittest.TestCase):
+    def _birth(self):
+        return detect_inside_joke_birth(
+            user_text="lol fish-shaped cookie energy",
+            origins=[(11, _AIKO_LINE)],
+        )
+
+    def test_writes_a_catchphrase_and_a_shared_moment(self) -> None:
+        from app.core.relationship.shared_moments import SharedMomentsStore
+
+        f = _Fixture()
+        try:
+            moments = SharedMomentsStore(
+                memory_store=f.memory, embedder=f.embedder,
+            )
+            out = bless_inside_joke(
+                self._birth(),
+                memory_store=f.memory,
+                embedder=f.embedder,
+                moments_store=moments,
+                session_key="s1",
+            )
+            self.assertIsNotNone(out["catchphrase_id"])
+            self.assertIsNotNone(out["moment_id"])
+            kinds = {m.kind for m in f.memory.list_top(limit=10)}
+            self.assertIn("catchphrase", kinds)
+            self.assertIn("shared_moment", kinds)
+        finally:
+            f.close()
+
+    def test_works_without_a_moments_store(self) -> None:
+        f = _Fixture()
+        try:
+            out = bless_inside_joke(
+                self._birth(),
+                memory_store=f.memory,
+                embedder=f.embedder,
+            )
+            self.assertIsNotNone(out["catchphrase_id"])
+            self.assertIsNone(out["moment_id"])
+        finally:
+            f.close()
+
+    def test_no_store_is_a_silent_no_op(self) -> None:
+        out = bless_inside_joke(
+            self._birth(), memory_store=None, embedder=None,
+        )
+        self.assertEqual(
+            out, {"catchphrase_id": None, "moment_id": None},
+        )
 
 
 if __name__ == "__main__":

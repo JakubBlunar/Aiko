@@ -121,7 +121,7 @@ K42 multi-bubble reply bursts (texting rhythm) ·
 K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
-K79 hesitation tell (typing latency) · K80 inside-joke birth.
+K79 hesitation tell (typing latency).
 
 K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
 same mechanic, broader framing.

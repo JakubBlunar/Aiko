@@ -95,7 +95,7 @@ on top of already-shipped infrastructure.
 | K77 | Candor gate — "can I be real with you?" | ❌ open |
 | K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |
-| K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ❌ open |
+| K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
 
 ---
 
@@ -391,17 +391,4 @@ one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
 
 ## K80. Inside-joke birth — bless the moment a bit becomes "ours"
 
-**Motivation.** K22 detects and *reuses* an existing callback / inside joke, but
-nothing marks the **birth** of one — the live moment where a throwaway line
-clearly just became a recurring bit between the two ("okay, that's officially a
-thing now"). Naming the formation of an inside joke is a distinct, delightful
-intimacy beat: it's the relationship *noticing itself*. K80 watches for the
-signal that a fresh phrase/bit landed hard (a big laugh reaction, an immediate
-echo by the user, a callback to something only minutes old) and, rarely, lets
-Aiko bless it — then promotes it into the catchphrase / shared-moment store so
-K22 can carry it forward. Distinct from K22 (reuse) and K73 (recurring *ritual*,
-not a *phrase*). Key files:
-[`catchphrase_miner.py`](../../app/core/memory/catchphrase_miner.py) (a
-fast-path "just-born" detector vs. the slow cross-session miner), a one-shot
-inner-life cue + a shared-moment write, persona copy,
-`agent.inside_joke_birth_enabled`.
+✅ **Shipped** — see [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours).
