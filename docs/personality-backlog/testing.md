@@ -230,6 +230,13 @@ umbrella over K10 (persona regression, shipped/on-demand) and L22
   quantised local model vs. a hosted pinned version).
 - Judge model + rubric stability — the judge itself drifts; consider a
   fixed judge version and periodic human spot-audit of the scores.
+- **L37's surfacing outcome ledger is a second, non-judge objective**, and
+  arguably a better one: golden turns and a rubric judge both score whether
+  output *looks* right, while the ledger records what actually happened next
+  in real sessions. It can't replace the scoreboard (no ground truth per
+  scenario, and it only exists for turns a real user had), but a rubric score
+  that moves *opposite* to the engaged rate is a strong signal the rubric is
+  measuring taste rather than effect. Worth reporting side by side.
 
 **Effort.** Medium (largely unlocked once DT4 + a pinned model exist).
 

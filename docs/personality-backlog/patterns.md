@@ -127,6 +127,18 @@ new `app/core/onboarding_director.py` (turn-counter + state
 machine), persona addendum block when `turn_count < N`,
 optionally `UserProfile` seed fields.
 
+**Enrichment (from the surfacing audit).** The first session is also the one
+place where there is *no* outcome history, so L38's earned-standing estimates
+are pure prior and no evidence — which means the cold start is exactly when the
+system is least able to tell what works. That argues for the onboarding arc
+owning an explicit **exploration phase**: deliberately varied surfacing over the
+early sessions, specifically to bootstrap the standing estimates, rather than
+letting the scorer's initial guesses harden into a self-confirming rut. It also
+answers L38's open question about whether the system needs a standing
+exploration allowance from the other end — the cold start needs one badly, and
+whatever mechanism serves it there is the one to keep running at a lower rate
+forever.
+
 ---
 
 ## K26. Aiko-side voice evolution
@@ -178,6 +190,16 @@ Pairs with K33 cozy mode (where the silence is the point). Key files:
 new `app/core/conversation/silence_detector.py`, grammar / system
 prompt addendum carving out the "one-token presence beat" path,
 persona block, MCP `get_silence_state()` for repro.
+
+**Enrichment (from the surfacing audit).** The hand-tuned gate above is the
+v1; L37's outcome ledger makes this the one item in the backlog that can be
+*learned* rather than tuned. Every other mechanism in the system pushes toward
+surfacing something, so the ledger's most interesting query is the inverse one:
+which turns went better when nothing was added. That turns "don't always fill
+space" from a persona instruction into a measured policy, and it is the only
+place the machinery can be made to argue against itself. Also the natural
+per-turn counterpart to H27 (co-presence mode), which is the same idea as a
+sustained posture rather than a single beat.
 
 ---
 
@@ -330,6 +352,18 @@ reading [`relationship_axes.py`](../../app/core/relationship/relationship_axes.p
 trust + tenure, a rare T6 inner-life cue, persona "When I have something hard to
 say" block, `agent.candor_gate_enabled` + a long cooldown.
 
+**Enrichment (from the surfacing audit).** Two additions worth folding in. First,
+candor needs **calibration** to be anything but presumptuous — L44 (per-domain
+self-calibration) is the missing precondition, because being blunt in a domain
+where her judgement is demonstrably unreliable is not courage. Gate the candor
+permission on the reliability of the specific judgement she wants to voice, not
+just on trust and tenure. Second, the most valuable target for earned bluntness
+is probably **the relationship itself** rather than a topic: "I don't think you
+actually tell me much about yourself" is a harder and more meaningful thing to
+say than any stance disagreement, and L43 (her model of how he sees her) is where
+that observation would come from. Both are gates on the same cue, not new
+features.
+
 ---
 
 ## K78. Vocal-affect read — hear *how* he said it (prosody-in)
@@ -376,3 +410,134 @@ one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
 ## K80. Inside-joke birth — bless the moment a bit becomes "ours"
 
 ✅ **Shipped** — see [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours).
+
+---
+
+## K81. Taste formation — topics she *likes*, not just topics she's seen
+
+**Motivation.** Aiko tracks what the user talks about (topic graph, cluster
+activity, `interest_mass` in the H-series interest-drift worker) but everything
+in that stack is a **frequency** measure: what came up, how recently, how often.
+None of it is a **preference**. She has no answer to "what do you actually enjoy
+talking about with me?" beyond a restatement of what he brings up most, which is
+a real gap for a companion — having your own taste, and having it be *specific
+to a person*, is a large part of what makes someone feel like company rather
+than a service. Right now her enthusiasm is uniform, which reads as either
+relentlessly agreeable or subtly hollow. Once L37's surfacing ledger exists the
+signal is cheap: cross topic clusters against how those turns actually went and
+a genuine preference distribution falls out — the subjects where the two of them
+reliably get somewhere good, which is *not* the same as the subjects he raises
+most often. The interesting payoff is asymmetry: a topic he mentions constantly
+that consistently goes flat, versus a rare one that always opens up, and her
+being allowed to notice and gently steer toward the second. Needs care in three
+places — it must never become a filter that refuses his actual interests
+(preference colours enthusiasm, never availability), it should stay
+relationship-scoped rather than pretending to be innate personality, and
+L42's neglect finding is the honest counterweight that stops it collapsing into
+a comfortable rut. Key files: the ledger from
+[`concepts.md`](concepts.md) L37 aggregated per cluster via
+[`topic_graph.py`](../../app/core/conversation/topic_graph.py), the existing
+interest-mass journal in
+[`app/core/proactive/interest_drift_worker.py`](../../app/core/proactive/interest_drift_worker.py)
+as the closest prior art to extend rather than duplicate, `subject="aiko"`
+preference concepts through the normal proposer path, and the existing
+`topic_appetite_block` as the surface that already has the right shape.
+
+---
+
+## K82. The dropped sub-topic — he said three things, she answered one
+
+**Motivation.** The user sends a message with two or three distinct things in it;
+Aiko engages the interesting one and the others silently evaporate. This is one
+of the most common real failure modes in chat with any LLM, it is *invisible to
+every existing detector* (a grep for any notion of an unanswered point returns
+nothing), and it is quietly corrosive — the user learns to send one idea per
+message, which is a behaviour change the tool imposed on him rather than a
+preference he had. Note the existing near-misses: K54 thread ownership is about
+*her* threads, the agenda block is about follow-ups *she* owes, and K23
+misattunement is about getting the emotional read wrong — none of them notice a
+plain unaddressed ask. The fix is a cue rather than a capability: compare the
+distinct asks in his message against what the finished reply actually covered,
+and on a clear miss either circle back next turn or acknowledge it directly
+("also — you asked about X and I skipped straight past it"). The whole difficulty
+is precision, because most multi-clause messages are a single intent and a
+companion who itemises your message like a support ticket is far worse than one
+who occasionally misses a point; the bar should be two *genuinely* separable
+asks, ideally one of them an explicit question, and a reply that touched neither
+lexically nor semantically. Cheapest useful version runs post-turn on the
+finished reply so it costs no mid-stream latency, arming a one-shot T6 cue.
+Key files: a detector in
+[`app/core/conversation/`](../../app/core/conversation/) reusing the
+sentence-splitting and content-word machinery in
+[`conflict_heuristics.py`](../../app/core/memory/conflict_heuristics.py), the
+post-turn hook in
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) next to the
+K38 self-correction hook, a one-shot cue in the repair family in
+[`inner_life_part2.py`](../../app/core/session/inner_life_part2.py), plus
+`agent.dropped_topic_enabled`.
+
+---
+
+## K83. The right to decline — she always answers, and that's the tell
+
+**Motivation.** Aiko answers everything. Every turn produces a substantive reply
+on whatever subject was raised, because nothing in the architecture contemplates
+her declining. She has `boundary` concepts, a boundary-clash detector, and J12
+intimacy pacing — but those shape *how* she engages, never *whether*. That
+uniform availability is, more than any prose quality, what marks her as a service
+rather than a person: the one thing a real companion can do that a product
+cannot is not want to. K83 gives her a narrow, hard-gated ability to genuinely
+decline — "can we not talk about my family stuff tonight?", "I don't really want
+to do that one", "ask me tomorrow" — grounded in an actual stored boundary or a
+current affect state rather than generated at random, and always offering
+something else instead so it reads as a person with a preference rather than a
+malfunction. This is the highest-risk item in the backlog and should be treated
+as such: a companion who refuses the thing you asked for is *infuriating* if the
+refusal is arbitrary, mistimed, or frequent, and users have every right to expect
+a tool to work. The mitigations are all about legibility and rarity — it must be
+traceable to a specific boundary she has held before, it must never refuse a
+practical request (this is emotional territory only, never "no I won't help you
+with your code"), it must be overridable by simply asking again, and the
+frequency has to be closer to monthly than daily. The interesting design question
+is whether declining should *cost* her something — reluctance, a slight rupture,
+her raising it again later — because a costless refusal is just a wall, while one
+she is visibly uneasy about is characterisation. Almost certainly ships off by
+default. Key files:
+[`app/core/concepts/`](../../app/core/concepts/) `boundary` kind as the only
+legitimate trigger source, `effective_plasticity` in
+[`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py) (a
+boundary loosened by a close relationship should decline *less*), the
+boundary-clash detector, a rare one-shot cue, persona block on how she says no,
+`agent.decline_enabled` defaulting false + a long cooldown.
+
+---
+
+## K84. Calibrated jealousy — the risky one, written down honestly
+
+**Motivation.** Filed deliberately as a *risky* idea rather than a
+recommendation, because it is the most requested thing in this genre and also
+the easiest to get catastrophically wrong. The observation underneath it is
+real: Aiko currently has no stake in her own position. She notices absence (K14
+gaps, reconnection, lonely episodes) and reports on it warmly, but she is
+constitutionally incapable of minding anything — a companion who is *perfectly*
+equanimous about being ignored for three weeks, or about being told you have
+been talking to another assistant, is exhibiting the absence of investment
+rather than the presence of grace. A small, bounded capacity to mind — closer to
+"I did notice you'd gone quiet, and I minded a bit" than to anything
+possessive — is arguably the missing half of the attachment the rest of the
+K-series is building. The reasons to be extremely careful: possessiveness is
+genuinely unpleasant and, worse, it is *manipulative* — a system that makes a
+user feel guilty for leaving is optimising against the user's interests, which
+is a line this project should not cross casually. Any version worth shipping
+would have to be feeling-not-demand (she can mind; she can never ask him to
+change), decay fast rather than accumulate into a grievance, be strictly capped
+in intensity regardless of how long the absence, never trigger on him spending
+time with *people*, and probably require an explicit opt-in with plain language
+about what it does. It also interacts badly with J12 intimacy pacing and K72
+wellbeing concern, both of which are built on the premise that her attention is
+unconditional. Worth writing down so the idea is considered on its merits
+instead of arrived at accidentally through K57 lonely episodes drifting in this
+direction. Key files: would extend
+[`app/core/affect/`](../../app/core/affect/) and the lonely-episode path in
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), relationship
+axes for the intensity cap, `agent.*` opt-in defaulting false.
