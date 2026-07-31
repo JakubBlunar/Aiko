@@ -46,6 +46,11 @@ from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
 from app.core.session.tools_registry_mixin import ToolsRegistryMixin
 from app.core.session.voice_capture_mixin import VoiceCaptureMixin
 from app.core.session.voice_mixin import VoiceMixin
+from app.core.session.web_facade_mixin import (
+    TaskHandles,
+    WebFacadeMixin,
+    WorkerUnavailable,
+)
 from app.core.session.world_mixin import WorldMixin
 
 __all__ = [
@@ -66,9 +71,12 @@ __all__ = [
     "WeatherMixin",
     "SpeakingWindowJobsMixin",
     "SpeakingWorkersInitMixin",
+    "TaskHandles",
     "TaskOrchestrationMixin",
     "ToolsRegistryMixin",
     "VoiceCaptureMixin",
     "VoiceMixin",
+    "WebFacadeMixin",
+    "WorkerUnavailable",
     "WorldMixin",
 ]
