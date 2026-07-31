@@ -14,7 +14,10 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.session.prompt_assembler import (
     PromptAssembler,
     PromptTelemetry,
+    _BLOCK_TIER_OF,
+    _PROMPT_BLOCK_TIERS,
     _SPEECH_GRAMMAR_ADDENDUM,
+    block_char_table,
     _build_motion_grammar_addendum,
     _build_outfit_grammar_addendum,
     _build_overlay_grammar_addendum,
@@ -5387,6 +5390,88 @@ class CueRegisterRotationTests(unittest.TestCase):
                 lint_lines, [],
                 "rotation on must spread prefixes so the lint stays quiet",
             )
+
+
+class BlockCharTableTests(unittest.TestCase):
+    """P31a — per-block character costs, and the registry audit they buy.
+
+    ``block_char_table`` resolves the ``_PROMPT_BLOCK_TIERS`` names
+    against the assembler's block locals. That makes the ladder
+    self-checking for the first time: before this, a renamed block
+    variable left a silently stale entry in a constant that nothing
+    verified.
+    """
+
+    def _telemetry(self, **providers: object) -> PromptTelemetry:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="Persona body.")
+            db.add_message(
+                session_id="bc1", role="user", content="hi", token_count=2,
+            )
+            if providers:
+                assembler.set_inner_life_providers(**providers)  # type: ignore[arg-type]
+            _, telem = assembler.assemble_with_budget(
+                "bc1", "x", context_window=8192, response_budget=256,
+            )
+            return telem
+
+    def test_every_registered_block_name_resolves(self) -> None:
+        # The point of the whole mechanism: a name in the ladder that no
+        # longer matches a local is a documentation lie, and this is the
+        # only thing that catches it.
+        telem = self._telemetry()
+        missing = sorted(set(_BLOCK_TIER_OF) - set(telem.block_chars))
+        self.assertEqual(
+            missing, [],
+            "these _PROMPT_BLOCK_TIERS names resolve to no block local "
+            f"(renamed or misspelled?): {missing}",
+        )
+
+    def test_reports_actual_lengths_including_empty_blocks(self) -> None:
+        telem = self._telemetry(
+            affect=lambda: "Affect: 12 chars ok",
+        )
+        self.assertEqual(
+            telem.block_chars["affect_block"], len("Affect: 12 chars ok"),
+        )
+        # An unwired block reports 0 rather than vanishing -- "renders
+        # every turn, always empty" is a finding, not an absence.
+        self.assertEqual(telem.block_chars["tease_rhythm_block"], 0)
+
+    def test_persona_and_addenda_are_measured(self) -> None:
+        telem = self._telemetry()
+        self.assertGreater(telem.block_chars["persona"], 0)
+        self.assertGreater(telem.block_chars["speech_grammar_addendum"], 0)
+        self.assertGreater(telem.block_chars["touch_grammar_addendum"], 0)
+        self.assertGreater(telem.block_chars["learned_style_addendum"], 0)
+
+    def test_every_name_has_exactly_one_tier(self) -> None:
+        seen: dict[str, str] = {}
+        for tier, names in _PROMPT_BLOCK_TIERS.items():
+            for name in names:
+                self.assertNotIn(
+                    name, seen,
+                    f"{name} is registered in both {seen.get(name)} and {tier}",
+                )
+                seen[name] = tier
+
+    def test_block_chars_stays_out_of_the_broadcast_dict(self) -> None:
+        # ~90 keys of debug data must not ride the per-turn WS metrics.
+        telem = self._telemetry()
+        self.assertNotIn("block_chars", telem.as_dict())
+
+    def test_resolver_prefers_the_exact_name(self) -> None:
+        table = block_char_table({
+            "persona": "exact",
+            "persona_block": "suffixed and longer",
+        })
+        self.assertEqual(table["persona"], len("exact"))
+
+    def test_non_string_locals_are_ignored(self) -> None:
+        # ``relevant_context`` resolves to a text local, but a provider
+        # result object shares the stem; only strings are measurable.
+        table = block_char_table({"relevant_context": object()})
+        self.assertNotIn("relevant_context", table)
 
 
 if __name__ == "__main__":

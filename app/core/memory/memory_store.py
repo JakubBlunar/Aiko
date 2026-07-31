@@ -1590,11 +1590,16 @@ class MemoryStore:
         kind: str | None = None,
         tier: str | None = None,
     ) -> list[Memory]:
+        # P33: filter by kind *inside* the lock so a kind-scoped call
+        # neither copies the whole mirror nor sorts rows it will discard.
+        # At the ~16k-row ceiling an unfiltered copy + two sorts to return
+        # 3 catchphrases was the shape this replaces.
+        kind_norm = kind.strip().lower() if kind else ""
         with self._lock:
-            mems = list(self._mirror.values())
-        if kind:
-            kind_norm = kind.strip().lower()
-            mems = [m for m in mems if m.kind == kind_norm]
+            if kind_norm:
+                mems = [m for m in self._mirror.values() if m.kind == kind_norm]
+            else:
+                mems = list(self._mirror.values())
         # Tier filter must run BEFORE the offset/limit slice so pagination
         # matches ``count_memories(tier=...)`` — otherwise a tier filter
         # applied to an already-paginated page only catches the rows of
@@ -1620,11 +1625,14 @@ class MemoryStore:
         kind: str | None = None,
         tier: str | None = None,
     ) -> list[Memory]:
+        # P33: see ``list_recent`` — kind filtering happens under the lock,
+        # before the sort.
+        kind_norm = kind.strip().lower() if kind else ""
         with self._lock:
-            mems = list(self._mirror.values())
-        if kind:
-            kind_norm = kind.strip().lower()
-            mems = [m for m in mems if m.kind == kind_norm]
+            if kind_norm:
+                mems = [m for m in self._mirror.values() if m.kind == kind_norm]
+            else:
+                mems = list(self._mirror.values())
         # See ``list_recent``: filter tier before the slice so pagination
         # is consistent with ``count_memories``.
         if tier:

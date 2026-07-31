@@ -195,7 +195,14 @@ class TtsQueue:
         except Exception:
             log.debug("tts engine stop() failed", exc_info=True)
         if was_playing:
-            self._notify("end", {})
+            # P25: mark the difference between "finished speaking" and
+            # "cut off". Audio is scheduled *client*-side, so on a natural
+            # end the browser must keep playing what it already holds,
+            # while on an abort it has to drop it -- barge-in otherwise
+            # leaves Aiko talking over the user for as long as the client
+            # buffer runs. Same event, so no client is forced to handle a
+            # new type; ``aborted`` is simply absent on the natural path.
+            self._notify("end", {"aborted": True})
 
     def is_active(self) -> bool:
         with self._lock:
@@ -206,7 +213,15 @@ class TtsQueue:
     def _on_chunk_done(self) -> None:
         next_chunk: tuple[str, str, str | None, float | None, float] | None = None
         with self._lock:
+            # ``stop()`` already cleared this, so a late callback from the
+            # engine (it finished synthesising the chunk we abandoned) is
+            # not the end of anything. Emitting again would follow the
+            # aborted end with a second, un-aborted one -- reading as
+            # "she finished normally" a beat after the barge-in.
+            was_playing = self._playing
             self._playing = False
+            if not was_playing:
+                return
             self._chunks_played += 1
             if self._pending:
                 next_chunk = self._pending.pop(0)

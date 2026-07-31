@@ -156,6 +156,77 @@ class TestTierFilteredListing(unittest.TestCase):
         self.assertEqual(len(set(seen)), 5)
 
 
+class TestKindFilteredListing(unittest.TestCase):
+    """P33: ``kind`` must filter before the sort/slice, not after.
+
+    The regression this locks down was a *correctness* bug, not just a
+    perf one: three call sites read the top-N rows of any kind and then
+    filtered in Python, so a low-salience kind (catchphrases) stopped
+    surfacing entirely once N higher-salience rows of other kinds
+    existed. Filtering inside the store also drops a full-mirror sort off
+    the hot path, which is the perf half.
+    """
+
+    def _seed(self):
+        _, store = _store_factory()
+        # 40 high-salience facts, then 3 low-salience catchphrases: the
+        # exact shape that starved the old post-filter callers.
+        for i in range(40):
+            store.add(
+                f"high salience fact {i:02d}", "fact", _emb(f"f{i}"),
+                salience=0.9,
+            )
+        for i in range(3):
+            store.add(
+                f"running joke number {i}", "catchphrase", _emb(f"c{i}"),
+                salience=0.2,
+            )
+        return store
+
+    def test_top_returns_the_low_salience_kind(self) -> None:
+        store = self._seed()
+        rows = store.list_top(limit=3, kind="catchphrase")
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(m.kind == "catchphrase" for m in rows))
+
+    def test_unfiltered_top_would_have_missed_them(self) -> None:
+        # Documents *why* the filter is required rather than merely nice:
+        # this is what the old call sites saw.
+        store = self._seed()
+        rows = store.list_top(limit=24)
+        self.assertEqual(
+            [m for m in rows if m.kind == "catchphrase"], [],
+            "if this starts passing, the starvation premise changed",
+        )
+
+    def test_kind_is_normalised(self) -> None:
+        store = self._seed()
+        self.assertEqual(len(store.list_top(limit=5, kind="  CatchPhrase ")), 3)
+
+    def test_recent_filters_kind_too(self) -> None:
+        store = self._seed()
+        rows = store.list_recent(limit=5, kind="catchphrase")
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(m.kind == "catchphrase" for m in rows))
+
+    def test_kind_and_tier_compose(self) -> None:
+        _, store = _store_factory()
+        store.add("joke in archive", "catchphrase", _emb("a"), tier="archive")
+        store.add("joke in long term", "catchphrase", _emb("b"))
+        store.add("fact in archive", "fact", _emb("c"), tier="archive")
+        rows = store.list_top(limit=10, kind="catchphrase", tier="archive")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content, "joke in archive")
+
+    def test_unknown_kind_returns_empty(self) -> None:
+        store = self._seed()
+        self.assertEqual(store.list_top(limit=10, kind="nope"), [])
+
+    def test_no_kind_still_returns_everything(self) -> None:
+        store = self._seed()
+        self.assertEqual(len(store.list_top(limit=100)), 43)
+
+
 class TestWallClockDecay(unittest.TestCase):
     def test_decay_scales_with_elapsed_days(self) -> None:
         _, store = _store_factory()

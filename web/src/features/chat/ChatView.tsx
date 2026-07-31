@@ -14,6 +14,7 @@ import { ChatEmptyState } from "./ChatEmptyState";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { LoadOlderHeader } from "./LoadOlderHeader";
 import { MessageBubble } from "./MessageBubble";
+import { streamRepinSignature } from "./streamRepin";
 import { ToolActivityStrip } from "./ToolActivityStrip";
 import { VoiceStrip } from "./VoiceStrip";
 
@@ -74,7 +75,10 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   const reaction = useAssistantStore((s) => s.reaction);
   const connectionStatus = useAssistantStore((s) => s.connection.status);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
-  const audioLevel = useAssistantStore((s) => s.audioLevel);
+  // P37: ``audioLevel`` is deliberately *not* read here. It changes ~20x
+  // a second while the mic is open, and this component is the chat
+  // chrome. The two elements that need it subscribe at the leaf
+  // (``MicPulseRing``, ``VoiceStrip``'s ``LevelDot`` / ``AudioMeter``).
   const lastTranscript = useAssistantStore((s) => s.lastTranscript);
   const setLastTranscript = useAssistantStore((s) => s.setLastTranscript);
   const currentPartial = useAssistantStore((s) => s.currentPartial);
@@ -145,10 +149,12 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   // Lightweight signatures: re-render ChatView (not the memoized
   // bubbles) when the streaming draft grows, or an active task's
   // status/progress/phase changes, so the re-pin effect below runs.
+  // P37: quantised rather than exact-length (see ``streamRepinSignature``)
+  // so the re-pin effect below runs a handful of times per reply instead of
+  // once per token. The *content* still reaches the bubble through
+  // MessageBubble's own draft selector, untouched by this.
   const streamingSignature = useAssistantStore((s) =>
-    s.streamingDraft
-      ? `${s.streamingDraft.id}:${s.streamingDraft.content.length}`
-      : "",
+    streamRepinSignature(s.streamingDraft),
   );
   const activeTaskSignature = useTasksStore((s) => {
     const view = s.tasksView;
@@ -557,7 +563,6 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         <div className="mx-auto max-w-3xl">
           <VoiceStrip
             voiceMode={voiceMode}
-            audioLevel={audioLevel}
             lastTranscript={lastTranscript}
             currentPartial={currentPartial}
           />
@@ -578,7 +583,6 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           <div className="flex items-center gap-2">
             <MicButton
               voiceMode={voiceMode}
-              audioLevel={audioLevel}
               connected={connectionStatus === "connected"}
               onClick={handleMicToggle}
               remotelyOwned={remotelyOwned}

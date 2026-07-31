@@ -26,6 +26,12 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.session")
 
+# P16: post-turn cascade wall time above which the timing line escalates
+# from DEBUG to INFO. The cascade is meant to be pure-Python + SQLite;
+# anything approaching a second means something in it is doing real work
+# on the turn thread.
+_POST_TURN_SLOW_MS = 400.0
+
 
 class ChatTurnMixin:
     """Chat loop + per-turn metrics + next-turn scheduling helpers."""
@@ -217,6 +223,14 @@ class ChatTurnMixin:
         # Post-turn inner-life (cheap, no LLM on the hot path): updates
         # affect state, broadcasts mood_state WS, and submits the
         # ReflectionWorker job to the speaking window scheduler.
+        #
+        # P16 measurement: this cascade had zero instrumentation, and
+        # ``embedder.end_turn()`` has already fired by the time we get
+        # here -- so its 1-4 embeds don't even show up in ``embed_calls``.
+        # ``post_turn_ms`` makes the cost visible before anyone tries the
+        # (Large) fast/slow-lane split. Note the timer wraps the ``except``
+        # too: a cascade that fails slowly is still time the user waited.
+        post_turn_started_at = time.perf_counter()
         try:
             self._post_turn_inner_life(
                 user_text=cleaned,
@@ -228,6 +242,16 @@ class ChatTurnMixin:
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
+        post_turn_ms = (time.perf_counter() - post_turn_started_at) * 1000.0
+        # The cascade is supposed to be cheap; a slow one is latency the
+        # user feels after the reply finished, so it escalates to INFO
+        # rather than hiding at DEBUG with the routine case.
+        log.log(
+            logging.INFO if post_turn_ms >= _POST_TURN_SLOW_MS else logging.DEBUG,
+            "post-turn done: post_turn_ms=%.1f mode=%s",
+            post_turn_ms,
+            mode,
+        )
 
         # Context occupancy uses the largest single Ollama call's prompt
         # tokens (stamped on telemetry), NOT the merged tool+stream sum in
@@ -264,6 +288,11 @@ class ChatTurnMixin:
             "prompt_pct": prompt_pct,
             "compactions_total": int(self._compactions_total),
             "first_token_ms": round(float(getattr(result, "first_token_ms", None) or 0.0), 1),
+            # P16: wall time of the post-turn inner-life cascade. Not part
+            # of ``llm_ms`` / ``total_ms`` above -- those were measured
+            # before it ran -- so read it as "extra latency the user waited
+            # after the reply finished streaming".
+            "post_turn_ms": round(post_turn_ms, 1),
             "filler_emitted": bool(getattr(result, "filler_emitted", False)),
             # K32: the SQLite ``messages.id`` of the assistant row just
             # persisted, so the frontend can stamp the live bubble's
@@ -315,6 +344,10 @@ class ChatTurnMixin:
                 "context_tokens": int(context_tokens),
                 "mode": mode,
                 "captured_at": time.time(),
+                # P31a: per-block char costs travel with the prompt they
+                # describe, for the same reason the prompt itself is
+                # out-of-band -- too big for the per-turn WS broadcast.
+                "block_chars": dict(getattr(telemetry, "block_chars", {}) or {}),
             }
         self._set_last_metrics(metrics)
 
@@ -410,13 +443,14 @@ class ChatTurnMixin:
         if store is None:
             return []
         try:
-            top = store.list_top(limit=max(limit * 4, 12))
+            # Filter by kind in the store (before the sort) rather than
+            # after: the unfiltered top-N shape returned nothing as soon as
+            # other kinds outranked the requested one.
+            top = store.list_top(limit=max(1, int(limit)), kind=kind)
         except Exception:
             return []
         out: list[str] = []
         for mem in top:
-            if (mem.kind or "").lower() != kind:
-                continue
             content = (mem.content or "").strip()
             if not content:
                 continue

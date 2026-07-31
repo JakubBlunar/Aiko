@@ -1710,18 +1710,25 @@ class PostTurnHelpersMixin:
         )
 
     def _known_catchphrases(self) -> list[str]:
-        """Phrases already in the running-jokes registry (lowercased)."""
+        """Phrases already in the running-jokes registry (lowercased).
+
+        This is K80's duplicate guard, so a missed row means re-blessing a
+        bit that is already "theirs" — the least magical thing the feature
+        could do. Before the ``kind`` filter it read the top 64 rows of
+        *any* kind, so on a mature corpus it could easily return nothing
+        while dozens of catchphrases existed.
+        """
         store = getattr(self, "_memory_store", None)
         if store is None:
             return []
         try:
-            top = store.list_top(limit=64)
+            top = store.iter_by_kind("catchphrase")
         except Exception:
             return []
         return [
             (m.content or "").strip().lower()
             for m in top
-            if (m.kind or "").lower() == "catchphrase" and m.content
+            if m.content
         ]
 
 

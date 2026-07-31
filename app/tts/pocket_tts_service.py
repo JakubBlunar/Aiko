@@ -364,6 +364,58 @@ class PocketTtsService:
     def warmup_async(self) -> None:
         self._loaded.wait(timeout=30.0)
 
+    def release_model(self) -> bool:
+        """Drop the loaded model so the weights can be collected (P28b).
+
+        ``stop()`` only clears the audio cache; the ~100M-param model
+        stayed resident for the process lifetime, so toggling TTS off at
+        runtime freed nothing. Returns True when a model was actually
+        released.
+
+        The PyTorch *runtime* stays imported -- that can't be undone in
+        a live process -- so this recovers the voice weights, not the
+        full footprint. Starting with ``tts.enabled=false`` avoids both.
+
+        A subsequent :meth:`load_model_now` (or an engine rebuild) brings
+        it back; ``get_status`` reports ``error`` in between, which is
+        why the caller is expected to be the enable/disable path rather
+        than a background sweep.
+        """
+        self.stop()
+        with self._lock:
+            had_model = self._model is not None
+            self._model = None
+            self._voice_state = None
+        if had_model:
+            # Only meaningful after the reference is gone. Torch tensors
+            # are refcounted like everything else, but the model graph
+            # holds cycles, so an explicit collect is what actually
+            # returns the pages.
+            import gc
+
+            gc.collect()
+            self._loaded.clear()
+            self._last_error = "Model released (TTS disabled)"
+            log.info("TTS model released")
+        return had_model
+
+    def load_model_now(self) -> None:
+        """Start the load thread again after :meth:`release_model`.
+
+        Idempotent: returns immediately when a model is already loaded or
+        a load is in flight.
+        """
+        with self._lock:
+            if self._model is not None:
+                return
+        if TTSModel is None or np is None:
+            return
+        self._loaded.clear()
+        self._last_error = None
+        threading.Thread(
+            target=self._load_model, daemon=True, name="pocket-tts-load",
+        ).start()
+
     def stop(self) -> None:
         self._stop_requested.set()
         with self._cache_lock:

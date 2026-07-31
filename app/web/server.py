@@ -1228,6 +1228,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             session.feed_audio_end()
                         except Exception:
                             log.debug("feed_audio_end on takeover failed", exc_info=True)
+                    # P27: STT loads lazily, so this is where the load
+                    # belongs -- boot no longer pays for a model a
+                    # text-only session never uses. Non-blocking; the
+                    # LiveSession below shares the same one-shot load.
+                    try:
+                        session.prewarm_stt()
+                    except Exception:
+                        log.debug("prewarm_stt failed", exc_info=True)
                     if not live_session.is_active:
                         live_session.start()
                     else:

@@ -324,6 +324,14 @@ export function useAssistantSocket(): {
           evt.text ?? "",
           evt.reaction ?? "neutral",
         );
+        // P25: audio is scheduled here, not on the server, so a server-side
+        // stop() only silences what hasn't been sent yet -- whatever this
+        // client already buffered keeps playing. On barge-in that means Aiko
+        // talks over the user for the length of the buffer. ``aborted`` is
+        // only set by ``TtsQueue.stop``, so a natural end still plays out.
+        if (evt.event !== "start" && evt.aborted) {
+          audioOutputRef.current?.flush();
+        }
         // While voice mode is on, mirror tts_state into voiceMode so the
         // mic-button label reads "speaking" while Aiko is talking.
         if (store.voiceMode !== "off") {
@@ -679,13 +687,36 @@ export function useAssistantSocket(): {
         store.setCompanionSettings(evt.companion);
         break;
 
-      case "voice_owner_changed":
+      case "voice_owner_changed": {
+        // P25: taking the mic means the user wants the floor. Any TTS this
+        // window has already buffered would otherwise keep playing over
+        // them -- the server-side stop can't reach audio that has already
+        // crossed the wire.
+        const tookTheMic =
+          evt.owner_id !== null &&
+          evt.owner_id === store.clientId &&
+          store.voiceOwnerId !== evt.owner_id;
         store.setVoiceOwnerId(evt.owner_id ?? null);
+        if (tookTheMic && store.ttsState === "speaking") {
+          audioOutputRef.current?.flush();
+        }
         break;
+      }
 
-      case "audio_owner_changed":
+      case "audio_owner_changed": {
+        // Losing playback ownership has to be immediate: the new owner
+        // starts scheduling the same stream, and two windows playing the
+        // same clip a few hundred ms apart is the audible failure.
+        const lostPlayback =
+          evt.owner_id !== null &&
+          evt.owner_id !== store.clientId &&
+          store.audioOwnerId === store.clientId;
         store.setAudioOwnerId(evt.owner_id ?? null);
+        if (lostPlayback) {
+          audioOutputRef.current?.flush();
+        }
         break;
+      }
 
       case "pong":
         break;
