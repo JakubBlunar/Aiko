@@ -44,7 +44,7 @@ stateDiagram-v2
     active --> contradicted: counter-evidence AND confidence < contradicted_floor (L9)
     contradicted --> active: revived — re-reinforced past promote_min_confidence
     contradicted --> retired: confidence < retire_floor
-    dormant --> active: confidence recovers >= promote_min_confidence (reinforced)
+    dormant --> active: revived — reinforced AND confidence >= promote_min_confidence
     dormant --> retired: confidence < retire_floor
     retired --> active: revived — L2 reattached evidence, clears the gate
     retired --> dormant: revived, clears the confidence floor but not the gate (was active before)
@@ -66,7 +66,7 @@ worker is also gated by `agent.concepts_enabled`.
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |
 | `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
 | `contradicted → retired` | keeps decaying below `retire_floor` | `concept_retire_confidence_floor` |
-| `dormant → active` | `confidence >= promote_min_confidence` (reinforced back up). Note this revival checks confidence **only** — it does not re-run the kind's `promotion_gate`, unlike the `retired` row below, so a faded concept returns on its original evidence. Reaching this state at all requires confidence to have recovered, which requires genuine reinforcement. | `concept_promote_min_confidence` |
+| `dormant → active` | fresh evidence (`last_reinforced_at` newer than the last pass) **and** `confidence >= promote_min_confidence`. The evidence half used to be implicit — while decay was the only route into `dormant`, recovered confidence could only come from reinforcement — but the L22 sweep parks concepts still sitting near their promotion confidence, so it is now checked. Revival still does **not** re-run the kind's `promotion_gate`, unlike the `retired` row below: a faded concept returns on its original evidence. | `concept_promote_min_confidence` |
 | `dormant → retired` | `confidence < retire_floor` | `concept_retire_confidence_floor` |
 | `retired → active / dormant / candidate` | fresh evidence (`last_reinforced_at` newer than the last lifecycle pass) lifts confidence; routed to `active` if it clears the gate, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
 
