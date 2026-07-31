@@ -262,6 +262,26 @@ class ConceptLifecycleWorker:
         stats["scanned"] += 1
         first_eval = concept.last_lifecycle_at is None
 
+        # 0. Anchor *age* to engaged time, before anything reads it. On its
+        # first evaluation a concept's engaged age is zero by definition, so
+        # stamping here makes ``_age_days`` say so rather than falling back to
+        # wall-clock and crediting calendar time the concept never lived
+        # through -- which would let an offline gap carry a candidate past a
+        # promotion age floor on idle time alone. Restricted to the first eval:
+        # an *already evaluated* concept that is still unanchored predates the
+        # v24 backfill, and for it the wall clock is the only age we have, so
+        # re-anchoring would silently reset its accrued age to zero. This is
+        # the *age* anchor only; ``last_lifecycle_engagement`` (the decay
+        # anchor) must keep reading the previous tick's total -- step 6.
+        if (
+            first_eval
+            and self._clock_active()
+            and concept.first_evidence_engagement is None
+        ):
+            concept.first_evidence_engagement = float(
+                self._engagement_clock.total()  # type: ignore[union-attr]
+            )
+
         # L16: the *effective* plasticity for this eval. For a kind that opts
         # into relationship modulation (boundary), the live trust/duration
         # signal raises the stored base toward its ceiling; for every other
@@ -377,21 +397,14 @@ class ConceptLifecycleWorker:
         if status_changed and new_status == "contradicted":
             self._maybe_revise_beliefs(concept, verdict, now, stats)
 
-        # 6. Stamp the per-concept engagement anchors + persist.
+        # 6. Stamp the decay anchor + persist. The *age* anchor was stamped up
+        # front (step 0) because the gate reads it; this one has to be last,
+        # since ``_engaged_days`` above measured decay from its previous value.
         concept.last_lifecycle_at = now.isoformat()
         if self._clock_active():
-            total = float(
+            concept.last_lifecycle_engagement = float(
                 self._engagement_clock.total()  # type: ignore[union-attr]
             )
-            concept.last_lifecycle_engagement = total
-            # Anchor *age* to engaged time on first evaluation. A brand-new
-            # concept is seconds old here, so this ~= its creation engagement
-            # total; from now on promotion / candidate-TTL age accrues in
-            # engaged (active-conversation) time, symmetric with decay. Only
-            # set when unanchored so existing concepts (backfilled to 0.0 by
-            # the v24 migration) keep their accrued engaged age.
-            if concept.first_evidence_engagement is None:
-                concept.first_evidence_engagement = total
         self._store.update(concept)
 
         # 7. Emit a lifecycle event + cascade to dependents. A confirmed
@@ -742,15 +755,16 @@ class ConceptLifecycleWorker:
         return last_reinforced > last_eval
 
     def _age_days(self, concept: "Concept", now: datetime) -> float:
-        """Concept age in *engaged* (active-conversation) days when the
-        shared clock is active and the concept has been anchored --
-        symmetric with the engagement-driven decay -- so promotion and the
-        candidate TTL advance with real interaction rather than wall-clock
-        calendar days. Falls back to wall-clock for un-anchored concepts
-        (brand-new, before their first lifecycle stamp) and whenever the
-        engagement clock is disabled / unwired. Unlike ``_engaged_days``
-        this is intentionally *not* catch-up-clamped: age must accumulate
-        without bound, it only ever gates promotion."""
+        """Concept age in *engaged* (active-conversation) days whenever the
+        shared clock is active -- symmetric with the engagement-driven decay
+        -- so promotion, the candidate TTL and plasticity drift advance with
+        real interaction rather than wall-clock calendar days. ``_process``
+        stamps the anchor up front (step 0), so with the clock on this reads
+        engaged time even on a concept's first evaluation; the wall-clock
+        branch below is reached only when the engagement clock is disabled or
+        unwired. Unlike ``_engaged_days`` this is intentionally *not*
+        catch-up-clamped: age must accumulate without bound, it only ever
+        gates promotion."""
         if self._clock_active():
             anchor = concept.first_evidence_engagement
             if anchor is not None:

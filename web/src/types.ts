@@ -1065,6 +1065,15 @@ export interface ConceptQualityReport {
     unreinforced_since_promotion?: number;
     unreinforced_pct?: number;
     median_engaged_days_to_dormant?: number | null;
+    // Flow figures. The stock counts above move only as fast as decay
+    // (tens of conversation hours), so these are what actually responds to
+    // a promotion-threshold change.
+    promotions_per_day?: number | null;
+    recent_window_days?: number;
+    promoted_recent?: number;
+    promotions_per_day_recent?: number;
+    unreinforced_recent?: number;
+    unreinforced_recent_pct?: number;
   };
 }
 

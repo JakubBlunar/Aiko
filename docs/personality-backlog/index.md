@@ -246,11 +246,22 @@ Open — quality and pruning:
   the confidence and evidence distributions, near-duplicate pairs, and
   per-(kind, subject) label-register rates. The three spurious-concept
   signals are computed but **advisory only** — nothing is demoted on
-  them yet. Still open: tuning the thresholds against those numbers,
-  enabling demotion for the never-reinforced signal, a one-off sweep
-  over the concepts minted before the proposer was disciplined, and the
-  offline eval harness (deliberately last: hand-authoring goldens before
-  the register settles would enshrine the output we are fixing).
+  them yet. **Tuning pass 1 (intake) shipped:** `identity` was the only
+  kind with no promotion floors of its own and the largest kind in the
+  graph, so it got `identity_evidence_gate` (3 sources + a real stability
+  delay); the engaged-age anchor now lands before the gate reads it, so an
+  offline gap can no longer mature a candidate on idle time; and the
+  pruning section grew intake-*rate* metrics plus
+  `scripts/concept_intake_report.py`, since the standing never-reinforced
+  count is far too slow to show whether a threshold change worked.
+  Still open: **the reinforce path, which fires ~10x less often than
+  discovery (60 events against 553) and is the larger half of the
+  never-reinforced signal**; tuning pass 2 (per-kind decay — the ordering
+  is already right via `plasticity_default`, the absolute scale is ~6x too
+  slow); enabling demotion for the never-reinforced signal plus a one-off
+  sweep over the concepts minted before the proposer was disciplined; and
+  the offline eval harness (deliberately last: hand-authoring goldens
+  before the register settles would enshrine the output we are fixing).
 
 Open — self-history:
 

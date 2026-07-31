@@ -15,8 +15,13 @@ these are the stateless pieces:
   (:func:`accrual_alpha`) -- so plasticity governs movement symmetrically
   in both directions (L16).
 - :func:`set_evidence_gate` -- the ``set``-evidence promotion predicate
-  (distinct sources + calendar-age stability + confidence), attached to
-  the ``identity`` kind's ``promotion_gate`` slot.
+  (distinct sources + age stability + confidence), and the fallback the
+  worker uses for any kind that doesn't supply a gate of its own. Age is
+  measured in *engaged* days whenever the engagement clock is live, so a
+  stability delay costs conversation rather than calendar time.
+- ``<kind>_evidence_gate`` -- one per kind, each layering its own built-in
+  floors on top of ``set_evidence_gate`` via ``max`` so a caller-supplied
+  bar (e.g. the L21 young-graph tightening) still wins when it is higher.
 """
 from __future__ import annotations
 
@@ -221,13 +226,20 @@ def set_evidence_gate(
     min_age_days: float,
     min_confidence: float,
 ) -> bool:
-    """Promotion predicate for ``set``-evidence kinds (e.g. identity).
+    """Promotion predicate for ``set``-evidence kinds, and the worker's
+    fallback for any kind that doesn't declare a gate of its own.
 
     A candidate promotes to ``active`` only once it draws on enough
     *distinct* sources, has been around long enough to be stable (not a
-    flash in the pan), and its confidence clears the bar. Age is
-    calendar-based on purpose: it only ever *delays* promotion, so
-    intermittent uptime is harmless.
+    flash in the pan), and its confidence clears the bar.
+
+    ``age_days`` is whatever the caller measured. The L3 worker
+    (``ConceptLifecycleWorker._age_days``) hands in **engaged** days
+    whenever the engagement clock is live -- symmetric with the
+    engagement-driven decay -- and falls back to wall-clock only when that
+    clock is disabled or unwired. So a ``min_age_days`` of 1.0 normally
+    buys one *engaged* day (on the order of an hour of conversation), not
+    one calendar day: idle uptime does not mature a candidate.
     """
     return (
         int(distinct_source_count) >= int(min_sources)
@@ -236,12 +248,55 @@ def set_evidence_gate(
     )
 
 
+# Built-in bars for an *identity* concept. Identity is the largest kind in
+# the graph and was the only one riding the global promote settings with no
+# floors of its own -- with ``concept_promote_min_age_days`` at 0.0 that meant
+# a trait could promote the instant it collected a second source, and most
+# did: 189 of 267 within an hour of being created, 82% of them never
+# reinforced afterwards. A trait is supposed to be a durable read on someone,
+# so it gets value-like structure (a third distinct source, a real stability
+# delay) without value's higher confidence bar -- the source histogram says
+# the leak was sources and age, not confidence.
+_IDENTITY_MIN_SOURCES = 3
+_IDENTITY_MIN_AGE_DAYS = 1.0
+_IDENTITY_MIN_CONFIDENCE = 0.6
+
+
+def identity_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``identity`` concepts.
+
+    Same shape as :func:`set_evidence_gate` with structural floors close to
+    :func:`value_evidence_gate`'s -- a third distinct source and a real
+    stability delay -- but identity keeps the ordinary confidence bar, since
+    a trait need not be a hard-won principle to be true. The caller's
+    thresholds still apply when they are *higher* (e.g. the L21 young-graph
+    bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _IDENTITY_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _IDENTITY_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _IDENTITY_MIN_CONFIDENCE),
+    )
+
+
 # Minimum bars a *value* concept must clear on top of whatever the caller
 # passes. Values are the stickiest, hardest-won concepts (L10) -- a stated
-# principle should be slow to assert -- so this floors the ``set`` gate at a
-# stricter point than identity even when the global promote settings are
-# relaxed. The L21 young-graph tightening still layers on top (the caller may
-# hand in higher values, which win via ``max``).
+# principle should be slow to assert -- so this floors the ``set`` gate
+# strictly even when the global promote settings are relaxed. It shares
+# identity's structural bars and adds a higher confidence bar on top. The L21
+# young-graph tightening still layers on (the caller may hand in higher
+# values, which win via ``max``).
 _VALUE_MIN_SOURCES = 3
 _VALUE_MIN_AGE_DAYS = 1.0
 _VALUE_MIN_CONFIDENCE = 0.72
@@ -260,10 +315,10 @@ def value_evidence_gate(
 
     Same shape as :func:`set_evidence_gate`, but with stricter built-in
     floors so a value ("the principle under the choices") only promotes once
-    it is genuinely well-evidenced and settled -- more distinct sources, a
-    non-instant age, and a higher confidence than identity. The caller's
-    thresholds still apply when they are *higher* (e.g. the L21 young-graph
-    bar), via ``max``.
+    it is genuinely well-evidenced and settled -- identity's structural bars
+    (distinct sources, a non-instant age) plus a higher confidence than
+    identity asks for. The caller's thresholds still apply when they are
+    *higher* (e.g. the L21 young-graph bar), via ``max``.
     """
     return set_evidence_gate(
         distinct_source_count=distinct_source_count,

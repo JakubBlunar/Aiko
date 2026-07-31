@@ -62,9 +62,9 @@ from app.core.concepts.concept_lifecycle import (
     boundary_evidence_gate,
     communication_style_evidence_gate,
     generalization_evidence_gate,
+    identity_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
-    set_evidence_gate,
     tension_evidence_gate,
     value_evidence_gate,
 )
@@ -299,10 +299,13 @@ register_kind(
         # for decay, disproof, *and* accrual). The ``concept_identity_plasticity``
         # setting still overrides this in the worker for back-compat/tuning.
         plasticity_default=0.3,
-        # L3: identity uses the set-evidence promotion gate (distinct
-        # sources + age-stability + confidence). The worker falls back to
-        # this same gate for any kind that doesn't supply its own.
-        promotion_gate=set_evidence_gate,
+        # L3: identity carries its own set-evidence gate (distinct sources +
+        # age-stability + confidence), floored at three sources and a real
+        # stability delay. It used to ride the bare ``set_evidence_gate`` --
+        # which is still the worker's fallback for any kind that supplies no
+        # gate -- but on the global settings alone (min age 0.0) that let
+        # traits promote the moment a second source appeared.
+        promotion_gate=identity_evidence_gate,
         # L24: identity feeds the user profile block for what *he* is like.
         # ``subject=aiko`` identity is not routed to a named block -- it
         # surfaces every turn via the T3 relevant_context path instead.

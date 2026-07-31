@@ -59,14 +59,14 @@ worker is also gated by `agent.concepts_enabled`.
 
 | Transition | Condition | Setting(s) |
 | --- | --- | --- |
-| `candidate → active` | `distinct_source_count >= min_sources` **and** `age_days >= min_age_days` **and** `confidence >= min_confidence` (the per-kind `promotion_gate`, default the `set`-evidence gate) | `concept_promote_min_sources`, `concept_promote_min_age_days`, `concept_promote_min_confidence` |
+| `candidate → active` | `distinct_source_count >= min_sources` **and** `age_days >= min_age_days` **and** `confidence >= min_confidence` — evaluated by the kind's own `promotion_gate`, which floors each of the three at its `_X_MIN_*` constant via `max`. `set_evidence_gate` is the fallback for a kind that declares none, but every shipped kind declares its own. | `concept_promote_min_sources`, `concept_promote_min_age_days`, `concept_promote_min_confidence` (raise the floor for *all* kinds; per-kind constants live in `concept_lifecycle.py`) |
 | `candidate → retired` | `age_days >= candidate_ttl` **and** `distinct_source_count < min_sources` | `concept_candidate_ttl_days`, `concept_promote_min_sources` |
 | `active → candidate` | `distinct_source_count == 0` — every supporting edge was deleted or repointed away (L25), so the belief rests on nothing. Checked **before** the confidence floors, because confidence decays far too slowly to notice on its own. It keeps its confidence and re-promotes normally once evidence returns. | (none — structural) |
 | `active → dormant` | `confidence < dormant_floor` (and **not** contradicted this tick) | `concept_dormant_confidence_floor` |
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |
 | `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
 | `contradicted → retired` | keeps decaying below `retire_floor` | `concept_retire_confidence_floor` |
-| `dormant → active` | `confidence >= promote_min_confidence` (reinforced back up) | `concept_promote_min_confidence` |
+| `dormant → active` | `confidence >= promote_min_confidence` (reinforced back up). Note this revival checks confidence **only** — it does not re-run the kind's `promotion_gate`, unlike the `retired` row below, so a faded concept returns on its original evidence. Reaching this state at all requires confidence to have recovered, which requires genuine reinforcement. | `concept_promote_min_confidence` |
 | `dormant → retired` | `confidence < retire_floor` | `concept_retire_confidence_floor` |
 | `retired → active / dormant / candidate` | fresh evidence (`last_reinforced_at` newer than the last lifecycle pass) lifts confidence; routed to `active` if it clears the gate, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
 
@@ -78,32 +78,52 @@ over the dormant check when both would trigger the same tick. A
 `status="active"`), and the detector only ever runs on `active` concepts,
 so a disproven belief stays quiet until it is genuinely re-reinforced.
 
-Age (`age_days`) is used **only** for the promotion stability check and
-the candidate TTL. Both only ever *delay* an action — being offline makes
-promotion/retirement wait, never fire early — so intermittent uptime is
-harmless.
+Age (`age_days`) gates the promotion stability check and the candidate TTL,
+and feeds the L16 plasticity drift. It never *causes* a status change: the
+two gates only ever *delay* an action — being offline makes promotion and
+retirement wait, never fire early — so intermittent uptime is harmless.
 
-**The promotion age floor defaults to off** (`concept_promote_min_age_days
-= 0.0`). Distinct sources + confidence are the meaningful promotion
-signals — a well-evidenced, confident concept shouldn't have to wait, and
-any evidence that arrives after promotion only refines its confidence — so
-by default a candidate promotes as soon as it clears the source + confidence
-bar. Raise the knob (e.g. `2.0`) to re-introduce a maturation delay.
+**The *global* promotion age floor defaults to off**
+(`concept_promote_min_age_days = 0.0`), but that is no longer the effective
+floor for any kind: each kind's own `<kind>_evidence_gate` declares an
+`_X_MIN_AGE_DAYS` and takes the `max` of it and the global setting. So the
+knob is a way to raise every kind's delay at once, not the delay itself —
+read the per-kind constants in
+[`concept_lifecycle.py`](../app/core/concepts/concept_lifecycle.py) to know
+what a given kind actually waits.
 
-**When age *is* used, it's engaged time, not wall-clock** (schema v24). A
-non-zero `concept_promote_min_age_days` and the `concept_candidate_ttl_days`
-cleanup are measured in *engaged* (active-conversation) days via a
-per-concept anchor `first_evidence_engagement` (the `EngagementClock.total()`
-captured on the concept's first lifecycle evaluation): `age_days =
+The original reasoning for a zero global floor was that distinct sources and
+confidence are the meaningful signals, so a well-evidenced concept shouldn't
+have to wait. That held until it was measured: with no delay, **167 of 240**
+never-reinforced `identity` concepts had promoted within an hour of first
+evidence, at a median of 3.6 minutes. A stability delay turned out to be
+doing real work, and `identity` was the one kind with no delay of its own.
+
+**Age is engaged time, not wall-clock** (schema v24). Both the promotion
+floor and the `concept_candidate_ttl_days` cleanup are measured in *engaged*
+(active-conversation) days via a per-concept anchor
+`first_evidence_engagement` (the `EngagementClock.total()` captured on the
+concept's first lifecycle evaluation): `age_days =
 engaged_days_since(first_evidence_engagement)`, **unclamped** (age must
 accumulate without bound; only decay's per-tick catch-up is clamped). So a
 maturation delay is spent on real interaction — at the default
-`engagement_seconds_per_day=3600`, `2.0` ≈ 2 hours of active conversation —
-rather than idling to maturity on the calendar. Un-anchored concepts
-(brand-new, before their first stamp) and clock-disabled deployments fall
-back to wall-clock age from `first_evidence_at`. Existing concepts are
-backfilled to anchor `0.0` on the v24 upgrade so an already-evidenced
-candidate promotes on the next tick instead of restarting its age clock.
+`engagement_seconds_per_day=3600`, `1.0` ≈ an hour of active conversation —
+rather than idling to maturity on the calendar.
+
+The anchor is stamped in **step 0** of `_process`, before the transition
+reads it, so a brand-new candidate's first evaluation reports age `0.0`.
+That ordering is load-bearing: stamped afterwards, the first evaluation fell
+through to the wall-clock branch, and a candidate minted just before a long
+shutdown would clear a stability delay on its calendar age alone — idle
+downtime maturing it, which is what engaged time exists to prevent.
+
+The wall-clock fallback from `first_evidence_at` remains for clock-disabled
+deployments, and for an *already-evaluated* row that is still un-anchored
+(pre-v24, missed by the backfill) — such a row is deliberately **not**
+re-anchored, since that would reset its accrued age to zero. Existing
+concepts were backfilled to anchor `0.0` on the v24 upgrade so an
+already-evidenced candidate promotes on the next tick instead of restarting
+its age clock.
 
 ## Ownership / responsibility table
 
