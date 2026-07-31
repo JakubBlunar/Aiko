@@ -16,14 +16,6 @@ from typing import Any, TYPE_CHECKING
 from app.core.infra import timephrase
 from app.core.infra import timephrase as _timephrase
 from app.core.infra.chat_database import MessageRow, SummaryRow
-from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
-
-if TYPE_CHECKING:
-    from app.core.memory.memory_retriever import MemoryRetriever
-    from app.core.rag.rag_retriever import RagRetriever
-
-log = logging.getLogger("app.prompt_assembler")
-
 from app.core.session.prompt_support import (
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
@@ -31,6 +23,13 @@ from app.core.session.prompt_support import (
     _safe_provider,
     _StaticSlices,
 )
+from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
+
+if TYPE_CHECKING:
+    from app.core.memory.memory_retriever import MemoryRetriever
+    from app.core.rag.rag_retriever import RagRetriever
+
+log = logging.getLogger("app.prompt_assembler")
 
 
 class PromptAssemblerHelpersMixin:

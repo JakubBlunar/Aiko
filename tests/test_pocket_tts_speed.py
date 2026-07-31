@@ -223,7 +223,8 @@ class RuntimeSpeedGateOffTests(unittest.TestCase):
         # to confirm the production default.
         with patch("app.tts.pocket_tts_service.TTSModel", None), \
              patch("app.tts.pocket_tts_service.np", np):
-            settings = MagicMock(); settings.enabled = True
+            settings = MagicMock()
+            settings.enabled = True
             svc = PocketTtsService(settings)
         self.assertFalse(svc.get_runtime_speed_enabled())
 

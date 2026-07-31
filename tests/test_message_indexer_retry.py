@@ -17,6 +17,7 @@ wait out the real backoff.
 """
 from __future__ import annotations
 
+import queue
 import unittest
 
 from app.core.infra.chat_database import MessageRow
@@ -124,7 +125,7 @@ class RetryExhaustionTests(unittest.TestCase):
             indexer._index_one(_row(7), attempt=2)
         self.assertTrue(any("gave up on msg 7" in line for line in cm.output))
         self.assertEqual(indexer._retry_timers, set())
-        with self.assertRaises(Exception):
+        with self.assertRaises(queue.Empty):
             indexer._queue.get_nowait()
         indexer.stop()
 

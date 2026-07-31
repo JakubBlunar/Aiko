@@ -180,7 +180,9 @@ def _boundary(store, **over):
 
 class WorkerModulationTests(unittest.TestCase):
     def test_high_trust_moves_confidence_faster(self) -> None:
-        signal = lambda: RelationshipSignal(trust01=1.0, duration01=1.0)
+        def signal():
+            return RelationshipSignal(trust01=1.0, duration01=1.0)
+
         h_mod = _harness(
             with_clock=False, relationship_signal_provider=signal
         )
@@ -196,7 +198,9 @@ class WorkerModulationTests(unittest.TestCase):
         self.assertGreater(conf_mod, conf_base)
 
     def test_influences_edge_and_shift_event_on_band_cross(self) -> None:
-        signal = lambda: RelationshipSignal(trust01=1.0, duration01=1.0)
+        def signal():
+            return RelationshipSignal(trust01=1.0, duration01=1.0)
+
         h = _harness(with_clock=False, relationship_signal_provider=signal)
         c = _boundary(h.store)
         stats = h.worker.run()
@@ -219,7 +223,9 @@ class WorkerModulationTests(unittest.TestCase):
         self.assertIn("loosening", shift.reason)
 
     def test_disabled_modulation_is_noop(self) -> None:
-        signal = lambda: RelationshipSignal(trust01=1.0, duration01=1.0)
+        def signal():
+            return RelationshipSignal(trust01=1.0, duration01=1.0)
+
         h = _harness(
             _settings(concept_plasticity_modulation_enabled=False),
             with_clock=False,

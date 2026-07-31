@@ -80,7 +80,7 @@ def _prefix_similarity(a: str, b: str) -> float:
         return len(shorter) / len(longer)
     # Fall back to longest common prefix length.
     common = 0
-    for ca, cb in zip(longer, shorter):
+    for ca, cb in zip(longer, shorter, strict=False):
         if ca != cb:
             break
         common += 1

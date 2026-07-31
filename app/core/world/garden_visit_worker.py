@@ -530,8 +530,8 @@ class GardenVisitWorker:
     ) -> tuple[Any | None, str, str]:
         """Weighted choice of a cozy non-garden spot + matching pose."""
         locations = [
-            l for l in self._store.list_locations()
-            if getattr(l, "slug", "") != "garden"
+            loc for loc in self._store.list_locations()
+            if getattr(loc, "slug", "") != "garden"
         ]
         if not locations:
             return None, "sitting", "idle"

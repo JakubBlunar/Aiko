@@ -148,7 +148,7 @@ class _FakeDb:
 
 def _session(kv=None, **slots):
     host = SimpleNamespace(_chat_db=_FakeDb(kv))
-    for name, spec in CUE_SPECS.items():
+    for spec in CUE_SPECS.values():
         if spec.slot_attr:
             setattr(host, spec.slot_attr, None)
     for attr, value in slots.items():
@@ -526,7 +526,7 @@ class _Host(PostTurnHelpersMixin, InnerLifePart1Mixin):
         self._settings = SimpleNamespace(
             agent=SimpleNamespace(question_balance_enabled=True),
         )
-        for name, spec in CUE_SPECS.items():
+        for spec in CUE_SPECS.values():
             if spec.slot_attr:
                 setattr(self, spec.slot_attr, None)
         for attr, value in slots.items():

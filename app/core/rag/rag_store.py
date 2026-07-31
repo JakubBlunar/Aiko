@@ -682,7 +682,7 @@ class RagStore:
         created_ats = table.column("created_at").to_pylist()
         vectors = table.column("vector").to_pylist()
         rows: list[tuple[str, np.ndarray]] = []
-        for created_at, vec in zip(created_ats, vectors):
+        for created_at, vec in zip(created_ats, vectors, strict=False):
             if vec is None:
                 continue
             try:
@@ -799,7 +799,7 @@ class RagStore:
         titles = table.column("title").to_pylist()
         created_ats = table.column("created_at").to_pylist()
         agg: dict[str, dict[str, Any]] = {}
-        for doc_id, title, created_at in zip(doc_ids, titles, created_ats):
+        for doc_id, title, created_at in zip(doc_ids, titles, created_ats, strict=False):
             if doc_id is None:
                 continue
             key = str(doc_id)

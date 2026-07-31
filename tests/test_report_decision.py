@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import FrozenInstanceError
 
 from app.core.tasks.report_decision import (
     ACTION_DROP,
@@ -156,7 +157,7 @@ class PromptTests(unittest.TestCase):
 
     def test_verdict_is_frozen(self) -> None:
         v = ReportVerdict(action=ACTION_PARK)
-        with self.assertRaises(Exception):
+        with self.assertRaises(FrozenInstanceError):
             v.action = ACTION_SURFACE  # type: ignore[misc]
 
 

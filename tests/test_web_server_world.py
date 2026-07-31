@@ -80,7 +80,7 @@ class _WorldState:
     def world_snapshot(self) -> dict[str, Any]:
         return {
             "state": dict(self.state),
-            "locations": [dict(l) for l in self.locations],
+            "locations": [dict(loc) for loc in self.locations],
             "items": [dict(i) for i in self.items],
             "enabled": True,
         }
@@ -116,7 +116,7 @@ class _WorldState:
 
     def delete_world_location(self, loc_id: int) -> bool:
         before = len(self.locations)
-        self.locations = [l for l in self.locations if l["id"] != loc_id]
+        self.locations = [loc for loc in self.locations if loc["id"] != loc_id]
         return len(self.locations) < before
 
     def add_world_item(self, **kwargs: Any) -> dict[str, Any]:

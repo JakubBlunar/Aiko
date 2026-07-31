@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from dataclasses import FrozenInstanceError
 
 from app.core.brain import (
     BrainEventQueue,
@@ -116,7 +117,7 @@ class EventDiscriminatorTests(unittest.TestCase):
         """Frozen dataclasses raise on attribute assignment — needed
         so a producer can't mutate an in-flight event after enqueue."""
         e = UserMessageEvent(text="hi")
-        with self.assertRaises(Exception):  # FrozenInstanceError subclasses Exception
+        with self.assertRaises(FrozenInstanceError):
             e.text = "mutated"  # type: ignore[misc]
 
 
@@ -150,7 +151,7 @@ class ProducerCallbacksTests(unittest.TestCase):
 
     def test_is_frozen(self) -> None:
         cb = ProducerCallbacks()
-        with self.assertRaises(Exception):
+        with self.assertRaises(FrozenInstanceError):
             cb.on_token = lambda _t: None  # type: ignore[misc]
 
     def test_attaches_to_user_message_event(self) -> None:

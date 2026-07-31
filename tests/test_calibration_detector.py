@@ -143,8 +143,10 @@ class DetectSofteningTests(unittest.TestCase):
 
     def test_hedge_but_low_cosine_silent(self):
         # Orthogonal unit vectors: cosine = 0.0 → below threshold.
-        v1 = np.zeros(8, dtype=np.float32); v1[0] = 1.0
-        v2 = np.zeros(8, dtype=np.float32); v2[1] = 1.0
+        v1 = np.zeros(8, dtype=np.float32)
+        v1[0] = 1.0
+        v2 = np.zeros(8, dtype=np.float32)
+        v2[1] = 1.0
         sig = detect(
             user_text="so you're saying that and also let's discuss apples?",
             user_vec=v1,

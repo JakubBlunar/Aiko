@@ -8,6 +8,7 @@ finishes in milliseconds.
 from __future__ import annotations
 
 import unittest
+from dataclasses import FrozenInstanceError
 
 import numpy as np
 
@@ -428,8 +429,8 @@ class ResultShapeTests(unittest.TestCase):
         )
         self.assertTrue(r.fired)
         self.assertEqual(r.sample_size, 6)
-        with self.assertRaises(Exception):
-            r.fired = False  # frozen
+        with self.assertRaises(FrozenInstanceError):
+            r.fired = False
 
     def test_flat_affect_result_fields(self) -> None:
         r = FlatAffectResult(

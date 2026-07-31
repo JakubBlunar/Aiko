@@ -123,7 +123,7 @@ class ResolveEvidenceLabelsTests(unittest.TestCase):
         store, mem, graph, cid = self._store_with_mixed_evidence()
         labels = resolve_evidence_labels(store, mem, graph, cid)
         self.assertIn("teasing", labels)
-        self.assertTrue(any("teasing me into a pout" in l for l in labels))
+        self.assertTrue(any("teasing me into a pout" in label for label in labels))
 
     def test_src_types_filter_drops_memory(self) -> None:
         store, mem, graph, cid = self._store_with_mixed_evidence()

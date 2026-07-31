@@ -156,6 +156,11 @@ def _vec(*values: float) -> np.ndarray:
     return arr / norm if norm else arr
 
 
+# Module-level so it isn't rebuilt per call as a default argument. Read-only:
+# _Host never writes through it, and ``None`` stays meaningful (no embedder).
+_DEFAULT_EMBEDDER_VEC = _vec(1.0, 0.0)
+
+
 class _FakeEmbedder:
     def __init__(self, vec: np.ndarray | None) -> None:
         self._vec = vec
@@ -206,7 +211,7 @@ class _Host(InnerLifeProvidersMixin):
         self,
         *,
         pairs: list[tuple[Any, float]] | None = None,
-        embedder_vec: np.ndarray | None = _vec(1.0, 0.0),
+        embedder_vec: np.ndarray | None = _DEFAULT_EMBEDDER_VEC,
         cooldown: int = 0,
         session_count: int = 0,
         enabled: bool = True,

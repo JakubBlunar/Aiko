@@ -25,11 +25,11 @@ import logging
 from collections import deque
 from typing import Any
 
+from app.core.infra import timephrase
+from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
+
 
 log = logging.getLogger("app.session")
-
-from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
-from app.core.infra import timephrase
 
 
 class PostTurnMixin(PostTurnHelpersMixin):

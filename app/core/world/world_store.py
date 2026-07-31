@@ -725,7 +725,7 @@ class WorldStore:
     def list_locations(self) -> list[Location]:
         with self._lock:
             locs = list(self._locations.values())
-        locs.sort(key=lambda l: (l.position, l.id))
+        locs.sort(key=lambda loc: (loc.position, loc.id))
         return locs
 
     def get_location(self, slug: str) -> Location | None:
@@ -779,7 +779,7 @@ class WorldStore:
                 if loc.slug == clean_slug:
                     return loc
             existing_max = max(
-                (l.position for l in self._locations.values()),
+                (loc.position for loc in self._locations.values()),
                 default=-1,
             )
         pos = int(position) if position is not None else existing_max + 1
@@ -1191,7 +1191,7 @@ class WorldStore:
     def snapshot(self) -> dict[str, Any]:
         return {
             "state": self.get_state().to_dict(),
-            "locations": [l.to_dict() for l in self.list_locations()],
+            "locations": [loc.to_dict() for loc in self.list_locations()],
             "items": [i.to_dict() for i in self.list_items()],
         }
 
