@@ -156,6 +156,8 @@ End-to-end repro:
 - [`AGENTS.md`](../../../AGENTS.md) — new "Soft physicality" Code Conventions bullet + new debugging-table row.
 - [`docs/tauri-shell.md`](../../../docs/tauri-shell.md) — `PersonaActionBanner` now documented as the canonical persona-mode equivalent of chat-mode bubble badges.
 
+---
+
 ## K36. "Things I did while you were away" — idle-time world activities
 
 Aiko's room only ever reflected the *present*. K36 gives her a quiet autonomous life: during idle windows a new [`IdleAwayActivityWorker`](../../../app/core/world/idle_activity_worker.py) picks one small activity tied to her actual room inventory (sip the tea you left, curl up with a book, the cat keeps her company, tidy the desk, look out the window, doodle, or just let her thoughts wander), **mutates** the world to match (`set_state(posture, activity)` plus `consume_item` / `update_item` where apt, broadcasting `world_updated` so the World tab updates live), composes a first-person summary (deterministic template + optional local-LLM rephrase), and appends `{at, activity, summary}` to a small `kv_meta` journal ring (`aiko.away_activities`). Pairs with K28 turning-over: K28 surfaces what Aiko has been *thinking* about, K36 surfaces what she's been *doing*.
@@ -319,6 +321,117 @@ K22 already weaves *short-horizon* callbacks and inside-jokes back in, but Aiko 
 **Settings**: `agent.long_arc_callback_enabled=true` (master) + five `memory.long_arc_callback_*` knobs (`min_age_days=21`, `min_cosine=0.55`, `cooldown_hours=6.0`, `per_session_cap=1`, `min_user_words=5`, all clamped). **MCP debug** ([`memory_worker_tools.py`](../../../app/mcp/server_tools/memory_worker_tools.py)): `get_long_arc_callback_state` (switch, knobs, session count, kv cooldown stamp + recent-ids ring, cooldown-elapsed, force flag, last fire) and `force_long_arc_callback` (one-shot bypass on the cap + cooldown + min-words gates — the age / cosine / kind gates still apply). Grep `long-arc-callback fire:` on the `app.session` logger. Repro: seed an old (≥ 21-day) memory on a topic, `force_long_arc_callback()`, send a message on that topic, and the tentative "weeks ago you said…" line lands in `get_last_response_detail.system_prompt`.
 
 Persona "When something reaches way back" block (right after the associative-wander section) teaches the beat: float it as a question, let the detail be fuzzy and hand the user the rest, take corrections cleanly, never imply you keep a file on them, and drop it the moment it doesn't land — one gentle reach, rare on purpose. Tests: [`tests/test_long_arc_callback.py`](../../../tests/test_long_arc_callback.py) (pure `select` / `render` / kv helpers / `candidates_from_hits` + provider plumbing through a fake retriever: fire-and-arm, cap, cooldown, short-turn skip, no-candidate silence, recent-id exclusion, force bypass + consume-on-miss), `LongArcCallbackProviderTests` in [`tests/test_prompt_assembler.py`](../../../tests/test_prompt_assembler.py) (lands, dropped under aggressive, receives `user_text`, tier slot after `associative_wander`), `LongArcCallbackSettingsTests` in [`tests/test_settings.py`](../../../tests/test_settings.py).
+
+---
+
+## K65. Worker modernization for the topic-cluster era (audit)
+
+**Motivation.** Several background workers predate the K9 topic graph and
+still scan / extract *globally* — over the whole memory mirror or the raw
+recent transcript — when the cluster structure now gives a much cheaper,
+sharper unit of work. None of these are broken; each is a "now that we have
+20+ real clusters, this worker can be smarter and cheaper" upgrade. They
+share one lever: read [`topic_graph.py`](../../../app/core/conversation/topic_graph.py)
+(`topic_clusters` / `interest_map` / centroids) and scope the work to a
+cluster instead of the whole pool. Sub-items are independent; ship in any
+order.
+
+**Status (rolling).** All sub-items done. K65a ✅ shipped (covered by F10j
+cluster-scoped hygiene). K65b ✅ shipped. K65c ✅ shipped (modernised —
+cluster-aware re-anchor, kept not retired). K65d ✅ shipped. K65e ✅ shipped.
+
+- **K65a. ✅ shipped (via F10j).** Cluster-scope the F5 conflict-detector
+  pair scan. This was already delivered by F10j cluster-scoped memory
+  hygiene: [`cluster_scope.partition_by_cluster`](../../../app/core/memory/cluster_scope.py)
+  groups the conflict worker's candidate snapshot by
+  `topic_graph.cluster_id_for` so the cosine sweep only nominates
+  within-cluster pairs (cost `O(Σ kᵢ²)`), gated by the
+  `agent.cluster_scoped_memory_hygiene_enabled` master switch and
+  degrading to the legacy all-pairs sweep when the graph is absent /
+  non-persistent. The heuristic + LLM gate are untouched. No further work
+  needed. Original spec below for reference.
+
+  Today
+  [`MemoryConflictWorker`](../../../app/core/memory/memory_conflict_worker.py)
+  does an **all-pairs** cosine sweep over the allow-listed corpus, bounded
+  only by `conflict_detector_max_corpus` / `_max_pairs_per_run` caps — so on
+  a large store it samples a slice and can miss contradictions, and the
+  nested loop is O(n²). Contradictory pairs (`loves X` vs `hates X`) are by
+  construction *topically close*, i.e. almost always in the **same cluster**.
+  Restrict the pair scan to within-cluster pairs (walk
+  `topic_clusters().member_ids`), turning the cost into O(Σ kᵢ²) — typically
+  an order of magnitude smaller — which lets the caps rise and *increases*
+  coverage while *cutting* CPU. Pure win; keep the existing heuristic + LLM
+  gate untouched, only change which pairs are nominated.
+
+- **K65b. ✅ shipped.** Bias the K2 belief worker toward high-mass
+  interests. [`BeliefInferenceWorker`](../../../app/core/relationship/belief_worker.py)
+  still mines the last `belief_worker_lookback_turns`=12 user messages, but
+  now folds the K9 `interest_map` into the **same** extraction call: (1) the
+  top `memory.belief_worker_interest_top_n`=5 densest cluster labels arrive
+  as a "topics this user keeps returning to — prioritise here" hint, and (2)
+  up to `memory.belief_worker_reconsider_max`=3 stalest active beliefs whose
+  topic sits on one of those high-mass interests are nominated for an
+  in-prompt "still true?" re-check (zero extra LLM spend). Gated by
+  `agent.belief_interest_bias_enabled` (default on); on a cold / unlabelled
+  store the provider returns `[]` and the worker is byte-identical to the
+  legacy flat-transcript path. Interest labels + re-check topics are
+  privacy-scrubbed (PII-only labels dropped). Debug: `force_run("belief_worker")`
+  + grep `belief-worker interest-bias:`. See
+  [shipped doc](#k65b-bias-the-belief-worker-toward-high-mass-interests).
+
+- **K65c. ✅ shipped (modernised, not retired).** The Phase-4c
+  [`CuriosityWorker`](../../../app/core/proactive/curiosity_worker.py) now
+  anchors its shallow-arc follow-up on a **known-but-quiet K9 interest**
+  (the most-dormant established cluster from `topic_graph.cluster_activity`,
+  picked by largest `days_since` clearing `curiosity_worker_quiet_days`=7)
+  instead of echoing the user's literal last words — so a flagging
+  small-talk beat reaches back to something they care about but haven't
+  raised lately ("still into rock climbing? it's been a while"). Falls back
+  to the legacy literal-words prompt when no quiet interest is available
+  (cold / non-persistent graph), preserving its reactive in-session niche
+  that K9 / K34 / K64c (all idle/proactive) don't cover. Gated by
+  `agent.curiosity_worker_cluster_anchor_enabled` (default on). The overlap
+  audit (see [shipped doc](#k65c-modernise-the-phase-4c-curiosityworker--cluster-aware-re-anchor))
+  concluded **modernise** over retire: it owns the only *reactive* curiosity
+  surface. See shipped doc for the worked comparison. Original spec below.
+
+  The
+  speaking-window [`CuriosityWorker`](../../../app/core/proactive/curiosity_worker.py)
+  drafts a next-turn "ask {user} a small follow-up about <topic>"
+  `open_question`, but its topic is just the *literal last short user turn*
+  gated on a shallow arc — it has no idea what the user is actually into.
+  Now that K9 seeds (lateral), K34 forward-curiosity (their future plans),
+  and K64c curiosity-gradient (under-explored edges) all cover richer
+  curiosity, either (a) give this worker cluster-awareness so its follow-up
+  anchors on a known-but-quiet interest, or (b) evaluate whether it's now
+  redundant and should be merged into the curiosity family / retired. Decide
+  with a quick overlap audit before adding more curiosity surface.
+
+- **K65d. ✅ shipped, then removed.** Seed self-image from the interest map.
+  This folded the K9 `interest_map` into the daily `SelfImageWorker` pulse
+  ("Lately you've been spending time on: X, Y, Z"). **The whole
+  `SelfImageWorker` / `self_image.txt` / T0 `self_image_block` path has since
+  been removed** — Aiko's self-model is now carried entirely by `subject=aiko`
+  concepts surfacing through the T3 `relevant_context` core lane. See L24 in
+  [`concepts.md`](concepts.md).
+  See [shipped doc](#k65d-seed-self-image-from-the-interest-map).
+
+- **K65e. ✅ shipped.** Ground the DreamWorker in the day's hot cluster.
+  [`DreamWorker`](../../../app/core/proactive/dream_worker.py) still seeds
+  between-session dreams from the rolling summary + callbacks + self
+  memories, but the bootstrap seed now also carries a "threads that kept
+  coming up lately: …" line of the day's most recently-active established
+  K9 clusters (`topic_graph.cluster_activity`, filtered to
+  `agent.dream_hot_cluster_recency_days`=3, most-recent first, top 2;
+  computed in `chat_turn_mixin._dream_hot_clusters`) so "I kept turning over
+  your X" lands on a real recent topic. Gated by
+  `agent.dream_hot_cluster_enabled` (default on). Kept **light to avoid K64d
+  overlap**: it's *flavour* only (a cold graph / no recent clusters →
+  byte-identical legacy seed; cluster labels alone never justify a dream),
+  the dream stays a one-shot felt `[dream]` reflection distinct from K64d's
+  structural knowledge-map reflection. See
+  [shipped doc](#k65e-ground-the-dreamworker-in-the-days-hot-cluster).
 
 ---
 
@@ -696,7 +809,6 @@ Not an emotion — an **expression policy** layered between K57 (what she *feels
 
 ---
 
-
 ## K37. Emotional contagion — Jacob's affect tilts Aiko's affect
 
 **SHIPPED.** Previously `AffectUpdater.apply_turn` only moved Aiko's
@@ -739,7 +851,6 @@ capped `(dv, da)` Aiko would move. Logs: the per-turn
 `tests/test_settings.py`.
 
 ---
-
 
 ## K47. Question/share balance — stop interviewing
 
@@ -799,7 +910,6 @@ in the "Style patterns I'm in" block of
 
 ---
 
-
 ## K48. Tease rhythm — banter as a budget, not random snark
 
 **SHIPPED.** The persona promises "gently roast when it's earned" and
@@ -852,5 +962,3 @@ pending cue + text, cooldown) and `force_tease_rhythm(cue)`
 Tests: `tests/test_tease_rhythm.py`, `TeaseRhythmSettingsTests` in
 `tests/test_settings.py`, `TeaseRhythmProviderSlotTests` in
 `tests/test_prompt_assembler.py`.
-
----
