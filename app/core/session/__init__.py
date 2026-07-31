@@ -45,6 +45,11 @@ from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixi
 from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
 from app.core.session.tools_registry_mixin import ToolsRegistryMixin
 from app.core.session.voice_capture_mixin import VoiceCaptureMixin
+from app.core.session.debug_overrides import (
+    KNOWN_OVERRIDES,
+    DebugOverrides,
+    UnknownOverride,
+)
 from app.core.session.voice_mixin import VoiceMixin
 from app.core.session.web_facade_mixin import (
     TaskHandles,
@@ -54,8 +59,10 @@ from app.core.session.web_facade_mixin import (
 from app.core.session.world_mixin import WorldMixin
 
 __all__ = [
+    "KNOWN_OVERRIDES",
     "AvatarMixin",
     "ChatTurnMixin",
+    "DebugOverrides",
     "DetectorsInitMixin",
     "IdleWorkersInitMixin",
     "InnerLifeProvidersMixin",
@@ -74,6 +81,7 @@ __all__ = [
     "TaskHandles",
     "TaskOrchestrationMixin",
     "ToolsRegistryMixin",
+    "UnknownOverride",
     "VoiceCaptureMixin",
     "VoiceMixin",
     "WebFacadeMixin",

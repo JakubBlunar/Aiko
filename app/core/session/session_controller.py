@@ -43,6 +43,7 @@ from app.core.persona.avatar_profile import (
     AvatarProfileError,
     from_disk as _avatar_from_disk,
 )
+from app.core.session.debug_overrides import DebugOverrides
 from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session import (
     AvatarMixin,
@@ -251,6 +252,11 @@ class SessionController(
         # ``switch_session`` — see ``_resolve_initial_session_id`` for
         # the fallback chain.
         self._session_id = self._resolve_initial_session_id(default="main")
+
+        # One-shot overrides the MCP debug tools arm and the inner-life
+        # providers consume. Cleared wholesale on a session switch so an
+        # override that never fired can't go off in a later conversation.
+        self._debug_overrides = DebugOverrides()
 
         # ── Secret storage ───────────────────────────────────────────────
         # Move any plaintext API keys out of ``user.json`` into the OS
@@ -979,6 +985,16 @@ class SessionController(
         self._init_detectors_and_state(settings)
 
         self._init_runtime_and_hooks(settings)
+
+    @property
+    def debug_overrides(self) -> DebugOverrides:
+        """One-shot overrides the MCP debug tools arm for the next turn.
+
+        Public because the tools are the only thing that arms them; the
+        providers that consume them are mixins on this class and reach the
+        registry directly.
+        """
+        return self._debug_overrides
 
     # ── State ─────────────────────────────────────────────────────────
 
