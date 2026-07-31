@@ -1244,6 +1244,22 @@ class AgentSettings:
     engagement_tracker_enabled: bool = True
     engagement_window: int = 12
     engagement_warmup_min: int = 6
+    # L37 -- surfacing outcome ledger. Records one row per item that
+    # reached the prompt, then attaches the engagement label the tracker
+    # above computes on the FOLLOWING turn, so the hand-tuned surfacing
+    # weights finally have an outcome to be measured against. Read-only
+    # for now: nothing consumes the rates yet (that is L38), so this is
+    # purely a recorder and can be turned off with no behavioural effect
+    # beyond losing the measurement.
+    surfacing_ledger_enabled: bool = True
+    # Word-overlap floor for calling a surfaced item "echoed" by Aiko's
+    # own reply, per item kind. Memories reuse the revival threshold
+    # (``revival_min_word_overlap``) since that is what it was tuned on;
+    # concepts get their own, lower bar because a concept LABEL is three
+    # to six words, which makes the memory-length threshold a far harsher
+    # test of the same thing. Both are a keyword proxy for what F12's
+    # semantic echo would measure properly.
+    surfacing_echo_min_overlap_concept: int = 1
     engagement_latency_z_strong_drop: float = 1.5
     engagement_length_z_strong_drop: float = -1.0
     engagement_closeness_delta_max: float = 0.04

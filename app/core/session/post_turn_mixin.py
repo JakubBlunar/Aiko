@@ -1316,6 +1316,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # provider wired at construction time, so the K13 record_turn
         # block above runs first by design (post-turn order matters).
         engagement_delta = 0.0
+        # L37 reads this instead of ``_last_engagement_label`` so a turn
+        # whose engagement pass failed settles nothing, rather than
+        # attributing the previous turn's stale label to older rows.
+        engagement_label: str | None = None
         engagement_tracker = getattr(self, "_engagement_tracker", None)
         if (
             engagement_tracker is not None
@@ -1332,6 +1336,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     user_word_count=word_count,
                 )
                 engagement_delta = float(engagement.closeness_delta)
+                engagement_label = engagement.label
                 self._last_engagement_label = engagement.label
                 self._pending_absence_seconds = engagement.absence_seconds
                 # K28: arm the turning-over cue in parallel with K14's
@@ -1388,6 +1393,21 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 engagement_clock.record_turn()
             except Exception:
                 log.debug("engagement clock record_turn raised", exc_info=True)
+
+        # L37: settle the previous reply's surfaced items with the
+        # engagement just observed, then record this reply's. Placed
+        # directly after the K14 block for the same reason J11's
+        # attribution pass is -- the label has to exist before it can be
+        # attributed backwards, and it belongs to the previous turn.
+        try:
+            self._record_surfacing_outcomes(
+                assistant_text=assistant_text,
+                assistant_message_id=assistant_message_id,
+                engagement_label=engagement_label,
+                user_message_id=user_message_id,
+            )
+        except Exception:
+            log.debug("surfacing outcome ledger raised", exc_info=True)
 
         # J11 — affection-style learning. Two passes, both cheap + pure:
         #   1. Attribute the engagement we just observed (K14

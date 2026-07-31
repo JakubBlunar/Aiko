@@ -1180,3 +1180,155 @@ suppressed out of contention, only re-ranked within it.
 **Effort.** Small, as estimated — though the estimate was for the wrong change.
 
 **Depends on.** Nothing. Shipped alongside L39's dedupe, same code block.
+
+---
+
+## L37. Surfacing outcome ledger -- did what I brought up actually land?
+
+**Status: SHIPPED as a recorder.** The ledger measures; nothing reads it yet.
+That split is deliberate — L38 is the pass that lets outcomes move
+`surface_score`, and designing it against guesses is exactly what L37 exists to
+stop. Ship the measurement, look at real data through the debug view, *then*
+decide how standing feeds the scorer.
+
+**Motivation.** The concept layer could grow its *knowledge* but not its
+*judgement*. Everything deciding which concepts and memories reach the prompt is
+a hand-tuned constant — the per-kind `surface_weights`, the core-lane confidence
+bars, the habituation window — and none of them moved in response to how the
+conversation went. Surfacing was very nearly write-only: the only trace a
+surfaced concept left was the habituation timestamp stamped at the end of
+`build_relevant_context`. A concept that had been in front of Aiko two hundred
+times to no visible effect was indistinguishable from one that opened up a good
+conversation every single time.
+
+The memory layer was one step ahead but stopped short of the same line:
+`_mark_revived_memories` bumps `revival_score` when the reply shares content
+words with a surfaced memory, which measures whether **Aiko echoed it**, not
+whether **the user cared**. Nothing asked the second question, even though the
+answer was already being computed and discarded for this purpose every turn —
+`EngagementTracker.record_turn` buckets the user's reply latency and word count
+against his own rolling baseline into `engaged` / `neutral` / `disengaged` /
+`abandoned`.
+
+**The off-by-one is the whole design.** `_compute_user_reply_latency_seconds`
+measures the gap between assistant reply *N-1* and user message *N*, so the
+engagement computed during post-turn of turn *N* describes the reaction to the
+**previous** reply. A ledger that credited the current turn's surfaced set would
+have looked completely healthy — every count plausible, every rate populated —
+while measuring the wrong thing. Rows are therefore keyed by the
+`assistant_message_id` of the reply they helped produce and settled one turn
+later, following the stash-and-settle precedent J11's `_prev_affection_kinds`
+and K74's `_prev_humor_kinds` already set in
+[`post_turn_mixin.py`](../../../app/core/session/post_turn_mixin.py).
+
+**Two corrections to the groomed entry, found while building.**
+
+*There is no `turn_id`.* The entry proposed keying on
+`(turn_id, item_kind, item_id)`, but the only `turn_id` in the codebase is a
+`secrets.token_hex(4)` in a `ContextVar` for log correlation — never persisted,
+never passed to `build_relevant_context`. The key is `assistant_message_id`, a
+real reference into `messages`, and it doesn't exist until the reply is
+persisted. That is *why* rows are written in post-turn rather than at surfacing
+time, with `build_relevant_context` only stashing.
+
+*Post-turn is not guaranteed to run.* Empty user text returns early, and if
+`AffectUpdater.apply_turn` raises, `_post_turn_inner_life` returns before the
+engagement block. So a turn can leave rows unsettled or produce none at all —
+which is why unsettled is modelled as a *correct* state rather than an error.
+
+That second correction has a consequence the entry didn't follow through on. A
+skipped post-turn leaves the carried key a turn behind, and the next turn to
+reach the hook would settle a two-turns-old reply with the reaction to the one
+in between — a *wrong* number, which is strictly worse than a missing one in a
+feature whose entire purpose is trustworthy measurement. So the carry is
+validated before it is used: K14 measures latency from the last assistant
+message before the current user message, so if another assistant message sits
+between the carry and that user message, the carry is stale and the ledger
+declines to settle (`has_assistant_message_between`, one indexed lookup). The
+row stays open and reads as "no evidence". Unverifiable cases — no
+`user_message_id`, no database, a raising query — count as current, since the
+carry is right on every path that isn't the rare skip and defaulting to
+"decline" would starve the ledger of the outcomes it exists to record.
+
+**What shipped.**
+
+- **Schema v25 -> v26**, `surfacing_outcomes` in
+  [`chat_database.py`](../../../app/core/infra/chat_database.py), following the
+  `concept_events` pattern: idempotent DDL in `_CREATE_TABLES` so it lands on
+  fresh databases, a comment-only ladder entry since there is nothing to
+  backfill (and inventing history would poison the very rates it measures), and
+  `item_id` as a soft reference that is never cascade-deleted, so a pruned
+  memory still leaves its surfacing history standing.
+- **`SurfacingOutcomeStore`**
+  ([`surfacing_outcome_store.py`](../../../app/core/memory/surfacing_outcome_store.py)),
+  in `memory/` beside the similarly cross-cutting `memory_conflict_store.py`
+  since the ledger spans memories, concepts and clusters. `add_many` writes a
+  turn's set in one transaction — a half-written turn would quietly skew every
+  rate derived from it. `settle` touches only `settled_at IS NULL` rows, so it
+  is idempotent by construction and a retry can never overwrite an earlier
+  verdict with a later turn's engagement.
+- **Write side**: `build_relevant_context` stashes the projected set on
+  `_last_surfaced_items` (mirroring `RagRetriever`'s
+  `_last_surfaced_memory_ids` snapshot, with the same caveat that the
+  golden-line regression path perturbs it), and *clears it on entry* so an early
+  return can't leave the previous turn's set behind to be credited twice.
+  Post-turn consumes the stash unconditionally for the same reason.
+- **Echo marks** are stamped at insert time, since "did Aiko reference it" is a
+  same-turn signal. `revival_min_word_overlap` was tuned against multi-sentence
+  memory content, so applying the same nominal bar to a three-to-six word
+  concept label would make it a far harsher test of the same thing; concepts get
+  their own floor (`surfacing_echo_min_overlap_concept`).
+- **`get_surfacing_outcomes`** MCP tool (the small half of DT5), reporting the
+  per-item leaderboard, a per-lane rollup, and the unsettled count.
+
+**Three distinctions the API refuses to collapse**, all of which would have been
+awkward to retrofit once L38 reads this once per candidate per turn:
+
+*Counts, not rates.* `stats_for` returns `(surfaced, settled, engaged, echoed)`
+and lets the caller derive the ratio, because one item settled 1-for-1 must not
+look like one settled 50-for-50. This is the gate
+`EngagementTracker._is_warmed` already implements for itself — reporting
+`warmed=False` rather than a confident label off two data points — and L38 can
+only build the same gate if the denominator is exposed.
+
+*No evidence is not zero.* `engaged_rate` is `None` rather than `0.0` when
+nothing has settled, so a consumer cannot punish an item purely for being new.
+
+*NULL is not False.* An `echoed` column left NULL means "could not look" (a
+cluster whose label isn't reachable, a memory since deleted), which is a
+different finding from a computed False — an item Aiko demonstrably ignored.
+
+*And the window.* `window_days` is a required keyword rather than an optional
+afterthought, `None` meaning lifetime. A lifetime-only rate anchors on early
+data and progressively stops adapting, inverting the goal of the feature —
+[`concept_quality.py`](../../../app/core/concepts/concept_quality.py) already
+draws the same lifetime-*stock* versus windowed-*flow* distinction deliberately.
+Windowing also bounds the hot-path query: at roughly ten rows a turn the table
+reaches a few hundred thousand rows within a year, so the aggregate is served by
+a `(item_kind, item_id, created_at)` covering index — asserted directly via
+`EXPLAIN QUERY PLAN` in the tests, since an index that silently stops covering
+is exactly the kind of regression that shows up as a mysteriously slow turn.
+
+**Open questions, resolved.** (1) *Retention* — `prune(keep_days)` ships as a
+method but nothing schedules it; P34 owns the policy, and note that here it is
+about signal freshness and hot-path cost, not just disk. (2) *Does `abandoned`
+mean the surfaced set was bad, or that dinner was ready?* — resolved as the
+entry proposed: only `engaged` counts as evidence *for* an item, so the signal
+degrades to "no evidence" rather than false blame. (3) *Worker cues in the same
+table?* — the `item_kind` column is an open enum, so G4 adding `kind="cue"` is a
+value rather than a migration; deliberately not written yet. (4) *Does `echoed`
+deserve its own weight?* — still open, and now answerable: it is recorded beside
+the engagement label precisely so the two can be compared before either is
+acted on. High echo with low engagement would mean Aiko takes the bait and the
+user doesn't.
+
+**Permanently out of scope, by design.** Any attempt to isolate one item's
+contribution when eight were surfaced together. Turn-level shared credit is
+noisy per turn and adequate over hundreds; a regression there would invent
+precision the signal cannot support.
+
+**Effort.** Medium, as estimated — the schema bump and two write points were
+routine; the off-by-one settling dance and the read-API shape took the thought.
+
+**Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L38, L42, F12, G4,
+P43, K81, and the rest of DT5.

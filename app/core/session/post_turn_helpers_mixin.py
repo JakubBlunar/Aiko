@@ -1309,6 +1309,172 @@ class PostTurnHelpersMixin:
             except Exception:
                 log.debug("mark_revived failed", exc_info=True)
 
+    # ── L37: surfacing outcome ledger ────────────────────────────────
+
+    def _surfacing_echo_marks(
+        self, items: list, assistant_text: str,
+    ) -> dict[tuple[str, int], bool]:
+        """Which surfaced items did Aiko's own reply actually reference?
+
+        The same keyword-overlap proxy :meth:`_mark_revived_memories`
+        uses, but recorded per item instead of acted on, and with a
+        per-kind threshold: ``revival_min_word_overlap`` was tuned against
+        multi-sentence memory content, so applying it to a three-to-six
+        word concept label would make the same nominal bar a far harsher
+        test. F12's semantic echo is the real fix.
+
+        An item is omitted from the result -- leaving the column NULL, and
+        reading as *not computed* -- whenever its text could not be
+        loaded, which must stay distinct from a computed "not echoed".
+        Clusters are always omitted: their labels aren't reachable from
+        here, and guessing would be worse than a NULL.
+        """
+        marks: dict[tuple[str, int], bool] = {}
+        if not assistant_text or not items:
+            return marks
+        # An empty content-word set here is a real observation (a curt
+        # reply echoed nothing), not a failure to look, so it still marks
+        # False for every item whose own text resolves.
+        reply_tokens = self._revival_tokens(assistant_text)
+        ms = self._memory_settings
+        mem_floor = max(1, int(getattr(ms, "revival_min_word_overlap", 3)))
+        concept_floor = max(1, int(getattr(
+            self._settings.agent, "surfacing_echo_min_overlap_concept", 1,
+        )))
+        mem_store = getattr(self, "_memory_store", None)
+        concept_store = getattr(self, "_concept_store", None)
+        for item in items:
+            kind = str(getattr(item, "item_kind", "") or "")
+            item_id = int(getattr(item, "item_id", 0) or 0)
+            if item_id <= 0:
+                continue
+            text = ""
+            floor = mem_floor
+            if kind == "memory" and mem_store is not None:
+                try:
+                    mem = mem_store.get(item_id)
+                except Exception:
+                    mem = None
+                text = str(getattr(mem, "content", "") or "")
+            elif kind == "concept" and concept_store is not None:
+                try:
+                    concept = concept_store.get(item_id)
+                except Exception:
+                    concept = None
+                text = str(getattr(concept, "label", "") or "")
+                floor = concept_floor
+            if not text:
+                continue
+            item_tokens = self._revival_tokens(text)
+            if not item_tokens:
+                continue
+            marks[(kind, item_id)] = (
+                len(reply_tokens & item_tokens) >= floor
+            )
+        return marks
+
+    def _surfacing_carry_is_current(
+        self, prev_id: int, user_message_id: int | None,
+    ) -> bool:
+        """Does the carried key really name the reply the label describes?
+
+        ``_post_turn_inner_life`` can return early -- on empty user text,
+        or if the affect updater raises -- which skips this hook without
+        clearing the carry. The next turn to reach here would then settle
+        a two-turns-old reply with a reaction to the one in between.
+
+        K14 measures latency from the last assistant message before the
+        current user message, so that reply *is* the subject of the label.
+        If another assistant message sits between the carry and this
+        user message, the carry is stale and settling it would attribute
+        the reaction to the wrong reply -- worse than not settling, which
+        just reads as "no evidence".
+
+        Unverifiable (no ``user_message_id``, no database) counts as
+        current: the carry is right on every path that isn't the rare
+        skip, and refusing to settle by default would starve the ledger.
+        """
+        if user_message_id is None or prev_id <= 0:
+            return True
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return True
+        try:
+            return not chat_db.has_assistant_message_between(
+                self.session_key, prev_id, int(user_message_id),
+            )
+        except Exception:
+            log.debug("surfacing carry check failed", exc_info=True)
+            return True
+
+    def _record_surfacing_outcomes(
+        self,
+        *,
+        assistant_text: str,
+        assistant_message_id: int | None,
+        engagement_label: str | None,
+        user_message_id: int | None = None,
+    ) -> None:
+        """Close the surfacing loop: settle turn N-1, record turn N.
+
+        The two halves run on different clocks, which is the whole point
+        of doing them together here. ``engagement_label`` was just derived
+        from how long the user took to reply and how much they wrote, so
+        it describes their reaction to the **previous** reply -- it settles
+        the rows keyed to ``_prev_surfacing_message_id``, never this
+        turn's. Whether Aiko echoed an item, by contrast, is knowable
+        immediately and is stamped at insert time.
+
+        The stash is consumed unconditionally so a turn that surfaced
+        nothing cannot be credited with the previous turn's set, and
+        ``engagement_label`` is passed in rather than read off the session
+        so a turn whose engagement pass failed leaves the old rows
+        unsettled instead of settling them with a stale label.
+        """
+        store = getattr(self, "_surfacing_outcome_store", None)
+        items = list(getattr(self, "_last_surfaced_items", None) or [])
+        self._last_surfaced_items = []
+        if store is None:
+            return
+
+        prev_id = int(getattr(self, "_prev_surfacing_message_id", 0) or 0)
+        if prev_id > 0 and engagement_label:
+            if self._surfacing_carry_is_current(prev_id, user_message_id):
+                settled = store.settle(prev_id, str(engagement_label))
+                if settled:
+                    log.info(
+                        "surfacing ledger: settled %d row(s) for msg=%d as %s",
+                        settled, prev_id, engagement_label,
+                    )
+            else:
+                log.info(
+                    "surfacing ledger: msg=%d left unsettled, a turn was "
+                    "skipped and %s describes a later reply",
+                    prev_id, engagement_label,
+                )
+
+        message_id = int(assistant_message_id or 0)
+        if message_id <= 0 or not items:
+            # Nothing keyed to this reply, so nothing for the next turn's
+            # engagement to attribute. Dropping the carry here is what
+            # stops a later turn settling a much older reply's rows.
+            self._prev_surfacing_message_id = 0
+            return
+        echoed = {}
+        try:
+            echoed = self._surfacing_echo_marks(items, assistant_text)
+        except Exception:
+            log.debug("surfacing echo marks failed", exc_info=True)
+        written = store.add_many(message_id, items, echoed=echoed)
+        self._prev_surfacing_message_id = message_id if written else 0
+        if written:
+            log.info(
+                "surfacing ledger: recorded %d item(s) for msg=%d "
+                "(echoed=%d/%d)",
+                written, message_id,
+                sum(1 for v in echoed.values() if v), len(echoed),
+            )
+
     def _estimate_user_affect_for_contagion(
         self, user_text: str | None, tone: Any,
     ) -> tuple[float, float] | None:

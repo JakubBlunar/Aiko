@@ -1092,6 +1092,33 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("ScheduleLearner init failed", exc_info=True)
 
+        # L37 — surfacing outcome ledger. A plain recorder with no worker:
+        # post-turn writes to it and the MCP debug view reads it. Built here
+        # beside the other cross-cutting ``memory/`` stores that hang off
+        # ``_chat_db``. Left as ``None`` when disabled so the post-turn hook
+        # is a single attribute check rather than a settings lookup per turn.
+        self._surfacing_outcome_store = None
+        # Set by ``build_relevant_context`` each turn and consumed by
+        # post-turn; the carry is the key post-turn N+1 settles against.
+        self._last_surfaced_items = []
+        self._prev_surfacing_message_id = 0
+        if self._chat_db is not None and bool(
+            getattr(settings.agent, "surfacing_ledger_enabled", True)
+        ):
+            try:
+                from app.core.memory.surfacing_outcome_store import (
+                    SurfacingOutcomeStore,
+                )
+
+                self._surfacing_outcome_store = SurfacingOutcomeStore(
+                    self._chat_db,
+                )
+            except Exception:
+                log.warning(
+                    "SurfacingOutcomeStore init failed", exc_info=True,
+                )
+                self._surfacing_outcome_store = None
+
         # F5 — conflicting-memory detector. Always builds the store
         # (REST endpoints and the ``[[conflict:reason]]`` tag dispatch
         # need it even when the worker is disabled), then conditionally

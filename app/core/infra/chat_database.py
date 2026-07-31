@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 
-_SCHEMA_VERSION = 25
+_SCHEMA_VERSION = 26
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -472,6 +472,52 @@ CREATE TABLE IF NOT EXISTS concept_events (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_events_created ON concept_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_concept_events_concept ON concept_events(concept_id);
+
+-- Schema v26 (L37): surfacing outcome ledger. An APPEND-ONLY record of
+-- which remembered items actually reached the system prompt and what
+-- happened next, so surfacing stops being write-only: today a concept
+-- shown 200 times to no effect is indistinguishable from one that opens
+-- up a good conversation every time.
+--
+-- One row per surfaced item per turn, keyed by the ``assistant_message_id``
+-- of the reply that item helped produce. ``item_id`` is a SOFT reference
+-- into ``concepts`` / ``memories`` / ``topic_clusters`` depending on
+-- ``item_kind`` -- never cascade-deleted, mirroring ``concept_events``, so
+-- a pruned memory still leaves its surfacing history standing.
+--
+-- The outcome columns fill in on two different clocks, which is the whole
+-- subtlety of the feature:
+--   ``echoed``            same-turn -- did Aiko's own reply reference it.
+--   ``engagement_label``  NEXT turn -- the user's reaction (K14 derives
+--                         latency from the gap between Aiko's last reply
+--                         and the current user message, so the engagement
+--                         computed at post-turn N describes reply N-1).
+-- Both are NULL until computed. A row that is never settled is CORRECT
+-- rather than broken: silence after a goodbye is not disengagement, so
+-- ``settled_at IS NULL`` doubles as the health metric.
+CREATE TABLE IF NOT EXISTS surfacing_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assistant_message_id INTEGER NOT NULL,
+    item_kind TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    lane TEXT NOT NULL DEFAULT '',
+    surface_reason TEXT NOT NULL DEFAULT '',
+    score REAL NOT NULL DEFAULT 0.0,
+    rank INTEGER NOT NULL DEFAULT 0,
+    echoed INTEGER,
+    engagement_label TEXT,
+    created_at TEXT NOT NULL,
+    settled_at TEXT
+);
+-- Covering index for the per-item windowed aggregate (the hot-path read):
+-- item lookup and the created_at bound are served by one index rather than
+-- a key seek followed by a date filter on every candidate.
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_item
+    ON surfacing_outcomes(item_kind, item_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_message
+    ON surfacing_outcomes(assistant_message_id);
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_created
+    ON surfacing_outcomes(created_at);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced
@@ -1211,6 +1257,12 @@ class ChatDatabase:
             )
         except sqlite3.OperationalError:
             pass
+        # v25 -> v26: the L37 ``surfacing_outcomes`` ledger. Table + indexes
+        # are created by the idempotent script above and there is nothing to
+        # backfill -- the ledger only means anything for turns observed while
+        # it was recording, and inventing history would poison the very rates
+        # it exists to measure. Recorded here purely so the version ladder
+        # stays a complete account of what each bump did.
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
@@ -1492,6 +1544,35 @@ class ChatDatabase:
         except sqlite3.OperationalError:
             return {}
         return {int(r[0]): (r[1], r[2]) for r in rows}
+
+    def has_assistant_message_between(
+        self, session_id: str, after_id: int, before_id: int,
+    ) -> bool:
+        """Is there an assistant reply strictly between two message ids?
+
+        Used by the L37 ledger to check that a carried
+        ``assistant_message_id`` really is the reply the current
+        engagement label describes. K14 measures latency from the last
+        assistant message before the current user message, so a *later*
+        reply sitting in the gap means a turn's post-turn pass was skipped
+        and the carry is a turn stale. Returning ``True`` there makes the
+        ledger decline to settle rather than attribute the reaction to the
+        wrong reply.
+        """
+        after, before = int(after_id), int(before_id)
+        if after <= 0 or before <= after:
+            return False
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' "
+                "  AND id > ? AND id < ? LIMIT 1",
+                (str(session_id), after, before),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return row is not None
 
     def messages_in_range(
         self,

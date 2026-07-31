@@ -1404,6 +1404,11 @@ class InnerLifePart1Mixin:
         from app.llm.token_utils import estimate_tokens
         from app.core.session.prompt_support import clip_text_to_tokens
 
+        # L37: clear the ledger stash up front, so an early return here can
+        # never leave the previous turn's surfaced set behind to be credited a
+        # second time against this turn's reply.
+        self._last_surfaced_items = []
+
         ms = self._memory_settings
         if not bool(getattr(ms, "context_budget_enabled", True)):
             return RelevantContext(reason="disabled")
@@ -1935,6 +1940,25 @@ class InnerLifePart1Mixin:
                 if int(getattr(c, "concept_id", 0)) > 0
             ]
             self._write_concept_habituation(hab_state, chosen_cids, hab_turn)
+
+        # L37: snapshot what actually reached the prompt for the outcome
+        # ledger. Stashed rather than written, because a ledger row is keyed
+        # by the ``assistant_message_id`` of the reply these items shaped and
+        # that id doesn't exist until the reply is persisted -- post-turn owns
+        # the insert. Mirrors ``rag.mark_surfaced`` snapshotting
+        # ``last_surfaced_memory_ids`` here for the post-turn revival check,
+        # and carries the same caveat: the golden-line regression path
+        # perturbs it, so that must only run while the session is idle.
+        try:
+            from app.core.memory.surfacing_outcome_store import (
+                items_from_selection,
+            )
+            self._last_surfaced_items = items_from_selection(
+                selection, score_components=score_components,
+            )
+        except Exception:
+            log.debug("relevant_context: surfaced stash failed", exc_info=True)
+            self._last_surfaced_items = []
 
         return RelevantContext(
             text=text,
