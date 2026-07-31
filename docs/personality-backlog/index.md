@@ -115,7 +115,7 @@ see [`shipped/moments.md`](shipped/moments.md).
 
 Still open: K12 calendar-linked anticipation ·
 K19 cold-start companion onboarding ·
-K26 Aiko-side voice evolution · K33 cozy mode ·
+K33 cozy mode ·
 K40 comfortable silence · K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
 K49 messiness permission (typed imperfection) ·

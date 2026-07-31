@@ -2280,6 +2280,15 @@ class AgentSettings:
     # Shortest echo that can count as a bit. Below 3 words the "phrase"
     # is usually just shared vocabulary.
     inside_joke_birth_min_words: int = 3
+
+    # ── K26: voice adoption ───────────────────────────────────────────
+    # The slow counterpart to K13 (register calibration): phrases that
+    # started as his drift into Aiko's own speech over months. Off → the
+    # worker never runs and the prompt block stays empty; already-adopted
+    # phrases are kept but not surfaced.
+    voice_adoption_enabled: bool = True
+    # Sweep cadence. Daily is plenty for a mechanic measured in weeks.
+    voice_adoption_interval_seconds: int = 86400
     # Phase 4c: CuriosityWorker — emits a one-line "next-turn"
     # follow-up question when the recent conversation has gone shallow.
     curiosity_worker_enabled: bool = True

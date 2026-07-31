@@ -69,12 +69,19 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 @dataclass(slots=True, frozen=True)
 class CatchphraseCandidate:
-    """A surviving n-gram with the data needed for a memory write."""
+    """A surviving n-gram with the data needed for a memory write.
+
+    ``first_speaker`` is whoever said the phrase first *within the mined
+    window* (``"user"`` / ``"assistant"``). A shared phrase reads very
+    differently depending on where it came from, and K26 (voice adoption)
+    only lets Aiko take on phrases that started as his.
+    """
 
     phrase: str
     count: int
     user_count: int
     assistant_count: int
+    first_speaker: str = ""
 
 
 def _normalise_text(text: str) -> str:
@@ -122,6 +129,7 @@ def _harvest_candidates(
     those that recur often enough on both sides."""
     user_counts: Counter[tuple[str, ...]] = Counter()
     assistant_counts: Counter[tuple[str, ...]] = Counter()
+    first_speaker: dict[tuple[str, ...], str] = {}
     for row in messages:
         role = (row.role or "").lower()
         if role not in ("user", "assistant"):
@@ -138,6 +146,7 @@ def _harvest_candidates(
                 if not _ngram_is_meaningful(ng):
                     continue
                 seen_in_msg.add(ng)
+                first_speaker.setdefault(ng, role)
                 if role == "user":
                     user_counts[ng] += 1
                 else:
@@ -158,6 +167,7 @@ def _harvest_candidates(
                 count=int(total),
                 user_count=int(u),
                 assistant_count=int(a),
+                first_speaker=first_speaker.get(ng, ""),
             )
         )
     # Prefer phrases that both sides use roughly equally. The score
@@ -349,6 +359,10 @@ def bless_inside_joke(
             salience=max(0.0, min(1.0, float(salience))),
             source_session=session_key,
             source_message_id=source_message_id,
+            # K26 provenance: a bit born this way is one of *hers* that he
+            # echoed, so she can never later "adopt" it as his turn of
+            # phrase. ``born`` marks the fast path for state dumps.
+            metadata={"origin": "assistant", "born": True},
             # Born in front of us with a laugh behind it -- at least as
             # vetted as a phrase the slow miner counted three times.
             tier="long_term",
@@ -524,6 +538,14 @@ class CatchphraseMiner:
                 1, cand.count // 2
             )
             salience = max(0.3, min(0.9, self._salience + 0.1 * (balance - 1.0)))
+            # K26: who said it first decides whether Aiko is allowed to
+            # take the phrase on as her own later. Recorded at write time
+            # because the window that proves provenance is right here.
+            metadata = (
+                {"origin": cand.first_speaker}
+                if cand.first_speaker in ("user", "assistant")
+                else None
+            )
             try:
                 memory = self._memory.add(
                     content=phrase,
@@ -532,6 +554,7 @@ class CatchphraseMiner:
                     salience=salience,
                     source_session=session_key,
                     source_message_id=None,
+                    metadata=metadata,
                     # Schema v8: catchphrases are analytic outputs over
                     # an entire conversation window -- already vetted
                     # by recurrence, so they go straight to long_term.

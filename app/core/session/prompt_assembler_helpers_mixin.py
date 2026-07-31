@@ -170,6 +170,7 @@ class PromptAssemblerHelpersMixin:
         coactivation_trace: Callable[[], dict] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
+        voice_adoption: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
         ambient_noise: Callable[[], str] | None = None,
         avatar_capabilities: Callable[[], dict[str, bool] | None] | None = None,
@@ -287,6 +288,8 @@ class PromptAssemblerHelpersMixin:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
             self._catchphrase_provider = catchphrase
+        if voice_adoption is not None:
+            self._voice_adoption_provider = voice_adoption
         if petname is not None:
             self._petname_provider = petname
         if ambient_noise is not None:

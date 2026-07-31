@@ -2522,6 +2522,91 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_inside_joke_birth raised: {exc}"
 
     @mcp.tool()
+    def get_voice_adoption_state() -> str:
+        """K26 — dump the voice-adoption state.
+
+        Shows the master switch + the (deliberately slow) knobs, which of
+        his phrases Aiko has taken on and when, the rendered prompt block,
+        and the full catchphrase registry with each row's resolved
+        provenance and age. First stop for "why hasn't she picked
+        anything up yet?" — usually the answer is that the registry rows
+        are too young, or their origin is unknown (mined before K26 and
+        not findable in the message history).
+        """
+        from app.core.relationship import voice_adoption as _va
+
+        agent = session._settings.agent
+        mem = session._memory_settings
+        out: dict[str, Any] = {
+            "enabled": bool(getattr(agent, "voice_adoption_enabled", True)),
+            "interval_seconds": int(
+                getattr(agent, "voice_adoption_interval_seconds", 86400)
+            ),
+            "min_age_days": float(
+                getattr(mem, "voice_adoption_min_age_days", 14.0)
+            ),
+            "min_days_between": float(
+                getattr(mem, "voice_adoption_min_days_between", 10.0)
+            ),
+            "max_adopted": int(
+                getattr(mem, "voice_adoption_max_adopted", 3)
+            ),
+        }
+        try:
+            adopted = _va.load_state(session._chat_db.kv_get)
+            out["adopted"] = adopted
+            out["block"] = _va.render_block(
+                adopted,
+                user_display_name=session.user_display_name,
+                max_phrases=int(
+                    getattr(mem, "voice_adoption_max_rendered", 2)
+                ),
+            )
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["adopted_error"] = str(exc)
+        worker = getattr(session, "_voice_adoption_worker", None)
+        if worker is not None:
+            try:
+                rows = worker._catchphrase_rows()
+                now = timephrase.utcnow()
+                out["registry"] = [
+                    {
+                        "phrase": r["phrase"],
+                        "origin": r["origin"],
+                        "age_days": round(
+                            (now - r["first_seen"]).total_seconds() / 86400.0,
+                            2,
+                        ),
+                        "salience": round(float(r["salience"]), 3),
+                    }
+                    for r in rows
+                ]
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["registry_error"] = str(exc)
+        else:
+            out["worker"] = "not registered"
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_voice_adoption_sweep() -> str:
+        """K26 — run the voice-adoption sweep now, without the time gates.
+
+        Drops the ``min_age_days`` + ``min_days_between`` gates for this
+        one run so a mechanic measured in weeks is testable in a sitting.
+        Does NOT drop the provenance gate (only phrases that started as
+        his are adoptable) or the ``max_adopted`` ceiling. The adopted
+        phrase shows up in the T0 prompt block on the very next turn.
+        """
+        worker = getattr(session, "_voice_adoption_worker", None)
+        if worker is None:
+            return "voice adoption worker not registered"
+        try:
+            worker.force_next()
+            return json.dumps(worker.run(), indent=2, default=str)
+        except Exception as exc:
+            return f"force_voice_adoption_sweep raised: {exc}"
+
+    @mcp.tool()
     def get_upcoming_horizon_state() -> str:
         """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
 

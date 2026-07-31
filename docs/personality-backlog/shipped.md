@@ -97,6 +97,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought)
 - [K27. Aiko's day — daily personality colour](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour)
 - [K21. Fresh-eyes thread re-summarisation](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation)
+- [K26. Aiko-side voice evolution — she starts to talk like him a little](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little)
 
 ## [Shipped — Companion patterns K31–K60](shipped/patterns-k31-k60.md)
 

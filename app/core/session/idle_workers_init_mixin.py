@@ -241,6 +241,44 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("SharedRitualWorker init failed", exc_info=True)
 
+            # K26 — voice adoption. Slowly folds phrases that started as
+            # his into Aiko's own speech. Reads the catchphrase registry
+            # only; at most one adoption every ~10 days.
+            try:
+                from app.core.proactive.voice_adoption_worker import (
+                    VoiceAdoptionWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._voice_adoption_worker = VoiceAdoptionWorker(
+                    chat_db=self._chat_db,
+                    memory_store=self._memory_store,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "voice_adoption_enabled",
+                            True,
+                        )
+                    ),
+                    origin_resolver=self._first_speaker_of_phrase,
+                    interval_seconds=getattr(
+                        agent, "voice_adoption_interval_seconds", 86400
+                    ),
+                    min_age_days=getattr(
+                        mem, "voice_adoption_min_age_days", 14.0
+                    ),
+                    min_days_between=getattr(
+                        mem, "voice_adoption_min_days_between", 10.0
+                    ),
+                    max_adopted=getattr(
+                        mem, "voice_adoption_max_adopted", 3
+                    ),
+                )
+                self._idle_scheduler.register(self._voice_adoption_worker)
+            except Exception:
+                log.warning("VoiceAdoptionWorker init failed", exc_info=True)
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local
@@ -1259,6 +1297,37 @@ class IdleWorkersInitMixin:
         # Cached gap list produced by the post-turn detector for the
         # NEXT turn's inner-life provider. Cleared after each render.
         self._pending_belief_gaps: list[Any] = []
+
+    def _first_speaker_of_phrase(self, phrase: str) -> str | None:
+        """K26 provenance fallback: who used ``phrase`` first, ever.
+
+        The miner stamps ``metadata.origin`` on everything it writes, but
+        catchphrases mined before K26 have none. This walks the message
+        history for the earliest turn containing the phrase. Best-effort
+        and approximate — the registry stores a *normalised* phrase, so
+        an original that carried punctuation mid-phrase won't match, and
+        the caller correctly treats a miss as "unknown, don't adopt".
+        """
+        text = (phrase or "").strip().lower()
+        if len(text) < 3:
+            return None
+        escaped = (
+            text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        try:
+            row = self._chat_db.execute_fetchone(
+                "SELECT role FROM messages "
+                "WHERE lower(content) LIKE ? ESCAPE '\\' "
+                "ORDER BY id ASC LIMIT 1",
+                (f"%{escaped}%",),
+            )
+        except Exception:
+            log.debug("phrase provenance lookup failed", exc_info=True)
+            return None
+        if not row:
+            return None
+        role = str(row[0] or "").lower()
+        return role if role in ("user", "assistant") else None
 
     def _away_activity_valence(self) -> float | None:
         """Current affect valence for the H18 idle-activity weighting.

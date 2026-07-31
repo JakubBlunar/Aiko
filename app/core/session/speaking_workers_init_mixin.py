@@ -595,6 +595,7 @@ class SpeakingWorkersInitMixin:
             narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,
             catchphrase=self._render_catchphrase_block,
+            voice_adoption=self._render_voice_adoption_block,
             petname=self._render_petname_block,
             ambient_noise=self._render_ambient_noise_block,
             avatar_capabilities=self._avatar_capabilities,
