@@ -1485,11 +1485,12 @@ class InnerLifePart1Mixin:
             get_kind,
         )
         from app.core.concepts.concept_surfacing import (
-            event_charge,
+            event_charge_detail,
             habituation_factor,
             recency_boost,
             salience as concept_salience,
             stability as concept_stability,
+            surface_reason,
             surface_score,
             turns_since_surfaced,
         )
@@ -1579,6 +1580,7 @@ class InnerLifePart1Mixin:
                     ))
                     score_components[cid] = {
                         "lane": "core",
+                        "reason": surface_reason(lane="core"),
                         "confidence": round(conf, 4),
                         "habituation": round(hab, 4),
                     }
@@ -1607,21 +1609,21 @@ class InnerLifePart1Mixin:
                 else DEFAULT_SURFACE_WEIGHTS
             )
             conf = float(getattr(concept, "confidence", 0.0))
+            reinforced_at = getattr(concept, "last_reinforced_at", None)
             rec = recency_boost(
-                getattr(concept, "last_reinforced_at", None),
-                surf_now, weights.recency_halflife_days,
+                reinforced_at, surf_now, weights.recency_halflife_days,
             )
             stab = concept_stability(
                 conf, float(getattr(concept, "plasticity", 0.0))
             )
             sal = 0.0
+            change_event: str | None = None
             if sal_enabled and weights.salience > 0.0:
-                sal = concept_salience(
-                    change=event_charge(
-                        recent_events.get(cid, ()),
-                        surf_now, halflife_days=weights.salience_halflife_days,
-                    ),
+                charge, change_event = event_charge_detail(
+                    recent_events.get(cid, ()),
+                    surf_now, halflife_days=weights.salience_halflife_days,
                 )
+                sal = concept_salience(change=charge)
             hab = _habituation(cid, hab_flex_floor)
             relevance = surface_score(
                 cosine=float(cos), confidence=conf, recency=rec,
@@ -1635,7 +1637,16 @@ class InnerLifePart1Mixin:
             ))
             comp = {
                 "lane": lane,
+                # L35: which of the six signals actually won this concept its
+                # place, not just the blended number they collapse into.
+                "reason": surface_reason(
+                    lane=lane, cosine=float(cos), confidence=conf,
+                    recency=rec, stability=stab, salience=sal,
+                    activation=float(activation), change_event=change_event,
+                    recency_known=bool(reinforced_at), w=weights,
+                ),
                 "cosine": round(float(cos), 4),
+                "confidence": round(conf, 4),
                 "recency": round(rec, 4),
                 "stability": round(stab, 4),
                 "salience": round(sal, 4),
@@ -2013,9 +2024,12 @@ class InnerLifePart1Mixin:
         ``pinned_ids`` marks which concepts came from the L27 always-on core
         lane (vs. the turn-relevant fill); recorded per-entry in the trace so
         the MCP ``get_last_concept_trace`` view shows *why* each concept was
-        in the prompt. It does not affect rendering."""
+        in the prompt, alongside the L35 ``surface_reason``. Neither affects
+        rendering -- the reason is debug-only and never reaches Aiko."""
         if not concepts:
             return "", {"surfaced": [], "reason": "no_eligible"}
+        from app.core.concepts.concept_surfacing import SURFACE_REASON_LABELS
+
         pinned = pinned_ids or set()
         components = score_components or {}
         name = self.user_display_name
@@ -2093,6 +2107,15 @@ class InnerLifePart1Mixin:
             comp = components.get(int(getattr(c, "concept_id", 0)))
             if comp:
                 entry["score"] = comp
+                # L35: hoist the winning signal to the top of the entry --
+                # the one field you read to answer "why is this here?"
+                # without unpacking the whole breakdown.
+                reason = comp.get("reason")
+                if reason:
+                    entry["surface_reason"] = reason
+                    entry["surface_reason_label"] = SURFACE_REASON_LABELS.get(
+                        reason, reason
+                    )
             surfaced_trace.append(entry)
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):

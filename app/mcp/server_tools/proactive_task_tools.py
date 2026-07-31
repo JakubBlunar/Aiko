@@ -2348,6 +2348,12 @@ def register(mcp, session: "SessionController") -> None:
           hedge}`` — or a ``reason`` when empty (``disabled`` /
           ``immature`` / ``no_eligible`` / ``aggressive`` / ...). Join
           ``concept_id`` to ``get_concept_graph`` for the evidence.
+          Each entry also carries the **L35 surface reason**:
+          ``surface_reason`` (a stable token — ``core_belief``,
+          ``topic_match``, ``unresolved_contradiction``, ``association``,
+          …) plus a readable ``surface_reason_label``. That is the one
+          field that answers "why is this concept here?"; ``score`` under
+          it holds the full signal breakdown the reason was picked from.
         - ``coactivation`` (L4 ``coactivation_block``): the chosen
           ``mode`` (reps / labels / strength / bucket) + ``quiet``
           cluster, or a ``reason``.

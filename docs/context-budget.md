@@ -204,6 +204,36 @@ browser and MCP `get_last_response_detail`) records the resolved
 scores, dropped-for-budget counts, and `degrade_level`. `concepts_surfaced` and
 `rag_prefetch_event` are populated from the same region result.
 
+### Why is this concept here? (L35)
+
+The surfacing scorer collapses six signals into one number, which makes the
+*ranking* legible but the *choice* opaque. Every entry in `concepts_surfaced`
+(MCP `get_last_concept_trace`) therefore carries a **surface reason** naming the
+signal that won it its slot:
+
+| Reason | Meaning |
+|---|---|
+| `core_belief` | pinned by the always-on core lane — never scored against the turn |
+| `association` | reached only via spreading activation; no cosine to the turn at all |
+| `topic_match` | context (label cosine) was the dominant term |
+| `high_confidence` / `settled_belief` | confidence, or confidence damped by how sticky the concept is |
+| `recently_reinforced` | fresh evidence landed on it |
+| `unresolved_contradiction` / `recently_revived` / `loosening_boundary` / `newly_promoted` | a lifecycle event charged its salience — the specific event is named |
+| `recent_change` | salience won, but no recognised event drove it |
+
+Two lanes answer themselves: core is pinned before any scoring happens, and an
+activation-lane concept had no direct relevance to the turn, so association is
+the only possible cause. For everything else the reason is the term with the
+largest **weighted** contribution to `surface_score` — a high cosine against a
+zero context weight won nothing. Recency is excluded when the concept has no
+`last_reinforced_at`, since `recency_boost` neutral-defaults to its maximum
+(`1.0`) and a missing signal must not be reported as the reason.
+
+The reason is **debug-only**. It is never shown to Aiko: letting her read "I
+surfaced this because we clashed on it" is the fastest route to a companion who
+narrates her own machinery. `score` on the same entry holds the full breakdown
+the reason was picked from.
+
 ## Knobs
 
 All under `memory.` — full descriptions + defaults in

@@ -1046,3 +1046,64 @@ off / immature / aggressive. Trace snapshots are copied (not live-read) so a
 cache-hit reports exactly what was in the prompt.
 
 **Effort.** Medium (high leverage — validates every other L-entry).
+
+---
+
+## L35. Surface-reason labels -- "why did I surface this?" on every item
+
+**Status: SHIPPED.** The follow-through on L26: that trace answered *which*
+concepts entered the prompt, this one answers *why* each of them did.
+
+**Motivation.** L26 already stamps a per-turn trace of *which* concepts surfaced
+(with confidence + hedge). L35 adds the *why*: a structured reason on every
+surfaced item — `high-confidence identity`, `recent emotional relevance`,
+`unresolved contradiction`, `curiosity trigger`, `relationship importance`,
+`recently forgotten/revived`. This makes the prompt legible ("why is this here?")
+and sharpens debugging.
+
+**What shipped.** A pure
+[`surface_reason()`](../../../app/core/concepts/concept_surfacing.py) beside the
+scorer it explains, plus a `SURFACE_REASON_LABELS` table for human phrasing.
+Each L26 trace entry gains `surface_reason` (a stable token) and
+`surface_reason_label`, hoisted to the top of the entry so the answer doesn't
+require unpacking the `score` breakdown it was derived from. Reasons are listed
+in [`context-budget.md`](../../context-budget.md#why-is-this-concept-here-l35).
+
+Three rules decide it:
+
+- **Two lanes answer themselves.** A core concept is pinned on confidence before
+  any scoring runs; an activation-lane concept had no cosine to the turn at all
+  and is in the prompt purely because a neighbour primed it. Neither ran a
+  contest, so neither needs one decided.
+- **Otherwise, the largest *weighted* contribution to `surface_score` wins** —
+  not the largest raw value. A cosine of 0.9 against a kind whose `context`
+  weight is zero won nothing, and saying otherwise would make the label a lie
+  about the machinery it exists to explain.
+- **A missing signal is never a reason.** `recency_boost` neutral-defaults to
+  `1.0` — its *maximum* — for a concept that was never reinforced, which is
+  correct for the score (a missing timestamp must not penalise) but would let
+  "reinforced recently" win on the absence of evidence. Recency drops out of
+  contention when there is no `last_reinforced_at`.
+
+A salience win is refined into the specific story behind the charge
+(`unresolved_contradiction` vs `recently_revived` vs …) by
+`event_charge_detail()`, a sibling of the existing `event_charge()` that also
+reports *which* event produced the max — the two are the same number to the
+scorer and completely different stories to a reader.
+
+**Open questions, resolved.** (1) *One reason or a ranked few?* — **one**. The
+full ranking is already in the entry's `score` breakdown; a second opinion in
+the reason field would just be the breakdown again, less precisely. (2) *Ever
+shown to Aiko?* — **no, debug-only**. The backlog flagged the over-narration
+risk and it is a real one: a companion who can read "I surfaced this because we
+clashed on it" is one step from saying so.
+
+**Not covered** (and not blocking): the `curiosity trigger` and `relationship
+importance` examples in the original sketch need L30 / L32, neither of which is
+built. Adding a reason for a signal that doesn't exist yet would be inventing a
+label with nothing behind it; those land with their features.
+
+**Effort.** Small (labelling existing selection signals; extends L26) — as
+estimated.
+
+**Depends on.** L26 (trace).

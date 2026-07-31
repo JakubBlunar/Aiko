@@ -256,7 +256,9 @@ Open — later kinds and refinements (L29-L36, all detailed in
 [`concepts.md`](concepts.md)): relationship & meta narratives, concept
 hypotheses and the curiosity loop that tests them, concept fission,
 importance as a second axis beside confidence, introspective reflection,
-a richer edge taxonomy, surface-reason labels, and a strategy layer.
+a richer edge taxonomy, and a strategy layer. **L35 (surface-reason
+labels) is shipped** — every concept in the L26 trace now names the
+signal that put it in the prompt.
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
