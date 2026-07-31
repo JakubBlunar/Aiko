@@ -85,7 +85,7 @@ class IngestHappyPathTests(_IngestBase):
 
     def test_reupload_replaces_chunks(self) -> None:
         body_v1 = b"first version of the document\n\nwith two paragraphs"
-        first = self.ingestor.ingest(filename="doc.txt", data=body_v1)
+        self.ingestor.ingest(filename="doc.txt", data=body_v1)
         # Same filename + body -> new uuid suffix, but the *previous* doc
         # remains because the id is unique-per-upload. List should now show
         # two documents.

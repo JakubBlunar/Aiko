@@ -360,7 +360,7 @@ class IdleWorkerScheduler:
                 skipped_budget += 1
                 continue
 
-            self._run_one(worker, record, now=now)
+            self._run_one(worker, record)
             ran += 1
             ran_names.append(name)
             actual_ms = record.last_duration_ms or 0.0
@@ -381,10 +381,11 @@ class IdleWorkerScheduler:
         self,
         worker: IdleWorker,
         record: IdleWorkerRecord,
-        *,
-        now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        started_at = now or _utcnow()
+        # Timestamps here are always real wall-clock: ``last_run_at`` records
+        # when the run *finished*, and durations come off the monotonic clock.
+        # There is deliberately no injectable ``now`` -- an earlier one only
+        # ever fed a start timestamp that nothing read.
         started_ms = time.monotonic() * 1000.0
         log.info("idle_worker run start: %s", worker.name)
         try:

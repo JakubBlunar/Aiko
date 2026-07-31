@@ -485,7 +485,6 @@ class RagRetrieverMergeTests(_TmpRagBase):
         # Two memories + a message; one duplicate text across sources.
         v1 = self.embedder.embed("Jacob loves coffee")
         v2 = self.embedder.embed("Jacob lives in Poland")
-        v3 = self.embedder.embed("random older line")
         self.store.add_memory(record_id="m1", content="Jacob loves coffee", kind="preference", embedding=v1, salience=0.9)
         self.store.add_memory(record_id="m2", content="Jacob lives in Poland", kind="fact", embedding=v2, salience=0.7)
         self.store.add_message(

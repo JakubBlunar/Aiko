@@ -74,7 +74,7 @@ from app.core.infra.settings import (
 from app.core.voice.tts_queue import TtsQueue
 from app.core.session.merge_buffer import _MergeBuffer
 from app.llm.chat_client import ChatClient
-from app.llm.embedder import build_embedder
+from app.llm.embedder import Embedder, build_embedder
 from app.llm.factory import ClientCache
 from app.stt.realtime_stt_service import RealtimeSttService
 

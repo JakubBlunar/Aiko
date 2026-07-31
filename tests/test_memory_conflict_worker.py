@@ -267,7 +267,7 @@ class HeuristicBorderlinePathTests(unittest.TestCase):
         w = _build_world(
             verdicts=[{"verdict": "YES", "reason": "ages disagree"}],
         )
-        id_a = _add_fact(
+        _add_fact(
             w["memory_store"], w["embedder"],
             "Bob is 35 years old and currently single",
             confidence=0.9,
@@ -292,7 +292,7 @@ class HeuristicBorderlinePathTests(unittest.TestCase):
         w = _build_world(
             verdicts=[{"verdict": "NO", "reason": "both true"}],
         )
-        id_a = _add_fact(
+        _add_fact(
             w["memory_store"], w["embedder"],
             "Bob is 35 years old and currently single",
             confidence=0.9,

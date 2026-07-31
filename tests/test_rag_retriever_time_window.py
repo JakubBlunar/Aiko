@@ -170,7 +170,9 @@ class TimeWindowGuardTests(unittest.TestCase):
 
     def test_no_guard_without_time_phrase(self) -> None:
         r = _build(created_at=_iso(NOW - timedelta(days=5)))
-        block = r.block_for("tell me about the dashboard")
+        # Called for its effect: the guard note is computed during block
+        # assembly, so skipping this would make the assertion below vacuous.
+        r.block_for("tell me about the dashboard")
         self.assertIsNone(r.time_window_guard_note())
 
 
