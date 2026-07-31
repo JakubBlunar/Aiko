@@ -54,7 +54,50 @@ class RealtimeSttService:
         self._loaded_language: str = ""
         self._loaded_device: str = ""
         self._context_active: bool = False
-        if AudioToTextRecorder is not None:
+        # P27: construction no longer loads the model. Whisper large-v1 plus
+        # RealtimeSTT's transcription child process is the single largest
+        # resident cost in the app (~0.9 GB), and a text-only session paid it
+        # at boot for a recorder it never fed a frame to. The load now happens
+        # on first *use* -- see :meth:`_ensure_recorder` -- or eagerly via
+        # :meth:`prewarm` when voice is turned on.
+        self._shut_down: bool = False
+        if AudioToTextRecorder is None:
+            self._last_error = "RealtimeSTT (AudioToTextRecorder) not installed"
+            log.warning(
+                "STT engine unavailable: RealtimeSTT (AudioToTextRecorder) not installed"
+            )
+        elif not self.enabled:
+            log.info("STT disabled in settings: engine not loaded")
+        else:
+            log.debug("STT engine deferred: loads on first use")
+
+    @property
+    def enabled(self) -> bool:
+        # Absent attribute means an older/partial settings object; don't
+        # silently disable voice for a shape we didn't expect.
+        return bool(getattr(self._settings, "enabled", True))
+
+    def _ensure_recorder(self) -> object | None:
+        """Load the recorder on demand, once. Returns None if unavailable.
+
+        Every path that touches ``self._recorder`` goes through here, so
+        the lazy load is invisible to callers -- they only see the same
+        "no recorder" short-circuit they already handled. A failed load
+        latches into ``_last_error`` so a broken install doesn't retry the
+        multi-second import on every audio chunk.
+        """
+        rec = self._recorder
+        if rec is not None:
+            return rec
+        if AudioToTextRecorder is None or self._last_error or self._shut_down:
+            return None
+        if not self.enabled:
+            return None
+        with self._lock:
+            if self._recorder is not None:
+                return self._recorder
+            if self._last_error:
+                return None
             t0 = time.monotonic()
             try:
                 self._recorder = self._create_recorder()
@@ -68,17 +111,28 @@ class RealtimeSttService:
                     (self._loaded_device or self._settings.device),
                     exc,
                 )
-            else:
-                log.info(
-                    "STT engine ready: model=%s language=%s device=%s init_ms=%.0f",
-                    self._loaded_model, self._loaded_language, self._loaded_device,
-                    (time.monotonic() - t0) * 1000.0,
-                )
-        else:
-            self._last_error = "RealtimeSTT (AudioToTextRecorder) not installed"
-            log.warning(
-                "STT engine unavailable: RealtimeSTT (AudioToTextRecorder) not installed"
+                return None
+            log.info(
+                "STT engine ready: model=%s language=%s device=%s init_ms=%.0f",
+                self._loaded_model, self._loaded_language, self._loaded_device,
+                (time.monotonic() - t0) * 1000.0,
             )
+            return self._recorder
+
+    def prewarm(self) -> bool:
+        """Load the model now, so the first voice turn doesn't wait on it.
+
+        Called from the voice-enable path rather than from boot: a
+        multi-second load is fine while the user is clicking the mic
+        toggle, and unacceptable in the middle of their first sentence.
+        Returns True when a recorder is loaded.
+        """
+        return self._ensure_recorder() is not None
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the weights are actually resident right now."""
+        return self._recorder is not None
 
     def _resolve_device(self) -> str:
         """Resolve the configured device, probing for CUDA when set to "auto".
@@ -130,29 +184,48 @@ class RealtimeSttService:
 
     @property
     def is_available(self) -> bool:
-        return self._recorder is not None and self._last_error is None
+        """Whether STT *can* serve a request -- not whether it's loaded.
+
+        P27: this used to mean "a recorder object exists", which was
+        equivalent while the load happened in ``__init__``. With the lazy
+        load it has to mean "could load": the five gate sites in
+        ``voice_capture_mixin`` ask this *before* any audio exists, so the
+        old meaning would refuse every voice turn forever.
+        """
+        if AudioToTextRecorder is None or not self.enabled or self._shut_down:
+            return False
+        # A latched load failure is permanent for this process; a recorder
+        # that loaded and then errored mid-stream is still usable.
+        if self._last_error is not None and self._recorder is None:
+            return False
+        return True
 
     def feed_audio(self, indata: object) -> None:
         """Feed raw audio chunk (e.g. from sounddevice callback). indata: int16 or float32 array."""
-        if self._recorder is None:
+        recorder = self._ensure_recorder()
+        if recorder is None:
             return
         try:
             if np is not None and hasattr(indata, "tobytes"):
                 arr = np.asarray(indata)
                 if arr.dtype == np.float32 or arr.dtype == float:
                     arr = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
-                self._recorder.feed_audio(arr.tobytes())
-            elif hasattr(self._recorder, "feed_audio"):
-                self._recorder.feed_audio(indata)
+                recorder.feed_audio(arr.tobytes())
+            elif hasattr(recorder, "feed_audio"):
+                recorder.feed_audio(indata)
         except Exception as exc:
             self._last_error = str(exc)
 
     def text(self) -> str:
         """Return current/final transcript."""
-        if self._recorder is None:
+        # Deliberately does *not* trigger a load: a transcript read with no
+        # recorder means nothing was fed, and loading Whisper to return ""
+        # would stall the caller for seconds.
+        recorder = self._recorder
+        if recorder is None:
             return ""
         try:
-            t = getattr(self._recorder, "text", None)
+            t = getattr(recorder, "text", None)
             if callable(t):
                 return (t() or "").strip()
             return ""
@@ -161,12 +234,13 @@ class RealtimeSttService:
 
     def start_context(self) -> None:
         """Enter recorder context (idempotent). Use with feed_audio then text()."""
-        if self._recorder is None or not hasattr(self._recorder, "__enter__"):
+        recorder = self._ensure_recorder()
+        if recorder is None or not hasattr(recorder, "__enter__"):
             return
         if getattr(self, "_context_active", False):
             return
         try:
-            self._recorder.__enter__()
+            recorder.__enter__()
             self._context_active = True
         except Exception as exc:
             self._last_error = f"start_context failed: {exc}"
@@ -200,7 +274,12 @@ class RealtimeSttService:
         binary mic frames, so the timing of "silence" lines up with
         what the client is actually streaming.
         """
-        if self._recorder is None or np is None or mic_source is None:
+        if np is None or mic_source is None:
+            return ""
+        # Load before the capture loop, not inside it: the first
+        # ``feed_audio`` would otherwise block for the whole model load
+        # while the mic queue backs up.
+        if self._ensure_recorder() is None:
             return ""
         sample_rate = self._audio_settings.sample_rate
         channels = self._audio_settings.channels
@@ -277,7 +356,10 @@ class RealtimeSttService:
         rec = self._recorder
         # Drop the reference first so ``is_available`` flips False and any
         # concurrent feed/text call short-circuits instead of racing the
-        # subprocess teardown.
+        # subprocess teardown. The latch matters more now that the load is
+        # lazy: without it, a feed arriving during shutdown would helpfully
+        # reload the model we are trying to tear down.
+        self._shut_down = True
         self._recorder = None
         self._context_active = False
         if rec is None:
@@ -296,10 +378,13 @@ class RealtimeSttService:
 
     def transcribe(self, audio_path: str | Path) -> str:
         """Transcribe a WAV file by feeding its contents to the recorder."""
-        if self._recorder is None or wave is None or np is None:
+        if wave is None or np is None:
             return ""
         path = Path(audio_path)
         if not path.exists():
+            return ""
+        recorder = self._ensure_recorder()
+        if recorder is None:
             return ""
         # Don't fight a context that's already managed elsewhere. When the
         # caller (e.g. LiveSession) holds the context open we still feed
@@ -319,7 +404,7 @@ class RealtimeSttService:
                         data = wav.readframes(chunk_frames)
                         if not data:
                             break
-                        self._recorder.feed_audio(data)
+                        recorder.feed_audio(data)
                     return self.text()
                 finally:
                     if owns_context:

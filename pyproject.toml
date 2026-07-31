@@ -48,6 +48,10 @@ dependencies = [
   # Manager / macOS Keychain / Freedesktop Secret Service). Falls back
   # to plaintext config when no backend is present.
   "keyring>=25.0.0,<27",
+  # P29 process-memory observability (MCP ``get_memory_breakdown``):
+  # RSS + child-process enumeration. Imported defensively so a slim
+  # install without it only loses the process section of that one tool.
+  "psutil>=5.9.0,<8",
 ]
 
 [project.optional-dependencies]

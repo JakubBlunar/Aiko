@@ -154,18 +154,21 @@ class InnerLifePart1Mixin:
         Hot-path mirror read; no LLM. Surfaces up to 3 catchphrase
         memories sorted by salience so the LLM keeps using the top
         few naturally.
+
+        The ``kind`` filter is load-bearing, not an optimisation: this
+        used to take the top 24 rows of *any* kind and filter afterwards,
+        so once two dozen higher-salience facts / promises / knowledge
+        rows existed, the running jokes silently stopped surfacing at all.
         """
         store = getattr(self, "_memory_store", None)
         if store is None:
             return ""
         try:
-            top = store.list_top(limit=24)
+            top = store.list_top(limit=3, kind="catchphrase")
         except Exception:
             return ""
         phrases: list[str] = []
         for mem in top:
-            if (mem.kind or "").lower() != "catchphrase":
-                continue
             content = (mem.content or "").strip()
             if not content:
                 continue

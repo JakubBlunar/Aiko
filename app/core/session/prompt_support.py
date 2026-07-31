@@ -524,6 +524,17 @@ class PromptTelemetry:
     provider_ms: dict[str, float] = field(default_factory=dict)
     rag_lookup_ms: float = 0.0
     assemble_ms: float = 0.0
+    # P31a: per-block *size* alongside per-block time, keyed by the same
+    # names as the ``_PROMPT_BLOCK_TIERS`` ladder. ``provider_ms`` answers
+    # "what made this turn slow"; this answers "what makes every turn
+    # expensive", which is a different and usually larger question — a
+    # block can be free to build and still cost 400 tokens on every
+    # single turn. Chars rather than tokens because the char count is
+    # exact and the token estimate is a moving EMA; the MCP tool converts.
+    # Kept out of ``as_dict()`` (it's ~90 keys of debug data, and the
+    # metrics dict rides the WS on every turn) — read it via the MCP
+    # ``get_prompt_block_costs`` tool.
+    block_chars: dict[str, int] = field(default_factory=dict)
     # P1 (perf backlog): per-turn embed budget. Populated by
     # ``TurnRunner`` from the shared :class:`Embedder`'s thread-local
     # turn counters; covers RAG retrieval, K6/K18 detection, and any

@@ -1,8 +1,8 @@
+import { useAssistantStore } from "@/store";
 import type { VoiceMode } from "@/types";
 
 interface MicButtonProps {
   voiceMode: VoiceMode;
-  audioLevel: number;
   connected: boolean;
   onClick: () => void;
   /** Optional size variant. ``compact`` is used inside the persona
@@ -24,13 +24,14 @@ interface MicButtonProps {
  * window can reuse the exact same affordance — same emoji, same pulse
  * ring, same pressed-state styling.
  *
- * Purely presentational: the parent owns the WS plumbing and decides
- * whether ``onClick`` should call ``send({ type: "voice_start" })`` or
- * ``send({ type: "voice_stop" })`` based on the current ``voiceMode``.
+ * The parent owns the WS plumbing and decides whether ``onClick`` should
+ * call ``send({ type: "voice_start" })`` or ``send({ type: "voice_stop" })``
+ * based on the current ``voiceMode``. Everything else is presentational,
+ * except the mic level, which :func:`MicPulseRing` reads for itself —
+ * see P37 and the note there.
  */
 export function MicButton({
   voiceMode,
-  audioLevel,
   connected,
   onClick,
   size = "default",
@@ -63,19 +64,37 @@ export function MicButton({
       className={`relative flex shrink-0 items-center justify-center self-center border transition ${dims} ${tone} disabled:cursor-not-allowed disabled:opacity-40`}
     >
       {isOn && voiceMode === "listening" ? (
-        <span
-          aria-hidden="true"
-          className={`absolute inset-0 border-2 border-pink-400/40 ${ringRadius}`}
-          style={{
-            transform: `scale(${1 + Math.min(audioLevel, 1) * 0.25})`,
-            transition: "transform 60ms linear",
-            opacity: 0.6,
-          }}
-        />
+        <MicPulseRing radiusClass={ringRadius} />
       ) : null}
       <span className="relative">
         {isOn ? "🎙️" : remotelyOwned ? "🎧" : "🎤"}
       </span>
     </button>
+  );
+}
+
+/**
+ * The one element that actually reacts to mic level, subscribed at the
+ * leaf (P37).
+ *
+ * ``audioLevel`` updates ~20x/second for as long as the mic is open. It
+ * used to be read by ``ChatView`` and ``PersonaWindow`` and threaded down
+ * as a prop, which re-rendered the entire chat chrome — composer,
+ * attachment tray, header, Virtuoso wrapper — at that rate, to move one
+ * ring by a few pixels. Subscribing here keeps the churn inside this
+ * single ``<span>``; the parents no longer see the value at all.
+ */
+function MicPulseRing({ radiusClass }: { radiusClass: string }) {
+  const audioLevel = useAssistantStore((s) => s.audioLevel);
+  return (
+    <span
+      aria-hidden="true"
+      className={`absolute inset-0 border-2 border-pink-400/40 ${radiusClass}`}
+      style={{
+        transform: `scale(${1 + Math.min(audioLevel, 1) * 0.25})`,
+        transition: "transform 60ms linear",
+        opacity: 0.6,
+      }}
+    />
   );
 }

@@ -50,14 +50,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_
 -- serve it. This covering-ish index turns that recurring full scan into a
 -- range scan as multi-year installs accumulate history. Base-column index,
 -- so it lives in the schema script (idempotent, picked up on every open).
-CREATE INDEX IF NOT EXISTS idx_messages_role_created ON messages(role, created_at);
--- P10: the G2 schedule-learner / K3 routine miner query
--- ``WHERE role='user' AND created_at >= ?`` has no session_id, so the
--- composite index above doesn't help it -- it full-scanned ``messages``.
 -- ``role`` / ``created_at`` exist since v1, so this lands on fresh and
 -- existing databases alike (executescript re-runs every startup, IF NOT
 -- EXISTS makes it idempotent -- no schema-version bump required).
 CREATE INDEX IF NOT EXISTS idx_messages_role_created ON messages(role, created_at);
+-- P41: ``messages_in_range`` filters on ``created_at`` *alone* (no
+-- session_id, no role) for the day/week digest and reflection readers.
+-- Neither index above is usable -- both are left-prefixed by another
+-- column -- so those queries full-scanned ``messages``, which is the
+-- fastest-growing table in the database. ``id`` rides along so the
+-- ``ORDER BY created_at, id`` tiebreak is satisfied from the index.
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at, id);
+-- P41: ``list_sessions`` runs a correlated subquery per session that
+-- picks the first user message by ``id`` order. Under
+-- ``(session_id, created_at)`` SQLite had to sort each group; with
+-- ``id`` as the trailing column the MIN/LIMIT 1 is an index seek.
+CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id);
 
 CREATE TABLE IF NOT EXISTS session_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1498,10 +1506,12 @@ class ChatDatabase:
         K-time2 direct time-window recall: when a query names a clearly
         retrospective window ("what did we say yesterday?") the semantic
         top-N can miss the actual lines. This is the verbatim fallback —
-        a bounded range scan (``idx_messages_role_created`` /
-        ``created_at`` ordering) returning the most recent ``limit`` rows
-        in the window, newest first. ``exclude_session_id`` drops the live
-        session (already in the recent-window context).
+        a bounded backwards range scan over ``idx_messages_created``
+        (``created_at, id``, added by P41; the older role- and
+        session-leading indexes can't serve a bare ``created_at`` filter,
+        so this used to full-scan) returning the most recent ``limit``
+        rows in the window, newest first. ``exclude_session_id`` drops the
+        live session (already in the recent-window context).
 
         Bounds are inclusive ISO-8601 strings; comparison is lexicographic,
         which is monotonic for the ``+00:00``-suffixed UTC timestamps

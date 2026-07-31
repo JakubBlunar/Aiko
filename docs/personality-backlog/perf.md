@@ -17,7 +17,8 @@ telemetry, P3 cheap slice-cache validation, P4 RAG memory-hit
 batch lookup, P5 + P23 Lance scan push-down for
 `list_recent_user_vectors`, P6 MessageIndexer queue/stats
 visibility (`get_message_indexer_stats`), P8 idle-worker queue
-visibility + multi-worker drain, P10 `(role, created_at)`
+visibility + multi-worker drain, P9 streaming tokens off the
+`messages` array, P10 `(role, created_at)`
 schedule-learner index, P12 bulk memory-mirror on startup, P13
 route-driven worker model + context (with the declarative
 `_worker_runtime_updaters` cascade + worker-LLM priority gate),
@@ -25,11 +26,43 @@ P14 heuristic tool-pass gate, P17 K22 callback-detector filtered
 mirror walk, P18 streaming-accumulator O(n²) fix, P19 RAG
 reader-writer lock + parallel per-source searches, P20 deferred
 (async) context compaction, P21 K29 borderline gate moved off the
-hot path, and P22 inner-life shared recent-history memo have
+hot path, P22 inner-life shared recent-history memo, P25 client
+audio flush on abort, P27 lazy STT load + `stt.enabled`, P28 TTS
+gated on `tts.enabled` + `release_model`, P29
+`get_memory_breakdown`, P31a `get_prompt_block_costs`, P40 engine-swap
+release, and P41 the two missing `messages` indexes have
 shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
 at the 2-embed steady state it targeted; see its shipped.md note.)
+
+**Audit note (first pass).** The open entries were re-read against the
+code rather than trusted. Corrections are inline and flagged in place;
+the headline ones were P9 (shipped, entry never retired), P26 (the
+client-side analyser path already exists for mobile; the pacer is 20 Hz
+not 30), P32(b) (the L3 graph walk is already batched), P30 (the mirror
+ceiling is ~16k rows, not 5k, and `search` is a Python loop rather than
+a matmul), and P27/P28 (line references had drifted to the pre-split
+`session_controller.py`). P33-P40 came out of the same pass.
+
+**Audit note (second pass).** The cheap wins from that list then
+shipped, which produced three more corrections worth recording, because
+they were all the same *kind* of error — asserting behaviour from the
+shape of the code rather than from the code:
+
+- **P40** claimed neither engine swap released the old service. The STT
+  half had been fixed for a while.
+- **P28** looked fixed at a glance because playback *was* gated
+  correctly; the load thread started before any of those checks could
+  matter.
+- **`messages_in_range`**'s own docstring claimed an index covered it
+  that could not (wrong leading column) — now P41.
+
+Two of the "perf" findings also turned out to be plain behaviour bugs:
+catchphrase blocks silently never surfacing (P33), and a late engine
+callback emitting a second, un-aborted end-of-speech event (P25).
+Measurement first is the lesson: P29 and P31a exist so the *remaining*
+items stop being argued from static reading.
 
 ---
 
@@ -46,7 +79,7 @@ just by hooking the composer.
 [`app/core/rag/rag_prefetcher.py`](../../app/core/rag/rag_prefetcher.py),
 [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 (new `feed_typed_draft` entry point),
-[`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx)
+[`web/src/features/chat/ChatView.tsx`](../../web/src/features/chat/ChatView.tsx)
 (debounced WS frame on draft length crossing a threshold).
 
 **Sketched approach.** New WS command `composer_draft` with
@@ -68,27 +101,13 @@ diary entry.
 
 ## P9. Frontend streaming append: O(n) per token
 
-**Motivation.** The Virtuoso virtualisation fixed the *render*
-cost on a long history, but `appendAssistantToken` still clones
-the entire `messages` array on every chunk. Long conversations +
-fast token streaming = unnecessary JS work that can re-introduce
-the freeze symptom under load even with virtualisation.
-
-**Key files.**
-[`web/src/store.ts`](../../web/src/store.ts)
-(`appendAssistantToken`),
-[`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx)
-(maybe move the streaming bubble to isolated state so updates
-don't go through the global messages array).
-
-**Sketched approach.** Either (a) keep the streaming text in a
-per-bubble ref and only commit to the messages array on stream
-end, or (b) use immer/structural sharing so the cloned messages
-array reuses the prefix. Option (a) is the cleaner companion-AI
-fit because it lets us render a "speaking" bubble distinctly
-from finalised history.
-
-**Effort.** Medium.
+**Status: SHIPPED** — moved to
+[`shipped/perf.md`](shipped/perf.md#p9-streaming-tokens-no-longer-clone-the-message-array).
+Option (a) from the sketch: mid-stream text lives in a separate
+`streamingDraft` and commits into `messages` once at stream end, so the
+array is identity-stable for the whole turn. The residual per-token cost
+that survived the rework — `ChatView` re-rendering to re-pin scroll — is
+tracked as [P37](#p37-residual-per-token-and-per-mic-frame-react-re-renders).
 
 ---
 
@@ -157,6 +176,20 @@ measurements). Medium if we need the dual-model split.
 
 ## P16. Post-turn inner-life blocks the brain loop
 
+**Status: now measurable.** The entry's own "audit before splitting"
+caution stood for a while because there was *no instrumentation at all*
+on the cascade — nobody knew whether it cost 5 ms or 500. It is now
+stamped as `post_turn_ms` on the metrics record (and on the WS
+`Metrics` type), with a log line that escalates from DEBUG to INFO past
+`_POST_TURN_SLOW_MS`. Note that `post_turn_ms` is deliberately *not*
+folded into `total_ms`: the cascade runs after the reply has finished
+streaming, so adding it would inflate the number the latency badge
+shows. Also worth knowing when reading the figure: `embedder.end_turn()`
+fires *before* the cascade runs, so post-turn's 1-4 embeds land in the
+next turn's embed budget rather than this one's. **Collect real numbers
+before attempting the split below** — if the cascade is single-digit
+milliseconds on a normal turn, the Large refactor buys nothing.
+
 **Motivation.** `chat_once_streaming` doesn't return until
 `_post_turn_inner_life` finishes — detector cascade, embed burst
 (see P15), K22 callback scan (see P17), SQLite writes. The brain
@@ -199,18 +232,24 @@ talking":
 1. **Reaction-tag gate** — the stream loop only dispatches TTS
    chunks once `mood is not None`
    ([`turn_runner.py`](../../app/core/session/turn_runner.py)
-   ~618). If the model leads with prose before
-   `[[reaction:...]]`, *all* speech waits; the fallback only
-   fires at stream end, flushing everything at once.
+   ~797-804). If the model leads with prose before
+   `[[reaction:...]]`, *all* speech waits; the fallback
+   (`mood = "neutral"`, ~860-871) only fires at stream end,
+   flushing everything at once.
 2. **Double STT pass** — `process_live_capture` re-transcribes
    the full WAV via `transcribe()` even when partial endpointing
-   already produced a stable final text during capture
-   ([`session_controller.py`](../../app/core/session/session_controller.py)
-   ~7003, [`realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
+   already produced a stable final text during capture. The
+   stable partial *is* read back — but only to fire one last RAG
+   prefetch (`feed_stt_partial(final=True)`), after which
+   `transcribe(wav_path)` runs unconditionally
+   ([`voice_capture_mixin.py`](../../app/core/session/voice_capture_mixin.py)
+   ~366-396 — the entry previously pointed at `session_controller.py`,
+   before the voice split;
+   [`realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
    `transcribe`). 100–500 ms of pure re-work between "user
    stopped talking" and LLM start.
-3. **First-chunk threshold** — `drain_tts_stream_chunks` holds
-   the first sentence until ≥24 chars / ≥4 words
+3. **First-chunk threshold** — `drain_tts_stream_chunks` holds a
+   sentence until ≥24 chars **or** ≥4 spaces **or** a newline
    ([`session_text_utils.py`](../../app/core/session/session_text_utils.py)
    ~246), so short openers ("Sure.", "Okay!") wait for more
    tokens before any audio.
@@ -229,187 +268,55 @@ the current threshold.
 
 ---
 
-## P25. Client keeps playing scheduled audio after server-side TTS stop
-
-**Motivation.** When the server stops TTS (stop command, future
-barge-in), already-scheduled `AudioBufferSourceNode`s on the
-client keep playing to the end of their buffers —
-`AudioOutputManager.flush()` exists but is only called on
-`dispose()`. Interrupt latency is therefore "whatever is already
-scheduled", often 0.5–3 s. This also blocks the barge-in default
-flip (immersion.md minor polish) from feeling right: server-side
-barge-in without client flush still talks over the user.
-
-**Key files.**
-[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
-(`tts_state` handler — no flush call),
-[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
-(`flush`),
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-(`stop_tts`).
-
-**Sketched approach.** Emit an explicit `audio_flush` WS event
-from `stop_tts` (or piggyback on `tts_state: stopped`); the
-client handler calls `audioOutput.flush()`. Also flush on
-voice-ownership takeover. Then flip `audio.barge_in_enabled`
-default and validate the floor.
-
-**Effort.** Small.
-
----
-
 ## P26. Lip-sync rides the server clock, not the playback clock
 
-**Motivation.** Mouth animation is driven by server-paced
-amplitude JSON (30 Hz throttle) + a network hop + the client's
-first-clip idle margin + 150 ms smoothing — so the mouth runs a
-noticeable, variable beat behind the audio the user actually
-hears, and main-thread jank desyncs it further.
+**Status: PARTLY SHIPPED (mobile only).** The sketched fix exists
+in the codebase and is wired for **mobile audio-owners**; desktop
+and the Tauri main window still ride the server clock. What's left
+is extending the existing path, not building it.
+
+**Motivation.** On the server-clock path, mouth animation is
+driven by server-paced amplitude JSON (`_amplitude_pacer`, 50 ms
+hop = **20 Hz**, not the 30 Hz this entry originally claimed) + a
+network hop + the client's first-clip idle margin
+(`FIRST_CLIP_IDLE_MARGIN_SEC`, 0.1 s) + per-frame smoothing
+(`SMOOTH_FACTOR = 0.35`, ≈150 ms time constant at 60 Hz) — so the
+mouth runs a noticeable, variable beat behind the audio the user
+actually hears, and main-thread jank desyncs it further.
+
+**What already exists.** `AudioOutputManager` builds
+`AnalyserNode → destination` and RAF-samples RMS at ~60 Hz,
+exposed via `setLipsyncListener`. The socket hook only routes it
+into the store when `isMobileViewport() && playsAudioHere`, and
+correspondingly ignores the `audio_amplitude` WS frame in that
+case. So both paths are live and mutually exclusive — per client,
+not per install.
 
 **Key files.**
 [`app/tts/pocket_tts_service.py`](../../app/tts/pocket_tts_service.py)
-(`_amplitude_pacer`),
-[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts),
+(`_amplitude_pacer` ~967-974),
+[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
+(analyser ~108-117, RAF sampler ~428-492),
+[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
+(the mobile-only routing gate ~76-88 and the mirrored
+`audio_amplitude` skip ~615-627),
 [`web/src/live2d/channels/LipsyncChannel.ts`](../../web/src/live2d/channels/LipsyncChannel.ts).
 
-**Sketched approach.** Derive amplitude client-side from an
-`AnalyserNode` hanging off the `AudioOutputManager` output —
-zero protocol change, perfectly aligned to playback by
-construction, and the server pacer becomes voice-strip-meter-only.
-Fallback option: timestamp amplitude frames server-side and have
-`LipsyncChannel` align them to scheduled `startAt`.
+**Remaining approach.** Drop the `isMobileViewport()` condition so
+any audio-owning client derives amplitude from its own playback
+tap, and reduce the server pacer to voice-strip-meter duty for
+non-owning windows. Then re-tune `SMOOTH_FACTOR` — 150 ms of
+smoothing was compensating for server-clock jitter that the
+analyser path doesn't have, so the same constant now *adds* lag it
+no longer needs to hide.
 
-**Effort.** Medium.
+**Open questions.** What do non-owning windows (persona window,
+second browser tab) show? They have no local audio to analyse, so
+they still need the WS frames — meaning the pacer stays, and the
+choice is per-client rather than a protocol removal.
 
----
-
-## P27. STT Whisper model loaded eagerly + unconditionally (biggest resident-RAM lever)
-
-**Motivation.** The single largest in-process ML weight is the
-STT model, and it is loaded for **every** install regardless of
-whether voice is ever used. `SessionController.__init__`
-constructs `RealtimeSttService(settings.stt, settings.audio)`
-unconditionally (no `stt.enabled` gate exists — `SttSettings`
-only has `model` + `language`), and the service's constructor
-**synchronously and eagerly** builds the `AudioToTextRecorder`,
-which loads the faster-whisper weights into the Python process
-and holds them for the whole process lifetime — there is no
-unload/release path (shutdown only calls `stop_context()`). The
-shipped default is **`large-v1`** (~1.5B params), which measures
-on the order of **~1.5–3 GB resident** depending on precision —
-the dominant chunk of the observed ~6 GB `python.exe`. A
-typed-only user (e.g. chat on a remote `gpt-5-mini` route, no
-mic) pays this in full for nothing. NOTE: this is the #1 fix for
-the RAM report — the embedder is HTTP→Ollama (negligible Python),
-the in-memory memory mirror is ~20 MB at the 5000-row cap, and
-the LLM context window lives in Ollama/OpenAI, not Python, so
-none of those are the cause.
-
-**Key files.**
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-(~L944, unconditional `RealtimeSttService` construct),
-[`app/stt/realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
-(~L56–74 eager load in `__init__`, `_create_recorder` ~L81–94),
-[`app/core/infra/settings.py`](../../app/core/infra/settings.py)
-(`SttSettings` ~L206–208 — add `enabled` + optional `device` /
-`compute_type`),
-[`config/default.json`](../../config/default.json) (`stt.model`
-L233).
-
-**Sketched approach.** Three independent wins, cheapest first:
-(a) **zero-code lever today** — document `stt.model: "small"` /
-`"base"` in `user.json` (drops ~1.5–2 GB immediately; quality is
-fine for short companion utterances); (b) **lazy load** — defer
-`AudioToTextRecorder` construction until the first voice
-activation (first mic frame / Live-mode enable) instead of in
-`__init__`, so typed-only sessions never pay it; (c) **idle
-release** — add an `stt.enabled` flag and an unload path
-(drop `self._recorder`, force GC) after N minutes with no voice
-use, rebuilding on demand. (b) gives most of the benefit for the
-common typed-first user. Also expose `compute_type` (faster-
-whisper `int8` on CPU roughly halves the footprint vs fp16/fp32)
-since Aiko currently passes neither `device` nor `compute_type`
-and inherits library defaults.
-
-**Open questions.** Does lazy-load add an unacceptable cold-start
-delay on the first voice turn (large-v1 load is multi-second)? If
-so, pair (b) with a background warm-load triggered when the
-client reports mic permission / Live toggle, not at first frame.
-
-**Effort.** Small (a/config), Small–medium (b/lazy), Medium
-(c/idle-release + flag).
-
----
-
-## P28. TTS engine + PyTorch load even when `tts.enabled=false`; never released
-
-**Motivation.** `_build_tts_service` constructs
-`PocketTtsService(settings.tts)` unconditionally — it does not
-consult `settings.tts.enabled` — and the service's constructor
-spawns a daemon load thread that pulls Pocket-TTS (~100M params)
-plus the PyTorch CPU runtime into memory (~0.6–1 GB combined),
-held for the process lifetime (`stop()` clears only the 8-entry
-audio cache, not `self._model`). For a user who has disabled TTS
-this is pure waste; even for a TTS user it's the second-largest
-resident block and the place the shared PyTorch runtime first
-gets paged in. Lower urgency than P27 (the model is genuinely
-needed when TTS is on, which is the common case), but the
-"loads even when disabled" path is a clear bug.
-
-**Key files.**
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-(`_build_tts_service` ~L7472–7478 — gate on `settings.tts.enabled`),
-[`app/tts/pocket_tts_service.py`](../../app/tts/pocket_tts_service.py)
-(`__init__` load thread ~L236–237, `_load_model` ~L265–286,
-`stop` ~L367–370 — add a model-release path).
-
-**Sketched approach.** (a) Skip the load entirely when
-`tts.enabled` is false (return a no-op engine, or defer the load
-thread until the first enable); (b) add an explicit
-`release_model()` so toggling TTS off at runtime frees the
-weights; (c) investigate Pocket-TTS int8 quantization (~230 MB
-vs ~450 MB baseline per upstream) as a config knob. (a) is the
-quick correctness fix.
-
-**Effort.** Small (a), Small (b), Medium (c — depends on upstream
-quantization support).
-
----
-
-## P29. No process-memory observability (RSS breakdown + the second python process)
-
-**Motivation.** The RAM investigation that produced P27/P28 was
-pure static code reading — there is no runtime surface that says
-"STT is holding X, TTS Y, the mirror Z". `get_status` reports
-model names and metrics but not resident memory. Diagnosing
-"why is the server 6 GB?" should be one MCP call, not an
-archaeology session. Separately, the reporter's Task-Manager
-screenshot showed **three** `python.exe` under one tree
-(~6.2 GB, ~946 MB, ~0.6 MB); the main process is understood
-(STT+TTS+runtime) but the **~946 MB second process is
-unidentified** — it could be a multiprocessing child, a
-faster-whisper/CTranslate2 worker, or a stray spawn, and it's
-~1 GB we can't currently account for.
-
-**Key files.**
-[`app/mcp/server.py`](../../app/mcp/server.py) (new
-`get_memory_breakdown` debug tool),
-[`app/web/__main__.py`](../../app/web/__main__.py) (process
-spawn audit — identify what the second interpreter is),
-AGENTS.md MCP tool table.
-
-**Sketched approach.** Add an MCP `get_memory_breakdown` tool:
-total RSS via `psutil.Process().memory_info().rss`, plus
-best-effort per-subsystem attribution (STT loaded/unloaded +
-model name, TTS loaded + model, memory-mirror row count ×
-vector bytes, LanceDB on-disk size, embedder LRU size). For the
-second process: enumerate `psutil.Process().children(recursive=
-True)` with `cmdline()` so we can see whether it's ours and
-what launched it (the MCP servers are `cmd /c npx` → node, not
-python, so a python child is something else). Pairs with P6 /
-P8 which already added per-subsystem stat tools.
-
-**Effort.** Small (breakdown tool), Small (children enumeration).
+**Effort.** Small (extend the gate) + Small (re-tune smoothing),
+down from Medium now that the analyser path exists.
 
 ---
 
@@ -432,32 +339,51 @@ the topic-graph persistence work.
 **What's already safe at scale.**
 - Topic graph: persisted (`topic_clusters` / `memory_topic_assignments`),
   incremental add/delete, ANN batch refit. See
-  [`patterns.md` → K9](patterns.md#k9-topic-graph--interest-network-browser).
+  [K9](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface).
 - RAG retrieval: LanceDB ANN (`search_memories`) is sub-linear
   *once an index exists* (`RagStore.ensure_vector_index` builds one
-  above 256 rows).
+  above 256 rows) — but see item 5 below: the index is built once
+  and never refreshed, which is now tracked as its own item (P35).
 
 **What still assumes a small corpus (the actual work).**
 1. **In-memory mirror.** `MemoryStore._mirror` holds every row +
-   its embedding in process. At 5000 rows that's ~20 MB (per P29);
-   at 100k+ it's hundreds of MB and `_reload_mirror` / `decay` /
-   `prune` walk it linearly. Either accept the larger RSS (still
-   cheap vs the STT/TTS weights in P27/P28) or move the cold tail
-   (archive tier) out of the mirror and read it from LanceDB on
-   demand.
+   its embedding in process. Note the real ceiling is **~16,000
+   rows, not 5,000**: `max_memories` is enforced *per tier* along
+   with `scratchpad_cap` (1000) and `archive_cap` (10000), so the
+   three caps sum. At ~4 KB per float32 embedding that's ~64 MB of
+   vectors alone before content and metadata; at 100k+ it's
+   hundreds of MB, and `_reload_mirror` / `decay` / `prune` walk it
+   linearly. Either accept the larger RSS (still cheap vs the
+   STT/TTS weights in P27/P28) or move the cold tail (archive tier)
+   out of the mirror and read it from LanceDB on demand.
 2. **O(n) mirror sweeps.** `decay()`, `prune()`, the K22 callback
    detector (P17), and the K6/K28 warm scans (P5/P23) all walk the
    full mirror. These need the P5/P17 fixes first, or they become
-   the new wall the moment the cap lifts.
-3. **`search()` brute-force fallback.** `MemoryStore.search` (the
-   non-RAG path, if still used anywhere) is a NumPy matmul over the
-   whole mirror — fine at 5000, not at 100k. Confirm every read
-   path goes through RAG ANN, not the mirror matmul.
+   the new wall the moment the cap lifts. Note `decay()` is worse
+   than a walk: it does the bulk `UPDATE` in SQL and then calls
+   `_reload_mirror()`, re-reading **every** row and BLOB from disk
+   rather than updating the mirror in place.
+3. **`search()` brute-force fallback.** `MemoryStore.search` is a
+   per-row Python cosine loop over the whole mirror — *not* a NumPy
+   matmul as this entry claimed (contrast `ConceptStore.nearest`,
+   which does stack a matrix), so it's slower than the original
+   estimate, not faster. The prompt hot path does **not** use it:
+   retrieval goes through `RagRetriever` → `RagStore`. It survives
+   in three secondary callers (`memory_retriever.py`,
+   `concept_contradiction.py`, `idle_gap_resolver.py`), and
+   `MemoryRetriever` itself is constructed and handed to
+   `PromptAssembler` but never actually invoked — dead weight worth
+   deleting or wiring deliberately.
 4. **prune() semantics.** With the cap raised/disabled, decide what
    (if anything) still bounds growth: keep a generous hard ceiling
    as a safety valve, rely on decay + archive-tier demotion to keep
    the *hot* set small, or both. Pinned rows must stay immune
    either way.
+5. **The ANN index is build-once.** Tracked separately as
+   [P35](#p35-the-lance-ann-index-is-built-once-never-refreshed) —
+   it is a hard prerequisite for this entry, because raising the cap
+   without index maintenance moves retrieval onto the flat-scan
+   fallback exactly when the corpus gets big.
 
 **Key files.**
 [`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
@@ -496,6 +422,18 @@ on P5/P17) → Large (d, mirror eviction / LRU rework).
 ---
 
 ## P31. Audit + trim the baseline system prompt (~25-30k resting floor)
+
+**Status: (a) shipped, so this is no longer a guess.** Sketch item (a)
+— the measurement — landed as the `get_prompt_block_costs` MCP tool and
+`PromptTelemetry.block_chars`; see
+[`shipped/perf.md`](shipped/perf.md#p31a-get_prompt_block_costs--per-block-prompt-cost-weighted-by-tier).
+It ranks blocks by tokens × the tier's cache-miss probability, and
+reports empty blocks as `0` rather than omitting them, so (c)'s
+content-gating candidates surface directly. The first thing it says is
+that the persona (~78k chars, ~19.5k estimated tokens) dominates
+everything else combined — so (b), the persona trim, is where the value
+is, and it wants its own pass because the persona is user-editable
+content rather than code.
 
 **Motivation.** On a *fresh* session with a single message the
 system prompt already measures ~25-30k tokens — that's the resting
@@ -540,11 +478,10 @@ per-block renderers),
 (the largest single T0 block; candidate for redundancy trimming
 against the `_SPEECH_GRAMMAR_ADDENDUM` in `prompt_assembler.py`).
 
-**Sketched approach.** (a) **Measure** — add a one-shot MCP dump
-(or extend `get_last_response_detail`) that ranks every inner-life
-block by token cost × render-frequency × tier, so we see the
-heaviest *volatile* (T5-T6) blocks first — those are the ones
-paying full price past the cache prefix. (b) **Persona trim** —
+**Sketched approach.** (a) **Measure** — **done**, see the status note
+above: `get_prompt_block_costs` ranks every block by tokens × tier, so
+the heaviest *volatile* (T5-T6) blocks — the ones paying full price past
+the cache prefix — are visible in one MCP call. (b) **Persona trim** —
 diff the persona's tag/grammar guidance against
 `_SPEECH_GRAMMAR_ADDENDUM` and collapse duplication (a persona-
 trim pass already shipped once; this is the follow-up now that
@@ -565,7 +502,7 @@ even when terse (affect, relationship, persona core)? Does moving
 occasional blocks behind a content-gate risk them silently never
 firing (the same audit-before-splitting caution as P16)?
 
-**Effort.** Small (a, measurement tool) → Medium (b/c, per-block
+**Effort.** ~~Small (a, measurement tool)~~ → Medium (b/c, per-block
 trim + lazy-render, one block family at a time) → the persona
 diff is a focused afternoon.
 
@@ -584,26 +521,60 @@ graph every cycle — O(edges) work that grows as concepts accrue; (c)
 autobiography is meant to be permanent), so storage + scan cost climb
 forever if left unmanaged.
 
+**Status per line (re-audited).**
+- (a) **Still true.** `ConceptSynthesisWorker` registers on the scheduler
+  at a 1800 s interval and issues `chat_stream` calls with up to 4096
+  tokens. Its `is_ready` is interval-only; the dirty check lives *inside*
+  `run()` (kv signatures short-circuit the LLM when nothing moved), so
+  the worker still occupies an idle slot to decide it has nothing to do.
+  The broader contention picture is now [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget).
+- (b) **No longer true.** L3 does *not* walk the graph. Each tick it
+  takes `list_stalest(batch_size)` (default 100) over the in-memory
+  concept set and does bounded per-concept SQL (`evidence_of` /
+  `edges_into` / `dependents_of`), so the cost is
+  O(batch × edges-per-concept) and full coverage happens over
+  `ceil(N/100)` ticks. `concept_edges` is already indexed on both
+  endpoints. What the sketch asked for is effectively in place — except
+  that it is round-robin rather than *dirty*-triggered, so a quiet graph
+  still pays a tick's worth of work forever.
+- (c) **Still true, and the sharpest edge is `concept_events`.** It is
+  strictly append-only — `ConceptEventStore` has `add` plus reads, no
+  delete or thin path — and L3 can emit several rows per concept per tick
+  (status change + `reinforced` + `confidence_sample` + `plasticity_shift`).
+  `concept_edges` only shrinks on concept/memory delete, consolidation
+  merge, or the integrity sweep. Note "snapshots" needs no thinning today
+  for a different reason than assumed: `concept_snapshot.py` builds
+  ephemeral API payloads, not a stored table. Folded into
+  [P34](#p34-unbounded-tables-messages-lance-mirror-concept_events).
+
 **Key files.**
 [`idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
 (where the proposer + lifecycle engine register + their cadence),
-the L1 `ConceptStore` (`concepts` + `concept_edges` + snapshot tables),
+[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
+(the batched round-robin, ~L219-220),
+[`concept_event_store.py`](../../app/core/concepts/concept_event_store.py)
+(append-only; no thinning API),
+the L1 `ConceptStore` (`concepts` + `concept_edges` tables),
 `app/mcp/server.py` (the L26 trace is also the perf-observability hook).
 
 **Sketched approach.** (a) **Cadence + budget** — run the proposer on a
 low, change-triggered cadence (weekly / on material cluster change, per
 L2), never every idle tick, and count it against the same idle-window
-budget as the other LLM workers (P8 queue visibility applies). (b) **Bounded
-graph walks** — the lifecycle engine should walk only *dirty* subgraphs
-(concepts whose evidence changed this cycle) rather than the whole graph;
-index `concept_edges` by both endpoints so cascade/revision walks are
-O(affected), not O(all). (c) **Snapshot thinning** — keep recent
+budget as the other LLM workers (P8 queue visibility applies). Lifting
+its dirty check from `run()` up into `is_ready()` would also stop it
+consuming a slot to decide it has nothing to do. (b) **Bounded
+graph walks** — **done** via the batched round-robin above; the
+remaining refinement is making it dirty-triggered so an unchanging graph
+costs nothing. (c) **Snapshot thinning** — keep recent
 self-snapshots dense and **thin older ones** (monthly → quarterly →
 yearly) so L19 stays traversable without linear growth; retired concepts
 archive rather than delete (L19 durability) but drop out of the hot scan
-set. (d) **Hot-path guarantee** — nothing here runs on the turn stream;
+set. For `concept_events` specifically the cheapest honest thinning is
+"keep every status transition forever, thin the `confidence_sample` /
+`reinforced` noise past N months" — those are the high-volume, low-value
+rows. (d) **Hot-path guarantee** — nothing here runs on the turn stream;
 the only per-turn concept cost is L23 selection over the small `active`
-set, which reuses the P15 shared user-text embed.
+set, which reuses the shared user-text embed (P15).
 
 **Open questions.** Snapshot thinning schedule? A cap on `active` concepts
 (soft-merge via L20 when it's exceeded) to bound per-turn selection? Does
@@ -612,3 +583,375 @@ workers or contend with them?
 
 **Effort.** Small-Medium (mostly cadence + indexing + a thinning sweep;
 cheap if designed in, expensive to retrofit once the graph is large).
+
+---
+
+## P33. Inner-life providers walk the whole memory mirror every turn
+
+**Status: (a) shipped and the correctness bug fixed; (b)/(c) open.** The
+inline "**Fixed**" markers below are current. Tests:
+`tests/test_memory_tiers.py::TestKindFilteredListing`.
+
+**Motivation.** P17 fixed the worst instance (the K22 callback
+detector's `list_recent(10_000)`) but the *pattern* is still spread
+across the provider set: a provider needs "the few rows of kind X"
+and gets there by copying the entire mirror. Two shapes, both
+per-turn:
+
+- **Copy + double sort.** `MemoryStore.list_top()` / `list_recent()`
+  used to do `list(self._mirror.values())` and then sort the whole
+  thing, applying the `kind` filter *after* the copy. At the ~16k-row
+  ceiling (P30) that's a 16k-element sort to return 3 rows. **Fixed:**
+  both now filter by `kind` inside the lock, before the sort.
+- **Post-filtering the wrong rows** — a correctness bug, not a perf one.
+  Callers asked for the top N of *any* kind and filtered to their kind in
+  Python, so once N higher-salience rows of other kinds existed the
+  caller silently got nothing. **Fixed** in the four single-kind sites:
+  `_render_catchphrase_block` (running jokes stopped surfacing at all),
+  `_known_catchphrases` and `CatchphraseMiner._existing_catchphrase_phrases`
+  (both K80 dedupe guards — they could re-bless a bit already recorded),
+  and `_top_inner_life_contents` (the dream pass's seed rows). **Still
+  open:** `relationship_pulse._collect_bullets` and
+  `prepared_nudge._collect_candidates` have the same shape over a *set* of
+  kinds, which wants a `list_top(kinds=…)` variant rather than a one-line
+  change.
+- **Full-kind walks.** `iter_by_kind` is cheap per row but unbounded
+  in count: K9 curiosity seeds, K29 opinion injection
+  (`iter_by_kind("self")` plus an embed), and F9 knowledge grounding
+  (concatenates **every** `knowledge` + `curiosity_finding` row, then
+  cosine-scans) all run on qualifying turns.
+
+Individually each is single-digit milliseconds today. The reason to
+track it is P30: these are exactly the sweeps that become the new wall
+the moment the corpus cap lifts, and they're invisible in telemetry
+because `provider_ms` attributes them to the *provider*, not to the
+mirror.
+
+**Key files.**
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
+(`list_top` / `list_recent` ~L1585-1642, `iter_by_kind` ~L1644),
+[`app/core/session/inner_life_part3.py`](../../app/core/session/inner_life_part3.py)
+(K29 ~L112-120, curiosity seeds ~L1256-1272),
+[`app/core/session/inner_life_part2.py`](../../app/core/session/inner_life_part2.py)
+(F9 knowledge grounding ~L116-118).
+
+**Sketched approach.** (a) Make the cheap fix universal: filter by
+`kind` *inside* the lock before sorting, so a kind-scoped `list_top`
+sorts only candidate rows. (b) For the genuinely unbounded walks, add
+a kind-scoped index to the mirror (`dict[str, set[int]]` maintained on
+add/delete/update) so `iter_by_kind` is O(matching) rather than
+O(total). (c) For F9, stop concatenating the whole knowledge corpus —
+it should go through RAG ANN like every other retrieval path.
+
+**Effort.** Small (a) → Small-Medium (b, one index to keep coherent
+across add/update/delete/reload) → Medium (c, changes retrieval
+semantics).
+
+---
+
+## P34. Unbounded tables: `messages`, Lance mirror, `concept_events`
+
+**Motivation.** `memories` has caps and `prune()`; `beliefs` has
+`prune_to_cap`; `task_events` has a 30-day cleanup worker. Three of
+the highest-volume stores have **no** global bound:
+
+- **`messages`** — deletable only per session (`clear_messages` /
+  `delete_session`). At ~2 rows per turn this is the fastest-growing
+  table in the app, and several queries scan it by time (see P10 and
+  the new indexes).
+- **The LanceDB `messages` mirror** — `MessageIndexer` indexes every
+  message and backfills all sessions on startup, so it tracks SQLite
+  row-for-row, each with a vector.
+- **`concept_events`** — append-only by construction (`add` plus
+  reads, no delete API), and L3 emits several rows per concept per
+  tick including the high-volume `confidence_sample` /
+  `reinforced` pair. See P32(c).
+
+None of this is urgent at current scale; the point is that "grows
+forever" is a design decision that should be made deliberately rather
+than by omission, and the retention story differs per table (chat
+history is arguably *meant* to be permanent; `confidence_sample` rows
+are noise after a few months).
+
+**Key files.**
+[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
+(`messages` schema + the per-session delete paths),
+[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py)
+(~L283-309 startup backfill),
+[`app/core/concepts/concept_event_store.py`](../../app/core/concepts/concept_event_store.py),
+[`app/core/tasks/task_cleanup_worker.py`](../../app/core/tasks/task_cleanup_worker.py)
+(the existing retention worker to model a sweep on).
+
+**Sketched approach.** Decide a posture per table rather than a
+global policy. For `messages`, keep everything but confirm the time-
+range queries stay indexed as it grows. For the Lance mirror,
+consider indexing only messages above a length/substance threshold —
+"ok" and "haha" cost a vector and are never a useful retrieval hit.
+For `concept_events`, a thinning sweep that keeps all status
+transitions and drops sampling noise past N months, modelled on
+`task_cleanup_worker`.
+
+**Open questions.** Does anything read `confidence_sample` rows older
+than the L17b window? If not, thinning is free. Does dropping short
+messages from the Lance mirror hurt K-time verbatim recall (which
+reads SQLite, not Lance — probably not)?
+
+**Effort.** Small (per-table decision + one sweep worker) → Medium
+(if the Lance indexing threshold needs backfill reconciliation).
+
+---
+
+## P35. The Lance ANN index is built once, never refreshed
+
+**Motivation.** `RagStore.ensure_vector_index` is idempotent by
+design — `create_index` runs with `replace=False`, so the second call
+is a no-op once an index exists. Its **only** caller is
+`topic_graph.rebuild()`, and only when the corpus is already above
+the 2000-row ANN rebuild threshold. So in practice the index is built
+at most once, at whatever corpus size happened to trip that path, and
+never rebuilt as rows accumulate. Lance degrades gracefully (a failed
+or absent index falls back to a flat scan, exceptions swallowed) —
+which is the problem: retrieval gets slower with no signal that the
+index went stale. This is a hard prerequisite for P30, since raising
+the memory cap without index maintenance is exactly the scenario where
+the flat-scan fallback hurts most.
+
+**Key files.**
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
+(`ensure_vector_index` ~L942-985 — note the swallowed exceptions and
+`min_rows=256`),
+[`app/core/conversation/topic_graph.py`](../../app/core/conversation/topic_graph.py)
+(~L1580-1582, the sole caller; `_ANN_REBUILD_THRESHOLD` ~L147).
+
+**Sketched approach.** (a) Call `ensure_vector_index` from a
+maintenance worker on a slow cadence (or from the existing
+topic-graph rebuild worker unconditionally, not only above
+threshold), and pass `replace=True` when the row count has grown by
+more than some factor since the last build. (b) Report index state —
+present / row count at build / current row count — through the
+existing RAG stats surface so "the index is stale" is observable
+rather than inferred. (c) Consider building it for `messages` and
+`documents` too, not just `memories`.
+
+**Effort.** Small (a + b), Small (c).
+
+---
+
+## P36. Idle-worker LLM pile-up under a 6 s soft budget
+
+**Motivation.** P8 gave the idle scheduler queue visibility and a
+multi-worker drain; it did not bound how much LLM work can queue up
+behind it. There are now **~55 worker registrations**, of which
+**~22-28 make LLM calls** when they fire (concept synthesis and
+consolidation, fact-checker, curiosity, knowledge, memory conflict
+detector, consolidation, belief, promise, topic label + digest, goal,
+pre-thought, thread resummary, curiosity seed, follow-up, diary,
+hobby, room evolution, associative wander, knowledge-map reflection,
+the L3-triggered belief reviser, …). They drain **sequentially**
+(concurrency 1) against a **6 s** soft per-tick budget with
+`idle_worker_max_per_tick: 0` (unlimited), and the anti-starvation
+rule runs at least one due worker even when it blows the budget. A
+single worker generation on a local 9B model can exceed the whole
+tick budget on its own.
+
+Each worker self-limits (hourly/daily caps, dirty flags, batch
+sizes), which is why this works in practice. But there is no global
+"LLM seconds per hour" ceiling, and the failure mode is invisible:
+workers that are perpetually deferred just never run, and nothing
+says so. Related: the default config points `main_chat` **and**
+`worker_default` at the same local model, so worker generations and
+the user's turn contend for the same Ollama slot. The
+`LlmPriorityGate` (`worker_llm_gate_enabled` /
+`worker_llm_max_concurrency`) mitigates this between workers, but a
+worker generation already in flight still delays the next user turn
+server-side.
+
+**Key files.**
+[`app/core/proactive/idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
+(~L302-367, the ranked drain + budget skip + anti-starvation rule),
+[`app/core/session/idle_workers_init_mixin.py`](../../app/core/session/idle_workers_init_mixin.py)
+and [`app/core/session/speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
+(the registration sites),
+[`app/llm/llm_gate.py`](../../app/llm/llm_gate.py)
+(the existing priority semaphore),
+[`config/default.json`](../../config/default.json)
+(`idle_worker_budget_ms` ~L458, `idle_worker_max_per_tick` ~L459).
+
+**Sketched approach.** (a) Report starvation: track per-worker
+"consecutive ticks deferred" and surface the worst offenders in
+`get_idle_worker_stats`, so "this worker hasn't run in two days" is
+visible. (b) An LLM-specific budget — at most N worker generations
+per tick / per hour, independent of the wall-clock tick budget, since
+one generation's cost is much lumpier than the 6 s estimate assumes.
+(c) Cheapest of all: move interval-only `is_ready` checks that are
+really dirty checks (P32(a)) into `is_ready`, so nothing spends a
+slot to conclude it has no work.
+
+**Open questions.** Is the right ceiling wall-time or generation
+count? Should the user's turn be able to *preempt* an in-flight
+worker generation (Ollama has no cancel-and-requeue, so this may mean
+not starting one when a turn looks imminent — the speaking-window
+scheduler already reasons about this).
+
+**Effort.** Small (a), Small-Medium (b), Small (c).
+
+---
+
+## P37. Residual per-token and per-mic-frame React re-renders
+
+**Status: (a) and (b) shipped; (c) still open.**
+
+- **(a) Per token — fixed.** The signature moved to
+  [`streamRepin.ts`](../../web/src/features/chat/streamRepin.ts) and is
+  quantised to 48-char buckets, so a ~1200-char reply re-renders
+  `ChatView` ~26 times instead of ~1200. The draft **id** stays
+  un-bucketed: without it, a new turn starting at length 0 would collide
+  with the previous turn's first bucket and every reply's first re-pin
+  would be silently skipped — which `streamRepin.test.ts` pins
+  explicitly. Stream end is still covered from two directions (the
+  signature goes empty, and the commit into `messages` triggers
+  Virtuoso's own `followOutput`).
+- **(b) Per mic frame — fixed.** `ChatView` and `PersonaWindow` no
+  longer subscribe to `audioLevel` at all. The three elements that
+  actually react to it subscribe at the leaf: `MicPulseRing` inside
+  [`MicButton`](../../web/src/features/voice/MicButton.tsx), and
+  `LevelDot` / `AudioMeter` inside
+  [`VoiceStrip`](../../web/src/features/chat/VoiceStrip.tsx). The meter
+  additionally quantises its selector to the *number of lit bars*, so
+  most level updates return an unchanged value and don't re-render even
+  the leaf. This mattered most in the persona window, which renders the
+  Live2D canvas — a 20 Hz re-render there was the expensive version of
+  the problem.
+- **(c) Still open.** The Virtuoso `itemContent` / `Footer` closures are
+  still recreated per `ChatView` render, so Virtuoso loses referential
+  stability on each one. Much less frequent now that (a) cut the render
+  count by ~45x, but the fix (hoist into `useCallback` / module scope) is
+  unchanged and independent.
+
+**Motivation.** P9 moved streaming text off the `messages` array, so
+finalised bubbles no longer re-render mid-stream. Two subscriptions in
+`ChatView` still re-rendered the whole chat chrome at high frequency:
+
+1. **Per token.** `streamingSignature` selected
+   `` `${draft.id}:${draft.content.length}` ``, which changed on every
+   chunk. That was deliberate (it re-pins the scroll), but it re-rendered
+   a large component with ~18 store selectors and recreated the
+   Virtuoso `itemContent` / `Footer` closures each time — so Virtuoso
+   lost referential stability on every token even though the memoised
+   bubbles below it didn't re-render.
+2. **Per mic frame.** `ChatView` also subscribed to `audioLevel`,
+   which the mic worklet updates every ~50 ms (~20 Hz) during capture,
+   and the server's `audio_level` frames update again. The transcript
+   is static during capture; the whole chrome re-rendered anyway.
+
+Neither was fatal, but they land on the same main thread that schedules
+TTS audio buffers, which is precisely the contention the audio layer's
+own comments warn about.
+
+**Key files.**
+[`web/src/features/chat/ChatView.tsx`](../../web/src/features/chat/ChatView.tsx)
+(selectors ~L70-92, `streamingSignature` ~L148-151, inline Virtuoso
+callbacks ~L515-535),
+[`web/src/hooks/useMicCapture.ts`](../../web/src/hooks/useMicCapture.ts)
+(~L76-82),
+[`web/public/mic-pcm-worklet.js`](../../web/public/mic-pcm-worklet.js)
+(the ~50 ms RMS emit).
+
+**Sketched approach.** (a) Coarsen the streaming signature — sample
+draft length in buckets so scroll re-pinning fires every ~N chars
+instead of every token. (b) Move the `audioLevel` subscription down
+into whichever leaf actually renders the meter. (c) Hoist the
+Virtuoso `itemContent` / `Footer` closures into `useCallback` /
+module scope so identity is stable across renders.
+
+**Effort.** Small each.
+
+---
+
+## P38. Live2D channels allocate a store snapshot several times per frame
+
+**Motivation.** `Live2DAvatar.getStoreSnapshot()` builds a **new
+object** on every call, and the animation channels call it
+independently from their own ticker / RAF paths: lipsync (pre-model),
+gaze, ambient body (tier-3 *and* pre-model), and expression — which
+alone calls it three times inside one tier-3 tick. That's roughly 5-8
+short-lived objects per frame, ~300-480/s at 60 Hz, purely to read
+state that hasn't changed within the frame.
+
+GC pressure of this shape is usually harmless, but it's on the same
+main thread as Pixi rendering and the audio scheduling, and the
+avatar is the one surface where a dropped frame is *visible*.
+
+**Key files.**
+[`web/src/features/avatar/Live2DAvatar.tsx`](../../web/src/features/avatar/Live2DAvatar.tsx)
+(`getStoreSnapshot` ~L203-228),
+[`web/src/live2d/channels/ExpressionChannel.ts`](../../web/src/live2d/channels/ExpressionChannel.ts)
+(three calls per tick, ~L520 / ~L603 / ~L744),
+[`web/src/live2d/channels/LipsyncChannel.ts`](../../web/src/live2d/channels/LipsyncChannel.ts),
+[`web/src/live2d/channels/GazeChannel.ts`](../../web/src/live2d/channels/GazeChannel.ts),
+[`web/src/live2d/channels/AmbientBodyChannel.ts`](../../web/src/live2d/channels/AmbientBodyChannel.ts).
+
+**Sketched approach.** Cache one snapshot per frame in the engine
+tick and pass it to the channels, instead of each channel pulling its
+own. The channels already receive a `deps` object, so this is a
+signature change plus deleting the internal calls.
+
+**Open questions.** Do any channels *rely* on reading state mid-frame
+after another channel mutated it? If so, that ordering dependency
+should be explicit rather than implicit in snapshot timing.
+
+**Effort.** Small.
+
+---
+
+## P39. Concept snapshot + quality report N+1 the evidence edges
+
+**Motivation.** `build_concept_snapshot` loops `store.all()` and calls
+`store.evidence_of(concept_id)` inside the loop — one SQL query per
+concept, plus label resolution. `build_concept_quality` repeats the
+pattern and adds an **O(n²) pairwise embedding comparison** within
+each (kind, subject) group. Neither is on the turn path (they back
+`GET /api/concepts`, the settings UI, and the MCP debug tools), so
+this is a UI-latency and debug-ergonomics issue rather than a hot-path
+one — but it scales with concept count, which is the number the
+L-series is explicitly trying to grow.
+
+**Key files.**
+[`app/core/concepts/concept_snapshot.py`](../../app/core/concepts/concept_snapshot.py)
+(~L139-153),
+[`app/core/concepts/concept_quality.py`](../../app/core/concepts/concept_quality.py)
+(~L239-242 the N+1, ~L454-467 the pairwise walk),
+[`app/core/concepts/concept_store.py`](../../app/core/concepts/concept_store.py)
+(`evidence_of` ~L749-754 — add a batch sibling).
+
+**Sketched approach.** Add `evidence_for_many(concept_ids)` returning
+a `dict[int, list[Edge]]` from a single `WHERE dst_id IN (…)` query
+(chunked to stay under SQLite's parameter limit) and have both callers
+use it. The pairwise embedding walk is a separate, larger question —
+it's doing a small clustering job and should probably borrow the ANN
+path the topic graph already uses.
+
+**Effort.** Small (batch evidence lookup), Medium (pairwise walk).
+
+---
+
+## P40. Engine swaps leak the previous model
+
+**Status: SHIPPED, and the entry was half wrong.** The STT half was
+already fixed when this entry was written — `set_stt_model` has called
+`old.shutdown()` on a daemon thread for a while, precisely to avoid the
+orphaned-child failure the `shutdown()` docstring warns about. Both
+setters also already early-returned on a no-op swap, so the "pays a full
+reload" claim didn't hold either. What *was* real: `set_tts_provider`
+dropped the outgoing `PocketTtsService` without releasing its weights,
+because there was nothing to call — the release path is P28(b).
+
+With that in place, the TTS swap moved into a shared
+`_rebuild_tts_engine` (also used by the enable/disable toggle) which
+releases the outgoing engine after rewiring the PCM listener, queue, and
+prosody dispatcher to the new one. See
+[`shipped/perf.md`](shipped/perf.md#p28-tts-respects-ttsenabled-and-the-runtime-toggle-frees-the-weights).
+
+Lesson for the next audit: this entry asserted two behaviours from
+reading the *sketch* of the code rather than the code, and both were
+stale. Worth re-checking claims of the form "nothing calls X".

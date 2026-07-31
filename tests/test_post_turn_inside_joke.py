@@ -50,8 +50,10 @@ class _MemoryStore:
         self.top = list(top or [])
         self.added: list[dict[str, Any]] = []
 
-    def list_top(self, *, limit: int = 64) -> list[Any]:
-        return self.top[:limit]
+    def iter_by_kind(self, kind: str) -> list[Any]:
+        # P33: the dedupe guard now asks the store for the complete
+        # catchphrase set instead of post-filtering an unfiltered top-N.
+        return [m for m in self.top if m.kind == kind]
 
     def add(self, **kwargs: Any) -> Any:
         self.added.append(kwargs)
