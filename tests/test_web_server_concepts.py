@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 _SNAPSHOT = {
@@ -36,7 +37,7 @@ _SNAPSHOT = {
 
 
 def _client(snapshot: dict | None = None) -> tuple[TestClient, MagicMock]:
-    session = MagicMock()
+    session = FakeSession()
     session.concepts_snapshot.return_value = (
         snapshot if snapshot is not None else _SNAPSHOT
     )

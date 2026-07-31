@@ -27,7 +27,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     """REST routes: sessions settings routes."""
     @app.get("/api/sessions")
     def list_sessions() -> JSONResponse:
-        rows = session._chat_db.list_sessions()
+        rows = session.list_sessions()
         active = session.session_key
         return JSONResponse({
             "active": active,
@@ -57,7 +57,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str) -> JSONResponse:
-        session._chat_db.delete_session(session_id)
+        session.delete_session(session_id)
         return JSONResponse({"deleted": session_id})
 
     @app.post("/api/sessions/clear")
@@ -81,12 +81,9 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         (fewer than ``limit`` rows) signals there's no more history.
         """
         capped = max(1, min(limit, 1000))
-        if before_id is not None:
-            rows = session._chat_db.get_messages_before(
-                session_id, before_id=int(before_id), limit=capped,
-            )
-        else:
-            rows = session._chat_db.get_messages(session_id, limit=capped)
+        rows = session.get_session_messages(
+            session_id, limit=capped, before_id=before_id,
+        )
 
         def _json_or_none(raw: str | None) -> Any:
             # Reactions / gestures persist as JSON strings; decode so the
@@ -141,7 +138,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         return JSONResponse({
             "user_display_name": (
-                session._settings.assistant.user_display_name or ""
+                session.settings.assistant.user_display_name or ""
             ),
             "needs_onboarding": bool(session.needs_onboarding),
         })
@@ -175,7 +172,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
     @app.get("/api/settings")
     def get_settings() -> JSONResponse:
-        s = session._settings
+        s = session.settings
         return JSONResponse({
             "chat": {
                 "model": session.effective_chat_model,
@@ -349,7 +346,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             "search": _search_public_snapshot(getattr(s, "search", None)),
             # H11 weather sync. Coarse location + units + the latest cached
             # snapshot; the raw (future) api_key is never echoed.
-            "weather": session._weather_public_snapshot(),
+            "weather": session.weather_public_snapshot(),
             "logging": {
                 # Mirror of LoggingSettings.ui_log_enabled and friends so
                 # the Settings drawer's Debug-logging toggle has a single
@@ -427,35 +424,22 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if "barge_in_enabled" in audio:
             session.set_barge_in_enabled(bool(audio["barge_in_enabled"]))
         if "earcons_enabled" in audio:
-            earcons_on = bool(audio["earcons_enabled"])
-            session._settings.audio.earcons_enabled = earcons_on
-            try:
-                session._earcons.enabled = earcons_on
-            except Exception:
-                log.debug("earcons enable toggle failed", exc_info=True)
-            try:
-                persist_user_overrides({"audio": {"earcons_enabled": earcons_on}})
-            except Exception:
-                log.debug("persist earcons override failed", exc_info=True)
+            session.set_earcons_enabled(bool(audio["earcons_enabled"]))
         proactive = payload.get("proactive") or {}
         if "silence_seconds" in proactive:
             try:
                 value = max(10.0, float(proactive["silence_seconds"]))
             except (TypeError, ValueError):
                 value = 45.0
-            session._settings.agent.proactive_silence_seconds = value
+            session.settings.agent.proactive_silence_seconds = value
         if "cooldown_seconds" in proactive:
             try:
                 value = max(30.0, float(proactive["cooldown_seconds"]))
             except (TypeError, ValueError):
                 value = 120.0
-            session._settings.agent.proactive_cooldown_seconds = value
-            try:
-                session._proactive.update_runtime(cooldown_seconds=value)
-            except Exception:
-                log.debug("proactive update_runtime failed", exc_info=True)
+            session.set_proactive_runtime(cooldown_seconds=value)
         if "typed_enabled" in proactive:
-            session._settings.agent.proactive_typed_enabled = bool(
+            session.settings.agent.proactive_typed_enabled = bool(
                 proactive["typed_enabled"]
             )
         if "silence_seconds_typed" in proactive:
@@ -463,27 +447,21 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 value = max(60.0, float(proactive["silence_seconds_typed"]))
             except (TypeError, ValueError):
                 value = 240.0
-            session._settings.agent.proactive_silence_seconds_typed = value
+            session.settings.agent.proactive_silence_seconds_typed = value
         if "cooldown_seconds_typed" in proactive:
             try:
                 value = max(120.0, float(proactive["cooldown_seconds_typed"]))
             except (TypeError, ValueError):
                 value = 600.0
-            session._settings.agent.proactive_cooldown_seconds_typed = value
-            try:
-                session._proactive.update_runtime(cooldown_seconds_typed=value)
-            except Exception:
-                log.debug(
-                    "proactive update_runtime (typed) failed", exc_info=True,
-                )
+            session.set_proactive_runtime(cooldown_seconds_typed=value)
         if "typed_when_away" in proactive:
-            session._settings.agent.proactive_typed_when_away = bool(
+            session.settings.agent.proactive_typed_when_away = bool(
                 proactive["typed_when_away"]
             )
         activity = payload.get("activity") or {}
         if "awareness_enabled" in activity:
             new_value = bool(activity["awareness_enabled"])
-            session._settings.agent.activity_awareness_enabled = new_value
+            session.settings.agent.activity_awareness_enabled = new_value
             # Privacy hygiene: when the user disables the toggle, drop
             # any cached active-app string so a next-prompt build won't
             # surface a stale "<user> is in <App>" line. ``set_user_active_app``
@@ -498,11 +476,11 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                     )
         shared_moments_cfg = payload.get("shared_moments") or {}
         if "enabled" in shared_moments_cfg:
-            session._settings.agent.shared_moments_enabled = bool(
+            session.settings.agent.shared_moments_enabled = bool(
                 shared_moments_cfg["enabled"]
             )
         if "llm_enabled" in shared_moments_cfg:
-            session._settings.agent.shared_moments_llm_enabled = bool(
+            session.settings.agent.shared_moments_llm_enabled = bool(
                 shared_moments_cfg["llm_enabled"]
             )
         if "min_turn_gap" in shared_moments_cfg:
@@ -510,12 +488,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 value = max(1, int(shared_moments_cfg["min_turn_gap"]))
             except (TypeError, ValueError):
                 value = 5
-            session._settings.agent.shared_moments_min_turn_gap = value
-            try:
-                if session._moment_detector is not None:
-                    session._moment_detector.update_runtime(min_turn_gap=value)
-            except Exception:
-                log.debug("moment detector update_runtime failed", exc_info=True)
+            session.set_shared_moments_runtime(min_turn_gap=value)
         if "cooldown_seconds" in shared_moments_cfg:
             try:
                 value = max(
@@ -523,27 +496,20 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 )
             except (TypeError, ValueError):
                 value = 300.0
-            session._settings.agent.shared_moments_cooldown_seconds = value
-            try:
-                if session._moment_detector is not None:
-                    session._moment_detector.update_runtime(
-                        cooldown_seconds=value,
-                    )
-            except Exception:
-                log.debug("moment detector cooldown update failed", exc_info=True)
+            session.set_shared_moments_runtime(cooldown_seconds=value)
         anniversary_cfg = payload.get("anniversary") or {}
         if "surfacing_enabled" in anniversary_cfg:
-            session._settings.agent.anniversary_surfacing_enabled = bool(
+            session.settings.agent.anniversary_surfacing_enabled = bool(
                 anniversary_cfg["surfacing_enabled"]
             )
         axes_cfg = payload.get("relationship_axes") or {}
         if "enabled" in axes_cfg:
-            session._settings.agent.relationship_axes_enabled = bool(
+            session.settings.agent.relationship_axes_enabled = bool(
                 axes_cfg["enabled"]
             )
         tools = payload.get("tools") or {}
         if tools:
-            tcfg = session._settings.tools
+            tcfg = session.settings.tools
             for key in ("enabled", "get_time", "recall", "web_search", "world"):
                 if key in tools:
                     setattr(tcfg, key, bool(tools[key]))
@@ -553,7 +519,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 log.debug("rebuild_tool_registry failed", exc_info=True)
         endpointing_cfg = payload.get("endpointing") or {}
         if endpointing_cfg:
-            ecfg = session._settings.endpointing
+            ecfg = session.settings.endpointing
             if "enabled" in endpointing_cfg:
                 ecfg.enabled = bool(endpointing_cfg["enabled"])
             if "use_partial_transcript" in endpointing_cfg:
@@ -598,7 +564,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             # path / level switches stay frozen because re-initialising
             # the rotating handler mid-session is messy. Broadcast the
             # change so any other connected tab flips its toggle too.
-            lcfg = session._settings.logging
+            lcfg = session.settings.logging
             changed = False
             if "ui_log_enabled" in logging_cfg:
                 lcfg.ui_log_enabled = bool(logging_cfg["ui_log_enabled"])
@@ -641,8 +607,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 })
         companion = payload.get("companion") or {}
         if companion:
-            agent = session._settings.agent
-            mem = session._settings.memory
+            agent = session.settings.agent
+            mem = session.settings.memory
             # Build the persistence patch as we go so each knob survives
             # a restart (matching avatar/identity durability). Empty
             # sub-dicts are pruned before writing.
@@ -668,11 +634,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                     persist_patch["memory"][key] = v
             if "grounding_line_mode" in companion:
                 mode = _parse_grounding_line_mode(companion["grounding_line_mode"])
-                agent.grounding_line_mode = mode
-                try:
-                    session._prompt_assembler.set_grounding_line_mode(mode)
-                except Exception:
-                    log.debug("set_grounding_line_mode failed", exc_info=True)
+                session.set_grounding_line_mode(mode)
                 persist_patch["agent"]["grounding_line_mode"] = mode
             for flag in (
                 "touch_enabled",
@@ -889,7 +851,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             ).strip()
         if not patch:
             return JSONResponse(
-                _search_public_snapshot(getattr(session._settings, "search", None))
+                _search_public_snapshot(getattr(session.settings, "search", None))
             )
         try:
             snapshot = session.reconfigure_search(patch)
@@ -1229,7 +1191,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         Entries with a ``source`` outside ``ui_log_categories`` are
         silently dropped; the batch is capped at ``ui_log_max_batch``.
         """
-        lcfg = session._settings.logging
+        lcfg = session.settings.logging
         if not bool(getattr(lcfg, "ui_log_enabled", False)):
             raise HTTPException(403, "ui debug logging disabled")
         if not isinstance(payload, dict):
@@ -1296,7 +1258,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
     @app.get("/api/metrics")
     def metrics() -> JSONResponse:
-        s = session._settings
+        s = session.settings
         return JSONResponse({
             "last": session.get_last_metrics(),
             "average": session.get_average_metrics(),

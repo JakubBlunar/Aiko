@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 @dataclass
@@ -124,7 +125,7 @@ class _SettingsStub:
 
 def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     settings = _SettingsStub()
-    session = MagicMock()
+    session = FakeSession()
     session._settings = settings
     session.session_key = "u:s"
     session.effective_chat_model = "test-model"
@@ -300,7 +301,11 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_earcons_runs_runtime_hook(self) -> None:
         client, session, settings = _build_client()
-        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides") as persist:
+        # Persistence moved with the sync it belongs to: the controller now
+        # owns "settings write + tell the player + write the override".
+        with patch(
+            "app.core.session.web_facade_mixin.persist_user_overrides",
+        ) as persist:
             response = client.patch(
                 "/api/settings",
                 json={"audio": {"earcons_enabled": False}},

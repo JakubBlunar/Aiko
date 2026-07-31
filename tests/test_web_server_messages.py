@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 def _row(mid: int, content: str):
@@ -36,7 +37,7 @@ def _row(mid: int, content: str):
 
 def _build_client() -> tuple[TestClient, MagicMock]:
     chat_db = MagicMock()
-    session = MagicMock()
+    session = FakeSession()
     session._chat_db = chat_db
     app = create_web_app(session)
     return TestClient(app), chat_db

@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 @dataclass
@@ -114,7 +115,7 @@ def _build_client(*, ui_log_enabled: bool = True) -> tuple[
 ]:
     settings = _SettingsStub()
     settings.logging.ui_log_enabled = ui_log_enabled
-    session = MagicMock()
+    session = FakeSession()
     session._settings = settings
     session.session_key = "u:s"
     session.effective_chat_model = "test-model"

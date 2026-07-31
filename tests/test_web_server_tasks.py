@@ -23,7 +23,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -39,6 +38,7 @@ from app.core.tasks import (
     TaskStore,
 )
 from app.web.server import create_web_app
+from web_fake_session import FakeSession
 
 
 # ── test handlers ───────────────────────────────────────────────────
@@ -130,7 +130,7 @@ class _Fixture:
         )
         self.user_id = user_id
 
-        session = MagicMock()
+        session = FakeSession()
         session._user_id = user_id
         session._task_orchestrator = self.orch
         session._task_store = self.store
@@ -318,7 +318,7 @@ class ListTasksTests(unittest.TestCase):
 
     def test_subsystem_disabled_returns_empty(self) -> None:
         """When ``session._task_store`` is None the endpoint stays open."""
-        session = MagicMock()
+        session = FakeSession()
         session._user_id = "default"
         session._task_orchestrator = None
         session._task_store = None
