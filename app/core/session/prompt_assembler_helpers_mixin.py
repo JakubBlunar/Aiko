@@ -170,6 +170,7 @@ class PromptAssemblerHelpersMixin:
         coactivation_trace: Callable[[], dict] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
+        voice_adoption: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
         ambient_noise: Callable[[], str] | None = None,
         avatar_capabilities: Callable[[], dict[str, bool] | None] | None = None,
@@ -196,6 +197,7 @@ class PromptAssemblerHelpersMixin:
         knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
+        inside_joke: Callable[[], str] | None = None,
         calibration: Callable[[], str] | None = None,
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
@@ -286,6 +288,8 @@ class PromptAssemblerHelpersMixin:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
             self._catchphrase_provider = catchphrase
+        if voice_adoption is not None:
+            self._voice_adoption_provider = voice_adoption
         if petname is not None:
             self._petname_provider = petname
         if ambient_noise is not None:
@@ -338,6 +342,8 @@ class PromptAssemblerHelpersMixin:
             self._belief_gaps_provider = belief_gaps
         if clarification is not None:
             self._clarification_provider = clarification
+        if inside_joke is not None:
+            self._inside_joke_provider = inside_joke
         if calibration is not None:
             self._calibration_provider = calibration
         if sensory_anchor is not None:

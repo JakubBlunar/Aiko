@@ -17,14 +17,17 @@ from types import SimpleNamespace
 from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.concepts.concept_surfacing import (
+    SURFACE_REASON_LABELS,
     composite_score,
     event_charge,
+    event_charge_detail,
     habituation_factor,
     load_habituation,
     recency_boost,
     salience,
     save_habituation,
     stability,
+    surface_reason,
     surface_score,
     turns_since_surfaced,
 )
@@ -243,6 +246,166 @@ class SalienceTests(unittest.TestCase):
         # Soft-OR: 0.5 and 0.5 -> 0.75, never exceeding 1.0.
         self.assertAlmostEqual(salience(change=0.5, affect=0.5), 0.75)
         self.assertAlmostEqual(salience(change=1.0, affect=0.9), 1.0)
+
+    def test_detail_names_the_driving_event(self) -> None:
+        fresh = _NOW.isoformat()
+        old = (_NOW - timedelta(days=14.0)).isoformat()
+        charge, driver = event_charge_detail(
+            [("promoted", fresh), ("contradicted", old)],
+            _NOW, halflife_days=14.0,
+        )
+        # Same winner as ``event_charge``, but now we know who it was.
+        self.assertAlmostEqual(charge, 0.5, places=3)
+        self.assertEqual(driver, "contradicted")
+
+    def test_detail_has_no_driver_without_charge(self) -> None:
+        self.assertEqual(
+            event_charge_detail(
+                [("discovered", _NOW.isoformat())], _NOW, halflife_days=14.0
+            ),
+            (0.0, None),
+        )
+
+
+class SurfaceReasonTests(unittest.TestCase):
+    """L35: name the signal that won a concept its place in the prompt."""
+
+    # Every signal weighted, so no single term wins by default.
+    _W = SurfaceWeights(
+        context=1.0, confidence=1.0, recency=1.0, stability=1.0,
+        salience=1.0, activation=1.0,
+    )
+
+    def test_lanes_that_answer_themselves(self) -> None:
+        # Core is pinned on confidence before any scoring runs; the
+        # activation lane is reached only by concepts with no cosine to the
+        # turn at all. Neither ran a contest, so the signals can't override.
+        self.assertEqual(
+            surface_reason(lane="core", cosine=1.0, w=self._W), "core_belief"
+        )
+        self.assertEqual(
+            surface_reason(
+                lane="activation", stability=1.0, activation=0.1, w=self._W
+            ),
+            "association",
+        )
+
+    def test_neutral_recency_never_wins(self) -> None:
+        """``recency_boost`` returns 1.0 -- its maximum -- for a concept that
+        was never reinforced. That's a "don't penalise" default, not
+        freshness, so it must not be reported as the reason."""
+        kw = dict(lane="flex", cosine=0.3, recency=1.0, w=self._W)
+        self.assertEqual(surface_reason(**kw), "recently_reinforced")
+        self.assertEqual(
+            surface_reason(**kw, recency_known=False), "topic_match"
+        )
+
+    def test_dominant_cosine_is_a_topic_match(self) -> None:
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.9, confidence=0.2, recency=0.1,
+                stability=0.1, salience=0.0, w=self._W,
+            ),
+            "topic_match",
+        )
+
+    def test_dominant_activation_is_an_association(self) -> None:
+        # A flex-lane concept (it had its own cosine) that was nonetheless
+        # carried by priming still reports the association.
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.05, confidence=0.1,
+                activation=0.9, w=self._W,
+            ),
+            "association",
+        )
+
+    def test_salience_win_names_the_event_behind_it(self) -> None:
+        """The same charge means different things; the reason has to say
+        which, or it's no more legible than the number was."""
+        for event, expected in (
+            ("contradicted", "unresolved_contradiction"),
+            ("revived", "recently_revived"),
+            ("plasticity_shift", "loosening_boundary"),
+            ("promoted", "newly_promoted"),
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    surface_reason(
+                        lane="flex", cosine=0.1, salience=0.9,
+                        change_event=event, w=self._W,
+                    ),
+                    expected,
+                )
+
+    def test_salience_win_without_a_known_driver_degrades(self) -> None:
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.1, salience=0.9, change_event=None,
+                w=self._W,
+            ),
+            "recent_change",
+        )
+
+    def test_weight_decides_the_winner_not_the_raw_value(self) -> None:
+        """A perfect cosine against a zero context weight won nothing --
+        the reason has to reflect what the scorer actually used."""
+        w = SurfaceWeights(context=0.0, confidence=0.0, recency=0.0,
+                           stability=1.0, salience=0.0)
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=1.0, stability=0.3, w=w,
+            ),
+            "settled_belief",
+        )
+
+    def test_recency_and_confidence_wins(self) -> None:
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.1, recency=0.95, w=self._W,
+            ),
+            "recently_reinforced",
+        )
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.1, confidence=0.95, w=self._W,
+            ),
+            "high_confidence",
+        )
+
+    def test_default_weights_are_context_only(self) -> None:
+        # DEFAULT_SURFACE_WEIGHTS is context-only, so a kind that never
+        # opted into the blend can only ever be a topic match.
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.4, confidence=0.9, recency=0.9,
+                stability=0.9, salience=0.9, w=DEFAULT_SURFACE_WEIGHTS,
+            ),
+            "topic_match",
+        )
+
+    def test_all_signals_zero_is_a_topic_match(self) -> None:
+        self.assertEqual(surface_reason(lane="flex", w=self._W), "topic_match")
+
+    def test_every_reason_has_a_human_label(self) -> None:
+        reasons = {
+            surface_reason(lane="core"),
+            surface_reason(lane="activation"),
+            surface_reason(lane="flex", cosine=0.9, w=self._W),
+            surface_reason(lane="flex", confidence=0.9, w=self._W),
+            surface_reason(lane="flex", recency=0.9, w=self._W),
+            surface_reason(lane="flex", stability=0.9, w=self._W),
+            surface_reason(lane="flex", salience=0.9, w=self._W),
+        }
+        for event in ("contradicted", "revived", "plasticity_shift", "promoted"):
+            reasons.add(
+                surface_reason(
+                    lane="flex", salience=0.9, change_event=event, w=self._W
+                )
+            )
+        self.assertEqual(len(reasons), len(SURFACE_REASON_LABELS))
+        for reason in reasons:
+            self.assertIn(reason, SURFACE_REASON_LABELS)
 
 
 class HabituationStateTests(unittest.TestCase):

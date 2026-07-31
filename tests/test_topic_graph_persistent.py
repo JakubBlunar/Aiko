@@ -400,6 +400,29 @@ class ClusterActivityTests(unittest.TestCase):
         # "not-a-date" doesn't parse, "" is empty -> last_active "" -> None.
         self.assertIsNone(entries[0].days_since)
 
+    def test_representative_id_matches_topic_clusters(self) -> None:
+        """L28: the rep id carried here is the same handle the concept
+        layer keys ``cluster -> concept`` evidence edges on, so a consumer
+        can hand it straight to ``ConceptView.for_cluster``."""
+        store = _StubMemoryStore()
+        for mem in [
+            _StubMemory(1, "cat naps", _vec([0.95, 0.30, 0.0, 0.0]), salience=0.3),
+            _StubMemory(2, "kittens", _vec([0.92, 0.39, 0.0, 0.0]), salience=0.9),
+            _StubMemory(3, "warm cats", _vec([0.97, 0.25, 0.0, 0.0]), salience=0.5),
+        ]:
+            store.add(mem)
+        _, cs = _cluster_store()
+        g = self._graph(store, cs)
+        clusters = g.topic_clusters()
+        for c in clusters:
+            g.set_cluster_label(c.cluster_id, "cats")
+        expected = {c.representative_id for c in g.topic_clusters()}
+        entries = g.cluster_activity(top_n=5, min_size=2)
+        self.assertTrue(entries)
+        # Highest salience wins, and it agrees with TopicCluster.
+        self.assertEqual(entries[0].representative_id, 2)
+        self.assertIn(entries[0].representative_id, expected)
+
 
 class ClusterMemberAndCoarseMatchTests(unittest.TestCase):
     """F10c/F10d graph readers: ``cluster_member_ids`` (sibling drill-in)

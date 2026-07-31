@@ -576,6 +576,10 @@ class MemorySettings:
     # How many under-researched (dense-but-unlearned) clusters to feed as the
     # "blank in the learned sense" half. 0 disables the gap half entirely.
     knowledge_map_reflection_gap_top_n: int = 3
+    # L28: how many concepts to hang off each rich territory ("you believe:
+    # …"), read through ConceptView.for_cluster. 0 disables the annotation
+    # and restores the pre-L28 size/recency-only payload.
+    knowledge_map_reflection_concepts_per_cluster: int = 2
     # num_predict cap for the worker-LLM meta-thought (it's one short note).
     knowledge_map_reflection_max_tokens: int = 120
     # Salience of the written [mindmap] reflection memory. Mid-range — it's a
@@ -921,6 +925,14 @@ class MemorySettings:
     concept_plasticity_drift_floor: float = 0.15
     concept_plasticity_recheck_slowdown_enabled: bool = True
     concept_plasticity_recheck_stride_k: float = 3.0
+    # L17a concept trajectory: a concept that decays without ever crossing a
+    # status threshold emits no lifecycle event, so its slide is invisible to
+    # the event log. The lifecycle sweep drops a ``confidence_sample`` row
+    # whenever a quiet concept has moved ``sample_band`` away (either
+    # direction) from the confidence at its last recorded event -- banded
+    # rather than per-tick so the timeline stays readable.
+    concept_confidence_sample_enabled: bool = True
+    concept_confidence_sample_band: float = 0.1
     # L23 cognitive surfacing -- habituation (repetition suppression). A concept
     # surfaced recently is damped by a ``[floor, 1]`` multiplier that recovers
     # over ``window_turns`` user-turns (turn clock = ``relationship.total_turns``,
@@ -1285,6 +1297,16 @@ class MemorySettings:
     shared_ritual_min_share: float = 0.34
     shared_ritual_max_active: int = 6
     shared_ritual_min_messages: int = 30
+    # K26 voice adoption. A catchphrase that started as *his* becomes
+    # adoptable once it has been in the registry ``min_age_days``; at most
+    # one adoption per ``min_days_between``, ``max_adopted`` active at a
+    # time, ``max_rendered`` named in the prompt block. The defaults are
+    # deliberately slow — the beat only works if it's invisible per
+    # session and obvious over months.
+    voice_adoption_min_age_days: float = 14.0
+    voice_adoption_min_days_between: float = 10.0
+    voice_adoption_max_adopted: int = 3
+    voice_adoption_max_rendered: int = 2
     # K76 flashbulb encoding. At memory-write time the live AffectState
     # arousal + any active K57 episode intensity fold into a [0,1] charge;
     # ``flashbulb_max_boost`` is the most salience a fully-charged moment
@@ -2243,6 +2265,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     )
                 ),
             ),
+            knowledge_map_reflection_concepts_per_cluster=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_concepts_per_cluster", 2,
+                    )
+                ),
+            ),
             knowledge_map_reflection_max_tokens=max(
                 40,
                 int(
@@ -2827,6 +2857,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_plasticity_recheck_stride_k=max(
                 0.0,
                 float(memory_raw.get("concept_plasticity_recheck_stride_k", 3.0)),
+            ),
+            concept_confidence_sample_enabled=bool(
+                memory_raw.get("concept_confidence_sample_enabled", True)
+            ),
+            concept_confidence_sample_band=min(
+                1.0,
+                max(
+                    0.01,
+                    float(
+                        memory_raw.get("concept_confidence_sample_band", 0.1)
+                    ),
+                ),
             ),
             concept_surfacing_habituation_enabled=bool(
                 memory_raw.get("concept_surfacing_habituation_enabled", True)
@@ -3427,6 +3469,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             shared_ritual_min_messages=max(
                 1,
                 int(memory_raw.get("shared_ritual_min_messages", 30)),
+            ),
+            voice_adoption_min_age_days=max(
+                0.0,
+                float(memory_raw.get("voice_adoption_min_age_days", 14.0)),
+            ),
+            voice_adoption_min_days_between=max(
+                0.0,
+                float(
+                    memory_raw.get("voice_adoption_min_days_between", 10.0)
+                ),
+            ),
+            voice_adoption_max_adopted=max(
+                1,
+                int(memory_raw.get("voice_adoption_max_adopted", 3)),
+            ),
+            voice_adoption_max_rendered=max(
+                1,
+                int(memory_raw.get("voice_adoption_max_rendered", 2)),
             ),
             flashbulb_enabled=bool(
                 memory_raw.get("flashbulb_enabled", True),

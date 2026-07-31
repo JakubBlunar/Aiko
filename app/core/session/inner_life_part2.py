@@ -2169,6 +2169,11 @@ class InnerLifePart2Mixin:
         key = str(chosen.get("topic_key") or "")
         topic = str(chosen.get("topic") or "").strip()
         direction = str(chosen.get("direction") or "").strip()
+        # L28: the concept the worker resolved for this cluster, if any.
+        belief = " ".join(str(chosen.get("belief") or "").split())[:200]
+        belief_clause = (
+            f" What you hold about it: {belief}." if belief else ""
+        )
         if key:
             surfaced.add(key)
             try:
@@ -2187,17 +2192,18 @@ class InnerLifePart2Mixin:
             return (
                 f"Heads-up: \"{topic}\" has quietly drifted out of your "
                 "attention lately — it used to come up more, and it's been "
-                "going still. If it fits, you can let that show honestly "
-                "(\"huh, I haven't thought about this in a while\") — a small "
-                "register shift, not an announcement. If it doesn't fit, just "
-                "engage normally."
+                f"going still.{belief_clause} If it fits, you can let that "
+                "show honestly (\"huh, I haven't thought about this in a "
+                "while\") — a small register shift, not an announcement. If "
+                "it doesn't fit, just engage normally."
             )
         return (
             f"Heads-up: you've found yourself drawn to \"{topic}\" more and "
-            "more lately — it's a budding interest of yours. If it fits, let "
-            "a little of that genuine pull colour your tone (\"honestly I've "
-            "been kind of into this lately\") — a register shift, not a line "
-            "you announce. If it doesn't fit, just engage normally."
+            f"more lately — it's a budding interest of yours.{belief_clause} "
+            "If it fits, let a little of that genuine pull colour your tone "
+            "(\"honestly I've been kind of into this lately\") — a register "
+            "shift, not a line you announce. If it doesn't fit, just engage "
+            "normally."
         )
 
     def _render_dormant_interest_block(self) -> str:

@@ -13,8 +13,10 @@ class — it only works as a base of ``SessionController`` and reads the
 (``_settings``, ``_prompt_assembler``, ``_maintenance_client``,
 ``_chat_db``, ``_effective_worker_model``, ``context_window_size``).
 
-On-demand only: nothing here registers with the IdleWorkerScheduler. A
-periodic auto-eval worker is a deferred backlog follow-up (K10-followup).
+Nothing here registers with the IdleWorkerScheduler; the cadence lives in
+:class:`~app.core.proactive.persona_regression_worker.PersonaRegressionWorker`
+(K10-followup), which calls this same core and is opt-in via
+``persona_regression_auto_enabled``.
 """
 from __future__ import annotations
 

@@ -81,10 +81,3 @@ worth speaking).
 **Open questions.** Do we keep the default OFF (current behaviour) or
 flip the default ON so the feature is discoverable? Probably OFF
 forever — typed-proactive is *meant* to be text-only.
-
----
-
-## C6. Worker-model decides task-result interrupt-worthiness — SHIPPED
-
-Shipped as the worker-model task-report decision + angle cue. See
-[`shipped.md` → Worker-model task-report decision](shipped/proactive-tasks.md#worker-model-task-report-decision--angle-cue-c6).

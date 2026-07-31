@@ -379,11 +379,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         subject: str | None = None,
         event_type: str | None = None,
         before_id: int | None = None,
+        concept_id: int | None = None,
     ) -> JSONResponse:
         """Append-only discovery timeline of Aiko's concept "aha!" moments,
         newest first. ``before_id`` pages backwards through history;
-        ``subject`` / ``event_type`` narrow the feed. Empty
-        ``enabled=False`` shape when the concept layer is disabled.
+        ``subject`` / ``event_type`` / ``concept_id`` narrow the feed --
+        the last of those gives one belief's whole arc, promotion through
+        decay. Empty ``enabled=False`` shape when concepts are disabled.
         """
         return JSONResponse(
             session.concept_timeline(
@@ -391,6 +393,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 subject=subject,
                 event_type=event_type,
                 before_id=before_id,
+                concept_id=concept_id,
             )
         )
 

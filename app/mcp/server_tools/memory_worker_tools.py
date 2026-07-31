@@ -2413,6 +2413,200 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_user_expertise_surface raised: {exc}"
 
     @mcp.tool()
+    def get_inside_joke_state() -> str:
+        """K80 — dump the inside-joke-birth detector state.
+
+        Shows the master switch + knobs, the wall-clock watermark (when
+        the last bit was blessed and how much cooldown is left), the
+        recent-assistant-turn ring the detector matches the user's echo
+        against, any armed one-shot cue, and the phrases already in the
+        catchphrase registry (which the detector refuses to re-bless).
+        First stop for "why didn't she notice that just became a bit?".
+        """
+        agent = session._settings.agent
+        cooldown_h = float(
+            getattr(agent, "inside_joke_birth_cooldown_hours", 24.0)
+        )
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(agent, "inside_joke_birth_enabled", True)
+            ),
+            "cooldown_hours": cooldown_h,
+            "min_words": int(
+                getattr(agent, "inside_joke_birth_min_words", 3)
+            ),
+        }
+        pending = getattr(session, "_pending_inside_joke", None)
+        out["pending_cue"] = (
+            None
+            if pending is None
+            else {
+                "phrase": pending.phrase,
+                "origin_message_id": pending.origin_message_id,
+                "lag_turns": pending.lag_turns,
+                "laughed": pending.laughed,
+                "amused": pending.amused,
+            }
+        )
+        try:
+            from app.core.session.post_turn_helpers_mixin import (
+                _KV_INSIDE_JOKE_AT,
+            )
+
+            last = session._chat_db.kv_get(_KV_INSIDE_JOKE_AT)
+            out["last_blessed_at"] = last
+            if last:
+                from datetime import datetime, timezone
+
+                ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                elapsed_h = (
+                    timephrase.utcnow() - ts
+                ).total_seconds() / 3600.0
+                out["cooldown_remaining_hours"] = round(
+                    max(0.0, cooldown_h - elapsed_h), 2,
+                )
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["watermark_error"] = str(exc)
+        ring = getattr(session, "_recent_assistant_turns", None) or ()
+        out["recent_assistant_turns"] = [
+            {"message_id": mid, "text": (text or "")[:200]}
+            for mid, text in ring
+        ]
+        try:
+            out["known_catchphrases"] = session._known_catchphrases()
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["known_catchphrases_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_inside_joke_birth(user_text: str) -> str:
+        """K80 — run the birth detector against ``user_text`` right now.
+
+        Bypasses the wall-clock watermark (it is cleared first) but not
+        the echo + amusement gate: ``user_text`` must actually repeat a
+        phrase from one of Aiko's recent replies *and* carry an amusement
+        marker (or sit on a laugh-reacted message). Send a distinctive
+        line via ``send_message`` first so the ring has something to
+        echo, then call this with the echo. On a hit the one-shot cue is
+        armed and the phrase is persisted — verify with the next
+        ``send_message`` + ``get_last_response_detail``.
+        """
+        try:
+            from app.core.session.post_turn_helpers_mixin import (
+                _KV_INSIDE_JOKE_AT,
+            )
+
+            session._chat_db.kv_set(_KV_INSIDE_JOKE_AT, "")
+            session._maybe_bless_inside_joke(
+                user_text=user_text, user_message_id=None,
+            )
+            birth = getattr(session, "_pending_inside_joke", None)
+            return json.dumps(
+                {
+                    "detected": birth is not None,
+                    "phrase": None if birth is None else birth.phrase,
+                    "lag_turns": None if birth is None else birth.lag_turns,
+                    "laughed": None if birth is None else birth.laughed,
+                    "amused": None if birth is None else birth.amused,
+                    "note": (
+                        "cue armed; it renders once on the next turn"
+                        if birth is not None
+                        else "no echo+amusement match against the recent ring"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_inside_joke_birth raised: {exc}"
+
+    @mcp.tool()
+    def get_voice_adoption_state() -> str:
+        """K26 — dump the voice-adoption state.
+
+        Shows the master switch + the (deliberately slow) knobs, which of
+        his phrases Aiko has taken on and when, the rendered prompt block,
+        and the full catchphrase registry with each row's resolved
+        provenance and age. First stop for "why hasn't she picked
+        anything up yet?" — usually the answer is that the registry rows
+        are too young, or their origin is unknown (mined before K26 and
+        not findable in the message history).
+        """
+        from app.core.relationship import voice_adoption as _va
+
+        agent = session._settings.agent
+        mem = session._memory_settings
+        out: dict[str, Any] = {
+            "enabled": bool(getattr(agent, "voice_adoption_enabled", True)),
+            "interval_seconds": int(
+                getattr(agent, "voice_adoption_interval_seconds", 86400)
+            ),
+            "min_age_days": float(
+                getattr(mem, "voice_adoption_min_age_days", 14.0)
+            ),
+            "min_days_between": float(
+                getattr(mem, "voice_adoption_min_days_between", 10.0)
+            ),
+            "max_adopted": int(
+                getattr(mem, "voice_adoption_max_adopted", 3)
+            ),
+        }
+        try:
+            adopted = _va.load_state(session._chat_db.kv_get)
+            out["adopted"] = adopted
+            out["block"] = _va.render_block(
+                adopted,
+                user_display_name=session.user_display_name,
+                max_phrases=int(
+                    getattr(mem, "voice_adoption_max_rendered", 2)
+                ),
+            )
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["adopted_error"] = str(exc)
+        worker = getattr(session, "_voice_adoption_worker", None)
+        if worker is not None:
+            try:
+                rows = worker._catchphrase_rows()
+                now = timephrase.utcnow()
+                out["registry"] = [
+                    {
+                        "phrase": r["phrase"],
+                        "origin": r["origin"],
+                        "age_days": round(
+                            (now - r["first_seen"]).total_seconds() / 86400.0,
+                            2,
+                        ),
+                        "salience": round(float(r["salience"]), 3),
+                    }
+                    for r in rows
+                ]
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["registry_error"] = str(exc)
+        else:
+            out["worker"] = "not registered"
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_voice_adoption_sweep() -> str:
+        """K26 — run the voice-adoption sweep now, without the time gates.
+
+        Drops the ``min_age_days`` + ``min_days_between`` gates for this
+        one run so a mechanic measured in weeks is testable in a sitting.
+        Does NOT drop the provenance gate (only phrases that started as
+        his are adoptable) or the ``max_adopted`` ceiling. The adopted
+        phrase shows up in the T0 prompt block on the very next turn.
+        """
+        worker = getattr(session, "_voice_adoption_worker", None)
+        if worker is None:
+            return "voice adoption worker not registered"
+        try:
+            worker.force_next()
+            return json.dumps(worker.run(), indent=2, default=str)
+        except Exception as exc:
+            return f"force_voice_adoption_sweep raised: {exc}"
+
+    @mcp.tool()
     def get_upcoming_horizon_state() -> str:
         """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
 

@@ -850,6 +850,66 @@ class HabituationWiringTests(unittest.TestCase):
         region_off = self._run(host_off, text="what tools should I use")
         self.assertNotIn(2, self._trace_by_id(region_off))
 
+    # ── L35 surface reasons ──────────────────────────────────────────
+
+    def test_core_concept_is_traced_as_a_core_belief(self) -> None:
+        concept = SimpleNamespace(
+            concept_id=1, label="values understanding systems", confidence=0.9,
+            plasticity=0.3, kind="identity", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        host = self._host([concept], near_score=0.0, tracker=_FakeTracker(3),
+                          kv=_FakeKV())
+        entry = self._trace_by_id(
+            self._run(host, text="what's the weather")
+        )[1]
+        self.assertTrue(entry["pinned"])
+        self.assertEqual(entry["surface_reason"], "core_belief")
+        self.assertEqual(entry["surface_reason_label"], "always-on core belief")
+
+    def test_contradicted_concept_is_traced_as_the_contradiction(self) -> None:
+        """The salience machinery already lifts a just-contradicted concept;
+        L35 is what makes the trace *say* that's why it's here."""
+        from datetime import datetime, timezone
+
+        concept = SimpleNamespace(
+            concept_id=21, label="feels strongly about deadlines",
+            confidence=0.6, plasticity=0.5, kind="affective", subject="user",
+            status="active", last_reinforced_at=None,
+        )
+        events = [
+            SimpleNamespace(
+                concept_id=21, event_type="contradicted",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+        # Modest cosine, so the fresh contradiction is the biggest term of
+        # the affective blend (context 0.5, recency 0.3, salience 0.2).
+        host = self._host([concept], near_score=0.3, tracker=_FakeTracker(3),
+                          kv=_FakeKV(), events=events)
+        entry = self._trace_by_id(self._run(host))[21]
+        self.assertEqual(entry["surface_reason"], "unresolved_contradiction")
+        self.assertEqual(
+            entry["surface_reason_label"], "unresolved contradiction"
+        )
+        self.assertEqual(entry["score"]["reason"], entry["surface_reason"])
+
+    def test_never_reinforced_concept_is_not_traced_as_recent(self) -> None:
+        """``recency_boost`` neutral-defaults to 1.0 for a concept with no
+        ``last_reinforced_at``. That must not read as "reinforced recently"
+        -- the affective blend weights recency above salience, so this is
+        exactly where a missing signal would otherwise win."""
+        concept = SimpleNamespace(
+            concept_id=31, label="lights up about synths", confidence=0.6,
+            plasticity=0.5, kind="affective", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        host = self._host([concept], near_score=0.5, tracker=_FakeTracker(3),
+                          kv=_FakeKV())
+        entry = self._trace_by_id(self._run(host))[31]
+        self.assertEqual(entry["score"]["recency"], 1.0)
+        self.assertEqual(entry["surface_reason"], "topic_match")
+
 
 if __name__ == "__main__":
     unittest.main()

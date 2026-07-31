@@ -386,6 +386,25 @@ Bootstrap-time reflection that fires once per app start when the gap since the l
 - `agent.catchphrase_miner_min_new_user_turns` *(int, `6`, min `1`)* — minimum new user turns since the last run.
 - `agent.catchphrase_miner_min_total_count` *(int, `3`, min `2`)* — minimum total occurrences of a phrase before it's promoted to a catchphrase.
 
+### Inside-joke birth (K80)
+
+The miner's fast path. The slow miner above only sees a phrase once it has *recurred* across a window; K80 catches the live moment a bit is born — the user handing one of Aiko's own phrases back to her, laughing — arms a one-shot "that's officially a thing now" cue, and promotes the phrase into the same catchphrase registry.
+
+- `agent.inside_joke_birth_enabled` *(bool, `true`)* — master switch. Off → no detection, no cue, no write.
+- `agent.inside_joke_birth_cooldown_hours` *(float, `24.0`, min `0`)* — wall-clock gap between blessings. Rarity is the point: a genuinely funny hour should produce one blessed bit, not a run of them.
+- `agent.inside_joke_birth_min_words` *(int, `3`, min `2`)* — shortest echo that can count as a bit. Below three words the "phrase" is usually just shared vocabulary.
+
+### Voice adoption (K26)
+
+The slow counterpart to K13 (register calibration): phrases that started as *his* drift into Aiko's own speech over months. A daily worker reads the catchphrase registry, keeps only rows whose provenance says the user said it first, and — rarely — promotes one into a small prompt block. Defaults are deliberately slow; the beat only works if it is invisible per session and obvious over months.
+
+- `agent.voice_adoption_enabled` *(bool, `true`)* — master switch. Off → the worker never runs and the block stays empty (already-adopted phrases are kept, just not surfaced).
+- `agent.voice_adoption_interval_seconds` *(int, `86400`, min `60`)* — sweep cadence.
+- `memory.voice_adoption_min_age_days` *(float, `14.0`, min `0`)* — how long a phrase must have been in the catchphrase registry before Aiko can take it on. A phrase from one intense evening is a mood, not a habit.
+- `memory.voice_adoption_min_days_between` *(float, `10.0`, min `0`)* — minimum wall-clock between two adoptions. Picking up three phrases in a week is mimicry, not absorption.
+- `memory.voice_adoption_max_adopted` *(int, `3`, min `1`)* — ceiling on the active adopted set. Past a handful she stops sounding like herself.
+- `memory.voice_adoption_max_rendered` *(int, `2`, min `1`)* — how many of them the prompt block names at once (newest first).
+
 ### Phase-4c curiosity worker
 
 One-line follow-up question prep when the recent conversation has gone shallow.
@@ -528,6 +547,13 @@ Three further mechanisms let plasticity *move* rather than stay stamped (all def
 - **Re-check slowdown** — a sticky (low effective-plasticity) concept is probed for L9 contradictions on a plasticity-scaled stride (`stride = 1 + round(k·(1 − eff_plast))`), skipping intermediate ticks *without* consuming the per-tick contradiction budget, so core beliefs are re-examined less often.
   - `memory.concept_plasticity_recheck_slowdown_enabled` *(bool, `true`)* — master switch; off → every active concept is eligible each tick as before.
   - `memory.concept_plasticity_recheck_stride_k` *(float, `3.0`, min `0`)* — stride steepness; `0` → stride always `1` (no slowdown) even when enabled.
+
+### L17a — concept trajectory (silent-decay sampling)
+
+The event timeline logs *transitions*, so a belief that decays for months without crossing a status floor leaves no trace of the slide. L3 closes that blind spot by appending a `confidence_sample` event when a concept that emitted nothing else this tick has drifted a full band from the confidence at its last recorded event (either direction). The baseline then advances to the sample, so a long fade logs once per band rather than once per tick. Read back with `ConceptEventStore.trajectory(concept_id)` (oldest-first) or `GET /api/concepts/timeline?concept_id=…`. See [`concept-lifecycle.md`](concept-lifecycle.md#reading-one-concepts-trajectory-l17a).
+
+- `memory.concept_confidence_sample_enabled` *(bool, `true`)* — master switch. Off → only transitions reach the timeline, as before.
+- `memory.concept_confidence_sample_band` *(float, `0.1`, clamped `[0.01, 1]`)* — how far confidence must move from the last recorded event before a sample fires. Smaller = finer trajectory, more rows.
 
 ### L13 — affective concepts (topic → durable affect)
 

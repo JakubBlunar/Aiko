@@ -488,12 +488,22 @@ class InterestActivity:
     that touch, ``None`` when no member timestamp resolved). Lets the
     knowledge-map reflection say "this territory is recently hot vs. went
     quiet months ago" instead of just "big vs. small".
+
+    ``representative_id`` is the cluster's stable handle -- the same
+    highest-salience member :class:`TopicCluster` reports, which is what
+    the concept layer keys its ``cluster -> concept`` evidence edges on.
+    Carrying it here is what lets a consumer ask
+    ``ConceptView.for_cluster(rep_id)`` "and what does he *believe* about
+    this territory?" (L28). Costs nothing extra: the same bulk mirror
+    snapshot that resolves recency already has the salience to pick it.
+    ``0`` when no member resolved in the mirror.
     """
 
     label: str
     size: int
     last_active: str
     days_since: float | None
+    representative_id: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -846,17 +856,24 @@ class TopicGraph:
         # One bulk snapshot of member touch timestamps under the store's
         # own lock (the documented in-process mirror touch). Sequential
         # with ``self._lock`` below, never nested, so no lock-order risk.
+        # The same pass grabs the ranking key behind ``representative_id``
+        # -- one extra tuple element, no second walk.
         touch_by_id: dict[int, str] = {}
+        rank_by_id: dict[int, tuple[float, int]] = {}
         ms = self._memory_store
         try:
             with ms._lock:  # type: ignore[attr-defined]
                 for m in ms._mirror.values():  # type: ignore[attr-defined]
-                    touch_by_id[int(m.id)] = (
-                        m.last_used_at or m.created_at or ""
+                    mid = int(m.id)
+                    touch_by_id[mid] = m.last_used_at or m.created_at or ""
+                    rank_by_id[mid] = (
+                        float(getattr(m, "salience", 0.0) or 0.0),
+                        int(getattr(m, "use_count", 0) or 0),
                     )
         except Exception:
             log.debug("cluster_activity mirror snapshot failed", exc_info=True)
             touch_by_id = {}
+            rank_by_id = {}
         now = timephrase.utcnow()
         out: list[InterestActivity] = []
         with self._lock:
@@ -868,16 +885,26 @@ class TopicGraph:
                 if not label:
                     continue
                 last = ""
+                rep = 0
+                best_rank = (-1.0, -1)
                 for mid in cluster.member_ids:
-                    touch = touch_by_id.get(int(mid), "")
+                    mid = int(mid)
+                    touch = touch_by_id.get(mid, "")
                     if touch and touch > last:
                         last = touch
+                    # Same ordering as ``_live_to_topic_clusters_locked``
+                    # (salience, then use_count), so this resolves to the
+                    # *same* id the concept edges were built against.
+                    rank = rank_by_id.get(mid)
+                    if rank is not None and rank > best_rank:
+                        best_rank, rep = rank, mid
                 out.append(
                     InterestActivity(
                         label=label,
                         size=size,
                         last_active=last,
                         days_since=_days_since(last, now),
+                        representative_id=rep,
                     )
                 )
         out.sort(key=lambda e: e.size, reverse=True)
