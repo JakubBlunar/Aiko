@@ -66,6 +66,7 @@ from app.core.session import (
     VoiceCaptureMixin,
     VoiceMixin,
     WeatherMixin,
+    WebFacadeMixin,
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
@@ -239,6 +240,7 @@ class SessionController(
     IdleWorkersInitMixin,
     DetectorsInitMixin,
     PersonaRegressionMixin,
+    WebFacadeMixin,
 ):
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
