@@ -894,6 +894,38 @@ class HabituationWiringTests(unittest.TestCase):
         )
         self.assertEqual(entry["score"]["reason"], entry["surface_reason"])
 
+    def test_core_lane_ranks_by_rest_not_confidence(self) -> None:
+        # L40: habituation used to be read only as a threshold, so the stale
+        # group kept core_lane's confidence order and a belief shown last turn
+        # preceded one rested for three. Order is the only thing that governs
+        # the pinned lane, so the graded factor has to sort it.
+        from app.core.concepts.concept_surfacing import save_habituation
+
+        def _c(cid: int, conf: float):
+            return SimpleNamespace(
+                concept_id=cid, label=f"trait {cid}", confidence=conf,
+                plasticity=0.3, kind="identity", subject="user",
+                status="active", last_reinforced_at=None,
+            )
+
+        concepts = [_c(1, 0.9), _c(2, 0.85), _c(3, 0.8)]
+        kv = _FakeKV()
+        # Current turn 11: #1 and #2 were shown last turn, #3 three turns ago.
+        # All three are inside the habituation window, so all are "stale" and
+        # the binary split alone can't tell them apart.
+        save_habituation(kv.kv_set, {1: 10, 2: 10, 3: 8})
+        host = self._host(concepts, near_score=0.0, tracker=_FakeTracker(10),
+                          kv=kv)
+
+        trace = self._trace_by_id(self._run(host, text="what's the weather"))
+        pinned = {cid for cid, e in trace.items() if e.get("pinned")}
+        # The cap is two. The most-rested #3 takes a slot despite having the
+        # *lowest* confidence, displacing the just-shown #2.
+        self.assertEqual(pinned, {1, 3})
+        self.assertGreater(
+            trace[3]["score"]["habituation"], trace[1]["score"]["habituation"],
+        )
+
     def test_never_reinforced_concept_is_not_traced_as_recent(self) -> None:
         """``recency_boost`` neutral-defaults to 1.0 for a concept with no
         ``last_reinforced_at``. That must not read as "reinforced recently"
@@ -909,6 +941,102 @@ class HabituationWiringTests(unittest.TestCase):
         entry = self._trace_by_id(self._run(host))[31]
         self.assertEqual(entry["score"]["recency"], 1.0)
         self.assertEqual(entry["surface_reason"], "topic_match")
+
+
+class ProfileClaimDedupeTests(unittest.TestCase):
+    """L39: a ``subject=user`` identity / value concept reaches the prompt via
+    two independent paths in one assembly -- the T0 profile block and the T3
+    relevant_context lanes. T0 wins by architecture (built first, slice-cached),
+    so T3 skips whatever ``_profile_concept_lines`` already claimed."""
+
+    _host = HabituationWiringTests._host
+    _run = HabituationWiringTests._run
+    _trace_by_id = HabituationWiringTests._trace_by_id
+
+    @staticmethod
+    def _identity(cid: int, conf: float = 0.82, label: str | None = None):
+        return SimpleNamespace(
+            concept_id=cid, label=label or f"trait {cid}", confidence=conf,
+            plasticity=0.5, kind="identity", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+
+    def _fresh_host(self, concepts: list, *, near_score: float, claimed=None):
+        host = self._host(concepts, near_score=near_score,
+                          tracker=_FakeTracker(3), kv=_FakeKV())
+        if claimed is not None:
+            host._last_profile_concept_ids = frozenset(claimed)
+        return host
+
+    def test_claimed_concept_is_dropped_from_the_core_lane(self) -> None:
+        concept = self._identity(7, label="enjoys systems thinking")
+        # Baseline: with nothing claimed it surfaces, so the assertion below
+        # is about the claim rather than an inert lane.
+        baseline = self._run(self._fresh_host([concept], near_score=0.6))
+        self.assertIn("enjoys systems thinking", baseline.text)
+
+        host = self._fresh_host([concept], near_score=0.6, claimed={7})
+        region = self._run(host)
+        self.assertNotIn("enjoys systems thinking", region.text)
+        self.assertNotIn(7, self._trace_by_id(region))
+        # The drop is recorded, so an empty concept lane stays distinguishable
+        # from a cold layer.
+        self.assertEqual(region.concept_trace.get("claimed_by_profile"), [7])
+
+    def test_claimed_concept_is_dropped_from_the_flex_lane(self) -> None:
+        # A value at 0.6 is under the kind's 0.85 core bar, so it can only
+        # arrive on the turn-relevant lane -- the corner a core-lane-only skip
+        # would miss, which would just relocate the duplicate.
+        concept = SimpleNamespace(
+            concept_id=9, label="cares about honesty", confidence=0.6,
+            plasticity=0.2, kind="value", subject="user", status="active",
+            last_reinforced_at=None,
+        )
+        baseline = self._run(self._fresh_host([concept], near_score=0.7))
+        entry = self._trace_by_id(baseline).get(9)
+        self.assertIsNotNone(entry)
+        self.assertFalse(entry.get("pinned"))
+
+        host = self._fresh_host([concept], near_score=0.7, claimed={9})
+        region = self._run(host)
+        self.assertNotIn(9, self._trace_by_id(region))
+
+    def test_claimed_concept_does_not_consume_a_core_slot(self) -> None:
+        # Cap of two over three core-qualifying concepts. Claiming the
+        # strongest must promote the third, not leave a hole -- the skip
+        # happens before the cap slice.
+        concepts = [
+            self._identity(1, 0.9), self._identity(2, 0.85),
+            self._identity(3, 0.8),
+        ]
+        unclaimed = self._run(
+            self._fresh_host(concepts, near_score=0.0),
+            text="what's the weather",
+        )
+        self.assertEqual(
+            {cid for cid, e in self._trace_by_id(unclaimed).items()
+             if e.get("pinned")},
+            {1, 2},
+        )
+
+        host = self._fresh_host(concepts, near_score=0.0, claimed={1})
+        region = self._run(host, text="what's the weather")
+        self.assertEqual(
+            {cid for cid, e in self._trace_by_id(region).items()
+             if e.get("pinned")},
+            {2, 3},
+        )
+
+    def test_unclaimed_when_the_stash_is_absent(self) -> None:
+        # The T3 lanes read the stash defensively: a host that never rendered a
+        # profile block (or a cold concept layer, which clears it) must behave
+        # exactly as before.
+        concept = self._identity(7, label="enjoys systems thinking")
+        host = self._fresh_host([concept], near_score=0.6)
+        self.assertFalse(hasattr(host, "_last_profile_concept_ids"))
+        region = self._run(host)
+        self.assertIn("enjoys systems thinking", region.text)
+        self.assertNotIn("claimed_by_profile", region.concept_trace)
 
 
 if __name__ == "__main__":

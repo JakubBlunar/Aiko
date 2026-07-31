@@ -44,11 +44,17 @@ below wants L37 first:
 - **DT5** `get_surfacing_outcomes`, which should ship *with* L37.
 
 Independent of the spine, the same audit found four verified defects worth
-picking up on their own: **L39** (identity concepts render twice a turn,
-and the T0 copy ignores habituation), **L40** (habituation never reaches
-the core lane's budget competition), **P42** (the retrieval budget is the
-residual of all 105 blocks), and **L41** (the L35 surface reason is
-computed every turn and discarded — usable as *framing*, never narrated).
+picking up on their own. Two are now closed and two remain: **L39** shipped
+its dedupe half (T3 now skips whatever the T0 profile block claimed, in all
+three lanes) and kept the repetition half open, because rotating the profile
+block would make a third volatile T0 block and cost prompt-cache stability;
+**L40** shipped, though the audit had it wrong — pinned candidates are admitted
+by `order` and their relevance is never read, so the real defect was
+habituation being consumed as a *boolean* and the stale group staying in
+confidence order. Still open: **P42** (the retrieval budget is the residual of
+all 105 blocks — now folded into P43, since a floor needs someone to yield to
+it) and **L41** (the L35 surface reason is computed every turn and discarded —
+usable as *framing*, never narrated).
 
 ### The same shape, one layer out: loops that end in a write
 
@@ -383,11 +389,15 @@ the spine section at the top of this file):
   concepts that reliably land rise and perennial no-shows fall. This is the
   change that turns the layer from a growing store of facts into something
   with judgement about its own material.
-- **L39.** Identity concepts surface twice a turn — the T0 profile block and
-  the T3 core lane render the same kinds independently, and the profile copy
-  has no habituation at all.
-- **L40.** Habituation never reaches the core lane's budget competition;
-  pinned concepts compete against memories on raw confidence.
+- **L39.** *Partly shipped.* The dedupe landed — T3 skips whatever the T0
+  profile block claimed, across the core, flex and activation lanes. What's
+  left is the repetition half: the profile copy still has no habituation, and
+  giving it one would make a third volatile T0 block, so a smaller stable cap
+  is the likelier lever.
+- **L40.** *Shipped* — see [`shipped/concepts.md`](shipped/concepts.md#l40-habituation-reaches-the-core-lane-through-order-not-relevance).
+  The premise was wrong (a pinned candidate's relevance is never read); the
+  real defect was habituation collapsing to a boolean, leaving the stale group
+  ranked by confidence so a just-shown belief outranked a rested one.
 - **L41.** Reason-conditioned phrasing — use the already-computed L35 reason
   to pick a line's framing, while keeping the debug-only rule that she must
   never narrate her own machinery.
@@ -457,7 +467,9 @@ compound across every K-series entry:
 - **P42.** The T3 retrieval budget is the *residual* after all 105 other
   blocks: `system_base` includes persona plus the whole T4-T6 tail before
   the surfacing reservation is sized, so routine ambient chrome outbids
-  turn-relevant recall. Measure with `get_prompt_block_costs` first.
+  turn-relevant recall. **Folded into P43** — `context_budget_min_tokens`
+  already reads like the floor this asks for but is clamped by what the tail
+  left, and nothing can yield to it without P43's arbitration.
 - **P43.** 105 blocks and no arbitration — the overflow path is a
   hand-maintained denylist of ~30 providers that has drifted (belief_gaps
   dropped, its sibling clarification kept). Generalise the T3 selector

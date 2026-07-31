@@ -2325,6 +2325,39 @@ weight; standing is the *earned* one — they should stay separate axes).
 
 ## L39. Identity concepts surface twice a turn, and one copy ignores habituation
 
+**Status: PARTLY SHIPPED (dedupe only).** The duplication is fixed.
+`_profile_concept_lines` now stashes the concept ids it rendered on
+`_last_profile_concept_ids`, and `build_relevant_context` skips them in **all
+three** T3 lanes — core, flex, and activation. The core-lane skip happens before
+the `core_cap` slice, so a claimed concept releases its slot to the next
+candidate instead of leaving a hole, and the skipped ids are recorded in the
+concept trace as `claimed_by_profile` so an empty lane stays distinguishable
+from a cold layer. Covering only the core lane turned out to be actively
+insufficient: a test with the flex guard removed showed a claimed identity
+concept re-entering the prompt through the turn-relevant lane on a topical
+match, so the dedupe simply relocated.
+
+**What to watch.** The profile block claims by confidence, so it takes exactly
+the concepts the core lane would have ranked first. T3 therefore now carries
+*different* material — `subject="aiko"` identity, boundary and generalization
+kinds, and lower-confidence user concepts — which is the intended effect but a
+real shift in what the core lane is for. On a small store where every
+core-qualifying concept is a user identity or value above the 0.5 profile bar,
+the core lane can legitimately come up empty; `claimed_by_profile` is what makes
+that readable rather than looking like a cold layer, and it is the signal that
+open question (2) below (a smaller profile cap) has become worth acting on.
+
+**Still open: the repetition half.** Giving the profile path its own habituation
+read is *not* shipped, and the reason is worth recording rather than
+re-discovering. The T0 profile block is part of the stable prompt prefix that
+the `_PROMPT_BLOCK_TIERS` ladder exists to protect; rotating its lines
+turn-to-turn would make it a **third** volatile T0 block alongside
+`narrative_block` and `catchphrase_block`, which the same audit flagged as
+defects. That trades prompt-cache cost for the repetition fix. Open question (2)
+below — a smaller stable cap rather than a rotating set — is the cheaper lever
+and is the one to try first, since ten identity lines every turn is a lot of
+standing assertion whether or not they rotate.
+
 **Motivation.** Two independent paths render the same concepts into the same
 prompt, and they don't know about each other. `_profile_concept_lines`
 ([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) renders
@@ -2363,13 +2396,28 @@ one. It should *not* get the habituation *write* (that would double-stamp
 against T3's clock); read-only is the right asymmetry, and worth a comment
 saying so.
 
-**Open questions.** (1) Is claim-first-in-T0 the right precedence, or should
-the turn-relevant T3 lane win because it is responsive to the conversation?
-Leaning T0 for prompt-cache stability, but a topically hot identity concept
-arguably belongs in T3. (2) Does the profile block want its own smaller cap
-once duplicates are gone — ten identity lines every turn is a lot of standing
-assertion. (3) Should this share one "already surfaced this turn" set across
-*all* blocks, which is really the general version of the problem P43 is about?
+**Open questions.** (1) ~~Is claim-first-in-T0 the right precedence~~ —
+**settled by the architecture.** T3 cannot win: the profile block is built (and
+slice-cached) before T3 exists, so making the turn-relevant lane take precedence
+would require either building T3 first, which breaks the reserve-before-history
+budget model, or re-rendering T0 afterwards, which breaks the tier ladder.
+(2) Does the profile block want its own smaller cap now that duplicates are
+gone? Still open, and now the leading candidate for the repetition half.
+(3) Should this share one "already surfaced this turn" set across *all* blocks,
+which is really the general version of the problem P43 is about? Still open —
+the claimed-id set shipped here is the narrow, concept-only case of it.
+
+**Notes from the implementation.** The claim survives a `_StaticSlices` cache
+hit without needing to be cached alongside the block (the way L26's
+`coactivation_trace` is): on a hit the renderer doesn't re-run, so the stash is
+stale, but it is stale *with the correct value* because the cached profile text
+contains exactly those ids. The stash is cleared at the top of
+`_profile_concept_lines` so every early return — cold layer, disabled view, zero
+cap, lookup failure — leaves an empty claim rather than a stale one, and a
+concept with no id is never claimed, since id 0 would act as a wildcard
+suppressing every unidentified candidate. Same-label siblings *are* claimed even
+though only the first renders a line, because the losing sibling's text is in
+the prompt via the line that won.
 
 **Effort.** Small. Two read sites and a per-turn claimed-id set.
 
@@ -2379,45 +2427,13 @@ assertion. (3) Should this share one "already surfaced this turn" set across
 
 ## L40. Habituation doesn't reach the core lane's budget competition
 
-**Motivation.** L23's habituation is supposed to make a just-surfaced concept
-step aside. On the core lane it only half-works. The core block computes the
-habituation factor and uses it to sort fresh candidates ahead of stale ones,
-then admits the winners with `relevance=conf` — the concept's **raw
-confidence** ([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py),
-the `ContextCandidate(source="concept", relevance=conf, ...)` construction).
-The factor is recorded in the trace and then dropped.
-
-Because pinned candidates bypass the per-source cap and the relevance floor but
-still consume the shared token budget, that raw confidence is what a core
-concept competes against *memories* with. So a core belief that surfaced last
-turn is softly deprioritised against other core beliefs, and not at all against
-the turn's memories — it takes the same slice of a budget it has already had
-recently, at the expense of material the user has not seen.
-
-**Key files.**
-[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) (the core
-lane's candidate construction) and
-[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
-for how `relevance` is used once pinned items are admitted.
-
-**Sketched approach.** Multiply the pinned candidate's relevance by the
-habituation factor already in hand. Keep the pin — a core belief should still
-be exempt from the cap and the floor, because "always-on" is the point of L27 —
-but let a recently-surfaced one yield tokens to a fresh memory rather than
-outbidding it at full strength. The core habituation floor (default 0.8) keeps
-the effect gentle by construction.
-
-**Open questions.** (1) Does this want the full blended `surface_score` instead
-of confidence-times-habituation? Arguably yes for consistency with the flex
-lane, but confidence is deliberate here — a core pin is justified by how firmly
-the belief is *held*, not by how well it matches the turn — so the minimal
-change is the honest one. (2) Worth checking against the L27 tests that a
-habituated core concept can still win when it is the only candidate.
-
-**Effort.** Small. One expression, plus a test that pins still outrank the
-floor.
-
-**Depends on.** Nothing. Same area as L39.
+**Status: SHIPPED — but the entry's premise was wrong** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l40-habituation-reaches-the-core-lane-through-order-not-relevance).
+There is no relevance-based budget competition for a pinned candidate to reach:
+the selector admits pinned items in `order` and never reads their `relevance`.
+The real defect was next door — habituation was read as a *boolean* threshold,
+so the stale group stayed in confidence order and a belief shown last turn
+outranked one rested for three. Fixed by sorting the stale group by rest.
 
 ---
 

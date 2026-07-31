@@ -960,6 +960,21 @@ stale. Worth re-checking claims of the form "nothing calls X".
 
 ## P42. The retrieval budget is the residual of everything else
 
+**Status: FOLDED INTO P43.** The diagnosis holds; the "small (floor +
+telemetry)" effort estimate below does not, and the reason is structural rather
+than a matter of tuning. A reservation is only a floor if someone yields to it,
+and by the time `_size_context_budget` runs there is nothing left to take from.
+`context_budget_min_tokens` already reads like the floor this entry asks for, but
+it is clamped by `hi = max(0, avail - history_floor)`, and `avail` is computed
+*after* the entire T4-T6 tail has been built and joined into `system_base`. So
+the min is honoured only when it happens to fit — a floor by convenience. Making
+it bind requires one of: shedding or trimming tail blocks, which is exactly
+P43's value-aware arbitration; or eating into `history_floor_tokens`, which has
+its own floor for its own reasons and just relocates the starvation. There is no
+third option that doesn't overcommit the window. Sequence this behind P43 rather
+than shipping a floor that silently doesn't hold, and see open question (3)
+below — the composition with `aggressive` is the same problem P43 is replacing.
+
 **Motivation.** Memories and concepts — the only blocks whose content is chosen
 *because it is relevant to this turn* — get whatever tokens are left after every
 other block has taken what it wants.
@@ -1010,7 +1025,9 @@ and only bites on exactly the turns where the current behaviour is worst.
 
 The minimal version does not need block arbitration (that is P43): a `min`
 reservation that the tail cannot eat into, plus telemetry when the tail is what
-forced the degrade, would capture most of the value.
+forced the degrade, would capture most of the value. **This turned out not to be
+available** — see the status note above; the reservation has no slack to draw on,
+so only the telemetry half is separable.
 
 Worth measuring first with `get_prompt_block_costs` on a busy turn: if the whole
 T4-T6 tail is only a few hundred tokens in practice, this is a smaller problem
@@ -1024,11 +1041,13 @@ survive scrutiny — that is very little history to protect. (3) Interaction wit
 `aggressive`, which already forces T3 to floors-only, so the two pressure paths
 need to compose sensibly rather than both firing.
 
-**Effort.** Small (floor + telemetry) / Medium (if the reservation becomes
-candidate-quality-aware).
+**Effort.** ~~Small (floor + telemetry)~~ — Medium, and not independently
+shippable: the floor half needs P43's arbitration to have anything to yield.
+Telemetry attributing a degrade to the tail is separable and small if it is
+wanted before then.
 
-**Depends on.** Nothing. Measure with P31a's `get_prompt_block_costs` first.
-Superseded in part by P43 if that lands.
+**Depends on.** P43 (the arbitration that makes a floor enforceable). Measure
+with P31a's `get_prompt_block_costs` first.
 
 ---
 

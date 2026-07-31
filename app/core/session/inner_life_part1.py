@@ -1067,7 +1067,13 @@ class InnerLifePart1Mixin:
         SQLite ``values`` field doesn't restate what the concept layer now
         owns. Returns ``([], set())`` on a cold/disabled layer or any error, so
         the block falls back to the pre-L28 SQLite-only rendering unchanged.
+
+        L39: the concept ids this block claims are stashed on
+        ``_last_profile_concept_ids`` so the T3 ``relevant_context`` lanes can
+        skip what this T0 block already renders. The stash is cleared up front,
+        so every early return leaves an empty claim rather than a stale one.
         """
+        self._last_profile_concept_ids = frozenset()
         if view is None or not getattr(view, "enabled", False):
             return [], set()
         ms = getattr(self, "_memory_settings", None)
@@ -1086,10 +1092,17 @@ class InnerLifePart1Mixin:
         lines: list[str] = []
         seen: set[str] = set()
         skip_fields: set[str] = set()
+        claimed: set[int] = set()
         for c in concepts:
             label = str(getattr(c, "label", "") or "").strip()
             if not label:
                 continue
+            # Claimed before the label dedupe: a same-label sibling contributes
+            # no line of its own, but its text *is* in the prompt via the line
+            # that won, so letting it through T3 would re-render the same claim.
+            cid = int(getattr(c, "concept_id", 0) or 0)
+            if cid:
+                claimed.add(cid)
             key = label.lower()
             if key in seen:
                 continue
@@ -1097,6 +1110,7 @@ class InnerLifePart1Mixin:
             lines.append(f"- {label}")
             if str(getattr(c, "kind", "")) == "value":
                 skip_fields.add("values")
+        self._last_profile_concept_ids = frozenset(claimed)
         return lines, skip_fields
 
     def _render_user_state_block(self) -> str:
@@ -1571,6 +1585,18 @@ class InnerLifePart1Mixin:
             ts = turns_since_surfaced(hab_state, cid, hab_turn)
             return habituation_factor(ts, window=hab_window, floor=floor)
 
+        # L39: concept ids the T0 profile block already rendered this turn (see
+        # ``_profile_concept_lines``). They are in the prompt already, so letting
+        # them through any T3 lane would state the same claim twice in one
+        # assembly. Read once, applied to all three lanes -- skipping only the
+        # core lane would just relocate the duplicate into the flex lane on a
+        # topical match. Stale-but-correct on a slice-cache hit: the renderer
+        # doesn't re-run, but the cached profile text holds exactly these ids.
+        claimed_ids: frozenset[int] = frozenset(
+            getattr(self, "_last_profile_concept_ids", None) or ()
+        )
+        claimed_skips: set[int] = set()
+
         pinned_ids: set[int] = set()
         if mature and view is not None:
             core_cap = max(0, int(getattr(ms, "context_budget_core_cap", 2)))
@@ -1596,16 +1622,36 @@ class InnerLifePart1Mixin:
                     if not label:
                         continue
                     cid = int(getattr(concept, "concept_id", 0))
+                    if cid in claimed_ids:
+                        # Dropped *before* the fresh/stale split and the cap
+                        # slice, so a profile-claimed concept never burns one of
+                        # the core_cap slots -- the next candidate fills it.
+                        claimed_skips.add(cid)
+                        continue
                     hab = _habituation(cid, hab_core_floor)
                     (fresh if hab >= 0.999 else stale).append(
                         (concept, cid, label, hab)
                     )
+                # L40: the fresh/stale split only reads habituation as a
+                # threshold, so a graded factor collapsed to a boolean and the
+                # stale group stayed in confidence order -- a belief shown last
+                # turn preceded one rested for three. Order is the only thing
+                # that governs the pinned lane (the budget selector admits
+                # pinned candidates in ``order`` and never reads their
+                # relevance), so the rest-ranking has to happen here. Stable, so
+                # equally-rested concepts keep core_lane's balanced native order.
+                stale.sort(key=lambda t: -t[3])
                 for i, (concept, cid, label, hab) in enumerate(
                     (fresh + stale)[:core_cap]
                 ):
                     pinned_ids.add(cid)
                     conf = float(getattr(concept, "confidence", 0.0))
                     cost = estimate_tokens(label) + 16
+                    # ``relevance`` is deliberately raw confidence: the selector
+                    # admits pinned candidates in ``order`` and never reads their
+                    # relevance (it only reports it as top_relevance), so damping
+                    # it here would change nothing. Habituation reaches the lane
+                    # through ``order`` instead -- see the sort above.
                     concept_cands.append(ContextCandidate(
                         source="concept", relevance=conf,
                         tokens=cost, order=i, payload=concept,
@@ -1628,6 +1674,10 @@ class InnerLifePart1Mixin:
             cid = int(getattr(concept, "concept_id", 0))
             label = (getattr(concept, "label", "") or "").strip()
             if not label:
+                return False
+            # L39: already rendered by the T0 profile block this turn.
+            if cid in claimed_ids:
+                claimed_skips.add(cid)
                 return False
             # L12: a tension concept never renders in the static T3 block -- it
             # surfaces only through the strictly-cooldowned T6 tension cue, so a
@@ -1836,6 +1886,11 @@ class InnerLifePart1Mixin:
             concept_pairs, pinned_ids=pinned_ids,
             score_components=score_components,
         )
+        # L39: record the dedupe so an empty concept lane is distinguishable
+        # from a cold layer -- a claimed concept is still in the prompt via T0,
+        # which is otherwise invisible from this trace alone.
+        if claimed_skips:
+            concept_trace["claimed_by_profile"] = sorted(claimed_skips)
         if concept_block:
             sections.append(concept_block)
 
