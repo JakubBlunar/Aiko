@@ -446,7 +446,7 @@ def _lifecycle_harness():
 def _seed_generalization(store, *, base_confs, base_status, gen_conf=0.9):
     now = datetime.now(_UTC).isoformat()
     bids = []
-    for i, (conf, status) in enumerate(zip(base_confs, base_status)):
+    for i, (conf, status) in enumerate(zip(base_confs, base_status, strict=False)):
         bids.append(store.add(Concept(
             label=f"base{i}", kind="identity", subject="user",
             evidence_model="set", status=status, confidence=conf,

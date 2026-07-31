@@ -73,7 +73,7 @@ class DuckDuckGoProviderTests(unittest.TestCase):
 
     def test_raises_on_ddgs_error(self) -> None:
         _install_fake_ddgs(None, raises=True)
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             DuckDuckGoProvider().search("q", 5)
 
 
@@ -154,12 +154,12 @@ class LangSearchProviderTests(unittest.TestCase):
 
     def test_raises_on_api_error_code(self) -> None:
         self._patch_requests(_FakeResponse(self._body([], code=403)))
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             LangSearchProvider(api_key="k").search("q", 5)
 
     def test_raises_on_http_error(self) -> None:
         self._patch_requests(_FakeResponse(self._body([]), status=500))
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             LangSearchProvider(api_key="k").search("q", 5)
 
     def test_empty_key_rejected(self) -> None:

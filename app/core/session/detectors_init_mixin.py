@@ -504,13 +504,15 @@ class DetectorsInitMixin:
                 # topic graph so it can name topic transitions, but only
                 # when the master switch is on (off → tracking disabled,
                 # K6/K18 behave exactly as before). Restart to toggle.
-                topic_graph_provider = None
-                if bool(
-                    getattr(settings.agent, "topic_tracking_enabled", True)
-                ):
-                    topic_graph_provider = lambda: getattr(
-                        self, "_topic_graph", None
-                    )
+                def _topic_graph_provider():
+                    # Late-bound: the graph is attached after this bootstrap.
+                    return getattr(self, "_topic_graph", None)
+
+                topic_graph_provider = (
+                    _topic_graph_provider
+                    if bool(getattr(settings.agent, "topic_tracking_enabled", True))
+                    else None
+                )
                 self._novelty_detector = NoveltyDetector(
                     embedder=self._embedder,
                     rag_store=self._rag_store,

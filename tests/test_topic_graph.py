@@ -221,7 +221,7 @@ class CacheInvalidationTests(unittest.TestCase):
         # Same instances if the cache held — TopicCluster is frozen
         # so identity is the cleanest check.
         self.assertEqual(len(first), len(second))
-        for a, b in zip(first, second):
+        for a, b in zip(first, second, strict=False):
             self.assertIs(a, b)
 
     def test_cache_rebuilds_on_new_memory(self) -> None:

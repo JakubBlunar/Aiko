@@ -145,12 +145,12 @@ class OpenMeteoProviderTests(unittest.TestCase):
 
     def test_current_raises_on_missing_block(self) -> None:
         with _RequestsPatch(_FakeResponse({"foo": "bar"})):
-            with self.assertRaises(Exception):
+            with self.assertRaises(ValueError):
                 OpenMeteoProvider().current(1.0, 2.0)
 
     def test_current_raises_on_http_error(self) -> None:
         with _RequestsPatch(_FakeResponse(self._current_body(), status=500)):
-            with self.assertRaises(Exception):
+            with self.assertRaises(RuntimeError):
                 OpenMeteoProvider().current(1.0, 2.0)
 
     def test_forecast_maps_days(self) -> None:

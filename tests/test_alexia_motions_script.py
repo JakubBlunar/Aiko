@@ -73,7 +73,7 @@ class BackchannelMotionRenderingTests(unittest.TestCase):
         left_kfs = _segments_to_keyframes(left["Curves"][0]["Segments"])
         right_kfs = _segments_to_keyframes(right["Curves"][0]["Segments"])
         # Same time codes; values are mirrored across zero.
-        for (lt, lv), (rt, rv) in zip(left_kfs, right_kfs):
+        for (lt, lv), (rt, rv) in zip(left_kfs, right_kfs, strict=False):
             self.assertAlmostEqual(lt, rt)
             self.assertAlmostEqual(lv, -rv)
 

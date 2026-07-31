@@ -10,6 +10,7 @@ from __future__ import annotations
 import random
 import unittest
 from collections import Counter
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 
 from app.core.affect import day_color
@@ -58,7 +59,7 @@ class PaletteShapeTests(unittest.TestCase):
 
     def test_dayclass_is_frozen(self) -> None:
         sample = PALETTE[0]
-        with self.assertRaises(Exception):
+        with self.assertRaises(FrozenInstanceError):
             sample.name = "other"  # type: ignore[misc]
 
 

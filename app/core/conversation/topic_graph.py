@@ -328,7 +328,7 @@ def _cluster_memories_adaptive(
     # to the modal dimension so the stack/matmul is well-formed.
     dim = vecs[0].shape[0] if vecs and vecs[0].size else 0
     if dim == 0 or any(v.shape[0] != dim for v in vecs):
-        usable = [(m, v) for m, v in zip(items, vecs) if v.shape[0] == dim and dim]
+        usable = [(m, v) for m, v in zip(items, vecs, strict=False) if v.shape[0] == dim and dim]
         if len(usable) < min_size:
             return []
         items = [m for m, _ in usable]

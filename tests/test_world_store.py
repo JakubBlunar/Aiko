@@ -72,7 +72,7 @@ class SeedTests(unittest.TestCase):
             items = store.list_items()
             self.assertGreaterEqual(len(locations), 5)
             self.assertGreaterEqual(len(items), 8)
-            slugs = {l.slug for l in locations}
+            slugs = {loc.slug for loc in locations}
             self.assertIn("desk", slugs)
             self.assertIn("kitchenette", slugs)
             # Cookies should be a stackable consumable.

@@ -1407,7 +1407,7 @@ class ChatDatabase:
                 "SELECT id, session_id, message FROM message_store ORDER BY id"
             ).fetchall()
             import json
-            for row_id, session_id, message_json in rows:
+            for _row_id, session_id, message_json in rows:
                 try:
                     msg = json.loads(message_json) if isinstance(message_json, str) else {}
                 except Exception:

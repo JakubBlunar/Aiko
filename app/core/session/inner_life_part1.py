@@ -1348,7 +1348,7 @@ class InnerLifePart1Mixin:
     def _concept_grounding_phrase(labels: list[str]) -> str:
         """Render the supporting labels as a trailing, hedged clause. Empty
         when there is nothing to ground on, so short concepts stay terse."""
-        clean = [l for l in labels if l]
+        clean = [label for label in labels if label]
         if not clean:
             return ""
         if len(clean) == 1:

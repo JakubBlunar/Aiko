@@ -186,7 +186,9 @@ class UpdateGoalProgressTool:
         try:
             goal_id = int(arguments.get("goal_id"))
         except (TypeError, ValueError):
-            raise ToolError("update_goal_progress: 'goal_id' must be an integer")
+            raise ToolError(
+                "update_goal_progress: 'goal_id' must be an integer"
+            ) from None
         note = (arguments.get("note") or "").strip()
         if not note:
             raise ToolError("update_goal_progress: 'note' is required")
@@ -285,7 +287,7 @@ class ArchiveGoalTool:
         try:
             goal_id = int(arguments.get("goal_id"))
         except (TypeError, ValueError):
-            raise ToolError("archive_goal: 'goal_id' must be an integer")
+            raise ToolError("archive_goal: 'goal_id' must be an integer") from None
         try:
             ok = store.archive_goal(goal_id)
         except Exception as exc:

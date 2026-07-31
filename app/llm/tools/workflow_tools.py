@@ -264,7 +264,7 @@ class CancelWorkTool:
         try:
             task_id = int(arguments.get("task_id", 0))
         except (TypeError, ValueError):
-            raise ToolError("cancel_work: 'task_id' must be an integer")
+            raise ToolError("cancel_work: 'task_id' must be an integer") from None
         if task_id <= 0:
             raise ToolError("cancel_work: 'task_id' must be a positive integer")
         orch = _orchestrator(self._session)

@@ -118,7 +118,7 @@ class RelationshipTrackerTests(unittest.TestCase):
     def test_record_turn_increments(self):
         f = _Fixture()
         try:
-            for i in range(3):
+            for _ in range(3):
                 state, _ = f.tracker.record_turn("u1")
             self.assertEqual(state.total_turns, 3)
         finally:

@@ -190,7 +190,7 @@ class MoveToTool:
             raise ToolError("move_to: 'location' is required")
         loc = store.find_location(target)
         if loc is None:
-            available = ", ".join(l.slug for l in store.list_locations()) or "(none)"
+            available = ", ".join(p.slug for p in store.list_locations()) or "(none)"
             raise ToolError(
                 f"move_to: no location matching '{target}'. Try: {available}"
             )
@@ -550,7 +550,7 @@ class PlantSeedTool:
         loc = store.find_location(where)
         if loc is None:
             available = ", ".join(
-                l.slug for l in store.list_locations()
+                p.slug for p in store.list_locations()
             ) or "(none)"
             raise ToolError(
                 f"plant_seed: no location matching '{where}'. "

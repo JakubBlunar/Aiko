@@ -7,6 +7,7 @@ create / answer / supersede / latest_pending / list, plus the
 from __future__ import annotations
 
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -260,7 +261,7 @@ class DataclassTests(unittest.TestCase):
             status=STATUS_PENDING, response=None,
             created_at="2026-01-01T00:00:00+00:00", answered_at=None,
         )
-        with self.assertRaises(Exception):
+        with self.assertRaises(FrozenInstanceError):
             inp.status = STATUS_ANSWERED  # type: ignore[misc]
 
 

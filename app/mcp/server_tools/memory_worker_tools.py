@@ -2006,7 +2006,7 @@ def register(mcp, session: "SessionController") -> None:
                     ids = getattr(cluster, "member_ids", ()) or ()
                     kinds = getattr(cluster, "member_kinds", ()) or ()
                     vibes: list[str] = []
-                    for mid, kind in zip(ids, kinds):
+                    for mid, kind in zip(ids, kinds, strict=False):
                         if kind != "shared_moment":
                             continue
                         m = store.get(mid)

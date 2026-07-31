@@ -5197,7 +5197,7 @@ class PromptCachePrefixOrderingTests(unittest.TestCase):
             self.assertGreaterEqual(
                 pos, 0, f"expected sentinel {s!r} in system prompt",
             )
-        for (s_a, p_a), (s_b, p_b) in zip(positions, positions[1:]):
+        for (s_a, p_a), (s_b, p_b) in zip(positions, positions[1:], strict=False):
             self.assertLess(
                 p_a, p_b,
                 f"prompt-cache ladder out of order at {s_a!r} (pos {p_a}) "

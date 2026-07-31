@@ -54,7 +54,7 @@ class MigrateToRagBulkTests(unittest.TestCase):
         # startup hang.
         with _TempStore() as store:
             emb = _FakeEmbedder()
-            for i, content in enumerate(("alpha", "beta", "gamma")):
+            for content in ("alpha", "beta", "gamma"):
                 store.add(content, "fact", emb.embed(content))
 
             rag = MagicMock()

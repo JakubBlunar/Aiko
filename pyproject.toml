@@ -148,3 +148,7 @@ select = ["F", "E", "W", "B"]
 # Package headers re-export their public surface for callers to import from,
 # which is what an ``__init__`` is for; ruff reads that as unused.
 "__init__.py" = ["F401"]
+# The browser perception code ships inside plugins/browser, which the plugin
+# runtime puts on sys.path at activation. This test does the same by hand, so
+# its ``import aiko_browser`` lines *have* to follow that sys.path edit.
+"tests/test_browser_perception.py" = ["E402"]

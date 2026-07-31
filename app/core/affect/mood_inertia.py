@@ -111,7 +111,7 @@ def detect_whiplash(recent_reactions: list[str]) -> bool:
             signs.append(0)
             continue
         signs.append(1 if target[0] > 0 else (-1 if target[0] < 0 else 0))
-    for prev, cur in zip(signs, signs[1:]):
+    for prev, cur in zip(signs, signs[1:], strict=False):
         if prev != 0 and cur != 0 and prev != cur:
             return True
     return False

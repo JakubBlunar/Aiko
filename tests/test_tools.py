@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.llm.search.providers import SearchResult
 from app.llm.tools import ToolError, ToolRegistry, ToolResult, ToolSchema, build_default_registry
 from app.llm.tools.builtins import GetTimeTool, RecallTool, WebSearchTool
 
@@ -112,9 +113,6 @@ class RecallToolTests(unittest.TestCase):
 
 
 # ── web_search ────────────────────────────────────────────────────────────
-
-
-from app.llm.search.providers import SearchResult
 
 
 class _FakeProvider:

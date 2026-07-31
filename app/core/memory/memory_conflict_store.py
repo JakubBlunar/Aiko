@@ -39,6 +39,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.core.infra import timephrase
+
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
 
@@ -63,10 +65,6 @@ ACTION_DELETE = "delete"
 ACTION_DISMISS = "dismiss"
 
 VALID_ACTIONS: frozenset[str] = frozenset((ACTION_DEMOTE, ACTION_DELETE, ACTION_DISMISS))
-
-# Heuristic labels emitted by ``app.core.memory.conflict_heuristics.classify_pair``.
-# Re-exported here so callers that only import the store still see them.
-from app.core.infra import timephrase
 
 # Origin of the conflict flag.
 FLAGGED_BY_AUTO = "auto"

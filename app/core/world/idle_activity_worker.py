@@ -599,7 +599,7 @@ class IdleAwayActivityWorker:
         )
         if pet is not None and locations:
             other = [
-                l for l in locations if l.id != getattr(pet, "location_id", None)
+                loc for loc in locations if loc.id != getattr(pet, "location_id", None)
             ]
             target = self._rng.choice(other) if other else None
             candidates["move_cat"] = ActivityPlan(
@@ -614,10 +614,10 @@ class IdleAwayActivityWorker:
         # Window — look outside.
         window = next(
             (
-                l
-                for l in locations
-                if "window" in (getattr(l, "name", "") or "").lower()
-                or "window" in (getattr(l, "slug", "") or "").lower()
+                loc
+                for loc in locations
+                if "window" in (getattr(loc, "name", "") or "").lower()
+                or "window" in (getattr(loc, "slug", "") or "").lower()
             ),
             None,
         )
@@ -633,10 +633,10 @@ class IdleAwayActivityWorker:
         # Desk — tidy / tinker (almost always present).
         desk = next(
             (
-                l
-                for l in locations
-                if "desk" in (getattr(l, "slug", "") or "").lower()
-                or "desk" in (getattr(l, "name", "") or "").lower()
+                loc
+                for loc in locations
+                if "desk" in (getattr(loc, "slug", "") or "").lower()
+                or "desk" in (getattr(loc, "name", "") or "").lower()
             ),
             None,
         )
@@ -866,11 +866,11 @@ class IdleAwayActivityWorker:
         if not locations:
             return None
         loc_by_slug = {
-            (getattr(l, "slug", "") or "").lower(): l for l in locations
+            (getattr(loc, "slug", "") or "").lower(): loc for loc in locations
         }
         loc_lines = "; ".join(
-            f"{getattr(l, 'slug', '')} ({getattr(l, 'name', '')})"
-            for l in locations
+            f"{getattr(loc, 'slug', '')} ({getattr(loc, 'name', '')})"
+            for loc in locations
         )
         item_names = ", ".join(
             getattr(i, "name", "") for i in items[:12] if getattr(i, "name", "")

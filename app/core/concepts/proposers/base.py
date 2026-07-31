@@ -379,7 +379,7 @@ def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str) -> s
         tail = _MAX_STEPS_SHOWN - head
         shown = list(enumerate(mems[:head]))
         shown.append((-1, None))
-        shown += list(zip(range(len(mems) - tail, len(mems)), mems[-tail:]))
+        shown += list(zip(range(len(mems) - tail, len(mems)), mems[-tail:], strict=False))
     for pos, mem in shown:
         if mem is None:
             lines.append(
