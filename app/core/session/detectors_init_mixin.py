@@ -851,9 +851,15 @@ class DetectorsInitMixin:
             try:
                 from app.mcp.runner import McpServerRunner
                 from app.mcp.server import create_mcp_server
-                mcp_srv = create_mcp_server(self, port=settings.mcp_server.port)
+                mcp_srv = create_mcp_server(
+                    self,
+                    port=settings.mcp_server.port,
+                    host=settings.mcp_server.host,
+                )
                 self._mcp_server_runner = McpServerRunner(
-                    mcp_srv, port=settings.mcp_server.port,
+                    mcp_srv,
+                    port=settings.mcp_server.port,
+                    host=settings.mcp_server.host,
                 )
                 self._mcp_server_runner.start()
             except Exception:

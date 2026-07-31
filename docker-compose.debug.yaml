@@ -1,0 +1,27 @@
+# Aiko — debug overlay: publishes the embedded MCP server.
+#
+# Layer this ON TOP of a variant, never on its own:
+#
+#   docker compose -f docker-compose-slim.yaml -f docker-compose.debug.yaml up -d --build
+#   open http://localhost:6275          # the UI, as usual
+#   # MCP SSE now answers on http://localhost:6274/sse
+#
+# Why it's a separate file: the MCP tools drive the live session with no
+# authentication at all — anything that can reach 6274 can read memories,
+# rewrite settings and steer the next turn. That is fine for a loopback
+# debug port and not fine as a default, so widening the bind is opt-in per
+# invocation rather than a flag someone can leave set in .env by accident.
+#
+# AIKO_MCP_HOST is what does the widening: inside a container, the default
+# 127.0.0.1 bind is unreachable even from the host running Docker, so the
+# published port alone would connect to nothing.
+#
+# Pair this with a --project name to pick which data volume you attach to,
+# e.g. `-p aiko-clean` to reuse an existing throwaway instance.
+
+services:
+  aiko:
+    ports:
+      - "${AIKO_MCP_PORT:-6274}:6274"
+    environment:
+      AIKO_MCP_HOST: "0.0.0.0"

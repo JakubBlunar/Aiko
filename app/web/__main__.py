@@ -35,6 +35,10 @@ def _apply_env_overrides(settings) -> None:
 
       * ``AIKO_WEB_HOST``        -> web_server.host   (use 0.0.0.0 in Docker)
       * ``AIKO_WEB_PORT``        -> web_server.port
+      * ``AIKO_MCP_HOST``        -> mcp_server.host. Debug-only, and off by
+        default for a reason: the MCP tools drive the live session with no
+        authentication. Setting it to 0.0.0.0 is what makes the embedded
+        debug server reachable from outside a container at all.
       * ``AIKO_OLLAMA_BASE_URL`` -> the ``base_url`` of every Ollama
         provider in the catalogue (e.g. http://host.docker.internal:11434,
         or http://ollama:11434 for an in-compose Ollama). Chat, workers
@@ -56,6 +60,15 @@ def _apply_env_overrides(settings) -> None:
                 web.port = int(port)
             except (TypeError, ValueError):
                 log.warning("ignoring invalid AIKO_WEB_PORT=%r", port)
+    mcp = getattr(settings, "mcp_server", None)
+    mcp_host = (os.environ.get("AIKO_MCP_HOST") or "").strip()
+    if mcp is not None and mcp_host:
+        mcp.host = mcp_host
+        log.warning(
+            "AIKO_MCP_HOST=%s -- the unauthenticated MCP debug surface is "
+            "bound off-loopback; use this only on a trusted network.",
+            mcp_host,
+        )
     base_url = (os.environ.get("AIKO_OLLAMA_BASE_URL") or "").strip()
     llm = getattr(settings, "llm", None)
     if base_url and llm is not None:

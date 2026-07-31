@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import mock
 
 from app.core.infra import settings as settings_mod
-from app.core.infra.settings import AvatarSettings, load_settings
+from app.core.infra.settings import AvatarSettings, McpServerSettings, load_settings
 
 
 class AvatarExpressivenessLoaderTests(unittest.TestCase):
@@ -5099,6 +5101,105 @@ class IntimacyPacingSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(a.intimacy_pacing_learning_rate, 1.0)
         self.assertAlmostEqual(a.intimacy_pacing_follow_strength, 0.0)
         self.assertAlmostEqual(a.intimacy_pacing_decay_half_life_days, 0.0)
+
+
+class McpServerHostTests(unittest.TestCase):
+    """``mcp_server.host`` defaults to loopback and only widens deliberately.
+
+    The default is the security posture, not a formality: the MCP tools drive
+    the live session unauthenticated. These pin it so a future refactor of the
+    parse block can't quietly turn the debug surface into a listening socket.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        self._base_config = json.loads(default_path.read_text(encoding="utf-8"))
+
+    def _write_config(self, mcp_extra: dict | None = None) -> Path:
+        cfg = copy.deepcopy(self._base_config)
+        if mcp_extra is not None:
+            cfg["mcp_server"] = {**cfg.get("mcp_server", {}), **mcp_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_to_loopback(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertEqual(result.mcp_server.host, "127.0.0.1")
+
+    def test_dataclass_default_matches_loader_default(self) -> None:
+        self.assertEqual(McpServerSettings().host, "127.0.0.1")
+
+    def test_explicit_host_round_trips(self) -> None:
+        result = load_settings(config_path=self._write_config({"host": "0.0.0.0"}))
+        self.assertEqual(result.mcp_server.host, "0.0.0.0")
+
+    def test_blank_and_missing_fall_back_to_loopback(self) -> None:
+        for value in ("", "   ", None):
+            with self.subTest(value=value):
+                result = load_settings(
+                    config_path=self._write_config({"host": value}),
+                )
+                self.assertEqual(result.mcp_server.host, "127.0.0.1")
+
+
+class McpHostEnvOverrideTests(unittest.TestCase):
+    """``AIKO_MCP_HOST`` is the container's only way to reach the MCP server.
+
+    Inside a container the loopback default is unreachable even from the host
+    running Docker, so a published port with no override forwards to nothing.
+    """
+
+    def test_override_applies(self) -> None:
+        from app.web.__main__ import _apply_env_overrides
+
+        settings = SimpleNamespace(
+            web_server=SimpleNamespace(host="127.0.0.1", port=6275),
+            mcp_server=SimpleNamespace(host="127.0.0.1", port=6274),
+        )
+        with mock.patch.dict(os.environ, {"AIKO_MCP_HOST": "0.0.0.0"}):
+            _apply_env_overrides(settings)
+        self.assertEqual(settings.mcp_server.host, "0.0.0.0")
+
+    def test_absent_env_leaves_loopback(self) -> None:
+        from app.web.__main__ import _apply_env_overrides
+
+        settings = SimpleNamespace(
+            web_server=SimpleNamespace(host="127.0.0.1", port=6275),
+            mcp_server=SimpleNamespace(host="127.0.0.1", port=6274),
+        )
+        env = {k: v for k, v in os.environ.items() if k != "AIKO_MCP_HOST"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            _apply_env_overrides(settings)
+        self.assertEqual(settings.mcp_server.host, "127.0.0.1")
+
+    def test_blank_env_is_ignored(self) -> None:
+        from app.web.__main__ import _apply_env_overrides
+
+        settings = SimpleNamespace(
+            web_server=SimpleNamespace(host="127.0.0.1", port=6275),
+            mcp_server=SimpleNamespace(host="127.0.0.1", port=6274),
+        )
+        with mock.patch.dict(os.environ, {"AIKO_MCP_HOST": "  "}):
+            _apply_env_overrides(settings)
+        self.assertEqual(settings.mcp_server.host, "127.0.0.1")
+
+    def test_missing_block_does_not_crash(self) -> None:
+        from app.web.__main__ import _apply_env_overrides
+
+        settings = SimpleNamespace(web_server=None)
+        with mock.patch.dict(os.environ, {"AIKO_MCP_HOST": "0.0.0.0"}):
+            _apply_env_overrides(settings)  # must not raise
 
 
 if __name__ == "__main__":
