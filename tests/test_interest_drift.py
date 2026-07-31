@@ -46,6 +46,50 @@ class _FakeGraph:
         return [e for e in frame if e.size >= (min_size or 0)][:top_n]
 
 
+@dataclass
+class _Activity:
+    label: str
+    size: int
+    representative_id: int = 0
+
+
+class _FakeGraphWithActivity(_FakeGraph):
+    """Adds the L28 rep-id seam on top of the scripted interest_map."""
+
+    def __init__(
+        self, frames: list[list[_Entry]], activity: list[_Activity],
+    ) -> None:
+        super().__init__(frames)
+        self._activity = activity
+        self.activity_calls = 0
+
+    def cluster_activity(self, *, top_n, min_size=None):
+        self.activity_calls += 1
+        return list(self._activity)[:top_n]
+
+
+@dataclass
+class _Concept:
+    label: str
+    confidence: float = 0.5
+
+
+class _FakeView:
+    def __init__(
+        self,
+        by_rep: dict[int, list[_Concept]] | None = None,
+        *,
+        enabled: bool = True,
+    ) -> None:
+        self._by_rep = by_rep or {}
+        self.enabled = enabled
+        self.calls: list[int] = []
+
+    def for_cluster(self, rep_id) -> list[_Concept]:
+        self.calls.append(int(rep_id))
+        return list(self._by_rep.get(int(rep_id), []))
+
+
 class _KV:
     def __init__(self) -> None:
         self.d: dict[str, str] = {}
@@ -217,6 +261,100 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(load_drifts(kv.kv_get)), 6)
 
 
+class BeliefAnnotationTests(unittest.TestCase):
+    """L28: a drafted drift carries the concept she holds about the topic,
+    resolved through ``ConceptView.for_cluster``."""
+
+    @staticmethod
+    def _frames() -> list[list[_Entry]]:
+        return [
+            [_Entry("rust debugging", 4)],
+            [_Entry("rust debugging", 6)],
+            [_Entry("rust debugging", 9)],
+        ]
+
+    def _graph(self) -> _FakeGraphWithActivity:
+        return _FakeGraphWithActivity(
+            self._frames(),
+            [_Activity("rust debugging", 9, representative_id=7)],
+        )
+
+    def _warm(self, worker) -> dict:
+        worker.run()
+        worker.run()
+        return worker.run()
+
+    def test_belief_lands_in_the_journal(self) -> None:
+        view = _FakeView({7: [
+            _Concept("she likes the puzzle of a stubborn bug", 0.8),
+            _Concept("a weaker hunch", 0.2),
+        ]})
+        kv = _KV()
+        worker = _make_worker(
+            self._graph(), kv, view_provider=lambda: view,
+        )
+        self.assertEqual(self._warm(worker)["drafted"], 1)
+        entry = load_drifts(kv.kv_get)[0]
+        self.assertEqual(
+            entry["belief"], "she likes the puzzle of a stubborn bug"
+        )
+
+    def test_view_only_consulted_when_drafting(self) -> None:
+        view = _FakeView({7: [_Concept("something")]})
+        graph = self._graph()
+        worker = _make_worker(graph, _KV(), view_provider=lambda: view)
+        worker.run()
+        worker.run()
+        # Two sampling ticks, no draft -> the mirror-joining read is unpaid.
+        self.assertEqual(graph.activity_calls, 0)
+        worker.run()
+        self.assertEqual(graph.activity_calls, 1)
+
+    def test_no_view_leaves_the_entry_unannotated(self) -> None:
+        kv = _KV()
+        worker = _make_worker(self._graph(), kv)
+        self._warm(worker)
+        self.assertNotIn("belief", load_drifts(kv.kv_get)[0])
+
+    def test_cold_view_leaves_the_entry_unannotated(self) -> None:
+        kv = _KV()
+        worker = _make_worker(
+            self._graph(), kv, view_provider=lambda: _FakeView(enabled=False),
+        )
+        self._warm(worker)
+        self.assertNotIn("belief", load_drifts(kv.kv_get)[0])
+
+    def test_graph_without_activity_still_drafts(self) -> None:
+        kv = _KV()
+        worker = _make_worker(
+            _FakeGraph(self._frames()), kv,
+            view_provider=lambda: _FakeView({7: [_Concept("x")]}),
+        )
+        self.assertEqual(self._warm(worker)["drafted"], 1)
+        self.assertNotIn("belief", load_drifts(kv.kv_get)[0])
+
+    def test_unresolved_representative_is_not_queried(self) -> None:
+        view = _FakeView({7: [_Concept("x")]})
+        graph = _FakeGraphWithActivity(
+            self._frames(),
+            [_Activity("rust debugging", 9, representative_id=0)],
+        )
+        kv = _KV()
+        worker = _make_worker(graph, kv, view_provider=lambda: view)
+        self._warm(worker)
+        self.assertEqual(view.calls, [])
+        self.assertNotIn("belief", load_drifts(kv.kv_get)[0])
+
+    def test_provider_raising_still_drafts(self) -> None:
+        def boom():
+            raise RuntimeError("no view")
+
+        kv = _KV()
+        worker = _make_worker(self._graph(), kv, view_provider=boom)
+        self.assertEqual(self._warm(worker)["drafted"], 1)
+        self.assertNotIn("belief", load_drifts(kv.kv_get)[0])
+
+
 # ── provider ─────────────────────────────────────────────────────────────
 
 
@@ -237,18 +375,28 @@ class _Host(InnerLifePart2Mixin):
 
 
 class ProviderTests(unittest.TestCase):
-    def _seed(self, host: _Host, *, topic="weekend hiking", direction="rising") -> None:
+    def _seed(
+        self,
+        host: _Host,
+        *,
+        topic="weekend hiking",
+        direction="rising",
+        belief: str | None = None,
+    ) -> None:
+        entry = {
+            "at": "2026-01-01T00:00:00+00:00",
+            "topic": topic,
+            "topic_key": topic_key(topic),
+            "direction": direction,
+            "from_size": 4,
+            "to_size": 12,
+        }
+        if belief is not None:
+            entry["belief"] = belief
         append_drift(
             host._chat_db.kv_get,
             host._chat_db.kv_set,
-            {
-                "at": "2026-01-01T00:00:00+00:00",
-                "topic": topic,
-                "topic_key": topic_key(topic),
-                "direction": direction,
-                "from_size": 4,
-                "to_size": 12,
-            },
+            entry,
             max_entries=6,
         )
 
@@ -294,6 +442,22 @@ class ProviderTests(unittest.TestCase):
         self._seed(host)
         host._interest_drift_force_next = True
         self.assertIn("hiking", host._render_interest_drift_block("").lower())
+
+    def test_belief_reaches_the_cue(self) -> None:
+        host = _Host()
+        self._seed(host, belief="the quiet of a long climb suits you")
+        out = host._render_interest_drift_block("planning a hiking trip")
+        self.assertIn(
+            "What you hold about it: the quiet of a long climb suits you.",
+            out,
+        )
+
+    def test_cue_without_belief_is_unchanged(self) -> None:
+        host = _Host()
+        self._seed(host)
+        out = host._render_interest_drift_block("planning a hiking trip")
+        self.assertNotIn("What you hold about it", out)
+        self.assertIn("budding interest of yours. If it fits", out)
 
 
 if __name__ == "__main__":

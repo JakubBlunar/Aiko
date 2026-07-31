@@ -576,6 +576,10 @@ class MemorySettings:
     # How many under-researched (dense-but-unlearned) clusters to feed as the
     # "blank in the learned sense" half. 0 disables the gap half entirely.
     knowledge_map_reflection_gap_top_n: int = 3
+    # L28: how many concepts to hang off each rich territory ("you believe:
+    # …"), read through ConceptView.for_cluster. 0 disables the annotation
+    # and restores the pre-L28 size/recency-only payload.
+    knowledge_map_reflection_concepts_per_cluster: int = 2
     # num_predict cap for the worker-LLM meta-thought (it's one short note).
     knowledge_map_reflection_max_tokens: int = 120
     # Salience of the written [mindmap] reflection memory. Mid-range — it's a
@@ -2248,6 +2252,14 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "knowledge_map_reflection_gap_top_n", 3,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_concepts_per_cluster=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_concepts_per_cluster", 2,
                     )
                 ),
             ),

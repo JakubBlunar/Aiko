@@ -1554,7 +1554,7 @@ each kind that ships).
 
 ## L28. Roll remaining derivers/workers onto the `ConceptView` contract (in progress)
 
-**Status: in progress — substrate shipped (L24), first consumer migrated.** L24
+**Status: in progress — substrate shipped (L24), four consumers migrated.** L24
 shipped the reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
 `kinds_for_target()` routing); the live consumers are `build_relevant_context`
 (T3 core lane + relevance), `recall_concept`, and — new — `user_profile` ->
@@ -1584,14 +1584,31 @@ grounding) is the goal.
   value concept exists (`skip_fields`), so the same claim isn't told twice. This
   retired the L10 deferral of user values into `profile_block` in one migration.
   Tunable via `profile_concept_max_lines` / `profile_concept_min_confidence`.
-- `interest_map` cluster annotation in
-  [`topic_graph.py`](../../app/core/conversation/topic_graph.py) — annotate
-  clusters with the concepts spanning them via `ConceptView.for_cluster(rep_id)`.
+- **SHIPPED** — cluster annotation in
+  [`topic_graph.py`](../../app/core/conversation/topic_graph.py):
+  `cluster_activity` rows now carry `representative_id` (the same
+  highest-salience member `TopicCluster` reports, which is what the concept
+  layer keys its `cluster -> concept` evidence edges on), so any reader can
+  hand it straight to `ConceptView.for_cluster(rep_id)`. It rides
+  `cluster_activity` rather than `interest_map` because the latter is the
+  cheap per-turn prompt read that deliberately never joins back to the
+  memory mirror; `cluster_activity` already takes that snapshot for recency,
+  so the rep id costs one extra tuple element and no second walk.
+- **SHIPPED** — [`KnowledgeMapReflectionWorker`](../../app/core/proactive/knowledge_map_reflection_worker.py):
+  each rich territory in the map-shape payload carries the concepts spanning
+  it ("… — you believe: …"), most-confident first, capped by
+  `knowledge_map_reflection_concepts_per_cluster` (0 restores the old
+  size/recency-only payload). The reflection can now say what a territory
+  *means* to her, not just how big and how recent it is.
+- **SHIPPED** — [`InterestDriftWorker`](../../app/core/proactive/interest_drift_worker.py):
+  a drafted drift carries the most-confident concept spanning that cluster in
+  its journal entry, and the inner-life cue appends "What you hold about it:
+  …". Resolved *only* for the topic actually being drafted, so the
+  mirror-joining read stays off the per-tick sampling path.
 - [`belief_store.py`](../../app/core/relationship/belief_store.py) /
   belief inference — bias toward durable concepts (K2 stays the *transient* layer,
   not migrated).
-- Interest-map readers: `KnowledgeMapReflectionWorker`, `InterestDriftWorker`,
-  and `ForwardCuriosityWorker` routine hints.
+- `ForwardCuriosityWorker` routine hints — the remaining interest-map reader.
 - [`goal_store.py`](../../app/core/goals/goal_store.py) — overlaps L14 aspiration
   concepts (gated on L14 shipping).
 - **Additional candidates (noted while shipping user_profile).**
