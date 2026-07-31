@@ -43,7 +43,10 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   usePersonaBackdrop();
   const avatar = useAssistantStore((s) => s.avatar);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
-  const audioLevel = useAssistantStore((s) => s.audioLevel);
+  // P37: no ``audioLevel`` subscription here either — the persona window
+  // renders the Live2D canvas, so a 20 Hz re-render of this component is
+  // the most expensive version of the problem. ``MicPulseRing``
+  // subscribes for itself.
   const connectionStatus = useAssistantStore((s) => s.connection.status);
   const turnInProgress = useAssistantStore((s) => s.turnInProgress);
   const ttsState = useAssistantStore((s) => s.ttsState);
@@ -156,7 +159,6 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
       <div className="flex shrink-0 items-center gap-2 rounded-t-lg bg-black/40 px-2 py-2 backdrop-blur">
         <MicButton
           voiceMode={voiceMode}
-          audioLevel={audioLevel}
           connected={connected}
           onClick={onMicToggle}
           size="compact"

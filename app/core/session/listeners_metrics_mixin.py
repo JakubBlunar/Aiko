@@ -228,6 +228,10 @@ class ListenersMetricsMixin:
             "context_tokens": 0,
             "mode": "idle",
             "captured_at": None,
+            # P31a: per-block character costs from the same assembly. Rides
+            # the out-of-band prompt snapshot rather than the broadcast
+            # metrics dict -- it's ~90 debug keys per turn.
+            "block_chars": {},
         }
 
     def get_last_metrics(self) -> dict[str, Any]:

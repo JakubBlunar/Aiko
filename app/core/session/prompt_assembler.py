@@ -89,6 +89,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "outfit_grammar_block",
         "motion_grammar_block",
         "touch_grammar_addendum",
+        # L18b: bridges the fixed talk-style defaults to the learned
+        # communication_style lines that surface at T3. Constant text, so
+        # it belongs in the cache prefix alongside the other addenda.
+        "learned_style_addendum",
         "narrative_block",
         "profile_block",
         "petname_block",
@@ -310,6 +314,44 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "curiosity_gradient_block",
     ),
 }
+
+# Reverse index: block name -> tier key. Built once at import.
+_BLOCK_TIER_OF: dict[str, str] = {
+    name: tier
+    for tier, names in _PROMPT_BLOCK_TIERS.items()
+    for name in names
+}
+
+
+def block_char_table(local_vars: dict[str, Any]) -> dict[str, int]:
+    """Per-block character cost, keyed by ``_PROMPT_BLOCK_TIERS`` name.
+
+    P31 needs "which block costs how many tokens, and in which tier" —
+    the *volatile* heavy blocks are the ones that pay full price past the
+    cache prefix, and there was no way to see them. Rather than thread a
+    size sink through ~90 append sites, this reads the block locals of
+    ``assemble_with_budget`` by the names the tier ladder already
+    registers. That constant used to describe itself as "purely
+    documentation/audit"; this makes the audit real, and
+    ``tests/test_prompt_assembler.py::BlockCharTableTests`` fails if a
+    registered name stops resolving (a rename or a typo), which the
+    ladder had no protection against before.
+
+    Names resolve as ``<name>``, then ``<name>_block``, then
+    ``<name>_text`` — the three shapes the assembler actually uses.
+    Blocks that rendered empty are reported as ``0`` rather than
+    omitted, so "renders every turn, always empty" is visible: that's
+    exactly the content-gating candidate P31 is hunting.
+    """
+    out: dict[str, int] = {}
+    for name in _BLOCK_TIER_OF:
+        for candidate in (name, f"{name}_block", f"{name}_text"):
+            if candidate in local_vars:
+                value = local_vars[candidate]
+                if isinstance(value, str):
+                    out[name] = len(value)
+                break
+    return out
 
 
 class PromptAssembler(PromptAssemblerHelpersMixin):
@@ -2445,9 +2487,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # [[gasp]] / [[hum]] grammar without us editing the
             # user-customisable persona file. Constant cost; under 60
             # tokens.
-            system_parts.append(
-                build_speech_grammar_addendum(self._resolve_user_display_name()),
+            speech_grammar_addendum = build_speech_grammar_addendum(
+                self._resolve_user_display_name(),
             )
+            system_parts.append(speech_grammar_addendum)
             if overlay_grammar_block:
                 system_parts.append(overlay_grammar_block)
             if outfit_grammar_block:
@@ -2460,14 +2503,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Backend gates (axes / cooldown / daily cap) silently
             # drop unsupported requests, so it's safe to advertise
             # every kind unconditionally.
-            system_parts.append(_TOUCH_GRAMMAR_ADDENDUM)
+            touch_grammar_addendum = _TOUCH_GRAMMAR_ADDENDUM
+            system_parts.append(touch_grammar_addendum)
             # L18b: bridge the fixed talk-style defaults above to the
             # learned communication_style / boundary lines that surface at
             # T3. Constant text -> stays in the cache prefix; self-gating
             # wording -> inert on turns where nothing surfaces.
-            system_parts.append(
-                build_learned_style_addendum(self._resolve_user_display_name()),
+            learned_style_addendum = build_learned_style_addendum(
+                self._resolve_user_display_name(),
             )
+            system_parts.append(learned_style_addendum)
         if narrative_block:
             system_parts.append(narrative_block)
         if profile_block:
@@ -3233,6 +3278,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # log readability but the dict only contains entries for
             # providers that actually ran this build.
             provider_ms={k: round(v, 2) for k, v in provider_ms.items()},
+            # P31a: per-block character cost. Read off this frame's locals
+            # by the names the tier ladder registers -- see
+            # ``block_char_table``. One dict snapshot per assembly.
+            block_chars=block_char_table(locals()),
             rag_lookup_ms=round(rag_lookup_ms, 2),
             assemble_ms=round(
                 (time.perf_counter() - assemble_started_at) * 1000.0, 2,

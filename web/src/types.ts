@@ -1474,6 +1474,9 @@ export interface MetricsSnapshot {
   // Phase 1c: time-to-first-stream-delta + slow-token filler.
   first_token_ms?: number;
   filler_emitted?: boolean;
+  // P16: post-turn inner-life cascade wall time. Runs after the reply
+  // has finished streaming, so it is not included in ``total_ms``.
+  post_turn_ms?: number;
 }
 
 export interface MetricsConfig {
@@ -1807,6 +1810,11 @@ export type WsServerEvent =
       event: "start" | "end";
       text?: string;
       reaction?: string;
+      // P25: set only when the speech was cut off (barge-in, explicit
+      // stop, TTS disabled mid-utterance) rather than finishing. The
+      // client drops its scheduled audio buffer on this; a natural end
+      // must be allowed to play out.
+      aborted?: boolean;
     }
   | { type: "stt_partial"; text: string }
   | { type: "stt_partial_live"; text: string }

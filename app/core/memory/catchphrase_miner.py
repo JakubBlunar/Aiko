@@ -496,17 +496,23 @@ class CatchphraseMiner:
     # ── internals ───────────────────────────────────────────────────────
 
     def _existing_catchphrase_phrases(self) -> list[str]:
+        """Every phrase already registered, for the write-side dedupe.
+
+        Must be the *complete* set: an unfiltered top-N read (what this
+        was) drops known phrases the moment other kinds outrank them,
+        which lets the miner re-write a joke it already recorded.
+        """
         store = self._memory
         if store is None:
             return []
         try:
-            top = store.list_top(limit=64)
+            top = store.iter_by_kind("catchphrase")
         except Exception:
             return []
         return [
             (m.content or "").strip().lower()
             for m in top
-            if (m.kind or "").lower() == "catchphrase" and m.content
+            if m.content
         ]
 
     def _persist_top_candidates(
