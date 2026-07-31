@@ -39,6 +39,7 @@ def register(mcp, session: "SessionController") -> None:
             "tts_enabled": s.tts.enabled,
             "stt_model": s.stt.model,
             "stt_language": s.stt.language,
+            "mcp_server_host": s.mcp_server.host,
             "mcp_server_port": s.mcp_server.port,
         }
         return json.dumps(info, indent=2, default=str)

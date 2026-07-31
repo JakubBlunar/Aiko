@@ -21,11 +21,17 @@ log = logging.getLogger("app.mcp.server")
 _session_ref: "SessionController | None" = None
 
 
-def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP:
-    """Build a FastMCP server wired to the live ``session``."""
+def create_mcp_server(
+    session: "SessionController", port: int = 6274, host: str = "127.0.0.1",
+) -> FastMCP:
+    """Build a FastMCP server wired to the live ``session``.
+
+    ``host`` defaults to loopback; ``McpServerSettings.host`` widens it for
+    containerised runs, where loopback is unreachable from outside.
+    """
     global _session_ref
     _session_ref = session
-    mcp = FastMCP("assistant", host="127.0.0.1", port=port)
+    mcp = FastMCP("assistant", host=host, port=port)
 
     # ── Tools ────────────────────────────────────────────────────────
 

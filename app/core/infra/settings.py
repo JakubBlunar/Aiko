@@ -528,7 +528,18 @@ class AvatarSettings:
 
 @dataclass(slots=True)
 class McpServerSettings:
+    """The embedded debug server the app *exposes* (not ``mcp_clients``).
+
+    ``host`` is loopback because these tools drive the live session with no
+    authentication whatsoever -- anything that can reach the port can read
+    memories and steer the next turn. The one legitimate reason to widen it
+    is a container, where loopback means "unreachable even from the machine
+    running Docker"; ``AIKO_MCP_HOST`` exists for exactly that and is opt-in
+    per deployment. See docs/docker.md.
+    """
+
     enabled: bool = True
+    host: str = "127.0.0.1"
     port: int = 6274
 
 
@@ -1950,6 +1961,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         mcp_server=McpServerSettings(
             enabled=bool(mcp_server_raw.get("enabled", True)),
+            host=str(mcp_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
         mcp_clients=_parse_external_mcp(raw.get("mcp_clients", {})),

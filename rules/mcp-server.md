@@ -4,6 +4,17 @@
 
 The app exposes an MCP server on `http://localhost:6274/sse` for development tooling. Start the app first, then connect any MCP client.
 
+**Against a container**, the default loopback bind is unreachable from the host, so add the debug overlay: `docker compose -f docker-compose-slim.yaml -f docker-compose.debug.yaml up -d --build`. Same URL afterwards. Only one Aiko can own 6274 at a time, so stop the local app first. See [`docs/docker.md`](../docs/docker.md).
+
+**From a shell**, [`scripts/mcp_call.py`](../scripts/mcp_call.py) calls any tool without an editor client in the loop — useful for the container (an editor's client caches the connection failure from whenever the port was last dead, and can't be retargeted mid-session):
+
+```bash
+python scripts/mcp_call.py --list
+python scripts/mcp_call.py get_status
+python scripts/mcp_call.py send_message --arg message="hey, you awake?"
+python scripts/mcp_call.py force_day_color --json '{"color": "amber"}'
+```
+
 ### Cursor Setup
 
 Already configured in `.cursor/mcp.json`. The tools appear as native MCP tools — call them directly, no wrapper scripts needed.

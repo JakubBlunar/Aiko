@@ -15,9 +15,12 @@ log = logging.getLogger("app.mcp.runner")
 class McpServerRunner:
     """Manages a uvicorn server on a daemon thread for the embedded MCP SSE endpoint."""
 
-    def __init__(self, mcp_server: FastMCP, port: int = 6274) -> None:
+    def __init__(
+        self, mcp_server: FastMCP, port: int = 6274, host: str = "127.0.0.1",
+    ) -> None:
         self._mcp = mcp_server
         self._port = port
+        self._host = host
         self._server: object | None = None
         self._thread: threading.Thread | None = None
 
@@ -27,7 +30,10 @@ class McpServerRunner:
             target=self._run, daemon=True, name="mcp-sse-server",
         )
         self._thread.start()
-        log.info("MCP SSE server starting on http://127.0.0.1:%d/sse", self._port)
+        # Log the bind address rather than a hardcoded loopback: when this
+        # says 0.0.0.0 the tool surface is reachable off-box, which is worth
+        # seeing in the log without having to go read the config.
+        log.info("MCP SSE server starting on http://%s:%d/sse", self._host, self._port)
 
     def _run(self) -> None:
         import uvicorn
@@ -38,7 +44,7 @@ class McpServerRunner:
         app = self._mcp.sse_app()
         config = uvicorn.Config(
             app,
-            host="127.0.0.1",
+            host=self._host,
             port=self._port,
             log_level="warning",
             loop="asyncio",

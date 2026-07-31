@@ -34,6 +34,7 @@ that's missing.
 | `docker-compose-slim.yaml` | Chat, avatar, memory, RAG, tools. **Start here.** |
 | `docker-compose-full.yaml` | Same plus server-side voice. Bigger image, needs more RAM. |
 | `docker-compose.yml` | The shared definition both of the above `include`. Runnable on its own; builds whatever `$AIKO_PROFILE` says. |
+| `docker-compose.debug.yaml` | An **overlay**, not a variant. Adds the published MCP debug port to either of the above — see "Health & logs". |
 
 The two variants differ by exactly one build arg, and they share the same
 data volume — switching from slim to full (or back) keeps your history,
@@ -192,7 +193,13 @@ Three env vars cover everything a fresh container needs — they override
 | `AIKO_WEB_PORT` | `6275` | Port the server listens on inside the container |
 | `AIKO_OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Where Aiko finds Ollama (chat **and** embeddings) |
 
-One more, off by default and not in the image: `AIKO_DEBUG_CLOCK=1` arms the
+Two more are debug-only and not in the image. `AIKO_MCP_HOST` overrides
+`mcp_server.host` (default `127.0.0.1`) and is what the
+`docker-compose.debug.yaml` overlay sets to `0.0.0.0` so the embedded MCP
+debug server is reachable from the host at all — see "Health & logs" below for
+why that is opt-in.
+
+`AIKO_DEBUG_CLOCK=1` arms the
 DT1 virtual clock so the MCP time-travel tools can advance Aiko's sense of
 "now". Add it to the `aiko` service's `environment:` block when you need it,
 and only against a copy of the data volume — rows written while the clock is
@@ -345,9 +352,21 @@ Caveats:
 - Logs: `docker compose logs -f aiko`. The same stream lands in
   `data/app.log` inside the volume.
 - The embedded MCP debug server binds `127.0.0.1:6274` **inside** the
-  container and is not published by default. To reach it, add a
-  `- "6274:6274"` port mapping (note: the MCP runner hardcodes `127.0.0.1`,
-  so you'd also need it to bind `0.0.0.0` — debug-only, left off by design).
+  container and is not published by default — where loopback means
+  "unreachable even from the machine running Docker". To reach it, layer the
+  debug overlay on top of your variant:
+
+  ```bash
+  docker compose -f docker-compose-slim.yaml -f docker-compose.debug.yaml up -d --build
+  # MCP SSE now answers on http://localhost:6274/sse
+  ```
+
+  The overlay publishes 6274 **and** sets `AIKO_MCP_HOST=0.0.0.0`, because the
+  port mapping alone would forward to a socket bound to loopback inside the
+  container. It is a separate file rather than a default because the MCP tools
+  drive the live session with **no authentication** — anything that reaches
+  that port can read memories and steer the next turn. Fine for a loopback
+  debug port on your own machine; not something to leave on.
 
 ---
 
