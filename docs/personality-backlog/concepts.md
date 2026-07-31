@@ -713,35 +713,11 @@ concepts) for the timeline; keep those as the *rendering* consumers, L17 as the
 
 ## L17a. Concept trajectory from the event log (the history read layer)
 
-**Motivation.** Give the rest of L17 a clean "how this concept moved over time"
-read without inventing new storage. The event stream already carries confidence +
-label at each transition; we just need a reader that turns a concept_id (or a
-subject slice) into an ordered trajectory.
-
-**Key files.**
-[`concept_event_store.py`](../../app/core/concepts/concept_event_store.py) (add a
-`trajectory(concept_id)` / `list(concept_id=…)` filtered read — today `list`
-filters only by `subject` / `event_type` / `before_id`);
-[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
-(the one writer — emit a lightweight sampled event on meaningful decay, see
-below).
-
-**Sketched approach.** A trajectory is `[(created_at, confidence, label, status,
-reason)]` reconstructed from a concept's events plus its current row. The **one
-gap**: a concept that slowly *decays* without crossing a status threshold emits
-no event, so its downward trail is invisible. Fix with the cheapest option —
-have L3 append a `confidence_sample` (or reuse `plasticity_shift`-style) event
-only when `|Δconfidence|` since the last logged event crosses a band (e.g. 0.1),
-so we sample *on meaningful movement*, not on a wall-clock cadence (keeps the
-table small and event-driven, consistent with the rest of L3). Add
-`concept_id`-filtered indexing so `trajectory()` is cheap.
-
-**Open questions.** (1) Band size for the decay sample (fixed vs plasticity-scaled
-— a high-plasticity taste should sample more finely than a sticky core trait)?
-(2) Keep every event forever, or thin old rows the way P32 thins snapshots
-(retaining transitions + relabels, dropping intermediate samples)?
-
-**Effort.** Small (read helper + one guarded event emit).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17a-concept-trajectory-from-the-event-log-the-history-read-layer).
+`ConceptEventStore.trajectory()` reads one concept's path oldest-first, and L3
+drops a banded `confidence_sample` so a silent decay is no longer invisible.
+L17b consumes it from here.
 
 ---
 

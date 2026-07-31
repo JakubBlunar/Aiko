@@ -23,6 +23,7 @@ talks to SQLite directly and orders by ``created_at``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from app.core.infra import timephrase
@@ -50,8 +51,12 @@ class ConceptEvent:
 
     ``event_type`` is an open enum. Emitted today: ``discovered`` (L2
     synthesis), ``promoted`` / ``demoted`` / ``dormant`` / ``retired`` /
-    ``revived`` / ``contradicted`` / ``plasticity_shift`` / ``reinforced``
-    (L3 lifecycle), and ``merged`` (L2 consolidation). ``demoted`` is the
+    ``revived`` / ``contradicted`` / ``plasticity_shift`` /
+    ``reinforced`` / ``confidence_sample`` (L3 lifecycle), and ``merged``
+    (L2 consolidation). ``confidence_sample`` is the L17a trail marker:
+    a concept that slowly decays without crossing a status threshold
+    emits nothing else, so its downward path would be invisible to
+    :meth:`ConceptEventStore.trajectory`. ``demoted`` is the
     structural counterpart to ``dormant``: the belief did not fade, its
     supporting evidence was reconciled away and it no longer rests on
     anything. ``novelty`` is ``1 - cosine`` to the
@@ -144,13 +149,15 @@ class ConceptEventStore:
         subject: str | None = None,
         event_type: str | None = None,
         before_id: int | None = None,
+        concept_id: int | None = None,
     ) -> list[ConceptEvent]:
         """Return timeline events newest-first.
 
         ``before_id`` pages backwards through history (pass the smallest
         ``event_id`` from the previous page to fetch the next older
         batch), so the UI can "scroll through the years" without loading
-        everything at once. ``subject`` / ``event_type`` narrow the feed.
+        everything at once. ``subject`` / ``event_type`` / ``concept_id``
+        narrow the feed.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         where: list[str] = []
@@ -161,6 +168,9 @@ class ConceptEventStore:
         if event_type:
             where.append("event_type = ?")
             params.append(str(event_type))
+        if concept_id is not None:
+            where.append("concept_id = ?")
+            params.append(int(concept_id))
         if before_id is not None:
             where.append("id < ?")
             params.append(int(before_id))
@@ -176,6 +186,63 @@ class ConceptEventStore:
             log.warning("concept event list failed", exc_info=True)
             return []
         return [self._row_to_event(r) for r in rows]
+
+    def trajectory(
+        self, concept_id: int, *, limit: int = 500
+    ) -> list[ConceptEvent]:
+        """Return one concept's events **oldest-first** -- how it moved.
+
+        The L17 self-drift work reads a concept as a path rather than a
+        current value: confidence and label at each recorded moment, in
+        the order they happened. Ordering is the inverse of :meth:`list`
+        (which is a reverse-chronological feed) because a trajectory is
+        read forwards, and ``limit`` keeps the *oldest* rows so the start
+        of the story survives on a long-lived concept.
+
+        Cheap: ``idx_concept_events_concept`` covers the filter.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                f"SELECT {_EVENT_COLS} FROM concept_events "
+                "WHERE concept_id = ? ORDER BY created_at ASC, id ASC "
+                "LIMIT ?",
+                (int(concept_id), max(1, int(limit))),
+            ).fetchall()
+        except Exception:
+            log.warning("concept trajectory read failed", exc_info=True)
+            return []
+        return [self._row_to_event(r) for r in rows]
+
+    def latest_confidence(
+        self, concept_ids: Sequence[int]
+    ) -> dict[int, float]:
+        """Map ``concept_id -> confidence`` at each concept's newest event.
+
+        This is the watermark the L3 sampler compares against to decide
+        whether a concept has drifted far enough since it was last on the
+        timeline to be worth recording. Done as **one** grouped query for
+        the whole lifecycle batch rather than a read per concept, since
+        the sweep already touches up to `concept_lifecycle_batch_size`
+        rows a tick.
+        """
+        ids = [int(c) for c in concept_ids if c is not None]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT e.concept_id, e.confidence FROM concept_events e "
+                "JOIN (SELECT concept_id, MAX(id) AS mid FROM concept_events "
+                f"      WHERE concept_id IN ({placeholders}) "
+                "       GROUP BY concept_id) m ON e.id = m.mid",
+                tuple(ids),
+            ).fetchall()
+        except Exception:
+            log.warning("concept latest-confidence read failed", exc_info=True)
+            return {}
+        return {int(r[0]): float(r[1] or 0.0) for r in rows}
 
     def count(self) -> int:
         conn = self._db._get_conn()  # type: ignore[attr-defined]

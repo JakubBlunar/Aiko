@@ -155,6 +155,9 @@ class ConceptLifecycleWorker:
         # restart) used to skip the contradiction probe on a plasticity-scaled
         # stride so sticky concepts are re-examined less often.
         self._probe_counter: dict[int, int] = {}
+        # L17a: per-tick snapshot of each batched concept's last recorded
+        # confidence, loaded in ``run`` and consulted by the sampler.
+        self._sample_baseline: dict[int, float] = {}
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -216,6 +219,11 @@ class ConceptLifecycleWorker:
         batch_size = max(1, self._i("concept_lifecycle_batch_size", 100))
         batch = self._store.list_stalest(batch_size)
         now = self._clock()
+        # L17a: the confidence each concept carried at its last timeline row,
+        # so the sampler below can tell "drifted a meaningful distance since
+        # we last recorded it" from "moved a hair this tick". One grouped
+        # read for the whole batch, not one per concept.
+        self._sample_baseline = self._load_sample_baseline(batch)
         stats = {
             "scanned": 0,
             "promoted": 0,
@@ -239,6 +247,8 @@ class ConceptLifecycleWorker:
             "belief_revisions": 0,
             "memories_lowered": 0,
             "memories_superseded": 0,
+            # L17a: silent-decay trail markers written this tick.
+            "confidence_samples": 0,
             "events": 0,
         }
         for concept in batch:
@@ -435,6 +445,82 @@ class ConceptLifecycleWorker:
             # per tick per concept that was actually reinforced.
             self._emit(concept, "reinforced", new_conf, now)
             stats["events"] += 1
+        else:
+            self._maybe_sample_confidence(concept, new_conf, now, stats)
+
+    # ── L17a confidence sampling ───────────────────────────────────────
+
+    def _load_sample_baseline(
+        self, batch: "list[Concept]"
+    ) -> dict[int, float]:
+        """Last recorded confidence per concept in this tick's batch."""
+        if self._events is None or not self._sampling_enabled():
+            return {}
+        try:
+            return self._events.latest_confidence(
+                [
+                    int(c.concept_id)
+                    for c in batch
+                    if c.concept_id is not None
+                ]
+            )
+        except Exception:
+            log.debug("sample baseline load failed", exc_info=True)
+            return {}
+
+    def _sampling_enabled(self) -> bool:
+        return self._b("concept_confidence_sample_enabled", True)
+
+    def _maybe_sample_confidence(
+        self,
+        concept: "Concept",
+        new_conf: float,
+        now: datetime,
+        stats: dict[str, Any],
+    ) -> None:
+        """Record a ``confidence_sample`` when a *quiet* concept has drifted.
+
+        Reached only from the emit chain's final branch -- nothing else
+        wrote a row for this concept this tick. That's the blind spot L17a
+        exists to close: a belief can decay for months, never cross a
+        status threshold, and leave the timeline with no trace of the
+        slide. Sampling is banded rather than per-tick so the event log
+        stays a story worth reading: one row per
+        ``concept_confidence_sample_band`` of movement away from the last
+        recorded value, in either direction.
+        """
+        if self._events is None or not self._sampling_enabled():
+            return
+        cid = concept.concept_id
+        if cid is None:
+            return
+        # A missing baseline means the concept predates the event store and
+        # has no timeline row at all; sample unconditionally to seed one, so
+        # later drift has something to be measured against.
+        baseline = self._sample_baseline.get(int(cid))
+        band = max(0.01, self._f("concept_confidence_sample_band", 0.1))
+        if baseline is not None and abs(new_conf - baseline) < band:
+            return
+        self._emit(
+            concept,
+            "confidence_sample",
+            new_conf,
+            now,
+            reason_override=self._sample_reason(new_conf, baseline),
+        )
+        self._sample_baseline[int(cid)] = float(new_conf)
+        stats["confidence_samples"] += 1
+        stats["events"] += 1
+
+    @staticmethod
+    def _sample_reason(new_conf: float, baseline: float | None) -> str:
+        if baseline is None:
+            return f"Confidence checkpoint at {new_conf:.2f}."
+        direction = "drifted up to" if new_conf > baseline else "slid to"
+        return (
+            f"Confidence {direction} {new_conf:.2f} "
+            f"from {baseline:.2f}, no status change."
+        )
 
     # ── L9 contradiction probe ─────────────────────────────────────────
 

@@ -245,7 +245,9 @@ Open — self-history:
   for cookies more than I used to"). Broken into L17a-f in
   [`concepts.md`](concepts.md): the trajectory read layer, the
   change-salience classifier, the learning-event record, self-correction
-  meta-concepts, the surfacing debugger, and the evolution diary.
+  meta-concepts, the surfacing debugger, and the evolution diary. **L17a
+  is shipped** — `trajectory()` plus banded `confidence_sample` events, so
+  the rest of the chain has a history to read.
 - **L19.** Aiko's autobiography (capstone) — her self-history as a
   durable, traversable timeline: traverse the self-concept graph +
   snapshots to genuinely answer "Have you changed?". Depends on L17.
