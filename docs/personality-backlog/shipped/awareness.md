@@ -842,7 +842,7 @@ hash so it survives cluster renumbering, capped to
 cluster whose window growth is ≤ `interest_drift_fade_max_growth_ratio`=0.05
 → `fading` (attention cooled). The strongest off-cooldown candidate drafts to
 the `aiko.interest_drifts` ring as `{at, topic, topic_key, direction,
-from_size, to_size}`. The consumer
+from_size, to_size, belief}`. The consumer
 [`InnerLifePart2Mixin._render_interest_drift_block`](../../../app/core/session/inner_life_part2.py)
 surfaces one **only when the live turn is on that topic** (`drift_relevant`,
 reusing F10f's `topic_relevant`), one-shot per `topic_key`
@@ -864,6 +864,16 @@ surfaced keys), `force_interest_drift` (run once bypassing caps),
 (pure classifier + worker warmup/cooldown gates + provider plumbing).
 **Remaining K64 family:** K64c curiosity gradient, K64d knowledge-map
 self-reflection (open in [`patterns.md`](../patterns.md)).
+
+**L28 follow-up.** A drafted drift now carries `belief` — the most-confident
+concept spanning that cluster, read through `ConceptView.for_cluster(rep_id)`
+off the `representative_id` `cluster_activity` reports — and the cue appends
+"What you hold about it: …", so the beat lands as *why she cares* rather than
+a bare direction. The rep-id lookup joins back to the memory mirror, so it is
+paid **only for the topic actually being drafted**; the per-tick `interest_map`
+sampling pass is untouched. No concept layer, no rep id, or no concept edges
+on the cluster all leave the entry and the cue exactly as before. See
+[`docs/concept-integration.md`](../../concept-integration.md).
 
 ---
 
@@ -945,6 +955,15 @@ wall-clock cooldown (stamped on the kv key `knowledge_map_reflection.last_fired_
 even on a dedupe so a near-identical reflection isn't re-attempted every tick;
 a force-run bypasses it). Every failure path is swallowed and logged at debug.
 
+**L28 follow-up.** Each rich territory now also carries what Aiko *believes*
+about it, read through `ConceptView.for_cluster(rep_id)` off the
+`representative_id` `cluster_activity` reports — "cooking (18 memories, hot
+this week) — you believe: he cooks to wind down, not to eat". Most-confident
+first, capped at `knowledge_map_reflection_concepts_per_cluster`=2; 0, a cold
+concept layer, or a cluster with no concept edges all restore the exact
+pre-L28 size/recency-only payload. See
+[`docs/concept-integration.md`](../../concept-integration.md).
+
 **MCP-debuggable**: `get_knowledge_map_reflection_state` (switch / interval /
 cooldown stamp / dry-run of the rich + under-explored shape the worker would
 reflect on), `force_knowledge_map_reflection` (run once bypassing the
@@ -952,9 +971,9 @@ cooldown, returns `wrote` / `memory_id` / `reflection` or a skip reason — the
 written row then surfaces on a later turn via RAG / K28, confirm it in the
 Memory tab). Grep `tail_logs(module_contains="knowledge_map_reflection")` for
 `knowledge-map-reflection wrote memory`. Settings:
-`agent.knowledge_map_reflection_enabled` + the seven
+`agent.knowledge_map_reflection_enabled` + the eight
 `memory.knowledge_map_reflection_*` knobs (interval / cooldown / min_clusters
-/ rich_top_n / gap_top_n / max_tokens / salience). Tests:
+/ rich_top_n / gap_top_n / concepts_per_cluster / max_tokens / salience). Tests:
 [`tests/test_knowledge_map_reflection.py`](../../../tests/test_knowledge_map_reflection.py)
 (shape read + LLM pass + `[mindmap]` write + dedupe + cooldown + `force_next`
 + `clean_reflection_output`) plus the `[mindmap]`-prefix-strip case in

@@ -686,6 +686,7 @@ class IdleWorkersInitMixin:
             and getattr(self, "_memory_store", None) is not None
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.proactive.interest_drift_worker import (
                     InterestDriftWorker,
                 )
@@ -704,6 +705,7 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    view_provider=lambda: concept_view_from(self),
                     interval_seconds=mem.interest_drift_interval_seconds,
                     daily_cap=mem.interest_drift_daily_cap,
                     journal_max=mem.interest_drift_journal_max,
@@ -839,6 +841,7 @@ class IdleWorkersInitMixin:
             and self._chat_db is not None
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.proactive.knowledge_map_reflection_worker import (
                     KnowledgeMapReflectionWorker,
                 )
@@ -863,6 +866,7 @@ class IdleWorkersInitMixin:
                             )
                         ),
                         notify_memory_added=self._notify_memory_added,
+                        view_provider=lambda: concept_view_from(self),
                         interval_seconds=(
                             mem.knowledge_map_reflection_interval_seconds
                         ),
@@ -872,6 +876,9 @@ class IdleWorkersInitMixin:
                         min_clusters=mem.knowledge_map_reflection_min_clusters,
                         rich_top_n=mem.knowledge_map_reflection_rich_top_n,
                         gap_top_n=mem.knowledge_map_reflection_gap_top_n,
+                        concepts_per_cluster=(
+                            mem.knowledge_map_reflection_concepts_per_cluster
+                        ),
                         max_tokens=mem.knowledge_map_reflection_max_tokens,
                         salience=mem.knowledge_map_reflection_salience,
                     )
