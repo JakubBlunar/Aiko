@@ -193,6 +193,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [L21. Cold-start + anti-premature-proposal guard](shipped/concepts.md#l21-cold-start--anti-premature-proposal-guard)
 - [L25. Edge referential integrity across the memory lifecycle](shipped/concepts.md#l25-edge-referential-integrity-across-the-memory-lifecycle)
 - [L26. Concept trace + "how Aiko is thinking" observability](shipped/concepts.md#l26-concept-trace--how-aiko-is-thinking-observability)
+- [L35. Surface-reason labels -- "why did I surface this?" on every item](shipped/concepts.md#l35-surface-reason-labels----why-did-i-surface-this-on-every-item)
 
 ## [Shipped — Integration & wiring (I-series)](shipped/integration.md)
 

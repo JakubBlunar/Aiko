@@ -2058,35 +2058,9 @@ integrity).
 
 ## L35. Surface-reason labels -- "why did I surface this?" on every item
 
-**Motivation.** L26 already stamps a per-turn trace of *which* concepts surfaced
-(with confidence + hedge). L35 adds the *why*: a structured reason on every
-surfaced item — `high-confidence identity`, `recent emotional relevance`,
-`unresolved contradiction`, `curiosity trigger`, `relationship importance`,
-`recently forgotten/revived`. This makes the prompt legible ("why is this here?"),
-sharpens debugging, and — fed back — could let Aiko *reference* her reason ("this
-has been on my mind because we clashed on it").
-
-**Key files.** The gather lanes in `build_relevant_context`
-([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) already know
-each item's lane + score; L35 records the dominant reason alongside the existing
-L26 trace fields (the `hedge` / `reason` stamp), surfaced in the L26 debug view
-([`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)).
-
-**Sketched approach.** Define a small reason enum; when the selector picks an item,
-tag it with the lane / signal that won it (core-confidence, flex-cosine,
-activation-spread, contradiction-charge, importance (L32), curiosity / hypothesis
-(L30), recency / revival). Cheap — the information already exists at selection time,
-it just isn't labelled. Optionally expose one reason to Aiko for the single most
-salient item.
-
-**Open questions.** (1) One dominant reason, or a ranked few? (2) Is any reason ever
-shown *to Aiko* (risk of over-narrating "I surfaced this because...") vs
-debug-only?
-
-**Effort.** Small (labelling existing selection signals; extends L26).
-
-**Depends on.** L26 (trace), L32 (importance as one reason), L30 (curiosity as one
-reason).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l35-surface-reason-labels----why-did-i-surface-this-on-every-item).
+Every entry in the L26 trace now names the signal that won it its slot, debug-only.
 
 ---
 
