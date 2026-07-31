@@ -58,11 +58,15 @@ def build_report(
         "pending_message_id": int(
             getattr(session, "_prev_surfacing_message_id", 0) or 0
         ),
-        "by_lane": store.lane_breakdown(window_days=window_days),
-        "leaderboard": store.leaderboard(
-            window_days=window_days, min_settled=min_settled, limit=top,
-        ),
-    }
+            "by_lane": store.lane_breakdown(window_days=window_days),
+            "by_echo_kind": store.echo_breakdown(window_days=window_days),
+            "semantic_floor_replay": store.semantic_floor_candidates(
+                window_days=window_days,
+            ),
+            "leaderboard": store.leaderboard(
+                window_days=window_days, min_settled=min_settled, limit=top,
+            ),
+        }
     if total == 0:
         report["hint"] = (
             "No rows yet. The ledger only records turns where something was "
@@ -76,6 +80,10 @@ def build_report(
             "ledger is mostly unsettled by design."
         )
     report["reading_guide"] = (
+        f"window_days={window_days} bounds every aggregate here "
+        f"({'lifetime' if window_days is None else 'recent flow'}); a "
+        "lifetime figure is only meaningful against the same window "
+        "measured at another time. "
         "engaged_rate is over settled rows only -- always read it next to "
         "settled, since a 1-for-1 item scores the same as 40-of-50. "
         "echo_rate is over all surfaced rows and asks a different "
@@ -84,7 +92,17 @@ def build_report(
         "bait and the user doesn't. rows_unsettled is expected to hold "
         "roughly one turn's worth per session, since the label comes from "
         "the following message; a number growing in step with rows_total "
-        "means settling has stopped."
+        "means settling has stopped. "
+        "by_echo_kind and semantic_floor_replay answer F12's deferred "
+        "question: a semantic echo currently earns less memory-retention "
+        "credit than a quoted one, on the theory that surfaced items were "
+        "already picked for topical similarity so cosine here partly "
+        "measures 'was on topic' rather than 'she used it'. If semantic "
+        "rows engage about as often as lexical ones, that discount is "
+        "unjustified; if they engage no better than rows with no echo, it "
+        "was right. semantic_floor_replay re-runs each candidate floor "
+        "over the recorded cosines (misses included) -- a floor whose "
+        "engaged_rate is flat all the way up is measuring topic, not use."
     )
     return report
 
@@ -92,7 +110,7 @@ def build_report(
 def register(mcp, session: "SessionController") -> None:
     @mcp.tool()
     def get_surfacing_outcomes(
-        window_days: int = 0,
+        window_days: int = 30,
         min_settled: int = 1,
         top: int = 20,
     ) -> str:
@@ -103,11 +121,18 @@ def register(mcp, session: "SessionController") -> None:
         the whole activation lane earn its tokens?), and the unsettled-row
         count that doubles as the ledger's health metric.
 
-        ``window_days=0`` means lifetime; pass e.g. 14 to see whether a
-        rate is still moving. ``min_settled`` keeps single-observation
-        noise off the top of the board -- raise it once there is enough
-        history. Nothing consumes these numbers yet (that is L38); this is
-        the view for deciding whether the signal is worth acting on.
+        Defaults to the last 30 days, which is both the more useful
+        question and vastly the cheaper one: the aggregate is bounded by
+        rows *in the window*, so a windowed board stays near a
+        millisecond while the lifetime one grows linearly with history
+        (measured at 200k rows: 23 ms windowed against 578 ms lifetime).
+        Pass ``window_days=0`` for lifetime when you specifically want the
+        all-time stock and can afford it.
+
+        ``min_settled`` keeps single-observation noise off the top of the
+        board -- raise it once there is enough history. Nothing consumes
+        these numbers yet (that is L38); this is the view for deciding
+        whether the signal is worth acting on.
         """
         try:
             return json.dumps(

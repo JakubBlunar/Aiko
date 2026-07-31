@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 
-_SCHEMA_VERSION = 26
+_SCHEMA_VERSION = 27
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -492,6 +492,18 @@ CREATE INDEX IF NOT EXISTS idx_concept_events_concept ON concept_events(concept_
 --                         latency from the gap between Aiko's last reply
 --                         and the current user message, so the engagement
 --                         computed at post-turn N describes reply N-1).
+--
+-- Schema v27 (F12) adds ``echo_kind`` / ``echo_score``, which record HOW
+-- the echo was decided (``lexical`` = quoted or closely restated,
+-- ``semantic`` = close in embedding space only, ``none``) and how
+-- strongly (overlapping word count for lexical, cosine for semantic --
+-- two different scales, so read them with the kind). This exists to
+-- settle a deferred decision: a semantic hit currently earns less
+-- retention credit than a quote because surfaced items were selected for
+-- topical similarity to begin with, so cosine here partly measures "was
+-- on topic" rather than "she used it". ``echo_score`` is recorded even on
+-- a miss, since a floor cannot be calibrated from verdicts that throw
+-- their near misses away.
 -- Both are NULL until computed. A row that is never settled is CORRECT
 -- rather than broken: silence after a goodbye is not disengagement, so
 -- ``settled_at IS NULL`` doubles as the health metric.
@@ -505,6 +517,8 @@ CREATE TABLE IF NOT EXISTS surfacing_outcomes (
     score REAL NOT NULL DEFAULT 0.0,
     rank INTEGER NOT NULL DEFAULT 0,
     echoed INTEGER,
+    echo_kind TEXT,
+    echo_score REAL,
     engagement_label TEXT,
     created_at TEXT NOT NULL,
     settled_at TEXT
@@ -1263,6 +1277,21 @@ class ChatDatabase:
         # it was recording, and inventing history would poison the very rates
         # it exists to measure. Recorded here purely so the version ladder
         # stays a complete account of what each bump did.
+        # v26 -> v27: F12's ``echo_kind`` / ``echo_score`` on the ledger.
+        # Rows written under v26 keep NULL on both, which reads correctly as
+        # "recorded before the distinction existed" -- those turns were
+        # judged by the lexical test alone, and back-filling ``lexical``
+        # would claim a semantic comparison had been made and lost.
+        for column, decl in (
+            ("echo_kind", "TEXT"),
+            ("echo_score", "REAL"),
+        ):
+            try:
+                conn.execute(
+                    f"ALTER TABLE surfacing_outcomes ADD COLUMN {column} {decl}"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

@@ -47,9 +47,40 @@ class MemorySettings:
     revival_per_hit: float = 0.15
     revival_decay_per_day: float = 0.02
     revival_min_word_overlap: int = 3
+    # F12 -- semantic revival. The keyword test above only credits
+    # memories Aiko happens to *quote*, and since paraphrasing is the
+    # whole reason to hand a memory to a language model, nearly all of its
+    # errors are misses. When the lexical test misses, fall back to cosine
+    # between the reply and the stored memory (both vectors already in
+    # hand -- no extra embed call).
+    #
+    # The floor is high and the credit is small on purpose. Surfaced
+    # memories were selected for topical similarity to the turn in the
+    # first place, and the reply is about that same turn, so cosine here
+    # partly measures "was on topic" rather than "she used it". Treating a
+    # semantic hit as equal to a quote would let topical coincidence earn
+    # full retention credit. ``semantic_revival_per_hit`` is deliberately
+    # below ``scratchpad_ttl_min_revival`` so one semantic hit earns
+    # salience and progress toward promotion WITHOUT rescuing a memory
+    # from scratchpad TTL cleanup; two do. The raw cosine is recorded in
+    # the L37 ledger so the floor can be re-derived from real
+    # distributions rather than left at this guess.
+    semantic_revival_enabled: bool = True
+    semantic_revival_min_cosine: float = 0.62
+    semantic_revival_per_hit: float = 0.05
     # Promotion / demotion / cleanup gates used by
     # :class:`MemoryPromotionWorker`.
     scratchpad_ttl_days: int = 14
+    # Minimum ``revival_score`` that spares an unused scratchpad memory
+    # from TTL deletion. This replaced an exact ``revival_score == 0.0``
+    # test, which was both brittle (float equality against a value that
+    # decays back down) and, once F12's semantic fallback existed, far too
+    # generous: any trace of topical similarity would have exempted a
+    # memory from cleanup forever, quietly turning scratchpad TTL off.
+    # Sits above ``semantic_revival_per_hit`` and at or below
+    # ``revival_per_hit``, so a quoted memory is rescued exactly as before
+    # and a merely-on-topic one is not.
+    scratchpad_ttl_min_revival: float = 0.10
     scratchpad_promote_min_age_days: int = 7
     scratchpad_promote_min_use_count: int = 3
     scratchpad_promote_min_revival: float = 0.3
@@ -1620,8 +1651,25 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             revival_min_word_overlap=max(
                 1, int(memory_raw.get("revival_min_word_overlap", 3))
             ),
+            semantic_revival_enabled=bool(
+                memory_raw.get("semantic_revival_enabled", True)
+            ),
+            semantic_revival_min_cosine=max(
+                0.0,
+                min(1.0,
+                    float(memory_raw.get("semantic_revival_min_cosine", 0.62))),
+            ),
+            semantic_revival_per_hit=max(
+                0.0,
+                min(1.0, float(memory_raw.get("semantic_revival_per_hit", 0.05))),
+            ),
             scratchpad_ttl_days=max(
                 1, int(memory_raw.get("scratchpad_ttl_days", 14))
+            ),
+            scratchpad_ttl_min_revival=max(
+                0.0,
+                min(1.0,
+                    float(memory_raw.get("scratchpad_ttl_min_revival", 0.10))),
             ),
             scratchpad_promote_min_age_days=max(
                 0, int(memory_raw.get("scratchpad_promote_min_age_days", 7))

@@ -235,10 +235,44 @@ class PostTurnMixin(PostTurnHelpersMixin):
             "resolved_outfit": self.resolve_auto_outfit(),
         })
 
-        # Schema v8: bump revival_score on memories Aiko actually cited.
-        # The RAG retriever stashed the surfaced IDs after its mark_used
-        # pass; we compare the assistant reply's keyword set against each
-        # memory's content and reward overlap above the configured floor.
+        # Embed Aiko's reply ONCE, ahead of everything that needs it.
+        # This used to live inside K22's gate, which quietly meant its
+        # other consumer (K30) inherited the callback detector's on/off
+        # switch. F12's semantic revival needs the same vector and must
+        # not inherit it too, so the embed is hoisted here and the gate is
+        # the union of what its consumers require.
+        #
+        # Cleared first, unconditionally: a skipped or failed embed must
+        # not leave the *previous* turn's vector lying around to be
+        # compared against this turn's memories. K20's carry-forward at
+        # the end of post-turn already only copies non-None, so it keeps
+        # behaving exactly as before.
+        self._last_assistant_vec = None
+        if (
+            (
+                bool(getattr(
+                    self._settings.agent, "callback_detector_enabled", True,
+                ))
+                or bool(getattr(
+                    self._memory_settings, "semantic_revival_enabled", True,
+                ))
+            )
+            and assistant_text
+            and len(assistant_text) >= 12
+            and self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                self._last_assistant_vec = self._embedder.embed(assistant_text)
+            except Exception:
+                log.debug("assistant reply embed failed", exc_info=True)
+
+        # Schema v8 + F12: bump revival_score on memories Aiko actually
+        # used. The RAG retriever stashed the surfaced IDs after its
+        # mark_used pass; we compare the reply against each memory, by
+        # keyword overlap and then by cosine against the vector embedded
+        # just above. Runs after the embed for that reason -- the lexical
+        # half is unaffected and still works when the embed was skipped.
         try:
             self._mark_revived_memories(assistant_text=assistant_text)
         except Exception:
@@ -286,9 +320,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # the retriever's read-side bonus prefers memories Aiko has
         # actually managed to weave back in. Pure mechanics, no inner-
         # life cue — the reinforcement is invisible to the LLM by
-        # design. Embeds assistant_text only (the user-said-this signal
-        # is already covered by the revival path above; K22 measures
-        # what *Aiko* successfully reached back to).
+        # design. Reads the reply vector embedded near the top of
+        # post-turn (the user-said-this signal is already covered by the
+        # revival path above; K22 measures what *Aiko* successfully
+        # reached back to).
         if (
             bool(
                 getattr(
@@ -299,17 +334,16 @@ class PostTurnMixin(PostTurnHelpersMixin):
             and len(assistant_text) >= 12
             and self._memory_store is not None
             and self._embedder is not None
+            and getattr(self, "_last_assistant_vec", None) is not None
         ):
             try:
                 from app.core.conversation import callback_detector
                 from datetime import datetime, timezone
 
-                turn_vec = self._embedder.embed(assistant_text)
-                # Stash for downstream consumers (K20 reads it as the
-                # "claim Jacob is reacting to" centroid on the next
-                # turn; carry-forward happens at the end of K20's
-                # block below).
-                self._last_assistant_vec = turn_vec
+                # Shared with F12's semantic revival and K30 below; K20
+                # picks it up next turn via the carry-forward at the end
+                # of post-turn.
+                turn_vec = self._last_assistant_vec
 
                 # K30 — repeated-thought detection. Compare the
                 # just-finished reply against the last-3 assistant

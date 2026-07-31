@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from app.core.infra import timephrase
+from app.core.memory.echo_detector import ECHO_SEMANTIC, EchoVerdict
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -238,13 +239,20 @@ class SurfacingOutcomeStore:
         assistant_message_id: int,
         items: Sequence[SurfacedItem],
         *,
-        echoed: dict[tuple[str, int], bool] | None = None,
+        echoes: dict[tuple[str, int], "EchoVerdict"] | None = None,
     ) -> int:
         """Record the set surfaced for one reply. Returns rows written.
 
-        ``echoed`` is keyed by ``(item_kind, item_id)`` and may cover only
-        some items; anything absent stays NULL, which reads as "not
-        computed" rather than "not echoed".
+        ``echoes`` is keyed by ``(item_kind, item_id)`` and may cover only
+        some items; anything absent stays NULL on all three echo columns,
+        which reads as "not computed" rather than "not echoed" -- a
+        distinction that matters, because item kinds differ in whether an
+        echo test is even meaningful for them.
+
+        A verdict whose kind is ``none`` still writes ``echoed = 0`` plus
+        its ``echo_score``: the sub-floor cosine of a miss is exactly the
+        evidence needed to re-derive the floor later, and discarding near
+        misses would leave only the successes to calibrate against.
 
         One transaction for the whole set: the surfaced items of a turn
         are a unit, and a half-written turn would quietly skew every rate
@@ -253,14 +261,14 @@ class SurfacingOutcomeStore:
         if not items or int(assistant_message_id) <= 0:
             return 0
         now = _now_iso()
-        marks = echoed or {}
+        marks = echoes or {}
         rows = []
         for it in items:
             kind = str(it.item_kind or "")
             item_id = int(it.item_id or 0)
             if not kind or item_id <= 0:
                 continue
-            mark = marks.get((kind, item_id))
+            verdict = marks.get((kind, item_id))
             rows.append((
                 int(assistant_message_id),
                 kind,
@@ -269,7 +277,9 @@ class SurfacingOutcomeStore:
                 str(it.surface_reason or ""),
                 float(it.score or 0.0),
                 int(it.rank or 0),
-                (None if mark is None else int(bool(mark))),
+                (None if verdict is None else int(bool(verdict.echoed))),
+                (None if verdict is None else str(verdict.kind)),
+                (None if verdict is None else float(verdict.score)),
                 now,
             ))
         if not rows:
@@ -279,8 +289,9 @@ class SurfacingOutcomeStore:
             conn.executemany(
                 "INSERT INTO surfacing_outcomes "
                 "(assistant_message_id, item_kind, item_id, lane, "
-                " surface_reason, score, rank, echoed, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " surface_reason, score, rank, echoed, echo_kind, "
+                " echo_score, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             conn.commit()
@@ -472,6 +483,119 @@ class SurfacingOutcomeStore:
             }
             for r in rows
         ]
+
+    def echo_breakdown(self, *, window_days: int | None = None) -> list[dict]:
+        """Engagement grouped by *how* the echo was decided (F12).
+
+        This is the query the deferred full-credit decision turns on. A
+        semantic echo currently earns less retention credit than a quote,
+        on the argument that surfaced items were already selected for
+        topical similarity, so cosine against the reply partly measures
+        "was on topic" rather than "she used it". That argument is
+        testable: if ``semantic`` rows engage the user about as often as
+        ``lexical`` ones, the discount is unjustified and semantic hits
+        should earn full credit. If they engage no better than rows with
+        no echo at all, the signal is topical leakage and the discount was
+        right.
+
+        ``score`` is averaged per ``echo_kind`` and not across kinds --
+        lexical scores are word counts and semantic ones are cosines.
+        Rows from before schema v27 have a NULL ``echo_kind`` and are
+        reported under ``"unrecorded"`` rather than silently folded into
+        ``none``, since they were judged by the lexical test alone.
+        """
+        params: list[object] = [ENGAGED_LABEL]
+        where = ["settled_at IS NOT NULL"]
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            where.append("created_at >= ?")
+            params.append(cutoff.isoformat())
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT item_kind, COALESCE(echo_kind, 'unrecorded'), "
+                "       COUNT(*) AS settled, "
+                "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END), "
+                "       AVG(echo_score), MIN(echo_score), MAX(echo_score) "
+                "FROM surfacing_outcomes "
+                f"WHERE {' AND '.join(where)} "
+                "GROUP BY item_kind, COALESCE(echo_kind, 'unrecorded') "
+                "ORDER BY settled DESC",
+                tuple(params),
+            ).fetchall()
+        except Exception:
+            log.warning("surfacing ledger echo breakdown failed", exc_info=True)
+            return []
+        out = []
+        for r in rows:
+            settled = int(r[2] or 0)
+            engaged = int(r[3] or 0)
+            out.append({
+                "item_kind": str(r[0] or ""),
+                "echo_kind": str(r[1] or ""),
+                "settled": settled,
+                "engaged": engaged,
+                "engaged_rate": (
+                    round(engaged / settled, 4) if settled else None
+                ),
+                "avg_score": (None if r[4] is None else round(float(r[4]), 4)),
+                "min_score": (None if r[5] is None else round(float(r[5]), 4)),
+                "max_score": (None if r[6] is None else round(float(r[6]), 4)),
+            })
+        return out
+
+    def semantic_floor_candidates(
+        self,
+        *,
+        window_days: int | None = None,
+        floors: Sequence[float] = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75),
+    ) -> list[dict]:
+        """What each candidate cosine floor *would* have selected.
+
+        Answers "where should the floor be?" without having to re-run
+        history: every settled row carries the cosine that was measured,
+        including the misses, so each floor can be replayed over the same
+        data. Only rows that the lexical test did **not** already claim
+        are counted, because those are the only ones a floor decides.
+
+        A floor worth adopting shows an engaged rate clearly above the
+        all-rows baseline in :meth:`echo_breakdown`; one whose rate is
+        flat across every floor is measuring topic, not use.
+        """
+        base_where = ["settled_at IS NOT NULL", "echo_score IS NOT NULL",
+                      "echo_kind != 'lexical'"]
+        base_params: list[object] = []
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            base_where.append("created_at >= ?")
+            base_params.append(cutoff.isoformat())
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        out = []
+        for floor in floors:
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*), "
+                    "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END) "
+                    "FROM surfacing_outcomes "
+                    f"WHERE {' AND '.join(base_where)} AND echo_score >= ?",
+                    (ENGAGED_LABEL, *base_params, float(floor)),
+                ).fetchone()
+            except Exception:
+                log.warning(
+                    "surfacing ledger floor replay failed", exc_info=True
+                )
+                return []
+            settled = int(row[0] or 0) if row else 0
+            engaged = int(row[1] or 0) if row else 0
+            out.append({
+                "floor": float(floor),
+                "would_match": settled,
+                "engaged": engaged,
+                "engaged_rate": (
+                    round(engaged / settled, 4) if settled else None
+                ),
+            })
+        return out
 
     def count(self) -> int:
         conn = self._db._get_conn()  # type: ignore[attr-defined]

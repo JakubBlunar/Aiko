@@ -14,7 +14,7 @@ Gates (all configurable via :class:`MemorySettings`):
     OR ``revival_score >= scratchpad_promote_min_revival``.
   * **Delete scratchpad** when
     ``age_days >= scratchpad_ttl_days AND use_count == 0
-        AND revival_score == 0``.
+        AND revival_score < scratchpad_ttl_min_revival``.
   * **Demote long_term -> archive** when
     ``idle_days >= archive_demote_idle_days AND revival_score < 0.05
         AND NOT pinned``.
@@ -64,6 +64,7 @@ class _Gates:
     promote_min_use_count: int
     promote_min_revival: float
     ttl_days: int
+    ttl_min_revival: float
     demote_idle_days: int
 
 
@@ -114,6 +115,13 @@ class MemoryPromotionWorker:
                 self._settings.scratchpad_promote_min_revival
             ),
             ttl_days=int(self._settings.scratchpad_ttl_days),
+            # Epsilon floor so a configured 0.0 keeps meaning "delete rows
+            # with no revival at all" rather than "< 0.0", which matches
+            # nothing and would silently switch TTL cleanup off.
+            ttl_min_revival=max(
+                1e-9,
+                float(getattr(self._settings, "scratchpad_ttl_min_revival", 0.0)),
+            ),
             demote_idle_days=int(self._settings.archive_demote_idle_days),
         )
         now = _utcnow()
@@ -163,6 +171,25 @@ class MemoryPromotionWorker:
         return promoted
 
     def _delete_dead_scratchpad(self, gates: _Gates, now: datetime) -> int:
+        """Drop scratchpad rows nothing ever came back to.
+
+        The revival condition is a threshold rather than the exact
+        ``revival_score == 0.0`` it used to be. Two reasons, and the
+        second is the load-bearing one:
+
+        - Float equality against a value that *decays* toward zero is
+          brittle by construction.
+        - F12 gave revival a semantic fallback, so a memory now earns a
+          small score merely for being close to a reply in embedding
+          space. Since surfaced memories were selected for topical
+          similarity to the turn in the first place, "any score at all"
+          became a bar that almost everything clears -- keeping the
+          exact-zero test would have quietly switched scratchpad TTL off
+          altogether. The threshold sits above ``semantic_revival_per_hit``
+          and at or below ``revival_per_hit``, so a memory Aiko actually
+          quoted is still spared exactly as before, while one that was
+          merely on topic is not.
+        """
         rows = self._store.iter_by_tier("scratchpad")
         deleted = 0
         for mem in rows:
@@ -172,7 +199,7 @@ class MemoryPromotionWorker:
             if (
                 age_days >= gates.ttl_days
                 and mem.use_count == 0
-                and mem.revival_score == 0.0
+                and mem.revival_score < gates.ttl_min_revival
             ):
                 try:
                     if self._store.delete(mem.id):

@@ -27,6 +27,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [F1. Background fact-checker worker](shipped/awareness.md#f1-background-fact-checker-worker)
 - [F2. Knowledge-gap journal](shipped/awareness.md#f2-knowledge-gap-journal)
 - [F2.1. Knowledge-gap auto-resolver (memory-match + user-answer)](shipped/awareness.md#f21-knowledge-gap-auto-resolver-memory-match--user-answer)
+- [F12. Semantic echo — revival stops only crediting what Aiko quotes](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes)
 - [F3. Confidence column on memories](shipped/awareness.md#f3-confidence-column-on-memories)
 - [F5. Conflicting-memory detector (schema v11)](shipped/awareness.md#f5-conflicting-memory-detector-schema-v11)
 - [G2. Schedule-learning worker](shipped/awareness.md#g2-schedule-learning-worker)

@@ -43,10 +43,20 @@ ledger before building any of them:
 - **L38** earned standing — outcomes move the concept surfacing score. The
   ledger's read API was shaped for this one; it is the natural next pass.
 - **L42** a self-model of her own surfacing conduct (feeds L17, L19).
-- **F12** semantic revival + user-side credit for memories. Also fixes the
-  weakest part of L37 as shipped: `echoed` is a keyword-overlap proxy.
-- **G4** cue outcome accounting and self-tuning cooldowns — `item_kind` is an
-  open enum, so `kind="cue"` is a value rather than a migration.
+- **F12** ✅ **semantic half shipped** — revival no longer credits only what she
+  quotes, and the same detector now decides L37's `echoed` column, which was
+  the weakest part of the ledger as shipped. The *user-side credit* half is
+  still open. Two corrections came out of building it: the cosine is measured
+  on an already-topically-filtered candidate set (so it partly measures "was
+  on topic"), and full credit would have switched scratchpad TTL off, since
+  its gate was an exact `revival_score == 0.0`. Whether the resulting discount
+  is right is **F17**, which is waiting on ledger data rather than on code.
+- **G4** cue outcome accounting and self-tuning cooldowns. Needs a **TEXT key
+  column** — the note here used to say `kind="cue"` was a value rather than a
+  migration, which was wrong: `item_id` is `INTEGER NOT NULL` and a cue has no
+  integer identity anywhere in the codebase. The cheap half is already
+  computed, though — `PromptTelemetry.block_chars` records per-block char
+  counts every turn, so "was it surfaced?" needs persisting, not instrumenting.
 - **P43** value-aware block arbitration instead of the hand-kept denylist.
 - **K81** taste formation — topics she likes, not topics she's seen.
 - **DT5** the rest of the debug surface (the ledger view itself has shipped).
@@ -130,11 +140,12 @@ Dev / debug tooling (DT-series):
   stale `archive` memory when a dormant topic re-activates, as a hedged
   callback ("vaguely remember you mentioning macro photography..."),
   driven by latent relevance rather than age.
-- **F12.** Revival is a bag-of-words test that credits the wrong party —
-  `revival_score` needs a semantic echo path (paraphrase currently scores
-  zero) and, more importantly, the user's engagement rather than only
-  whether Aiko repeated herself. Gates decay rebates and promotion, so it
-  matters.
+- **F12.** ✅ **Semantic half shipped** — revival used to credit only memories
+  Aiko *quoted*, so paraphrase (the entire point of handing a memory to an
+  LLM) scored zero. Now falls back to cosine via a shared `echo_detector` that
+  the L37 ledger uses too. **Still open:** crediting the *user's* engagement
+  rather than only whether Aiko repeated herself. See
+  [shipped](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes).
 - **F13.** The contradiction family's missing fourth corner — F5, K29 and
   K38 all have detectors; *the user explicitly correcting her* has none,
   despite being the highest-quality evidence the system will ever get. A
@@ -147,6 +158,12 @@ Dev / debug tooling (DT-series):
   *vaguer*. Admitting the hole ("I've lost the detail, remind me?") is both
   the honest surface of a decay system and the only rehydration path the
   memory store would have. Shares a cooldown with F11.
+- **F17.** Should a semantic echo earn *full* retention credit? F12 shipped a
+  deliberate discount on the theory that cosine against the reply partly
+  measures "was on topic" — surfaced memories were picked for topical
+  similarity to begin with. Schema v27 records every cosine, misses included,
+  so this is a *read* (`echo_breakdown`, `semantic_floor_candidates`) rather
+  than an experiment. **Waiting on weeks of real data, not on code.**
 - **F16.** Testimony vs. inference — nothing distinguishes what he *said*
   from what she *concluded*, so she can assert things he never said. The
   fix is honest phrasing ("I get the sense" vs. "you told me"), which also

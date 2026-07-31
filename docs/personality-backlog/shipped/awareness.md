@@ -102,6 +102,124 @@ per-tick cap, `is_ready` gates, INFO audit log) and
 
 ---
 
+## F12. Semantic echo — revival stops only crediting what Aiko quotes
+
+**The problem.** `revival_score` is the memory layer's one durable
+quality signal: it earns a per-day salience rebate, it is an
+early-promotion path out of `scratchpad`, it protects `long_term` rows
+from archive demotion, and it lowers prune priority. It was decided by a
+bag-of-words test — tokenise Aiko's reply and the surfaced memory, drop
+stopwords and anything under four characters, and count it a citation at
+three shared content words.
+
+That test is strict enough to almost never produce a false positive,
+which sounds like a virtue until you notice the consequence: **nearly all
+of its errors are misses.** Aiko paraphrases constantly — that is the
+entire reason to hand a memory to a language model rather than pasting it
+— and a paraphrase shares no credit. "You mentioned wanting to get back
+into film photography" against a stored "user shot 35mm in college and
+misses it" is a perfect use of the memory and scores zero overlap. So the
+memories that survived were the ones Aiko happened to *quote*, not the
+ones she used well.
+
+**One detector, two consumers.** The tokeniser, stopword list and overlap
+test used to live as private helpers on the post-turn mixin, and the L37
+ledger had grown a second copy of the same logic. Both now defer to
+[`app/core/memory/echo_detector.py`](../../../app/core/memory/echo_detector.py),
+which returns an `EchoVerdict` carrying *how* the echo was decided
+(`lexical` / `semantic` / `none`) and *how strongly* (overlapping word
+count, or cosine). The memory layer and the ledger can no longer drift
+apart on what an echo is.
+
+Lexical runs first, because a quote is unambiguous and cheap. On a miss
+it falls back to cosine between the reply and the stored memory. Both
+vectors were already in hand — memory embeddings live on `MemoryStore`'s
+in-process mirror, and K22's callback detector already embedded the
+reply — so this costs **no extra embed call**. The fallback is enabled by
+supplying a floor rather than a flag, so there is no way to ask for
+semantic matching without saying how strict.
+
+**The embed hoist.** The reply embedding was computed *inside* K22's gate,
+which meant its other consumer (K30 repeated-thought detection) silently
+inherited the callback detector's on/off switch. Semantic revival needed
+the same vector and must not inherit it too, so the embed moved to the top
+of `_post_turn_inner_life` under the union of its consumers' conditions,
+and `_last_assistant_vec` is now **cleared unconditionally first** — a
+skipped or failed embed previously left the *previous* turn's vector in
+place, which would have been compared against this turn's memories. K20's
+carry-forward only ever copies non-None, so it behaves exactly as before.
+
+**Why a semantic hit earns less — and the retention gate that forced the
+issue.** The obvious design is to treat both verdicts alike. That would
+have been a mistake, for a reason the original backlog entry missed:
+**the candidates were already selected for topical similarity.** A
+surfaced memory is one of the top-k nearest to the turn, and the reply is
+about that same turn, so a high cosine is close to guaranteed and partly
+measures "was on topic" rather than "she used it".
+
+Scratchpad TTL deleted an unused row only when `revival_score == 0.0`
+*exactly*. Under full credit, nearly every surfaced scratchpad row would
+have acquired some score and become permanently exempt — F12 would have
+quietly switched scratchpad cleanup off altogether rather than improving
+what was retained. So:
+
+- a **lexical** hit earns the full historical `revival_per_hit` (0.15);
+- a **semantic** hit earns `semantic_revival_per_hit` (0.05);
+- the TTL gate became `revival_score < scratchpad_ttl_min_revival` (0.10),
+  which also retires a brittle float-equality test against a value that
+  decays.
+
+The thresholds interlock deliberately: a quoted memory is spared exactly
+as before, a merely on-topic one is not, and *two* semantic hits clear the
+bar — repeated weak evidence is worth more than one instance, decided by
+the threshold rather than a special case. A configured `0` keeps meaning
+"delete rows with no revival at all" via an epsilon floor, rather than
+`< 0.0`, which would match nothing.
+
+**Measuring instead of guessing.** The 0.62 floor is a guess, and schema
+**v27** exists so it does not have to stay one: `surfacing_outcomes` gained
+`echo_kind` and `echo_score`, recorded on *misses as well as hits* —
+a floor cannot be re-derived from a table that kept only the rows clearing
+the floor we happened to pick first. Two reads on
+[`SurfacingOutcomeStore`](../../../app/core/memory/surfacing_outcome_store.py)
+expose it through `get_surfacing_outcomes`:
+
+- `echo_breakdown` — engaged rate split by `echo_kind`. If semantic rows
+  engage about as often as lexical ones the discount is unjustified; if
+  they engage no better than rows with no echo, it was right.
+- `semantic_floor_candidates` — replays each candidate floor over the
+  recorded cosines, counting only rows the lexical test did not already
+  claim. A floor whose engaged rate is flat all the way up is measuring
+  topic, not use.
+
+Pre-v27 rows keep NULL on both columns and report as `"unrecorded"`
+rather than being folded into `none`: they were judged by the lexical test
+alone, and back-filling `lexical` would claim a semantic comparison had
+been made and lost.
+
+**Deferred on purpose.** Whether a semantic hit should earn *full*
+retention credit is [F17](../awareness.md#f17-should-a-semantic-echo-earn-full-retention-credit),
+to be settled from the data above rather than from intuition now. The
+user-side credit half of the original entry — rewarding a memory for the
+*user's* engagement rather than Aiko's own verbosity — is also still open
+there; L37's ledger already records exactly that join.
+
+**Settings.** `memory.semantic_revival_enabled` (default on),
+`memory.semantic_revival_min_cosine` (0.62; `0` disables),
+`memory.semantic_revival_per_hit` (0.05),
+`memory.scratchpad_ttl_min_revival` (0.10). See
+[`docs/memory-tiers.md`](../../memory-tiers.md#revival-drift-e2).
+
+**Tests.**
+[`tests/test_semantic_echo.py`](../../../tests/test_semantic_echo.py) —
+the detector (quote beats floor, paraphrase caught, sub-floor cosine still
+reported, unusable vectors degrade), option-A credit split, the TTL gate
+including the configured-zero case, and the calibration reads. Migration
+and echo-column coverage in
+[`tests/test_surfacing_outcome_ledger.py`](../../../tests/test_surfacing_outcome_ledger.py).
+
+---
+
 ## F3. Confidence column on memories
 
 `confidence REAL NOT NULL DEFAULT 0.7` added to the `memories`

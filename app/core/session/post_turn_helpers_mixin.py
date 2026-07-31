@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 from app.core.infra import timephrase
+from app.core.memory import echo_detector
 
 
 log = logging.getLogger("app.session")
@@ -1220,58 +1221,39 @@ class PostTurnHelpersMixin:
                         exc_info=True,
                     )
 
-    # ── Schema v8 revival detection (E2) ────────────────────────────
-
-    # Tiny stopword list scoped to the revival overlap check. We only
-    # need to suppress the most common "free" matches so a memory and
-    # an assistant reply don't pass the >=3-word threshold purely on
-    # filler. Not a full NLP pipeline -- the threshold itself does the
-    # heavy lifting.
-    _REVIVAL_STOPWORDS: frozenset[str] = frozenset({
-        "the", "a", "an", "and", "or", "but", "if", "then", "so", "of",
-        "in", "on", "at", "to", "for", "with", "by", "as", "is", "are",
-        "was", "were", "be", "been", "being", "do", "does", "did", "have",
-        "has", "had", "you", "your", "i", "me", "my", "we", "our", "us",
-        "he", "she", "they", "them", "this", "that", "these", "those",
-        "it", "its", "from", "about", "into", "than", "what", "when",
-        "where", "who", "how", "why", "not", "no", "yes", "ok", "okay",
-        "just", "really", "very", "much", "like", "would", "could",
-        "should", "will", "can", "may", "might", "also", "too", "any",
-        "all", "some", "more", "most", "less", "such", "there", "here",
-        "now", "again", "still", "even", "only", "yet",
-    })
-
-    @classmethod
-    def _revival_tokens(cls, text: str) -> set[str]:
-        """Lowercase content-word set used by the keyword overlap check.
-
-        Tokens shorter than 4 chars and items in :attr:`_REVIVAL_STOPWORDS`
-        are dropped -- short / common words light up too many incidental
-        overlaps to be useful as a revival signal.
-        """
-        if not text:
-            return set()
-        import re
-
-        raw = re.findall(r"[A-Za-z][A-Za-z0-9'_-]+", str(text).lower())
-        out: set[str] = set()
-        for token in raw:
-            token = token.strip("'-_")
-            if len(token) < 4:
-                continue
-            if token in cls._REVIVAL_STOPWORDS:
-                continue
-            out.add(token)
-        return out
+    # ── Revival detection (schema v8 / E2, semantic half from F12) ───
+    #
+    # The tokeniser, stopword list and overlap test used to live here as
+    # private helpers, and the L37 ledger grew a second copy of the same
+    # logic. Both now defer to
+    # :mod:`app.core.memory.echo_detector`, so "did the reply use this?"
+    # has exactly one answer and the memory layer and the ledger cannot
+    # drift apart on it.
 
     def _mark_revived_memories(self, *, assistant_text: str) -> None:
-        """Reward memories Aiko actually cited in her reply with revival.
+        """Reward memories Aiko actually used in her reply with revival.
 
         Reads the most recent surfaced-IDs snapshot from the RAG
-        retriever, runs the keyword-overlap check between the reply
-        text and each surfaced memory's content, and calls
+        retriever, asks
+        :func:`app.core.memory.echo_detector.detect` whether the reply
+        used each surfaced memory, and calls
         :meth:`MemoryStore.mark_revived` on the qualifying ids. Skipped
         entirely when tiers are disabled or no memories surfaced.
+
+        F12 split the bump in two, because the two kinds of evidence are
+        not equally strong. A **lexical** hit means Aiko quoted or closely
+        restated the memory and earns the full historical
+        ``revival_per_hit``. A **semantic** hit means the reply was merely
+        close in embedding space, which is weaker than it looks: the
+        memory was surfaced *because* it was topically near this turn, so
+        some of that similarity is the retrieval showing through rather
+        than Aiko using anything. It earns the smaller
+        ``semantic_revival_per_hit``, which sits below
+        ``scratchpad_ttl_min_revival`` so a single on-topic coincidence
+        cannot exempt a memory from cleanup.
+
+        Two write batches rather than one, since ``mark_revived`` applies a
+        single delta to a whole list.
         """
         if not assistant_text or not self._memory_settings.tiers_enabled:
             return
@@ -1284,63 +1266,115 @@ class PostTurnHelpersMixin:
         ids = getattr(retriever, "last_surfaced_memory_ids", None)
         if not ids:
             return
-        threshold = max(1, int(self._memory_settings.revival_min_word_overlap))
-        reply_tokens = self._revival_tokens(assistant_text)
-        if len(reply_tokens) < threshold:
+        ms = self._memory_settings
+        threshold = max(1, int(ms.revival_min_word_overlap))
+        reply_tokens = echo_detector.tokens(assistant_text)
+        delta = float(ms.revival_per_hit)
+        semantic_delta = float(getattr(ms, "semantic_revival_per_hit", 0.0))
+        min_cosine = self._semantic_echo_floor()
+        if delta <= 0 and semantic_delta <= 0:
             return
-        delta = float(self._memory_settings.revival_per_hit)
-        if delta <= 0:
+        # The lexical test needs at least ``threshold`` content words to
+        # have any chance; the semantic one does not care, so a curt reply
+        # is no longer a blanket early return.
+        if len(reply_tokens) < threshold and min_cosine is None:
             return
-        revived: list[int] = []
+        reply_vec = getattr(self, "_last_assistant_vec", None)
+
+        lexical: list[int] = []
+        semantic: list[int] = []
         for mem_id in ids:
             mem = store.get(int(mem_id))
             if mem is None:
                 continue
-            mem_tokens = self._revival_tokens(mem.content)
-            if len(reply_tokens & mem_tokens) >= threshold:
-                revived.append(int(mem_id))
-        if revived:
+            verdict = echo_detector.detect(
+                reply_tokens=reply_tokens,
+                item_text=mem.content,
+                min_overlap=threshold,
+                reply_vec=reply_vec,
+                item_vec=getattr(mem, "embedding", None),
+                min_cosine=min_cosine,
+            )
+            if verdict.is_lexical:
+                lexical.append(int(mem_id))
+            elif verdict.echoed:
+                semantic.append(int(mem_id))
+
+        for batch, batch_delta, label in (
+            (lexical, delta, "lexical"),
+            (semantic, semantic_delta, "semantic"),
+        ):
+            if not batch or batch_delta <= 0:
+                continue
             try:
-                store.mark_revived(revived, delta=delta)
+                store.mark_revived(batch, delta=batch_delta)
                 log.info(
-                    "revival: bumped %d memory revival_scores (delta=%.2f)",
-                    len(revived), delta,
+                    "revival: bumped %d memory revival_scores "
+                    "(kind=%s delta=%.2f)",
+                    len(batch), label, batch_delta,
                 )
             except Exception:
                 log.debug("mark_revived failed", exc_info=True)
+
+    def _semantic_echo_floor(self) -> float | None:
+        """The cosine floor for a semantic echo, or ``None`` when off.
+
+        ``None`` is what switches the semantic half off in
+        :func:`echo_detector.detect` -- the caller enables the fallback by
+        supplying a floor rather than by passing a flag, so there is no
+        way to ask for semantic matching without saying how strict.
+        """
+        ms = self._memory_settings
+        if not bool(getattr(ms, "semantic_revival_enabled", False)):
+            return None
+        floor = float(getattr(ms, "semantic_revival_min_cosine", 0.0))
+        return floor if floor > 0.0 else None
 
     # ── L37: surfacing outcome ledger ────────────────────────────────
 
     def _surfacing_echo_marks(
         self, items: list, assistant_text: str,
-    ) -> dict[tuple[str, int], bool]:
+    ) -> dict[tuple[str, int], echo_detector.EchoVerdict]:
         """Which surfaced items did Aiko's own reply actually reference?
 
-        The same keyword-overlap proxy :meth:`_mark_revived_memories`
-        uses, but recorded per item instead of acted on, and with a
-        per-kind threshold: ``revival_min_word_overlap`` was tuned against
-        multi-sentence memory content, so applying it to a three-to-six
-        word concept label would make the same nominal bar a far harsher
-        test. F12's semantic echo is the real fix.
+        The same question :meth:`_mark_revived_memories` acts on, recorded
+        per item instead, through the same
+        :func:`app.core.memory.echo_detector.detect` so the ledger cannot
+        disagree with the memory layer about what an echo is.
 
-        An item is omitted from the result -- leaving the column NULL, and
+        Two per-kind differences, both deliberate:
+
+        - **Threshold.** ``revival_min_word_overlap`` was tuned against
+          multi-sentence memory content; applying it to a three-to-six
+          word concept label would make the same nominal bar a far harsher
+          test, so concepts get their own floor.
+        - **Semantic fallback.** Only memories get one. Memory embeddings
+          are on the store's in-process mirror, and a memory is a sentence
+          or two, which is a fair comparison against a reply. A concept
+          label is a handful of words whose embedding sits in a different
+          part of the space than prose, so a cosine between the two would
+          not mean what the memory cosine means.
+
+        An item is omitted from the result -- leaving the columns NULL, and
         reading as *not computed* -- whenever its text could not be
         loaded, which must stay distinct from a computed "not echoed".
         Clusters are always omitted: their labels aren't reachable from
         here, and guessing would be worse than a NULL.
         """
-        marks: dict[tuple[str, int], bool] = {}
+        marks: dict[tuple[str, int], echo_detector.EchoVerdict] = {}
         if not assistant_text or not items:
             return marks
         # An empty content-word set here is a real observation (a curt
-        # reply echoed nothing), not a failure to look, so it still marks
-        # False for every item whose own text resolves.
-        reply_tokens = self._revival_tokens(assistant_text)
+        # reply echoed nothing), not a failure to look, so it still records
+        # a verdict for every item whose own text resolves.
+        reply_tokens = echo_detector.tokens(assistant_text)
         ms = self._memory_settings
         mem_floor = max(1, int(getattr(ms, "revival_min_word_overlap", 3)))
         concept_floor = max(1, int(getattr(
             self._settings.agent, "surfacing_echo_min_overlap_concept", 1,
         )))
+        min_cosine = self._semantic_echo_floor()
+        reply_vec = getattr(self, "_last_assistant_vec", None)
         mem_store = getattr(self, "_memory_store", None)
         concept_store = getattr(self, "_concept_store", None)
         for item in items:
@@ -1350,12 +1384,16 @@ class PostTurnHelpersMixin:
                 continue
             text = ""
             floor = mem_floor
+            item_vec = None
+            item_cosine_floor = None
             if kind == "memory" and mem_store is not None:
                 try:
                     mem = mem_store.get(item_id)
                 except Exception:
                     mem = None
                 text = str(getattr(mem, "content", "") or "")
+                item_vec = getattr(mem, "embedding", None)
+                item_cosine_floor = min_cosine
             elif kind == "concept" and concept_store is not None:
                 try:
                     concept = concept_store.get(item_id)
@@ -1365,11 +1403,13 @@ class PostTurnHelpersMixin:
                 floor = concept_floor
             if not text:
                 continue
-            item_tokens = self._revival_tokens(text)
-            if not item_tokens:
-                continue
-            marks[(kind, item_id)] = (
-                len(reply_tokens & item_tokens) >= floor
+            marks[(kind, item_id)] = echo_detector.detect(
+                reply_tokens=reply_tokens,
+                item_text=text,
+                min_overlap=floor,
+                reply_vec=reply_vec,
+                item_vec=item_vec,
+                min_cosine=item_cosine_floor,
             )
         return marks
 
@@ -1460,19 +1500,21 @@ class PostTurnHelpersMixin:
             # stops a later turn settling a much older reply's rows.
             self._prev_surfacing_message_id = 0
             return
-        echoed = {}
+        echoes = {}
         try:
-            echoed = self._surfacing_echo_marks(items, assistant_text)
+            echoes = self._surfacing_echo_marks(items, assistant_text)
         except Exception:
             log.debug("surfacing echo marks failed", exc_info=True)
-        written = store.add_many(message_id, items, echoed=echoed)
+        written = store.add_many(message_id, items, echoes=echoes)
         self._prev_surfacing_message_id = message_id if written else 0
         if written:
             log.info(
                 "surfacing ledger: recorded %d item(s) for msg=%d "
-                "(echoed=%d/%d)",
+                "(echoed=%d/%d semantic=%d)",
                 written, message_id,
-                sum(1 for v in echoed.values() if v), len(echoed),
+                sum(1 for v in echoes.values() if v.echoed), len(echoes),
+                sum(1 for v in echoes.values()
+                    if v.kind == echo_detector.ECHO_SEMANTIC),
             )
 
     def _estimate_user_affect_for_contagion(
