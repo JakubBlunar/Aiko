@@ -287,6 +287,36 @@ class InnerLifePart4Mixin:
             log.debug("anniversary render failed", exc_info=True)
             return ""
 
+    def _render_inside_joke_block(self) -> str:
+        """K80: surface a one-shot "that just became a bit" cue.
+
+        The detector runs inline from ``_post_turn_inner_life`` and
+        stashes any hit on ``self._pending_inside_joke``. We consume the
+        slot here (clearing before the render, so a render failure still
+        resets it) — a bit is born once, and a sticky cue would have her
+        blessing the same phrase every turn, which is precisely how a
+        real moment turns into a tic.
+        """
+        if not bool(
+            getattr(self._settings.agent, "inside_joke_birth_enabled", True)
+        ):
+            return ""
+        birth = getattr(self, "_pending_inside_joke", None)
+        if birth is None:
+            return ""
+        self._pending_inside_joke = None
+        try:
+            from app.core.memory.catchphrase_miner import (
+                render_inside_joke_block,
+            )
+
+            return render_inside_joke_block(
+                birth, user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("inside-joke render failed", exc_info=True)
+            return ""
+
     def _render_mood_shell_block(self) -> str:
         """K5: one-line tonal directive derived from affect + axes.
 

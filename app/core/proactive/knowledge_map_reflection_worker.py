@@ -26,6 +26,7 @@ missed beat, never a broken insert or a crashed tick.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -33,6 +34,7 @@ from app.core.proactive.idle_worker import default_is_ready
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_view import ConceptView
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import Memory, MemoryStore
     from app.llm.chat_client import ChatClient
@@ -48,6 +50,25 @@ log = logging.getLogger("app.knowledge_map_reflection_worker")
 MINDMAP_PREFIX = "[mindmap] "
 
 _KV_LAST_FIRED_AT = "knowledge_map_reflection.last_fired_at"
+
+
+@dataclass(slots=True)
+class RichTerritory:
+    """One well-trodden region of the map, as the reflection sees it.
+
+    ``label`` / ``size`` / ``days_since`` come from the topic graph (how
+    much, how recently); ``concepts`` is the L28 annotation -- what Aiko
+    *believes* about that territory, read through
+    :meth:`ConceptView.for_cluster` off ``representative_id``. Empty when
+    the concept layer is off, cold, or has nothing edged to the cluster,
+    which is the normal early state and renders exactly as before.
+    """
+
+    label: str
+    size: int
+    days_since: float | None = None
+    representative_id: int = 0
+    concepts: list[str] = field(default_factory=list)
 
 
 def _utcnow() -> datetime:
@@ -145,15 +166,22 @@ class KnowledgeMapReflectionWorker:
         model: str | None = None,
         enabled_provider: Callable[[], bool] | None = None,
         notify_memory_added: Callable[["Memory"], None] | None = None,
+        view_provider: Callable[[], "ConceptView | None"] | None = None,
         interval_seconds: float = 86400.0,
         cooldown_hours: float = 20.0,
         min_clusters: int = 4,
         rich_top_n: int = 5,
         gap_top_n: int = 3,
+        concepts_per_cluster: int = 2,
         max_tokens: int = 120,
         salience: float = 0.5,
     ) -> None:
         self._topic_graph_provider = topic_graph_provider
+        # L28: late-bound ConceptView so each territory can carry what Aiko
+        # actually *believes* about it, not just how big and how recent it
+        # is. ``None`` (or a provider returning a cold view) leaves the
+        # payload exactly as it was.
+        self._view_provider = view_provider
         self._memory_store = memory_store
         self._embedder = embedder
         self._kv_get = kv_get
@@ -167,6 +195,7 @@ class KnowledgeMapReflectionWorker:
         self._min_clusters = max(2, int(min_clusters))
         self._rich_top_n = max(1, int(rich_top_n))
         self._gap_top_n = max(0, int(gap_top_n))
+        self._concepts_per_cluster = max(0, int(concepts_per_cluster))
         self._max_tokens = max(40, int(max_tokens))
         self._salience = max(0.0, min(1.0, float(salience)))
         # MCP debug: force the next run() to bypass the wall-clock cooldown.
@@ -277,19 +306,20 @@ class KnowledgeMapReflectionWorker:
 
     def _read_shape(
         self, graph: "TopicGraph",
-    ) -> tuple[list[tuple[str, int, float | None]], list[tuple[str, int]]]:
-        """Return ``(rich, gaps)`` — rich as ``(label, size, days_since)``.
+    ) -> tuple[list["RichTerritory"], list[tuple[str, int]]]:
+        """Return ``(rich, gaps)``.
 
         ``rich`` = the largest labelled clusters (well-trodden territory),
         each carrying how long since that territory was last active so the
-        reflection can read "recently hot vs. went quiet months ago";
+        reflection can read "recently hot vs. went quiet months ago", plus
+        the concepts Aiko holds about it (L28);
         ``gaps`` = dense-but-under-researched clusters (familiar in
         conversation, blank in *learned* knowledge). Both tolerate the
         non-persistent / in-memory graph mode (empty). Falls back to the
         recency-free ``interest_map`` if ``cluster_activity`` is unavailable
         (older graph / duck-typed stub).
         """
-        rich: list[tuple[str, int, float | None]] = []
+        rich: list[RichTerritory] = []
         top_n = max(self._rich_top_n, self._min_clusters)
         try:
             activity = getattr(graph, "cluster_activity", None)
@@ -297,18 +327,25 @@ class KnowledgeMapReflectionWorker:
                 for e in activity(top_n=top_n):
                     label = (getattr(e, "label", "") or "").strip()
                     if label:
-                        rich.append((
-                            label,
-                            int(getattr(e, "size", 0) or 0),
-                            getattr(e, "days_since", None),
+                        rich.append(RichTerritory(
+                            label=label,
+                            size=int(getattr(e, "size", 0) or 0),
+                            days_since=getattr(e, "days_since", None),
+                            representative_id=int(
+                                getattr(e, "representative_id", 0) or 0
+                            ),
                         ))
             else:
                 for e in graph.interest_map(top_n=top_n):
                     label = (getattr(e, "label", "") or "").strip()
                     if label:
-                        rich.append((label, int(getattr(e, "size", 0) or 0), None))
+                        rich.append(RichTerritory(
+                            label=label,
+                            size=int(getattr(e, "size", 0) or 0),
+                        ))
         except Exception:
             log.debug("knowledge_map_reflection interest_map failed", exc_info=True)
+        self._annotate_concepts(rich)
 
         gaps: list[tuple[str, int]] = []
         if self._gap_top_n > 0:
@@ -324,14 +361,58 @@ class KnowledgeMapReflectionWorker:
                 )
         return rich, gaps
 
+    def _annotate_concepts(self, rich: list["RichTerritory"]) -> None:
+        """L28: hang each territory's concepts off it, in place.
+
+        The map says *how much* and *how recently*; the concept layer says
+        *what he actually believes about it*. Reading them through
+        ``ConceptView.for_cluster`` rather than re-deriving here is the
+        point of the contract -- one read path, so this worker can't drift
+        from what the rest of the system thinks the graph means.
+
+        Silent no-op when concepts are off, cold, or simply have nothing
+        edged to a given cluster, which is the common case early on.
+        """
+        if self._concepts_per_cluster <= 0 or self._view_provider is None:
+            return
+        try:
+            view = self._view_provider()
+        except Exception:
+            log.debug("knowledge_map_reflection concept view failed", exc_info=True)
+            return
+        if view is None or not getattr(view, "enabled", False):
+            return
+        for row in rich:
+            if not row.representative_id:
+                continue
+            try:
+                concepts = view.for_cluster(row.representative_id)
+            except Exception:
+                log.debug(
+                    "knowledge_map_reflection for_cluster failed", exc_info=True
+                )
+                continue
+            # Most-confident first: a territory gets its firmest beliefs,
+            # not whichever edge happens to be listed first.
+            concepts = sorted(
+                concepts,
+                key=lambda c: float(getattr(c, "confidence", 0.0) or 0.0),
+                reverse=True,
+            )
+            labels: list[str] = []
+            for concept in concepts[: self._concepts_per_cluster]:
+                label = " ".join(str(getattr(concept, "label", "")).split())
+                if label:
+                    labels.append(label)
+            row.concepts = labels
+
     def _compose(
         self,
-        rich: list[tuple[str, int, float | None]],
+        rich: list["RichTerritory"],
         gaps: list[tuple[str, int]],
     ) -> str:
         rich_lines = "\n".join(
-            self._rich_line(label, size, days)
-            for label, size, days in rich[: self._rich_top_n]
+            self._rich_line(row) for row in rich[: self._rich_top_n]
         )
         payload = [
             "The richest territories of what you hold "
@@ -363,11 +444,13 @@ class KnowledgeMapReflectionWorker:
         return clean_reflection_output(raw)
 
     @staticmethod
-    def _rich_line(label: str, size: int, days_since: float | None) -> str:
-        phrase = recency_phrase(days_since)
-        if phrase:
-            return f"  - {label} ({size} memories, {phrase})"
-        return f"  - {label} ({size} memories)"
+    def _rich_line(row: "RichTerritory") -> str:
+        phrase = recency_phrase(row.days_since)
+        facts = f"{row.size} memories, {phrase}" if phrase else f"{row.size} memories"
+        line = f"  - {row.label} ({facts})"
+        if row.concepts:
+            line += " — you believe: " + "; ".join(row.concepts)
+        return line
 
     # ── gates / helpers ────────────────────────────────────────────────
 

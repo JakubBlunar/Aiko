@@ -1264,6 +1264,17 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     "data/persona/golden_turns.jsonl",
                 ),
             ),
+            persona_regression_auto_enabled=bool(
+                agent_raw.get("persona_regression_auto_enabled", False),
+            ),
+            persona_regression_interval_seconds=max(
+                3600,
+                int(
+                    agent_raw.get(
+                        "persona_regression_interval_seconds", 86400,
+                    )
+                ),
+            ),
             tasks_enabled=bool(agent_raw.get("tasks_enabled", True)),
             tasks_per_user_cap=max(
                 1, int(agent_raw.get("tasks_per_user_cap", 8))
@@ -1669,6 +1680,23 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             catchphrase_miner_min_total_count=max(
                 2, int(agent_raw.get("catchphrase_miner_min_total_count", 3)),
+            ),
+            inside_joke_birth_enabled=bool(
+                agent_raw.get("inside_joke_birth_enabled", True),
+            ),
+            inside_joke_birth_cooldown_hours=max(
+                0.0,
+                float(agent_raw.get("inside_joke_birth_cooldown_hours", 24.0)),
+            ),
+            inside_joke_birth_min_words=max(
+                2, int(agent_raw.get("inside_joke_birth_min_words", 3)),
+            ),
+            voice_adoption_enabled=bool(
+                agent_raw.get("voice_adoption_enabled", True),
+            ),
+            voice_adoption_interval_seconds=max(
+                60,
+                int(agent_raw.get("voice_adoption_interval_seconds", 86400)),
             ),
             curiosity_worker_enabled=bool(
                 agent_raw.get("curiosity_worker_enabled", True),

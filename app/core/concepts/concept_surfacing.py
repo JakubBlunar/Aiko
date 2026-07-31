@@ -129,6 +129,33 @@ _SALIENCE_EVENT_WEIGHTS: dict[str, float] = {
 }
 
 
+def event_charge_detail(
+    events,
+    now: datetime,
+    *,
+    halflife_days: float,
+    weights: "dict[str, float] | None" = None,
+) -> tuple[float, str | None]:
+    """:func:`event_charge`, plus *which* event produced the charge.
+
+    L35 needs the driver's name to turn a salience win into a reason a
+    human can read -- "unresolved contradiction" and "recently revived"
+    are the same number to the scorer and completely different stories.
+    Returns ``(0.0, None)`` when nothing charged.
+    """
+    table = weights if weights is not None else _SALIENCE_EVENT_WEIGHTS
+    best = 0.0
+    driver: str | None = None
+    for ev_type, created_at in events:
+        base = float(table.get(str(ev_type), 0.0))
+        if base <= 0.0:
+            continue
+        charge = base * recency_boost(created_at, now, halflife_days)
+        if charge > best:
+            best, driver = charge, str(ev_type)
+    return _c01(best), driver
+
+
 def event_charge(
     events,
     now: datetime,
@@ -143,14 +170,9 @@ def event_charge(
     decayed by :func:`recency_boost` and the max is taken -- one sharp recent
     change is enough to make a concept salient, and it fades over the half-life.
     """
-    table = weights if weights is not None else _SALIENCE_EVENT_WEIGHTS
-    best = 0.0
-    for ev_type, created_at in events:
-        base = float(table.get(str(ev_type), 0.0))
-        if base <= 0.0:
-            continue
-        best = max(best, base * recency_boost(created_at, now, halflife_days))
-    return _c01(best)
+    return event_charge_detail(
+        events, now, halflife_days=halflife_days, weights=weights
+    )[0]
 
 
 def salience(*, change: float = 0.0, affect: float = 0.0) -> float:
@@ -206,6 +228,134 @@ def surface_score(
         ) / total
     boosted = base + float(w.activation) * float(activation)
     return _c01(boosted * float(habituation))
+
+
+# ── L35 surface reasons (why *this* concept is in the prompt) ─────────────
+# The scorer above collapses six signals into one number, which makes the
+# ranking legible but the *choice* opaque: a concept in the prompt could be
+# there because it matched the topic, because it was just contradicted, or
+# because a neighbour primed it, and the trace couldn't tell you which.
+# ``surface_reason`` names the winner. Kept as plain string constants like
+# the rest of ``app/core/concepts`` (see ``concept_kinds.SUBJECTS``).
+#
+# Debug-only by design: the reason is stamped on the L26 trace, never handed
+# to Aiko. Letting her read "I surfaced this because we clashed on it" is the
+# fastest route to a companion who narrates her own machinery.
+
+REASON_CORE = "core_belief"
+REASON_TOPIC = "topic_match"
+REASON_CONFIDENT = "high_confidence"
+REASON_RECENT = "recently_reinforced"
+REASON_SETTLED = "settled_belief"
+REASON_ASSOCIATION = "association"
+REASON_CONTRADICTION = "unresolved_contradiction"
+REASON_REVIVED = "recently_revived"
+REASON_LOOSENED = "loosening_boundary"
+REASON_PROMOTED = "newly_promoted"
+REASON_CHANGE = "recent_change"
+
+#: Human phrasing for the debug view, keyed by reason token.
+SURFACE_REASON_LABELS: dict[str, str] = {
+    REASON_CORE: "always-on core belief",
+    REASON_TOPIC: "matches what we're talking about",
+    REASON_CONFIDENT: "high confidence",
+    REASON_RECENT: "reinforced recently",
+    REASON_SETTLED: "settled, firmly held",
+    REASON_ASSOCIATION: "primed by an associated topic",
+    REASON_CONTRADICTION: "unresolved contradiction",
+    REASON_REVIVED: "recently revived",
+    REASON_LOOSENED: "boundary loosening",
+    REASON_PROMOTED: "newly promoted",
+    REASON_CHANGE: "changed recently",
+}
+
+#: Which salience driver maps to which reason. A salience win is only ever
+#: as specific as the event behind it; anything unrecognised degrades to the
+#: generic "something changed".
+_EVENT_REASONS: dict[str, str] = {
+    "contradicted": REASON_CONTRADICTION,
+    "revived": REASON_REVIVED,
+    "plasticity_shift": REASON_LOOSENED,
+    "promoted": REASON_PROMOTED,
+}
+
+
+def surface_reason(
+    *,
+    lane: str,
+    cosine: float = 0.0,
+    confidence: float = 0.0,
+    recency: float = 0.0,
+    stability: float = 0.0,
+    salience: float = 0.0,
+    activation: float = 0.0,
+    recency_known: bool = True,
+    change_event: str | None = None,
+    w: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS,
+) -> str:
+    """Name the signal that won this concept its place in the prompt.
+
+    Two lanes answer themselves. A **core** concept is pinned on
+    confidence before any scoring happens, and an **activation**-lane
+    concept had no cosine to the turn at all -- it is in the prompt purely
+    because a neighbour primed it. Neither ran a contest, so neither needs
+    one decided.
+
+    Everything else is the dominant term of :func:`surface_score`, decided
+    on each signal's *weighted contribution* rather than its raw value: a
+    cosine of 0.9 against a zero context weight didn't win anything.
+    Contributions are normalized exactly the way the score is, so
+    ``activation`` (additive, outside the normalization) is compared on
+    the same footing as the five ranking terms.
+
+    ``recency_known=False`` drops recency from contention. Its neutral
+    value is ``1.0`` -- the *highest* it goes -- so a concept that has
+    simply never been reinforced would otherwise win on a missing signal.
+    That default is deliberate in the score (a missing timestamp must not
+    penalise) but it is not a reason for anything.
+
+    A salience win is refined by ``change_event`` (from
+    :func:`event_charge_detail`) into the specific story behind the charge.
+    Ties resolve toward the more specific signal, which is why the
+    candidate order below is deliberate rather than alphabetical.
+    """
+    if lane == "core":
+        return REASON_CORE
+    if lane == "activation":
+        return REASON_ASSOCIATION
+    total = (
+        float(w.context)
+        + float(w.confidence)
+        + float(w.recency)
+        + float(w.stability)
+        + float(w.salience)
+    )
+    if total <= 0.0:
+        # Degenerate weights: the score is raw cosine, so nothing else can
+        # have won -- except a pure activation pickup with no cosine at all.
+        return REASON_TOPIC if cosine > 0.0 else REASON_ASSOCIATION
+    # Most specific first, so an exact tie tells the more interesting story.
+    ranked = [
+        (float(w.salience) * _c01(salience) / total, _salience_reason(change_event)),
+        (float(w.activation) * _c01(activation), REASON_ASSOCIATION),
+        (float(w.stability) * _c01(stability) / total, REASON_SETTLED),
+        (float(w.context) * _c01(cosine) / total, REASON_TOPIC),
+        (float(w.confidence) * _c01(confidence) / total, REASON_CONFIDENT),
+    ]
+    if recency_known:
+        ranked.insert(2, (
+            float(w.recency) * _c01(recency) / total, REASON_RECENT
+        ))
+    best_share, best_reason = max(ranked, key=lambda pair: pair[0])
+    if best_share <= 0.0:
+        # Every signal is zero (or zero-weighted); the lane is the only
+        # thing left that's true.
+        return REASON_TOPIC
+    return best_reason
+
+
+def _salience_reason(change_event: str | None) -> str:
+    return _EVENT_REASONS.get(str(change_event or ""), REASON_CHANGE)
 
 
 def composite_score(
@@ -293,14 +443,17 @@ def save_habituation(
 
 __all__ = [
     "HABITUATION_KV_KEY",
+    "SURFACE_REASON_LABELS",
     "composite_score",
     "event_charge",
+    "event_charge_detail",
     "habituation_factor",
     "load_habituation",
     "recency_boost",
     "salience",
     "save_habituation",
     "stability",
+    "surface_reason",
     "surface_score",
     "turns_since_surfaced",
 ]

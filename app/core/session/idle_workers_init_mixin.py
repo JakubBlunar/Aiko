@@ -241,6 +241,44 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("SharedRitualWorker init failed", exc_info=True)
 
+            # K26 — voice adoption. Slowly folds phrases that started as
+            # his into Aiko's own speech. Reads the catchphrase registry
+            # only; at most one adoption every ~10 days.
+            try:
+                from app.core.proactive.voice_adoption_worker import (
+                    VoiceAdoptionWorker,
+                )
+
+                mem = self._memory_settings
+                agent = self._settings.agent
+                self._voice_adoption_worker = VoiceAdoptionWorker(
+                    chat_db=self._chat_db,
+                    memory_store=self._memory_store,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "voice_adoption_enabled",
+                            True,
+                        )
+                    ),
+                    origin_resolver=self._first_speaker_of_phrase,
+                    interval_seconds=getattr(
+                        agent, "voice_adoption_interval_seconds", 86400
+                    ),
+                    min_age_days=getattr(
+                        mem, "voice_adoption_min_age_days", 14.0
+                    ),
+                    min_days_between=getattr(
+                        mem, "voice_adoption_min_days_between", 10.0
+                    ),
+                    max_adopted=getattr(
+                        mem, "voice_adoption_max_adopted", 3
+                    ),
+                )
+                self._idle_scheduler.register(self._voice_adoption_worker)
+            except Exception:
+                log.warning("VoiceAdoptionWorker init failed", exc_info=True)
+
         # WorldNoticeWorker — proactive "I noticed my room / the thing you
         # left me" nudges. Rides the same idle scheduler + prepared-nudge
         # store as the FollowUpWorker, and composes its line on the local
@@ -686,6 +724,7 @@ class IdleWorkersInitMixin:
             and getattr(self, "_memory_store", None) is not None
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.proactive.interest_drift_worker import (
                     InterestDriftWorker,
                 )
@@ -704,6 +743,7 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    view_provider=lambda: concept_view_from(self),
                     interval_seconds=mem.interest_drift_interval_seconds,
                     daily_cap=mem.interest_drift_daily_cap,
                     journal_max=mem.interest_drift_journal_max,
@@ -839,6 +879,7 @@ class IdleWorkersInitMixin:
             and self._chat_db is not None
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.proactive.knowledge_map_reflection_worker import (
                     KnowledgeMapReflectionWorker,
                 )
@@ -863,6 +904,7 @@ class IdleWorkersInitMixin:
                             )
                         ),
                         notify_memory_added=self._notify_memory_added,
+                        view_provider=lambda: concept_view_from(self),
                         interval_seconds=(
                             mem.knowledge_map_reflection_interval_seconds
                         ),
@@ -872,6 +914,9 @@ class IdleWorkersInitMixin:
                         min_clusters=mem.knowledge_map_reflection_min_clusters,
                         rich_top_n=mem.knowledge_map_reflection_rich_top_n,
                         gap_top_n=mem.knowledge_map_reflection_gap_top_n,
+                        concepts_per_cluster=(
+                            mem.knowledge_map_reflection_concepts_per_cluster
+                        ),
                         max_tokens=mem.knowledge_map_reflection_max_tokens,
                         salience=mem.knowledge_map_reflection_salience,
                     )
@@ -882,6 +927,51 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning(
                     "KnowledgeMapReflectionWorker init failed", exc_info=True
+                )
+
+        # K10-followup PersonaRegressionWorker — the clock K10's on-demand
+        # golden-turn eval never had. Replays the fixture on a slow cadence
+        # during quiet windows and logs a WARNING when a turn that used to
+        # pass starts failing. Off unless persona_regression_auto_enabled,
+        # since each run costs one worker-LLM call per golden turn.
+        self._persona_regression_worker = None
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.proactive.persona_regression_worker import (
+                    PersonaRegressionWorker,
+                )
+
+                agent = settings.agent
+                self._persona_regression_worker = PersonaRegressionWorker(
+                    run_regression=self.run_persona_regression,
+                    snapshot_provider=self.persona_regression_snapshot,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "persona_regression_enabled",
+                            True,
+                        )
+                    ) and bool(
+                        getattr(
+                            self._settings.agent,
+                            "persona_regression_auto_enabled",
+                            False,
+                        )
+                    ),
+                    interval_seconds=float(
+                        getattr(
+                            agent,
+                            "persona_regression_interval_seconds",
+                            86400,
+                        )
+                    ),
+                )
+                self._idle_scheduler.register(
+                    self._persona_regression_worker
+                )
+            except Exception:
+                log.warning(
+                    "PersonaRegressionWorker init failed", exc_info=True
                 )
 
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
@@ -1207,6 +1297,37 @@ class IdleWorkersInitMixin:
         # Cached gap list produced by the post-turn detector for the
         # NEXT turn's inner-life provider. Cleared after each render.
         self._pending_belief_gaps: list[Any] = []
+
+    def _first_speaker_of_phrase(self, phrase: str) -> str | None:
+        """K26 provenance fallback: who used ``phrase`` first, ever.
+
+        The miner stamps ``metadata.origin`` on everything it writes, but
+        catchphrases mined before K26 have none. This walks the message
+        history for the earliest turn containing the phrase. Best-effort
+        and approximate — the registry stores a *normalised* phrase, so
+        an original that carried punctuation mid-phrase won't match, and
+        the caller correctly treats a miss as "unknown, don't adopt".
+        """
+        text = (phrase or "").strip().lower()
+        if len(text) < 3:
+            return None
+        escaped = (
+            text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        try:
+            row = self._chat_db.execute_fetchone(
+                "SELECT role FROM messages "
+                "WHERE lower(content) LIKE ? ESCAPE '\\' "
+                "ORDER BY id ASC LIMIT 1",
+                (f"%{escaped}%",),
+            )
+        except Exception:
+            log.debug("phrase provenance lookup failed", exc_info=True)
+            return None
+        if not row:
+            return None
+        role = str(row[0] or "").lower()
+        return role if role in ("user", "assistant") else None
 
     def _away_activity_valence(self) -> float | None:
         """Current affect valence for the H18 idle-activity weighting.

@@ -1618,15 +1618,24 @@ class AgentSettings:
     # taxonomy defaults in :data:`app.core.touch.touch_gestures`.
     touch_per_kind_overrides: dict[str, Any] = field(default_factory=dict)
 
-    # ── K10 persona regression (on-demand golden-turn eval) ───────────
+    # ── K10 persona regression (golden-turn eval) ─────────────────────
     # Master switch for the persona-drift harness. When off,
     # ``run_persona_regression()`` is a no-op returning an empty snapshot
-    # and the Diagnostics panel shows a disabled state. Purely on-demand
-    # (MCP tool / "Run check" button / pytest); no background spend.
+    # and the Diagnostics panel shows a disabled state. Gates the
+    # background worker below as well as the on-demand paths (MCP tool /
+    # "Run check" button / pytest).
     persona_regression_enabled: bool = True
     # JSONL fixture of canonical "golden turns" to replay. Relative to
     # the working directory; ships beside the persona sheet.
     persona_regression_fixture_path: str = "data/persona/golden_turns.jsonl"
+    # K10-followup: let the idle scheduler replay the fixture unattended
+    # so drift is *noticed* rather than only measurable on request. Off by
+    # default -- a run costs one worker-LLM call per golden turn, and
+    # staying opt-in is why K10 shipped on-demand in the first place.
+    persona_regression_auto_enabled: bool = False
+    # Cadence for that background replay. Daily; floored at an hour by the
+    # worker, since nothing about persona drift moves faster.
+    persona_regression_interval_seconds: int = 86400
 
     # ── Brain orchestration: long-running tasks (schema v16) ──────────
     # Master switch for the whole task subsystem. Off disables the
@@ -2257,6 +2266,29 @@ class AgentSettings:
     catchphrase_miner_min_seconds_between: float = 600.0
     catchphrase_miner_min_new_user_turns: int = 6
     catchphrase_miner_min_total_count: int = 3
+
+    # ── K80: inside-joke birth ────────────────────────────────────────
+    # The miner's fast path: the user echoing one of Aiko's own phrases
+    # back at her, laughing, is the moment a bit is *born*. Arms a
+    # one-shot "that's officially a thing now" cue and promotes the
+    # phrase into the same catchphrase registry the slow miner feeds.
+    # Off → no detection, no cue, no write.
+    inside_joke_birth_enabled: bool = True
+    # Wall-clock gap between blessings. Rarity is the point: a genuinely
+    # funny hour should produce one blessed bit, not a run of them.
+    inside_joke_birth_cooldown_hours: float = 24.0
+    # Shortest echo that can count as a bit. Below 3 words the "phrase"
+    # is usually just shared vocabulary.
+    inside_joke_birth_min_words: int = 3
+
+    # ── K26: voice adoption ───────────────────────────────────────────
+    # The slow counterpart to K13 (register calibration): phrases that
+    # started as his drift into Aiko's own speech over months. Off → the
+    # worker never runs and the prompt block stays empty; already-adopted
+    # phrases are kept but not surfaced.
+    voice_adoption_enabled: bool = True
+    # Sweep cadence. Daily is plenty for a mechanic measured in weeks.
+    voice_adoption_interval_seconds: int = 86400
     # Phase 4c: CuriosityWorker — emits a one-line "next-turn"
     # follow-up question when the recent conversation has gone shallow.
     curiosity_worker_enabled: bool = True

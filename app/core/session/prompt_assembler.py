@@ -93,6 +93,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "profile_block",
         "petname_block",
         "catchphrase_block",
+        # K26: the handful of his phrases that have drifted into her own
+        # speech. Sits with catchphrase / petname (the "how the two of
+        # them talk" cluster) and moves on a scale of weeks.
+        "voice_adoption_block",
     ),
     # T1 — per-arc / per-day. Changes a few times a day at most.
     "T1_semi_stable": (
@@ -207,6 +211,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K73: warm "this has become our thing" shared-ritual beat.
         # Sibling cue-producer; cooldown + acknowledged-flag gated.
         "shared_ritual_block",
+        # K80: "that line just became a bit" — the phrase-sized sibling
+        # of the K73 ritual beat. One-shot, watermark-gated.
+        "inside_joke_block",
         # L12: rare, gentle "a friction worth sitting with" cue over an active
         # tension (meta) concept. Sibling cue-producer; strictly cooldowned
         # one-shot drafted by TensionCueWorker -- the only surface for a
@@ -477,6 +484,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # stashes a result on the controller; this provider renders
         # it on the very next turn and clears the slot.
         self._clarification_provider: Callable[[], str] | None = None
+        # K80 — inside-joke birth one-shot. Sibling of the clarification
+        # provider: the post-turn detector stashes the just-born bit and
+        # this renders it exactly once.
+        self._inside_joke_provider: Callable[[], str] | None = None
         # K20 — metacognitive calibration. Reads the persisted
         # per-user CalibrationState and renders a one-line hedge cue
         # when global / topic scores have dropped below threshold.
@@ -878,6 +889,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # speaking-window mining job.
         self._vocal_tone_provider: Callable[[], str] | None = None
         self._catchphrase_provider: Callable[[], str] | None = None
+        # K26 — the slow sibling of ``catchphrase``: which of *his*
+        # phrases Aiko has taken on as her own.
+        self._voice_adoption_provider: Callable[[], str] | None = None
         self._petname_provider: Callable[[], str] | None = None
         self._ambient_noise_provider: Callable[[], str] | None = None
         # Alexia bundle: capability lookup → drives the dynamic overlay
@@ -1112,6 +1126,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         catchphrase_block = _safe_provider(
             self._catchphrase_provider,
             timing_sink=provider_ms, timing_name="catchphrase",
+        )
+        voice_adoption_block = _safe_provider(
+            self._voice_adoption_provider,
+            timing_sink=provider_ms, timing_name="voice_adoption",
         )
         petname_block = _safe_provider(
             self._petname_provider,
@@ -1818,6 +1836,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("shared_ritual provider raised", exc_info=True)
                     shared_ritual_block = ""
 
+        # K80 inside-joke birth: "that line just became a bit". One-shot
+        # (the provider clears the slot on read); the phrase-sized
+        # sibling of the K73 ritual beat.
+        inside_joke_block = ""
+        if getattr(self, "_inside_joke_provider", None) is not None:
+            with _timed_phase(provider_ms, "inside_joke"):
+                try:
+                    inside_joke_block = self._inside_joke_provider() or ""
+                except Exception:
+                    log.debug("inside_joke provider raised", exc_info=True)
+                    inside_joke_block = ""
+
         # K-time3 upcoming-horizon: pre-resolved future relative times for
         # plans due within the horizon window. Time-anchored (not gap-gated),
         # independent of the _gap_cue_surfaced family.
@@ -2326,6 +2356,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "opinion_injection_block",
             "boundary_clash_block",
             "stance_persistence_block",
+            "inside_joke_block",
             "novelty_block",
             "stagnation_block",
             "style_pattern_block",
@@ -2345,6 +2376,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "opinion_injection_block": opinion_injection_block,
             "boundary_clash_block": boundary_clash_block,
             "stance_persistence_block": stance_persistence_block,
+            "inside_joke_block": inside_joke_block,
             "novelty_block": novelty_block,
             "stagnation_block": stagnation_block,
             "style_pattern_block": style_pattern_block,
@@ -2379,6 +2411,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             opinion_injection_block = cue_blocks["opinion_injection_block"]
             boundary_clash_block = cue_blocks["boundary_clash_block"]
             stance_persistence_block = cue_blocks["stance_persistence_block"]
+            inside_joke_block = cue_blocks["inside_joke_block"]
             novelty_block = cue_blocks["novelty_block"]
             stagnation_block = cue_blocks["stagnation_block"]
             style_pattern_block = cue_blocks["style_pattern_block"]
@@ -2447,6 +2480,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # next to petname because both encode "how this person talks".
         if catchphrase_block:
             system_parts.append(catchphrase_block)
+        # K26: the phrases of his she's picked up. Right after the running
+        # jokes — same "how the two of them talk" cluster — and just as
+        # stable: it only changes when the voice-adoption worker promotes
+        # or retires one, which is a matter of weeks.
+        if voice_adoption_block:
+            system_parts.append(voice_adoption_block)
 
         # ── T1: SEMI-STABLE (per-arc / per-day) ──────────────────────
         # Relationship / axes / arc / agenda / goals / day_color /
@@ -2794,6 +2833,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer family; cooldown + acknowledged-flag gated
             # one-shot. NOT in the K16 suppression set.
             system_parts.append(shared_ritual_block)
+        if inside_joke_block:
+            # K80: the phrase-sized sibling of K73 — a bit that just
+            # became theirs. Right after the ritual beat so both
+            # "this is ours now" cues read as one thought.
+            system_parts.append(inside_joke_block)
         if tension_block:
             # L12: rare, gentle "a friction worth sitting with" observation
             # over an active tension (meta) concept. Sits with the cue-producer

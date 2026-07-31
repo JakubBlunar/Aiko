@@ -20,8 +20,11 @@ This worker is the silent producer. On an idle tick it:
     (:func:`classify_drift` — pure size-delta math, **no LLM**): fast recent
     growth → ``rising``; a sizable cluster that's gone flat → ``fading``,
   * skips any topic noticed within its per-topic cooldown window,
-  * appends ``{at, topic, topic_key, direction, from_size, to_size}`` to a
-    small kv_meta journal ring (``aiko.interest_drifts``).
+  * resolves what she *believes* about the drifting topic through
+    :meth:`~app.core.concepts.concept_view.ConceptView.for_cluster` (L28) so
+    the cue can name the pull, not just the direction,
+  * appends ``{at, topic, topic_key, direction, from_size, to_size, belief}``
+    to a small kv_meta journal ring (``aiko.interest_drifts``).
 
 The consumer is
 :meth:`InnerLifeProvidersMixin._render_interest_drift_block`, which surfaces
@@ -56,6 +59,7 @@ from app.core.proactive.knowledge_gap_notice_worker import (
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_view import ConceptView
     from app.core.conversation.topic_graph import TopicGraph
 
 
@@ -202,6 +206,7 @@ class InterestDriftWorker:
         kv_get: Callable[[str], str | None],
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
+        view_provider: Callable[[], "ConceptView | None"] | None = None,
         interval_seconds: float = 21600.0,
         daily_cap: int = 3,
         journal_max: int = 6,
@@ -217,6 +222,10 @@ class InterestDriftWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._enabled_provider = enabled_provider
+        # L28: late-bound ConceptView, consulted once per drafted drift to
+        # attach the belief behind the topic. None leaves the journal entry
+        # exactly as it was.
+        self._view_provider = view_provider
         self._interval_seconds = max(60.0, float(interval_seconds))
         self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
@@ -298,17 +307,21 @@ class InterestDriftWorker:
             return {"drafted": 0, "no_candidate": True}
 
         chosen = candidates[0]
+        belief = self._belief_for(graph, chosen.key)
+        entry_out: dict[str, Any] = {
+            "at": now.isoformat(timespec="seconds"),
+            "topic": chosen.topic[:200],
+            "topic_key": chosen.key,
+            "direction": chosen.direction,
+            "from_size": chosen.from_size,
+            "to_size": chosen.to_size,
+        }
+        if belief:
+            entry_out["belief"] = belief
         append_drift(
             self._kv_get,
             self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "topic": chosen.topic[:200],
-                "topic_key": chosen.key,
-                "direction": chosen.direction,
-                "from_size": chosen.from_size,
-                "to_size": chosen.to_size,
-            },
+            entry_out,
             max_entries=self._journal_max,
         )
         cooldowns[chosen.key] = now.isoformat(timespec="seconds")
@@ -376,6 +389,61 @@ class InterestDriftWorker:
         # Strongest absolute change first (most pronounced drift).
         out.sort(key=lambda c: abs(c.to_size - c.from_size), reverse=True)
         return out
+
+    # ── L28: what she believes about the drifting topic ────────────────
+
+    def _belief_for(self, graph: "TopicGraph", key: str) -> str:
+        """Most-confident concept spanning the drifting topic's cluster.
+
+        The mass series only knows a topic got bigger or went flat. The
+        concept layer knows *why she cares*, so the cue can be "you've
+        been drawn to this, and you think X about it" rather than a bare
+        direction. Resolved through ``ConceptView.for_cluster`` -- the same
+        read path every other consumer uses (L28).
+
+        Deliberately paid only for the one topic that's actually being
+        drafted: ``cluster_activity`` joins back to the memory mirror,
+        which the per-tick ``interest_map`` pass avoids. Returns ``""``
+        whenever anything is missing, which is the normal state before the
+        concept layer has anything to say about a topic.
+        """
+        if self._view_provider is None:
+            return ""
+        try:
+            view = self._view_provider()
+        except Exception:
+            log.debug("interest_drift view_provider raised", exc_info=True)
+            return ""
+        if view is None or not getattr(view, "enabled", False):
+            return ""
+        rep = 0
+        try:
+            activity = getattr(graph, "cluster_activity", None)
+            if not callable(activity):
+                return ""
+            for row in activity(top_n=self._max_clusters, min_size=self._min_size):
+                label = (getattr(row, "label", "") or "").strip()
+                if label and topic_key(label) == key:
+                    rep = int(getattr(row, "representative_id", 0) or 0)
+                    break
+        except Exception:
+            log.debug("interest_drift cluster_activity failed", exc_info=True)
+            return ""
+        if not rep:
+            return ""
+        try:
+            concepts = view.for_cluster(rep)
+        except Exception:
+            log.debug("interest_drift for_cluster failed", exc_info=True)
+            return ""
+        best = ""
+        best_conf = -1.0
+        for concept in concepts:
+            conf = float(getattr(concept, "confidence", 0.0) or 0.0)
+            label = " ".join(str(getattr(concept, "label", "")).split())
+            if label and conf > best_conf:
+                best, best_conf = label, conf
+        return best[:200]
 
     # ── gates / helpers ────────────────────────────────────────────────
 

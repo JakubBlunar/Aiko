@@ -133,7 +133,9 @@ isn't derived twice.
 | always-on core lane | `core_always_on` kinds (`identity`, `value`, `boundary`) | `build_relevant_context` | **shipped (migrated)** |
 | concept recall tool | active concepts (any subject) | `recall_concept` | **shipped (migrated)** |
 | user profile (who he is / what he values) | `subject=user` identity + value concepts | `user_profile` -> `profile_block` | **shipped (L28)** — concepts lead the block; SQLite is the floor and the `values` field is suppressed when a value concept exists |
-| cluster annotation | concepts spanning a cluster | `interest_map` via `for_cluster` | deferred (L28) |
+| cluster annotation | concepts spanning a cluster | `cluster_activity` rows carry `representative_id`; readers resolve via `for_cluster` | **shipped (L28)** — the hot-path `interest_map` stays a bare `(label, size)` read; the rep id rides the mirror-joining `cluster_activity` instead |
+| what a territory *means* (map-shape reflection) | concepts spanning the cluster | `KnowledgeMapReflectionWorker` -> `[mindmap]` reflection | **shipped (L28)** — top-`knowledge_map_reflection_concepts_per_cluster` by confidence, appended to each rich territory line |
+| why a drifting interest matters | concepts spanning the cluster | `InterestDriftWorker` -> `interest_drift` journal -> inner-life cue | **shipped (L28)** — one most-confident concept, resolved only for the topic actually being drafted |
 | transient mood / opinions | K2 beliefs | belief layer | stays transient (not migrated) |
 | aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |
 | behaviour boundaries (soft guiding lines) | `boundary` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance (composite-scored) | **shipped (L18)** |

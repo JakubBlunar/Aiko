@@ -44,7 +44,7 @@ stateDiagram-v2
     active --> contradicted: counter-evidence AND confidence < contradicted_floor (L9)
     contradicted --> active: revived — re-reinforced past promote_min_confidence
     contradicted --> retired: confidence < retire_floor
-    dormant --> active: confidence recovers >= promote_min_confidence (reinforced)
+    dormant --> active: revived — reinforced AND confidence >= promote_min_confidence
     dormant --> retired: confidence < retire_floor
     retired --> active: revived — L2 reattached evidence, clears the gate
     retired --> dormant: revived, clears the confidence floor but not the gate (was active before)
@@ -66,7 +66,7 @@ worker is also gated by `agent.concepts_enabled`.
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |
 | `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
 | `contradicted → retired` | keeps decaying below `retire_floor` | `concept_retire_confidence_floor` |
-| `dormant → active` | `confidence >= promote_min_confidence` (reinforced back up). Note this revival checks confidence **only** — it does not re-run the kind's `promotion_gate`, unlike the `retired` row below, so a faded concept returns on its original evidence. Reaching this state at all requires confidence to have recovered, which requires genuine reinforcement. | `concept_promote_min_confidence` |
+| `dormant → active` | fresh evidence (`last_reinforced_at` newer than the last pass) **and** `confidence >= promote_min_confidence`. The evidence half used to be implicit — while decay was the only route into `dormant`, recovered confidence could only come from reinforcement — but the L22 sweep parks concepts still sitting near their promotion confidence, so it is now checked. Revival still does **not** re-run the kind's `promotion_gate`, unlike the `retired` row below: a faded concept returns on its original evidence. | `concept_promote_min_confidence` |
 | `dormant → retired` | `confidence < retire_floor` | `concept_retire_confidence_floor` |
 | `retired → active / dormant / candidate` | fresh evidence (`last_reinforced_at` newer than the last lifecycle pass) lifts confidence; routed to `active` if it clears the gate, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
 
@@ -331,12 +331,38 @@ append-only, decoupled from concept deletion) with a generated `reason`.
 | `retired` | L3 | `→ retired` (decayed or stale candidate) |
 | `revived` | L3 | leaving `dormant`/`retired`/`contradicted` back up on fresh evidence |
 | `contradicted` | L3 (L9) | counter-evidence confirmed — emitted **every** confirmed disproof, even when the belief only weakened (status unchanged), so the timeline records the moment. `reason` quotes the disproving memory snippet. |
-| `reinforced` | reserved | L15 |
+| `reinforced` | L3 | fresh distinct evidence landed on an already-`active` belief without shifting its status |
+| `plasticity_shift` | L3 (L16) | relationship modulation moved effective plasticity across a `concept_plasticity_shift_event_delta` band |
+| `confidence_sample` | L3 (L17a) | a **quiet** concept drifted a full `concept_confidence_sample_band` from the confidence at its last recorded event — see below |
 
 The frontend
 [`ConceptTimelinePanel.tsx`](../web/src/features/settings/memory/ConceptTimelinePanel.tsx)
 renders any `event_type` with a per-type tone, so these surface
 automatically.
+
+### Reading one concept's trajectory (L17a)
+
+The table above is a *transition* log, which leaves one blind spot: a
+belief can decay for months, never cross a status floor, and so leave no
+trace of the slide. `confidence_sample` closes it. The sweep loads each
+batched concept's last recorded confidence in one grouped read
+(`ConceptEventStore.latest_confidence`) and, **only** when nothing else
+emitted for that concept this tick, drops a sample once the confidence
+has moved a full band away in either direction. Banded rather than
+per-tick, so the timeline stays a story worth reading; the baseline then
+advances to the sample, so a long fade logs once per band. Off via
+`concept_confidence_sample_enabled`.
+
+Reading it back:
+
+- `ConceptEventStore.trajectory(concept_id)` — that concept's events
+  **oldest-first**, the inverse of `list()`'s newest-first feed, because
+  a trajectory is read forwards. `limit` keeps the *oldest* rows so the
+  start of the story survives.
+- `GET /api/concepts/timeline?concept_id=…` — the same slice from the
+  browser, still newest-first like the rest of the feed.
+
+Both ride `idx_concept_events_concept`, so a per-concept read is cheap.
 
 ## Edge referential integrity (L25)
 

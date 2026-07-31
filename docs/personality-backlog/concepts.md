@@ -95,7 +95,12 @@ racing to mutate the same confidence value along different edges.
 
 ### Catalogue of concept kinds
 
-Shipping now:
+> This catalogue is the original design record, kept for the rationale behind
+> each kind. **Every kind listed below now ships.** The landed write-ups moved
+> to [`shipped/concepts.md`](shipped/concepts.md); the entries that still carry
+> open follow-ups (L9, L10, L12, L20) remain in this file.
+
+The first kind:
 
 - **Identity** (user, cluster-set) — traits/interests spanning clusters: "he
   enjoys understanding systems" (CPU debugging + AI architecture + self-hosting
@@ -103,7 +108,7 @@ Shipping now:
   (Programming + Home Lab + AI co-fire when deeply focused). Homed on
   `user_profile` (user) / the T3 relevant_context core lane (aiko). See L1-L6, L9.
 
-Future kinds (each a deferred entry below, all reusing L1-L6):
+The kinds that followed (each reusing L1-L6):
 
 - **Relationship** (relationship, recurring-pattern) — "Friday Debugging
   Evenings", "Cookie Diplomacy", "Late-night Philosophy". See L7.
@@ -169,143 +174,6 @@ each domain: `user_profile` + the T3 relevant_context core lane (identity/value/
 `relationship` / shared-moments (relationship), `long_arc_callback` /
 `NarrativeWeaver` (narrative), `goals` (aspiration), K2 beliefs / F5 conflicts
 (belief/tension).
-
----
-
-## L1. Concept store + schema (kind-parameterized)
-
-**Motivation.** A concept is a first-class, long-lived entity with a
-lifecycle, evidence, and confidence — not an atomic fact, so it doesn't belong
-in `memories`. It needs its own table so the candidate -> active promotion
-machinery has somewhere to live. Critically, the schema must be **kind-agnostic
-from day one** so adding value / self / tension / narrative concepts later is a
-registry entry, not a migration.
-
-**Key files.** New `app/core/concepts/concept_store.py` (`ConceptStore`,
-modeled on
-[`topic_cluster_store.py`](../../app/core/conversation/topic_cluster_store.py)),
-schema bump in
-[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py).
-
-**Sketched approach.** Two SQLite tables, both kind-general:
-
-- `concepts` — `id`, `label`, `kind` (`identity` for v1; open enum), `subject`
-  (`user` / `aiko` / `relationship`), `user_id` (scoping — user concepts are
-  per-user; `subject=aiko` concepts are global, `user_id` NULL),
-  `evidence_model` (`cluster_set` / `memory_chain` / `recurring_pattern` /
-  `concept_graph`), `status` (`candidate` / `active` / `dormant` / `retired`),
-  `confidence` REAL, `evidence_count` INT, `distinct_source_count` INT
-  (generalises `cross_cluster_count` — distinct clusters, memories, or concepts
-  depending on `evidence_model`), `rationale` TEXT, `embedding` BLOB (label
-  embedding, for dedupe + recall), `created_at`, `updated_at`,
-  `last_reinforced_at`, `promoted_at`, plus **provenance**: `origin_session`
-  and `first_evidence_at` (when/where the concept was first born — needed for
-  the L19 autobiography "I remember when I first realised…" and for
-  explainability in the L6 UI).
-- `concept_edges` — **one typed influence graph**, not a per-feature link table
-  (see "One graph + one engine" above). Columns: `src_type` + `src_id`,
-  `dst_type` + `dst_id` (node types `concept` / `cluster` / `memory`),
-  `relation` (`evidence` / `references` / `influences` / `contradicts` /
-  `generalizes`), `polarity` (`+1` / `-1`), `strength` REAL, `ordinal`
-  (nullable — sequence order for `memory_chain` kinds), `created_at`. This one
-  table subsumes:
-  ordinary **evidence** (`memory|cluster -> concept`, `relation=evidence`), the
-  **meta-concept reference** that lets a tension point at other concepts
-  (`concept -> concept`, `relation=references`, L12), the **belief-revision**
-  contradiction edge (`concept <-> memory`, `relation=contradicts`, L15), and
-  **cross-concept influence** such as a trust concept modulating a boundary's
-  plasticity (`concept -> concept`, `relation=influences`, L16). A new linkage
-  is a new `relation` value, never a new table.
-
-**Kind registry.** A `ConceptKind` spec object (in `concept_store.py` or a
-sibling `concept_kinds.py`) declares, per kind: `subject`, `evidence_model`,
-its proposer callable (L2), its promotion gate (L3), and its surfacing target
-(L5). The store, worker, and prompt layer all dispatch through this registry so
-none of them grow a per-kind `if/elif` ladder.
-
-**Single-writer engine.** Per "One graph + one engine" above, the store exposes
-edge + concept CRUD, but **only the L3 lifecycle engine mutates**
-`confidence` / `plasticity` / `status`. The proposer (L2) creates candidates and
-`evidence` edges; everything that *changes* a concept over time (accrual, decay,
-drift, cascade, revision) is a pass of that one engine, never a second worker.
-
-**Meta-concepts (concept-graph edges) — design for this from day one.**
-Because `concept_edges` allows a `concept -> concept` edge, a concept can
-reference *other concepts* as its evidence. This is a **first-class capability of
-the schema, not special-cased to tension (L12)** — any future kind (e.g. an
-aspiration concept built on identity + value concepts) can be a meta-concept.
-That generality is powerful but imposes four rules the L2/L3 machinery must
-respect, so they belong in the data model now rather than being rediscovered at
-implementation time:
-
-1. **Dependency ordering.** A meta-concept can only be proposed once its
-   referenced concepts are `active`. The synthesis worker (L2) must run
-   `cluster_set` / `memory_chain` / `recurring_pattern` proposers **before**
-   `concept_graph` proposers within a cycle, so bases exist before anything
-   references them.
-2. **Cascade on lifecycle change.** When a base concept is retired / disproven /
-   merged (L3, L9), its dependents must be re-evaluated — a tension whose
-   "Maker Mode" side was retired is moot. Model this as an explicit dependency
-   edge (the `concept -> concept` edge in `concept_edges` *is* that edge) and walk dependents on any
-   status transition; a retired base cascades its dependents to
-   re-validation, not silent staleness.
-3. **Confidence bounding.** A meta-concept can't be more certain than what it's
-   built on: `confidence <= min(referenced concept confidences)`. Enforce at
-   accrual time (L3) so a shaky base can't prop up an over-confident tension.
-4. **Depth cap + cycle guard.** Start with meta referencing **only base
-   (non-meta) active concepts** — no meta-of-meta — and reject any proposal that
-   would form a reference cycle. Relax the depth cap only if a concrete need
-   appears.
-
-**Stable-key caveat.** For `cluster`-type evidence, cluster ids are reassigned
-on every batch refit (`TopicGraphRebuildWorker`), so links must key off the
-cluster's **representative-member id** (the stable key the label/digest caches
-already use in `kv_meta`), not the raw `cluster_id`. Re-resolve to live
-`cluster_id` at read time. (`memory` and `concept` refs are already stable ids.)
-
-**Storage & retrieval — SQLite is the source of truth, cosine in-process, no
-LanceDB.** Concepts live in a different cardinality regime than memories, and
-the retrieval strategy follows from that. Memories number thousands→tens of
-thousands, so RAG needs an ANN index (LanceDB). Concepts are an *abstraction*
-over clusters (which are themselves an abstraction over memories), so their
-count stays small — tens, maybe low hundreds even after years; a corpus of
-thousands of concepts would mean the layer had failed at its job of
-compressing. The precedent to copy is the topic graph, not the memory store:
-[`topic_graph.py`](../../app/core/conversation/topic_graph.py) does **not** put
-cluster centroids in LanceDB — it keeps the handful of centroids in memory and
-does nearest-centroid as a tiny numpy matmul; only the *memory* vectors go to
-LanceDB. Concepts are the centroid regime. So:
-
-- **SQLite `concepts.embedding` BLOB is the source of truth** (float32, same
-  encode/decode + dimension-drift guard as `ClusterRow.centroid` in
-  [`topic_cluster_store.py`](../../app/core/conversation/topic_cluster_store.py)
-  — a stale-dimension blob decodes to empty and is re-embedded, never crashes).
-- **`ConceptStore` holds an in-process embedding mirror** — `dict[id ->
-  unit-norm float32]` plus a stacked matrix of the `active` set — refreshed on
-  every write and **warm-loaded on boot** via a `load_all()` (mirroring
-  `TopicClusterStore.load_all`). Vector similarity is a cosine matmul over that
-  small in-memory matrix, sub-millisecond at this scale, no index required.
-- **One shared retrieval primitive.** Since the user is right that concepts get
-  read from many places — L2 dedup, L5 `recall_concept`, L23 per-turn selection,
-  L24 derivers — the store exposes a single `nearest(query_vec, *, subject=None,
-  kind=None, status="active", k=...)` (cosine over the mirror, filtered) that
-  every one of those call sites uses. Retrieval logic lives in one method, not
-  scattered SQL/embedding code per consumer.
-- **SQLite indices cover the non-vector queries** (the lifecycle engine's
-  filtered scans and the graph walks): `idx_concepts_status`,
-  `idx_concepts_subject_kind`, `idx_concepts_user`, and on the edge table
-  `idx_concept_edges_src (src_type, src_id)` + `idx_concept_edges_dst (dst_type,
-  dst_id)` for O(indexed) cascade/dependents traversal (L1 rules 2, L25).
-
-**Escape hatch (why this doesn't box us in).** If the `active`-concept count
-ever genuinely explodes, the fix is exactly the topic graph's: keep SQLite as
-the source of truth and add an ANN index later — the `nearest()` seam is the
-one place that would change, so nothing here blocks a future LanceDB mirror. It
-also composes with the growth-bounding already planned (L20 generalization
-merges + P32 snapshot thinning keep the `active` set small *on purpose*), so the
-in-memory cosine stays trivial by design rather than by luck.
-
-**Effort.** Medium.
 
 ---
 
@@ -385,59 +253,6 @@ eval harness scores this as a precision failure.
 get to *merge* two existing candidates it now sees as one (today it can
 reinforce one by id, but not fuse two)? Should the co-activation (L4) signal
 feed the proposer once it exists?
-
-**Effort.** Medium.
-
----
-
-## L3. The lifecycle engine — accrual, promotion, and the single writer
-
-> **Built (v1).** The canonical state-machine + ownership reference now
-> lives in [`docs/concept-lifecycle.md`](../concept-lifecycle.md): status
-> vocabulary, transition triggers + governing settings, the
-> engagement-driven confidence model, the event mapping, and the
-> invariants. The notes below are the original design sketch.
-
-**Motivation.** The core of the "don't jump to conclusions" guard, and — per
-"One graph + one engine" above — the **single writer** of every concept's
-`confidence` / `plasticity` / `status`. A single LLM hunch shouldn't become part
-of Aiko's worldview; it has to earn it. This entry owns the "validate" half; the
-cross-cutting passes **L15 (belief revision), L16 (plasticity), and L17 (drift
-noticing) are passes of this same engine**, not separate workers — that's what
-keeps two workers from racing to mutate the same `confidence` along different
-edges.
-
-**Key files.** One `ConceptLifecycleWorker` (idle), modeled on
-[`memory_promotion_worker.py`](../../app/core/memory/memory_promotion_worker.py)
-+ the `beliefs` status lifecycle. The L2 proposer creates candidates; this
-worker is the only thing that changes them thereafter.
-
-**Sketched approach.** Each cycle (all passes over the L1 `concept_edges` graph):
-
-- Re-observed candidates gain confidence; new memories that match a candidate
-  (embedding + cluster membership) reinforce it and bump `evidence_count` /
-  `last_reinforced_at`.
-- Promote `candidate -> active` only when **distinct_source_count >= 2** AND the
-  candidate has been **stable over N cycles / M days** AND `confidence` clears
-  a threshold. (The three tests from the brainstorm: does it keep appearing?
-  does it connect multiple pieces of evidence? is it stable over time?) The
-  gate is a per-kind callable on the `ConceptKind` registry (L1), so a narrative
-  concept can gate on "chain coherent + closed" and a tension concept on "both
-  referenced concepts are themselves active" instead of the cluster-count rule.
-- Decay the unreinforced: stale candidates are dropped; an `active` concept
-  whose evidence clusters go quiet slides `active -> dormant -> retired`.
-- **Disproof, not just decay** (see L9): confidence can be actively *lowered*
-  by contradicting evidence, not only eroded by silence — an `active` concept
-  can weaken back toward `candidate` or be marked contradicted.
-- **Meta-concept cascade + bounding** (per L1): on any base concept's status
-  transition, walk its `concept -> concept` edge dependents and re-evaluate them (a
-  retired base moots its tensions); and clamp every meta-concept's confidence to
-  `min(referenced concept confidences)` at accrual time so a shaky base can't
-  prop up an over-confident meta-concept.
-
-**Open questions.** Confidence function (linear reinforcement vs. logistic)?
-Promotion thresholds (N, M, min confidence)? Should a user's explicit
-confirmation (L6) hard-promote regardless of counts?
 
 **Effort.** Medium.
 
@@ -599,121 +414,6 @@ on the L3 schedule.
 
 ---
 
-## L7. Relationship concepts (SHIPPED)
-
-**Kind.** `ritual`, subject `relationship`, evidence model `set` (the evidence
-is the constituent `shared_moment` memories; the recurrence lives in the
-grouping, not on the edges).
-
-**Status: SHIPPED.** Not about the user or Aiko individually — about the
-relationship itself: named recurring rituals mined from the shared-moment
-stream ("Friday late-night debugging sessions", "winding down together at the
-end of a hard day", "talking through nerves before a release"). Surfaces as
-warm relationship colour, held lightly, never announced. Distinct from
-`catchphrase` (a recurring *phrase*) and from the relationship-phase block (the
-arc, not a specific ritual).
-
-**Grouping (the new plumbing).** `shared_moment` rows already carry a `vibe` +
-`when` in metadata and an embedding on the row; what was missing was the
-*grouping*. [`ritual_grouping`](../../app/core/concepts/ritual_grouping.py) is a
-pure single-link cosine clustering over the moment embeddings (two moments join
-when their cosine clears a threshold; a group is the connected component). Each
-surviving component (`>= group_min_size`) is annotated with a dominant `vibe`
-and an optional weekday hint parsed from `when`, plus trimmed member
-`MomentLite`s. No store / settings / LLM imports (numpy only), so it unit-tests
-in isolation; the worker builds its inputs via `moment_from_memory`.
-
-**Synthesis.** A new `"shared_moments"` population + `_run_ritual_pass` in
-[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
-it enumerates `iter_by_kind("shared_moment")`, skips below a min-moments floor,
-groups + caps them, and offers each group to the
-[`relationship_ritual`](../../app/core/concepts/proposers/relationship_ritual.py)
-proposer, which names the recurring pattern (or reinforces a known ritual by id).
-A NEW ritual must draw on `>= min_sources` distinct moments. Count + max-id
-watermark dirty-tracking under the proposer's `sig_key` so a settled corpus is a
-fast no-op; the whole pass is gated by `agent.ritual_synthesis_enabled`.
-
-**Registry + gate.** `ritual` is registered (`set` model, mid plasticity `0.4`,
-`core_always_on=False`, **no** `surfacing_targets`) with `ritual_evidence_gate`
-(recurrence floors: `>= 3` distinct moments, a non-instant age, a `0.65`
-confidence bar — so a burst in a single session can't promote).
-
-**Surfacing.** Relevance-only (like `subject=aiko` / `affective` concepts): a
-ritual surfaces through the T3 `relevant_context` path when the turn touches the
-shared pattern, under `_concept_ritual_header` relationship framing, never
-pinned every turn.
-
-**Effort.** Shipped on top of L1-L5 / L10 / L11 / L13. New settings:
-`agent.ritual_synthesis_enabled`, `concept_synthesis_ritual_min_moments`,
-`concept_synthesis_ritual_group_min_size`,
-`concept_synthesis_ritual_group_similarity`,
-`concept_synthesis_max_ritual_groups`.
-
----
-
-## L8. Narrative concepts (SHIPPED — both subjects)
-
-**Kind.** `narrative`, subject `user` (default) and `aiko`, evidence model
-**`sequence`** — the first ordered-evidence kind. A concept's evidence is an
-*ordered chain of specific memory ids* (a temporal/causal arc), stored on
-`concept_edges.ordinal` (0..n) rather than as an unordered set.
-
-**Status: SHIPPED.** Humans think in stories. A causal chain of episodic
-memories — bought GPU -> installed GPU -> driver issue -> found CPU instability
--> fixed Core 4 — now collapses into one referenceable arc ("The Great 13900KS
-Investigation"). Runs for **both subjects**: user arcs (third-person, over his
-topic clusters) and Aiko's own arcs (first-person, over her aiko-dominant
-self-themes — "the stretch where I learned to hold a gentle stance"). Once
-named, the arc becomes shared history Aiko can call back to.
-
-**Ordinal wiring (the new plumbing).** The `sequence` model reuses the existing
-`concept_edges.ordinal` column: `_add_evidence_edges` now takes an
-`evidence_model` and, for `sequence`, stamps each edge's ordinal by its position
-in the (temporally ordered) evidence list, so `evidence_of` returns the chain in
-order. `set` kinds are unchanged (ordinal stays `None`). `_persist` passes the
-proposal's model; `_reinforce` passes the existing concept's model.
-
-**Synthesis.** A new `"narrative"` population + `_run_narrative_pass(subject)` in
-[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
-for each subject-dominant topic cluster it loads the member memories via
-`get_many` and orders them by `event_time` (falling back to `created_at`),
-offering up to `max_narrative_clusters_per_run` clusters (per subject) as
-[`NarrativeCandidate`](../../app/core/concepts/proposers/base.py)s (each capped
-at `max_narrative_memories` steps, min `narrative_min_chain` to count as a
-story). The shared [`propose_narrative`](../../app/core/concepts/proposers/base.py)
-body (used by [`narrative_user`](../../app/core/concepts/proposers/narrative_user.py)
-/ [`narrative_aiko`](../../app/core/concepts/proposers/narrative_aiko.py)) names
-any **closed** arc, re-derives the chain order from the candidate (not the LLM's
-id order) so ordinals are correct, and emits `sequence` evidence — or reinforces
-a known arc by id. Open (`closed: false`) or too-short chains are dropped. Per-
-subject size/label dirty-tracking under each proposer's `sig_key`; the whole
-pass is gated by `agent.narrative_synthesis_enabled`.
-
-**Registry + gate.** `narrative` is registered (`sequence` model, low-ish
-plasticity `0.3` — a settled story resists churn, same band as identity;
-`core_always_on=False`, **no** `surfacing_targets`) with
-`narrative_evidence_gate` (chain floors: `>= 3` ordered steps, a non-instant
-age, a `0.6` confidence bar — a two-beat anecdote or a single-session burst
-can't promote).
-
-**Surfacing.** Relevance-only (like `subject=aiko` / `affective` / `ritual`
-concepts): an arc surfaces through the T3 `relevant_context` path when the turn
-touches it, under `_concept_narrative_header` framing (first-person for Aiko's
-own arcs), never pinned every turn.
-
-**Explicitly *not* a recency digest.** A narrative is a *closed* arc, not a
-rolling "what have we been up to lately" summary — that never-closing recency
-question is served by the conversation summary + recent-message context, and is
-recorded as an L29 non-goal below.
-
-**Effort.** Shipped on top of L1-L5 / L10 / L11 / L13. New settings:
-`agent.narrative_synthesis_enabled`, `concept_synthesis_narrative_min_chain`,
-`concept_synthesis_max_narrative_clusters_per_run`,
-`concept_synthesis_max_narrative_memories`. The `sequence` evidence model is now
-live, which unlocks L14 (aspiration/trajectory — its open-ended sibling).
-
----
-
 ## L9. Identity concepts as living, confidence-bearing beliefs
 
 **Status: BUILT.** Counter-evidence now lowers an active identity
@@ -871,69 +571,6 @@ Distinguish from identity so the two don't collapse into one label.
 
 ---
 
-## L11. Subject=aiko enablement — Aiko's self-model (SHIPPED)
-
-**Not a kind — a subject.** This entry does **not** add a "self" kind. It's the
-enablement that lets *every* kind (identity, value, affective, boundary,
-aspiration) exist with `subject=aiko`, mined over Aiko's own memories instead of
-the user's. "Self-concepts" is just shorthand for "concepts where
-`subject=aiko`".
-
-**Status: SHIPPED.** Aiko's self-model now reaches parity with the user path. The
-single [`TopicGraph`](../../app/core/conversation/topic_graph.py) already clusters
-*all* memories, including her `self`/`reflection`/`diary` rows, so aiko-dominant
-clusters exist for free; they were just discarded. The aiko pass
-([`_run_aiko_pass`](../../app/core/concepts/concept_synthesis_worker.py)) is now a
-**combined pass** that mines BOTH her aiko-dominant self-themes (clusters) AND her
-salient individual self-memories, via the generalized
-`_dominant_clusters("aiko")` (the mirror of `_dominant_clusters("user")`, which
-keeps `aiko_share > 0.5` instead of excluding it). A single self-concept can be
-grounded by a recurring theme (`cluster` evidence), a specific memory (`memory`
-evidence), or a mix — the `set` model already allows mixed evidence nodes, so
-`min_sources` counts total distinct sources across both. When she has no
-aiko-dominant clusters yet the pass degrades cleanly to memories-only (cold
-start), and self-memories that are a shown cluster's representative are dropped
-from the memory list so a theme and its own headline memory aren't offered twice.
-Both aiko proposers
-([`identity_aiko`](../../app/core/concepts/proposers/identity_aiko.py) /
-[`value_aiko`](../../app/core/concepts/proposers/value_aiko.py)) share the
-hybrid [`propose_aiko_hybrid`](../../app/core/concepts/proposers/base.py) body, so
-every future `subject=aiko` kind inherits the same combined path. Combined
-dirty-tracking (self-memory count/max-id delta OR aiko-cluster drift) fires per
-proposer `sig_key`.
-
-**Surfacing.** `subject=aiko` concepts surface every turn through the T3
-`relevant_context` core lane under first-person "yourself" headers (there is no
-dedicated self-image worker/block — that was removed). Cluster-typed evidence
-renders real "…keeps surfacing around X/Y" grounding via
-[`resolve_evidence_labels`](../../app/core/concepts/concept_snapshot.py) + the
-`src_types=("cluster","concept")` filter in
-[`inner_life_part1`](../../app/core/session/inner_life_part1.py); memory-typed
-evidence still counts for confidence/promotion but stays out of the grounding
-clause (a full first-person memory sentence reads as a truncated fragment there).
-
-**Motivation.** Every other subject is the user or the relationship; this is the
-**symmetry** that makes Aiko feel like a person rather than a mirror. She forms
-concepts about *herself*: identity ("I tend to over-explain", "I'm curious about
-consciousness"), value ("I care about honesty over agreeableness"), affective
-("explaining things I love lifts me"), boundary ("I won't fake agreement"). A
-self that notices its own patterns — and holds its own values — is the big step
-toward human-like, and the foundation the L19 autobiography stands on. Overlaps
-K30 self-noticing (transient in-session cues) — subject=aiko concepts are the
-*durable* version those cues accrete into.
-
-**Follow-ups still open (deferred).** No new *kinds* were added here: affective /
-boundary / aspiration `subject=aiko` concepts stay deferred, but each now
-inherits the combined cluster+memory path with no further plumbing (a new kind is
-a registry entry + proposer prompt). No separate self topic graph (we filter the
-existing one). The self-model this stands up is what L17 (drift) and L19
-(autobiography) read from.
-
-**Effort.** Shipped — done on top of L1-L5/L10 with no new settings (reuses
-`concept_synthesis_max_clusters_per_run` + `concept_synthesis_max_aiko_memories`).
-
----
-
 ## L12. Tension / contradiction concepts (SHIPPED — the first meta kind)
 
 **Status: SHIPPED (all three subjects; the first `concept -> concept`
@@ -1008,314 +645,6 @@ override* (L23) is still deferred.
 
 ---
 
-## L13. Affective concepts (SHIPPED)
-
-**Kind.** `affective`, subject `user` **or** `aiko` (L11), evidence model `set`
-(topic <-> affect; the affect *direction* lives in the concept text, not on the
-edges).
-
-**Status: SHIPPED.** A durable topic->emotion mapping for both parties: what
-energizes vs. drains him ("technical work energizes him", "release-week pressure
-stresses him out") and how topics move Aiko ("explaining systems lifts me",
-"talking about love makes me flustered", "I don't like talking about X"). It
-surfaces as **tone guidance**, never a stated fact. Distinct from K2 mood beliefs
-(current mood) — this is the settled pattern.
-
-**Signal capture (the real new plumbing).** Affect was barely persisted before
-this, so L13 first stands up a durable topic->affect signal:
-
-- **Per-cluster affect maps** — [`cluster_affect`](../../app/core/concepts/cluster_affect.py),
-  a pure kv-backed EWMA store (mirrors K75 `user_expertise`). Two maps,
-  `concept.cluster_affect.user` / `concept.cluster_affect.aiko`, keyed by topic
-  `cluster_id`, each holding `{valence, arousal, samples, updated_at}`, bounded by
-  cap + age-out.
-- **Post-turn sampler** — `_sample_cluster_affect` in
-  [`post_turn_helpers_mixin`](../../app/core/session/post_turn_helpers_mixin.py),
-  called after `apply_turn`. It embeds `user_text`, resolves the live cluster via
-  `best_clusters_for`, and EWMA-folds the K37 `user_affect` estimate into the user
-  map (when a real estimate exists) and Aiko's post-turn `AffectState` into the
-  aiko map. Gated by `agent.affect_sampler_enabled`; fully best-effort.
-- **Self-memory affect stamping** — `MemoryStore.set_affect_provider` stamps
-  `metadata.affect = {valence, arousal}` on `self`/`reflection`/`diary` writes
-  (Aiko's self-narrative tone), the aiko-only second signal.
-
-**Synthesis.** A new `"affect"` population + `_run_affect_pass(subject)` in
-[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py):
-it annotates topic clusters with the subject's typical affect (from the map,
-joining `cluster_id -> representative_id` at synthesis time) and, for
-`subject=aiko`, ALSO aggregates her self-themes' self-memory affect + offers her
-affect-stamped self-memories. Two proposers
-([`affective_user`](../../app/core/concepts/proposers/affective_user.py) /
-[`affective_aiko`](../../app/core/concepts/proposers/affective_aiko.py)) name the
-durable pattern in the right voice (third-person for the user, first-person for
-Aiko, the latter reusing `propose_aiko_hybrid` mixed evidence). A NEW affective
-concept needs `>= min_sources` distinct sources — for the user that means an
-emotional signature shared by 2+ topics; for Aiko a topic + her self-memories can
-suffice — so a one-off mood never becomes a durable claim (durability is also
-guarded by `concept_synthesis_affect_min_samples` on the map side). Dirty-tracking
-is per affect-bucket / sample drift under each proposer's `sig_key`.
-
-**Registry + gate.** `affective` is registered (`set` model, high plasticity
-`0.5` — the fluid band, `core_always_on=False`, **no** `surfacing_targets`) with
-`affective_evidence_gate` (fluid-end floors: `>= 2` sources, a modest age, a
-`0.6` confidence bar — gentler than value).
-
-**Surfacing.** Relevance-only (like `subject=aiko` concepts): they surface through
-the T3 `relevant_context` path when the turn's topic matches, under
-`_concept_affective_header` tone-guidance framing (first-person for aiko), never
-pinned every turn.
-
-**Motivation.** Lets Aiko read the emotional weather behind a topic, not just its
-content — and, for `subject=aiko`, notice what she herself likes / dislikes /
-gets flustered by.
-
-**Effort.** Shipped on top of L1-L5 / L10 / L11. New settings:
-`agent.affect_sampler_enabled`, `concept_synthesis_affect_min_samples`,
-`affect_sampler_{min_sim,top_n,learning_rate}`,
-`cluster_affect_{map_cap,max_age_days}`.
-
----
-
-## L14. Aspiration / trajectory concepts (SHIPPED — both subjects + momentum)
-
-**Kind.** `aspiration`, subject `user` (default) and `aiko`, evidence model
-**`sequence`** — the second ordered-evidence kind and the open-ended sibling of
-L8 `narrative`. Same ordinal chain on `concept_edges.ordinal`, but it names a
-*direction* someone is moving in rather than a *closed* arc.
-
-**Status: SHIPPED.** Where the user (or Aiko) is *heading*, as a trajectory
-rather than a fixed trait: "building toward a fully self-hosted life", "moving
-from tinkering to shipping"; for Aiko, first-person "growing into someone he can
-rely on". Runs for **both subjects** over the same subject-dominant clusters L8
-uses. Distinct from Aiko's concrete K1 goals (actionable to-dos) — an aspiration
-is who she is *becoming*, not a task. Surfaces relevance-only **and** feeds a
-proactive momentum check-in.
-
-**Reuse over new type.** `aspiration` reuses the L8 `sequence` machinery
-verbatim — the `NarrativeCandidate` ("ordered cluster of memories"), the ordinal
-wiring, and the temporal ordering by `event_time`. The shipped `propose_narrative`
-was generalized into
-[`propose_ordered_concept`](../../app/core/concepts/proposers/base.py)
-`(kind, gate_flag, block_word, …)`; `propose_narrative` is now a thin
-behavior-preserving wrapper (`gate_flag="closed"`). Aspiration's wrapper passes
-`gate_flag="directional"`. The only structural additions are a **min evidence
-span** filter (a trajectory must cover time) and the `directional` gate flag
-(vs narrative's `closed`).
-
-**Synthesis.** A new `"aspiration"` population + `_run_aspiration_pass(subject)`
-in [`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py).
-The narrative/aspiration candidate-building + dirty-tracking + sig-persistence
-was refactored into a shared `_ordered_candidates(...)` helper; narrative calls
-it with `min_span_days=0` (behavior-preserving), aspiration with a span floor
-(`_span_days` over member `event_time`/`created_at`). Proposers
-[`aspiration_user`](../../app/core/concepts/proposers/aspiration_user.py) /
-[`aspiration_aiko`](../../app/core/concepts/proposers/aspiration_aiko.py) name
-any **directional** chain (third-person / first-person voice) or reinforce a
-known one by id; non-directional or too-short chains are dropped. Per-subject
-dirty-tracking under each `sig_key`; gated by `agent.aspiration_synthesis_enabled`.
-
-**Registry + gate.** `aspiration` is registered (`sequence` model, plasticity
-`0.4` — a direction is durable but *evolves* as progress happens, between
-narrative's `0.3` and affect's `0.5`; `core_always_on=False`, **no**
-`surfacing_targets`) with
-[`aspiration_evidence_gate`](../../app/core/concepts/concept_lifecycle.py):
-`>= 3` ordered steps, a **higher age floor** than narrative (`>= 3` days — a
-trajectory must be *sustained*), a `0.6` confidence bar.
-
-**Surfacing.** Relevance-only through the T3 `relevant_context` path under
-`_concept_aspiration_header` framing (first-person "where you're heading" for
-Aiko, "where they're heading" for the user), held lightly, momentum framing,
-never recited.
-
-**Proactive momentum callbacks (new for L14).** A cue-producer/consumer pair
-modeled on K70 growth-witness (deliberately a new worker, not an extension of
-`follow_up_worker` / `upcoming_horizon`, which are `future_plan`+`event_time`
-pipelines unsuited to open-ended directions):
-[`AspirationMomentumWorker`](../../app/core/proactive/aspiration_momentum_worker.py)
-reads active aspirations via a `ConceptView` (L24), and — **staleness-driven,
-not calendar-driven** — picks the stalest one worth a check-in (past
-`staleness_min_days` since last reinforcement, off its per-concept cooldown,
-above the confidence bar) and drafts ONE cue into the `aiko.aspiration_momentum`
-kv ring. The consumer `_render_aspiration_momentum_block`
-([`inner_life_part2`](../../app/core/session/inner_life_part2.py)) surfaces the
-newest unseen cue on a later turn (watermark-gated) as a private T6 hint the
-chat model phrases in-context — **cue producer, not verbatim**. MCP:
-`force_aspiration_momentum_draft` / `force_aspiration_momentum_surface`.
-
-**Effort.** Shipped on top of L1-L5 / L8 / L11. New settings:
-`agent.aspiration_synthesis_enabled`, `agent.aspiration_momentum_enabled`,
-`concept_synthesis_aspiration_min_chain` / `_min_span_days` /
-`concept_synthesis_max_aspiration_clusters_per_run` / `_max_aspiration_memories`,
-and `aspiration_momentum_*` (interval, cooldown_days, min_confidence,
-staleness_min_days, journal_max).
-
----
-
-## L15. Bidirectional confidence / belief revision (concept -> evidence re-check)
-
-**Status: BUILT.** A confirmed contradiction (L9) now persists a
-`concept --contradicts--> memory` edge, and the tick that flips a concept
-to `contradicted` hands it to the read-mostly
-[`ConceptBeliefReviser`](../../app/core/concepts/concept_belief_reviser.py),
-which walks the concept's `evidence` memories and arbitrates — per memory
-— one of the three resolutions below: **(a) inaccurate** -> damped/floored
-confidence cut, **(b) superseded** -> `past_event` reclassify with a fresh
-`relevance_until` (confidence untouched), **(c) keep** -> no memory write.
-A cheap `classify_pair` gate keeps the LLM off compatible memories; the
-3-way arbiter is bounded per tick (`concept_belief_revision_batch_size`
-concepts x `_max_evidence` memories) and rate-limited
-(`state_key='concept_belief_revision.rate_state'`); pinned observations
-are never touched. L3 stays the single writer of *concept* state — the
-reviser writes only *memory* state, like F1 / F5. Driven from
-[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py);
-config on `MemorySettings.concept_belief_revision_*` +
-`AgentSettings.concept_belief_revision_per_hour/day_cap` (see
-[`concept-lifecycle.md`](../concept-lifecycle.md) and
-[`configuration.md`](../configuration.md)). The optional cheap *direct
-nudge* below was deliberately **not** built — arbitration is the safe
-path.
-
-**Motivation.** Today the pipeline is one-way: memories -> clusters -> concepts.
-But higher-order structure can catch errors atomic facts can't. If a concept
-that a set of strong memories supports becomes contradicted (L9), that doubt
-should flow *back down* and prompt a re-examination of those memories — closing
-the loop into a proper belief-revision network. This is what lets Aiko say "wait,
-I thought you were vegetarian, but you keep ordering steak — did that change, or
-did I get it wrong?" instead of clinging to a stale high-confidence fact.
-
-**The trap to avoid.** A concept's confidence must **not** directly overwrite a
-memory's `confidence`. Two reasons: (1) **circularity** — memory confidence
-feeds concept confidence (L3), so a direct back-edge is an undamped loop that
-collapses or oscillates; (2) **source-of-truth erosion** — a memory is an
-observation ("on 2024-01-03 he said he's vegetarian"), a concept is an
-*inference*; an inference silently rewriting observations is backwards.
-
-**Key files.** Reuses
-[`idle_fact_checker.py`](../../app/core/memory/idle_fact_checker.py) (F1 —
-already mutates per-memory `confidence` with evidence) and
-[`memory_conflict_worker.py`](../../app/core/memory/memory_conflict_worker.py)
-(F5 — already arbitrates contradictions); driven as a pass of the L3 lifecycle
-engine, walking the `concept -> memory` (`relation=contradicts`) edges in
-`concept_edges`.
-
-**Sketched approach.** Propagation is a **trigger, not a write**. When a
-concept's confidence drops below a threshold or it's marked contradicted (L9),
-enqueue its `ref_type=memory` evidence into the F1 fact-checker / F5 conflict
-scan with a hint ("this aggregate looks contradicted — re-examine these"). The
-arbitration then picks one of **three** resolutions per memory, which blind
-top-down propagation would conflate:
-
-- **(a) memory inaccurate** (bad extraction / misremembered) -> lower its
-  `confidence` (F1's existing job);
-- **(b) memory accurate but superseded** (true then, stale now) -> touch
-  `relevance_until` / `temporal_type`, **not** `confidence` — the fact still
-  happened;
-- **(c) memory fine, concept was a bad inference** -> lower the *concept*, leave
-  memories alone.
-
-If a cheap *direct* nudge is ever wanted (skipping arbitration), guardrail it
-hard: damped small delta, one-directional per cycle (never up+down on the same
-edge in one pass), a confidence floor, and never auto-touch pinned or
-high-salience source memories. Same dependency-edge substrate as the L1
-meta-concept cascade — build one cascade mechanism, use it for concept->concept
-and concept->memory alike.
-
-**Open questions.** Trigger threshold? Batch size per re-check so F1 isn't
-swamped? Does resolution (c) feed back as negative evidence that further lowers
-the concept, and how is that damped?
-
-**Effort.** Large.
-
----
-
-## L16. Concept plasticity (bounded, believable drift)
-
-**Status: SHIPPED (core + all three deferred pieces).** `plasticity` is now
-the single learning rate the L3 engine damps *every* confidence move by, so
-movement is symmetric in both directions: decay (`halflife *= 2 - p`), **accrual**
-([`accrual_alpha`](../../app/core/concepts/concept_lifecycle.py), step `0.5 + 0.5*p`
-of the gap to target — a sticky trait needs more reinforced evals to promote),
-L9 disproof (`apply_contradiction_penalty`), and the L15 revision cut (scaled by
-the concept's plasticity in
-[`concept_belief_reviser.py`](../../app/core/concepts/concept_belief_reviser.py)).
-`p = 1` reproduces the pre-L16 full snap / full penalty. Per-kind default bands
-live on `ConceptKind.plasticity_default`
-([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py); identity = low,
-tuned by `concept_identity_plasticity`), falling back to `concept_default_plasticity`;
-the worker stamps the band on a concept's first eval
-([`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)).
-See [`concept-lifecycle.md`](../concept-lifecycle.md) and
-[`configuration.md`](../configuration.md).
-
-**Deferred block — SHIPPED.** All three deferred pieces landed together (this
-also carries **L18a**). (1) **Relationship modulation** — a *hybrid*: the L3
-worker computes an **effective** plasticity at eval time via the pure
-[`effective_plasticity`](../../app/core/concepts/concept_lifecycle.py), lifting a
-kind's stored base by the live trust + relationship-duration signal
-(`RelationshipSignal`, built in
-[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
-from [`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
-(trust) + [`relationship.py`](../../app/core/relationship/relationship.py)
-(duration)). Per-kind gains live on `ConceptKind.plasticity_modulation`;
-**`boundary`** is the first (and only) consumer — its 0.45 base loosens toward a
-0.75 ceiling as the bond deepens, never touching the stored base. "Never
-silently": the worker materializes one `signal:relationship_trust
---influences--> concept` edge and emits a `plasticity_shift` event when the lift
-crosses a band. (2) **Plasticity-drift** — a settled *active* concept's stored
-plasticity is nudged one-way down toward a floor via
-[`drift_plasticity`](../../app/core/concepts/concept_lifecycle.py), scaled by
-confidence + engaged age (stickier with time). (3) **Re-check slowdown** — a
-sticky (low effective-plasticity) concept is probed for contradictions on a
-plasticity-scaled stride (`1 + round(k·(1−eff_plast))`), so core beliefs are
-re-examined less often (in addition to L16 already scaling the *delta*). Each
-piece is independently switchable via `concept_plasticity_*` settings; see
-[`configuration.md`](../configuration.md).
-
-**Motivation.** Concepts should change over time — but not all at the same rate,
-and not randomly. Some parts of a person (or of Aiko) are core and sticky;
-others are meant to be fluid. Encoding that as a **plasticity** attribute makes
-personality drift *constrained and believable* instead of noise:
-
-```
-Identity: "Curious"          confidence 0.95   plasticity Low
-Taste:    "Likes lemon cake" confidence 0.65   plasticity High
-Boundary: "Dislikes tickling" confidence 0.92  plasticity Medium
-                                    influenced by: trust, relationship
-                                    duration, previous experiences
-```
-
-**Key files.** Adds a `plasticity` field to the `concepts` table (L1) with a
-per-kind default on the `ConceptKind` registry. Plasticity is not a standalone
-feature — it is the **governing parameter of the L3 lifecycle engine**; there is
-no separate plasticity worker, only the one drift engine reading this field. The
-"influenced by" modifiers are `relation=influences` edges in `concept_edges`
-(L1) whose sources read
-[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
-(trust) and [`relationship.py`](../../app/core/relationship/relationship.py)
-(duration / total sessions).
-
-**Sketched approach.** Plasticity is the **per-concept learning rate** the L3
-engine uses on every mutation pass: low plasticity = high inertia (confidence
-moves slowly in *both* directions, needs more evidence to promote/demote/disprove
-— protects core identity and values); high plasticity = fast adaptation
-(tastes/affect can shift quickly). Because L3 is the single writer, this rate
-governs accrual, decay, belief-revision deltas (L15), and drift (L17)
-uniformly — one dial, one engine. Per-kind defaults: identity / value low, taste / affective high,
-**boundary** medium. Plasticity itself can be **relationship-modulated** — e.g.
-a boundary becomes more plastic as `trust` and duration grow (Aiko will let a
-boundary be renegotiated once she trusts you), tying into K15 vulnerability
-budget. This is the governor that keeps H3 mood drift / growth from wandering:
-core traits are anchored, surface preferences are free.
-
-**Open questions.** Scalar `[0,1]` vs. discrete low/med/high bands? Should
-plasticity itself drift (a trait that becomes more fixed with age/confidence)?
-Does low plasticity also *slow* the L15 belief-revision re-check, or only the
-confidence delta?
-
-**Effort.** Medium (a field + a rate modifier on L3, plus the relationship read).
-
----
-
 ## L17. Self-drift noticing (Aiko compares her own concepts over time)
 
 **Motivation.** The charming payoff of the whole layer. A normal memory system
@@ -1384,35 +713,11 @@ concepts) for the timeline; keep those as the *rendering* consumers, L17 as the
 
 ## L17a. Concept trajectory from the event log (the history read layer)
 
-**Motivation.** Give the rest of L17 a clean "how this concept moved over time"
-read without inventing new storage. The event stream already carries confidence +
-label at each transition; we just need a reader that turns a concept_id (or a
-subject slice) into an ordered trajectory.
-
-**Key files.**
-[`concept_event_store.py`](../../app/core/concepts/concept_event_store.py) (add a
-`trajectory(concept_id)` / `list(concept_id=…)` filtered read — today `list`
-filters only by `subject` / `event_type` / `before_id`);
-[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
-(the one writer — emit a lightweight sampled event on meaningful decay, see
-below).
-
-**Sketched approach.** A trajectory is `[(created_at, confidence, label, status,
-reason)]` reconstructed from a concept's events plus its current row. The **one
-gap**: a concept that slowly *decays* without crossing a status threshold emits
-no event, so its downward trail is invisible. Fix with the cheapest option —
-have L3 append a `confidence_sample` (or reuse `plasticity_shift`-style) event
-only when `|Δconfidence|` since the last logged event crosses a band (e.g. 0.1),
-so we sample *on meaningful movement*, not on a wall-clock cadence (keeps the
-table small and event-driven, consistent with the rest of L3). Add
-`concept_id`-filtered indexing so `trajectory()` is cheap.
-
-**Open questions.** (1) Band size for the decay sample (fixed vs plasticity-scaled
-— a high-plasticity taste should sample more finely than a sticky core trait)?
-(2) Keep every event forever, or thin old rows the way P32 thins snapshots
-(retaining transitions + relabels, dropping intermediate samples)?
-
-**Effort.** Small (read helper + one guarded event emit).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17a-concept-trajectory-from-the-event-log-the-history-read-layer).
+`ConceptEventStore.trajectory()` reads one concept's path oldest-first, and L3
+drops a banded `confidence_sample` so a silent decay is no longer invisible.
+L17b consumes it from here.
 
 ---
 
@@ -1656,185 +961,6 @@ evidence for L17d self-correction? (3) Retention / thinning of old entries.
 
 ---
 
-## L18. Boundary concepts (SHIPPED — both subjects + anchor sourcing + composite surfacing)
-
-**Kind.** `boundary`, subject `user` (default) and `aiko` (L11), evidence model
-**`set`**; canonical **medium**-plasticity kind (`plasticity_default=0.45`).
-
-**Motivation.** Some concepts aren't traits or tastes — they *gate behaviour*.
-"Go gentler about his work when he's stressed", "no pet names yet"; first-person
-"I won't fake agreement just to please him". These are behaviorally load-bearing
-in a way identity concepts aren't. **Per the shipped steer they are guiding, not
-refusals** — soft relationship/preference lines that bend how Aiko shows up, never
-content-policy hard stops and never a reason to refuse a topic.
-
-**Status: SHIPPED.** What actually shipped:
-
-- **Evidence = topic clusters + explicit remembered anchors.** A boundary forms
-  from a broad cluster pattern *or* from a specific thing Aiko deliberately chose
-  to remember (`[[remember:…]]` → `kind="self_tagged"` about the user;
-  `[[remember:self:…]]` → `kind="self"` about her — the aiko pass also reads
-  `reflection` / `diary`). This is the "we discuss it, she remembers it, then
-  behaves that way" path. The two proposers
-  ([`boundary_user`](../../app/core/concepts/proposers/boundary_user.py) /
-  [`boundary_aiko`](../../app/core/concepts/proposers/boundary_aiko.py)) are the
-  first **hybrid** proposers for both subjects, sharing a `propose_boundary` body
-  in [`base.py`](../../app/core/concepts/proposers/base.py).
-- **A single deliberate anchor can seed a boundary.** Unlike every other kind
-  (`>= 2` sources), one explicit anchor is enough; cluster-only boundaries still
-  need `>= 2`. The proposer enforces the composition rule (`>= 1` anchor **OR**
-  `>= 2` clusters); the L3
-  [`boundary_evidence_gate`](../../app/core/concepts/concept_lifecycle.py)
-  *overrides* the source floor to 1 (not `max`) — deliberately bypassing the L21
-  young-graph source-count tightening for a chosen annotation, while its
-  confidence tightening still applies via `max`. Age (`0.5d`) + confidence
-  (`0.65`) floors still guard against noise.
-- **Soft always-on surfacing.** `core_always_on=True`, `core_min_confidence=0.8`
-  (joins the L27 core lane), no `surfacing_targets` (it routes through the T3
-  `relevant_context` path, not `profile_block`). A dedicated
-  `_concept_boundary_header` renders it with soft/guiding framing for user, aiko,
-  and relationship subjects — no refusal/hard-stop language.
-- **A general per-kind composite surfacing scorer.** Surfacing used to be
-  single-signal (core lane by *confidence* only, turn-relevant fill by *cosine*
-  only). L18 adds a `SurfaceWeights` field on `ConceptKind` and a pure
-  [`concept_surfacing`](../../app/core/concepts/concept_surfacing.py) helper
-  (`recency_boost` + `composite_score`) blending **context (cosine) + confidence
-  + recency**, applied to the turn-relevant fill in
-  [`inner_life_part1`](../../app/core/session/inner_life_part1.py). Defaults are
-  context-only, so this is **opt-in per kind** and every other kind is unchanged;
-  boundary opts into a recency-heavy blend (`context 0.5 / confidence 0.2 /
-  recency 0.3`, 14-day half-life) because a line she was just reminded of matters
-  more than a stale one.
-
-**Synthesis.** A `"boundary"` population + `_run_boundary_pass(subject)` in
-[`concept_synthesis_worker`](../../app/core/concepts/concept_synthesis_worker.py),
-mirroring the aiko combined cluster+memory pass (subject-specific anchor kinds,
-combined dirty-tracking, per-subject `sig_key`). Gated by
-`agent.boundary_synthesis_enabled`; anchor batch capped by
-`concept_synthesis_max_boundary_memories` (default 24).
-
-**Deferred (tracked below as their own backlog items, so nothing is silently
-absorbed into this shipped entry):** ~~L18a boundary trust-modulation (the
-deferred L16 piece)~~ **[SHIPPED with L16]**, ~~L18b boundary behaviour-subsystem
-gating~~ **[SHIPPED, reframed as persona-lightening + learned-style steer]**,
-~~L18c boundary-vs-conversation conflict steer~~ **[SHIPPED]**, L18d
-concept-vs-concept conflict detection (meta concepts), L18e boundary evidence
-broadening.
-
-**Effort.** Shipped on top of L1-L5 / L11 / L27.
-
----
-
-## L18a. Boundary trust-modulation (carries the deferred L16 piece) — SHIPPED
-
-**Status: SHIPPED (folded into the L16 deferred block above).** Boundary is the
-first (and only) consumer of relationship modulation: its `0.45` base plasticity
-loosens toward a `0.75` ceiling as trust + relationship duration grow, computed
-live at eval time by [`effective_plasticity`](../../app/core/concepts/concept_lifecycle.py)
-and never touching the stored base. "Never silently": each modulation
-materializes a `signal:relationship_trust --influences--> concept` edge and, on a
-band cross, emits a `plasticity_shift` event. Per-kind gains live on
-`ConceptKind.plasticity_modulation`
-([`concept_kinds.py`](../../app/core/concepts/concept_kinds.py)); the live signal
-is wired in
-[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py).
-See the **L16** entry for the full description.
-
----
-
-## L18b. Boundary behaviour-subsystem gating — SHIPPED (reframed)
-
-**Status: SHIPPED**, reframed away from code-level behaviour-subsystem gating.
-The original sketch (read active boundaries as a *gate* into K31/K32 touch,
-K59 tease, K60 mask) was dropped: Aiko can run on a different chat model whose
-behaviour is driven by the *prompt*, not by those Python subsystems, so gating
-them wouldn't reliably move the needle. Instead the load-bearing work is a
-prompt steer:
-
-- **Persona lightened.** The talk-style rules at T0 (`How you talk`,
-  `Conversation rules` incl. `LENGTH:` / `DON'T ALWAYS ASK A QUESTION`,
-  `Leading vs following`) are now framed as *defaults*. Two of the most
-  absolute rules (`LENGTH:` sizing, the "1 in 3 turns end on a thought"
-  question cadence) were softened to name that a surfaced learned line
-  recalibrates them.
-- **The learned-style steer.** A constant, name-aware addendum
-  (`build_learned_style_addendum` in
-  [`prompt_support.py`](../../app/core/session/prompt_support.py)) folds in
-  right after the persona (same T0 slot as the speech-grammar addendum, so it
-  stays in the cache prefix) telling the model that when the context surfaces a
-  learned `communication_style` / `boundary` line it is the *live calibration*
-  of the defaults and wins when it fits — "hold them lightly, never as hard
-  rules, and when none surface the defaults simply stand". Self-gating, so
-  there is no per-turn branching in T0.
-
-This carries the deferred L23 "lighten hard-coded persona style blocks"
-follow-on. The `communication_style` / `boundary` concept headers in
-[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) already say
-"let these steer HOW you talk"; the addendum is the missing bridge from those
-T3 lines back to the T0 defaults.
-
-**Effort.** Small (prompt-only).
-
----
-
-## L18c. Boundary-vs-conversation conflict steer (fast-follow) — SHIPPED
-
-**Status: SHIPPED.** A K29-style per-turn detector
-([`boundary_clash_detector.py`](../../app/core/affect/boundary_clash_detector.py))
-fires a soft T6 cue when the live turn is heading *toward* an active `boundary`
-concept, so Aiko feels the tension in-the-moment instead of only carrying the
-boundary as background T3 guidance.
-
-- **Read.** Active boundaries via `ConceptView.relevant` (embedding-nearest,
-  which yields the label-cosine in one call) across all subjects
-  (user / relationship / aiko).
-- **Gate.** Cosine floor (`memory.boundary_clash_min_cosine`, default 0.58 —
-  a notch above the K29 opinion floor) + a word-count gate. `classify_pair` is
-  used only to *sharpen* the register ("pushing right at" vs "brushing up
-  against"), never to gate the fire. Cosine-only, no hot-path LLM.
-- **Surfacing.** Provider `_render_boundary_clash_block` in
-  [`inner_life_part3.py`](../../app/core/session/inner_life_part3.py), wired
-  into the T6 "live read on the turn" cluster next to K29 (cooldown +
-  per-session cap mirror K29; joins the K51 cue-register rotation). The cue is
-  self-contained and forbids naming the line out loud, refusing, or lecturing.
-
-Gated by `agent.boundary_clash_enabled`. Tests: `tests/test_boundary_clash.py`.
-
-**Effort.** Small-medium (fast-follow to L18).
-
----
-
-## L18d. Concept-vs-concept conflict detection (under meta concepts)
-
-**Status: SHIPPED (subsumed by L12; boundary-clash shape added to the tension
-proposers).**
-
-**Motivation.** Tensions *between* concepts — boundary vs value, boundary vs
-boundary — are a distinct problem from boundary-vs-live-conversation. This is the
-general machinery for reasoning about how concepts clash, and belongs with the
-meta-concept work (L29).
-
-**What shipped.** The concept-vs-concept conflict machinery is L12's tension
-metas: `_run_tension_pass` offers every active non-meta concept — boundaries
-included — to the proposer, and a chosen pair is stored as a `tension` meta with
-`("concept", id)` `evidence` edges, surfaced through the T6 `TensionCueWorker`.
-The only gap was framing: the three proposer prompts named friction as
-value-vs-behaviour / hot-vs-quiet only, so boundary clashes under-fired. Fixed
-prompt-only — `tension_user.py`, `tension_aiko.py`, `tension_relationship.py`
-now name a boundary pulled against by a value/habit that crosses it (or two
-boundaries that can't both be honoured) as a first-class friction shape, each
-with an example.
-
-**Dropped as redundant.** The sketched dedicated new edge relation + separate
-concept-pair detector — a boundary-involving pair already composes into a
-`tension` meta exactly like any other pair, so a parallel mechanism would only
-duplicate it.
-
-**Key files.** `app/core/concepts/proposers/tension_{user,aiko,relationship}.py`;
-tests in `tests/test_tension_concepts.py` (`BoundaryClashShapeTests`).
-
----
-
 ## L18e. Boundary evidence broadening
 
 **Motivation.** L18 mines *deliberate* anchors (`[[remember:…]]`) + clusters. Many
@@ -1940,47 +1066,6 @@ effectively reserved for a future *multi-level* hierarchy.
 depth cap stays for v1, so a generalization can't yet abstract another
 generalization; relationship-subject abstractions (user + aiko only for now).
 Feeds L19 naturally — the abstraction level is what a self-narrative reaches for.
-
----
-
-## L21. Cold-start + anti-premature-proposal guard
-
-**Status: BUILT.** `TopicGraph.topic_graph_maturity()` / `mature()` provide the
-cluster-count (+ member) signal; `MemoryStore.earliest_created_at()` provides
-the calendar-history signal. The L2 `ConceptSynthesisWorker` gates both
-`is_ready()` and `run()` on maturity (`concept_min_clusters` +
-`concept_min_history_days`) while a manual `force` run bypasses it; the L3
-`ConceptLifecycleWorker` promotes against a **stricter young-graph bar**
-(`concept_promote_young_min_sources` / `concept_promote_young_min_confidence`)
-via an injected `graph_mature_provider` until the graph clears the floor; the L5
-`concept_block` stays silent while immature and `recall_concept` returns empty
-when the store is sparse. All consumers degrade gracefully rather than
-confabulate.
-
-**Motivation.** The concept layer only lights up after months of accumulated
-memories and clusters. Two failure modes to design against up front: (1) Aiko
-behaving oddly *before* concepts exist (empty `concept_block`, a `recall_concept`
-that returns nothing), and (2) the proposer (L2) firing on thin evidence and
-minting a **spurious early concept** — which is worse than none, because a
-confident wrong self/user model poisons everything downstream.
-
-**Key files.** Gating in the L2 proposer + the L3 promotion gate; the L5
-surfacing block degrades to silent when there are no `active` concepts (same
-signature/cooldown machinery). Pairs with the topic-graph maturity signals from
-F10 (cluster count / age).
-
-**Sketched approach.** Don't run the proposer at all until the topic graph has a
-minimum population (e.g. N clusters over M days of real history); raise the
-promotion bar while the graph is young (more evidence + more cycles required
-early); and keep every consumer (block, `recall_concept`, autobiography L19)
-**gracefully empty** rather than confabulating when the store is sparse. The
-layer should *quietly not exist* for a new user, then fade in — never blurt a
-half-formed model of someone it barely knows.
-
-**Open questions.** Maturity thresholds (cluster count / history age)? Do we
-seed anything at onboarding (K19 cold-start companion), or stay fully emergent?
-
-**Effort.** Small-Medium (mostly gates + graceful-empty paths).
 
 ---
 
@@ -2098,6 +1183,8 @@ identity's 2.73.
   a 7-day `promoted_recent` / `unreinforced_recent` cohort, and an
   `unreinforced_sample` id list (signal C was the only spurious signal without
   one, which left it countable but not actionable).
+- **[`scripts/concept_sweep_unreinforced.py`](../../scripts/concept_sweep_unreinforced.py)**
+  — the signal-C enforcement arm, dry-run by default (see "Still open" below).
 - **[`scripts/concept_intake_report.py`](../../scripts/concept_intake_report.py)**
   — a read-only, re-runnable diagnostic (per-kind actives and stall rates,
   promotion cohorts, the source histogram with the "a bar here would have
@@ -2123,7 +1210,8 @@ latency figures are the *flow* and should.
 | identity mean distinct sources | 2.73 |
 | identity promoted within 1h of first evidence | 167 of 240 (69.6%), median 3.6 min |
 | promotions, last 3 days | 29 (9.7/day) |
-| `reinforced` events, all time | 60 |
+| `reinforced` events, all time | 60 (0 before Jul 12; 16 vs 4 `discovered` on Jul 30) |
+| engaged time accumulated, all time | 12.9 engaged days |
 
 Read the recent-cohort stall percentage with care: a concept promoted yesterday
 has had almost no opportunity to be reinforced, so it reads high by
@@ -2132,17 +1220,23 @@ time, which is exactly why the baseline above is dated.
 
 ### Still open
 
-- **Reinforcement fires far too rarely, and that — not the gate — is the
-  larger half of signal C.** The timeline carries 553 `discovered` and 504
-  `promoted` events against **60 `reinforced`**. Every concept has a
-  `last_reinforced_at` (L2 stamps it at creation), but only 84 actives have one
-  *after* promotion. So "82.7% never reinforced" is substantially a statement
-  that the reinforce path under-fires, not only that intake is loose. Tightening
-  intake helps by arithmetic — fewer concepts competing for the same 60
-  reinforcements — but the ceiling is the reinforce path itself. Worth its own
-  investigation before any further gate tuning. `value` is the tell: 86%
-  stalled at a mean of 4.31 sources, i.e. well-evidenced concepts that still
-  never get re-observed.
+- **The never-reinforced set is a bootstrap-era backlog, not an ongoing leak.**
+  The lifetime ratio looks alarming — 553 `discovered` against 60 `reinforced`
+  — but it is dominated by the first nine days. Broken down by day, `reinforced`
+  was **zero from Jul 3 to Jul 11** while 481 concepts were minted into an
+  almost-empty graph (with nothing to reinforce, every proposal was necessarily
+  new, and `_existing_for` was still dumping the entire concept list into the
+  prompt — "too long to pick a reinforce-by-id target from"). It switched on at
+  **44 events on Jul 12**, and on **Jul 30 — the first day of use after the L22
+  `_existing_for` fix — it ran 16 `reinforced` and 3 `merged` against only 4
+  `discovered`**, i.e. reinforcement outpacing discovery 4:1, which is the
+  healthy signature for a mature graph.
+
+  So the reinforce path works, and **374 of the 402** never-reinforced actives
+  (93%) were promoted before Jul 13 — before reinforcement had ever fired once.
+  One day of post-fix data is not enough to declare it *fixed*, but it is
+  enough to say the priority is the **backlog**, not the mechanism. The next
+  measurement should just be more use, not more code.
 - **Threshold tuning, pass 2: per-kind decay rates.** Worth knowing before
   starting: per-kind decay **already exists** via `plasticity_default`, and its
   ordering is already right — `value` 0.2 (81 effective days, stickiest),
@@ -2153,18 +1247,35 @@ time, which is exactly why the baseline above is dated.
   `drift_plasticity` pushes active concepts' plasticity *down* toward 0.15 over
   time, so survivors get stickier and the backlog gets harder to drain the
   longer it sits.
-- **Enforcement of signal C** — demote the never-reinforced set. Needs a
-  chosen threshold and a one-off sweep over the concepts minted before the
-  proposer was disciplined. Now cheap to target: `pruning.unreinforced_sample`
-  carries the ids, and `unreinforced_since_promotion` is exported.
-- **The dormant revival path bypasses the kind gates.** `_transition` revives
-  `dormant -> active` on `concept_promote_min_confidence` alone, without
-  consulting the promotion gate (unlike the `retired` path, which does). A
-  demoted 2-source identity trait could therefore return without facing the
-  new floor. Currently unreachable in practice — reviving needs confidence to
-  have recovered, which needs reinforcement — and arguably correct, since it is
-  restoring something that already earned its place. Recorded so the choice is
-  deliberate rather than accidental.
+- **Enforcement of signal C — the one-off sweep. SHIPPED as a script,
+  not yet run.** 374 concepts minted before reinforcement had ever fired are
+  sitting `active` at a median confidence of ~0.8, competing for surfacing slots
+  against concepts that earned their place, and decay cannot clear them: ~86
+  engaged days each against **12.9 engaged days accumulated in total**.
+  [`scripts/concept_sweep_unreinforced.py`](../../scripts/concept_sweep_unreinforced.py)
+  demotes them to `dormant` (never `retired`, and it touches neither confidence
+  nor evidence, so a genuine reinforcement brings any of them straight back),
+  appending a `dormant` row to the timeline for each so the sweep reads as
+  lifecycle history rather than a silent rewrite. Scoped to the pre-Jul-13
+  cohort via `--before` rather than "all never-reinforced" — the newer ones may
+  simply not have been re-observed yet. **Dry-run by default**: without
+  `--apply` the database is opened read-only, so the reporting path cannot
+  mutate anything. Still to do: stop the app and actually run it, then re-run
+  `concept_intake_report.py` against the dated baseline above.
+- **The dormant revival path.** ~~Bypasses the kind gates.~~ Half fixed, and
+  the sweep is what forced it. `_transition` used to revive `dormant -> active`
+  on `concept_promote_min_confidence` **alone**, with no reinforcement check —
+  safe only because decay was the sole route into `dormant`, so recovered
+  confidence implied reinforcement. The sweep breaks that assumption: it parks
+  concepts still sitting at ~0.8, which would have bounced back to `active` on
+  the very next L3 tick and logged a `revived` event for a belief nothing had
+  re-observed. The branch now requires `_reinforced_since_last` as well,
+  matching the `contradicted` and `retired` branches, which costs nothing on
+  the decay path and makes `dormant` mean "quiet until something actually
+  reinforces you". **Still open:** revival does not consult the kind's
+  `promotion_gate`, so a swept 2-source identity trait can return without
+  facing the new floor. Arguably correct for a genuinely re-observed belief
+  that already earned its place once; recorded so the choice stays deliberate.
 - **Offline eval harness** — a fixture corpus with expected/forbidden concepts,
   scored precision-over-recall in CI like the K10 persona regression. Held back
   on purpose: hand-authoring goldens before the proposer emits the register we
@@ -2349,100 +1460,6 @@ concepts-only via the T3 core lane; remaining derivers tracked in L28.*
 
 ---
 
-## L25. Edge referential integrity across the memory lifecycle
-
-**Status: BUILT.** The
-[`ConceptEdgeReconciler`](../../app/core/concepts/concept_edge_reconciler.py)
-enforces the per-event policy below. It is registered as a `MemoryStore`
-**delete listener** (`on_memory_deleted` drops a deleted memory's edges and
-recomputes the affected concepts' edge-derived `evidence_count` /
-`distinct_source_count`); the legacy Phase 4b `MemoryConsolidator` calls its
-`repoint` hook to move a hard-deleted victim's edges onto the survivor *before*
-deletion (rule b); and because `MemoryStore.prune` batch-deletes rows **without**
-firing delete listeners, the idle
-[`ConceptEdgeIntegrityWorker`](../../app/core/concepts/concept_edge_integrity_worker.py)
-sweep GCs any orphaned edges it leaves (`ConceptStore.orphaned_memory_edges` →
-drop → recount). K35-archived rows stay alive so their edges are kept as
-historical evidence (rule c). Counts are treated as **edge-derived**
-(recomputed by any edge-mutating path, same as L2 reinforce); L3 remains the
-single writer of `confidence` / `plasticity` / `status`. Knobs:
-`memory.concept_edge_integrity_{enabled,interval_seconds,batch_size}`. See
-[`concept-lifecycle.md`](../concept-lifecycle.md) and
-[`configuration.md`](../configuration.md).
-
-**Motivation.** Concepts point at memories through `concept_edges`, but memories
-are not permanent: they're archived, consolidated/merged (K35), reclassified,
-and outright **deleted** (dead scratchpad in `MemoryPromotionWorker`). Nothing
-currently says what happens to an evidence edge when its target memory moves or
-vanishes — leaving dangling edges, or a concept that silently loses the support
-it was promoted on. Easy to miss, nasty to debug later.
-
-**Key files.**
-[`memory_store.py`](../../app/core/memory/memory_store.py) (`delete` / `update` /
-`prune`), [`memory_promotion_worker.py`](../../app/core/memory/memory_promotion_worker.py),
-[`memory_consolidation_worker.py`](../../app/core/memory/memory_consolidation_worker.py),
-the L1 `ConceptStore` edge table.
-
-**Sketched approach.** Decide the policy per lifecycle event and enforce it in
-one place: (a) **delete** — the memory-delete path notifies `ConceptStore` to
-drop or tombstone the edge and decrement the concept's `evidence_count` (which
-may weaken/demote it via L3); (b) **consolidation/merge** — re-point the edge at
-the surviving memory rather than dropping it, so a merged evidence memory keeps
-supporting its concept; (c) **archive/reclassify** — keep the edge (archived
-memories still count as historical evidence, important for L19). Make edges
-**tolerant of a missing ref** as defence-in-depth (skip, don't crash), and add
-an idle integrity sweep that garbage-collects orphaned edges. Same single-writer
-discipline: only the lifecycle engine reconciles counts.
-
-**Effort.** Medium.
-
----
-
-## L26. Concept trace + "how Aiko is thinking" observability
-
-**Status: BUILT.** The dev-facing window into the layer: per-turn "what concepts
-entered this prompt" plus MCP dumps of the live graph and recent lifecycle
-transitions. Unit is *one turn* (vs. L6 user-facing / L22 aggregate quality).
-
-**Delivered — per-turn trace.** The L5 `concept_block` and L4 `coactivation_block`
-renderers
-([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) stamp a
-structured trace at selection time onto `self._concept_block_trace` /
-`self._coactivation_block_trace`: the surfaced concepts (`concept_id`, `label`,
-`confidence`, `plasticity`, `kind`, `subject`, `hedge`) or a `reason` when empty
-(`disabled` / `block_disabled` / `store_missing` / `immature` / `no_eligible` /
-`aggressive` / ...); and the chosen co-activation `mode` (`reps` / `labels` /
-`strength` / `bucket_by`) + `quiet` cluster. Because the blocks are **slice-cached**
-(`_StaticSlices`; the renderers don't re-run on a cache hit), the trace is
-captured *at build time* through paired `concept_trace` / `coactivation_trace`
-providers (`set_inner_life_providers`) into
-`_StaticSlices.concept_trace` / `.coactivation_trace`, then forwarded by
-`assemble_with_budget` to `PromptTelemetry.concepts_surfaced` /
-`coactivation_surfaced` (tagged with `slice_cache_event` + `aggressive` so you
-can tell cached vs. freshly built vs. dropped under pressure). That flows through
-the existing `PromptTelemetry.as_dict()` → `_last_metrics` path, so it is visible
-via `get_last_response_detail`. No edge walk on the hot path — the trace links by
-`concept_id`; join to the graph dump for evidence.
-
-**Delivered — introspection (MCP).** Three tools in
-[`proactive_task_tools.py`](../../app/mcp/server_tools/proactive_task_tools.py):
-`get_last_concept_trace` (the per-turn trace above), `get_concept_graph`
-(wraps `session.concepts_snapshot()` — every concept with status / confidence /
-plasticity / rationale + resolved evidence edges + counts; richer than the older
-`get_concepts_state`), and `get_concept_transitions` (wraps
-`session.concept_timeline()` filtered to lifecycle events — `promoted` /
-`dormant` / `retired` / `revived`, newest-first, dropping `discovered` births).
-
-**Design notes.** Only `relation="evidence"` edges exist in v1, so
-`concepts_snapshot()` is a complete graph dump — no new `ConceptStore.all_edges()`
-needed. The trace is empty-with-`reason` (never absent) when the layer is
-off / immature / aggressive. Trace snapshots are copied (not live-read) so a
-cache-hit reports exactly what was in the prompt.
-
-**Effort.** Medium (high leverage — validates every other L-entry).
-
----
-
 ## L27. Kind-aware always-on core-concept selection (generalise the identity lane)
 
 **Status: SHIPPED (kind-aware core lane + anti-nag rotation).** The
@@ -2537,7 +1554,7 @@ each kind that ships).
 
 ## L28. Roll remaining derivers/workers onto the `ConceptView` contract (in progress)
 
-**Status: in progress — substrate shipped (L24), first consumer migrated.** L24
+**Status: in progress — substrate shipped (L24), four consumers migrated.** L24
 shipped the reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
 `kinds_for_target()` routing); the live consumers are `build_relevant_context`
 (T3 core lane + relevance), `recall_concept`, and — new — `user_profile` ->
@@ -2567,14 +1584,31 @@ grounding) is the goal.
   value concept exists (`skip_fields`), so the same claim isn't told twice. This
   retired the L10 deferral of user values into `profile_block` in one migration.
   Tunable via `profile_concept_max_lines` / `profile_concept_min_confidence`.
-- `interest_map` cluster annotation in
-  [`topic_graph.py`](../../app/core/conversation/topic_graph.py) — annotate
-  clusters with the concepts spanning them via `ConceptView.for_cluster(rep_id)`.
+- **SHIPPED** — cluster annotation in
+  [`topic_graph.py`](../../app/core/conversation/topic_graph.py):
+  `cluster_activity` rows now carry `representative_id` (the same
+  highest-salience member `TopicCluster` reports, which is what the concept
+  layer keys its `cluster -> concept` evidence edges on), so any reader can
+  hand it straight to `ConceptView.for_cluster(rep_id)`. It rides
+  `cluster_activity` rather than `interest_map` because the latter is the
+  cheap per-turn prompt read that deliberately never joins back to the
+  memory mirror; `cluster_activity` already takes that snapshot for recency,
+  so the rep id costs one extra tuple element and no second walk.
+- **SHIPPED** — [`KnowledgeMapReflectionWorker`](../../app/core/proactive/knowledge_map_reflection_worker.py):
+  each rich territory in the map-shape payload carries the concepts spanning
+  it ("… — you believe: …"), most-confident first, capped by
+  `knowledge_map_reflection_concepts_per_cluster` (0 restores the old
+  size/recency-only payload). The reflection can now say what a territory
+  *means* to her, not just how big and how recent it is.
+- **SHIPPED** — [`InterestDriftWorker`](../../app/core/proactive/interest_drift_worker.py):
+  a drafted drift carries the most-confident concept spanning that cluster in
+  its journal entry, and the inner-life cue appends "What you hold about it:
+  …". Resolved *only* for the topic actually being drafted, so the
+  mirror-joining read stays off the per-tick sampling path.
 - [`belief_store.py`](../../app/core/relationship/belief_store.py) /
   belief inference — bias toward durable concepts (K2 stays the *transient* layer,
   not migrated).
-- Interest-map readers: `KnowledgeMapReflectionWorker`, `InterestDriftWorker`,
-  and `ForwardCuriosityWorker` routine hints.
+- `ForwardCuriosityWorker` routine hints — the remaining interest-map reader.
 - [`goal_store.py`](../../app/core/goals/goal_store.py) — overlaps L14 aspiration
   concepts (gated on L14 shipping).
 - **Additional candidates (noted while shipping user_profile).**
@@ -3054,35 +2088,9 @@ integrity).
 
 ## L35. Surface-reason labels -- "why did I surface this?" on every item
 
-**Motivation.** L26 already stamps a per-turn trace of *which* concepts surfaced
-(with confidence + hedge). L35 adds the *why*: a structured reason on every
-surfaced item — `high-confidence identity`, `recent emotional relevance`,
-`unresolved contradiction`, `curiosity trigger`, `relationship importance`,
-`recently forgotten/revived`. This makes the prompt legible ("why is this here?"),
-sharpens debugging, and — fed back — could let Aiko *reference* her reason ("this
-has been on my mind because we clashed on it").
-
-**Key files.** The gather lanes in `build_relevant_context`
-([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) already know
-each item's lane + score; L35 records the dominant reason alongside the existing
-L26 trace fields (the `hedge` / `reason` stamp), surfaced in the L26 debug view
-([`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)).
-
-**Sketched approach.** Define a small reason enum; when the selector picks an item,
-tag it with the lane / signal that won it (core-confidence, flex-cosine,
-activation-spread, contradiction-charge, importance (L32), curiosity / hypothesis
-(L30), recency / revival). Cheap — the information already exists at selection time,
-it just isn't labelled. Optionally expose one reason to Aiko for the single most
-salient item.
-
-**Open questions.** (1) One dominant reason, or a ranked few? (2) Is any reason ever
-shown *to Aiko* (risk of over-narrating "I surfaced this because...") vs
-debug-only?
-
-**Effort.** Small (labelling existing selection signals; extends L26).
-
-**Depends on.** L26 (trace), L32 (importance as one reason), L30 (curiosity as one
-reason).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l35-surface-reason-labels----why-did-i-surface-this-on-every-item).
+Every entry in the L26 trace now names the signal that won it its slot, debug-only.
 
 ---
 

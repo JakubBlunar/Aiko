@@ -19,6 +19,14 @@ Throttling: at most one mining pass per ``min_seconds_between`` (default
 600 s — frequent enough to catch a new joke landing, rare enough not to
 hammer the embedder). A second guard ``min_new_user_turns`` skips the
 pass when there's been less than N new user turns since the last run.
+
+K80 adds a **fast path** alongside that slow miner:
+:func:`detect_inside_joke_birth` watches a single turn for the moment a
+bit is *born* — the user echoing a distinctive phrase Aiko just used,
+with a laugh behind it. The slow miner needs a phrase to recur across a
+whole window before it counts; the fast path catches the one live beat
+where "that's officially a thing now" is true, and hands the phrase to
+the same ``kind="catchphrase"`` registry so K22 can carry it forward.
 """
 from __future__ import annotations
 
@@ -27,11 +35,12 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase, MessageRow
     from app.core.memory.memory_store import MemoryStore
+    from app.core.relationship.shared_moments import SharedMomentsStore
     from app.llm.embedder import Embedder
 
 
@@ -60,12 +69,19 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 @dataclass(slots=True, frozen=True)
 class CatchphraseCandidate:
-    """A surviving n-gram with the data needed for a memory write."""
+    """A surviving n-gram with the data needed for a memory write.
+
+    ``first_speaker`` is whoever said the phrase first *within the mined
+    window* (``"user"`` / ``"assistant"``). A shared phrase reads very
+    differently depending on where it came from, and K26 (voice adoption)
+    only lets Aiko take on phrases that started as his.
+    """
 
     phrase: str
     count: int
     user_count: int
     assistant_count: int
+    first_speaker: str = ""
 
 
 def _normalise_text(text: str) -> str:
@@ -113,6 +129,7 @@ def _harvest_candidates(
     those that recur often enough on both sides."""
     user_counts: Counter[tuple[str, ...]] = Counter()
     assistant_counts: Counter[tuple[str, ...]] = Counter()
+    first_speaker: dict[tuple[str, ...], str] = {}
     for row in messages:
         role = (row.role or "").lower()
         if role not in ("user", "assistant"):
@@ -129,6 +146,7 @@ def _harvest_candidates(
                 if not _ngram_is_meaningful(ng):
                     continue
                 seen_in_msg.add(ng)
+                first_speaker.setdefault(ng, role)
                 if role == "user":
                     user_counts[ng] += 1
                 else:
@@ -149,6 +167,7 @@ def _harvest_candidates(
                 count=int(total),
                 user_count=int(u),
                 assistant_count=int(a),
+                first_speaker=first_speaker.get(ng, ""),
             )
         )
     # Prefer phrases that both sides use roughly equally. The score
@@ -173,6 +192,209 @@ def _is_subsumed(longer: str, existing: list[str]) -> bool:
         if already in longer:
             return True
     return False
+
+
+# ── K80: inside-joke birth (the fast path) ──────────────────────────────
+
+# Amusement markers in the *user's* echo turn. Deliberately narrow: this
+# is the "he's laughing while he says it back" signal, not general
+# positivity, and a false positive here spends the one blessing we allow
+# per cooldown window on a line that wasn't actually a bit.
+_AMUSED_RE = re.compile(
+    r"(?:^|\W)(?:lol|lmao|lmfao|rofl|ha(?:ha)+h?|hehe(?:he)*|heh|"
+    r"teehee+|\U0001F602|\U0001F923|\U0001F605|\U0001F979)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(slots=True, frozen=True)
+class InsideJokeBirth:
+    """One just-born bit: a phrase of Aiko's the user handed back.
+
+    ``lag_turns`` is how many assistant turns back the phrase came from
+    (0 = the reply he's answering right now). ``laughed`` records a K32
+    laugh reaction on that message; ``amused`` an in-text marker. At
+    least one of the two is always true — that's the whole gate.
+    """
+
+    phrase: str
+    origin_message_id: int | None
+    lag_turns: int
+    laughed: bool
+    amused: bool
+
+
+def _meaningful_ngrams(text: str, *, min_n: int, max_n: int) -> set[tuple[str, ...]]:
+    tokens = _normalise_text(text).split()
+    out: set[tuple[str, ...]] = set()
+    for n in range(min_n, max_n + 1):
+        for ng in _ngrams(tokens, n):
+            if _ngram_is_meaningful(ng):
+                out.add(ng)
+    return out
+
+
+def detect_inside_joke_birth(
+    *,
+    user_text: str,
+    origins: Sequence[tuple[int | None, str]],
+    laughed_ids: set[int] | frozenset[int] = frozenset(),
+    known_phrases: Iterable[str] = (),
+    min_n: int = 3,
+    max_n: int = 7,
+) -> InsideJokeBirth | None:
+    """Spot the user handing one of Aiko's own phrases back to her.
+
+    ``origins`` is the recent assistant turns as ``(message_id, text)``,
+    **newest first**. A birth needs two things at once: the user echoed a
+    distinctive phrase from one of those replies, and the moment was
+    funny — a K32 laugh reaction on the echoed message (``laughed_ids``)
+    or an amusement marker in the echo itself. Repetition alone is not a
+    joke; that's just how conversations work, and the slow miner already
+    covers phrases that genuinely recur.
+
+    Phrases already in ``known_phrases`` are skipped: a bit can only be
+    born once, and reusing an established one is K22's territory.
+
+    Pure — no store, no clock, no I/O. Returns the *most recent*
+    qualifying echo, preferring the longest phrase within that turn,
+    since the freshest line is the one the moment is about.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+    user_ngrams = _meaningful_ngrams(text, min_n=min_n, max_n=max_n)
+    if not user_ngrams:
+        return None
+    amused = bool(_AMUSED_RE.search(text))
+    blocked = [p for p in (str(x).strip().lower() for x in known_phrases) if p]
+
+    for lag, (message_id, origin_text) in enumerate(origins):
+        laughed = message_id is not None and int(message_id) in laughed_ids
+        if not (laughed or amused):
+            continue
+        shared = user_ngrams & _meaningful_ngrams(
+            origin_text or "", min_n=min_n, max_n=max_n,
+        )
+        if not shared:
+            continue
+        # Longest wins: "the fish-shaped cookie incident" is the bit,
+        # not the "fish-shaped cookie" inside it.
+        for ng in sorted(shared, key=lambda g: (-len(g), g)):
+            phrase = " ".join(ng)
+            if _is_subsumed(phrase, blocked):
+                continue
+            return InsideJokeBirth(
+                phrase=phrase,
+                origin_message_id=(
+                    int(message_id) if message_id is not None else None
+                ),
+                lag_turns=lag,
+                laughed=laughed,
+                amused=amused,
+            )
+    return None
+
+
+def render_inside_joke_block(
+    birth: InsideJokeBirth, *, user_display_name: str = "the user",
+) -> str:
+    """Render a just-born bit into a one-shot system-prompt cue."""
+    phrase = birth.phrase.strip()
+    if not phrase:
+        return ""
+    how = (
+        "laughed and said it straight back to you"
+        if birth.laughed
+        else "said it straight back to you, laughing"
+    )
+    return (
+        f"Heads-up: \"{phrase}\" is turning into a bit between you two — "
+        f"you used it, and {user_display_name} {how}. If it fits, you can "
+        "let yourself notice that out loud, once, lightly (\"okay, that's "
+        "officially a thing now\") — the pleasure is in the two of you "
+        "clocking it together, not in you announcing a milestone. Don't "
+        "explain the joke, don't promise to keep using it, and if the "
+        "moment has already moved on, just let it go and talk normally."
+    )
+
+
+def bless_inside_joke(
+    birth: InsideJokeBirth,
+    *,
+    memory_store: "MemoryStore | None",
+    embedder: "Embedder | None",
+    moments_store: "SharedMomentsStore | None" = None,
+    session_key: str | None = None,
+    source_message_id: int | None = None,
+    salience: float = 0.7,
+) -> dict[str, Any]:
+    """Persist a just-born bit so it outlives the turn it was born in.
+
+    Two writes, both best-effort and independent:
+
+    * a ``kind="catchphrase"`` memory — the same registry the slow miner
+      feeds, so the phrase joins the "running jokes" block and becomes an
+      eligible K22 callback target;
+    * a ``shared_moment`` (vibe ``playful``) — the *event* of it becoming
+      theirs, which is what anniversaries and long-arc callbacks reach
+      for later.
+
+    Returns which writes landed. Never raises.
+    """
+    out: dict[str, Any] = {"catchphrase_id": None, "moment_id": None}
+    phrase = birth.phrase.strip()
+    if not phrase or memory_store is None or embedder is None:
+        return out
+    try:
+        emb = embedder.embed(phrase)
+    except Exception:
+        log.debug("inside-joke embed failed", exc_info=True)
+        return out
+    try:
+        memory = memory_store.add(
+            content=phrase,
+            kind="catchphrase",
+            embedding=emb,
+            salience=max(0.0, min(1.0, float(salience))),
+            source_session=session_key,
+            source_message_id=source_message_id,
+            # K26 provenance: a bit born this way is one of *hers* that he
+            # echoed, so she can never later "adopt" it as his turn of
+            # phrase. ``born`` marks the fast path for state dumps.
+            metadata={"origin": "assistant", "born": True},
+            # Born in front of us with a laugh behind it -- at least as
+            # vetted as a phrase the slow miner counted three times.
+            tier="long_term",
+        )
+    except Exception:
+        log.debug("inside-joke catchphrase insert failed", exc_info=True)
+        memory = None
+    if memory is not None:
+        out["catchphrase_id"] = int(getattr(memory, "id", 0) or 0) or None
+
+    if moments_store is not None:
+        try:
+            row = moments_store.add(
+                summary=f"\u201c{phrase}\u201d became a running bit between us",
+                vibe="playful",
+                source="birth",
+                confidence=0.7,
+                salience=max(0.0, min(1.0, float(salience))),
+                source_message_ids=(
+                    [birth.origin_message_id]
+                    if birth.origin_message_id is not None
+                    else None
+                ),
+                source_session=session_key,
+                source_message_id=source_message_id,
+            )
+        except Exception:
+            log.debug("inside-joke shared moment insert failed", exc_info=True)
+            row = None
+        if row is not None:
+            out["moment_id"] = int(getattr(row, "id", 0) or 0) or None
+    return out
 
 
 class CatchphraseMiner:
@@ -316,6 +538,14 @@ class CatchphraseMiner:
                 1, cand.count // 2
             )
             salience = max(0.3, min(0.9, self._salience + 0.1 * (balance - 1.0)))
+            # K26: who said it first decides whether Aiko is allowed to
+            # take the phrase on as her own later. Recorded at write time
+            # because the window that proves provenance is right here.
+            metadata = (
+                {"origin": cand.first_speaker}
+                if cand.first_speaker in ("user", "assistant")
+                else None
+            )
             try:
                 memory = self._memory.add(
                     content=phrase,
@@ -324,6 +554,7 @@ class CatchphraseMiner:
                     salience=salience,
                     source_session=session_key,
                     source_message_id=None,
+                    metadata=metadata,
                     # Schema v8: catchphrases are analytic outputs over
                     # an entire conversation window -- already vetted
                     # by recurrence, so they go straight to long_term.
@@ -354,5 +585,9 @@ class CatchphraseMiner:
 __all__ = [
     "CatchphraseCandidate",
     "CatchphraseMiner",
+    "InsideJokeBirth",
+    "bless_inside_joke",
+    "detect_inside_joke_birth",
+    "render_inside_joke_block",
     "_harvest_candidates",
 ]

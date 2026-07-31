@@ -38,6 +38,35 @@ class _Activity:
     size: int
     last_active: str
     days_since: float | None
+    representative_id: int = 0
+
+
+@dataclass
+class _Concept:
+    label: str
+    confidence: float = 0.5
+
+
+class _FakeView:
+    """Stands in for ConceptView: cluster rep id -> concepts."""
+
+    def __init__(
+        self,
+        by_rep: dict[int, list[_Concept]] | None = None,
+        *,
+        enabled: bool = True,
+        raises: bool = False,
+    ) -> None:
+        self._by_rep = by_rep or {}
+        self.enabled = enabled
+        self._raises = raises
+        self.calls: list[int] = []
+
+    def for_cluster(self, rep_id) -> list[_Concept]:
+        self.calls.append(int(rep_id))
+        if self._raises:
+            raise RuntimeError("boom")
+        return list(self._by_rep.get(int(rep_id), []))
 
 
 class _FakeGraphWithActivity:
@@ -339,6 +368,97 @@ class ClusterActivityShapeTests(unittest.TestCase):
         worker, _kv = _make_worker(graph=_FakeGraph(rich=_rich(5)), llm=llm)
         self.assertEqual(worker.run()["wrote"], 1)
         self.assertIn("topic 0", llm.last_user)
+
+
+class ConceptAnnotationTests(unittest.TestCase):
+    """L28: territories carry what Aiko believes about them, read through
+    ``ConceptView.for_cluster`` off the cluster's representative id."""
+
+    @staticmethod
+    def _graph() -> _FakeGraphWithActivity:
+        return _FakeGraphWithActivity([
+            _Activity("work stuff", 20, "x", 2.0, representative_id=11),
+            _Activity("old hobby", 12, "y", 300.0, representative_id=22),
+            _Activity("cooking", 8, "z", 60.0, representative_id=0),
+            _Activity("travel", 6, "w", 20.0, representative_id=44),
+        ])
+
+    def test_concepts_reach_the_llm_payload(self) -> None:
+        view = _FakeView({
+            11: [_Concept("he burns out when deadlines stack up")],
+            22: [_Concept("he misses playing guitar")],
+        })
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: view,
+        )
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertIn("you believe: he burns out when deadlines stack up", llm.last_user)
+        self.assertIn("he misses playing guitar", llm.last_user)
+        # Still says how much / how recently.
+        self.assertIn("20 memories, hot this week", llm.last_user)
+
+    def test_most_confident_concepts_win_the_cap(self) -> None:
+        view = _FakeView({
+            11: [
+                _Concept("weak hunch", 0.2),
+                _Concept("firm belief", 0.9),
+                _Concept("middling", 0.5),
+            ],
+        })
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: view, concepts_per_cluster=2,
+        )
+        worker.run()
+        self.assertIn("firm belief; middling", llm.last_user)
+        self.assertNotIn("weak hunch", llm.last_user)
+
+    def test_unresolved_representative_is_not_queried(self) -> None:
+        view = _FakeView({11: [_Concept("something")]})
+        worker, _kv = _make_worker(
+            graph=self._graph(), min_clusters=4, view_provider=lambda: view,
+        )
+        worker.run()
+        self.assertNotIn(0, view.calls)
+
+    def test_cold_view_leaves_payload_untouched(self) -> None:
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: _FakeView(enabled=False),
+        )
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertNotIn("you believe", llm.last_user)
+
+    def test_zero_per_cluster_skips_the_view_entirely(self) -> None:
+        view = _FakeView({11: [_Concept("something")]})
+        worker, _kv = _make_worker(
+            graph=self._graph(), min_clusters=4, view_provider=lambda: view,
+            concepts_per_cluster=0,
+        )
+        worker.run()
+        self.assertEqual(view.calls, [])
+
+    def test_view_failure_still_writes_the_reflection(self) -> None:
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: _FakeView({11: []}, raises=True),
+        )
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertNotIn("you believe", llm.last_user)
+
+    def test_provider_raising_is_swallowed(self) -> None:
+        def boom():
+            raise RuntimeError("no view")
+
+        worker, _kv = _make_worker(
+            graph=self._graph(), min_clusters=4, view_provider=boom,
+        )
+        self.assertEqual(worker.run()["wrote"], 1)
 
 
 if __name__ == "__main__":
