@@ -466,7 +466,10 @@ class MessageIndexerBackfillTests(_TmpRagBase):
     def test_live_listener_indexes_new_message(self) -> None:
         indexer = MessageIndexer(self.db, self.store, self.embedder)
         indexer.start(backfill=False)
-        self.db.add_message(session_id="s1", role="user", content="this is a fresh message that should index")
+        self.db.add_message(
+            session_id="s1", role="user",
+            content="this is a fresh message that should index",
+        )
         for _ in range(40):
             if self.store.counts()["messages"] >= 1:
                 break
@@ -485,8 +488,14 @@ class RagRetrieverMergeTests(_TmpRagBase):
         # Two memories + a message; one duplicate text across sources.
         v1 = self.embedder.embed("Jacob loves coffee")
         v2 = self.embedder.embed("Jacob lives in Poland")
-        self.store.add_memory(record_id="m1", content="Jacob loves coffee", kind="preference", embedding=v1, salience=0.9)
-        self.store.add_memory(record_id="m2", content="Jacob lives in Poland", kind="fact", embedding=v2, salience=0.7)
+        self.store.add_memory(
+            record_id="m1", content="Jacob loves coffee",
+            kind="preference", embedding=v1, salience=0.9,
+        )
+        self.store.add_memory(
+            record_id="m2", content="Jacob lives in Poland",
+            kind="fact", embedding=v2, salience=0.7,
+        )
         self.store.add_message(
             session_id="s9", message_id=1, role="user",
             content="Jacob loves coffee",  # dup with m1
@@ -512,8 +521,14 @@ class RagRetrieverMergeTests(_TmpRagBase):
     def test_format_block_splits_self_vs_jacob(self) -> None:
         v_self = self.embedder.embed("I prefer to keep things short")
         v_fact = self.embedder.embed("Jacob lives in Krakow")
-        self.store.add_memory(record_id="ms1", content="I prefer to keep things short", kind="self", embedding=v_self, salience=0.7)
-        self.store.add_memory(record_id="ms2", content="Jacob lives in Krakow", kind="fact", embedding=v_fact, salience=0.7)
+        self.store.add_memory(
+            record_id="ms1", content="I prefer to keep things short",
+            kind="self", embedding=v_self, salience=0.7,
+        )
+        self.store.add_memory(
+            record_id="ms2", content="Jacob lives in Krakow",
+            kind="fact", embedding=v_fact, salience=0.7,
+        )
         retriever = RagRetriever(self.store, self.embedder, top_k=5, score_threshold=-1.0)
         # Query verbatim against the fact so FakeEmbedder produces a real
         # similarity (it hashes per-string).

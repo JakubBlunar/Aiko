@@ -845,7 +845,11 @@ class LlmSettingsMixin:
                 )
                 return []
         now = time.monotonic()
-        if not refresh and self._models_cache is not None and (now - self._models_cache_time) < self._cache_ttl:
+        if (
+            not refresh
+            and self._models_cache is not None
+            and (now - self._models_cache_time) < self._cache_ttl
+        ):
             return list(self._models_cache)
         try:
             models = self._chat_client.list_models()

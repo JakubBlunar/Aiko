@@ -104,7 +104,9 @@ class _StubGraph:
     def cluster_member_ids(self, cluster_id: int) -> list[int]:
         return list(self._members.get(int(cluster_id), []))
 
-    def best_clusters_for(self, q: Any, *, top_n: int = 1, min_sim: float = 0.0) -> list[tuple[int, str, float]]:
+    def best_clusters_for(
+        self, q: Any, *, top_n: int = 1, min_sim: float = 0.0,
+    ) -> list[tuple[int, str, float]]:
         return list(self._best[:top_n])
 
 

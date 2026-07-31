@@ -232,8 +232,14 @@ class WorkerToolkitTests(unittest.TestCase):
 
     def test_format_transcript_dicts_with_age(self) -> None:
         rows = [
-            {"role": "user", "content": "hey", "created_at": (_NOW - timedelta(minutes=5)).isoformat()},
-            {"role": "assistant", "content": "hi", "created_at": (_NOW - timedelta(minutes=4)).isoformat()},
+            {
+                "role": "user", "content": "hey",
+                "created_at": (_NOW - timedelta(minutes=5)).isoformat(),
+            },
+            {
+                "role": "assistant", "content": "hi",
+                "created_at": (_NOW - timedelta(minutes=4)).isoformat(),
+            },
         ]
         out = tp.format_transcript(rows, _NOW)
         self.assertIn("[5 min ago] User: hey", out)

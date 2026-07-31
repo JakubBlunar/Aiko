@@ -461,7 +461,9 @@ class OpenMeteoProvider:
                     description=describe_wmo(code),
                     temp_max=float(highs[i]) if i < len(highs) and highs[i] is not None else 0.0,
                     temp_min=float(lows[i]) if i < len(lows) and lows[i] is not None else 0.0,
-                    precipitation_probability=int(precip[i]) if i < len(precip) and precip[i] is not None else 0,
+                    precipitation_probability=(
+                        int(precip[i]) if i < len(precip) and precip[i] is not None else 0
+                    ),
                 )
             )
         return Forecast(

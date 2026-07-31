@@ -72,7 +72,9 @@ class _FakeRetriever:
 
 
 class RagPrefetcherTests(unittest.TestCase):
-    def _wait_completed(self, prefetcher: RagPrefetcher, expected: int, *, timeout: float = 2.0) -> None:
+    def _wait_completed(
+        self, prefetcher: RagPrefetcher, expected: int, *, timeout: float = 2.0,
+    ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if prefetcher.stats()["completed"] >= expected:

@@ -38,7 +38,11 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_extractor import MemoryExtractor
 from app.core.memory.memory_retriever import MemoryRetriever
 from app.core.memory.memory_store import MemoryStore
-from app.core.persona.avatar_profile import AvatarProfile, AvatarProfileError, from_disk as _avatar_from_disk
+from app.core.persona.avatar_profile import (
+    AvatarProfile,
+    AvatarProfileError,
+    from_disk as _avatar_from_disk,
+)
 from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session import (
     AvatarMixin,

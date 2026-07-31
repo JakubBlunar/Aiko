@@ -372,7 +372,10 @@ def _relationship_clause(ctx: GroundingContext) -> str:
     days = ctx.relationship_days
     if phase and phase != "new":
         if days is not None and days >= 1:
-            return f"you and {ctx.user_display_name or 'the user'} are in the {phase} phase, ~{int(days)} days in"
+            return (
+                f"you and {ctx.user_display_name or 'the user'} are in the "
+                f"{phase} phase, ~{int(days)} days in"
+            )
         return f"you and {ctx.user_display_name or 'the user'} are in the {phase} phase"
     if days is not None and days >= 1:
         return f"~{int(days)} days in with {ctx.user_display_name or 'the user'}"

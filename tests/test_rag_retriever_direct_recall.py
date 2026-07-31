@@ -44,7 +44,10 @@ class MessagesInRangeTests(unittest.TestCase):
         # Three messages: two yesterday, one today.
         rows = [
             ("u:s1", "user", "yesterday morning note", _iso(NOW - timedelta(days=1, hours=3))),
-            ("u:s1", "assistant", "yesterday evening reply", _iso(NOW - timedelta(days=1) + timedelta(hours=7))),
+            (
+                "u:s1", "assistant", "yesterday evening reply",
+                _iso(NOW - timedelta(days=1) + timedelta(hours=7)),
+            ),
             ("u:s2", "user", "today note", _iso(NOW - timedelta(hours=2))),
         ]
         for sid, role, content, created in rows:
@@ -68,7 +71,11 @@ class MessagesInRangeTests(unittest.TestCase):
 
     def test_returns_only_in_window_rows_newest_first(self) -> None:
         start = _iso((NOW - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
-        end = _iso((NOW - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999))
+        end = _iso(
+            (NOW - timedelta(days=1)).replace(
+                hour=23, minute=59, second=59, microsecond=999999,
+            )
+        )
         rows = self.db.messages_in_range(start, end, limit=10)
         contents = [r["content"] for r in rows]
         self.assertEqual(
@@ -140,7 +147,9 @@ def _row(content: str, created: datetime, *, sid: str = "u:old", mid: int = 1) -
     }
 
 
-def _build(*, enabled: bool = True, rows: list[dict[str, Any]] | None = None) -> tuple[RagRetriever, _FakeChatDb]:
+def _build(
+    *, enabled: bool = True, rows: list[dict[str, Any]] | None = None,
+) -> tuple[RagRetriever, _FakeChatDb]:
     if rows is None:
         rows = [_row("we talked about the dashboard rollout", NOW - timedelta(days=1))]
     chat_db = _FakeChatDb(rows)

@@ -520,7 +520,10 @@ class DreamVariantTests(unittest.TestCase):
         # render strips it and keeps the waking "thinking about" framing.
         result = TurningOverResult(
             memory_id=3,
-            content="[mindmap] most of my head's been about work, almost nothing on how he unwinds.",
+            content=(
+                "[mindmap] most of my head's been about work, almost nothing "
+                "on how he unwinds."
+            ),
             dream=False,
             topical_score=0.8,
             age_hours=30.0,

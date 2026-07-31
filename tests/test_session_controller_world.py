@@ -32,7 +32,9 @@ class _SettingsStub:
     assistant: _AssistantStub
 
 
-def _make_controller(*, seed: bool = True) -> tuple[SessionController, Path, tempfile.TemporaryDirectory]:
+def _make_controller(
+    *, seed: bool = True,
+) -> tuple[SessionController, Path, tempfile.TemporaryDirectory]:
     tmp = tempfile.TemporaryDirectory()
     db_path = Path(tmp.name) / "session_world.db"
     ChatDatabase(db_path)

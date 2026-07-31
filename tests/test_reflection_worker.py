@@ -96,7 +96,11 @@ class ParseReflectionTests(unittest.TestCase):
         self.assertEqual(out.callbacks, ["Ask about packing tomorrow"])
 
     def test_parses_fenced_json(self) -> None:
-        raw = "```json\n{\"observation\":\"hello there\",\"open_questions\":[],\"callbacks\":[]}\n```"
+        raw = (
+            "```json\n"
+            "{\"observation\":\"hello there\",\"open_questions\":[],\"callbacks\":[]}\n"
+            "```"
+        )
         out = _parse_reflection_payload(raw)
         self.assertEqual(out.observation, "hello there")
         self.assertEqual(out.open_questions, [])
@@ -109,7 +113,8 @@ class ParseReflectionTests(unittest.TestCase):
 
     def test_caps_arrays(self) -> None:
         raw = (
-            '{"observation":"x","open_questions":["one item","two item","three item","four item","five item"]}'
+            '{"observation":"x","open_questions":["one item","two item",'
+            '"three item","four item","five item"]}'
         )
         out = _parse_reflection_payload(raw)
         self.assertEqual(len(out.open_questions), 3)
@@ -147,7 +152,11 @@ class ReflectionWorkerTests(unittest.TestCase):
 
     def test_runs_and_persists_memories(self) -> None:
         worker, ollama, store, embedder = self._make_worker(
-            response='{"observation":"Stood out: a trip plan.","open_questions":["When does he leave?"],"callbacks":["Check on packing"]}',
+            response=(
+                '{"observation":"Stood out: a trip plan.",'
+                '"open_questions":["When does he leave?"],'
+                '"callbacks":["Check on packing"]}'
+            ),
         )
         result = worker.maybe_run(
             session_key="s",

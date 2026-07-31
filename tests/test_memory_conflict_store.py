@@ -65,7 +65,8 @@ class SchemaMigrationTests(unittest.TestCase):
         conn.close()
 
     def test_v10_database_upgrades_through_v11(self) -> None:
-        """A pre-v11 database (no memory_conflicts) gets migrated cleanly through to the current version."""
+        """A pre-v11 database (no memory_conflicts) gets migrated cleanly
+        through to the current version."""
         tmp = tempfile.mkdtemp()
         path = Path(tmp) / "legacy.db"
         # Build a minimal v10-shaped database by hand: just the

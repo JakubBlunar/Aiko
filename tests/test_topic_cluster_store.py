@@ -86,8 +86,14 @@ class RoundTripTests(unittest.TestCase):
         store.upsert_cluster(ClusterRow(cluster_id=1, label="old"))
         store.set_assignment(99, 1)
         new_clusters = [
-            ClusterRow(cluster_id=1, label="a", centroid=np.array([1.0, 0.0], dtype=np.float32), size=2),
-            ClusterRow(cluster_id=2, label="b", centroid=np.array([0.0, 1.0], dtype=np.float32), size=2),
+            ClusterRow(
+                cluster_id=1, label="a",
+                centroid=np.array([1.0, 0.0], dtype=np.float32), size=2,
+            ),
+            ClusterRow(
+                cluster_id=2, label="b",
+                centroid=np.array([0.0, 1.0], dtype=np.float32), size=2,
+            ),
         ]
         store.replace_all(new_clusters, {1: 1, 2: 1, 3: 2, 4: 2})
         clusters, assignments = store.load_all()

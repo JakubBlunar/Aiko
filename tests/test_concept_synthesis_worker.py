@@ -261,7 +261,8 @@ class WorkerHarness:
 
 def _both_responder(system, user):
     """Realistic responder: a user identity concept (spans 2 clusters) and
-    an aiko identity concept (spans 2 self memories).     Value passes (L10) and boundary passes (L18) are
+    an aiko identity concept (spans 2 self memories). Value passes (L10) and
+    boundary passes (L18) are
     a deliberate no-op here so the identity-focused tests keep their counts;
     dedicated value coverage lives in ``ValueProposerTests`` and boundary in
     ``tests/test_l18_boundary_concepts.py``."""

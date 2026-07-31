@@ -504,7 +504,11 @@ class VoiceCaptureMixin:
         initial_prompt: str = "",
     ) -> dict[str, object]:
         if not self._state.mic_enabled:
-            return {"ok": False, "reason": "mic-disabled", "message": "Microphone source is disabled."}
+            return {
+                "ok": False,
+                "reason": "mic-disabled",
+                "message": "Microphone source is disabled.",
+            }
         if not self._realtime_stt.is_available:
             return {"ok": False, "reason": "stt-missing", "message": "RealtimeSTT not installed."}
         try:

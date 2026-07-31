@@ -247,7 +247,12 @@ class PromisePrefixStripTests(unittest.TestCase):
 
 class NarrativeWeaverTests(unittest.TestCase):
     def _seed_memories(self, memory: MemoryStore):
-        memory.add("Wonders if Jacob picked the python book back up", "callback", _emb(1), salience=0.8)
+        memory.add(
+            "Wonders if Jacob picked the python book back up",
+            "callback",
+            _emb(1),
+            salience=0.8,
+        )
         memory.add("Why is the deploy so flaky on Friday", "open_question", _emb(2), salience=0.7)
         memory.add("Will reply to that long email tomorrow", "promise", _emb(3), salience=0.6)
         memory.add("Notices that he warms up after coffee", "reflection", _emb(4), salience=0.5)

@@ -1416,7 +1416,9 @@ class MemoryFacadeMixin:
         if status_norm == "open":
             rows = store.list_open(self._user_id, limit=clamped)
         else:
-            rows = store.list_all(self._user_id, limit=clamped if status_norm is None else clamped * 4)
+            rows = store.list_all(
+                self._user_id, limit=clamped if status_norm is None else clamped * 4
+            )
             if status_norm is not None:
                 rows = [r for r in rows if r.status == status_norm][:clamped]
         return {"items": [r.to_dict() for r in rows], "enabled": True}

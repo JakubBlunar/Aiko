@@ -416,10 +416,18 @@ class TerminalTransitionTests(unittest.TestCase):
 class ListingTests(unittest.TestCase):
     def _seed(self, store: TaskStore) -> dict[str, int]:
         ids = {
-            "jacob_run": store.create(user_id="jacob", handler_name="file_search", title="r1", args={}, state={}),
-            "jacob_await": store.create(user_id="jacob", handler_name="file_read", title="r2", args={}, state={}),
-            "jacob_done": store.create(user_id="jacob", handler_name="file_search", title="r3", args={}, state={}),
-            "alice_run": store.create(user_id="alice", handler_name="file_search", title="a1", args={}, state={}),
+            "jacob_run": store.create(
+                user_id="jacob", handler_name="file_search", title="r1", args={}, state={},
+            ),
+            "jacob_await": store.create(
+                user_id="jacob", handler_name="file_read", title="r2", args={}, state={},
+            ),
+            "jacob_done": store.create(
+                user_id="jacob", handler_name="file_search", title="r3", args={}, state={},
+            ),
+            "alice_run": store.create(
+                user_id="alice", handler_name="file_search", title="a1", args={}, state={},
+            ),
         }
         store.mark_awaiting_input(ids["jacob_await"], prompt="?")
         store.mark_done(ids["jacob_done"], result={})
@@ -465,7 +473,10 @@ class ListingTests(unittest.TestCase):
             # newest -> oldest
             row_ids = [r.id for r in rows]
             self.assertEqual(row_ids, sorted(row_ids, reverse=True))
-            self.assertEqual(set(row_ids), {ids["jacob_run"], ids["jacob_await"], ids["jacob_done"]})
+            self.assertEqual(
+                set(row_ids),
+                {ids["jacob_run"], ids["jacob_await"], ids["jacob_done"]},
+            )
         finally:
             f.close()
 

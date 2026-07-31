@@ -69,7 +69,9 @@ _CIRCADIAN_BIAS: dict[str, dict[str, float]] = {
 # ── Day-color tilts (K27 palette names) ─────────────────────────────────
 _DAY_COLOR_BIAS: dict[str, dict[str, float]] = {
     "pensive": {"wander": 1.3, "look_outside": 1.3, "read_book": 1.1, "doodle": 0.8},
-    "restless": {"tidy_desk": 1.3, "move_cat": 1.3, "look_outside": 1.2, "read_book": 0.7, "nap": 0.6},
+    "restless": {
+        "tidy_desk": 1.3, "move_cat": 1.3, "look_outside": 1.2, "read_book": 0.7, "nap": 0.6,
+    },
     "cozy": {"read_book": 1.4, "snack": 1.3, "wander": 1.1, "tidy_desk": 0.8},
     "sharp_witted": {"doodle": 1.4, "tidy_desk": 1.3, "wander": 0.8},
     "dreamy": {"look_outside": 1.4, "wander": 1.3, "tidy_desk": 0.7},

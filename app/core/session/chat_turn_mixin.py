@@ -93,7 +93,9 @@ class ChatTurnMixin:
 
         # If chat history is disabled, replay the message into a transient key
         # so we never persist it across restarts.
-        session_key = self.session_key if self._remember_history else f"{self.session_key}:noremember"
+        session_key = (
+            self.session_key if self._remember_history else f"{self.session_key}:noremember"
+        )
 
         # ── Voice merge bookkeeping ────────────────────────────────────
         # For live-mode turns we install a ``_MergeBuffer`` so that:

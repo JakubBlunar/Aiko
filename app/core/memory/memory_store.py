@@ -823,7 +823,11 @@ class MemoryStore:
             confidence_value = 0.9
 
         temporal_type_normalized = _coerce_temporal_type(temporal_type)
-        event_time_clean = event_time.strip() if isinstance(event_time, str) and event_time.strip() else None
+        event_time_clean = (
+            event_time.strip()
+            if isinstance(event_time, str) and event_time.strip()
+            else None
+        )
         relevance_until_clean = (
             relevance_until.strip()
             if isinstance(relevance_until, str) and relevance_until.strip()

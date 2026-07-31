@@ -1497,7 +1497,8 @@ class ChatDatabase:
         conn = self._get_conn()
         created_at = _now_iso()
         cursor = conn.execute(
-            "INSERT INTO messages (session_id, role, content, token_count, created_at, arc, dialogue_act, attachments) "
+            "INSERT INTO messages (session_id, role, content, token_count, "
+            "created_at, arc, dialogue_act, attachments) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (session_id, role, content, token_count, created_at, arc, dialogue_act, attachments),
         )
@@ -1916,14 +1917,16 @@ class ChatDatabase:
     ) -> None:
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO session_summaries (session_id, summary, summary_tokens, messages_summarized, updated_at) "
+            "INSERT INTO session_summaries (session_id, summary, "
+            "summary_tokens, messages_summarized, updated_at) "
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, summary, summary_tokens, messages_summarized, _now_iso()),
         )
         if keep_latest and keep_latest > 0:
             conn.execute(
                 "DELETE FROM session_summaries WHERE session_id = ? AND id NOT IN "
-                "(SELECT id FROM session_summaries WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?)",
+                "(SELECT id FROM session_summaries WHERE session_id = ? "
+                "ORDER BY updated_at DESC LIMIT ?)",
                 (session_id, session_id, keep_latest),
             )
         conn.commit()

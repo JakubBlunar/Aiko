@@ -62,18 +62,19 @@ class ToolsRegistryMixin:
             )
             if getattr(tools_cfg, "get_time", True):
                 registry.register(GetTimeTool())
-            if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
+            has_retriever = getattr(self, "_rag_retriever", None) is not None
+            if getattr(tools_cfg, "recall", True) and has_retriever:
                 registry.register(RecallTool(self._rag_retriever))
             # F10d cluster-scoped recall. Gated by its own switch but needs
             # the same retriever; only useful once the topic graph is wired
             # (the tool returns an empty result otherwise, so it is safe to
             # register regardless).
-            if getattr(tools_cfg, "recall_topic", True) and getattr(self, "_rag_retriever", None) is not None:
+            if getattr(tools_cfg, "recall_topic", True) and has_retriever:
                 registry.register(RecallTopicTool(self._rag_retriever))
             # L5 concept recall. Same retriever; useful once the concept
             # store is wired (empty result otherwise, so safe to register
             # regardless).
-            if getattr(tools_cfg, "recall_concept", True) and getattr(self, "_rag_retriever", None) is not None:
+            if getattr(tools_cfg, "recall_concept", True) and has_retriever:
                 registry.register(RecallConceptTool(self._rag_retriever))
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the

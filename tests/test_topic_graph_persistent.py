@@ -386,9 +386,18 @@ class ClusterActivityTests(unittest.TestCase):
     def test_unparseable_timestamp_yields_none_days(self) -> None:
         store = _StubMemoryStore()
         for mem in [
-            _StubMemory(1, "cat naps", _vec([0.95, 0.30, 0.0, 0.0]), created_at="not-a-date", last_used_at=None),
-            _StubMemory(2, "kittens", _vec([0.92, 0.39, 0.0, 0.0]), created_at="", last_used_at=None),
-            _StubMemory(3, "warm cats", _vec([0.97, 0.25, 0.0, 0.0]), created_at="", last_used_at=None),
+            _StubMemory(
+                1, "cat naps", _vec([0.95, 0.30, 0.0, 0.0]),
+                created_at="not-a-date", last_used_at=None,
+            ),
+            _StubMemory(
+                2, "kittens", _vec([0.92, 0.39, 0.0, 0.0]),
+                created_at="", last_used_at=None,
+            ),
+            _StubMemory(
+                3, "warm cats", _vec([0.97, 0.25, 0.0, 0.0]),
+                created_at="", last_used_at=None,
+            ),
         ]:
             store.add(mem)
         _, cs = _cluster_store()

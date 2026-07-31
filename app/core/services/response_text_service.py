@@ -34,7 +34,8 @@ _INLINE_ACTION_META_PATTERN = re.compile(
 
 def parse_reaction_at_start(text: str) -> tuple[str | None, str]:
     """If text starts with [[reaction:X]], return (X, rest). Otherwise (None, text).
-    Use for streaming: call with accumulated buffer; when tag is complete, strip it and use rest for TTS.
+    Use for streaming: call with accumulated buffer; when tag is complete, strip
+    it and use rest for TTS.
 
     Stack form ``[[reaction:A+B]]``: only the **primary** (first)
     component is returned as the reaction name so every existing
@@ -94,7 +95,8 @@ def extract_tts_reaction_tag(text: str) -> tuple[str | None, str]:
 
 
 def strip_all_reaction_tags(text: str) -> str:
-    """Remove all [[reaction:X]] tags from text. Use for display/streaming so UI never shows tags."""
+    """Remove all [[reaction:X]] tags from text. Use for display/streaming so
+    the UI never shows tags."""
     return _REACTION_TAG_PATTERN.sub("", str(text or ""))
 
 
@@ -144,8 +146,9 @@ _DETAIL_CLOSE = "[[/detail]]"
 
 
 def parse_two_tier_reply(raw: str) -> tuple[str, str]:
-    """Split reply into (spoken_part, full_for_display). If no [[spoken]] block, whole reply is spoken.
-    full_for_display has tags stripped so it can be shown (and optionally markdown-rendered) in the transcript."""
+    """Split reply into (spoken_part, full_for_display). If no [[spoken]] block,
+    the whole reply is spoken. ``full_for_display`` has tags stripped so it can
+    be shown (and optionally markdown-rendered) in the transcript."""
     source = str(raw or "").strip()
     if not source:
         return "", ""
@@ -159,8 +162,9 @@ def parse_two_tier_reply(raw: str) -> tuple[str, str]:
         # Build full_for_display: strip tags but keep content (spoken + detail)
         before = source[:so].strip()
         after = source[sc + len(_SPOKEN_CLOSE) :].strip()
-        # Remove [[detail]]...[[/detail]] from spoken_part (already done - spoken is between spoken tags)
-        # full_for_display = before (e.g. reaction) + spoken content + after (may contain detail block)
+        # Nothing to remove from spoken_part: it is already just what sat
+        # between the spoken tags. full_for_display is before (e.g. reaction)
+        # + spoken content + after (which may carry the detail block).
         parts_for_display = []
         if before:
             parts_for_display.append(_strip_two_tier_tags(before))
@@ -180,7 +184,8 @@ def parse_two_tier_reply(raw: str) -> tuple[str, str]:
 
 
 def _strip_two_tier_tags(text: str) -> str:
-    """Remove [[spoken]]/[[/spoken]], [[detail]]/[[/detail]], and [[reaction:X]] tags but keep their content."""
+    """Remove [[spoken]]/[[/spoken]], [[detail]]/[[/detail]] and [[reaction:X]]
+    tags, keeping their content."""
     s = str(text or "")
     for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE, _DETAIL_OPEN, _DETAIL_CLOSE):
         s = s.replace(tag, "")

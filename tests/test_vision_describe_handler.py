@@ -52,7 +52,9 @@ class _Emitter:
 class _FakeVisionClient(OllamaClient):
     """An OllamaClient whose ``chat`` is canned (no network)."""
 
-    def __init__(self, response: str = "a sleepy orange cat", raise_exc: Exception | None = None) -> None:
+    def __init__(
+        self, response: str = "a sleepy orange cat", raise_exc: Exception | None = None,
+    ) -> None:
         # Deliberately skip super().__init__ — we never touch the network.
         self.calls: list[dict[str, Any]] = []
         self._response = response

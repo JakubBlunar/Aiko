@@ -157,7 +157,9 @@ class KvTests(unittest.TestCase):
 # ── Pure: candidates_from_hits ───────────────────────────────────────
 
 
-def _hit(mid: int, *, kind: str, age_days: float, score: float, content: str = "c") -> SimpleNamespace:
+def _hit(
+    mid: int, *, kind: str, age_days: float, score: float, content: str = "c",
+) -> SimpleNamespace:
     return SimpleNamespace(
         score=score,
         record=SimpleNamespace(
@@ -169,13 +171,19 @@ def _hit(mid: int, *, kind: str, age_days: float, score: float, content: str = "
 class CandidatesFromHitsTests(unittest.TestCase):
     def test_age_floor_filters(self) -> None:
         now = datetime.now(timezone.utc)
-        hits = [_hit(1, kind="fact", age_days=10, score=0.7), _hit(2, kind="fact", age_days=30, score=0.7)]
+        hits = [
+            _hit(1, kind="fact", age_days=10, score=0.7),
+            _hit(2, kind="fact", age_days=30, score=0.7),
+        ]
         cands = lac.candidates_from_hits(hits, now=now, min_age_days=21)
         self.assertEqual([c.memory_id for c in cands], [2])
 
     def test_kind_filter(self) -> None:
         now = datetime.now(timezone.utc)
-        hits = [_hit(1, kind="self", age_days=40, score=0.7), _hit(2, kind="fact", age_days=40, score=0.7)]
+        hits = [
+            _hit(1, kind="self", age_days=40, score=0.7),
+            _hit(2, kind="fact", age_days=40, score=0.7),
+        ]
         cands = lac.candidates_from_hits(
             hits, now=now, min_age_days=21, allowed_kinds=lac.ALLOWED_KINDS
         )
@@ -183,7 +191,12 @@ class CandidatesFromHitsTests(unittest.TestCase):
 
     def test_blank_and_bad_id_skipped(self) -> None:
         now = datetime.now(timezone.utc)
-        bad = SimpleNamespace(score=0.9, record=SimpleNamespace(id="abc", kind="fact", created_at=_iso(40), content="c"))
+        bad = SimpleNamespace(
+            score=0.9,
+            record=SimpleNamespace(
+                id="abc", kind="fact", created_at=_iso(40), content="c",
+            ),
+        )
         blank = _hit(2, kind="fact", age_days=40, score=0.7, content="  ")
         good = _hit(3, kind="fact", age_days=40, score=0.7)
         cands = lac.candidates_from_hits([bad, blank, good], now=now, min_age_days=21)

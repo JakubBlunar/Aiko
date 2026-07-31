@@ -15,8 +15,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
     )
 
     return AgentSettings(
-            proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
-            proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
+            proactive_silence_seconds=max(
+                10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))
+            ),
+            proactive_cooldown_seconds=max(
+                30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))
+            ),
             # Typed-mode floors: silence 60s (anything shorter reads as
             # nag-y at typed speed) and cooldown 120s. The defaults are
             # well above both floors; the clamps are belt-and-braces
@@ -672,18 +676,32 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 ),
             ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
-            summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
+            summary_min_unsummarized_messages=max(
+                2, int(agent_raw.get("summary_min_unsummarized_messages", 6))
+            ),
             summary_target_tokens=max(120, int(agent_raw.get("summary_target_tokens", 600))),
-            max_prompt_tokens_pct=max(0.3, min(0.95, float(agent_raw.get("max_prompt_tokens_pct", 0.8)))),
+            max_prompt_tokens_pct=max(
+                0.3, min(0.95, float(agent_raw.get("max_prompt_tokens_pct", 0.8)))
+            ),
             scheduler_idle_seconds=max(2.0, float(agent_raw.get("scheduler_idle_seconds", 20.0))),
-            scheduler_speaking_window_grace_ms=max(0, int(agent_raw.get("scheduler_speaking_window_grace_ms", 200))),
-            scheduler_max_job_seconds=max(1.0, float(agent_raw.get("scheduler_max_job_seconds", 8.0))),
-            reflection_min_seconds_between=max(0.0, float(agent_raw.get("reflection_min_seconds_between", 8.0))),
-            reflection_emotional_delta_threshold=max(0.0, float(agent_raw.get("reflection_emotional_delta_threshold", 0.05))),
+            scheduler_speaking_window_grace_ms=max(
+                0, int(agent_raw.get("scheduler_speaking_window_grace_ms", 200))
+            ),
+            scheduler_max_job_seconds=max(
+                1.0, float(agent_raw.get("scheduler_max_job_seconds", 8.0))
+            ),
+            reflection_min_seconds_between=max(
+                0.0, float(agent_raw.get("reflection_min_seconds_between", 8.0))
+            ),
+            reflection_emotional_delta_threshold=max(
+                0.0, float(agent_raw.get("reflection_emotional_delta_threshold", 0.05))
+            ),
             user_profile_min_turns=max(1, int(agent_raw.get("user_profile_min_turns", 6))),
             agenda_groom_every_n_turns=max(1, int(agent_raw.get("agenda_groom_every_n_turns", 8))),
             arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
-            prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
+            prepared_nudge_ttl_seconds=max(
+                30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))
+            ),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
             tool_pass_gate_enabled=bool(agent_raw.get("tool_pass_gate_enabled", True)),
@@ -702,15 +720,27 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 agent_raw.get("workflow_skill_router_enabled", False)
             ),
             consolidator_enabled=bool(agent_raw.get("consolidator_enabled", True)),
-            consolidator_min_hours_between=max(0.5, float(agent_raw.get("consolidator_min_hours_between", 18.0))),
+            consolidator_min_hours_between=max(
+                0.5, float(agent_raw.get("consolidator_min_hours_between", 18.0))
+            ),
             consolidator_chunk_size=max(8, int(agent_raw.get("consolidator_chunk_size", 40))),
-            consolidator_similarity_threshold=max(0.5, min(0.99, float(agent_raw.get("consolidator_similarity_threshold", 0.84)))),
-            consolidator_min_cluster_size=max(2, int(agent_raw.get("consolidator_min_cluster_size", 2))),
+            consolidator_similarity_threshold=max(
+                0.5, min(0.99, float(agent_raw.get("consolidator_similarity_threshold", 0.84)))
+            ),
+            consolidator_min_cluster_size=max(
+                2, int(agent_raw.get("consolidator_min_cluster_size", 2))
+            ),
             consolidator_use_llm_merge=bool(agent_raw.get("consolidator_use_llm_merge", True)),
             relationship_pulse_enabled=bool(agent_raw.get("relationship_pulse_enabled", True)),
-            relationship_pulse_min_hours=max(24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))),
-            relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
-            relationship_pulse_max_tokens=max(80, int(agent_raw.get("relationship_pulse_max_tokens", 256))),
+            relationship_pulse_min_hours=max(
+                24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))
+            ),
+            relationship_pulse_min_turns=max(
+                5, int(agent_raw.get("relationship_pulse_min_turns", 30))
+            ),
+            relationship_pulse_max_tokens=max(
+                80, int(agent_raw.get("relationship_pulse_max_tokens", 256))
+            ),
             cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
             earcon_auto_sprinkle=bool(
                 agent_raw.get("earcon_auto_sprinkle", True),
@@ -1669,7 +1699,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 agent_raw.get("sensory_anchor_enabled", True),
             ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
-            resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
+            resume_opener_ttl_seconds=max(
+                60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))
+            ),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
             dream_hot_cluster_enabled=bool(
                 agent_raw.get("dream_hot_cluster_enabled", True),

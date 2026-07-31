@@ -223,7 +223,8 @@ def _format_failure_bullet(cue: TaskCue) -> str:
 
 
 def _format_question_bullet(cue: TaskCue) -> str:
-    """``- file_search "meetings" — found a lot of matches; should I focus on recent ones? [recent / oldest / all]``"""
+    """``- file_search "meetings" — found a lot of matches; should I focus on
+    recent ones? [recent / oldest / all]``"""
     title = cue.title.strip() or "the task"
     question = cue.summary.strip() or "waiting for your input"
     if cue.options:
