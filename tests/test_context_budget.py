@@ -515,6 +515,80 @@ class RegionBuilderTests(unittest.TestCase):
         self.assertNotIn("enjoys systems thinking", region.text)
 
 
+class SurfacingStashTests(unittest.TestCase):
+    """L37: ``build_relevant_context`` leaves behind what it surfaced.
+
+    The rows themselves are written in post-turn (they are keyed by the
+    assistant message id, which doesn't exist yet here), so all this side
+    has to get right is *what* it hands over and *when* it clears.
+    """
+
+    _host = RegionBuilderTests._host
+
+    def test_stash_carries_every_surfaced_source(self) -> None:
+        host, _ = self._host()
+        host.build_relevant_context(
+            user_text="tell me about hiking", recent_turns=[],
+            session_key="s1", budget_tokens=2000, degrade_level=0,
+        )
+        items = host._last_surfaced_items
+        by_kind: dict[str, list] = {}
+        for item in items:
+            by_kind.setdefault(item.item_kind, []).append(item)
+        self.assertIn("memory", by_kind)
+        self.assertEqual([c.item_id for c in by_kind["concept"]], [7])
+        self.assertEqual([c.item_id for c in by_kind["cluster"]], [1])
+        # Provenance rides along: the lane is what makes the ledger
+        # diagnostic rather than just a per-item counter.
+        self.assertTrue(by_kind["concept"][0].lane)
+        self.assertGreater(by_kind["memory"][0].score, 0.0)
+
+    def test_stash_matches_what_was_rendered(self) -> None:
+        """A stash wider than the prompt would credit items Aiko never
+        actually saw, which is the one way this measurement can lie.
+        """
+        host, _ = self._host()
+        region = host.build_relevant_context(
+            user_text="tell me about hiking", recent_turns=[],
+            session_key="s1", budget_tokens=2000, degrade_level=0,
+        )
+        chosen = {
+            int(c.payload.record.id)
+            for c in region.selection.source("memory").chosen
+        }
+        stashed = {
+            i.item_id for i in host._last_surfaced_items
+            if i.item_kind == "memory"
+        }
+        self.assertEqual(stashed, {m for m in chosen if m > 0})
+
+    def test_an_early_return_clears_a_previous_stash(self) -> None:
+        """Otherwise the disabled turn's reply would inherit the last
+        turn's surfaced set and be credited with items it never carried.
+        """
+        host, _ = self._host()
+        host.build_relevant_context(
+            user_text="tell me about hiking", recent_turns=[],
+            session_key="s1", budget_tokens=2000, degrade_level=0,
+        )
+        self.assertTrue(host._last_surfaced_items)
+        host._memory_settings.context_budget_enabled = False
+        host.build_relevant_context(
+            user_text="hi", recent_turns=[], session_key="s1",
+            budget_tokens=2000, degrade_level=0,
+        )
+        self.assertEqual(host._last_surfaced_items, [])
+
+    def test_no_budget_clears_the_stash_too(self) -> None:
+        host, _ = self._host()
+        host._last_surfaced_items = ["stale"]
+        host.build_relevant_context(
+            user_text="hi", recent_turns=[], session_key="s1",
+            budget_tokens=0, degrade_level=0,
+        )
+        self.assertEqual(host._last_surfaced_items, [])
+
+
 class ConceptRenderSubjectTests(unittest.TestCase):
     """Subject-aware framing: aiko self-concepts read in the first person,
     not as things learned about the user."""

@@ -30,18 +30,26 @@ from one that lands every time. Aiko can grow her knowledge but not her
 judgement; her selection policy is hand-tuned constants that will be
 identical after a year of use.
 
-**L37** (surfacing outcome ledger) is the missing join, and it is cheap
-because the outcome signal already exists — `EngagementTracker` computes
-the user's reaction per turn and nothing reads it for this. Everything
-below wants L37 first:
+**L37** (surfacing outcome ledger) was the missing join, and it was cheap
+because the outcome signal already existed — `EngagementTracker` computes
+the user's reaction per turn and nothing read it for this. **It has now
+shipped as a recorder**, along with the `get_surfacing_outcomes` half of DT5:
+one row per surfaced item per turn, keyed by `assistant_message_id` and settled
+with the *following* turn's engagement label. Nothing consumes the rates yet,
+which is deliberate — the whole point of shipping the measurement first is that
+the items below can be designed against real data instead of guesses. Read the
+ledger before building any of them:
 
-- **L38** earned standing — outcomes move the concept surfacing score.
+- **L38** earned standing — outcomes move the concept surfacing score. The
+  ledger's read API was shaped for this one; it is the natural next pass.
 - **L42** a self-model of her own surfacing conduct (feeds L17, L19).
-- **F12** semantic revival + user-side credit for memories.
-- **G4** cue outcome accounting and self-tuning cooldowns.
+- **F12** semantic revival + user-side credit for memories. Also fixes the
+  weakest part of L37 as shipped: `echoed` is a keyword-overlap proxy.
+- **G4** cue outcome accounting and self-tuning cooldowns — `item_kind` is an
+  open enum, so `kind="cue"` is a value rather than a migration.
 - **P43** value-aware block arbitration instead of the hand-kept denylist.
 - **K81** taste formation — topics she likes, not topics she's seen.
-- **DT5** `get_surfacing_outcomes`, which should ship *with* L37.
+- **DT5** the rest of the debug surface (the ledger view itself has shipped).
 
 Independent of the spine, the same audit found four verified defects worth
 picking up on their own. Two are now closed and two remain: **L39** shipped
@@ -110,9 +118,10 @@ Dev / debug tooling (DT-series):
 - **DT3.** Feature-flag catalog + "minimal mode" preset.
 - **DT4.** Scenario / conversation replay harness (the deterministic-clock
   half is now unblocked by DT1).
-- **DT5.** `get_surfacing_outcomes` — the read side of the L37 ledger:
-  which surfaced concepts / memories / cues actually land. Should ship
-  with L37 rather than after it.
+- **DT5.** *Partly shipped* — `get_surfacing_outcomes` landed with L37 and
+  reports which surfaced concepts / memories actually land, with denominators
+  beside every rate and a per-lane rollup. Still open: the wider read surface
+  over the rest of the inner-life state.
 
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
@@ -380,11 +389,11 @@ a richer edge taxonomy, and a strategy layer. **L35 (surface-reason
 labels) is shipped** — every concept in the L26 trace now names the
 signal that put it in the prompt.
 
-Open — the surfacing-outcome group (L37-L42, from the surfacing audit; see
-the spine section at the top of this file):
+Open — the surfacing-outcome group (L38-L42, from the surfacing audit; see
+the spine section at the top of this file). **L37, the ledger the rest of the
+group depends on, is shipped** — it records what was surfaced and what happened
+next, and `get_surfacing_outcomes` is the view onto it:
 
-- **L37.** Surfacing outcome ledger — record what was surfaced and what
-  happened next. The prerequisite for most of the rest.
 - **L38.** Earned standing — a seventh `surface_score` term fed by L37, so
   concepts that reliably land rise and perennial no-shows fall. This is the
   change that turns the layer from a growing store of facts into something

@@ -2159,6 +2159,18 @@ turns that signal into a per-strategy measure), L44 (per-domain reliability).
 
 ## L37. Surfacing outcome ledger -- did what I brought up actually land?
 
+**Status: SHIPPED as a recorder** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l37-surfacing-outcome-ledger----did-what-i-brought-up-actually-land).
+One row per surfaced item per turn, keyed by `assistant_message_id` and settled
+with the *next* turn's engagement label. Two corrections found on the way in:
+there is no persisted `turn_id` to key on, and post-turn is not guaranteed to
+run — so an unsettled row is modelled as correct rather than broken. Nothing
+consumes the rates yet; that is L38, deliberately left as a separate pass so it
+can be designed against real ledger data through `get_surfacing_outcomes`.
+
+<details>
+<summary>Original entry (kept for the design reasoning)</summary>
+
 **Motivation.** The concept layer can grow its *knowledge* but not its
 *judgement*. Everything about which concepts reach the prompt is decided by
 hand-tuned constants — the per-kind `surface_weights`, the core-lane confidence
@@ -2253,9 +2265,21 @@ dance. No LLM calls, no new workers.
 **Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L38, L42, G4, P43,
 K81, DT5.
 
+</details>
+
 ---
 
 ## L38. Earned standing -- let outcomes move the surfacing score
+
+**Status: UNBLOCKED — L37 has shipped and is recording.** Its read API was
+shaped for this item specifically: `SurfacingOutcomeStore.stats_for(kind, ids,
+window_days=…)` is one grouped query for a whole candidate set, returns
+`(surfaced, settled, engaged, echoed)` *counts* rather than a rate so the
+shrinkage below has a real denominator to work with, and reports `None` rather
+than `0.0` when nothing has settled so a new concept isn't punished for being
+new. Before building, read actual ledger data through `get_surfacing_outcomes` —
+the point of shipping the recorder first was to avoid designing this against
+guesses.
 
 **Motivation.** With L37 recording what happened, the scorer can finally learn.
 Today `surface_score`

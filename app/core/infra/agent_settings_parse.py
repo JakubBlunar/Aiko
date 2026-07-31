@@ -894,6 +894,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             engagement_warmup_min=max(
                 2, int(agent_raw.get("engagement_warmup_min", 6)),
             ),
+            surfacing_ledger_enabled=bool(
+                agent_raw.get("surfacing_ledger_enabled", True),
+            ),
+            surfacing_echo_min_overlap_concept=max(
+                1, int(agent_raw.get("surfacing_echo_min_overlap_concept", 1)),
+            ),
             engagement_latency_z_strong_drop=max(
                 0.1,
                 float(
