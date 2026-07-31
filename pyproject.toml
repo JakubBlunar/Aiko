@@ -89,6 +89,10 @@ wake-word = [
 ]
 dev = [
   "pytest>=8.0.0,<10",
+  # Lint. Ruff is pre-1.0 and adds rules in minors, which for a linter means a
+  # patch bump can fail a previously green tree; the ceiling keeps that from
+  # happening on someone else's machine. Configured in ``[tool.ruff]`` below.
+  "ruff>=0.14.0,<1",
 ]
 all = [
   "english-speaking-assistant[voice,wake-word,dev]",
@@ -109,3 +113,38 @@ app = "app"
 
 [tool.ruff]
 line-length = 100
+target-version = "py311"
+# ``data/`` is the runtime state directory (SQLite, LanceDB, persona files) and
+# ``web/`` is the frontend; neither is ours to lint, and both can hold
+# user-dropped files.
+extend-exclude = ["data", "web"]
+
+[tool.ruff.lint]
+# Deliberately narrow: rules that catch real bugs or enforce something the
+# project already asserts in prose, and nothing that is merely a matter of
+# taste.
+#
+#   F  pyflakes -- unused imports/variables, and F541 (f-string with no
+#      placeholders), which AGENTS.md and .cursorrules have both required all
+#      along with nothing to enforce it.
+#   E  pycodestyle errors -- line length, which .editorconfig already declares
+#      as max_line_length = 100.
+#   W  pycodestyle warnings -- trailing whitespace and missing final newline,
+#      also already declared in .editorconfig.
+#   B  flake8-bugbear -- the genuine-bug subset: mutable default arguments,
+#      ``except`` ordering, loop variables captured by closures.
+select = ["F", "E", "W", "B"]
+
+# Not enabled, on purpose:
+#   I (isort), UP (pyupgrade), SIM (flake8-simplify) -- each is a large
+#     mechanical diff across ~780 files. They are worth doing, but as their own
+#     commits against an already-green baseline, not folded into the pass that
+#     establishes the baseline.
+#   ruff format -- this codebase is full of hand-wrapped comments and prose
+#     docstrings, and the formatter rewraps them. It would destroy exactly the
+#     commentary that makes the code readable, in a diff too large to review.
+
+[tool.ruff.lint.per-file-ignores]
+# Package headers re-export their public surface for callers to import from,
+# which is what an ``__init__`` is for; ruff reads that as unused.
+"__init__.py" = ["F401"]
