@@ -15,7 +15,6 @@ from app.llm.chat_client import (
     ChatToolCall,
     ChatUsage,
     content_looks_complete as _content_looks_complete,
-    strip_thinking_blocks,
     strip_thinking_blocks_with_signal as _strip_thinking_blocks_with_signal,
 )
 from app.llm.token_utils import estimate_tokens

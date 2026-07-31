@@ -31,7 +31,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable
+from typing import Callable
 
 from app.core.infra.chat_database import ChatDatabase, MessageRow
 from app.core.memory.memory_store import (

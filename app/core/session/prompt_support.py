@@ -11,21 +11,17 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from app.core.conversation import cue_register
-from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
+from app.core.infra.chat_database import MessageRow, SummaryRow
 from app.llm.token_utils import (
     chars_per_token,
-    estimate_messages_tokens,
     estimate_tokens,
 )
 
 if TYPE_CHECKING:
-    from app.core.memory.memory_retriever import MemoryRetriever
-    from app.core.rag.rag_retriever import RagRetriever
+    pass
 
 log = logging.getLogger("app.prompt_assembler")
 

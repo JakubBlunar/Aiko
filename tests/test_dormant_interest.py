@@ -8,12 +8,10 @@ inner-life consumer
 """
 from __future__ import annotations
 
-import json
 import unittest
 from dataclasses import dataclass
 
 from app.core.proactive.dormant_interest_worker import (
-    DORMANT_INTEREST_JOURNAL_KEY,
     DormantInterestWorker,
     append_dormant,
     classify_dormant,

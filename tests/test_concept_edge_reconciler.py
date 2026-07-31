@@ -6,7 +6,6 @@ listener-bypassing ``prune()`` via a raw row delete), and repoint-on-merge.
 """
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path

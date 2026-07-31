@@ -44,7 +44,6 @@ from app.core.memory.memory_extractor import (
 )
 from app.core.memory.memory_store import (
     VALID_TEMPORAL_TYPES,
-    Memory,
     MemoryStore,
     _coerce_temporal_type,
 )

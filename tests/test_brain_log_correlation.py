@@ -97,8 +97,8 @@ class FilterStampsBothIdsTests(unittest.TestCase):
         try:
             record = _make_record("app.core.test", logging.INFO, "hi")
             _TurnIdFilter().filter(record)
-            self.assertEqual(getattr(record, "turn"), "c0ffee01")
-            self.assertEqual(getattr(record, "task"), "ca5cade1")
+            self.assertEqual(record.turn, "c0ffee01")
+            self.assertEqual(record.task, "ca5cade1")
         finally:
             reset_task_id(ttt)
             reset_turn_id(tt)
@@ -106,16 +106,16 @@ class FilterStampsBothIdsTests(unittest.TestCase):
     def test_filter_dashes_when_neither_set(self) -> None:
         record = _make_record("app.core.test", logging.INFO, "hi")
         _TurnIdFilter().filter(record)
-        self.assertEqual(getattr(record, "turn"), "-")
-        self.assertEqual(getattr(record, "task"), "-")
+        self.assertEqual(record.turn, "-")
+        self.assertEqual(record.task, "-")
 
     def test_filter_dashes_task_when_only_turn_set(self) -> None:
         tt = set_turn_id("abc12345")
         try:
             record = _make_record("app.core.test", logging.INFO, "hi")
             _TurnIdFilter().filter(record)
-            self.assertEqual(getattr(record, "turn"), "abc12345")
-            self.assertEqual(getattr(record, "task"), "-")
+            self.assertEqual(record.turn, "abc12345")
+            self.assertEqual(record.task, "-")
         finally:
             reset_turn_id(tt)
 

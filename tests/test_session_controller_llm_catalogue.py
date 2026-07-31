@@ -287,7 +287,7 @@ class UpdateRouteTests(unittest.TestCase):
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
+            "app.llm.ollama_client.OllamaClient.get_context_length",
             return_value=None,
         ):
             result = controller.update_route(role, draft)

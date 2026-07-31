@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import unittest
 
-from app.llm import token_utils
 from app.llm.token_utils import (
     calibration_state,
     chars_per_token,

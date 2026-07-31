@@ -78,7 +78,6 @@ class MemoryRetriever:
         # Schema v10: deferred import keeps this fallback lightweight
         # (the LanceDB-backed path already imports the helpers; the
         # SQLite-only path is the cold standby).
-        from datetime import datetime, timezone
 
         from app.core.rag.rag_retriever import _temporal_suffix
 

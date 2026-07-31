@@ -9,13 +9,10 @@ from pathlib import Path
 import numpy as np
 
 from app.core.relationship.belief_store import (
-    Belief,
     BeliefStore,
     KIND_MOOD,
     KIND_OPINION,
-    SOURCE_MANUAL,
     SOURCE_SELF_TAG,
-    SOURCE_WORKER,
     STATUS_ACTIVE,
     STATUS_CONFIRMED,
     STATUS_CONTRADICTED,

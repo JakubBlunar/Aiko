@@ -15,7 +15,6 @@ exercise just the prefetch / assembler / client glue.
 from __future__ import annotations
 
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path

@@ -5,7 +5,6 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.proactive.prepared_nudge import PreparedNudgeStore

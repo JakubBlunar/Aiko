@@ -16,12 +16,12 @@ from app.core.session.prompt_assembler import (
     PromptTelemetry,
     _BLOCK_TIER_OF,
     _PROMPT_BLOCK_TIERS,
-    _SPEECH_GRAMMAR_ADDENDUM,
     block_char_table,
     _build_motion_grammar_addendum,
     _build_outfit_grammar_addendum,
     _build_overlay_grammar_addendum,
 )
+from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class _TempDb:

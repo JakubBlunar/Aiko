@@ -38,7 +38,7 @@ class ToolsRegistryMixin:
         registry, and hands it to the active :class:`TurnRunner`.
         """
         try:
-            from app.llm.tools import build_default_registry, ToolRegistry
+            from app.llm.tools import ToolRegistry
         except Exception:
             log.warning("tool registry import failed", exc_info=True)
             self._tool_registry = None

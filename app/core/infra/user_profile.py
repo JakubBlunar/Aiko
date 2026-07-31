@@ -23,12 +23,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sqlite3
-import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
 from app.core.infra import timephrase

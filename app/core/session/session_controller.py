@@ -22,15 +22,11 @@ already use, so callers don't have to change.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
-import time
-import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -39,13 +35,10 @@ from app.audio.earcons import EarconPlayer
 from app.core.affect.affect_state import AffectStore, AffectUpdater
 from app.core.conversation.backchannel_classifier import BackchannelGate, BackchannelHint
 from app.core.infra.chat_database import ChatDatabase
-from app.core.affect import circadian as _circadian
-from app.core.infra.crash_logging import log_event
 from app.core.memory.memory_extractor import MemoryExtractor
 from app.core.memory.memory_retriever import MemoryRetriever
 from app.core.memory.memory_store import MemoryStore
 from app.core.persona.avatar_profile import AvatarProfile, AvatarProfileError, from_disk as _avatar_from_disk
-from app.core.proactive.proactive_director import ProactiveDirector
 from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session import (
     AvatarMixin,
@@ -72,38 +65,17 @@ from app.core.session import (
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
-from app.core.session.session_text_utils import (
-    infer_tts_reaction,
-    prepare_tts_text,
-    sanitize_user_text,
-)
 from app.core.infra.settings import (
     AppSettings,
     LLM_ROLE_MAIN_CHAT,
     LLM_ROLE_WORKER_DEFAULT,
     find_provider,
 )
-from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
-from app.core.proactive.summary_worker import SummaryWorker
 from app.core.voice.tts_queue import TtsQueue
-from app.core.session.turn_runner import TurnRunner
 from app.core.session.merge_buffer import _MergeBuffer
-from app.core.session.session_state import SessionState
 from app.llm.chat_client import ChatClient
 from app.llm.embedder import build_embedder
-from app.llm.factory import ClientCache, build_client_for_route
-from app.llm.llm_gate import (
-    CONVERSATION_WORKER,
-    MAINTENANCE_WORKER,
-    TASK,
-    GatedChatClient,
-    LlmPriorityGate,
-    tier_from_name,
-)
-from app.llm.ollama_client import OllamaClient
-from app.llm.openai_compatible_client import OpenAICompatibleClient
-from app.llm.token_utils import estimate_tokens
-from app.stt import endpointing as _endpointing
+from app.llm.factory import ClientCache
 from app.stt.realtime_stt_service import RealtimeSttService
 
 

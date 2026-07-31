@@ -8,12 +8,10 @@ inner-life consumer
 """
 from __future__ import annotations
 
-import json
 import unittest
 from dataclasses import dataclass
 
 from app.core.proactive.interest_drift_worker import (
-    INTEREST_DRIFT_JOURNAL_KEY,
     InterestDriftWorker,
     append_drift,
     classify_drift,

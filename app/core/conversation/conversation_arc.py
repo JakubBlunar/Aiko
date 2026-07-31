@@ -41,7 +41,6 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label

@@ -22,7 +22,6 @@ from typing import Any
 
 import numpy as np
 
-from app.core.conversation import callback_detector
 from app.core.conversation.callback_detector import (
     CALLBACK_KINDS,
     CallbackHit,

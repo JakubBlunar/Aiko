@@ -51,7 +51,6 @@ from typing import TYPE_CHECKING, Callable, Iterable, Literal
 import numpy as np
 
 from app.core.memory.conflict_heuristics import (
-    HEURISTIC_BORDERLINE,
     HEURISTIC_DEFINITE,
     classify_pair,
 )

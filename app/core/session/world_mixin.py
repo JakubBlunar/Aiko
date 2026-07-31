@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from app.core.infra import timephrase
 
@@ -229,7 +228,6 @@ class WorldMixin:
         feature is disabled.
         """
         try:
-            from datetime import datetime
 
             from app.core.affect import vitality as _vit
             from app.core.affect import vitality_rhythm as _vr
@@ -536,7 +534,6 @@ class WorldMixin:
         # no-op inside ``apply_reaction_confirmation``.
         if bool(getattr(agent, "affection_style_enabled", True)):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import affection_style as _af
 
@@ -584,7 +581,6 @@ class WorldMixin:
             normalized_kind in ("laugh", "eyeroll")
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import humor_style as _hs
 
@@ -627,7 +623,6 @@ class WorldMixin:
         # half's master switch.
         if bool(getattr(agent, "intimacy_pacing_enabled", True)):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import intimacy_pacing as _ip
 

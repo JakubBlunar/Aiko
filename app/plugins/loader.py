@@ -31,7 +31,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 log = logging.getLogger("app.plugins")

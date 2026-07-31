@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.affect import affect_rupture_detector
 from app.core.affect.affect_rupture_detector import (
     DEFAULT_EXCLUDED_REACTIONS,
     RuptureResult,

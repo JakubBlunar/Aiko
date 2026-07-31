@@ -87,7 +87,6 @@ class InnerLifePart4Mixin:
         tracker = getattr(self, "_relationship_tracker", None)
         if tracker is not None:
             try:
-                from datetime import datetime, timezone
                 from app.core.relationship.relationship import _days_since, phase_for
 
                 rstate = tracker.get(self._user_id)
@@ -266,7 +265,6 @@ class InnerLifePart4Mixin:
         if store is None:
             return ""
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship.anniversary import pick_anniversary, render_anniversary_block
 
@@ -882,7 +880,6 @@ class InnerLifePart4Mixin:
         if chat_db is None or not hasattr(chat_db, "kv_get"):
             return False
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import vulnerability_budget as _vb
 
@@ -1294,7 +1291,6 @@ class InnerLifePart4Mixin:
         if tracker is None:
             return 0.0
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship.relationship import _days_since
 

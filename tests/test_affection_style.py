@@ -5,7 +5,6 @@ Pure math + serde only — no controller, no I/O. Mirrors the
 """
 from __future__ import annotations
 
-import math
 import unittest
 from datetime import datetime, timedelta, timezone
 

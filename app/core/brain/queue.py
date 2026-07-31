@@ -102,7 +102,7 @@ class BrainEventQueue:
         no-op (we don't raise — producers shouldn't have to know about
         shutdown races).
         """
-        priority = int(getattr(event, "priority"))
+        priority = int(event.priority)
         kind = str(getattr(event, "kind", "?"))
         with self._not_empty:
             if self._closed:

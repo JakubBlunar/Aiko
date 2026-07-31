@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 

@@ -46,7 +46,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal
 
 import numpy as np

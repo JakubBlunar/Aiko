@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from app.core.affect.affect_state import felt_phrase
 from app.core.session.session_text_utils import resolve_user_name

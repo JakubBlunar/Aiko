@@ -17,7 +17,6 @@ gate, the once-per-bit rule, and the two writes a birth produces.
 from __future__ import annotations
 
 import hashlib
-import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path

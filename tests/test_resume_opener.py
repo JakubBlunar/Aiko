@@ -20,7 +20,7 @@ import numpy as np
 
 from app.core.goals.agenda import AgendaStore
 from app.core.infra.chat_database import ChatDatabase
-from app.core.memory.memory_store import Memory, MemoryStore
+from app.core.memory.memory_store import MemoryStore
 from app.core.proactive.prepared_nudge import (
     NarrativeWeaver,
     PreparedNudgeStore,

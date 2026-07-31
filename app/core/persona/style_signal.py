@@ -449,7 +449,6 @@ class StyleSignalStore:
             return
         try:
             import json
-            from datetime import datetime, timezone
 
             blob = json.dumps(payload, separators=(",", ":"))
             self._db.execute_commit(

@@ -7,7 +7,6 @@ from typing import Any
 
 from app.core.tasks.workflow.workflow_planner import (
     ACTION_FINISH,
-    ACTION_MISSING_CAPABILITY,
     ACTION_SKILL,
     OUTCOME_PARTIAL,
     OUTCOME_SUCCESS,

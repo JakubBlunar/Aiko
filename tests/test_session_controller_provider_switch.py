@@ -267,7 +267,7 @@ class UpdateRouteTests(unittest.TestCase):
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
+            "app.llm.ollama_client.OllamaClient.get_context_length",
             return_value=None,
         ):
             result = controller.update_route(
@@ -333,7 +333,7 @@ class UpdateRouteTests(unittest.TestCase):
         with patch(
             "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
+            "app.llm.ollama_client.OllamaClient.get_context_length",
             return_value=None,
         ):
             controller.update_route(
@@ -374,7 +374,7 @@ class UpdateRouteTests(unittest.TestCase):
         controller = self._make_stub_controller()
         self.assertIs(controller._worker_client_inner, controller._chat_client)
         with patch(
-            "app.core.session.session_controller.OllamaClient.get_context_length",
+            "app.llm.ollama_client.OllamaClient.get_context_length",
             return_value=None,
         ):
             controller.set_chat_model("llama3.1:70b")

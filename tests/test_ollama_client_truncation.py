@@ -425,7 +425,7 @@ class StripThinkingBlocksTests(unittest.TestCase):
     """
 
     def test_strip_balanced_block(self) -> None:
-        from app.llm.ollama_client import strip_thinking_blocks
+        from app.llm.chat_client import strip_thinking_blocks
 
         text = (
             "<think>weighing the options here, settling on a tone</think>"
@@ -435,7 +435,7 @@ class StripThinkingBlocksTests(unittest.TestCase):
 
     def test_strip_unclosed_block(self) -> None:
         # Truncation can chop off the closing tag. Drop the rest.
-        from app.llm.ollama_client import strip_thinking_blocks
+        from app.llm.chat_client import strip_thinking_blocks
 
         text = (
             "Hello.\n<think>this is reasoning that never closes because we"
@@ -444,13 +444,13 @@ class StripThinkingBlocksTests(unittest.TestCase):
         self.assertEqual(strip_thinking_blocks(text), "Hello.")
 
     def test_strip_thinking_alias(self) -> None:
-        from app.llm.ollama_client import strip_thinking_blocks
+        from app.llm.chat_client import strip_thinking_blocks
 
         text = "<thinking>plotting</thinking>Final answer here."
         self.assertEqual(strip_thinking_blocks(text), "Final answer here.")
 
     def test_no_change_when_no_marker(self) -> None:
-        from app.llm.ollama_client import strip_thinking_blocks
+        from app.llm.chat_client import strip_thinking_blocks
 
         text = "A normal answer with no thinking trace."
         self.assertEqual(strip_thinking_blocks(text), text)

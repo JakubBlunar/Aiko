@@ -46,7 +46,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Iterable
 from app.core.infra import timephrase
 
 

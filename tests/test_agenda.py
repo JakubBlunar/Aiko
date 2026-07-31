@@ -9,7 +9,6 @@ from app.core.goals.agenda import (
     AgendaItem,
     AgendaStore,
     AgendaWorker,
-    GroomDiff,
     _parse_groom_diff,
     extract_inline_tags,
 )

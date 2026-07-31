@@ -818,7 +818,7 @@ class TaskOrchestrator:
                 session_key=self._session_key_for(row.user_id),
                 status=STATUS_CANCELLED,  # type: ignore[arg-type]
                 title=row.title,
-                result_summary=f"cancelled by user",
+                result_summary="cancelled by user",
                 notify_aiko=active.notify_aiko if active else row.notify_aiko,
                 visible_to_user=active.visible_to_user if active else row.visible_to_user,
             )

@@ -21,7 +21,6 @@ def register(mcp, session: "SessionController") -> None:
         decayed intensities.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import emotion_episodes as _ee
 
@@ -84,7 +83,6 @@ def register(mcp, session: "SessionController") -> None:
         miffed and arms the thaw.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import emotion_episodes as _ee
 
@@ -269,7 +267,6 @@ def register(mcp, session: "SessionController") -> None:
         Read-only.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.relationship import tease_ledger as _tl
 
@@ -531,7 +528,6 @@ def register(mcp, session: "SessionController") -> None:
         the wrong amount.
         """
         try:
-            from datetime import datetime, timezone
 
             from app.core.affect import vulnerability_budget as _vb
 

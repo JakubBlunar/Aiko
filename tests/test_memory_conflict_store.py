@@ -7,13 +7,14 @@ import unittest
 from pathlib import Path
 
 from app.core.infra.chat_database import ChatDatabase
-from app.core.memory.memory_conflict_store import (
-    ACTION_DEMOTE,
-    ACTION_DELETE,
-    FLAGGED_BY_AIKO,
-    FLAGGED_BY_AUTO,
+from app.core.memory.conflict_heuristics import (
     HEURISTIC_BORDERLINE,
     HEURISTIC_DEFINITE,
+)
+from app.core.memory.memory_conflict_store import (
+    ACTION_DEMOTE,
+    FLAGGED_BY_AIKO,
+    FLAGGED_BY_AUTO,
     MemoryConflictStore,
     STATUS_AUTO_RESOLVED,
     STATUS_DISMISSED,

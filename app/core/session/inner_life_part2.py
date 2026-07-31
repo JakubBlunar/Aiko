@@ -283,7 +283,6 @@ class InnerLifePart2Mixin:
             return ""
         try:
             from app.core.affect import calibration_detector
-            from datetime import datetime, timezone
 
             state = store.get(self._user_id)
             state = calibration_detector.decay(
@@ -614,7 +613,6 @@ class InnerLifePart2Mixin:
             log.debug("turning-over import failed", exc_info=True)
             return ""
 
-        from datetime import datetime, timezone
 
         memory_settings = self._memory_settings
         try:
@@ -726,7 +724,6 @@ class InnerLifePart2Mixin:
             return ""
         self._pending_sleep_return_seconds = None
 
-        from datetime import datetime, timezone
 
         from app.core.world import sleep_return as _sr
 
@@ -809,7 +806,7 @@ class InnerLifePart2Mixin:
         rows whose content is prefixed ``[dream] ``. Returns the cleaned gist
         (prefix stripped, truncated) or ``None`` when no recent dream exists.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from app.core.world import sleep_return as _sr
 
@@ -1724,7 +1721,6 @@ class InnerLifePart2Mixin:
         if chat_db is None or not hasattr(chat_db, "kv_get"):
             return ""
 
-        from datetime import datetime, timezone
 
         try:
             from app.core.relationship import shared_ritual as _sr
@@ -2276,7 +2272,6 @@ class InnerLifePart2Mixin:
         # occasional even when several re-openers are queued.
         clock_key = "dormant_interest.surfaced_clock"
         if not force_next:
-            from datetime import datetime, timezone
 
             cooldown_h = float(
                 getattr(
@@ -2327,7 +2322,6 @@ class InnerLifePart2Mixin:
                     "dormant_interest surfaced write failed", exc_info=True
                 )
         try:
-            from datetime import datetime, timezone
 
             chat_db.kv_set(
                 clock_key,

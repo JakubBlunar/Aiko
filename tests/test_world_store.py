@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from app.core.infra.chat_database import ChatDatabase
 from app.core.world.world_store import (
     VALID_KINDS,
-    VALID_PLANT_STAGES,
     VALID_POSTURES,
     WorldStore,
     promote_stage,

@@ -23,7 +23,6 @@ from app.core.rag.rag_retriever import (
 )
 from app.core.rag.rag_store import (
     MemoryRecord,
-    MessageRecord,
     RagHit,
 )
 

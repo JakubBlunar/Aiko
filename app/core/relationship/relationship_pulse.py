@@ -26,7 +26,7 @@ from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
-    from app.core.memory.memory_store import Memory, MemoryStore
+    from app.core.memory.memory_store import MemoryStore
     from app.core.relationship.relationship import RelationshipStore
     from app.llm.embedder import Embedder
     from app.llm.ollama_client import OllamaClient

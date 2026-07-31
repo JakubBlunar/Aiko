@@ -60,7 +60,6 @@ class SpeakingWindowJobsMixin:
         if store is None or embedder is None:
             return
         humanized = label.replace("_", " ")
-        from datetime import datetime, timezone
 
         today = timephrase.utcnow().strftime("%Y-%m-%d")
         content = (

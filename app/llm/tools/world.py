@@ -46,7 +46,7 @@ from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.session.session_controller import SessionController
-    from app.core.world.world_store import Item, Location, RoomState
+    from app.core.world.world_store import Item, Location
 
 
 log = logging.getLogger("app.tools.world")
@@ -532,7 +532,6 @@ class PlantSeedTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
-        from datetime import datetime, timezone
 
         from app.core.world.world_store import species_fact
 

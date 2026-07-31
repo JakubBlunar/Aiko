@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from app.llm.tools.base import Tool, ToolError, ToolSchema
+from app.llm.tools.base import ToolError, ToolSchema
 from app.core.infra import timephrase
 
 

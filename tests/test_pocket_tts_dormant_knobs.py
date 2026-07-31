@@ -9,7 +9,6 @@ Covers:
 """
 from __future__ import annotations
 
-import threading
 import unittest
 from unittest.mock import patch
 

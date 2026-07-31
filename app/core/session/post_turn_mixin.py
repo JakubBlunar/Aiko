@@ -339,7 +339,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
         ):
             try:
                 from app.core.conversation import callback_detector
-                from datetime import datetime, timezone
 
                 # Shared with F12's semantic revival and K30 below; K20
                 # picks it up next turn via the carry-forward at the end
@@ -511,7 +510,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
         ):
             try:
                 from app.core.affect import calibration_detector
-                from datetime import datetime, timezone
 
                 prior_assistant_vec = getattr(
                     self, "_prior_assistant_vec", None,
@@ -1475,7 +1473,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             getattr(agent_settings, "affection_style_enabled", True)
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import affection_style as _af
 
@@ -1560,7 +1557,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             getattr(agent_settings, "humor_style_enabled", True)
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import humor_style as _hs
 
@@ -1633,7 +1629,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             getattr(agent_settings, "intimacy_pacing_enabled", True)
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.relationship import intimacy_pacing as _ip
 
@@ -1699,7 +1694,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     and embedder is not None
                     and bool(getattr(graph, "persistent", False))
                 ):
-                    from datetime import datetime, timezone
 
                     mem = getattr(self, "_memory_settings", None)
                     min_sim = float(
@@ -1834,7 +1828,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             and raw_assistant_text
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.affect import vulnerability_budget as _vb
 
@@ -1914,7 +1907,6 @@ class PostTurnMixin(PostTurnHelpersMixin):
             and bool(getattr(agent_settings, "wants_ledger_enabled", True))
         ):
             try:
-                from datetime import datetime, timezone
 
                 from app.core.conversation import wants_ledger as _wl
 

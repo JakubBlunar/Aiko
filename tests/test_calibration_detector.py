@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
-from app.core.affect import calibration_detector
 from app.core.affect.calibration_detector import (
     CalibrationSignal,
     apply_signal,

@@ -16,8 +16,6 @@ surfaces here, not in a manual log dive.
 """
 from __future__ import annotations
 
-import logging
-import time
 import unittest
 from typing import Any
 from unittest.mock import MagicMock

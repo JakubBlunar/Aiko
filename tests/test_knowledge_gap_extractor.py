@@ -21,7 +21,6 @@ import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.knowledge_gap_extractor import (
-    GapCandidate,
     KnowledgeGapStore,
     extract_inline_tags,
 )

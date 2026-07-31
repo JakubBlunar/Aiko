@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import unittest
-from collections.abc import Iterator
 from unittest.mock import MagicMock, Mock, patch
 
 from app.core.infra.settings import load_settings

@@ -9,7 +9,6 @@ The worker composes its line via the deterministic fallback
 """
 from __future__ import annotations
 
-import json
 import random
 import unittest
 from datetime import datetime, timedelta, timezone
