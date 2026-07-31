@@ -217,6 +217,20 @@ Aiko calls tools via the LLM's native function-calling (time, memory recall, web
 
 The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `MessageIndexer`, `DocumentIngestor`, `MemoryStore`, `ChatDatabase`, `AvatarProfile`, `OllamaClient` tool calls, the response-text service, and the tool registry.
 
+## Code style
+
+Every tracked text file is LF, in the repository and in the working tree on
+every platform — enforced by [`.gitattributes`](.gitattributes) and matching
+[`.editorconfig`](.editorconfig). You don't have to configure anything for
+this; just don't set `core.autocrlf=true` locally, which would fight it.
+
+There is one local setting worth making, once per clone, so that the
+one-time LF renormalisation doesn't sit on top of every `git blame`:
+
+```powershell
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## Notes
 
 - Everything runs locally by default — Ollama, faster-whisper, Pocket-TTS, LanceDB.
