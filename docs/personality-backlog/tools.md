@@ -220,6 +220,55 @@ LLM; they should share the "which blocks fired" assertion vocabulary.
 
 ---
 
+## DT5. `get_surfacing_outcomes` — did what she brought up land?
+
+**Motivation.** `get_last_concept_trace` answers "why is this concept in the
+prompt *right now*" and `get_prompt_block_costs` answers "what did this prompt
+cost". Neither answers the question that matters over time: **which of the
+things she surfaces actually go anywhere?** Once L37's `surfacing_outcomes`
+ledger exists, that question is a query — but without a debug surface the data
+is invisible and none of the tuning it enables (L38 standing weights, G4
+cooldowns, P43 block value) can be sanity-checked against reality before being
+made load-bearing. This is the read side of the whole loop, and it should ship
+*with* L37 rather than after it, because the first thing anyone will want to
+know is whether the ledger is recording something sensible.
+
+**Key files.** A new tool in
+[`app/mcp/server_tools/`](../../app/mcp/server_tools/) alongside the existing
+concept and prompt-cost tools (`proactive_task_tools.py` holds
+`get_last_concept_trace`; `prompt_cost_tools.py` holds the P31a tool — either is
+a reasonable model). Reads the L37 table; see
+[`concepts.md`](concepts.md) and [`rules/mcp-server.md`](../../rules/mcp-server.md)
+for the registration pattern and the docs table that needs a row.
+
+**Sketched approach.** Three views off the same table, because they answer
+different questions and a single dump answers none of them well: a **leaderboard**
+(top and bottom items by engaged rate, with observation counts so the reader can
+see which numbers are meaningless yet — a 2-of-3 rate must *look* untrustworthy),
+a **per-turn trace** for the last N turns showing what was surfaced and how the
+turn went, and a **coverage** view — how much of the concept and memory store has
+ever surfaced at all, which is the fastest way to spot a whole population that
+retrieval never reaches.
+
+Report shrunk estimates next to raw counts, matching whatever L38's scorer
+actually consumes, so the tool and the ranking never disagree. Include the
+unsettled-row count as an explicit field: a large backlog of unsettled turns
+means the off-by-one attribution is silently failing, and that is the failure
+mode most likely to go unnoticed.
+
+**Open questions.** (1) Does this want to be one tool with a `view` argument or
+three tools? One tool with a mode keeps the registry small, which the MCP
+surface is already straining. (2) Is a UI panel worth it eventually, or is MCP
+plus the existing diagnostics drawer enough? MCP first — this is a tuning tool,
+not something a user needs. (3) Whether it should also expose the *decline
+reasons* G4 records, or those belong with the worker-status tool.
+
+**Effort.** Small.
+
+**Depends on.** L37 (the ledger). Pairs with G4.
+
+---
+
 ## D7. Anticipatory routine assistance — act on what she's learned
 
 **Motivation.** K3 already learns the user's recurring `(weekday, bucket)` slots

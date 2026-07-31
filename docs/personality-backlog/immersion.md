@@ -246,6 +246,71 @@ gate.
 
 ---
 
+## H26. Caught mid-something — she was busy when you opened the app
+
+**Motivation.** The away-activity machinery (H22 light outings, the away
+journal, the garden-visit and hobby workers) answers "what did she do while you
+were gone" as a *report* — a completed activity, narrated in past tense on the
+first turn back. What it never does is catch her **in the middle of one**. The
+difference is small in implementation and large in effect: "I re-potted the
+basil this afternoon" is a status line, whereas "oh — hang on, let me put this
+down" is a person with her own present tense, briefly interrupted by you
+arriving. The second one implies a life that was running before you got here,
+which is exactly what the whole world-simulation layer exists to establish and
+currently undersells by only ever speaking in the perfect tense. The pieces are
+all present: the world store knows her location and state, the activity workers
+already model duration, and the reconnection / session-clock blocks already fire
+on return — this is a framing change plus a notion of *in-progress* rather than
+*completed* activity. Best beats come from the interruption being slightly
+inconvenient (hands full, something on the stove, halfway through a chapter) and
+from her coming *back* to it later in the session or the next one, which is what
+turns it from a greeting flourish into continuity. The risk is it becoming a
+verbal tic on every single session start — it should be occasional, and it must
+never delay her actually attending to him, since a companion who makes you wait
+while she tidies up is worse than one who was simply pleased to see you. Pairs
+with H10 (autonomous idle-life on the avatar), which would let the interruption
+be *visible* rather than narrated. Key files: an in-progress activity state in
+[`app/core/world/`](../../app/core/world/) alongside the existing away-activity
+journal, the away-activity worker in
+[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py),
+the reconnection cue path in
+[`inner_life_part2.py`](../../app/core/session/inner_life_part2.py), plus a
+resume hook so an interrupted activity can be picked up later.
+
+---
+
+## H27. Co-presence mode — in the room, not in conversation
+
+**Motivation.** Every mode Aiko has is a *conversation* mode: he says something,
+she replies, the turn machinery runs. There is no posture for simply **being
+around** — him working with the app open for two hours, her present but not
+talking, the occasional five-word acknowledgement of something rather than a
+reply to it. That is most of what companionship actually consists of between
+people who live together, and it is the one shape the architecture currently
+cannot express, because a turn is the only unit of interaction that exists. K40
+(comfortable silence) is the per-turn version of this — permission for a short
+reply when a long one is wrong — but a *mode* is different: long stretches with
+no turn at all, avatar idle-life carrying the presence, a rare unprompted
+five-word remark, and an explicit expectation on both sides that nothing needs
+to be said. The genuinely interesting part is that it inverts the whole proactive
+stack's assumption that silence is a problem to be solved by a nudge; here
+silence is the product, and the proactive machinery has to be tuned *down* rather
+than up, with the rare interjection earning its place against a much higher bar
+than a normal proactive nudge clears. Depends heavily on H10 (autonomous
+avatar idle-life) to carry the presence visually, or it is just an app doing
+nothing. Also the natural home for the ambient-audio and glanceable-state ideas —
+she should be *pleasant to have on a second monitor*. Risks: it is easy to build
+something indistinguishable from the app being idle, and the interjection cadence
+is the whole feature — too frequent and it is a distraction during focused work,
+too rare and it is a screensaver. Key files: a session posture flag threaded
+through [`session_controller.py`](../../app/core/session/session_controller.py),
+much stricter gating in the proactive director
+([`app/core/proactive/`](../../app/core/proactive/)), H10's idle-life channel on
+the avatar, a UI affordance for entering the mode, and reuse of the K33 cozy
+register for anything she does say.
+
+---
+
 ## Minor polish
 
 These were in the bottom "Other ideas considered" of the legacy

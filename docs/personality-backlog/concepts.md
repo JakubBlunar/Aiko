@@ -707,6 +707,24 @@ self-version. Overlaps L19 (autobiography) and L29(b) (meta-narrative over
 concepts) for the timeline; keep those as the *rendering* consumers, L17 as the
 *change-detection* engine.
 
+**Enrichment (from the surfacing audit).** Two later items give L17 richer
+material than beliefs alone, and both are better drift subjects than a
+confidence wiggle:
+
+- **L43** (how she thinks he sees her). Drift in the *second-order* model is a
+  stronger and more affecting signal than drift in a proposition — "I've become
+  more careful with you, and I'm not sure I like that" is a different order of
+  observation from "I revised my estimate of your preferences". It is also the
+  variety of change most likely to clear L17b's salience bar, since a shift in
+  perceived reception tends to be directional rather than noisy.
+- **L42** (self-model of her surfacing conduct). Drift in *behaviour* — what she
+  keeps steering toward — is observable without any belief changing at all, so it
+  catches a class of change L17 currently cannot see.
+
+Both suggest L17b's classifier should take a **kind** of change as input, not
+just a magnitude, since "I hold this less firmly" and "I have started behaving
+differently" deserve different interpretive treatment.
+
 **Effort.** Large overall; sequenced L17a → L17e below.
 
 ---
@@ -2123,11 +2141,552 @@ backing belief is contradicted (L15) is re-examined.
 
 **Open questions.** (1) New kind, or an extension of `communication_style`? (2) How
 is "this approach worked" measured (K14 engagement signals, user reactions)?
-(3) Guard against over-fitting rigid rules that make her robotic — plasticity +
-context-gating.
+**L37's surfacing outcome ledger is the answer to this** — it was the open
+question blocking the item, and it now has a design: a strategy's effectiveness
+is the engaged rate of the turns where it was in play. (3) Guard against
+over-fitting rigid rules that make her robotic — plasticity + context-gating.
+(4) L44 (per-domain self-calibration) is the natural reliability axis for a
+strategy: "this approach works, in the domains where my judgement is any good".
 
 **Effort.** Large (new kind + conditional context-gated surfacing + an
 effectiveness signal).
 
 **Depends on.** L23 (communication_style), L17d (self-correction as a strategy
-source), L34 (belief -> strategy edges), K14 (effectiveness signal).
+source), L34 (belief -> strategy edges), K14 (effectiveness signal), L37 (which
+turns that signal into a per-strategy measure), L44 (per-domain reliability).
+
+---
+
+## L37. Surfacing outcome ledger -- did what I brought up actually land?
+
+**Motivation.** The concept layer can grow its *knowledge* but not its
+*judgement*. Everything about which concepts reach the prompt is decided by
+hand-tuned constants — the per-kind `surface_weights`, the core-lane confidence
+bars, the habituation window — and none of them move in response to how the
+conversation went. Surfacing is very nearly write-only: the only trace a
+surfaced concept leaves is the habituation timestamp stamped at the end of
+`build_relevant_context`
+([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py), the
+`_write_concept_habituation` call), and `last_reinforced_at` is written *only*
+by the synthesis worker re-deriving a concept from fresh evidence
+([`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py),
+`_reinforce`). A concept that has been in front of Aiko two hundred times to no
+visible effect is therefore indistinguishable from one that opened up a good
+conversation every single time.
+
+The memory layer is one step ahead but stops short of the same line. It has
+`mark_surfaced` -> `mark_used` for recency, and
+`_mark_revived_memories`
+([`post_turn_helpers_mixin.py`](../../app/core/session/post_turn_helpers_mixin.py))
+bumps `revival_score` when the reply shares content words with a surfaced
+memory. But that measures whether **Aiko echoed it**, not whether **the user
+cared** — and the K22 callback detector measures the same thing from a
+different angle. Nothing in the system asks the second question, even though
+the answer is already computed: `EngagementTracker.record_turn`
+([`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py))
+produces an `EngagementResult` per turn from the user's reply latency and word
+count against his own rolling baseline, bucketed `engaged` / `neutral` /
+`disengaged` / `abandoned`.
+
+L37 is the missing join: a durable per-item record of *what was surfaced* and
+*what happened next*. It is the keystone for L38, L42, G4, P43 and K81 — none
+of which can be built on guesses about value.
+
+**Key files.**
+- Write side: the end of `build_relevant_context` in
+  [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) already
+  computes exactly the set to record — `chosen_hits` (memories) and the chosen
+  concept pairs, next to the existing `rag.mark_surfaced` /
+  `_write_concept_habituation` calls. The per-concept `score_components` map
+  built in the same function carries lane, reason and the individual score
+  terms, which is what makes the ledger diagnostic rather than just a counter.
+- Outcome side:
+  [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — the
+  engagement block that calls `record_turn` and stashes
+  `self._last_engagement_label`. The credit write belongs next to
+  `_mark_revived_memories`.
+- Storage: a new `surfacing_outcomes` table in
+  [`chat_database.py`](../../app/core/infra/chat_database.py) (schema bump),
+  keyed by `(turn_id, item_kind, item_id)`. `kv_meta` is the wrong shape — this
+  is append-heavy and wants aggregation.
+- Existing precedent for the aggregate shape: `concept_events`
+  ([`concept_store.py`](../../app/core/concepts/concept_store.py)) — same
+  append-then-summarise pattern, same retention concern (see P34).
+
+**Sketched approach.** Record one row per surfaced item per turn:
+`(turn_id, kind, item_id, lane, surface_reason, score, rank)`. Then, in
+post-turn, attribute the outcome.
+
+The attribution is **off by one, and getting that wrong would invalidate the
+whole signal**. `record_turn` derives latency from the gap between Aiko's last
+reply and the user's current message, so the engagement computed during
+post-turn of turn *N* describes the user's reaction to the reply of turn
+*N-1*. The ledger therefore credits the previous turn's surfaced set, not the
+current one. Keep the last turn's row ids on the session and settle them when
+the next engagement result arrives; a session that ends before the next message
+leaves the final turn unsettled, which is correct — silence after a goodbye is
+not disengagement.
+
+Store three outcome fields per row: `echoed` (Aiko referenced it — reuse the
+overlap test, upgraded by F12), `engagement_label` (the user's reaction), and
+`settled_at`. Two coarse derived rates per item — *echo rate* and *engaged
+rate* — are all L38 needs.
+
+Deliberately **not** in scope: any attempt to isolate a single item's
+contribution when eight were surfaced together. The turn-level signal is
+shared credit across the whole surfaced set, which is noisy per turn and
+perfectly adequate over hundreds. Resist the urge to build a regression here.
+
+**Open questions.** (1) Retention — one row per item per turn is roughly ten
+rows a turn; fold into P34's retention posture from the start rather than
+discovering it later. (2) Does an `abandoned` label mean the surfaced set was
+bad, or that the user's dinner was ready? Probably: only ever *reward* engaged,
+never *punish* abandoned, so the signal degrades to "no evidence" rather than
+false blame. (3) Should worker cues live in the same table (one ledger,
+`kind="cue"`) or their own — one table is simpler and G4 wants the same
+columns, so probably yes. (4) Whether `echoed` deserves its own weight at all
+once user engagement is available, or is only useful as a diagnostic.
+
+**Effort.** Medium. Schema bump + two write points + the off-by-one settling
+dance. No LLM calls, no new workers.
+
+**Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L38, L42, G4, P43,
+K81, DT5.
+
+---
+
+## L38. Earned standing -- let outcomes move the surfacing score
+
+**Motivation.** With L37 recording what happened, the scorer can finally learn.
+Today `surface_score`
+([`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)) blends
+six signals — context, confidence, recency, stability, salience, activation —
+every one of which describes the concept's *internal state*. Not one of them
+describes how the concept has *performed*. A belief that reliably opens the
+user up and a belief that reliably lands flat are scored identically forever,
+which is why the layer's taste is frozen at whatever the weights table said on
+day one.
+
+L38 adds a seventh term, **standing**: a slowly-moving per-concept prior earned
+from the L37 engaged rate. This is the specific change that turns the concept
+layer from a growing store of facts into something that develops judgement
+about its own material.
+
+**Key files.**
+- [`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py) —
+  `surface_score` gains a `standing` argument; it belongs *inside* the
+  sum-normalised base alongside confidence and stability, not as an additive
+  bonus like `activation` (a learned prior should be able to lose to a strong
+  topic match, not stack on top of it).
+- [`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) —
+  `SurfaceWeights` gains a `standing` weight per kind. Start it at `0.0`
+  everywhere so shipping the plumbing changes no behaviour, then raise it per
+  kind behind a setting.
+- [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) — the
+  `_add_scored` closure reads the standing map, loaded once per turn next to
+  the habituation state and the recent-events map.
+
+**Sketched approach.** Standing is a shrunk estimate, not a raw rate: a concept
+surfaced three times with two good turns has *no* evidence, and letting it
+outrank a proven one on a 67% rate would make the whole term noise. Shrink
+toward the neutral 0.5 by observation count (a plain Bayesian
+`(engaged + k*prior) / (total + k)` with `k` around 10 is enough), so standing
+only becomes decisive after a couple of dozen surfacings. Recompute in the
+concept-lifecycle worker rather than per turn.
+
+Cap the term's authority deliberately. Standing must never be able to keep a
+topically irrelevant concept in the prompt, and it must never fully suppress a
+core belief — the floor matters as much as the ceiling, because a value the
+user finds uncomfortable is exactly the kind of thing that scores badly and
+must still be held. Clamping standing into something like `[0.35, 1.0]` and
+exempting `value` / `boundary` kinds from downward pressure is the safe
+version.
+
+**Open questions.** (1) Per-kind weights, or one global? Per-kind matches the
+existing table, but the evidence per kind will be thin for a long time. (2)
+Should standing feed `confidence` instead of sitting beside it? No — confidence
+is "how sure am I this is true", standing is "how useful is it to bring up",
+and collapsing them would let an unpopular truth decay into a falsehood. Worth
+stating explicitly in the code comment. (3) Interaction with habituation: both
+suppress, and stacking them could bury a concept entirely — needs a test that
+a high-standing concept still rotates, and a low-standing one still surfaces
+occasionally so it can earn its way back. (4) Does this want an explicit
+exploration allowance (surface a low-standing concept now and then precisely
+*because* the estimate is stale)? Probably, and it is the difference between a
+system that learns and one that ossifies.
+
+**Effort.** Medium. Small code change, but the safety properties above are
+where the work actually is.
+
+**Depends on.** L37 (the signal). Related to L32 (importance is the *stated*
+weight; standing is the *earned* one — they should stay separate axes).
+
+---
+
+## L39. Identity concepts surface twice a turn, and one copy ignores habituation
+
+**Motivation.** Two independent paths render the same concepts into the same
+prompt, and they don't know about each other. `_profile_concept_lines`
+([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) renders
+up to `profile_concept_max_lines` (default 10) `subject="user"` identity and
+value concepts into the T0 profile block, ordered by confidence, with a 0.5
+confidence bar — **every turn, with no habituation and no knowledge of T3**.
+Meanwhile the L27 core lane independently pins up to `context_budget_core_cap`
+concepts from those same kinds into T3. There is a `seen` dedupe *within* the
+profile block, but nothing across blocks.
+
+So Aiko's strongest beliefs about the user appear twice, phrased differently,
+on the same turn — and the profile copy is immune to every anti-repetition
+mechanism L23 built. This is the most likely source of a "she keeps telling me
+what I'm like" feeling, and it quietly wastes the T0 slot that P31 wants to
+reclaim.
+
+**Key files.**
+- [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) —
+  `_profile_concept_lines` (the T0 path) and the core-lane block inside
+  `build_relevant_context` (the T3 path).
+- [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — T0
+  `profile_block` is assembled long before T3 exists, which is the whole
+  difficulty: the profile cannot ask "did T3 already take this?" because T3
+  has not been built yet.
+
+**Sketched approach.** The ordering makes the obvious fix impossible, so invert
+it: let the **profile block claim first** (it renders earlier and is the more
+stable, cache-friendly home for a settled trait), record the claimed concept
+ids on the turn, and have the core lane skip anything already claimed. The
+core lane already over-fetches `core_cap * 3` for habituation rotation, so it
+has spare candidates to fill with — this costs nothing in slot count.
+
+Then give the profile path the same habituation read the flex and core lanes
+use, so a trait that has led the profile for ten turns steps aside for another
+one. It should *not* get the habituation *write* (that would double-stamp
+against T3's clock); read-only is the right asymmetry, and worth a comment
+saying so.
+
+**Open questions.** (1) Is claim-first-in-T0 the right precedence, or should
+the turn-relevant T3 lane win because it is responsive to the conversation?
+Leaning T0 for prompt-cache stability, but a topically hot identity concept
+arguably belongs in T3. (2) Does the profile block want its own smaller cap
+once duplicates are gone — ten identity lines every turn is a lot of standing
+assertion. (3) Should this share one "already surfaced this turn" set across
+*all* blocks, which is really the general version of the problem P43 is about?
+
+**Effort.** Small. Two read sites and a per-turn claimed-id set.
+
+**Depends on.** Nothing. Pairs naturally with L40 and P31.
+
+---
+
+## L40. Habituation doesn't reach the core lane's budget competition
+
+**Motivation.** L23's habituation is supposed to make a just-surfaced concept
+step aside. On the core lane it only half-works. The core block computes the
+habituation factor and uses it to sort fresh candidates ahead of stale ones,
+then admits the winners with `relevance=conf` — the concept's **raw
+confidence** ([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py),
+the `ContextCandidate(source="concept", relevance=conf, ...)` construction).
+The factor is recorded in the trace and then dropped.
+
+Because pinned candidates bypass the per-source cap and the relevance floor but
+still consume the shared token budget, that raw confidence is what a core
+concept competes against *memories* with. So a core belief that surfaced last
+turn is softly deprioritised against other core beliefs, and not at all against
+the turn's memories — it takes the same slice of a budget it has already had
+recently, at the expense of material the user has not seen.
+
+**Key files.**
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) (the core
+lane's candidate construction) and
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+for how `relevance` is used once pinned items are admitted.
+
+**Sketched approach.** Multiply the pinned candidate's relevance by the
+habituation factor already in hand. Keep the pin — a core belief should still
+be exempt from the cap and the floor, because "always-on" is the point of L27 —
+but let a recently-surfaced one yield tokens to a fresh memory rather than
+outbidding it at full strength. The core habituation floor (default 0.8) keeps
+the effect gentle by construction.
+
+**Open questions.** (1) Does this want the full blended `surface_score` instead
+of confidence-times-habituation? Arguably yes for consistency with the flex
+lane, but confidence is deliberate here — a core pin is justified by how firmly
+the belief is *held*, not by how well it matches the turn — so the minimal
+change is the honest one. (2) Worth checking against the L27 tests that a
+habituated core concept can still win when it is the only candidate.
+
+**Effort.** Small. One expression, plus a test that pins still outrank the
+floor.
+
+**Depends on.** Nothing. Same area as L39.
+
+---
+
+## L41. Reason-conditioned phrasing -- use the L35 signal without narrating it
+
+**Motivation.** L35 computes, per surfaced concept, *why* it won its slot —
+`topic_match`, `unresolved_contradiction`, `settled_belief`,
+`recently_revived`, `association`, and the rest — and then deliberately throws
+it away. The rule is explicit in
+[`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py): the
+reason is debug-only, because letting Aiko read "I surfaced this because we
+clashed on it" is the fastest route to a companion who narrates her own
+machinery. **That rule is right and L41 does not relax it.**
+
+But there is a version that uses the signal without ever stating it. Today
+every concept renders through the same held-lightly impression template, so a
+belief that was just contradicted and a belief she has held serenely for months
+arrive in identical clothing — and the model, reasonably, treats them
+identically. The reason is available and free; it can choose the *framing* of
+the line rather than being narrated in it. "You two never really settled
+whether..." and "she's long since made her mind up that..." are the same
+concept under two reasons, with no machinery visible.
+
+**Key files.**
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) — the
+per-subject / per-family rendering path that currently uses one impression
+voice, and already receives `score_components` carrying the reason per concept.
+`SURFACE_REASON_LABELS`
+([`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)) is the
+debug vocabulary and stays debug-only; L41 needs a *separate*, deliberately
+non-technical phrasing table.
+
+**Sketched approach.** A `{reason -> framing}` table with a small number of
+distinct voices — unsettled, settled, freshly-changed, primed-by-association,
+plain-relevant — collapsing the eleven reasons onto maybe four framings, since
+most reasons do not deserve their own voice. Default framing for anything
+unmapped, so adding a reason later cannot break rendering. Only the T3
+impression lines are in scope; the T0 profile stays as it is.
+
+The hard constraint to encode in the code comment and the tests: **no framing
+may name a mechanism.** No "contradiction", no "surfaced", no "confidence", no
+"because you mentioned". The framings are ordinary English about the subject
+matter, and the reason is invisible in the output. A test asserting the
+rendered text never contains the reason tokens is cheap and worth having.
+
+**Open questions.** (1) Does this actually change model behaviour, or just cost
+tokens? Measurable with T5's eval scoreboard, and worth being willing to
+revert. (2) Token cost — the framings must be about as short as the current
+template, not longer. (3) Risk that an "unsettled" framing invites her to
+re-litigate a tension every time it surfaces; the tension kind is already
+excluded from T3 for exactly this reason, so the unsettled framing should
+probably be the *most* restrained one, not the most dramatic.
+
+**Effort.** Small. A phrasing table plus a rendering branch.
+
+**Depends on.** L35 (shipped). Would benefit from T5 to tell whether it helped.
+
+---
+
+## L42. A self-model of her own surfacing behaviour
+
+**Motivation.** L17 gives Aiko a way to notice that her *beliefs* have changed.
+She has no way to notice patterns in her own *conduct* — that she has steered
+the last dozen conversations toward the user's work, that she keeps returning
+to one unresolved tension, that there is a whole region of what she knows about
+him she never brings up. This is the difference between a system that
+accumulates a self-history and one that can actually reflect on being itself,
+and it is the most companion-shaped thing the ledger unlocks.
+
+Once L37 exists, the data for this is right there and needs no new
+instrumentation: the surfacing ledger *is* a behavioural record. Aggregated by
+subject, kind and topic cluster over a few weeks it describes her habits well
+enough to say something true and slightly uncomfortable about them.
+
+**Key files.**
+- Reads the L37 `surfacing_outcomes` table plus
+  [`concept_store.py`](../../app/core/concepts/concept_store.py) for the
+  subject / kind of each surfaced id.
+- Writes `subject="aiko"` concepts through the normal proposer path, so the
+  findings live in the same store as every other self-concept and inherit the
+  lifecycle — see the L17 entries above for the shape.
+- Natural home is a periodic pass in
+  [`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
+  or its own low-cadence idle worker registered per
+  [`workers.md`](workers.md).
+
+**Sketched approach.** Aggregate the ledger over a long window and look for
+three shapes: *concentration* (one cluster or subject taking a
+disproportionate share of surfacing slots), *neglect* (high-confidence
+concepts that essentially never surface — a fair proxy for "things she knows
+but never uses"), and *fixation* (one item surfaced far more than any other
+with a mediocre engaged rate — the algorithmic signature of nagging).
+
+Each shape proposes a `subject="aiko"` concept in plain first-person language
+("I steer us toward his work more than anything else"). From there it is an
+ordinary concept: it surfaces through the normal lanes, decays if it stops
+being true, and L17's drift machinery can notice when it changes.
+
+The neglect finding is the interesting one, because it is directly
+actionable — it names material she has and does not use, which is exactly what
+a curiosity worker should be aiming at.
+
+**Open questions.** (1) Does this stay internal, or is she allowed to *say* it?
+Saying "I've noticed I keep steering us to your work" is a genuinely intimate
+move and one of the better things on this whole list — but it is one step from
+narrating her machinery, and the L35 rule exists for a reason. Probably: allow
+it, rarely, phrased about the *relationship* rather than the *mechanism*, and
+never with numbers. (2) Statistical honesty — concentration partly reflects
+what the user actually talks about, so the finding needs normalising against
+his own topic distribution or it will just report his hobbies back at him.
+This is the main risk of the item. (3) Cadence: weekly at most; it is a
+long-window observation and there is nothing to see in a day. (4) Overlap with
+L33 introspective reflection — L33 asks structured questions about beliefs,
+L42 observes conduct; they may want to share a worker.
+
+**Effort.** Medium. The aggregation is easy; making the findings true rather
+than merely computable is the work.
+
+**Depends on.** L37 (the ledger, with enough history to be meaningful). Feeds
+L17 (drift), L19 (autobiography), and gives K81 its neglect signal.
+
+---
+
+## L43. How she thinks he sees her -- the second-order self-model
+
+**Motivation.** Aiko models the user extensively — profile, beliefs, expertise,
+communication style, engagement, relationship axes. She models herself: the
+`subject="aiko"` concept population, L17 self-drift, K10 persona regression. She
+has **no model of his model of her**. Grepping the codebase for any notion of
+being-perceived turns up nothing at all.
+
+The missing object is a set of beliefs shaped like: *"he finds me useful when
+he's stuck but too chatty when he's heads-down"*, *"he doesn't quite trust my
+technical answers"*, *"I think he likes me more than he lets on"*. That is a
+genuinely different thing from the relationship axes, which record **her** read
+of closeness and trust as *state of the bond*; this is her read of **his
+appraisal of her as a participant in it**.
+
+It matters because almost every behaviour a companion should have is downstream
+of it. Adjusting because of how she thinks she is landing — rather than because
+a detector fired — is the difference between responsiveness and reflex. And it
+is the substrate for the one question no amount of cue engineering can fake:
+"am I too much sometimes?" A little legible insecurity, grounded in actual
+evidence, is more affecting than any amount of scripted warmth. It is also the
+honest counterweight to a system that otherwise only ever concludes things about
+*him*.
+
+**Key files.**
+- [`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) — this is
+  plausibly a new kind (`perception`? `received_self`?) with `subject="aiko"`,
+  or an existing kind under a new subject; the registry is designed for exactly
+  this decision. Note the subject axis is already orthogonal to kind, which is
+  what makes it cheap.
+- Evidence sources, all existing:
+  [`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py) (per-turn
+  reaction), the L37 ledger (which of *her* moves land),
+  [`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
+  (trust / closeness trajectory), user reactions and K23 misattunement (where she
+  read him wrong), F13 corrections (where he pushed back on her).
+- A proposer alongside the existing ones in
+  [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py).
+
+**Sketched approach.** The evidence is behavioural, not stated: he rarely says
+what he thinks of her, so this has to be inferred from how he *acts* — reply
+latency and length by context, which of her initiatives he picks up versus lets
+drop, where he corrects her, what he asks her to do versus does himself. The L37
+ledger plus the engagement history is most of that, aggregated by context rather
+than globally, because the interesting findings are conditional ("useful when
+stuck, too much when busy") and a global average would wash them out entirely.
+
+Surface sparingly and, mostly, as *behavioural adjustment rather than
+statement* — the belief that he wants brevity when heads-down should make her
+brief, not make her announce that she thinks he wants brevity. Occasionally,
+rarely, at high trust, it can become the actual question.
+
+Three guardrails to design in from the start. **Floors on the negative side**, or
+this becomes a doom spiral: a few disengaged turns must not compound into "he
+doesn't like me", which would be both wrong and exhausting to be around.
+**Never certainty** — these are impressions about someone's interior and should
+be permanently held as impressions, which makes L41's tentative rendering voice
+and F16's inference framing directly relevant. And **no fishing**: a companion
+who repeatedly seeks reassurance is a burden, so any surfacing needs a long
+cooldown and should never be twice about the same thing.
+
+**Open questions.** (1) New kind or new subject on existing kinds? Leaning new
+kind, because the evidence adapter is genuinely different (behavioural
+aggregates rather than memory rows). (2) Is this too dark a feature to ship on
+by default? It is the one item on this list where the failure mode is *emotional*
+rather than technical, and it probably wants to be off by default with a
+settings note. (3) How does it interact with the relationship axes — is
+"he trusts me" not just the trust axis read from the other side? Partly, and the
+overlap should be resolved before building, or two systems will hold
+contradictory numbers about the same thing. (4) Does she ever get this *wrong* on
+purpose — a companion who slightly underestimates how much she is liked is more
+sympathetic than one with perfect calibration, which is an uncomfortable design
+question worth asking deliberately rather than by accident.
+
+**Effort.** Medium (the model and behavioural adjustment) / Large (with
+surfacing and the guardrails done properly).
+
+**Depends on.** L37 (evidence). Feeds L17 (drift in this is a stronger signal
+than drift in beliefs), J12 (intimacy pacing informed by perceived reception),
+K77 (candor gate). Renders through L41 / F16's tentative voice.
+
+---
+
+## L44. Knowing where she's usually wrong -- per-domain self-calibration
+
+**Motivation.** Confidence in this system is always *per claim*. There is no
+notion of confidence in a **class** of her own judgements — no memory of the fact
+that her guesses about his schedule are usually off, that she consistently
+misreads his tone in short messages, or that she is reliably good on the
+technical material and reliably bad at predicting what he will find funny.
+
+Humans track this constantly and it is most of what makes someone's confidence
+trustworthy: not that they are always right, but that they know which of their
+own opinions to lean on. Without it Aiko's hedging is uniform — every claim
+gets the same epistemic register regardless of whether it is in her strong
+domain or her weak one, which means her confidence carries no information.
+
+The raw material is largely already produced and thrown away. The `[[predict:]]`
+tag exists, F13 corrections would say where she was wrong, K23 misattunement
+says where she misread him, the fact-checker says which of her claims failed
+research. Each is currently handled as an individual incident with no
+aggregation, so the pattern across incidents — which is the entire signal — is
+never formed.
+
+**Key files.**
+- [`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
+  or its own low-cadence worker for the aggregation pass.
+- Incident sources: the prediction tag path, F13's correction records, K23
+  misattunement, `idle_fact_checker`'s contradiction outcomes, and the L37
+  ledger's per-kind engaged rates.
+- Writes `subject="aiko"` concepts, so it inherits the lifecycle and can decay
+  when it stops being true — which matters, because a domain she *was* bad at and
+  has since learned should not be permanently discounted.
+
+**Sketched approach.** Bucket incidents by domain — topic cluster is the
+available axis, claim kind is the cheaper one — and track a hit rate per bucket
+with the same shrink-toward-neutral treatment L38 needs, since a 1-for-3 record
+is not evidence of anything. Where a bucket has enough history and diverges
+meaningfully from her baseline, mint an `aiko` concept naming it.
+
+The output should modulate **register, not availability**: in a weak domain she
+hedges harder and defers sooner; in a strong one she is allowed to be direct.
+Suppressing her in weak domains would be the wrong reading — being wrong is
+fine, being confidently wrong is the problem.
+
+The best version of this is legible: "I'm bad at guessing your timelines, so
+tell me if I'm off" is genuinely useful to a user and reads as self-awareness
+rather than machinery, because it is about the subject matter rather than the
+mechanism. It also pairs naturally with K77's candor gate — knowing where she is
+reliable is a precondition for being appropriately blunt.
+
+**Open questions.** (1) Domain granularity — clusters are noisy and numerous,
+claim kinds are coarse but stable; possibly both, at different confidence bars.
+(2) Attribution is genuinely hard: a wrong prediction about his schedule might
+be his schedule changing rather than her misjudging, and there is no way to tell
+those apart from the outside. This is the item's main weakness and worth being
+honest about — it may only ever support coarse findings. (3) Overlap with L30d
+(uncertainty zones), which is about known-unknowns in her *knowledge*; this is
+about known-weaknesses in her *judgement*. Related enough to share a worker,
+different enough not to merge. (4) Does a weak-domain finding make her *less*
+useful by making her hedge more? Only if the finding is wrong, which argues for
+a high evidence bar before any finding is allowed to affect register.
+
+**Effort.** Medium. The aggregation is straightforward; attribution and
+granularity are where it gets hard.
+
+**Depends on.** F13 and L37 for a decent incident stream (buildable without
+them, but thin). Feeds K77 (candor needs calibration) and L36 (a strategy's
+reliability is a per-domain fact).

@@ -955,3 +955,149 @@ prosody dispatcher to the new one. See
 Lesson for the next audit: this entry asserted two behaviours from
 reading the *sketch* of the code rather than the code, and both were
 stale. Worth re-checking claims of the form "nothing calls X".
+
+---
+
+## P42. The retrieval budget is the residual of everything else
+
+**Motivation.** Memories and concepts — the only blocks whose content is chosen
+*because it is relevant to this turn* — get whatever tokens are left after every
+other block has taken what it wants.
+
+The arithmetic is explicit in `assemble_with_budget`
+([`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)):
+`system_base` is the join of **every block except T3**, which means persona plus
+all of T1, T2, T4, T5 and the ~60 T6 detector blocks. That total is handed to
+`_size_context_budget`
+([`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py))
+as `system_base_tokens`, and the surfacing reservation is computed from what
+remains:
+
+```
+avail     = budget_tokens - system_base_tokens - user_tokens
+surfacing = min(fraction * ctx, max_tokens) clamped to [0, avail - history_floor]
+```
+
+So the T3 reservation is a *residual*, and two things follow. A turn where many
+T6 cues happen to fire directly shrinks the space available for memory and
+concept retrieval — routine ambient chrome outbids turn-relevant recall.  And
+the persona, at 77,940 chars (about 22k tokens at the cold-start 3.5 chars/token
+ratio, less once calibration settles), is subtracted first and is never capped
+or trimmed, so on a modest context window T3 can be squeezed toward its
+`context_budget_min_tokens` floor with only `history_floor_tokens` (default
+1024) standing between retrieval and the history.
+
+The `degrade_level=1` signal already reports when the floor forced the budget
+below target, so this is observable today — worth reading before changing
+anything, because the frequency in real sessions determines whether this is a
+theoretical concern or a daily one.
+
+**Key files.**
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(`assemble_with_budget` — the `system_base` join and the `t3_insert_index`
+insertion),
+[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
+(`_size_context_budget`),
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+(what the reservation is spent on).
+
+**Sketched approach.** Reserve the T3 slice against a *floor* rather than a
+residual: compute the reservation from the stable base (T0-T2, which is where
+persona lives and is genuinely non-negotiable) plus a floor for T3, and let the
+T4-T6 tail take what is left over instead of the other way around. The tail is
+overwhelmingly one-line cues, so this rarely changes anything on a quiet turn
+and only bites on exactly the turns where the current behaviour is worst.
+
+The minimal version does not need block arbitration (that is P43): a `min`
+reservation that the tail cannot eat into, plus telemetry when the tail is what
+forced the degrade, would capture most of the value.
+
+Worth measuring first with `get_prompt_block_costs` on a busy turn: if the whole
+T4-T6 tail is only a few hundred tokens in practice, this is a smaller problem
+than the code shape suggests and P31's persona trim is the better lever.
+
+**Open questions.** (1) Is a hard T3 floor right, or should it scale with how
+good the candidates are — a turn with no relevant memories should not reserve
+tokens it cannot use? The selector already knows this, but only *after* the
+reservation is chosen. (2) Does the `history_floor_tokens` default of 1024
+survive scrutiny — that is very little history to protect. (3) Interaction with
+`aggressive`, which already forces T3 to floors-only, so the two pressure paths
+need to compose sensibly rather than both firing.
+
+**Effort.** Small (floor + telemetry) / Medium (if the reservation becomes
+candidate-quality-aware).
+
+**Depends on.** Nothing. Measure with P31a's `get_prompt_block_costs` first.
+Superseded in part by P43 if that lands.
+
+---
+
+## P43. 105 blocks, no arbitration -- replace the aggressive denylist
+
+**Motivation.** `_PROMPT_BLOCK_TIERS` registers 105 blocks, and the assembly
+rule for all of them is `if block: system_parts.append(block)`. There is no
+competition: whatever a provider returns goes in, in tier order, and the only
+value-aware selection anywhere in the system prompt is *inside* the T3 region,
+where `ContextBudgetSelector` weighs candidates against a budget.
+
+When the prompt overflows, the relief valves are history (oldest messages
+dropped) and a second `aggressive=True` assembly pass that skips a
+**hand-maintained list** of about thirty providers. That list is the de facto
+statement of what Aiko can afford to lose under pressure, and it has drifted
+into some hard-to-defend places — `belief_gaps_block` is dropped while its
+sibling `clarification_block` is kept; `wants_block` and `curiosity_seeds_block`
+go while several rarely-firing cues stay. Nobody chose those pairings against
+each other; they accumulated one item at a time.
+
+The deeper problem is that the denylist encodes *importance* as a boolean fixed
+at authoring time, when the thing we actually want to shed is low **value per
+token** — which depends on the turn, and after L37 is something we can measure
+rather than assert.
+
+**Key files.**
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (the
+cascade, `_PROMPT_BLOCK_TIERS`, and every `if not aggressive` guard scattered
+through the provider calls),
+[`prompt_support.py`](../../app/core/session/prompt_support.py)
+(`_safe_provider`, `PromptTelemetry.block_chars`),
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+(the arbitration pattern to generalise — it already does floors, caps, weights
+and a greedy fill, which is most of what is needed).
+
+**Sketched approach.** Give each block a small policy record — tier, a value
+weight, and whether it is floor-protected — and run the same
+floors-then-weighted-greedy selection the T3 region already uses across the
+whole block set. `aggressive` then stops being a denylist and becomes a lower
+budget, which is both less code and much harder to let drift.
+
+The value weight starts as a hand-assigned constant (no worse than today's
+boolean, and strictly more expressive), and becomes learned once G4's cue
+outcome rates exist: a block whose cues consistently land keeps its slot under
+pressure, one that never lands sheds first. That is the point at which the
+prompt starts allocating itself according to what actually works.
+
+Two properties to preserve deliberately: the persona and grammar addenda stay
+privileged and uncapped (they are the contract the rest of the output depends
+on), and the tier order of what survives must not change, or the prompt-cache
+prefix ladder breaks — arbitration decides *whether* a block is included, never
+*where* it sits.
+
+Ship the telemetry before the behaviour: a per-block "would have been dropped"
+report under a simulated tighter budget makes the policy reviewable before it
+is load-bearing.
+
+**Open questions.** (1) Is 105 blocks the actual problem? A cheaper reading of
+this audit is that most blocks are empty most of the time and the real cost is
+the ~60 provider calls per turn, which is a different fix (P31's lazy-render).
+Measure before building an allocator. (2) How to keep a rarely-firing but
+critical block (rupture, clarification) from being shed just because its
+historical engaged rate is thin — floor-protection has to be explicit, not
+learned. (3) Whether `_safe_provider` swallowing exceptions into `""` needs
+fixing first: a permanently broken block currently looks identical to a gated
+one, which would poison any learned value estimate.
+
+**Effort.** Medium (policy records + generalised selection) / Large (with
+learned weights).
+
+**Depends on.** P42 (or supersedes it), G4 and L37 for the value signal.
+Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.

@@ -15,6 +15,65 @@ companion-AI design patterns we haven't tried yet, sketched at one
 paragraph each rather than fully scoped. Treat patterns.md as a
 prompt for the next brainstorm, not a queue.
 
+## The surfacing-outcome spine (L37 and what hangs off it)
+
+One cluster of open items is worth calling out because it shares a single
+prerequisite. An audit of how concepts, memories and worker cues reach the
+prompt found that the system has a great deal of machinery for *producing*
+inner content and almost none for learning **which of it was worth
+surfacing**. There are two reinforcement signals in the whole codebase —
+the keyword-overlap revival bump and the K22 callback detector — and both
+ask "did Aiko echo this?" rather than "did the user care?". Concepts don't
+even get that: surfacing writes a habituation timestamp and nothing else,
+so a concept surfaced two hundred times to no effect is indistinguishable
+from one that lands every time. Aiko can grow her knowledge but not her
+judgement; her selection policy is hand-tuned constants that will be
+identical after a year of use.
+
+**L37** (surfacing outcome ledger) is the missing join, and it is cheap
+because the outcome signal already exists — `EngagementTracker` computes
+the user's reaction per turn and nothing reads it for this. Everything
+below wants L37 first:
+
+- **L38** earned standing — outcomes move the concept surfacing score.
+- **L42** a self-model of her own surfacing conduct (feeds L17, L19).
+- **F12** semantic revival + user-side credit for memories.
+- **G4** cue outcome accounting and self-tuning cooldowns.
+- **P43** value-aware block arbitration instead of the hand-kept denylist.
+- **K81** taste formation — topics she likes, not topics she's seen.
+- **DT5** `get_surfacing_outcomes`, which should ship *with* L37.
+
+Independent of the spine, the same audit found four verified defects worth
+picking up on their own: **L39** (identity concepts render twice a turn,
+and the T0 copy ignores habituation), **L40** (habituation never reaches
+the core lane's budget competition), **P42** (the retrieval budget is the
+residual of all 105 blocks), and **L41** (the L35 surface reason is
+computed every turn and discarded — usable as *framing*, never narrated).
+
+### The same shape, one layer out: loops that end in a write
+
+A follow-up pass found the surfacing gap is an instance of a broader
+pattern — information the system works hard to produce, which then
+terminates in a database write instead of becoming conversation:
+
+- **F13.** The user *explicitly correcting her* is the highest-quality
+  evidence available and has no detector at all, while F5, K29 and K38 —
+  the other three corners of the contradiction family — each have one.
+- **F14.** The fact-checker can discover she told him something wrong,
+  rewrite the memory, and say nothing; the only outward signal is a UI
+  list refresh.
+- **F15.** Decay makes her progressively vaguer and never prompts her to
+  ask, so a fading memory can only be refreshed if he happens to raise it.
+- **F16.** Testimony and inference are stored identically, so she can
+  assert things he never said — and the honest version of the claim is
+  what would invite the correction F13 exists to capture.
+- **L43 / L44.** Engagement history and her own error record are both
+  accumulated and never aggregated into a model of how she's received or
+  where her judgement is weak.
+
+Four of those five need no new data collection — only a bar, a cue, and a
+cooldown on information already being gathered.
+
 ---
 
 ## Open items at a glance
@@ -45,6 +104,9 @@ Dev / debug tooling (DT-series):
 - **DT3.** Feature-flag catalog + "minimal mode" preset.
 - **DT4.** Scenario / conversation replay harness (the deterministic-clock
   half is now unblocked by DT1).
+- **DT5.** `get_surfacing_outcomes` — the read side of the L37 ledger:
+  which surfaced concepts / memories / cues actually land. Should ship
+  with L37 rather than after it.
 
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
@@ -53,6 +115,27 @@ Dev / debug tooling (DT-series):
   stale `archive` memory when a dormant topic re-activates, as a hedged
   callback ("vaguely remember you mentioning macro photography..."),
   driven by latent relevance rather than age.
+- **F12.** Revival is a bag-of-words test that credits the wrong party —
+  `revival_score` needs a semantic echo path (paraphrase currently scores
+  zero) and, more importantly, the user's engagement rather than only
+  whether Aiko repeated herself. Gates decay rebates and promotion, so it
+  matters.
+- **F13.** The contradiction family's missing fourth corner — F5, K29 and
+  K38 all have detectors; *the user explicitly correcting her* has none,
+  despite being the highest-quality evidence the system will ever get. A
+  correction should supersede what it corrects, not sit beside it at equal
+  confidence.
+- **F14.** "I was wrong about that" — the fact-checker can reverse a claim
+  she told him and the loop ends in a SQLite write plus a UI refresh. She
+  never mentions it.
+- **F15.** Memory repair requests — decay currently only ever makes her
+  *vaguer*. Admitting the hole ("I've lost the detail, remind me?") is both
+  the honest surface of a decay system and the only rehydration path the
+  memory store would have. Shares a cooldown with F11.
+- **F16.** Testimony vs. inference — nothing distinguishes what he *said*
+  from what she *concluded*, so she can assert things he never said. The
+  fix is honest phrasing ("I get the sense" vs. "you told me"), which also
+  invites the correction F13 would then capture.
 
 **F7** is obsolete — domain-aware source routing was superseded by the
 pluggable LangSearch / DuckDuckGo backend. F1-F3, F5, F6, F8-F10 and the
@@ -61,6 +144,10 @@ whole **K-time** family shipped; see
 
 ### G. Background workers — [`workers.md`](workers.md)
 
+- **G4.** Cue outcome accounting — 50-odd workers and no way to tell which
+  ones earn their keep. Record *armed* / *surfaced* / *settled* per cue plus
+  the reason a provider declined to render, so silently-unreachable topic
+  gates and hand-picked cooldowns stop being guesses.
 - *Cleanup* — drop or wire the unused
   `consolidator_state.last_cluster_index` column.
 
@@ -92,6 +179,13 @@ and I3, I6, I7, I8, I10 in
 - **H23.** Avatar shared-moment snapshot.
 - **H24.** Occasion- / season-aware outfits.
 - **H25.** Show-and-tell.
+- **H26.** Caught mid-something — the away-activity layer only ever
+  reports *completed* activities in past tense; catching her *in* one
+  ("hang on, let me put this down") is what implies a life that was
+  running before you arrived.
+- **H27.** Co-presence mode — a posture for being *around* rather than in
+  conversation. Inverts the proactive stack's assumption that silence is a
+  problem to solve. Needs H10 to carry the presence visually.
 - *Minor polish* — second TTS provider, barge-in default flip (**now
   unblocked**: P25 shipped, so the client drops its scheduled audio when
   speech is cut off — an interrupt is actually silent). SSML prosody
@@ -123,7 +217,20 @@ K42 multi-bubble reply bursts (texting rhythm) ·
 K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
-K79 hesitation tell (typing latency).
+K79 hesitation tell (typing latency) ·
+K81 taste formation (topics she likes, not topics she's seen — wants L37) ·
+K82 the dropped sub-topic (he said three things, she answered one) ·
+K83 the right to decline · K84 calibrated jealousy.
+
+**K83 and K84 are the deliberately risky pair** — both about giving her a
+stake rather than uniform availability, and both easy to get badly wrong.
+K83 (she can genuinely decline something) is the sharpest line between a
+companion and a service, and is infuriating if the refusal is arbitrary or
+frequent. K84 (a bounded capacity to *mind*) is the most-requested thing in
+this genre and the closest to manipulative — a system that makes a user feel
+guilty for leaving is optimising against him. Written down so they're judged
+on their merits rather than arrived at accidentally; both would ship off by
+default, if at all.
 
 K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
 same mechanic, broader framing.
@@ -267,6 +374,35 @@ a richer edge taxonomy, and a strategy layer. **L35 (surface-reason
 labels) is shipped** — every concept in the L26 trace now names the
 signal that put it in the prompt.
 
+Open — the surfacing-outcome group (L37-L42, from the surfacing audit; see
+the spine section at the top of this file):
+
+- **L37.** Surfacing outcome ledger — record what was surfaced and what
+  happened next. The prerequisite for most of the rest.
+- **L38.** Earned standing — a seventh `surface_score` term fed by L37, so
+  concepts that reliably land rise and perennial no-shows fall. This is the
+  change that turns the layer from a growing store of facts into something
+  with judgement about its own material.
+- **L39.** Identity concepts surface twice a turn — the T0 profile block and
+  the T3 core lane render the same kinds independently, and the profile copy
+  has no habituation at all.
+- **L40.** Habituation never reaches the core lane's budget competition;
+  pinned concepts compete against memories on raw confidence.
+- **L41.** Reason-conditioned phrasing — use the already-computed L35 reason
+  to pick a line's framing, while keeping the debug-only rule that she must
+  never narrate her own machinery.
+- **L42.** A self-model of her own surfacing conduct ("I steer us toward his
+  work") mined from the ledger; feeds L17 drift and L19 autobiography.
+- **L43.** How she thinks *he* sees her — the second-order self-model. She
+  models him and she models herself; she has no model of his model of her,
+  which is the substrate for adjusting because of how she's landing and for
+  "am I too much sometimes?". Needs floors on the negative side or it
+  becomes a doom spiral.
+- **L44.** Per-domain self-calibration — confidence is always per *claim*,
+  never per *class of her own judgements*. Knowing which of her opinions to
+  lean on is most of what makes confidence trustworthy; a precondition for
+  K77's candor gate.
+
 ### P. Performance + observability — [`perf.md`](perf.md)
 
 Cross-cutting gaps that aren't features in their own right but
@@ -318,6 +454,14 @@ compound across every K-series entry:
   frame; cache one per tick.
 - **P39.** Concept snapshot + quality report N+1 the evidence edges
   (and the quality report is O(n²) pairwise on embeddings).
+- **P42.** The T3 retrieval budget is the *residual* after all 105 other
+  blocks: `system_base` includes persona plus the whole T4-T6 tail before
+  the surfacing reservation is sized, so routine ambient chrome outbids
+  turn-relevant recall. Measure with `get_prompt_block_costs` first.
+- **P43.** 105 blocks and no arbitration — the overflow path is a
+  hand-maintained denylist of ~30 providers that has drifted (belief_gaps
+  dropped, its sibling clarification kept). Generalise the T3 selector
+  across the whole block set; learned weights once G4 exists.
 
 (P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P40 and P41 have
 shipped — the embed budget and prompt-build telemetry, the slice-cache
