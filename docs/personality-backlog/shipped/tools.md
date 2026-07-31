@@ -3,7 +3,7 @@
 Part of the [shipped log index](../shipped.md). Capabilities Aiko can call and
 the debug tooling we use to build her. The image-vision work (D2, both parts)
 lives with the task machinery in
-[`proactive-tasks.md`](proactive-tasks.md#d2-part-a-local-vision-describe_image-task--one-model-no-cloud).
+[`proactive-tasks.md`](proactive-tasks.md#d2-part-a-local-vision-describe_image-task--one-model-no-cloud-image-tokens).
 Open items still live in [`tools.md`](../tools.md).
 
 ---
