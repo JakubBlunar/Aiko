@@ -1304,9 +1304,6 @@ def register(mcp, session: "SessionController") -> None:
                 "min_cosine": float(
                     getattr(mem, "long_arc_callback_min_cosine", 0.55)
                 ),
-                "cooldown_hours": float(
-                    getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
-                ),
                 "per_session_cap": int(
                     getattr(mem, "long_arc_callback_per_session_cap", 1)
                 ),
@@ -1325,26 +1322,21 @@ def register(mcp, session: "SessionController") -> None:
         try:
             from app.core.conversation import long_arc_callback as _lac
 
-            now = timephrase.utcnow()
-            out["last_fired_at"] = session._chat_db.kv_get(_lac.KV_LAST_FIRED_AT)
             out["recent_ids"] = _lac.load_recent_ids(session._chat_db.kv_get)
-            out["cooldown_elapsed"] = _lac.cooldown_elapsed(
-                session._chat_db.kv_get,
-                now=now,
-                cooldown_hours=float(
-                    getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
-                ),
-            )
+            out["cadence"] = session.cue_pool_cadence("long_arc_callback")
+            out["pool"] = session.list_cue_pool(
+                cue_type="long_arc_callback", limit=6,
+            ).get("cues", [])
         except Exception as exc:
             out["kv_error"] = str(exc)
         return json.dumps(out, indent=2, default=str)
 
     @mcp.tool()
     def force_long_arc_callback() -> str:
-        """K63 — arm a one-shot bypass on the cap + cooldown + min-words.
+        """K63 — arm a one-shot bypass on the cap + cadence + min-words.
 
         Sets ``_long_arc_callback_force_next`` so the next provider call
-        skips the per-session cap, the wall-clock cooldown, and the min-
+        skips the per-session cap, the surfacing cadence, and the min-
         words gate. The age / cosine / kind gates still apply: the turn
         must mention something that actually cosine-matches an old (>=
         ``min_age_days``) memory, or the bypass silently expires. Repro:

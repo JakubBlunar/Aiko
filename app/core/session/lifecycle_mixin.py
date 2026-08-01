@@ -293,16 +293,15 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._stance_recent_window = 0
         self._stance_recent_text = ""
         self._last_stance_persistence = None
-        # K63 — a full memory wipe resets everything, including the kv
-        # cooldown + don't-repeat ring (the memories they reference are
-        # gone). Best-effort kv clear so a stale id can't suppress a
-        # fresh callback after the user nukes their history.
+        # K63 — a full memory wipe resets everything, including the
+        # don't-repeat ring (the memories it references are gone).
+        # Best-effort kv clear so a stale id can't suppress a fresh
+        # callback after the user nukes their history.
         self._long_arc_callback_session_count = 0
         self._last_long_arc_callback = None
         try:
             from app.core.conversation import long_arc_callback as _lac
 
-            self._chat_db.kv_set(_lac.KV_LAST_FIRED_AT, "")
             self._chat_db.kv_set(_lac.KV_RECENT_IDS, "[]")
         except Exception:
             pass

@@ -664,10 +664,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
 
         * Master switch (``agent.long_arc_callback_enabled``).
         * Per-session cap (``memory.long_arc_callback_per_session_cap``,
-          default 1) and a wall-clock cooldown
-          (``memory.long_arc_callback_cooldown_hours``, default 6h) — both
-          checked *before* the embed so the search only runs on a genuinely
-          eligible turn.
+          default 1), checked *before* the embed so the search only runs
+          on a genuinely eligible turn. Spacing between callbacks is the
+          type's ``surface_cooldown_hours``.
         * Short turns (< ``memory.long_arc_callback_min_user_words``) are
           skipped — too little topic to anchor a callback.
         * The aged retrieval lane keeps only memories at least
@@ -675,8 +674,19 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
           bar than normal RAG), and a don't-repeat ring suppresses anything
           recently surfaced. Leans on K25 hedging via the tentative cue.
 
+        Because the pick is made against the live message, the pool row
+        is written here rather than by a producer — the surface-time
+        ledger the gap-return cues use. That is what stops an ignored
+        callback from being spent: it is released back to ``pending``
+        after the turn and re-offered while they are still on the same
+        thread (:func:`long_arc_callback.still_relevant`), instead of
+        being burned into the don't-repeat ring having said nothing.
+        A retry is exempt from the per-session cap and the cadence for
+        the same reason — it is one offer being finished, not a second
+        one being opened.
+
         MCP debug: ``force_long_arc_callback`` arms a one-shot
-        ``_long_arc_callback_force_next`` that bypasses the cap + cooldown +
+        ``_long_arc_callback_force_next`` that bypasses the cap + cadence +
         min-words gates (but NOT the age / cosine / kind gates — a forced
         bypass on a turn with no old topical memory still silently
         expires).
@@ -706,18 +716,25 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         kv_get = self._chat_db.kv_get
         kv_set = self._chat_db.kv_set
 
+        retry = self.take_pool_cue(
+            "long_arc_callback",
+            relevant=lambda payload: lac.still_relevant(payload, user_text),
+            force=force_next,
+        )
+        if retry is not None:
+            log.info(
+                "long-arc-callback retry: cue=%s mem=%s",
+                retry.id, retry.payload.get("memory_id"),
+            )
+            return retry.text
+
         if not force_next:
             cap = max(
                 0, int(getattr(mem, "long_arc_callback_per_session_cap", 1))
             )
             if int(getattr(self, "_long_arc_callback_session_count", 0)) >= cap:
                 return ""
-            cooldown_hours = float(
-                getattr(mem, "long_arc_callback_cooldown_hours", 6.0)
-            )
-            if not lac.cooldown_elapsed(
-                kv_get, now=now, cooldown_hours=cooldown_hours
-            ):
+            if self._cadence_blocked("long_arc_callback"):
                 return ""
             min_words = max(
                 0, int(getattr(mem, "long_arc_callback_min_user_words", 5))
@@ -758,8 +775,21 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         if not block:
             return ""
 
-        # Arm the rarity gates only on an actual fire.
-        lac.mark_fired(kv_set, now=now)
+        # Arm the rarity gates only on an actual fire. The cadence rides
+        # on the ledger row's ``last_surfaced_at``, so writing it is what
+        # spaces the next callback.
+        row = self.record_surfaced_cue(
+            "long_arc_callback",
+            lac.snippet(pick.content),
+            block,
+            payload={
+                "memory_id": pick.memory_id,
+                "kind": pick.kind,
+                "snippet": lac.snippet(pick.content),
+                "cosine": round(pick.cosine, 3),
+                "age_days": round(pick.age_days, 1),
+            },
+        )
         lac.append_recent_id(kv_get, kv_set, pick.memory_id)
         self._long_arc_callback_session_count = (
             int(getattr(self, "_long_arc_callback_session_count", 0)) + 1
@@ -770,15 +800,17 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             "cosine": round(pick.cosine, 3),
             "age_days": round(pick.age_days, 1),
             "forced": force_next,
+            "cue_id": getattr(row, "id", 0),
         }
         log.info(
             "long-arc-callback fire: mem=%d kind=%s cosine=%.3f age_days=%.1f "
-            "forced=%s",
+            "forced=%s cue=%s",
             pick.memory_id,
             pick.kind,
             pick.cosine,
             pick.age_days,
             force_next,
+            getattr(row, "id", 0),
         )
         return block
 

@@ -165,16 +165,23 @@ CUE_SPECS: dict[str, CueSpec] = {
         # straight to ``cue_pool``, so a queued row is the whole of the
         # arming signal -- see the pure-pool branch in ``armed_cues``.
         CueSpec("self_correction"),
+        # Also pool-only, and the one entry whose arming is knowably
+        # under-reported: whether an aged memory relevant to this turn
+        # exists is the *result* of the provider's vector search, so
+        # there is nothing to inspect beforehand. A pending row means a
+        # previous callback went unused and is worth a second offer,
+        # which is the only arming signal that can be read cheaply.
+        CueSpec("long_arc_callback"),
+        CueSpec("shared_ritual"),
         CueSpec(
             "aspiration_momentum",
             journal_key="aiko.aspiration_momentum",
             watermark_key="aspiration_momentum.last_surfaced_at",
         ),
-        CueSpec(
-            "wellbeing_concern",
-            journal_key="aiko.wellbeing_concern",
-            watermark_key="wellbeing_concern.last_surfaced_at",
-        ),
+        # Pooled, so the stock answers and the watermark it used to carry
+        # is gone; the ring stays as the no-store fallback, the same way
+        # the five topic-gated cues below keep theirs.
+        CueSpec("wellbeing_concern", journal_key="aiko.wellbeing_concern"),
         CueSpec(
             "tension",
             journal_key="aiko.tension_cue",
@@ -405,6 +412,42 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             handling_section="Things I've been wondering about you:",
             block="forward_curiosity_block",
         ),
+        CuePolicy(
+            "wellbeing_concern",
+            # Read off *behaviour* over days -- small-hours activity, "I
+            # haven't eaten" said twice in a week -- so the subject has no
+            # relationship to what the conversation is currently on and a
+            # cosine hit is real signal. It also does the work the lexical
+            # path cannot here: the subject is the pattern ("eating") and
+            # the check-in is the natural sentence ("have you actually
+            # eaten today"), which do not share a token.
+            inventory_target=1,
+            ttl_hours=72.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            # Rare by nature. Seven days is what the producer-side
+            # ``wellbeing_concern_cooldown_days`` defaulted to, and the
+            # anti-nag discipline is the whole feature, so it keeps that
+            # cadence rather than inheriting the shelf's.
+            surface_cooldown_hours=168.0,
+            handling_section="When I'm worried about you:",
+            block="wellbeing_concern_block",
+        ),
+        CuePolicy(
+            "shared_ritual",
+            # The ritual's own label -- "our Friday wind-downs" -- which
+            # is a standing pattern rather than the live topic. Two words
+            # to match, since a label is a phrase and one shared word is
+            # as likely to be the weekday as the ritual.
+            inventory_target=1,
+            ttl_hours=336.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            surface_cooldown_hours=72.0,
+            handling_section="Our things (shared rituals):",
+            block="shared_ritual_block",
+        ),
         # ── event-armed: nothing stocks these, the pool is a retry buffer
         #
         # ``inventory_target=0`` is the discriminator, not a tuning
@@ -453,6 +496,35 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Things I did while you were away:",
             block="away_activities_block",
+        ),
+        CuePolicy(
+            "long_arc_callback",
+            # Picked at render like the three above, but by a vector
+            # search against the live message rather than off a gap. That
+            # is also why it is the one type here that must stay lexical:
+            # the candidate was *selected* for cosine similarity to what
+            # the user just said, so a high cosine against Aiko's reply
+            # measures her staying on topic and would score every turn a
+            # hit. Three shared words, because the subject is a quoted
+            # snippet rather than a topic.
+            inventory_target=0,
+            # Long enough to outlast the thread that summoned it, short
+            # enough that a callback about hiking is gone by the time the
+            # conversation is about anything else. The relevance gate on
+            # the retry is the real bound; this is the backstop.
+            ttl_hours=12.0,
+            max_surfacings=2,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL,
+            min_overlap=3,
+            # Was ``long_arc_callback_cooldown_hours``, spent at render
+            # whether or not she used what she was shown. Here it gates
+            # opening a *new* callback only, so an ignored one gets its
+            # second chance on the next turn about the same thread
+            # instead of costing six hours of silence.
+            surface_cooldown_hours=6.0,
+            handling_section="When something reaches way back:",
+            block="long_arc_callback_block",
         ),
         CuePolicy(
             "self_correction",

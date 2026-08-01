@@ -258,20 +258,26 @@ with two escape valves so the tightened rule does not become a trap:
 
 ## Legacy workers
 
-Eighteen workers implement `demand()` today: five world (`plant_growth`,
-`garden_visit`, `circadian_settle`, `room_evolution`, `away_activity`),
-four thinking (`concept_lifecycle`, `concept_synthesis`,
-`concept_consolidation`, `memory_decay`), eight cue producers
-(`curiosity_seed`, `forward_curiosity`, `associative_wander`,
+Twenty-one workers implement `demand()` today: five world
+(`plant_growth`, `garden_visit`, `circadian_settle`, `room_evolution`,
+`away_activity`), four thinking (`concept_lifecycle`,
+`concept_synthesis`, `concept_consolidation`, `memory_decay`), ten cue
+producers (`curiosity_seed`, `forward_curiosity`, `associative_wander`,
 `curiosity_gradient`, `interest_drift`, `knowledge_gap_notice`,
-`dormant_interest`, `self_callback`) and the `mood_drift` sampler.
+`dormant_interest`, `self_callback`, `wellbeing_concern`,
+`shared_ritual`), the `mood_drift` sampler and
+`promise_followthrough`.
 
 The cue producers all report the same shape of pressure — the deficit
 between the pending rows on their shelf and `CuePolicy.inventory_target`
 — and get it from [`CueProducer`](../app/core/proactive/cue_producer.py)
-rather than writing it out; see [`cue-pool.md`](cue-pool.md). The
-`mood_drift` sampler is the other end of the range: a pure heartbeat,
-full pressure until today's sample lands and nothing after.
+rather than writing it out; see [`cue-pool.md`](cue-pool.md). The other
+two are the ends of the range. The `mood_drift` sampler is a pure
+heartbeat: full pressure until today's sample lands, nothing after.
+`promise_followthrough` is the one that reports demand without owning a
+shelf at all — its state is in `memories`, so it reads its pending kv
+slot and its arm cooldown instead, which is still two cheap reads and
+still a better admission signal than a fixed interval.
 
 The rest — around thirty — do not, and are handled by an explicit legacy
 path in `evaluate_admission`: already ready means already admitted,

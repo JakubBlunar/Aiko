@@ -2261,14 +2261,16 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.self_callback_journal_max, 1)
 
     def test_wellbeing_concern_round_trip(self) -> None:
-        # K72: agent master switch + cadence/cooldown + memory thresholds.
+        # K72: agent master switch + heartbeat + memory thresholds. The
+        # cooldown that used to sit here is the type's
+        # ``CuePolicy.surface_cooldown_hours``.
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.agent.wellbeing_concern_enabled)
         self.assertEqual(
             result.agent.wellbeing_concern_check_interval_seconds, 21600,
         )
-        self.assertAlmostEqual(
-            result.agent.wellbeing_concern_cooldown_days, 7.0,
+        self.assertFalse(
+            hasattr(result.agent, "wellbeing_concern_cooldown_days"),
         )
         self.assertEqual(result.memory.wellbeing_concern_window_days, 7)
         self.assertEqual(result.memory.wellbeing_concern_late_night_min, 3)
@@ -2281,7 +2283,6 @@ class MisattunementSettingsTests(unittest.TestCase):
             agent_extra={
                 "wellbeing_concern_enabled": False,
                 "wellbeing_concern_check_interval_seconds": 5,  # floor 60
-                "wellbeing_concern_cooldown_days": 12.0,
             },
         )
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -2296,9 +2297,6 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertFalse(result.agent.wellbeing_concern_enabled)
         self.assertEqual(
             result.agent.wellbeing_concern_check_interval_seconds, 60,
-        )
-        self.assertAlmostEqual(
-            result.agent.wellbeing_concern_cooldown_days, 12.0,
         )
         self.assertEqual(result.memory.wellbeing_concern_window_days, 1)
         self.assertEqual(result.memory.wellbeing_concern_late_night_min, 1)
@@ -2363,14 +2361,16 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.voice_adoption_max_rendered, 1)
 
     def test_shared_ritual_round_trip(self) -> None:
-        # K73: agent master switch + cadence/cooldown + memory thresholds.
+        # K73: agent master switch + heartbeat + memory thresholds. The
+        # surface cooldown that used to sit here is the type's
+        # ``CuePolicy.surface_cooldown_hours``.
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.agent.shared_ritual_enabled)
         self.assertEqual(
             result.agent.shared_ritual_check_interval_seconds, 86400,
         )
-        self.assertAlmostEqual(
-            result.agent.shared_ritual_surface_cooldown_days, 3.0,
+        self.assertFalse(
+            hasattr(result.agent, "shared_ritual_surface_cooldown_days"),
         )
         self.assertEqual(result.memory.shared_ritual_window_days, 56)
         self.assertEqual(result.memory.shared_ritual_min_weeks, 3)
@@ -2381,7 +2381,6 @@ class MisattunementSettingsTests(unittest.TestCase):
             agent_extra={
                 "shared_ritual_enabled": False,
                 "shared_ritual_check_interval_seconds": 5,  # floor 60
-                "shared_ritual_surface_cooldown_days": 9.0,
             },
         )
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -2398,9 +2397,6 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertFalse(result.agent.shared_ritual_enabled)
         self.assertEqual(
             result.agent.shared_ritual_check_interval_seconds, 60,
-        )
-        self.assertAlmostEqual(
-            result.agent.shared_ritual_surface_cooldown_days, 9.0,
         )
         self.assertEqual(result.memory.shared_ritual_window_days, 7)
         self.assertEqual(result.memory.shared_ritual_min_weeks, 1)
@@ -2766,13 +2762,12 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
 
 
 class LongArcCallbackSettingsTests(unittest.TestCase):
-    """K63: 1 agent flag + 5 memory knobs round-trip with clamps."""
+    """K63: 1 agent flag + 4 memory knobs round-trip with clamps."""
 
     _LAC_AGENT_KEYS = ("long_arc_callback_enabled",)
     _LAC_MEMORY_KEYS = (
         "long_arc_callback_min_age_days",
         "long_arc_callback_min_cosine",
-        "long_arc_callback_cooldown_hours",
         "long_arc_callback_per_session_cap",
         "long_arc_callback_min_user_words",
     )
@@ -2817,8 +2812,9 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
         self.assertTrue(result.agent.long_arc_callback_enabled)
         self.assertEqual(result.memory.long_arc_callback_min_age_days, 21)
         self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 0.55)
-        self.assertAlmostEqual(
-            result.memory.long_arc_callback_cooldown_hours, 6.0,
+        # The wall-clock spacing moved onto CuePolicy.
+        self.assertFalse(
+            hasattr(result.memory, "long_arc_callback_cooldown_hours"),
         )
         self.assertEqual(result.memory.long_arc_callback_per_session_cap, 1)
         self.assertEqual(result.memory.long_arc_callback_min_user_words, 5)
@@ -2829,7 +2825,6 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
             memory_extra={
                 "long_arc_callback_min_age_days": 60,
                 "long_arc_callback_min_cosine": 0.7,
-                "long_arc_callback_cooldown_hours": 12.0,
                 "long_arc_callback_per_session_cap": 2,
                 "long_arc_callback_min_user_words": 8,
             },
@@ -2838,9 +2833,6 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
         self.assertFalse(result.agent.long_arc_callback_enabled)
         self.assertEqual(result.memory.long_arc_callback_min_age_days, 60)
         self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 0.7)
-        self.assertAlmostEqual(
-            result.memory.long_arc_callback_cooldown_hours, 12.0,
-        )
         self.assertEqual(result.memory.long_arc_callback_per_session_cap, 2)
         self.assertEqual(result.memory.long_arc_callback_min_user_words, 8)
 
@@ -2849,7 +2841,6 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
             memory_extra={
                 "long_arc_callback_min_age_days": 0,  # floors at 1
                 "long_arc_callback_min_cosine": 5.0,  # clamps to 1.0
-                "long_arc_callback_cooldown_hours": -3.0,  # floors at 0
                 "long_arc_callback_per_session_cap": -1,  # floors at 0
                 "long_arc_callback_min_user_words": -4,  # floors at 0
             },
@@ -2857,9 +2848,6 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertEqual(result.memory.long_arc_callback_min_age_days, 1)
         self.assertAlmostEqual(result.memory.long_arc_callback_min_cosine, 1.0)
-        self.assertAlmostEqual(
-            result.memory.long_arc_callback_cooldown_hours, 0.0,
-        )
         self.assertEqual(result.memory.long_arc_callback_per_session_cap, 0)
         self.assertEqual(result.memory.long_arc_callback_min_user_words, 0)
 

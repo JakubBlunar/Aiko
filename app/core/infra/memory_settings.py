@@ -221,9 +221,10 @@ class MemorySettings:
     # than the normal RAG ``score_threshold`` so a callback is a real
     # link, not a loose association.
     long_arc_callback_min_cosine: float = 0.55
-    # Wall-clock cooldown between callbacks (hours). Long for rarity.
-    long_arc_callback_cooldown_hours: float = 6.0
-    # At most this many callbacks per session, regardless of cooldown.
+    # At most this many *new* callbacks per session. The wall-clock
+    # spacing that used to sit here is the type's
+    # ``CuePolicy.surface_cooldown_hours``, so that an ignored callback
+    # can be re-offered without the retry waiting out the gap.
     long_arc_callback_per_session_cap: int = 1
     # Skip turns shorter than this many words (too little topic to anchor
     # a callback; also avoids an embed/search on trivial replies).
@@ -1802,10 +1803,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             long_arc_callback_min_cosine=max(
                 0.0,
                 min(1.0, float(memory_raw.get("long_arc_callback_min_cosine", 0.55))),
-            ),
-            long_arc_callback_cooldown_hours=max(
-                0.0,
-                float(memory_raw.get("long_arc_callback_cooldown_hours", 6.0)),
             ),
             long_arc_callback_per_session_cap=max(
                 0,
