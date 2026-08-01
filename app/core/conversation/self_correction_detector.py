@@ -159,4 +159,31 @@ def detect_self_correction(
     return best
 
 
-__all__ = ["SelfCorrectionHit", "detect_self_correction"]
+def render_cue(hit: SelfCorrectionHit) -> str:
+    """The prompt line for one hit, or ``""`` if it has nothing to say.
+
+    Lives beside the detector rather than in the provider because the cue
+    is now composed when it is *armed*, one turn before it renders. That
+    is what lets the row go into the pool complete: the pool needs the
+    text and the subject at write time, and re-deriving either at render
+    would put the decision back in two places.
+
+    An empty return is the guard that used to sit in the provider, where
+    it fired after the one-shot slot had already been cleared -- a hit
+    with no snippet or no memory text burned the arm having said nothing.
+    Here the caller simply does not write a row.
+    """
+    snippet = (hit.reply_snippet or "").strip()
+    memory = (hit.memory_content or "").strip()
+    if not snippet or not memory:
+        return ""
+    return (
+        f'Heads-up: a moment ago you said "{snippet}", but you\'d '
+        f"noted {memory}. If it still fits, own the correction "
+        "naturally and once -- 'oh wait, I think I had that "
+        "backwards' -- never a grovel, and drop it if it no longer "
+        "matters."
+    )
+
+
+__all__ = ["SelfCorrectionHit", "detect_self_correction", "render_cue"]

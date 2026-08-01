@@ -124,11 +124,9 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: self._cue_store,
                     interval_seconds=getattr(
                         agent, "self_callback_check_interval_seconds", 21600
-                    ),
-                    cooldown_days=getattr(
-                        agent, "self_callback_cooldown_days", 10.0
                     ),
                     min_age_days=getattr(
                         mem, "self_callback_min_age_days", 14

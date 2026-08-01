@@ -54,7 +54,7 @@ REFLECTIVE = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 # the rest waits on typed handle accessors for the subsystems.
 BUDGETS: dict[str, int] = {
     "app/web": 0,
-    "app/mcp/server_tools": 474,
+    "app/mcp/server_tools": 473,
 }
 
 MAX_REPORTED = 15

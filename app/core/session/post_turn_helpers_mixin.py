@@ -835,8 +835,8 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
 
     def _maybe_arm_self_correction(self, assistant_text: str) -> None:
         """K38: catch when Aiko's just-finished reply contradicts one of
-        her own high-confidence ``fact`` / ``preference`` memories and arm
-        a one-shot self-correction cue for the next turn.
+        her own high-confidence ``fact`` / ``preference`` memories and
+        queue a self-correction cue for the next turn.
 
         Embedding-free: the detector
         (:func:`app.core.conversation.self_correction_detector.detect_self_correction`)
@@ -847,6 +847,13 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         on every post-turn call; the detector only runs when it reaches 0.
         Independent of the gap-return cue family -- does NOT touch
         ``_gap_cue_surfaced``.
+
+        The cue goes to the pool rather than to an in-memory slot. Unlike
+        the gap-return cues, which pick their content when the block
+        renders, everything about this one is decided here -- so there is
+        nothing to gain by holding it in the session, and two things to
+        lose. A slot does not survive a restart, and a slot cannot tell
+        whether she took the correction or read past it.
         """
         if not bool(
             getattr(self._settings.agent, "self_correction_enabled", True)
@@ -893,25 +900,53 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
                     )
                 ),
             )
-            if hit is not None:
-                self._pending_self_correction = hit
-                self._self_correction_cooldown_remaining = int(
-                    getattr(
-                        self._memory_settings,
-                        "self_correction_cooldown_turns",
-                        3,
-                    )
+            if hit is None or not self.queue_self_correction_cue(hit):
+                return
+            self._self_correction_cooldown_remaining = int(
+                getattr(
+                    self._memory_settings,
+                    "self_correction_cooldown_turns",
+                    3,
                 )
-                log.info(
-                    "self-correction fire: memory_id=%s label=%s overlap=%d "
-                    "snippet=%r",
-                    hit.memory_id,
-                    hit.label,
-                    hit.overlap,
-                    hit.reply_snippet,
-                )
+            )
+            log.info(
+                "self-correction fire: memory_id=%s label=%s overlap=%d "
+                "snippet=%r",
+                hit.memory_id,
+                hit.label,
+                hit.overlap,
+                hit.reply_snippet,
+            )
         except Exception:
             log.debug("self-correction detector raised", exc_info=True)
+
+    def queue_self_correction_cue(self, hit: Any) -> bool:
+        """Put one detected contradiction on the pool. Did it take?
+
+        Public because the MCP ``force_self_correction`` tool arms the
+        same cue and should arm it the same way -- a debug path that
+        writes the row itself is a debug path that drifts.
+
+        The subject is what she should correct *to*. Her own snippet is
+        the wrong version, and she is likely to quote it while owning the
+        slip ("earlier I said X..."), so matching on it would score a hit
+        for repeating the mistake.
+        """
+        from app.core.conversation import self_correction_detector
+
+        cue = self_correction_detector.render_cue(hit)
+        if not cue:
+            return False
+        return self._queue_pool_cue(
+            "self_correction",
+            hit.memory_content,
+            cue,
+            payload={
+                "memory_id": int(getattr(hit, "memory_id", 0) or 0),
+                "label": str(getattr(hit, "label", "")),
+                "snippet": str(getattr(hit, "reply_snippet", "")),
+            },
+        )
 
     def _maybe_arm_mood_inertia(
         self,

@@ -1304,25 +1304,22 @@ def register(mcp, session: "SessionController") -> None:
 
         The SelfCallbackWorker mines Aiko's aged ``self`` / ``reflection``
         memories for a past feeling / intention worth revisiting and
-        drafts a cue into ``aiko.self_callback``;
-        ``_render_self_callback_block`` surfaces the newest unseen one on a
-        later turn (watermark-gated). It is NEVER spoken verbatim.
+        queues a cue in ``cue_pool``; ``_render_self_callback_block``
+        claims one on a later turn. It is NEVER spoken verbatim.
 
-        Returns a JSON dict with the master switch, cadence + cooldown,
-        whether the worker wired up, the MCP force-next flag, the cue ring,
-        and the producer/surfacing watermarks.
+        Returns a JSON dict with the master switch, the heartbeat, the
+        type's surfacing cadence, whether the worker wired up, the MCP
+        force-next flag, the pool rows, and the legacy kv ring (still
+        written, but nothing surfaces from it any more).
         """
         try:
             from app.core.affect import self_callback as _sc
+            from app.core.proactive.cue_accounting import policy_for
 
             agent = session._settings.agent
             mem = session._memory_settings
-
-            def kv(key: str) -> str | None:
-                try:
-                    return session._chat_db.kv_get(key)
-                except Exception:
-                    return None
+            policy = policy_for("self_callback")
+            store = getattr(session, "_cue_store", None)
 
             return json.dumps(
                 {
@@ -1336,8 +1333,11 @@ def register(mcp, session: "SessionController") -> None:
                             21600,
                         )
                     ),
-                    "cooldown_days": float(
-                        getattr(agent, "self_callback_cooldown_days", 10.0)
+                    "surface_cooldown_hours": (
+                        policy.surface_cooldown_hours if policy else None
+                    ),
+                    "inventory_target": (
+                        policy.inventory_target if policy else None
                     ),
                     "min_age_days": int(
                         getattr(mem, "self_callback_min_age_days", 14)
@@ -1362,9 +1362,20 @@ def register(mcp, session: "SessionController") -> None:
                     "force_next": bool(
                         session.debug_overrides.peek("self_callback_force_next", False)
                     ),
-                    "callbacks": _sc.load_callbacks(session._chat_db.kv_get),
-                    "last_fired_at": kv("self_callback.last_fired_at"),
-                    "last_surfaced_at": kv("self_callback.last_surfaced_at"),
+                    "pool": [
+                        row.as_dict()
+                        for row in store.list_for_user(
+                            cue_type="self_callback", limit=10,
+                        )
+                    ] if store is not None else [],
+                    "last_surfaced_at": (
+                        store.last_surfaced_at("self_callback")
+                        if store is not None
+                        else None
+                    ),
+                    "journal_ring": _sc.load_callbacks(
+                        session._chat_db.kv_get,
+                    ),
                 },
                 indent=2,
             )
@@ -1895,9 +1906,10 @@ def register(mcp, session: "SessionController") -> None:
         Returns a JSON dict with:
 
         - ``enabled``: ``agent.self_correction_enabled`` master switch.
-        - ``pending``: the armed ``SelfCorrectionHit`` (memory_id /
-          label / overlap / snippet) waiting for the next turn, or
-          ``null``.
+        - ``pending``: the queued cues waiting to surface, read from
+          ``cue_pool`` (the detector no longer holds them in memory), or
+          an empty list. ``surfaced_count`` says whether Aiko has already
+          been shown one and read past it.
         - ``cooldown_remaining``: turns left before the detector runs
           again (decrements each post-turn).
         - ``thresholds``: the ``memory.self_correction_*`` knobs the
@@ -1906,18 +1918,20 @@ def register(mcp, session: "SessionController") -> None:
         """
         try:
             mem = session._memory_settings
-            pending = getattr(session, "_pending_self_correction", None)
-            pending_json = None
-            if pending is not None:
-                pending_json = {
-                    "memory_id": getattr(pending, "memory_id", None),
-                    "label": getattr(pending, "label", None),
-                    "overlap": getattr(pending, "overlap", None),
-                    "reply_snippet": getattr(pending, "reply_snippet", None),
-                    "memory_content": getattr(
-                        pending, "memory_content", None
-                    ),
-                }
+            store = getattr(session, "_cue_store", None)
+            pending_json: list[dict] = []
+            if store is not None:
+                pending_json = [
+                    {
+                        "id": row.id,
+                        "memory_id": row.payload.get("memory_id"),
+                        "label": row.payload.get("label"),
+                        "reply_snippet": row.payload.get("snippet"),
+                        "memory_content": row.subject,
+                        "surfaced_count": row.surfaced_count,
+                    }
+                    for row in store.pending("self_correction", limit=10)
+                ]
             return json.dumps(
                 {
                     "enabled": bool(
@@ -1968,8 +1982,9 @@ def register(mcp, session: "SessionController") -> None:
         Runs ``detect_self_correction`` against ``reply_text`` (or the
         last assistant message if blank) over Aiko's current ``fact`` /
         ``preference`` memories, bypassing the per-fire cooldown. On a
-        hit it stashes the result on ``_pending_self_correction`` so the
-        next turn's provider folds the correction into Aiko's reply.
+        hit it queues the cue in ``cue_pool`` so the next turn's provider
+        folds the correction into Aiko's reply -- and so the turn after
+        that records whether she actually took it.
 
         Repro: ``force_self_correction(reply_text="My favorite color is
         blue.")`` (with a stored "favorite color is green" memory) ->
@@ -2018,7 +2033,11 @@ def register(mcp, session: "SessionController") -> None:
                     {"armed": False, "hit": None, "note": "no contradiction"},
                     indent=2,
                 )
-            session._pending_self_correction = hit
+            if not session.queue_self_correction_cue(hit):
+                return json.dumps(
+                    {"armed": False, "hit": None, "note": "cue pool refused"},
+                    indent=2,
+                )
             return json.dumps(
                 {
                     "armed": True,

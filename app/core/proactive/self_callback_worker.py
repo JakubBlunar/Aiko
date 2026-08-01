@@ -2,19 +2,37 @@
 
 During a quiet window this worker scans Aiko's own aged ``self`` /
 ``reflection`` memories, picks the oldest feeling / intention worth
-revisiting (one that hasn't been surfaced recently), and — paced by a
-multi-day cooldown — drafts ONE private cue into the ``aiko.self_callback``
-kv ring. The consumer
-:meth:`InnerLifeProvidersMixin._render_self_callback_block` surfaces the
-newest unseen cue on a later turn (watermark-gated) so Aiko closes the
-loop in her own words. This worker never speaks or fires a nudge.
+revisiting (one that hasn't been surfaced recently), and queues ONE
+private cue into ``cue_pool``. The consumer
+:meth:`InnerLifeProvidersMixin._render_self_callback_block` claims it on a
+later turn so Aiko closes the loop in her own words. This worker never
+speaks or fires a nudge.
 
-Pacing (kv watermarks, all swallow-and-log):
-  * ``self_callback.last_fired_at`` — wall-clock cooldown (days).
+Where the pacing went
+---------------------
+This cue is rare by *nature*, not by scarcity, and until the pool that
+rarity was an accident of production: a ten-day ``last_fired_at``
+cooldown here meant one cue drafted a fortnight, and one drafted meant
+one surfaced. Deficit-driven scheduling removes the accident -- an empty
+shelf is pressure, and pressure is admission -- so the rarity had to be
+stated somewhere it actually belongs. It now lives on the type's
+``CuePolicy.surface_cooldown_hours``, which paces how often Aiko *opens*
+one of these rather than how often the worker thinks about it.
 
-Per-memory de-dup is structural: each ring entry's ``signature`` is
-``self:<memory_id>``, and the picker excludes the recent ring signatures,
-so the same memory never re-drafts.
+That swap is also a correction. A producer cooldown throttles the wrong
+thing: it means that when the shelf runs dry the cue simply stops
+existing for ten days, and a good moment during those ten days finds
+nothing to say.
+
+Per-memory de-dup is structural and doubled, matching the other pooled
+workers: each ring entry's ``signature`` is ``self:<memory_id>`` and the
+picker excludes the recent ring signatures, while the pool separately
+refuses any excerpt it already holds a cue for in any state -- including
+ones already used or expired unwanted, which the ring forgets.
+
+The ``aiko.self_callback`` kv ring is still written. Nothing surfaces
+from it any more; it stays because ``get_self_callback_state`` reads it
+and because it is the signature source above.
 
 Every failure path is swallowed and logged at debug — the worst case is a
 missed beat, never a crashed tick.
@@ -23,11 +41,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect import self_callback as _sc
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 
@@ -42,31 +61,12 @@ log = logging.getLogger("app.self_callback_worker")
 _SELECT_MAX_TOKENS = 200
 
 
-_KV_LAST_FIRED_AT = "self_callback.last_fired_at"
-
 # Aiko's own first-person memory kinds we mine for a past self-state.
 _SELF_KINDS = ("self", "reflection")
 
 
 def _utcnow() -> datetime:
     return timephrase.utcnow()
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value or not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 class SelfCallbackWorker:
@@ -81,8 +81,8 @@ class SelfCallbackWorker:
         kv_get: Callable[[str], "str | None"],
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         interval_seconds: float = 21600.0,
-        cooldown_days: float = 10.0,
         min_age_days: int = _sc.DEFAULT_MIN_AGE_DAYS,
         journal_max: int = 4,
         # Optional worker-model selection pass (more robust than the
@@ -98,8 +98,8 @@ class SelfCallbackWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("self_callback", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
-        self._cooldown_seconds = max(0.0, float(cooldown_days) * 86400.0)
         self._min_age_days = max(1, int(min_age_days))
         self._journal_max = max(1, int(journal_max))
         self._worker_client = worker_client
@@ -119,31 +119,30 @@ class SelfCallbackWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        # Hard veto only. The interval is the heartbeat now; how much
+        # stock is on the shelf decides the rest.
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from an empty shelf, not from a wall-clock cooldown.
+
+        Declares ``needs_llm`` honestly, because on the runs where the
+        selection pass is active this worker contends with the chat model
+        and the scheduler's LLM lane needs to know.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand(needs_llm=self._llm_active())
 
     def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"drafted": 0, "disabled": True}
-            except Exception:
-                pass
-
-        now = _utcnow()
         forced = self._force_next
         self._force_next = False
+        if not self._enabled():
+            return {"drafted": 0, "disabled": True}
 
-        if not forced and not self._cooldown_elapsed(now):
-            return {"drafted": 0, "skipped_cooldown": True}
-
+        now = _utcnow()
         try:
             memories = self._memory_store.iter_by_kinds(_SELF_KINDS)
         except Exception:
@@ -151,6 +150,7 @@ class SelfCallbackWorker:
             return {"drafted": 0, "no_memories": True}
 
         excluded = _sc.recent_signatures(self._kv_get)
+        pooled = set() if forced else self._cues.spoken_for()
         source = "heuristic"
         candidate = None
 
@@ -170,28 +170,38 @@ class SelfCallbackWorker:
             )
         if candidate is None:
             return {"drafted": 0, "no_candidate": True}
+        if self._already_pooled(candidate, pooled):
+            return {"drafted": 0, "already_pooled": True}
 
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "memory_id": candidate.memory_id,
+            "kind": candidate.kind,
+            "excerpt": candidate.excerpt,
+            "age_days": candidate.age_days,
+            "signature": candidate.signature,
+            "source": source,
+        }
         _sc.append_callback(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "memory_id": candidate.memory_id,
-                "kind": candidate.kind,
-                "excerpt": candidate.excerpt,
-                "age_days": candidate.age_days,
-                "signature": candidate.signature,
-                "source": source,
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
-        self._mark_fired(now)
+        cue_id = self._cues.publish(
+            candidate.excerpt,
+            _sc.render_inner_life_block(
+                candidate.kind,
+                candidate.excerpt,
+                candidate.age_days,
+                user_display_name=self._user_name(),
+            ),
+            payload=entry,
+        )
         log.info(
-            "self-callback drafted: id=%s kind=%s age=%dd source=%s",
+            "self-callback drafted: id=%s kind=%s age=%dd source=%s cue=%s",
             candidate.memory_id,
             candidate.kind,
             candidate.age_days,
             source,
+            cue_id,
         )
         return {
             "drafted": 1,
@@ -199,7 +209,22 @@ class SelfCallbackWorker:
             "kind": candidate.kind,
             "age_days": candidate.age_days,
             "source": source,
+            "cue_id": cue_id,
         }
+
+    def _already_pooled(self, candidate: Any, pooled: "set[str]") -> bool:
+        """Has the pool seen this excerpt before, in any state?
+
+        Wider than the ring's signature check beside it, which only looks
+        back eight entries. A memory whose callback was already *used*, or
+        that expired because no moment for it ever came, is at least as
+        poor a candidate as one still waiting.
+        """
+        if not pooled:
+            return False
+        from app.core.proactive.cue_store import normalise_subject
+
+        return normalise_subject(candidate.excerpt) in pooled
 
     # ── LLM selection ────────────────────────────────────────────────
 
@@ -228,14 +253,10 @@ class SelfCallbackWorker:
             )
             if not gathered:
                 return None
-            user_name = "them"
-            if self._user_name_provider is not None:
-                try:
-                    user_name = self._user_name_provider() or "them"
-                except Exception:
-                    user_name = "them"
             system, user = _sc.build_selection_prompt(
-                gathered, user_display_name=user_name, assistant_name="Aiko",
+                gathered,
+                user_display_name=self._user_name(),
+                assistant_name="Aiko",
             )
             chunks: list[str] = []
             stream = self._worker_client.chat_stream(
@@ -275,33 +296,24 @@ class SelfCallbackWorker:
             log.debug("self_callback llm selection failed", exc_info=True)
             return None
 
-    # ── gates ────────────────────────────────────────────────────────
+    # ── gates / helpers ──────────────────────────────────────────────
 
-    def _cooldown_elapsed(self, now: datetime) -> bool:
-        if self._cooldown_seconds <= 0:
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
             return True
-        last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))
-        if last is None:
+        try:
+            return bool(self._enabled_provider())
+        except Exception:
             return True
-        return (now - last).total_seconds() >= self._cooldown_seconds
 
-    def _mark_fired(self, now: datetime) -> None:
-        self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-
-    # ── helpers ──────────────────────────────────────────────────────
+    def _user_name(self) -> str:
+        if self._user_name_provider is None:
+            return "them"
+        try:
+            return self._user_name_provider() or "them"
+        except Exception:
+            return "them"
 
     def force_next(self) -> None:
-        """Arm a one-shot bypass of the cooldown gate (MCP debug)."""
+        """Arm the next ``run()`` to ignore what the pool already holds."""
         self._force_next = True
-
-    def _kv_get_safe(self, key: str) -> str | None:
-        try:
-            return self._kv_get(key)
-        except Exception:
-            return None
-
-    def _kv_set_safe(self, key: str, value: str) -> None:
-        try:
-            self._kv_set(key, value)
-        except Exception:
-            log.debug("self_callback kv_set failed key=%s", key, exc_info=True)

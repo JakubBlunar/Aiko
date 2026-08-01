@@ -1,12 +1,16 @@
-"""Worker-level tests for K71 SelfCallbackWorker (LLM + fallback)."""
+"""Worker-level tests for K71 SelfCallbackWorker (LLM + fallback + pool)."""
 from __future__ import annotations
 
 import json
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.core.affect import self_callback as sc
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_store import CueStore
 from app.core.proactive.self_callback_worker import SelfCallbackWorker
 
 
@@ -54,18 +58,23 @@ class _FakeClient:
         yield self.payload
 
 
-def _worker(store, kv, client=None, **kw):
+def _worker(store, kv, client=None, *, cues=None, **kw):
     return SelfCallbackWorker(
         memory_store=store,
         kv_get=kv.get,
         kv_set=kv.set,
-        cooldown_days=0.0,  # no cooldown for the test
+        cue_store_provider=(lambda: cues) if cues is not None else None,
         min_age_days=14,
         worker_client=client,
         worker_model="test-model" if client else "",
         user_name_provider=lambda: "Jacob",
         **kw,
     )
+
+
+def _cue_store() -> tuple[CueStore, TemporaryDirectory]:
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    return CueStore(ChatDatabase(Path(tmp.name) / "chat.db")), tmp
 
 
 class SelfCallbackWorkerLlmTests(unittest.TestCase):
@@ -130,6 +139,91 @@ class SelfCallbackWorkerLlmTests(unittest.TestCase):
         _worker(_FakeStore(mems), kv, None).run()
         ring = sc.load_callbacks(kv.get)
         self.assertEqual(ring[-1]["source"], "heuristic")
+
+
+class PoolProductionTests(unittest.TestCase):
+    """The half that replaced the ten-day producer cooldown."""
+
+    def setUp(self) -> None:
+        self.cues, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+        self.kv = _FakeKV()
+
+    def _run(self, mems, **kw):
+        return _worker(_FakeStore(mems), self.kv, None, cues=self.cues, **kw)
+
+    def test_a_drafted_callback_lands_in_the_pool(self) -> None:
+        self._run([_Mem(2, "I've been feeling restless", _aged(30))]).run()
+        rows = self.cues.pending("self_callback")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("restless", rows[0].subject)
+        # The rendered line, not the raw excerpt -- the pool row is what
+        # the provider puts in the prompt, so the age phrasing and the
+        # user's name have to be baked in at production time.
+        text = rows[0].text.lower()
+        self.assertIn("a few weeks ago", text)
+        self.assertIn("jacob", text)
+
+    def test_pressure_falls_as_the_shelf_fills(self) -> None:
+        now = datetime.now(timezone.utc)
+        empty = self._run([]).demand(now=now, last_run_at=None)
+        self.assertEqual(empty.pressure, 1.0)
+        for i in range(2):
+            self.cues.add("self_callback", f"subject {i}", "cue")
+        full = self._run([]).demand(now=now, last_run_at=None)
+        self.assertEqual(full.pressure, 0.0)
+
+    def test_a_disabled_worker_reports_no_pressure(self) -> None:
+        signal = self._run([], enabled_provider=lambda: False).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_demand_declares_the_llm_pass(self) -> None:
+        """The scheduler's LLM lane has to know before admitting the run."""
+        worker = _worker(
+            _FakeStore([]),
+            self.kv,
+            _FakeClient("{}"),
+            cues=self.cues,
+        )
+        signal = worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertTrue(signal.needs_llm)
+
+    def test_an_excerpt_the_pool_already_used_is_not_redrafted(self) -> None:
+        """Wider than the ring's signature check, which forgets.
+
+        A callback Aiko already closed the loop on must not come back as
+        a fresh cue, and its row is ``used`` rather than pending -- so
+        only the pool can rule it out.
+        """
+        mems = [_Mem(2, "I've been feeling restless", _aged(30))]
+        self._run(mems).run()
+        row = self.cues.pending("self_callback")[0]
+        self.cues.mark_used(row.id, evidence="test")
+        # Clear the ring so the signature check cannot be what stops it.
+        self.kv.d.clear()
+        res = self._run(mems).run()
+        self.assertEqual(res["drafted"], 0)
+        self.assertTrue(res["already_pooled"])
+
+    def test_force_next_ignores_what_the_pool_holds(self) -> None:
+        mems = [_Mem(2, "I've been feeling restless", _aged(30))]
+        self._run(mems).run()
+        self.kv.d.clear()
+        worker = self._run(mems)
+        worker.force_next()
+        self.assertEqual(worker.run()["drafted"], 1)
+
+    def test_no_pool_leaves_the_worker_on_plain_intervals(self) -> None:
+        """The fallback that let the seven migrate one at a time."""
+        worker = _worker(_FakeStore([]), self.kv, None)
+        self.assertIsNone(
+            worker.demand(now=datetime.now(timezone.utc), last_run_at=None)
+        )
 
 
 if __name__ == "__main__":

@@ -541,6 +541,28 @@ class CueStore:
             return 0
         return int(row[0]) if row else 0
 
+    def last_surfaced_at(self, cue_type: str) -> str | None:
+        """When a cue of this type last reached the prompt, in any state.
+
+        Backs ``CuePolicy.surface_cooldown_hours``. Terminal rows are
+        counted deliberately: the question is "how recently did Aiko do
+        one of these", and a cue she *used* is the strongest possible yes.
+        Excluding it would let a callback that landed be followed by
+        another on the very next turn, which is the pattern the cadence
+        gate exists to prevent.
+        """
+        try:
+            row = self._conn().execute(
+                "SELECT MAX(last_surfaced_at) FROM cue_pool "
+                "WHERE user_id = ? AND cue_type = ? "
+                "  AND last_surfaced_at IS NOT NULL",
+                (self._user_id, str(cue_type)),
+            ).fetchone()
+        except Exception:
+            log.warning("cue_pool cadence read failed", exc_info=True)
+            return None
+        return str(row[0]) if row and row[0] else None
+
     def in_state(
         self,
         state: str,

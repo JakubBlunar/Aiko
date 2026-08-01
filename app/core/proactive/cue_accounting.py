@@ -161,6 +161,10 @@ CUE_SPECS: dict[str, CueSpec] = {
             journal_key="aiko.self_callback",
             watermark_key="self_callback.last_surfaced_at",
         ),
+        # Pool-only: no ring, no slot. The post-turn detector writes
+        # straight to ``cue_pool``, so a queued row is the whole of the
+        # arming signal -- see the pure-pool branch in ``armed_cues``.
+        CueSpec("self_correction"),
         CueSpec(
             "aspiration_momentum",
             journal_key="aiko.aspiration_momentum",
@@ -263,6 +267,23 @@ class CuePolicy:
     max_asks: int = 2
     # How long an unanswered question waits before she may ask again.
     reask_cooldown_hours: float = 24.0
+    # How long after any cue of this type reached the prompt before
+    # another *new* one may. Zero, the default, means the shelf alone
+    # decides -- fine for a type Aiko can reasonably raise several of in
+    # an evening.
+    #
+    # Some types are rare by nature rather than by scarcity, and before
+    # the pool their rarity came from the producer: a worker that drafts
+    # one cue a fortnight surfaces one a fortnight. Deficit-driven
+    # production removes that accident, so a type whose whole character is
+    # "this happens twice a month" has to say so here or a full shelf will
+    # empty itself over consecutive turns.
+    #
+    # Gates first claims only. A released row is a cue Aiko was already
+    # shown and did not take, and the retry is the point of holding it --
+    # cadence governs how often she opens a new one, not how long she
+    # takes to finish one.
+    surface_cooldown_hours: float = 0.0
     fulfilment: str = FULFILMENT_SPOKEN
     match_mode: str = MATCH_LEXICAL
     match_scope: str = MATCH_SCOPE_REPLY
@@ -351,6 +372,29 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             block="curiosity_gradient_block",
         ),
         CuePolicy(
+            "self_callback",
+            # An aged note of her own, chosen for its age rather than for
+            # the live thread -- so unlike the on-topic types above, a
+            # high cosine here genuinely means she brought it up.
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            # The excerpt runs to 140 characters, so it is a sentence and
+            # not a topic. Same reasoning as ``turning_over``: one shared
+            # word between a sentence and a reply is noise.
+            min_overlap=3,
+            inventory_target=2,
+            ttl_hours=336.0,
+            # The one type whose whole character is scarcity. Ten days is
+            # what ``self_callback_cooldown_days`` defaulted to when the
+            # producer held the rarity; moving it here keeps the observed
+            # cadence while letting the shelf stay stocked, so a good
+            # moment inside the window finds something rather than
+            # nothing.
+            surface_cooldown_hours=240.0,
+            handling_section="Closing the loop on myself (my own continuity):",
+            block="self_callback_block",
+        ),
+        CuePolicy(
             "forward_curiosity",
             # Something in the user's life she has been wondering about,
             # fired on a conversational gap rather than on topic.
@@ -409,6 +453,28 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Things I did while you were away:",
             block="away_activities_block",
+        ),
+        CuePolicy(
+            "self_correction",
+            # Also event-armed, but by a post-turn detector rather than a
+            # gap, and the content is settled the moment the slip is
+            # found -- so unlike the three above this one is queued a turn
+            # ahead and claimed normally.
+            inventory_target=0,
+            # The line opens "a moment ago you said", which survives one
+            # turn and is a fiction by the next. Both bounds say the same
+            # thing; the surfacing budget is the one that will bite.
+            ttl_hours=0.5,
+            max_surfacings=2,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Lexical only, and not for want of calibration: the
+            # contradiction is about whatever they are talking about, so
+            # her staying on topic would push the cosine up whether or not
+            # she ever corrected anything.
+            match_mode=MATCH_LEXICAL,
+            min_overlap=2,
+            handling_section="Catching myself:",
+            block="self_correction_block",
         ),
         # ── whole-turn, unchanged from what already runs
         CuePolicy(
@@ -555,6 +621,14 @@ def armed_cues(session: Any) -> set[str]:
             and policy.inventory_target <= 0
         )
         if retry_pool:
+            if not spec.journal_key and not spec.slot_attr:
+                # Nothing outside the pool arms this one, so the row is
+                # the whole opportunity. Without this branch the two
+                # "no signal to check" defaults below would both come out
+                # true and the cue would read as armed on every turn.
+                if stock > 0:
+                    out.add(name)
+                continue
             # Content comes from wherever it always did; the pool only
             # adds the released rows on top.
             fresh = not spec.journal_key or _journal_has_material(

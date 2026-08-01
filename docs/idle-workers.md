@@ -258,12 +258,22 @@ with two escape valves so the tightened rule does not become a trap:
 
 ## Legacy workers
 
-Nine workers implement `demand()` today: five world (`plant_growth`,
-`garden_visit`, `circadian_settle`, `room_evolution`, `away_activity`)
-and four thinking (`concept_lifecycle`, `concept_synthesis`,
-`concept_consolidation`, `memory_decay`).
+Eighteen workers implement `demand()` today: five world (`plant_growth`,
+`garden_visit`, `circadian_settle`, `room_evolution`, `away_activity`),
+four thinking (`concept_lifecycle`, `concept_synthesis`,
+`concept_consolidation`, `memory_decay`), eight cue producers
+(`curiosity_seed`, `forward_curiosity`, `associative_wander`,
+`curiosity_gradient`, `interest_drift`, `knowledge_gap_notice`,
+`dormant_interest`, `self_callback`) and the `mood_drift` sampler.
 
-The rest — around forty — do not, and are handled by an explicit legacy
+The cue producers all report the same shape of pressure — the deficit
+between the pending rows on their shelf and `CuePolicy.inventory_target`
+— and get it from [`CueProducer`](../app/core/proactive/cue_producer.py)
+rather than writing it out; see [`cue-pool.md`](cue-pool.md). The
+`mood_drift` sampler is the other end of the range: a pure heartbeat,
+full pressure until today's sample lands and nothing after.
+
+The rest — around thirty — do not, and are handled by an explicit legacy
 path in `evaluate_admission`: already ready means already admitted,
 ranked by staleness alone, and charged to the **LLM lane**, because
 without a signal we cannot know they are cheap. That reproduces

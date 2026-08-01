@@ -161,5 +161,64 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(w.run().get("skipped"))
 
 
+class DemandTests(unittest.TestCase):
+    """A heartbeat, not a producer: binary pressure on today's sample.
+
+    The provider keeps a lazy-sample fallback for a starved scheduler.
+    These are about the fallback no longer being the thing that saves
+    the day -- a missed sample is a day of the drift series that can
+    never be reconstructed, so the worker asks to jump the queue.
+    """
+
+    def _worker(self, **settings_kw) -> MoodDriftSampleWorker:
+        return MoodDriftSampleWorker(
+            chat_db=_FakeChatDB(),
+            settings=_Settings(**settings_kw),
+            affect_store=_FakeAffectStore(-0.4),
+            axes_store=_FakeAxesStore(),
+            user_id="u",
+        )
+
+    def _demand(self, worker: MoodDriftSampleWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_an_unsampled_day_asks_loudly(self) -> None:
+        signal = self._demand(self._worker())
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertFalse(signal.needs_llm)
+
+    def test_pressure_drops_to_nothing_once_sampled(self) -> None:
+        worker = self._worker()
+        worker.run()
+        self.assertEqual(self._demand(worker).pressure, 0.0)
+
+    def test_a_sample_taken_elsewhere_still_settles_it(self) -> None:
+        """The provider's lazy fallback writes the same ring."""
+        worker = self._worker()
+        record_daily_sample(
+            chat_db=worker._chat_db,
+            affect_store=_FakeAffectStore(0.1),
+            axes_store=None,
+            user_id="u",
+            now=datetime.now(timezone.utc).astimezone(),
+        )
+        self.assertEqual(self._demand(worker).pressure, 0.0)
+
+    def test_a_disabled_worker_reports_no_pressure(self) -> None:
+        signal = self._demand(self._worker(mood_drift_enabled=False))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_an_unreadable_ring_reads_as_unsampled(self) -> None:
+        """One redundant probe beats a day silently lost."""
+        worker = self._worker()
+        worker._chat_db.kv_get = lambda _key: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        )
+        self.assertEqual(self._demand(worker).pressure, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

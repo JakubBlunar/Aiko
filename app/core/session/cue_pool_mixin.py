@@ -86,7 +86,13 @@ class CuePoolMixin:
         the type ride along separately, appended in T6 by the assembler.
         """
         store = self._cue_pool_store()
-        row = pick_pool_cue(store, cue_type, relevant=relevant, force=force)
+        row = pick_pool_cue(
+            store,
+            cue_type,
+            relevant=relevant,
+            force=force,
+            allow_first_claim=force or not self._cadence_blocked(cue_type),
+        )
         if row is None or store is None:
             return None
         try:
@@ -95,6 +101,43 @@ class CuePoolMixin:
             log.debug("cue mark_surfaced failed: id=%s", row.id, exc_info=True)
         self._register_surfaced_cue(row)
         return row
+
+    def _queue_pool_cue(
+        self,
+        cue_type: str,
+        subject: str,
+        text: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Queue a cue the turn path detected, ``pending``, under its TTL.
+
+        The session-side twin of :meth:`CueProducer.publish`. Most cues
+        are drafted by a worker while the user is away, but a couple are
+        noticed post-turn -- a contradiction only exists once Aiko has
+        said the contradicting thing -- and those have no worker to route
+        through.
+
+        Distinct from :meth:`record_surfaced_cue`, which writes a row that
+        is *already* in the prompt. This one is written a turn early and
+        waits to be claimed, which is what the ordinary pool cues do.
+        """
+        store = self._cue_pool_store()
+        if store is None:
+            return False
+        policy = self._policy_for(cue_type)
+        try:
+            cue_id = store.add(
+                cue_type,
+                subject,
+                text,
+                payload=payload,
+                ttl_hours=policy.ttl_hours if policy is not None else None,
+            )
+        except Exception:
+            log.debug("cue queue failed: type=%s", cue_type, exc_info=True)
+            return False
+        return bool(cue_id)
 
     def record_surfaced_cue(
         self,
@@ -148,6 +191,37 @@ class CuePoolMixin:
             return None
         self._register_surfaced_cue(row)
         return row
+
+    def _cadence_blocked(self, cue_type: str) -> bool:
+        """Is this type too soon off its last surfacing to open a new cue?
+
+        Rarity used to be a side effect of production: a worker drafting
+        one entry a fortnight surfaced one a fortnight, and no gate was
+        needed because there was never a second cue to reach for. Stocking
+        the shelf against an inventory target removes that accident, so
+        the types whose whole character is scarcity carry a
+        ``surface_cooldown_hours`` and this is where it is spent.
+
+        Reads the pool rather than a watermark of its own. Every row
+        already records ``last_surfaced_at``, so the newest of them is the
+        answer, and a second source of truth for the same fact is exactly
+        the kind of drift the pool was built to end.
+        """
+        policy = self._policy_for(cue_type)
+        hours = float(getattr(policy, "surface_cooldown_hours", 0.0) or 0.0)
+        if policy is None or hours <= 0.0:
+            return False
+        store = self._cue_pool_store()
+        if store is None:
+            return False
+        try:
+            last = timephrase.parse_iso(store.last_surfaced_at(cue_type))
+        except Exception:
+            log.debug("cue cadence read failed: type=%s", cue_type, exc_info=True)
+            return False
+        if last is None:
+            return False
+        return timephrase.utcnow() - last < timedelta(hours=hours)
 
     def _register_surfaced_cue(self, row: "CueRow") -> None:
         """Remember a row for this turn's post-turn verdict."""
