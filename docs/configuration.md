@@ -296,6 +296,19 @@ Detects when **Aiko's own** recent output has fallen into a rut (same openers, e
 - `agent.style_tracker_length_avg_threshold` *(float, `50.0`, min `1`)* — average word-count that trips the "all your replies are paragraphs" cue.
 - `agent.style_tracker_cue_cooldown_turns` *(int, `5`, min `0`)* — turns to suppress a re-fire of the **same** style cue.
 
+### K49 — casual speech texture
+
+Perfectly clean prose is its own robotic tell, so the persona's **"Speech texture:"** subsection gives Aiko standing permission to use small disfluencies (`"uhm"`, `"mm"`, `"mhm"`, `"wow"`, `"oof"`) *inside* a real thought. The same subsection keeps throat-clearing ("That's a great question", "Let me think about that") banned — a disfluency sits inside a thought, throat-clearing sits in front of one and delays it.
+
+- `agent.speech_texture_enabled` *(bool, `true`)* — gates the guidance. When `false`, the `Speech texture:` subsection is lifted out of the persona at load time, so Aiko loses the permission and reverts to clean prose. Applied to the loaded persona rather than kept as a second copy in code, so the wording stays editable in `data/persona/aiko_companion.txt`. Renaming or deleting the subsection yourself makes the toggle a no-op, which is the intended escape hatch.
+- `agent.speech_texture_spoken` *(bool, `true`)* — when `false`, the **non-lexical** fillers (`uhm`, `um`, `uh`, `mm`, `mhm`, `hmm`, `er`, `eh` and their doubled spellings) are stripped from the TTS stream only; the chat transcript keeps them either way. This switch exists because Pocket-TTS has no phoneme control, so a written `"uhm"` is synthesised grapheme-by-grapheme and can land as "uh-em". Ordinary interjections (`wow`, `oh`, `huh`, `yeah`, `oof`) are real words the engine already says correctly and are **never** stripped.
+
+Two details worth knowing about the strip: it only fires when a filler is its own clause (start of text or after clause punctuation, *and* followed by punctuation of its own), so `"it's uhm complicated"` is left alone rather than guessed at; and a reply that is entirely a filler (`"Mhm."`) passes through untouched, because that is a deliberate acknowledgement rather than a stumble.
+
+Both keys are bound at construction (the prompt assembler and the turn runner respectively), so flipping either one needs a restart. Editing the *wording* of the subsection in the persona file does not — the persona is re-read per turn.
+
+If the model over-corrects and sprinkles a filler into every reply, the existing style-pattern tracker's opener-rut band is the backstop — reaction words in the opener slot count as openers like any other word. Verified against a 9B, that over-correction is the likely direction: the disfluency rate settled near 75% of replies rather than the intended minority, and the model wants to put the filler in the opener slot rather than mid-thought. Tests: `tests/test_speech_texture.py`.
+
 ### K13 — Jacob-side stylometric mirror
 
 Tracks Jacob's writing style across recent user turns and emits a "How Jacob writes lately: terse, casual, asks back often" directive so Aiko's register stays calibrated. Five axes: terseness / formality / emoji / slang / question rate. No embedder, no LLM. **Always rendered** (including aggressive context-mode) because register is the first thing aggressive mode wants to preserve.

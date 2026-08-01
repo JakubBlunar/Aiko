@@ -889,6 +889,9 @@ class SessionController(
             cue_register_rotation_enabled=bool(
                 getattr(self._settings.agent, "cue_register_rotation_enabled", True)
             ),
+            speech_texture_enabled=bool(
+                getattr(self._settings.agent, "speech_texture_enabled", True)
+            ),
         )
 
 

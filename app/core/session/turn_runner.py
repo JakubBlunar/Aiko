@@ -42,6 +42,7 @@ from app.core.session.session_text_utils import (
     prepare_tts_text,
     sanitize_assistant_text,
     sanitize_user_text,
+    strip_speech_fillers,
 )
 from app.core.proactive.summary_worker import SummaryWorker
 from app.core.session.tool_pass_gate import (
@@ -214,6 +215,7 @@ class TurnRunner:
         on_tool_result: Callable[[str, str, bool], None] | None = None,
         filler_threshold_ms: int = 800,
         filler_enabled: bool = True,
+        speech_texture_spoken: bool = True,
         listen_extensions_provider: Callable[[], int] | None = None,
         tool_pass_gate_enabled: bool = True,
         tasks_active_provider: Callable[[], bool] | None = None,
@@ -247,6 +249,11 @@ class TurnRunner:
             threshold_ms=filler_threshold_ms,
             enabled=filler_enabled,
         )
+        # K49: when false, the non-lexical disfluencies the persona invites
+        # are dropped from the spoken stream only. The transcript keeps them
+        # either way -- an engine with no phoneme control is the reason to
+        # turn this off, and that is an audio problem, not a text one.
+        self._speech_texture_spoken = bool(speech_texture_spoken)
         # Best-effort carry-over of the previous reaction so the filler tone
         # matches recent texture. Updated at the end of each successful run.
         self._last_reaction: str | None = None
@@ -341,6 +348,7 @@ class TurnRunner:
         max_prompt_tokens_pct: float | None = None,
         filler_threshold_ms: int | None = None,
         filler_enabled: bool | None = None,
+        speech_texture_spoken: bool | None = None,
         tool_pass_gate_enabled: bool | None = None,
         skill_router_enabled: bool | None = None,
         brain_core_families: "Iterable[str] | None" = None,
@@ -367,6 +375,8 @@ class TurnRunner:
                 threshold_ms=filler_threshold_ms,
                 enabled=filler_enabled,
             )
+        if speech_texture_spoken is not None:
+            self._speech_texture_spoken = bool(speech_texture_spoken)
         if tool_pass_gate_enabled is not None:
             self._tool_pass_gate_enabled = bool(tool_pass_gate_enabled)
         if skill_router_enabled is not None:
@@ -388,6 +398,7 @@ class TurnRunner:
         on_outfit: OutfitCallback | None = None,
         on_motion: MotionCallback | None = None,
         on_touch: TouchCallback | None = None,
+        strip_fillers: bool = False,
     ) -> None:
         """Phase 1c: split a sentence into text + stage-direction
         earcons and emit each piece in order.
@@ -408,6 +419,10 @@ class TurnRunner:
         extracted in the same stream pass and forwarded via their
         respective callbacks, then stripped so the TTS pipeline
         never sees them.
+
+        K49: ``strip_fillers`` drops non-lexical disfluencies from the
+        spoken text. This is the right layer for it -- everything here is
+        already the audio branch, so the transcript cannot be affected.
         """
         # Phase 3c: turn each [[correct]]…[[/correct]] into a tsk-earcon
         # marker so it lands in the same earcon channel everything else
@@ -469,6 +484,8 @@ class TurnRunner:
         for kind, content in pieces:
             if kind == "text":
                 prepared = prepare_tts_text(content)
+                if prepared and strip_fillers:
+                    prepared = strip_speech_fillers(prepared)
                 if prepared:
                     on_tts_chunk(prepared, mood)
             elif kind == "earcon" and on_earcon is not None:
@@ -812,6 +829,7 @@ class TurnRunner:
                                 on_outfit=on_outfit,
                                 on_motion=on_motion,
                                 on_touch=on_touch,
+                                strip_fillers=not self._speech_texture_spoken,
                             )
 
         except Exception as exc:
@@ -961,6 +979,7 @@ class TurnRunner:
                     on_outfit=on_outfit,
                     on_motion=on_motion,
                     on_touch=on_touch,
+                    strip_fillers=not self._speech_texture_spoken,
                 )
 
         # Adaptive tokenizer calibration: the streaming pass just reported the

@@ -1175,6 +1175,22 @@ class AgentSettings:
     style_tracker_length_avg_threshold: float = 50.0
     style_tracker_cue_cooldown_turns: int = 5
 
+    # ── K49: casual speech texture (disfluency permission) ────────────
+    # Perfectly clean prose is itself a robotic tell, so the persona
+    # gives Aiko permission to use small disfluencies ("uhm", "mm",
+    # "mhm", "wow") inside a real thought -- as distinct from
+    # throat-clearing ("That's a great question"), which stays banned.
+    # ``speech_texture_enabled`` gates that persona guidance.
+    #
+    # ``speech_texture_spoken`` is separate because the two surfaces
+    # differ: Pocket-TTS has no phoneme control, so a non-lexical filler
+    # is synthesised letter-by-letter and can come out as "uh-em". Set
+    # it false to keep disfluencies in the chat transcript while
+    # dropping the unpronounceable ones from the audio; ordinary words
+    # like "wow" / "oh" / "huh" are spoken either way.
+    speech_texture_enabled: bool = True
+    speech_texture_spoken: bool = True
+
     # ── K47: question/share balance (stop interviewing) ───────────────
     # Proactive complement to the reactive style-tracker question
     # saturation cue. A rolling per-session ratio of Aiko's replies that

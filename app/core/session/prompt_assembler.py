@@ -361,6 +361,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         rag_retriever: "RagRetriever | None" = None,
         history_age_prefix_enabled: bool = True,
         cue_register_rotation_enabled: bool = True,
+        speech_texture_enabled: bool = True,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
@@ -379,6 +380,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # model never reads the same coach template thrice in one
         # prompt. False = byte-identical legacy cues.
         self._cue_rotation_enabled = bool(cue_register_rotation_enabled)
+        # K49 toggle. When False the persona's "Speech texture:" subsection
+        # is lifted out at load time, so Aiko loses the standing permission
+        # to use disfluencies. Applied to the persona rather than kept as a
+        # separate code-side block so the guidance stays in the one place
+        # the user can edit it.
+        self._speech_texture_enabled = bool(speech_texture_enabled)
         # Carry-over hint: the most recent assistant reaction. Lets the LLM
         # keep an emotional through-line across turns without us writing it
         # explicitly into the persona.
