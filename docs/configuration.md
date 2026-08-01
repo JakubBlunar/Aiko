@@ -1156,8 +1156,67 @@ Caps and per-goal limits for the goal store. Together with the `agent.goal_worke
 
 - `memory.idle_worker_wake_seconds` *(float, `60.0`, min `1`)* — tick cadence. Lower → workers fire sooner after a quiet period starts but increase idle CPU.
 - `memory.idle_worker_quiet_threshold_seconds` *(int, `30`, min `0`)* — how long since last user activity before the scheduler considers itself idle.
-- `memory.idle_worker_tick_budget_ms` *(int, `3000`, min `0`)* — per-tick wall-time budget. The scheduler runs as many due workers as fit. Set to a small value (e.g. `500`) to approximate the old one-per-tick behaviour. Anti-starvation always lets the most-overdue worker fire even if its EMA estimate exceeds the remaining budget.
 - `memory.idle_worker_max_per_tick` *(int, `0`, min `0`)* — hard cap on workers per tick. `0` = unlimited (only the time budget matters); positive values clamp tick log volume on heavy backlogs.
+
+#### Demand-driven scheduling (P36)
+
+A worker's `interval_seconds` used to be its cadence. It is now its
+**heartbeat** — a liveness backstop. What actually decides whether a
+worker runs is its `demand()` probe, a read far cheaper than `run()`
+that reports how much work is pending. The scheduler ranks by urgency
+(70% pressure, 30% staleness) rather than by age, so a worker with real
+backlog runs long before its heartbeat and one with nothing to do costs
+a probe instead of a slot.
+
+Workers that have not been migrated have no `demand()` and keep their
+old interval behaviour exactly.
+
+The mechanism as a whole — lanes, idle depth, contention grades, the fit
+rules, and how to write a `demand()` probe — is documented in
+[`idle-workers.md`](idle-workers.md).
+
+**Two lanes.** `idle_worker_tick_budget_ms` was always really a
+*contention* limit wearing a *time* limit's clothes: it was sized for
+one local Ollama serving both the chat path and the workers, where a
+background generation stole the user's next first token. So it now
+governs only workers whose run calls the LLM. Everything else — pure
+arithmetic, SQL sweeps, mirror scans — draws on
+`idle_worker_compute_budget_ms`, which has no GPU to protect. Compute
+workers are also drained *first* within a tick, so a cheap worker never
+waits out a multi-second generation.
+
+**Contention grades.** The LLM lane is additionally sized by comparing
+the `main_chat` and `worker_default` routes:
+
+| Grade | Topology | Effect on the LLM lane |
+| --- | --- | --- |
+| `none` | Different backends, or either side is not local Ollama | Follows idle depth, same as the compute lane |
+| `queueing` | Same local Ollama, same model | Same as `none` today; kept as a distinct grade because it is diagnostically different |
+| `swapping` | Same local Ollama, **different** model | Pinned at the base budget through `just_left` and `away`, because Ollama would evict the chat model to load the worker one |
+
+**Idle depth.** The longer the user has been gone, the less a long tick
+costs them, so both lanes scale by tier: `just_left` (<5 min) 1x, `away`
+(<30 min) 3x, `long_away` (<4 h) 6x, `overnight` 10x. Depth survives a
+restart via a wall-clock stamp in `kv_meta`; otherwise a reboot would
+make an eight-hour absence look like a fresh one.
+
+- `memory.idle_worker_tick_budget_ms` *(int, `3000`, min `0`)* — base per-tick budget for the **LLM lane**, before depth and contention scaling.
+- `memory.idle_worker_compute_budget_ms` *(int, `6000`, min `0`)* — base per-tick budget for the **compute lane** (workers that touch no LLM).
+- `memory.idle_worker_pressure_enabled` *(bool, `true`)* — master switch. `false` restores the pre-P36 path exactly: one budget, oldest-first ranking, no probes.
+- `memory.idle_worker_urgency_threshold` *(float, `0.35`, clamped `[0, 1]`)* — minimum blended pressure/staleness for admission ahead of the heartbeat. Raise to make Aiko lazier about speculative work.
+- `memory.idle_worker_min_interval_ratio` *(float, `0.1`, clamped `[0, 1]`)* — anti-thrash floor as a fraction of each worker's own interval, floored at one tick. One ratio serves intervals spanning three orders of magnitude: at `wake=30`/`ratio=0.1` a 300s worker floors at 30s while an 86400s one floors at 2.4h.
+- `memory.idle_worker_depth_max_multiplier` *(float, `10.0`, min `1`)* — caps budget growth with idle depth. `1.0` disables depth scaling entirely.
+- `memory.idle_worker_contention_override` *(str, `"auto"`)* — force `none` / `queueing` / `swapping` when the route topology lies, e.g. a "remote" endpoint that is really your own GPU box (which would otherwise read as split backends and quietly remove the protection). Anything unrecognised means auto-detect.
+
+`get_idle_workers_status` reports the live depth tier, contention grade
+and both effective lane budgets; `probe_idle_worker_demand` asks every
+worker what it thinks it has to do right now, which is the fastest way
+to find out why an idle scheduler is idle.
+
+**Removed:** `memory.decay_worker_interval_seconds` is no longer in
+`config/default.json` — `MemoryDecayWorker` now reports pressure from
+engagement-clock elapsed time, so the interval is only a backstop. The
+parser still honours the key if you set it in `user.json`.
 
 ---
 

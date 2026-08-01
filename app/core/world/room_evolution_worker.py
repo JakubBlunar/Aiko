@@ -24,7 +24,7 @@ import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.world import room_evolution as evo
 from app.core.world.idle_activity_worker import append_idle_seed
 from app.core.infra import timephrase
@@ -90,10 +90,50 @@ class RoomEvolutionWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        # Feature flag only; the interval became the heartbeat (P36).
+        return bool(getattr(self._agent, "room_evolution_enabled", True))
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Is there a room transition to make, and might it need the LLM?
+
+        Mirrors the candidate-building half of :meth:`run` without
+        applying anything -- ``list_items`` plus a kv read.
+
+        ``needs_llm`` is conservative: the only LLM path is composing a
+        seed when a book *finishes*, but which candidate gets picked is a
+        random choice made inside ``run()``, so the book merely being a
+        candidate is enough to charge the LLM lane. At a six-hour
+        heartbeat that over-charge costs nothing, while the opposite
+        error would put a generation in the compute lane.
+        """
         if not bool(getattr(self._agent, "room_evolution_enabled", True)):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        if not self._force and not self._gap_elapsed(now):
+            return WorkSignal(pressure=0.0, reason="min_gap")
+        try:
+            items = {i.slug: i for i in self._world.list_items()}
+        except Exception:
+            log.debug("room_evolution: demand list_items failed", exc_info=True)
+            return None
+        jar = items.get(evo.COOKIE_JAR_SLUG)
+        candidates = sum(
+            (
+                evo.TEA_POT_SLUG in items,
+                evo.BOOK_SLUG in items,
+                jar is None or jar.quantity <= _COOKIE_LOW_AT,
+            )
+        )
+        if candidates <= 0:
+            return WorkSignal(pressure=0.0, reason="no_candidates")
+        book_in_play = evo.BOOK_SLUG in items
+        return WorkSignal(
+            pressure=pressure_from_count(candidates, saturation=3),
+            reason=f"{candidates} transitions",
+            needs_llm=bool(
+                book_in_play and self._ollama is not None and self._model
+            ),
         )
 
     def run(self) -> dict[str, Any]:

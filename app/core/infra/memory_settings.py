@@ -1617,6 +1617,36 @@ class MemorySettings:
     # backlogs.
     idle_worker_tick_budget_ms: int = 3000
     idle_worker_max_per_tick: int = 0
+    # P36: demand-driven scheduling. Workers report a cheap "how much
+    # work is pending" pressure via ``demand()``; the scheduler ranks by
+    # urgency instead of by age, and splits the per-tick budget into two
+    # lanes. ``idle_worker_tick_budget_ms`` above becomes the LLM lane
+    # (it was always really a GPU-contention limit, sized for one local
+    # Ollama serving both chat and workers); ``compute_budget_ms`` is
+    # the lane for workers that touch no LLM and therefore have no GPU
+    # to protect.
+    #
+    # ``pressure_enabled = false`` restores the pre-P36 path exactly:
+    # one budget, oldest-first ranking, no probes.
+    idle_worker_pressure_enabled: bool = True
+    idle_worker_compute_budget_ms: int = 6000
+    # Minimum blended pressure/staleness for admission ahead of the
+    # heartbeat. Raise to make Aiko lazier about speculative work.
+    idle_worker_urgency_threshold: float = 0.35
+    # Anti-thrash floor as a fraction of each worker's own interval,
+    # floored at one scheduler tick. One ratio serves intervals spanning
+    # three orders of magnitude: at wake=15/ratio=0.1 a 30s worker
+    # floors at 15s while an 86400s one floors at 2.4h.
+    idle_worker_min_interval_ratio: float = 0.1
+    # How far the budget may grow as the user's absence deepens.
+    # ``1.0`` disables depth scaling.
+    idle_worker_depth_max_multiplier: float = 10.0
+    # ``auto`` derives chat-vs-worker GPU contention from the route
+    # topology. Force ``none`` / ``queueing`` / ``swapping`` when the
+    # topology lies -- e.g. a "remote" endpoint that is really your own
+    # GPU box, which would otherwise read as split backends and remove
+    # the protection.
+    idle_worker_contention_override: str = "auto"
 
 
 
@@ -3866,5 +3896,40 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0,
                 int(memory_raw.get("idle_worker_max_per_tick", 0)),
             ),
+            idle_worker_pressure_enabled=bool(
+                memory_raw.get("idle_worker_pressure_enabled", True),
+            ),
+            idle_worker_compute_budget_ms=max(
+                0,
+                int(memory_raw.get("idle_worker_compute_budget_ms", 6000)),
+            ),
+            idle_worker_urgency_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("idle_worker_urgency_threshold", 0.35)
+                    ),
+                ),
+            ),
+            idle_worker_min_interval_ratio=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("idle_worker_min_interval_ratio", 0.1)
+                    ),
+                ),
+            ),
+            idle_worker_depth_max_multiplier=max(
+                1.0,
+                float(
+                    memory_raw.get("idle_worker_depth_max_multiplier", 10.0)
+                ),
+            ),
+            idle_worker_contention_override=str(
+                memory_raw.get("idle_worker_contention_override", "auto")
+                or "auto"
+            ).strip().lower(),
     )
 

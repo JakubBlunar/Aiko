@@ -273,7 +273,11 @@ class IdleWorkerSchedulerLoggingTests(unittest.TestCase):
         self.assertIn("idle_workers tick:", joined)
         self.assertIn("ran=2", joined)
         self.assertIn("due=2", joined)
-        self.assertIn("budget_ms=2000", joined)
+        # P36 split the single budget into a compute and an LLM lane, so
+        # the line reports both rather than one ``budget_ms``.
+        self.assertIn("llm_ms=2000", joined)
+        self.assertIn("contention=", joined)
+        self.assertIn("depth=just_left", joined)
 
     def test_no_summary_when_nothing_due(self) -> None:
         sched = IdleWorkerScheduler(tick_budget_ms=2000)

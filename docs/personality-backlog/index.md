@@ -522,9 +522,11 @@ compound across every K-series entry:
   append-only `concept_events`; retention posture per table.
 - **P35.** The Lance ANN index is built once and never refreshed
   (silent degradation to flat scan; hard prerequisite for P30).
-- **P36.** Idle-worker LLM pile-up — ~22-28 LLM-capable workers
-  draining sequentially under a 6 s soft budget, with no starvation
-  reporting and no LLM-specific ceiling.
+- **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
+  pending work via a `demand()` probe, the scheduler ranks by urgency
+  instead of age, and the budget splits into a compute lane and an LLM
+  lane sized by idle depth and chat-vs-worker GPU contention. Nine of
+  ~50 workers migrated. See [`idle-workers.md`](../idle-workers.md).
 - **P37.** Residual React re-renders — the per-token and per-mic-frame
   subscriptions **shipped** (bucketed streaming signature; `audioLevel`
   moved to the leaves). Left: hoisting the Virtuoso `itemContent` /
@@ -543,6 +545,13 @@ compound across every K-series entry:
   hand-maintained denylist of ~30 providers that has drifted (belief_gaps
   dropped, its sibling clarification kept). Generalise the T3 selector
   across the whole block set; learned weights once G4 exists.
+- **P44.** Migrate the remaining ~40 idle workers to `demand()`; each one
+  that lands frees an `*_interval_seconds` key from config.
+- **P45.** Retire the per-hour / per-day cue caps in favour of a
+  satisfaction signal fed back from whether the cues were engaged with.
+- **P46.** Drain the compute lane in parallel — blocked on shared
+  mutable state (the `WorldStore` mirror, `ConceptStore` caches,
+  `threading.local()` SQLite connections).
 
 (P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P40 and P41 have
 shipped — the embed budget and prompt-build telemetry, the slice-cache

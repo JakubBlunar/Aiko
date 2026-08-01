@@ -6,9 +6,10 @@ it's due to advance. Stages move slowly (hours per step; see
 ``_STAGE_MIN_AGE_HOURS`` in :mod:`app.core.world.world_store`) so wallclock
 growth feels gentle rather than gamey.
 
-Hourly cadence is deliberate — the worker is cheap, the cost is one
-SQLite UPDATE per promoted plant, and the wall-clock model means we
-don't need to fire more often than the slowest stage gate.
+The hourly ``interval_seconds`` is a heartbeat, not a cadence: the
+:meth:`demand` probe counts how many plants would actually advance and
+the scheduler decides from that (P36). The worker is cheap either way --
+one SQLite UPDATE per promoted plant.
 
 Notifications go out through the same ``world_updated`` WS path used by
 manual edits via ``session._notify_world({"item": …})``; the UI updates
@@ -20,7 +21,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.world.world_store import WorldStore
@@ -55,8 +56,45 @@ class PlantGrowthWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        # No hard veto: this worker has no feature flag and no cold-start
+        # guard. The interval that used to gate here is now the heartbeat
+        # and the demand() probe decides the rest (P36).
+        return True
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """How many plants would actually advance a stage right now.
+
+        The hourly sweep existed because there was no way to ask; it
+        scanned every plant to usually promote none. This is the same
+        walk minus the writes -- ``stage_promotion_due`` is the
+        read-only half of ``promote_stage``, which matters because
+        ``list_items`` returns live mirror references. No LLM.
+        """
+        from app.core.world.world_store import stage_promotion_due
+
+        try:
+            plants = self._store.list_items(kind="plant")
+        except Exception:
+            log.debug("plant growth: demand list_items failed", exc_info=True)
+            return None
+        due = 0
+        for item in plants:
+            try:
+                if stage_promotion_due(item, now=now) is not None:
+                    due += 1
+            except Exception:
+                log.debug(
+                    "plant growth: demand probe raised for id=%s",
+                    getattr(item, "id", "?"), exc_info=True,
+                )
+        return WorkSignal(
+            pressure=pressure_from_count(due, saturation=3),
+            reason=f"{due} due",
         )
 
     def run(self) -> dict[str, Any]:

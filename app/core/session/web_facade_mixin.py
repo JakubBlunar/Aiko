@@ -232,6 +232,17 @@ class WebFacadeMixin:
     # ── tasks ────────────────────────────────────────────────────────
 
     @property
+    def idle_scheduler(self) -> Any:
+        """The :class:`IdleWorkerScheduler`, or ``None`` when not running.
+
+        ``None`` whenever ``memory.tiers_enabled`` is off or memory
+        failed to wire, so callers must handle it. Read via ``getattr``
+        because the scheduler is built partway through init and a debug
+        tool can arrive before that.
+        """
+        return getattr(self, "_idle_scheduler", None)
+
+    @property
     def tasks(self) -> TaskHandles:
         """The task stores, or a bundle of ``None`` when tasks are disabled."""
         return TaskHandles(

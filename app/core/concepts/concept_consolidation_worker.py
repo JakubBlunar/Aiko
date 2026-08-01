@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.infra import timephrase
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_event_store import ConceptEventStore
@@ -108,10 +108,44 @@ class ConceptConsolidationWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None
     ) -> bool:
+        # Feature flag only; the interval became the heartbeat (P36).
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None
+    ) -> "WorkSignal | None":
+        """Are there near-duplicate pairs left to adjudicate?
+
+        Reuses :meth:`_collect_pairs` against the in-memory mirror, which
+        is a cosine scan over the stalest batch and no LLM. Pairs already
+        in the negative cache are excluded, so a graph the worker has
+        fully adjudicated reports zero pressure and stops burning a tick
+        every fifteen minutes to rediscover that.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="disabled")
+        if not self._graph_mature():
+            return WorkSignal(pressure=0.0, reason="immature_graph")
+        batch_size = max(1, self._i("concept_consolidation_batch_size", 40))
+        merge_cos = self._fl("concept_consolidation_merge_cosine", 0.84)
+        try:
+            batch = self._store.list_stalest(batch_size)
+            pairs = self._collect_pairs(batch, merge_cos, {"scanned": 0})
+        except Exception:
+            log.debug(
+                "concept_consolidation: demand probe failed", exc_info=True,
+            )
+            return None
+        fresh = sum(
+            1 for _cos, a, b in pairs
+            if frozenset({a.concept_id, b.concept_id})
+            not in self._negative_cache
+        )
+        return WorkSignal(
+            pressure=pressure_from_count(fresh, saturation=5),
+            reason=f"{fresh} candidate pairs",
+            # Every pair it acts on is adjudicated by the LLM.
+            needs_llm=fresh > 0,
         )
 
     def _enabled(self) -> bool:

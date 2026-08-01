@@ -40,9 +40,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from app.core.proactive.idle_worker import (
+    LANE_COMPUTE,
+    LANE_LLM,
+    Admission,
     IdleWorker,
     IdleWorkerRecord,
+    WorkSignal,
+    classify_depth,
     default_is_ready,
+    derive_min_interval_s,
+    evaluate_admission,
+)
+from app.core.proactive.llm_contention import (
+    CONTENTION_QUEUEING,
+    llm_lane_multiplier,
 )
 from app.core.infra import timephrase
 
@@ -66,6 +77,22 @@ _KV_PREFIX = "idle_worker."
 # to avoid stuffing a tick with a dozen unknown workers at once.
 _DEFAULT_ESTIMATE_MS: float = 250.0
 
+# A demand() probe is supposed to be a COUNT or a kv_meta read. Once its
+# EMA passes this, the premise has broken -- probing is no longer much
+# cheaper than running -- so the worker drops back to interval
+# behaviour rather than paying the probe on every tick.
+_PROBE_BUDGET_MS: float = 50.0
+
+# Multiple of a worker's heartbeat past which it is admitted even though
+# its estimate does not fit the lane. Without this, a user who returns
+# every few minutes pins idle depth at ``just_left`` forever and a long
+# worker never gets a tick it fits in.
+_FIT_ESCAPE_HEARTBEATS: float = 3.0
+
+# Lane drain order. Compute first, so cheap arithmetic is never stuck
+# behind a multi-second generation; urgency orders within a lane.
+_LANE_ORDER = (LANE_COMPUTE, LANE_LLM)
+
 
 class IdleWorkerScheduler:
     """Single-threaded scheduler for the IdleWorker registry."""
@@ -79,6 +106,13 @@ class IdleWorkerScheduler:
         kv_set: Callable[[str, str], None] | None = None,
         tick_budget_ms: int = 3000,
         max_per_tick: int = 0,
+        compute_budget_ms: int = 6000,
+        pressure_enabled: bool = True,
+        urgency_threshold: float = 0.35,
+        min_interval_ratio: float = 0.1,
+        depth_max_multiplier: float = 10.0,
+        idle_depth_provider: Callable[[], float] | None = None,
+        contention_provider: Callable[[], str] | None = None,
     ) -> None:
         """
         Parameters
@@ -90,21 +124,45 @@ class IdleWorkerScheduler:
             Optional ``() -> bool``. When provided and it returns
             ``False``, the scheduler skips that tick (no worker runs).
             Used by :class:`SessionController` to gate against Live
-            mode + recent user activity.
+            mode + recent user activity. Also re-checked *between*
+            workers inside a tick, so a deep-idle tick with a 10x
+            budget stops admitting the moment the user comes back.
         kv_get / kv_set:
             Optional ``(key) -> str | None`` / ``(key, str) -> None``
             for persisting ``last_run_at`` across restarts. Pass the
             :class:`ChatDatabase` helpers in production; tests can pass
             ``None`` to use in-memory state only.
         tick_budget_ms:
-            Soft wall-time budget per tick (P8). The scheduler runs as
-            many due workers as fit into this budget, sorted oldest
-            first, using each worker's ``avg_duration_ms`` (EMA) as the
-            cost estimate. Anti-starvation: at least one due worker
-            always runs per tick, even if its estimate exceeds the
-            remaining budget. Raise this for long quiet windows; lower
-            it (or set 0 to fall back to one-per-tick) on slow
-            machines.
+            Wall-time budget per tick for workers whose run will call
+            the worker LLM (P8/P36). Sized for the worst contention
+            case: one local Ollama serving both chat and workers, where
+            a background generation delays the user's next first token.
+            Scaled per tick by idle depth *and* contention grade.
+        compute_budget_ms:
+            The same, for workers that touch no LLM. Scaled by idle
+            depth alone -- there is no GPU to protect -- which is what
+            lets pure-arithmetic workers tick freely on a shared Ollama.
+        pressure_enabled:
+            Master switch for demand-driven scheduling. ``False``
+            restores the pre-P36 path exactly: one budget, oldest-first
+            ranking, no probes.
+        urgency_threshold:
+            Minimum blended pressure/staleness for admission ahead of
+            the heartbeat.
+        min_interval_ratio:
+            Feeds :func:`derive_min_interval_s` for the per-worker
+            anti-thrash floor.
+        depth_max_multiplier:
+            Caps budget growth with idle depth. ``1.0`` disables depth
+            scaling.
+        idle_depth_provider:
+            Optional ``() -> float`` returning seconds since the last
+            user activity. Absent means "assume the user just left",
+            the most conservative reading.
+        contention_provider:
+            Optional ``() -> str`` returning a grade from
+            :mod:`app.core.proactive.llm_contention`. Absent defaults to
+            ``queueing``, which matches today's shared-Ollama sizing.
         max_per_tick:
             Optional hard cap on workers per tick (0 = unlimited, the
             default; the budget is the soft cap). Useful when you want
@@ -115,7 +173,14 @@ class IdleWorkerScheduler:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._tick_budget_ms = max(0, int(tick_budget_ms))
+        self._compute_budget_ms = max(0, int(compute_budget_ms))
         self._max_per_tick = max(0, int(max_per_tick))
+        self._pressure_enabled = bool(pressure_enabled)
+        self._urgency_threshold = max(0.0, float(urgency_threshold))
+        self._min_interval_ratio = max(0.0, float(min_interval_ratio))
+        self._depth_max_multiplier = max(1.0, float(depth_max_multiplier))
+        self._idle_depth_provider = idle_depth_provider
+        self._contention_provider = contention_provider
         self._workers: dict[str, IdleWorker] = {}
         self._records: dict[str, IdleWorkerRecord] = {}
         self._lock = threading.Lock()
@@ -152,6 +217,27 @@ class IdleWorkerScheduler:
             self._tick_budget_ms = max(0, int(tick_budget_ms))
         if max_per_tick is not None:
             self._max_per_tick = max(0, int(max_per_tick))
+
+    def update_demand_settings(
+        self,
+        *,
+        compute_budget_ms: int | None = None,
+        pressure_enabled: bool | None = None,
+        urgency_threshold: float | None = None,
+        min_interval_ratio: float | None = None,
+        depth_max_multiplier: float | None = None,
+    ) -> None:
+        """Adjust the demand-driven knobs at runtime (settings reload)."""
+        if compute_budget_ms is not None:
+            self._compute_budget_ms = max(0, int(compute_budget_ms))
+        if pressure_enabled is not None:
+            self._pressure_enabled = bool(pressure_enabled)
+        if urgency_threshold is not None:
+            self._urgency_threshold = max(0.0, float(urgency_threshold))
+        if min_interval_ratio is not None:
+            self._min_interval_ratio = max(0.0, float(min_interval_ratio))
+        if depth_max_multiplier is not None:
+            self._depth_max_multiplier = max(1.0, float(depth_max_multiplier))
 
     def update_quiet_callback(
         self, is_quiet_callback: Callable[[], bool] | None
@@ -270,6 +356,35 @@ class IdleWorkerScheduler:
                     "run_count": int(record.run_count),
                     "error_count": int(record.error_count),
                     "last_error": record.last_error,
+                    "demand_aware": callable(
+                        getattr(worker, "demand", None)
+                    ),
+                    "last_pressure": (
+                        round(record.last_pressure, 4)
+                        if record.last_pressure is not None
+                        else None
+                    ),
+                    "last_urgency": (
+                        round(record.last_urgency, 4)
+                        if record.last_urgency is not None
+                        else None
+                    ),
+                    "last_admit_reason": record.last_admit_reason,
+                    "last_lane": record.last_lane,
+                    "last_probe_reason": record.last_probe_reason,
+                    "avg_probe_ms": (
+                        round(record.avg_probe_ms, 3)
+                        if record.avg_probe_ms is not None
+                        else None
+                    ),
+                    "min_interval_seconds": round(
+                        derive_min_interval_s(
+                            interval,
+                            wake_seconds=self._wake_seconds,
+                            ratio=self._min_interval_ratio,
+                        ),
+                        2,
+                    ),
                 })
 
         # Sort: never-run workers first (overdue_seconds=None), then by
@@ -282,11 +397,32 @@ class IdleWorkerScheduler:
             return (1, -float(ov))
 
         rows.sort(key=_key)
+        idle_s = self._idle_seconds()
+        depth_name, tier_index, depth_mult = classify_depth(
+            idle_s, max_multiplier=self._depth_max_multiplier,
+        )
+        grade = self._contention()
+        llm_mult = llm_lane_multiplier(
+            grade, tier_index=tier_index, depth_multiplier=depth_mult,
+        )
         return {
             "wake_seconds": self._wake_seconds,
             "tick_budget_ms": self._tick_budget_ms,
+            "compute_budget_ms": self._compute_budget_ms,
             "max_per_tick": self._max_per_tick,
             "quiet": quiet,
+            "pressure_enabled": self._pressure_enabled,
+            "urgency_threshold": self._urgency_threshold,
+            "idle_seconds": round(idle_s, 1),
+            "idle_depth": depth_name,
+            "depth_multiplier": depth_mult,
+            "contention": grade,
+            "effective_compute_budget_ms": round(
+                float(self._compute_budget_ms) * depth_mult, 1,
+            ),
+            "effective_llm_budget_ms": round(
+                float(self._tick_budget_ms) * llm_mult, 1,
+            ),
             "workers": rows,
         }
 
@@ -299,14 +435,46 @@ class IdleWorkerScheduler:
             except Exception:
                 log.debug("idle_worker tick failed", exc_info=True)
 
+    def _quiet(self) -> bool:
+        """Is it safe to run a worker right now? Errors read as 'no'."""
+        if self._is_quiet_callback is None:
+            return True
+        try:
+            return bool(self._is_quiet_callback())
+        except Exception:
+            log.debug("is_quiet_callback raised; treating as busy", exc_info=True)
+            return False
+
     def _tick(self) -> None:
-        if self._is_quiet_callback is not None:
-            try:
-                if not bool(self._is_quiet_callback()):
-                    return
-            except Exception:
-                log.debug("is_quiet_callback raised; skipping tick", exc_info=True)
-                return
+        if not self._quiet():
+            return
+        if self._pressure_enabled:
+            self._tick_demand()
+        else:
+            self._tick_legacy()
+
+    def _is_ready(
+        self, worker: IdleWorker, record: IdleWorkerRecord, now: datetime,
+    ) -> bool:
+        """The worker's own hard veto, with the interval as a fallback."""
+        try:
+            return bool(
+                worker.is_ready(now=now, last_run_at=record.last_run_at)
+            )
+        except Exception:
+            return default_is_ready(
+                worker.interval_seconds,
+                now=now,
+                last_run_at=record.last_run_at,
+            )
+
+    def _tick_legacy(self) -> None:
+        """The pre-P36 tick, preserved verbatim as the escape hatch.
+
+        Reached when ``memory.idle_worker_pressure_enabled`` is false.
+        One budget, oldest-first ranking, slot 1 exempt from the fit
+        check at every idle depth.
+        """
         now = _utcnow()
         # Pick due workers in "most overdue first" order. Oldest
         # last_run_at wins ties so we don't starve any one worker.
@@ -330,15 +498,7 @@ class IdleWorkerScheduler:
 
         for name, worker in ranked:
             record = self._records[name]
-            try:
-                ready = worker.is_ready(now=now, last_run_at=record.last_run_at)
-            except Exception:
-                ready = default_is_ready(
-                    worker.interval_seconds,
-                    now=now,
-                    last_run_at=record.last_run_at,
-                )
-            if not ready:
+            if not self._is_ready(worker, record, now):
                 continue
             due_total += 1
 
@@ -374,6 +534,256 @@ class IdleWorkerScheduler:
                 "queue_after=%d tick_ms=%.0f budget_ms=%d names=%s",
                 ran, due_total, skipped_budget, queue_after,
                 tick_elapsed_ms, self._tick_budget_ms,
+                ",".join(ran_names) if ran_names else "-",
+            )
+
+    # ── demand-driven tick (P36) ─────────────────────────────────────
+
+    def _idle_seconds(self) -> float:
+        if self._idle_depth_provider is None:
+            return 0.0
+        try:
+            return max(0.0, float(self._idle_depth_provider()))
+        except Exception:
+            log.debug("idle_depth_provider raised; assuming 0s", exc_info=True)
+            return 0.0
+
+    def _contention(self) -> str:
+        if self._contention_provider is None:
+            return CONTENTION_QUEUEING
+        try:
+            return str(self._contention_provider())
+        except Exception:
+            log.debug(
+                "contention_provider raised; assuming queueing", exc_info=True,
+            )
+            return CONTENTION_QUEUEING
+
+    def _probe(
+        self, worker: IdleWorker, record: IdleWorkerRecord, now: datetime,
+    ) -> WorkSignal | None:
+        """Run a worker's ``demand()`` probe, or ``None`` for legacy workers.
+
+        A probe whose EMA has grown past ``_PROBE_BUDGET_MS`` is skipped:
+        the premise of demand-driven scheduling is that asking is much
+        cheaper than doing, and a probe that violates it would turn a
+        scheduling win into a per-tick tax.
+        """
+        demand = getattr(worker, "demand", None)
+        if not callable(demand):
+            return None
+        if (
+            record.avg_probe_ms is not None
+            and record.avg_probe_ms > _PROBE_BUDGET_MS
+        ):
+            record.last_probe_reason = "probe_too_slow"
+            return None
+        started_ms = time.monotonic() * 1000.0
+        try:
+            signal = demand(now=now, last_run_at=record.last_run_at)
+        except Exception:
+            log.debug(
+                "idle_worker %s demand() raised; falling back to interval",
+                worker.name, exc_info=True,
+            )
+            record.last_probe_reason = "probe_error"
+            return None
+        elapsed_ms = (time.monotonic() * 1000.0) - started_ms
+        record.update_after_probe(elapsed_ms)
+        if elapsed_ms > _PROBE_BUDGET_MS:
+            log.warning(
+                "idle_worker %s demand() took %.1fms (budget %.0fms); "
+                "it will drop back to interval scheduling if this persists",
+                worker.name, elapsed_ms, _PROBE_BUDGET_MS,
+            )
+        if signal is None:
+            record.last_probe_reason = "no_signal"
+            return None
+        record.last_probe_reason = signal.reason or None
+        return signal
+
+    def _fits_lane(
+        self,
+        *,
+        estimate_ms: float,
+        remaining_ms: float,
+        first_in_lane: bool,
+        tier_index: int,
+        elapsed_s: float | None,
+        heartbeat_s: float,
+    ) -> bool:
+        """Whether a worker may start given what is left of its lane.
+
+        The pre-P36 rule exempted the first worker of every tick from
+        the budget entirely, which meant a worker with a 45s average was
+        admitted on every tick and ``tick_budget_ms`` bounded only slots
+        two onward. Since a returning message queues behind whatever is
+        running rather than cancelling it, that unbounded first run was
+        the user's real worst-case wait.
+
+        So the exemption now applies only from the ``away`` tier on,
+        where a long run has room. Two escape valves keep the tightened
+        rule from becoming a trap at ``just_left``:
+
+        * A worker that has *never* run has no measured cost, and
+          ``_DEFAULT_ESTIMATE_MS`` is a guess. Refusing it on that guess
+          would mean never measuring it, so it could be excluded
+          forever. The first run of anything is exempt.
+        * Past three heartbeats, admit regardless. A user who returns
+          every few minutes pins depth at ``just_left`` indefinitely,
+          and without this a long worker would never see a tick it fits
+          in.
+        """
+        if estimate_ms <= remaining_ms:
+            return True
+        if not first_in_lane:
+            return False
+        if tier_index > 0:
+            return True
+        if elapsed_s is None:
+            return True
+        return (
+            heartbeat_s > 0.0
+            and elapsed_s >= _FIT_ESCAPE_HEARTBEATS * heartbeat_s
+        )
+
+    def _tick_demand(self) -> None:
+        now = _utcnow()
+        idle_s = self._idle_seconds()
+        depth_name, tier_index, depth_mult = classify_depth(
+            idle_s, max_multiplier=self._depth_max_multiplier,
+        )
+        grade = self._contention()
+        llm_mult = llm_lane_multiplier(
+            grade, tier_index=tier_index, depth_multiplier=depth_mult,
+        )
+        lanes = {
+            LANE_COMPUTE: float(self._compute_budget_ms) * depth_mult,
+            LANE_LLM: float(self._tick_budget_ms) * llm_mult,
+        }
+
+        with self._lock:
+            items = list(self._workers.items())
+
+        due_total = 0
+        candidates: list[
+            tuple[int, float, float, str, IdleWorker, IdleWorkerRecord]
+        ] = []
+        for name, worker in items:
+            record = self._records.get(name)
+            if record is None:
+                continue
+            if not self._is_ready(worker, record, now):
+                continue
+            due_total += 1
+
+            elapsed_s = (
+                None if record.last_run_at is None
+                else (now - record.last_run_at).total_seconds()
+            )
+            heartbeat_s = float(worker.interval_seconds)
+            signal = self._probe(worker, record, now)
+            verdict: Admission = evaluate_admission(
+                elapsed_s=elapsed_s,
+                heartbeat_s=heartbeat_s,
+                min_interval_s=derive_min_interval_s(
+                    heartbeat_s,
+                    wake_seconds=self._wake_seconds,
+                    ratio=self._min_interval_ratio,
+                ),
+                signal=signal,
+                threshold=self._urgency_threshold,
+            )
+            record.last_pressure = signal.pressure if signal else None
+            record.last_urgency = verdict.urgency
+            record.last_admit_reason = verdict.reason
+            record.last_lane = verdict.lane
+            if not verdict.admit:
+                continue
+            lane_rank = _LANE_ORDER.index(verdict.lane)
+            # Oldest-first as the tiebreaker, not the name. Staleness
+            # saturates at 1.0, so once several workers are past their
+            # heartbeat their urgencies tie exactly -- breaking that tie
+            # alphabetically would starve everything after the first
+            # name. This is the pre-P36 rotation, kept underneath
+            # urgency rather than replaced by it.
+            last_run_key = (
+                float("-inf") if record.last_run_at is None
+                else record.last_run_at.timestamp()
+            )
+            candidates.append(
+                (lane_rank, -verdict.urgency, last_run_key, name, worker, record),
+            )
+
+        # Lane-major, urgency descending inside each lane. Compute work
+        # is milliseconds, so putting it first costs the LLM lane almost
+        # nothing while saving cheap workers from waiting out a
+        # multi-second generation (or slipping to a later tick entirely).
+        #
+        # Deliberately not tie-broken by name: the sort is stable and
+        # ``items`` is insertion-ordered, so equal-rank workers keep
+        # registration order, which is both deterministic and the
+        # pre-P36 behaviour.
+        candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+
+        ran = 0
+        skipped_budget = 0
+        ran_names: list[str] = []
+        lane_ran = {LANE_COMPUTE: 0, LANE_LLM: 0}
+        tick_started_ms = time.monotonic() * 1000.0
+        max_runs = self._max_per_tick if self._max_per_tick > 0 else None
+        stopped_early = False
+
+        for lane_rank, _neg_urgency, _last_run, name, worker, record in candidates:
+            if max_runs is not None and ran >= max_runs:
+                skipped_budget += 1
+                continue
+            # The user coming back mid-tick must stop us admitting more.
+            # The worker already running still finishes -- that wait is
+            # what _fits_lane bounds.
+            if not self._quiet():
+                stopped_early = True
+                break
+
+            lane = _LANE_ORDER[lane_rank]
+            estimate_ms = (
+                record.avg_duration_ms
+                if record.avg_duration_ms is not None
+                else _DEFAULT_ESTIMATE_MS
+            )
+            elapsed_s = (
+                None if record.last_run_at is None
+                else (now - record.last_run_at).total_seconds()
+            )
+            if not self._fits_lane(
+                estimate_ms=estimate_ms,
+                remaining_ms=lanes[lane],
+                first_in_lane=lane_ran[lane] == 0,
+                tier_index=tier_index,
+                elapsed_s=elapsed_s,
+                heartbeat_s=float(worker.interval_seconds),
+            ):
+                skipped_budget += 1
+                record.last_admit_reason = "lane_full"
+                continue
+
+            self._run_one(worker, record)
+            ran += 1
+            lane_ran[lane] += 1
+            ran_names.append(name)
+            lanes[lane] = max(0.0, lanes[lane] - (record.last_duration_ms or 0.0))
+
+        if due_total > 0 or ran > 0:
+            tick_elapsed_ms = (time.monotonic() * 1000.0) - tick_started_ms
+            log.info(
+                "idle_workers tick: ran=%d due=%d admitted=%d "
+                "skipped_budget=%d tick_ms=%.0f depth=%s(%.0fs) "
+                "contention=%s compute_ms=%.0f llm_ms=%.0f%s names=%s",
+                ran, due_total, len(candidates), skipped_budget,
+                tick_elapsed_ms, depth_name, idle_s, grade,
+                float(self._compute_budget_ms) * depth_mult,
+                float(self._tick_budget_ms) * llm_mult,
+                " stopped_early=1" if stopped_early else "",
                 ",".join(ran_names) if ran_names else "-",
             )
 

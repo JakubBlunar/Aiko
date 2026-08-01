@@ -13,7 +13,9 @@ for any moved method must patch
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
+from app.core.infra import timephrase
 from app.core.infra.settings import AppSettings
 from collections.abc import Callable
 from app.core.session.debug_overrides import DebugOverridesHostMixin
@@ -28,6 +30,11 @@ import uuid
 
 
 log = logging.getLogger("app.session")
+
+# Wall-clock mirror of ``_last_user_activity_at``. Persisted because the
+# monotonic clock restarts with the process, and idle *depth* (P36) has
+# to survive that to be worth anything.
+_KV_LAST_USER_ACTIVITY = "idle.last_user_activity_at"
 
 
 class LifecycleMixin(DebugOverridesHostMixin):
@@ -596,8 +603,78 @@ class LifecycleMixin(DebugOverridesHostMixin):
         :meth:`_is_user_idle` before running a worker; a recent touch
         defers background work so it doesn't compete with the active
         conversation.
+
+        The monotonic stamp drives the quiet gate. The wall-clock mirror
+        in ``kv_meta`` drives idle *depth* (P36): monotonic resets to
+        zero on restart, which would make an eight-hour absence look
+        like a fresh one and keep the budget pinned at ``just_left``
+        exactly when there is most catching up to do.
         """
         self._last_user_activity_at = time.monotonic()
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return
+        try:
+            chat_db.kv_set(
+                _KV_LAST_USER_ACTIVITY, timephrase.utcnow().isoformat(),
+            )
+        except Exception:
+            log.debug("kv_set last_user_activity failed", exc_info=True)
+
+    def _idle_depth_seconds(self) -> float:
+        """Seconds since the user was last around, surviving a restart.
+
+        ``max`` of the in-process monotonic elapsed and the wall-clock
+        gap since the persisted stamp. The monotonic value is the
+        trustworthy one while the process lives; the persisted one is
+        what rescues depth after a reboot mid-absence. Taking the max
+        means a clock jump can only ever make Aiko *more* willing to
+        work, never less careful about the chat path -- and the quiet
+        gate, not this number, is what protects an active conversation.
+        """
+        monotonic_elapsed = time.monotonic() - float(
+            getattr(self, "_last_user_activity_at", 0.0) or 0.0
+        )
+        wall_elapsed = 0.0
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is not None:
+            try:
+                raw = chat_db.kv_get(_KV_LAST_USER_ACTIVITY)
+                if raw:
+                    last = datetime.fromisoformat(str(raw))
+                    wall_elapsed = (
+                        timephrase.utcnow() - last
+                    ).total_seconds()
+            except Exception:
+                log.debug("idle depth wall-clock read failed", exc_info=True)
+        return max(0.0, monotonic_elapsed, wall_elapsed)
+
+    def _llm_contention_grade(self) -> str:
+        """How badly background LLM work fights the chat path for a GPU.
+
+        Recomputed per tick rather than cached because the route table
+        is editable at runtime from the settings drawer: pointing
+        ``worker_default`` at a second backend should widen the LLM lane
+        on the next tick, not on the next restart. The comparison is a
+        couple of dict lookups.
+        """
+        from app.core.proactive.llm_contention import (
+            CONTENTION_QUEUEING,
+            classify_contention,
+        )
+
+        try:
+            return classify_contention(
+                self._settings.llm,
+                override=getattr(
+                    self._memory_settings,
+                    "idle_worker_contention_override",
+                    "auto",
+                ),
+            )
+        except Exception:
+            log.debug("contention classification failed", exc_info=True)
+            return CONTENTION_QUEUEING
 
     def _is_user_idle(self) -> bool:
         """Return True when it's safe to run a background worker.

@@ -30,7 +30,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -105,11 +105,86 @@ class MemoryDecayWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # Feature flag only; the interval became the heartbeat (P36).
+        return bool(self._settings.tiers_enabled)
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """How much decay has accrued since the last sweep. Never LLM.
+
+        On the engagement-clock path this is the real win: decay is
+        driven by *active conversation* time, so while the user is away
+        there is genuinely nothing to decay and the old 30-minute timer
+        was waking up to write zero rows all night.
+
+        On the wall-clock path there is no cheap signal beyond elapsed
+        time, so pressure just tracks the heartbeat. Reporting it anyway
+        (rather than returning ``None``) is what keeps this pure-SQL
+        worker in the compute lane instead of the LLM one.
+        """
         if not self._settings.tiers_enabled:
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="tiers_disabled")
+
+        engaged_days = self._peek_engaged_days()
+        if engaged_days is not None:
+            # Saturate at a full day of active conversation.
+            return WorkSignal(
+                pressure=max(0.0, min(1.0, engaged_days)),
+                reason=f"{engaged_days:.3f} engaged days",
+            )
+
+        heartbeat = max(1.0, self.interval_seconds)
+        elapsed_s = (
+            heartbeat if last_run_at is None
+            else (now - last_run_at).total_seconds()
         )
+        return WorkSignal(
+            pressure=max(0.0, min(1.0, elapsed_s / heartbeat)),
+            reason="wall clock",
+        )
+
+    def _peek_engaged_days(self) -> float | None:
+        """Read-only twin of :meth:`_engaged_elapsed`.
+
+        ``None`` means "not on the engagement path". Crucially this
+        never writes the baseline anchor -- that side effect belongs to
+        an actual sweep, not to being asked whether one is worth doing.
+        """
+        clock = self._engagement_clock
+        if (
+            clock is None
+            or self._kv_get is None
+            or self._kv_set is None
+            or not getattr(clock, "enabled", False)
+            or not bool(
+                getattr(self._settings, "memory_decay_use_engagement_clock", True)
+            )
+        ):
+            return None
+        try:
+            raw = self._kv_get(self._KV_LAST_DECAY_ENGAGEMENT)
+        except Exception:
+            return None
+        if raw is None:
+            # No baseline yet; let the sweep run and write one.
+            return 1.0
+        try:
+            anchor = float(raw)
+        except (TypeError, ValueError):
+            return None
+        try:
+            return float(
+                clock.engaged_days_since(
+                    anchor,
+                    clamp_days=float(self._settings.decay_max_catchup_days),
+                )
+            )
+        except Exception:
+            return None
 
     def run(self) -> dict[str, Any]:
         if not self._settings.tiers_enabled:

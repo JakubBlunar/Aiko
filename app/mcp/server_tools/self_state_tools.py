@@ -378,7 +378,7 @@ def register(mcp, session: "SessionController") -> None:
         of ``{"skipped": "rate_limited"}`` / ``{"skipped":
         "max_active"}`` is expected when those are exhausted.
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running (memory.tiers_enabled may be off)"
         try:
@@ -460,7 +460,7 @@ def register(mcp, session: "SessionController") -> None:
         like ``too_short`` / ``not_due`` / ``rate_limited``). The
         min-message and trigger gates still apply.
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running (memory.tiers_enabled may be off)"
         try:
@@ -1884,7 +1884,7 @@ def register(mcp, session: "SessionController") -> None:
         configured half-life. Returns the run result (``decayed`` /
         ``top`` or a skip reason).
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running"
         try:
@@ -2055,7 +2055,7 @@ def register(mcp, session: "SessionController") -> None:
     @mcp.tool()
     def force_humor_style_decay() -> str:
         """K74 — run the HumorStyleDecayWorker once, ignoring gates."""
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running"
         try:

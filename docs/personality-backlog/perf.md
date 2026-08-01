@@ -795,6 +795,53 @@ scheduler already reasons about this).
 
 **Effort.** Small (a), Small-Medium (b), Small (c).
 
+### Status: phase 1 shipped — demand-driven scheduling
+
+Answered the open questions as: **neither ceiling alone**, and **no
+preemption**.
+
+- *Ceiling.* Wall-time, but split in two. The 6 s budget was never
+  really about time — it was about one local Ollama serving both the
+  chat path and the workers. So `idle_worker_tick_budget_ms` now governs
+  only the **LLM lane**, sized by a `classify_contention()` grade
+  (`none` / `queueing` / `swapping`) derived from comparing the
+  `main_chat` and `worker_default` routes. Everything else draws on a
+  separate **compute lane** that has no GPU to protect. Compute drains
+  first within a tick, so cheap arithmetic never queues behind a
+  generation. See [`llm_contention.py`](../../app/core/proactive/llm_contention.py).
+- *Preemption.* Rejected. A returning message queues behind whatever is
+  running rather than cancelling it, which made the in-flight worker's
+  duration the user's real worst-case wait. That exposed a bug in the
+  pre-existing anti-starvation rule: `ran >= 1` exempted the first
+  worker of every tick from the budget entirely, so a worker with a 45 s
+  average was admitted on every tick and `tick_budget_ms` bounded only
+  slots two onward. The exemption is now depth-aware — at `just_left`
+  slot 1 must fit its lane, from `away` on it need not — with two escape
+  valves (a never-run worker has no measured cost to budget against, and
+  three heartbeats overdue admits regardless).
+- *(a) starvation reporting* — shipped as `last_admit_reason` /
+  `last_pressure` / `last_urgency` / `last_lane` per worker in
+  `get_idle_workers_status`, plus a new `probe_idle_worker_demand` tool
+  that asks every worker what it thinks it has to do right now.
+- *(c) dirty checks out of `run()`* — shipped as the `demand()` probe,
+  which is the general form: a worker reports pending work *and* whether
+  servicing it needs the LLM, and the scheduler ranks by urgency (70%
+  pressure, 30% staleness) instead of by age. `interval_seconds` is
+  demoted from cadence to heartbeat.
+
+Nine workers migrated: the five world ones (`away_activity`,
+`garden_visit`, `plant_growth`, `circadian_settle`, `room_evolution`)
+and four thinking ones (`concept_lifecycle`, `concept_synthesis`,
+`concept_consolidation`, `memory_decay`). The remaining ~40 keep their
+old interval behaviour byte-for-byte, and
+`idle_worker_pressure_enabled: false` restores the old path wholesale.
+
+The mechanism itself is documented in
+[`docs/idle-workers.md`](../idle-workers.md); follow-ups are
+[P44](#p44-migrate-the-remaining-idle-workers-to-demand),
+[P45](#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+and [P46](#p46-parallel-compute-lane-drain).
+
 ---
 
 ## P37. Residual per-token and per-mic-frame React re-renders
@@ -1120,3 +1167,107 @@ learned weights).
 
 **Depends on.** P42 (or supersedes it), G4 and L37 for the value signal.
 Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
+
+---
+
+## P44. Migrate the remaining idle workers to `demand()`
+
+**Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+shipped the mechanism and migrated nine workers. The other ~40 still
+schedule on `interval_seconds` alone, which means two things: they spend
+a slot to discover they have nothing to do, and — because the scheduler
+cannot know whether they are cheap — they are all charged to the LLM
+lane, whether or not they touch a model. A pure-arithmetic worker
+sitting in the LLM lane is exactly the contention the split was meant to
+remove.
+
+**What to do per worker.** Split `is_ready()` in two. The hard vetoes
+(feature flags, cold-start guards, rate limiters) stay; the
+`default_is_ready(self.interval_seconds, …)` timing check moves into a
+`demand()` probe. Leaving the timing check in `is_ready()` vetoes the
+worker before its pressure is ever consulted, which silently disables
+the mechanism for it. Then hoist the early-returns at the top of `run()`
+into the probe — those are the dirty checks that were already there,
+just on the wrong side of the slot. Full recipe in
+[`docs/idle-workers.md`](../idle-workers.md#writing-or-migrating-a-worker).
+
+Set `needs_llm` per *run*, not per worker: `ConceptSynthesisWorker` only
+calls a model when its signature diff found dirty clusters, and
+`IdleAwayActivityWorker` rolls a ratio per beat. A static per-worker flag
+would be wrong for both.
+
+**Config this unlocks.** Each migrated worker's
+`*_interval_seconds` key becomes a heartbeat backstop rather than a
+cadence, and most can then leave `config/default.json` (the parser keeps
+honouring them as overrides). `decay_worker_interval_seconds` already
+has. The governing rule: **a deleted config key must be replaced by the
+worker knowing something, not by a hardcoded constant.**
+
+**Effort.** Small per worker, Medium in aggregate. Independent — they
+can go in batches.
+
+---
+
+## P45. Retire the per-hour / per-day caps in favour of satisfaction
+
+**Motivation.** Keys like `idle_curiosity_per_hour_cap` /
+`idle_curiosity_per_day_cap` do two unrelated jobs. As *cost*
+protection they are now redundant with the [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+lane budgets, which bound LLM time directly rather than by proxy. As
+*behavioural* protection they are doing something real — five curiosity
+cues an hour is annoying regardless of what it cost — but they express
+it as an arbitrary count instead of as the thing actually meant: *she
+has said enough for now*.
+
+**Sketched approach.** Replace the count with a satisfaction signal
+fed back from consumption. `SurfacingOutcomeStore` already tracks
+whether a surfaced item was engaged with, neutral, or abandoned, and
+exposes `engaged_rate`. A worker whose last few cues were never taken up
+should report *low* pressure regardless of how many it is nominally
+allowed; one whose cues keep landing should be free to keep going. That
+turns "at most 5/hour" into "produce until the user stops biting", which
+is both closer to the intent and self-tuning per user.
+
+**Prerequisite.** [P44](#p44-migrate-the-remaining-idle-workers-to-demand)
+for the workers concerned — the satisfaction signal has to live
+somewhere, and `demand()` is that somewhere.
+
+**Effort.** Medium. Needs a per-worker mapping from surfacing outcomes
+back to the worker that produced the item, which does not exist yet for
+every cue type.
+
+---
+
+## P46. Parallel compute-lane drain
+
+**Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+drains compute-lane workers *before* LLM ones but still one at a time,
+which captures most of the benefit (a cheap worker no longer waits out a
+generation) without touching concurrency. Running the compute lane in
+parallel would be the next step — the lane is CPU-bound and its workers
+are mostly independent.
+
+**Why it is not done.** An audit found enough shared mutable state to
+make it unsafe today, and none of it fails loudly:
+
+- `WorldStore.list_items` returns **live references** into the in-memory
+  mirror, and `promote_stage` mutates `item.state` in place. (P36 added
+  a read-only `stage_promotion_due` for the probe path specifically
+  because of this.)
+- `ConceptStore._concepts` / `_vectors` and the cached active matrix are
+  unguarded.
+- `MemoryStore` and `WorldStore` use `threading.local()` connections, so
+  parallel writers get separate transactions against a WAL database with
+  no global write lock.
+- `EngagementClock` does a read-modify-write on `kv_meta` without one.
+- The scheduler's own `last_run_at` / record updates assume a single
+  drain thread.
+
+**Prerequisite work.** Guard the in-memory mirrors, make
+`list_items` hand out copies (or make the mutating helpers explicit
+about ownership), and decide on a write-serialisation strategy for
+SQLite. `RagStore` is already thread-safe via a reader-writer lock and
+is the model to follow.
+
+**Effort.** Medium-Large, and mostly prerequisite rather than scheduler
+work.
