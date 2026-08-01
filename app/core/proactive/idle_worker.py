@@ -351,6 +351,31 @@ def pressure_from_count(count: int, *, saturation: int) -> float:
     return max(0.5, min(1.0, n / sat))
 
 
+def pressure_from_deficit(have: int, *, want: int) -> float:
+    """Pressure rises as stock runs down. A full shelf means zero.
+
+    The inverse of :func:`pressure_from_count`, and the shape every cue
+    worker needs. Those workers are not draining a backlog -- they are
+    *producing* inventory, so the thing that should wake them is running
+    out rather than piling up. A worker holding its target number of
+    unspent cues reports 0.0 and is never admitted; one that is empty
+    reports 1.0 and jumps the queue.
+
+    The interesting case is the middle. Deficit is scaled so that being
+    one short of target already clears the default urgency threshold on
+    its own: restocking is cheap and being caught empty when the
+    conversation opens a seam is the expensive failure, so the curve is
+    deliberately eager. Everything between is linear in the shortfall,
+    which is all the ranking needs.
+    """
+    stock = max(0, int(have))
+    target = max(1, int(want))
+    if stock >= target:
+        return 0.0
+    deficit = target - stock
+    return max(0.5, min(1.0, deficit / target))
+
+
 def compute_staleness(elapsed_s: float, heartbeat_s: float) -> float:
     """How overdue a worker is, clamped to ``[0.0, 1.0]``.
 
@@ -447,4 +472,5 @@ __all__ = [
     "derive_min_interval_s",
     "evaluate_admission",
     "pressure_from_count",
+    "pressure_from_deficit",
 ]

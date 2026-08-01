@@ -16,10 +16,14 @@ from typing import Any, TYPE_CHECKING
 from app.core.infra import timephrase
 from app.core.infra import timephrase as _timephrase
 from app.core.infra.chat_database import MessageRow, SummaryRow
+from app.core.proactive.cue_accounting import CUE_POLICIES
 from app.core.session.prompt_support import (
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
+    CUE_HANDLING_PREAMBLE,
     SPEECH_TEXTURE_SECTION_HEADER,
+    cue_handling_path_for,
+    split_persona_section,
     strip_persona_section,
     _TOUCH_GRAMMAR_ADDENDUM,
     _safe_provider,
@@ -469,6 +473,8 @@ class PromptAssemblerHelpersMixin:
     def reload_persona(self) -> None:
         """Force re-read on next ``build()`` call."""
         self._persona_cache = None
+        self._cue_handling_cache = None
+        self._persona_split_cache = None
 
     @property
     def last_slice_cache_event(self) -> str:
@@ -653,10 +659,7 @@ class PromptAssemblerHelpersMixin:
         ``get_latest_summary``.
         """
         head = self._db.get_history_head(session_key)
-        try:
-            persona_mtime = self._persona_path.stat().st_mtime
-        except OSError:
-            persona_mtime = 0.0
+        persona_mtime = self._persona_mtimes()
         return (
             session_key,
             head[0],
@@ -675,10 +678,7 @@ class PromptAssemblerHelpersMixin:
         recent_window: int,
         aggressive: bool,
     ) -> tuple:
-        try:
-            persona_mtime = self._persona_path.stat().st_mtime
-        except OSError:
-            persona_mtime = 0.0
+        persona_mtime = self._persona_mtimes()
         history_max_id = 0
         if history_msgs:
             history_max_id = max(int(getattr(m, "id", 0) or 0) for m in history_msgs)
@@ -810,11 +810,81 @@ class PromptAssemblerHelpersMixin:
         ]
 
     def _load_persona(self) -> str:
-        path = self._persona_path
+        """The always-on persona: everything except the hoisted cue notes."""
+        core, _sections = self._persona_split()
+        return self._render_persona_text(core)
+
+    def persona_cue_handling(self, cue_type: str) -> str:
+        """The handling note for one cue type, or ``""``.
+
+        Called by the assembler for each pooled cue block that actually
+        rendered this turn. Empty when the type has no hoisted section,
+        when the user renamed or deleted that section, or when the persona
+        is unreadable -- in every case the T0 stanza still states the
+        general contract, so a cue is never left with no guidance at all.
+        """
+        _core, sections = self._persona_split()
+        return self._render_persona_text(sections.get(str(cue_type), ""))
+
+    def _persona_mtimes(self) -> tuple[float, float]:
+        """``(persona, cue-handling)`` mtimes, ``0.0`` for a missing file.
+
+        Both feed the static prompt cache key. The cue file only ever
+        contributes to T6, with one exception that makes it matter here:
+        emptying it takes the last section away, and the T0 stanza that
+        introduces cues goes with it.
+        """
         try:
-            mtime = path.stat().st_mtime
+            persona = self._persona_path.stat().st_mtime
         except OSError:
+            persona = 0.0
+        try:
+            handling = cue_handling_path_for(self._persona_path).stat().st_mtime
+        except OSError:
+            handling = 0.0
+        return persona, handling
+
+    def _read_cue_handling(self, mtime: float) -> str:
+        """Raw text of the companion cue-handling file, ``""`` if absent.
+
+        Absent is a normal state, not a fault: an install whose persona
+        still carries the sections inline never needs this file, and the
+        caller falls back to the T0 stanza when a section is missing from
+        both.
+        """
+        if not mtime:
             return ""
+        cached = getattr(self, "_cue_handling_cache", None)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        path = cue_handling_path_for(self._persona_path)
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            log.warning("cue handling file %s unreadable: %s", path, exc)
+            raw = ""
+        self._cue_handling_cache = (mtime, raw)
+        return raw
+
+    def _persona_split(self) -> tuple[str, dict[str, str]]:
+        """Split the persona into core text plus per-cue handling notes.
+
+        The notes normally live in their own ``cue_handling.txt`` beside the
+        persona, because they are the one part of Aiko's character text that
+        isn't always-on -- each rides into T6 with its cue. They are still
+        honoured inline in the persona itself, and an inline copy *wins*: a
+        user who edited a section in place before the files were split keeps
+        their wording instead of silently reverting to the shipped default.
+
+        Cached against ``(both mtimes, speech_texture_enabled)`` rather than
+        the rendered output: the split runs on the *raw* text, before
+        ``{user_name}`` is substituted, because that is how the headers are
+        written in the files (one of them contains the placeholder).
+        """
+        path = self._persona_path
+        mtime, handling_mtime = self._persona_mtimes()
+        if not mtime:
+            return "", {}
         if self._persona_cache is not None and self._persona_cache[0] == mtime:
             raw = self._persona_cache[1]
         else:
@@ -825,24 +895,92 @@ class PromptAssemblerHelpersMixin:
                 raw = ""
             self._persona_cache = (mtime, raw)
         if not raw:
-            return ""
+            return "", {}
         # K49: gate applied after the mtime cache so flipping the setting at
         # runtime takes effect without a persona reload, and the cache keeps
         # holding what the file actually says.
-        if not getattr(self, "_speech_texture_enabled", True):
+        texture = bool(getattr(self, "_speech_texture_enabled", True))
+        key = (mtime, handling_mtime, texture)
+        cached = getattr(self, "_persona_split_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        if not texture:
             raw = strip_persona_section(raw, SPEECH_TEXTURE_SECTION_HEADER)
+        core = raw
+        handling_raw = self._read_cue_handling(handling_mtime)
+        sections: dict[str, str] = {}
+        shadowed: list[str] = []
+        for cue_type, policy in CUE_POLICIES.items():
+            if not policy.handling_section:
+                continue
+            core, extracted = split_persona_section(
+                core, policy.handling_section,
+            )
+            _rest, from_file = split_persona_section(
+                handling_raw, policy.handling_section,
+            )
+            if extracted and from_file:
+                shadowed.append(cue_type)
+            extracted = extracted or from_file
+            if extracted:
+                sections[cue_type] = extracted
+        if shadowed:
+            # The upgrade shape: a data volume predating the file split has
+            # the sections inline *and* gets the new file seeded next to it.
+            # Preferring the inline copy is right -- it may be hand-edited --
+            # but silence would leave someone editing the new file and seeing
+            # no effect, which is the exact trap the split was meant to close.
+            log.info(
+                "persona defines %d cue handling section(s) inline (%s); "
+                "the copies in %s are ignored. Delete them from the persona "
+                "to switch over.",
+                len(shadowed),
+                ", ".join(sorted(shadowed)),
+                cue_handling_path_for(path).name,
+            )
+        if sections:
+            core = f"{core}\n\n{CUE_HANDLING_PREAMBLE}"
+        self._persona_split_cache = (key, core, sections)
+        return core, sections
+
+    def _render_cue_handling(self, blocks: dict[str, str]) -> str:
+        """Gather the handling notes for the cues that fired this turn.
+
+        One section rather than a note appended to each cue block, for two
+        reasons. The cue blocks are interleaved with a dozen unrelated
+        surfaces in T6, so per-block notes would scatter guidance through
+        the middle of the cluster; and on the rare turn two cues fire, the
+        model reads their instructions together, which is where "never
+        stack two of them" from the T0 stanza has to be legible.
+        """
+        parts = [
+            note
+            for cue_type, block in blocks.items()
+            if block and (note := self.persona_cue_handling(cue_type))
+        ]
+        if not parts:
+            return ""
+        # The lead-in does real work: these sections keep their persona
+        # headers, and one of them ("Quiet curiosity:") is also the header
+        # of its own cue block a few sections up. Without it the pair
+        # reads as the same list twice.
+        return "How to handle the cues above:\n\n" + "\n\n".join(parts)
+
+    def _render_persona_text(self, text: str) -> str:
         # Phase 4d: render the {user_name} placeholder per-call so a rename
         # via onboarding takes effect without invalidating the mtime cache.
         # If the persona file has stray ``{`` braces (e.g. literal JSON) the
         # ``.format()`` call would raise -- fall back to the raw text.
+        if not text:
+            return ""
         try:
-            return raw.format(user_name=self._resolve_user_display_name())
+            return text.format(user_name=self._resolve_user_display_name())
         except Exception:
             log.debug(
                 "persona templating failed; falling back to raw text",
                 exc_info=True,
             )
-            return raw
+            return text
 
     @staticmethod
     def _format_age(created_at_iso: str, now: datetime) -> str:

@@ -176,12 +176,11 @@ CUE_SPECS: dict[str, CueSpec] = {
             journal_key="aiko.tension_cue",
             watermark_key="tension_cue.last_surfaced_at",
         ),
-        # Journal-backed cues that dedupe by a per-topic key set rather
-        # than a single watermark. Arming degrades to "the ring is
-        # non-empty", which over-counts: the provider may have already
-        # shown this exact topic. Their armed-to-surfaced ratio is
-        # therefore a floor, not an estimate -- flagged rather than faked,
-        # since a wrong number here would be worse than a coarse one.
+        # These five used to dedupe by a per-topic key set rather than a
+        # single watermark, so arming degraded to "the ring is non-empty"
+        # and over-counted. They are pooled now and ``armed_cues`` reads
+        # their stock instead, which is exact; the journal keys stay for
+        # the case where no store is wired.
         CueSpec("interest_drift", journal_key="aiko.interest_drifts"),
         CueSpec("associative_wander", journal_key="aiko.associative_wanders"),
         CueSpec("curiosity_gradient", journal_key="aiko.curiosity_gradients"),
@@ -192,12 +191,207 @@ CUE_SPECS: dict[str, CueSpec] = {
     )
 }
 
-# Cues whose arming signal is coarse (see above) -- surfaced in the debug
-# view so the ratio is never read as more precise than it is.
+# ── the cue pool policy registry ──────────────────────────────────────
+#
+# CueSpec above answers "did this cue have anything to say"; CuePolicy
+# answers everything that happens after. How much stock the worker should
+# keep, how long a cue stays good, what counts as Aiko having used it, and
+# which slab of persona travels with it when it surfaces.
+#
+# The reason this is one table rather than seven implementations is that
+# the equivalent knowledge exists today as hardcoded cooldowns and daily
+# caps scattered across seven workers and seven renderers -- two per day
+# here, a 3600-second gate there, a 0.50 cosine somewhere else -- and none
+# of it can be compared, tuned, or even found. "Surfacing behaves
+# differently per cue type" only stops being a slogan once the differences
+# are written down next to each other.
+
+
+# How a cue is judged used.
+#
+# ``spoken`` -- Aiko saying it is the whole point. She wanted to drift onto
+# the subject and she drifted; whether the user takes the bait is a
+# separate question and not this cue's business.
+#
+# ``answered`` -- the cue is a question, so she has only done her part when
+# she asks. If she asks about X and the reply is about Y, she still does
+# not know, the curiosity is not satisfied, and the cue has to survive.
+# That is what the ``awaiting`` state is for.
+#
+# ``either_party`` -- spent once the subject gets discussed at all, by
+# whoever raises it. Curiosity seeds already work this way.
+FULFILMENT_SPOKEN = "spoken"
+FULFILMENT_ANSWERED = "answered"
+FULFILMENT_EITHER = "either_party"
+
+# Whether a cosine hit is trustworthy for this cue, and the axis is not
+# the obvious one. ``echo_detector``'s docstring warns that a surfaced item
+# was selected for topical similarity, so cosine against the reply mostly
+# measures "was on topic". True -- but only for cues whose subject IS the
+# live topic. Several of these exist precisely to introduce something the
+# conversation is *not* on, and for those a high cosine is the signal we
+# want: it means she pivoted.
+MATCH_LEXICAL = "lexical"
+MATCH_LEXICAL_OR_COSINE = "lexical_or_cosine"
+
+# Which text the subject is matched against.
+MATCH_SCOPE_REPLY = "reply"
+MATCH_SCOPE_TURN = "turn"
+
+
+@dataclass(frozen=True, slots=True)
+class CuePolicy:
+    """Everything type-specific about a pooled cue's life.
+
+    Defaults are the conservative choice at every field: lexical matching
+    only, one repeat of each failure mode, and no persona text hoisted.
+    A type that wants more says so.
+    """
+
+    name: str
+    # How many pending cues counts as stocked. The worker reports pressure
+    # from the shortfall against this, which is what retires the old daily
+    # caps -- inventory is the thing those constants were approximating.
+    inventory_target: int = 3
+    # How long a cue stays worth saying. A dormant topic keeps for weeks;
+    # "did the espresso machine arrive" does not.
+    ttl_hours: float = 168.0
+    # Times the cue may sit in the prompt without Aiko raising it.
+    max_surfacings: int = 2
+    # Times she may raise it without getting an answer. Only meaningful
+    # for ``answered``.
+    max_asks: int = 2
+    # How long an unanswered question waits before she may ask again.
+    reask_cooldown_hours: float = 24.0
+    fulfilment: str = FULFILMENT_SPOKEN
+    match_mode: str = MATCH_LEXICAL
+    match_scope: str = MATCH_SCOPE_REPLY
+    # Cosine floor, used only when ``match_mode`` allows it. Provisional
+    # everywhere except ``curiosity_seed``, which inherits a value that has
+    # been running in production; the rest are recorded as ``used_evidence``
+    # on every verdict so the real floors can be read off the distribution
+    # later rather than guessed now.
+    match_threshold: float = 0.55
+    # Shared content words needed for a lexical hit. One, because the
+    # subject is matched rather than the whole cue sentence, and a subject
+    # term is distinctive by construction -- it survived stopword filtering
+    # and topic clustering to become a subject in the first place.
+    min_overlap: int = 1
+    # The persona header whose handling text rides along with this cue
+    # instead of sitting in the cache prefix on every turn.
+    handling_section: str = ""
+
+
+CUE_POLICIES: dict[str, CuePolicy] = {
+    policy.name: policy
+    for policy in (
+        # ── on-topic by construction: cosine is confounded, lexical decides
+        CuePolicy(
+            "knowledge_gap_notice",
+            # "I keep circling X and never dug in" -- X is the live topic,
+            # so a high cosine against her reply says nothing at all.
+            fulfilment=FULFILMENT_ANSWERED,
+            match_mode=MATCH_LEXICAL,
+            inventory_target=3,
+            handling_section="Topics you keep circling but never dug into:",
+        ),
+        CuePolicy(
+            "interest_drift",
+            # May or may not be current; gets the conservative treatment
+            # until the recorded cosines say otherwise.
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL,
+            inventory_target=2,
+            ttl_hours=168.0,
+            handling_section="When your interests shift over time:",
+        ),
+        # ── off-topic by construction: a high cosine means she pivoted
+        CuePolicy(
+            "associative_wander",
+            # Matched against the *distant* half of the pair, which is by
+            # definition not what the conversation is about.
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            inventory_target=3,
+            ttl_hours=72.0,
+            handling_section="When your mind wanders and connects two things:",
+        ),
+        CuePolicy(
+            "dormant_interest",
+            # A topic that has gone quiet -- the opposite of the live one.
+            # Reopening it is the point, so silence means it failed.
+            fulfilment=FULFILMENT_ANSWERED,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            inventory_target=2,
+            ttl_hours=336.0,
+            reask_cooldown_hours=72.0,
+            handling_section=(
+                "When something {user_name} used to love has gone quiet:"
+            ),
+        ),
+        CuePolicy(
+            "curiosity_gradient",
+            # The thin edge beside the dense cluster: adjacent to the live
+            # topic, deliberately not it.
+            fulfilment=FULFILMENT_ANSWERED,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            inventory_target=3,
+            handling_section=(
+                "When you're curious about the edge of something familiar:"
+            ),
+        ),
+        CuePolicy(
+            "forward_curiosity",
+            # Something in the user's life she has been wondering about,
+            # fired on a conversational gap rather than on topic.
+            fulfilment=FULFILMENT_ANSWERED,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            inventory_target=2,
+            ttl_hours=72.0,
+            handling_section="Things I've been wondering about you:",
+        ),
+        # ── whole-turn, unchanged from what already runs
+        CuePolicy(
+            "curiosity_seed",
+            fulfilment=FULFILMENT_EITHER,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            match_scope=MATCH_SCOPE_TURN,
+            # The threshold K9 has been resolving seeds at since it
+            # shipped. Overridden from
+            # ``agent.curiosity_seed_resolve_threshold`` at read time so the
+            # existing config key keeps working.
+            match_threshold=0.50,
+            # Overridden from ``agent.curiosity_seed_max_active``.
+            inventory_target=6,
+            ttl_hours=336.0,
+            handling_section="Quiet curiosity:",
+        ),
+    )
+}
+
+# The cue types that live in ``cue_pool``. Everything else in
+# ``CUE_SPECS`` still rides its kv_meta journal, and -- more importantly --
+# is still exempt from consumption matching. The old reasoning that "echo
+# is meaningless for a cue, because a cue is an instruction" is correct for
+# a tone or posture instruction; it is wrong only for a cue that names a
+# specific subject, which is exactly the set below.
+POOLED_CUES: frozenset[str] = frozenset(CUE_POLICIES)
+
+# Cues whose arming signal is coarse -- a ring with no watermark, so
+# "armed" can only mean "the ring is non-empty", which over-counts when
+# the provider has already shown that entry's topic. Surfaced in the
+# debug view so the ratio is never read as more precise than it is.
+# Pooled cues are excluded: their stock is an exact count of unspent
+# material, which is what the heuristic was reaching for.
 COARSE_ARMING: frozenset[str] = frozenset(
     name for name, spec in CUE_SPECS.items()
     if spec.journal_key and not spec.watermark_key
-)
+) - POOLED_CUES
+
+
+def policy_for(cue_type: str) -> CuePolicy | None:
+    """The policy for a pooled cue type, or ``None`` if it is not pooled."""
+    return CUE_POLICIES.get(str(cue_type or ""))
 
 
 def _newest_entry_stamp(chat_db: Any, journal_key: str) -> str | None:
@@ -247,6 +441,25 @@ def _journal_has_material(chat_db: Any, spec: CueSpec) -> bool:
     return not (watermark and str(watermark) == stamp)
 
 
+def _pool_stock(session: Any, name: str) -> int | None:
+    """Pending cues of this type, or ``None`` when the pool cannot answer.
+
+    ``None`` is not "no stock": it means this cue type does not live in
+    the pool, or the session has no store, and the caller should fall
+    back to the journal ring.
+    """
+    if name not in POOLED_CUES:
+        return None
+    store = getattr(session, "_cue_store", None)
+    if store is None:
+        return None
+    try:
+        return int(store.count_pending(name))
+    except Exception:
+        log.debug("cue pool arming read failed: cue=%s", name, exc_info=True)
+        return None
+
+
 def armed_cues(session: Any) -> set[str]:
     """Which cues had something to say at assembly time.
 
@@ -255,20 +468,34 @@ def armed_cues(session: Any) -> set[str]:
     journal-backed ones advance their watermark. Reading afterwards would
     report almost nothing as armed, and the ratio would come out looking
     perfect precisely when the machinery was busiest.
+
+    For pooled cues the pool answers instead of the ring, and answers
+    better: a pending row is by definition one the provider has not spent,
+    which is the exact question the ring-plus-watermark heuristic was
+    approximating. ``forward_curiosity`` still needs both halves -- the
+    slot arms the opportunity, the pool supplies the content -- which is
+    the same conjunction it needed when the content came from a ring.
     """
     chat_db = getattr(session, "_chat_db", None)
     out: set[str] = set()
     for name, spec in CUE_SPECS.items():
+        stock = _pool_stock(session, name)
+        has_content = (
+            stock > 0
+            if stock is not None
+            else bool(spec.journal_key)
+            and _journal_has_material(chat_db, spec)
+        )
         if spec.slot_attr:
             if getattr(session, spec.slot_attr, None) is None:
                 continue
-            # Slot armed. When the cue also needs journal content, both
-            # have to agree -- which is what its provider requires.
-            if spec.journal_key and not _journal_has_material(chat_db, spec):
+            # Slot armed. When the cue also needs content, both have to
+            # agree -- which is what its provider requires.
+            if (spec.journal_key or stock is not None) and not has_content:
                 continue
             out.add(name)
             continue
-        if spec.journal_key and _journal_has_material(chat_db, spec):
+        if has_content:
             out.add(name)
     return out
 
@@ -372,15 +599,26 @@ def decisions_from_block_chars(
 
 __all__ = [
     "COARSE_ARMING",
+    "CUE_POLICIES",
     "CUE_SPECS",
+    "FULFILMENT_ANSWERED",
+    "FULFILMENT_EITHER",
+    "FULFILMENT_SPOKEN",
     "GAP_CUE_ORDER",
+    "MATCH_LEXICAL",
+    "MATCH_LEXICAL_OR_COSINE",
+    "MATCH_SCOPE_REPLY",
+    "MATCH_SCOPE_TURN",
     "OUTCOME_DECLINED",
     "OUTCOME_SURFACED",
+    "POOLED_CUES",
     "REASON_LOST_PRIORITY",
     "REASON_PROVIDER",
     "REASON_QUESTION_BALANCE",
+    "CuePolicy",
     "CueSpec",
     "CueTurnDecisions",
     "armed_cues",
     "decisions_from_block_chars",
+    "policy_for",
 ]

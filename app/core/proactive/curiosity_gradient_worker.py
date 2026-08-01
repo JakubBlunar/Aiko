@@ -45,7 +45,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.associative_wander_worker import pair_key
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the cheap lexical "is the live turn on this topic?" gate.
 from app.core.proactive.knowledge_gap_notice_worker import topic_relevant
@@ -62,8 +63,6 @@ log = logging.getLogger("app.curiosity_gradient_worker")
 # provider reads.
 CURIOSITY_GRADIENT_JOURNAL_KEY = "aiko.curiosity_gradients"
 _KV_EDGE_COOLDOWNS = "curiosity_gradient.edge_cooldowns"
-_KV_DAY = "curiosity_gradient.day"
-_KV_DAY_COUNT = "curiosity_gradient.day_count"
 
 
 def _utcnow() -> datetime:
@@ -230,6 +229,22 @@ def gradient_relevant(entry: dict[str, Any], user_text: str) -> bool:
     return topic_relevant(dense, user_text) or topic_relevant(thin, user_text)
 
 
+def render_gradient_cue(entry: dict[str, Any]) -> str:
+    """The prompt line for one under-explored edge.
+
+    Written into ``cue_pool`` at production time; the handling text that
+    used to trail it now rides in with the persona section this type
+    hoists, so it is only paid for on turns where the cue fires.
+    """
+    dense = str(entry.get("dense_topic") or "").strip()
+    thin = str(entry.get("thin_topic") or "").strip()
+    return (
+        f"Heads-up: you spend a lot of time around \"{dense}\", but "
+        f"\"{thin}\" sits right on its edge and you've barely explored it "
+        "— and you're genuinely curious about it."
+    )
+
+
 class CuriosityGradientWorker:
     """IdleWorker that notices under-explored edges of familiar topics."""
 
@@ -242,8 +257,8 @@ class CuriosityGradientWorker:
         kv_get: Callable[[str], str | None],
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         interval_seconds: float = 5400.0,
-        daily_cap: int = 3,
         journal_max: int = 6,
         dense_min_size: int = 8,
         thin_min_size: int = 2,
@@ -256,8 +271,8 @@ class CuriosityGradientWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("curiosity_gradient", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._dense_min_size = max(2, int(dense_min_size))
         self._thin_min_size = max(1, int(thin_min_size))
@@ -280,11 +295,18 @@ class CuriosityGradientWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from the shortfall of unasked edge questions."""
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand()
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -293,9 +315,6 @@ class CuriosityGradientWorker:
             return {"drafted": 0, "disabled": True}
 
         now = _utcnow()
-        if not force and not self._under_daily_cap(now):
-            return {"drafted": 0, "skipped_daily_cap": True}
-
         graph = self._safe_graph()
         if graph is None:
             return {"drafted": 0, "no_graph": True}
@@ -316,34 +335,43 @@ class CuriosityGradientWorker:
         if not edges:
             return {"drafted": 0, "no_edge": True}
 
+        from app.core.proactive.cue_store import normalise_subject
+
         cooldowns = self._load_cooldowns()
+        pooled = set() if force else self._cues.spoken_for()
         chosen = None
         for edge in edges:
             if not force and self._on_cooldown(cooldowns, edge.key, now):
+                continue
+            if normalise_subject(edge.thin_label) in pooled:
                 continue
             chosen = edge
             break
         if chosen is None:
             return {"drafted": 0, "all_on_cooldown": True}
 
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "dense_topic": chosen.dense_label[:200],
+            "thin_topic": chosen.thin_label[:200],
+            "edge_key": chosen.key,
+            "cosine": round(chosen.cosine, 3),
+        }
         append_gradient(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "dense_topic": chosen.dense_label[:200],
-                "thin_topic": chosen.thin_label[:200],
-                "edge_key": chosen.key,
-                "cosine": round(chosen.cosine, 3),
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        # The subject is the *thin* topic: the dense one is what she
+        # already talks about, so matching against it post-turn would
+        # prove nothing. The thin one is the thing she wanted to ask.
+        cue_id = self._cues.publish(
+            chosen.thin_label, render_gradient_cue(entry), payload=entry,
         )
         cooldowns[chosen.key] = now.isoformat(timespec="seconds")
         self._save_cooldowns(cooldowns, now)
-        self._bump_daily(now)
         log.info(
-            "curiosity-gradient drafted: dense=%r thin=%r cos=%.3f",
+            "curiosity-gradient drafted: dense=%r thin=%r cos=%.3f cue=%s",
             chosen.dense_label[:60], chosen.thin_label[:60], chosen.cosine,
+            cue_id,
         )
         return {
             "drafted": 1,
@@ -351,6 +379,7 @@ class CuriosityGradientWorker:
             "thin_topic": chosen.thin_label,
             "edge_key": chosen.key,
             "cosine": round(chosen.cosine, 3),
+            "cue_id": cue_id,
         }
 
     # ── MCP debug ─────────────────────────────────────────────────────
@@ -384,30 +413,6 @@ class CuriosityGradientWorker:
         if last is None:
             return False
         return (now - last).total_seconds() / 3600.0 < self._edge_cooldown_hours
-
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
-    def _bump_daily(self, now: datetime) -> None:
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     def _load_cooldowns(self) -> dict[str, str]:
         try:
@@ -465,4 +470,5 @@ __all__ = [
     "load_gradients",
     "append_gradient",
     "gradient_relevant",
+    "render_gradient_cue",
 ]

@@ -13,6 +13,7 @@ import type {
   Belief,
   BeliefsResponse,
   ChatMessage,
+  CuePoolResponse,
   Identity,
   LlmProvider,
   LlmProviderPreset,
@@ -369,6 +370,30 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(answer !== undefined ? { answer } : {}),
     }),
+  // ── Cue pool ─────────────────────────────────────────────────────
+  /**
+   * One page of the cue pool plus the per-type scoreboard.
+   *
+   * Terminal rows are never deleted, so ``state`` is the interesting
+   * filter here: ``used`` is what Aiko actually spent, ``expired`` is
+   * what she was offered and never took.
+   */
+  listCuePool: (
+    options: {
+      limit?: number;
+      offset?: number;
+      cueType?: string | null;
+      state?: string | null;
+    } = {},
+  ) => {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 50),
+      offset: String(options.offset ?? 0),
+    });
+    if (options.cueType) params.set("cue_type", options.cueType);
+    if (options.state) params.set("state", options.state);
+    return jsonFetch<CuePoolResponse>(`/api/cue-pool?${params.toString()}`);
+  },
   // ── Curiosity seeds (K9) ─────────────────────────────────────────
   /**
    * Trigger one CuriositySeedWorker.run() on the server. Used by the

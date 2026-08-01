@@ -28,6 +28,22 @@ log = logging.getLogger("app.prompt_assembler")
 
 DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 
+# The companion file holding the hoisted per-cue handling notes, resolved
+# next to whatever persona file is in use rather than pinned to
+# ``data/persona/``.
+#
+# It is a separate file because its contents do *not* behave like the rest
+# of the persona: everything in ``aiko_companion.txt`` is always-on prompt
+# text, while these sections are lifted out at load time and re-emitted in
+# T6 only on the turns their cue actually fires. Keeping them inline made
+# that invisible -- the file read as if all of it were the standing prompt.
+CUE_HANDLING_FILENAME = "cue_handling.txt"
+
+
+def cue_handling_path_for(persona_path: Path) -> Path:
+    """Where to look for the hoisted cue notes given a persona file."""
+    return persona_path.parent / CUE_HANDLING_FILENAME
+
 # K49: the persona subsection that grants disfluency permission. Named
 # here so ``agent.speech_texture_enabled = false`` can lift it back out of
 # the user-editable persona file rather than us keeping a second copy of
@@ -35,26 +51,33 @@ DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 SPEECH_TEXTURE_SECTION_HEADER = "Speech texture:"
 
 
-def strip_persona_section(text: str, header: str) -> str:
-    """Drop a labelled ``Header:`` subsection and its bullets from a persona.
+def split_persona_section(text: str, header: str) -> tuple[str, str]:
+    """Cut a labelled ``Header:`` subsection out, returning both halves.
 
-    Used to gate an optional persona subsection off without maintaining a
-    duplicate copy of it in code. Matches the header line exactly, then
+    ``(remaining, extracted)``. Matches the header line exactly, then
     consumes its bullet lines (``- ...`` plus indented continuations) and
     one trailing blank line so the surrounding sections stay separated.
 
-    A no-op when the header isn't found -- the persona is user-editable, so
-    a renamed or deleted section simply means the toggle has nothing to do.
+    Two callers with opposite needs share this. The K49 speech-texture
+    toggle wants a section *gone* and throws the extract away; the cue
+    hoist wants it moved, and re-emits it in T6 on the turns its cue
+    actually fires. Neither keeps a second copy of the guidance in code,
+    which is what matters -- the persona file stays the single place a
+    user edits Aiko's voice.
+
+    ``("", …)`` for the extract when the header isn't found: the persona
+    is user-editable, so a renamed or deleted section simply means there
+    is nothing to move.
     """
     if not text or not header:
-        return text
+        return text, ""
     lines = text.splitlines()
     try:
         start = next(
             i for i, line in enumerate(lines) if line.strip() == header
         )
     except StopIteration:
-        return text
+        return text, ""
     end = start + 1
     while end < len(lines):
         stripped = lines[end].strip()
@@ -64,9 +87,39 @@ def strip_persona_section(text: str, header: str) -> str:
             end += 1
             continue
         break
+    extracted = "\n".join(lines[start:end]).strip()
     if end < len(lines) and not lines[end].strip():
         end += 1
-    return "\n".join(lines[:start] + lines[end:]).strip()
+    return "\n".join(lines[:start] + lines[end:]).strip(), extracted
+
+
+def strip_persona_section(text: str, header: str) -> str:
+    """Drop a labelled ``Header:`` subsection and its bullets from a persona."""
+    return split_persona_section(text, header)[0]
+
+
+# What replaces the seven hoisted cue sections in the always-on persona.
+#
+# Those sections were ~2,400 characters of "when your context says X, here
+# is how to handle it" sitting in the cache prefix on every single turn,
+# for cues that fire on a small minority of them. The instruction is only
+# actionable when its cue is present, so it now rides along with the cue
+# in T6 and this stanza is what T0 keeps: the general contract, which does
+# apply on every turn -- including, crucially, the turns with no cue at
+# all, where the rule is that nothing is owed.
+CUE_HANDLING_PREAMBLE = (
+    "Cues in your context:\n"
+    "- Some turns your context carries a cue -- a short line about "
+    "something that has been on your mind, or something of "
+    "{user_name}'s. Each one arrives with its own note on how to handle "
+    "it; follow that note rather than a general instinct.\n"
+    "- A cue is an opening, never an obligation. If it doesn't honestly "
+    "fit the moment, let it go in silence -- a forced cue is worse than "
+    "an unspoken one.\n"
+    "- Never quote a cue, never mention that something surfaced or "
+    "reminded you, and never stack two of them into one reply.\n"
+    "- No cue = nothing owed. Just talk normally."
+)
 
 # Phase 1c: stage-direction grammar. Folded into the system prompt
 # right after the persona so the model knows about it without us having

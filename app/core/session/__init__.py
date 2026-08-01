@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from app.core.session.avatar_mixin import AvatarMixin
 from app.core.session.chat_turn_mixin import ChatTurnMixin
+from app.core.session.cue_pool_mixin import CuePoolMixin
 from app.core.session.detectors_init_mixin import DetectorsInitMixin
 from app.core.session.idle_workers_init_mixin import IdleWorkersInitMixin
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
@@ -62,6 +63,7 @@ __all__ = [
     "KNOWN_OVERRIDES",
     "AvatarMixin",
     "ChatTurnMixin",
+    "CuePoolMixin",
     "DebugOverrides",
     "DetectorsInitMixin",
     "IdleWorkersInitMixin",

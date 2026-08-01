@@ -1011,7 +1011,6 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         for k in (
             "forward_curiosity_interval_seconds",
             "forward_curiosity_cooldown_seconds",
-            "forward_curiosity_daily_cap",
             "forward_curiosity_min_gap_hours",
             "forward_curiosity_journal_max",
         ):
@@ -1034,7 +1033,6 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(
             result.memory.forward_curiosity_cooldown_seconds, 3600,
         )
-        self.assertEqual(result.memory.forward_curiosity_daily_cap, 4)
         self.assertAlmostEqual(
             result.memory.forward_curiosity_min_gap_hours, 4.0,
         )
@@ -1045,7 +1043,6 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
             agent_extra={"forward_curiosity_enabled": False},
             memory_extra={
                 "forward_curiosity_interval_seconds": 900,
-                "forward_curiosity_daily_cap": 2,
                 "forward_curiosity_min_gap_hours": 6.0,
             },
         )
@@ -1054,7 +1051,6 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(
             result.memory.forward_curiosity_interval_seconds, 900,
         )
-        self.assertEqual(result.memory.forward_curiosity_daily_cap, 2)
         self.assertAlmostEqual(
             result.memory.forward_curiosity_min_gap_hours, 6.0,
         )
@@ -2866,12 +2862,11 @@ class LongArcCallbackSettingsTests(unittest.TestCase):
 
 
 class DormantInterestSettingsTests(unittest.TestCase):
-    """K67: 1 agent flag + 7 memory knobs round-trip with clamps."""
+    """K67: 1 agent flag + 6 memory knobs round-trip with clamps."""
 
     _DI_AGENT_KEYS = ("dormant_interest_enabled",)
     _DI_MEMORY_KEYS = (
         "dormant_interest_interval_seconds",
-        "dormant_interest_daily_cap",
         "dormant_interest_journal_max",
         "dormant_interest_min_size",
         "dormant_interest_max_clusters",
@@ -2921,7 +2916,6 @@ class DormantInterestSettingsTests(unittest.TestCase):
         self.assertEqual(
             result.memory.dormant_interest_interval_seconds, 21600,
         )
-        self.assertEqual(result.memory.dormant_interest_daily_cap, 2)
         self.assertEqual(result.memory.dormant_interest_journal_max, 6)
         self.assertEqual(result.memory.dormant_interest_min_size, 6)
         self.assertEqual(result.memory.dormant_interest_max_clusters, 40)
@@ -2940,7 +2934,6 @@ class DormantInterestSettingsTests(unittest.TestCase):
             agent_extra={"dormant_interest_enabled": False},
             memory_extra={
                 "dormant_interest_interval_seconds": 7200,
-                "dormant_interest_daily_cap": 1,
                 "dormant_interest_journal_max": 10,
                 "dormant_interest_min_size": 8,
                 "dormant_interest_max_clusters": 20,
@@ -2954,7 +2947,6 @@ class DormantInterestSettingsTests(unittest.TestCase):
         self.assertEqual(
             result.memory.dormant_interest_interval_seconds, 7200,
         )
-        self.assertEqual(result.memory.dormant_interest_daily_cap, 1)
         self.assertEqual(result.memory.dormant_interest_journal_max, 10)
         self.assertEqual(result.memory.dormant_interest_min_size, 8)
         self.assertEqual(result.memory.dormant_interest_max_clusters, 20)
@@ -2972,7 +2964,6 @@ class DormantInterestSettingsTests(unittest.TestCase):
         path = self._write_config(
             memory_extra={
                 "dormant_interest_interval_seconds": 1,  # floors at 60
-                "dormant_interest_daily_cap": -1,  # floors at 0
                 "dormant_interest_journal_max": 0,  # floors at 1
                 "dormant_interest_min_size": 1,  # floors at 2
                 "dormant_interest_max_clusters": 0,  # floors at 1
@@ -2985,7 +2976,6 @@ class DormantInterestSettingsTests(unittest.TestCase):
         self.assertEqual(
             result.memory.dormant_interest_interval_seconds, 60,
         )
-        self.assertEqual(result.memory.dormant_interest_daily_cap, 0)
         self.assertEqual(result.memory.dormant_interest_journal_max, 1)
         self.assertEqual(result.memory.dormant_interest_min_size, 2)
         self.assertEqual(result.memory.dormant_interest_max_clusters, 1)

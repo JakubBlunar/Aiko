@@ -125,14 +125,28 @@ class RegistryTests(unittest.TestCase):
                     f"{name} has no way to be detected as armed",
                 )
 
-    def test_coarse_arming_is_exactly_the_watermarkless_journals(self) -> None:
+    def test_coarse_arming_is_the_watermarkless_journals_minus_the_pool(
+        self,
+    ) -> None:
+        """A pooled cue's stock is an exact count, so it is not coarse."""
+        from app.core.proactive.cue_accounting import POOLED_CUES
+
         self.assertEqual(
             COARSE_ARMING,
             frozenset(
                 n for n, s in CUE_SPECS.items()
                 if s.journal_key and not s.watermark_key
-            ),
+            ) - POOLED_CUES,
         )
+
+    def test_the_five_topic_gated_cues_left_coarse_arming(self) -> None:
+        self.assertFalse(COARSE_ARMING & {
+            "interest_drift",
+            "associative_wander",
+            "curiosity_gradient",
+            "dormant_interest",
+            "knowledge_gap_notice",
+        })
 
 
 # ── 2. arming detection ───────────────────────────────────────────────
@@ -740,6 +754,200 @@ class SchemaTests(unittest.TestCase):
                 tmp.cleanup()
             except PermissionError:
                 pass
+
+
+# ── 8. the cue pool policy registry ───────────────────────────────────
+
+
+class CuePolicyTests(unittest.TestCase):
+    def test_every_pooled_cue_is_a_registered_cue(self) -> None:
+        """A policy for a cue the arming model has never heard of is a typo."""
+        from app.core.proactive.cue_accounting import CUE_SPECS, POOLED_CUES
+
+        # ``curiosity_seed`` is the one exception: it never used a journal
+        # ring, so it has no CueSpec and never needed one.
+        self.assertEqual(POOLED_CUES - set(CUE_SPECS), {"curiosity_seed"})
+
+    def test_handling_sections_exist_in_the_cue_file(self) -> None:
+        """The hoist is silent when a header is wrong -- so check it here.
+
+        ``strip_persona_section`` is deliberately a no-op on a header it
+        cannot find, because the persona is user-editable. That is right at
+        runtime and useless as a typo guard, which is what this is. Renaming
+        a ``handling_section`` right here in ``CUE_POLICIES`` is the likeliest
+        way to break the pairing, hence a guard next to the definitions as
+        well as one next to the loader.
+        """
+        from pathlib import Path
+
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        notes = Path("data/persona/cue_handling.txt").read_text(
+            encoding="utf-8",
+        )
+        headers = {line.strip() for line in notes.splitlines()}
+        for name, policy in CUE_POLICIES.items():
+            if not policy.handling_section:
+                continue
+            self.assertIn(
+                policy.handling_section,
+                headers,
+                f"{name}: handling_section is not a cue_handling.txt header",
+            )
+
+    def test_only_off_topic_cues_trust_cosine(self) -> None:
+        """The two on-topic-by-construction types stay lexical-only.
+
+        Their subject *is* what is being discussed, so a cosine against the
+        reply measures "was on topic" rather than "she used the cue".
+        """
+        from app.core.proactive.cue_accounting import (
+            CUE_POLICIES,
+            MATCH_LEXICAL,
+        )
+
+        for name in ("knowledge_gap_notice", "interest_drift"):
+            self.assertEqual(CUE_POLICIES[name].match_mode, MATCH_LEXICAL)
+
+    def test_question_shaped_cues_are_answered_not_spoken(self) -> None:
+        from app.core.proactive.cue_accounting import (
+            CUE_POLICIES,
+            FULFILMENT_ANSWERED,
+        )
+
+        for name in (
+            "forward_curiosity",
+            "curiosity_gradient",
+            "knowledge_gap_notice",
+            "dormant_interest",
+        ):
+            self.assertEqual(
+                CUE_POLICIES[name].fulfilment, FULFILMENT_ANSWERED,
+            )
+
+    def test_both_retry_budgets_are_bounded(self) -> None:
+        """The retry loop must terminate even if the matcher never fires."""
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        for name, policy in CUE_POLICIES.items():
+            self.assertGreaterEqual(policy.max_surfacings, 1, name)
+            self.assertLessEqual(policy.max_surfacings, 3, name)
+            self.assertGreaterEqual(policy.max_asks, 1, name)
+            self.assertLessEqual(policy.max_asks, 3, name)
+            self.assertGreater(policy.ttl_hours, 0.0, name)
+            self.assertGreater(policy.inventory_target, 0, name)
+
+    def test_policy_for_is_none_off_the_pool(self) -> None:
+        from app.core.proactive.cue_accounting import policy_for
+
+        self.assertIsNone(policy_for("turning_over"))
+        self.assertIsNone(policy_for(""))
+        self.assertIsNotNone(policy_for("dormant_interest"))
+
+
+class PoolReportTests(unittest.TestCase):
+    """``get_cue_outcomes``' pool section -- depth and the real verdict.
+
+    Reach says a block rendered; this says whether the cue was spent.
+    The two disagree often enough that the section has to be readable on
+    its own, including with cue accounting switched off.
+    """
+
+    def setUp(self) -> None:
+        from app.core.proactive.cue_store import CueStore
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+
+        tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+        self.host = type("_Host", (CuePoolMixin,), {})()
+        self.host._cue_store = self.store
+
+    def _report(self, *, decisions=None):
+        from app.mcp.server_tools.cue_outcome_tools import build_report
+
+        session = SimpleNamespace(
+            cue_pool_stats=self.host.cue_pool_stats,
+            _cue_decision_store=decisions,
+        )
+        return build_report(session, window_days=None)
+
+    def _row(self, report, cue: str) -> dict:
+        return next(
+            r for r in report["pool"]["by_type"] if r["cue"] == cue
+        )
+
+    def test_every_policy_type_has_a_row_even_when_empty(self) -> None:
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        rows = self._report()["pool"]["by_type"]
+        self.assertEqual(
+            {r["cue"] for r in rows}, set(CUE_POLICIES),
+        )
+
+    def test_an_empty_shelf_shows_its_whole_target_as_deficit(self) -> None:
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        row = self._row(self._report(), "curiosity_seed")
+        target = CUE_POLICIES["curiosity_seed"].inventory_target
+        self.assertEqual(row["pending"], 0)
+        self.assertEqual(row["deficit"], target)
+
+    def test_a_full_shelf_has_no_deficit(self) -> None:
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        target = CUE_POLICIES["curiosity_seed"].inventory_target
+        for i in range(target):
+            self.store.add("curiosity_seed", f"subject {i}", "cue")
+        row = self._row(self._report(), "curiosity_seed")
+        self.assertEqual(row["pending"], target)
+        self.assertEqual(row["deficit"], 0)
+
+    def test_used_and_expired_are_reported_apart(self) -> None:
+        spent = self.store.add("curiosity_seed", "bread", "a")
+        self.store.mark_surfaced(spent)
+        self.store.mark_used(spent, evidence="lexical:1.00")
+        dropped = self.store.add("curiosity_seed", "kites", "b")
+        self.store.expire(dropped, evidence="max_surfacings")
+
+        row = self._row(self._report(), "curiosity_seed")
+        self.assertEqual(row["used"], 1)
+        self.assertEqual(row["expired"], 1)
+        self.assertEqual(row["pending"], 0)
+
+    def test_the_mean_says_how_many_looks_a_cue_needs(self) -> None:
+        cue_id = self.store.add("curiosity_seed", "bread", "a")
+        self.store.mark_surfaced(cue_id)
+        self.store.mark_surfaced(cue_id)
+        self.store.mark_used(cue_id, evidence="lexical:1.00")
+        row = self._row(self._report(), "curiosity_seed")
+        self.assertEqual(row["mean_surfacings_before_use"], 2.0)
+
+    def test_the_pool_is_readable_with_cue_accounting_off(self) -> None:
+        self.store.add("curiosity_seed", "bread", "a")
+        report = self._report()
+        self.assertFalse(report["enabled"])
+        self.assertTrue(report["pool"]["enabled"])
+        self.assertEqual(self._row(report, "curiosity_seed")["pending"], 1)
+
+    def test_no_pool_is_reported_as_disabled_not_as_an_error(self) -> None:
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+        from app.mcp.server_tools.cue_outcome_tools import build_report
+
+        poolless = type("_Host", (CuePoolMixin,), {})()
+        session = SimpleNamespace(
+            cue_pool_stats=poolless.cue_pool_stats, _cue_decision_store=None,
+        )
+        report = build_report(session, window_days=None)
+        self.assertFalse(report["pool"]["enabled"])
+
+    def test_an_untouched_pool_still_reports_its_shelves(self) -> None:
+        """Distinct from no pool at all -- an empty shelf is a deficit."""
+        report = self._report()
+        self.assertTrue(report["pool"]["enabled"])
+        self.assertTrue(
+            all(r["deficit"] > 0 for r in report["pool"]["by_type"]),
+        )
 
 
 if __name__ == "__main__":

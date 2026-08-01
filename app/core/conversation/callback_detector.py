@@ -20,8 +20,8 @@ Design choices:
   per call.
 - **Allow-list of kinds.** Only the kinds that "callback well"
   (factual recall, shared moments, catchphrases, user-tagged events
-  + self-disclosures) are eligible. Ephemeral kinds (curiosity_seed,
-  knowledge_gap, agenda, promise, goal_progress, milestone) are
+  + self-disclosures) are eligible. Ephemeral kinds (knowledge_gap,
+  agenda, promise, goal_progress, milestone) are
   explicitly excluded -- those are dynamic-state rows, not the right
   targets for "she remembered the silly thing I said".
 - **Age floor (default 3 days).** A memory from earlier in the same
@@ -57,8 +57,7 @@ log = logging.getLogger("app.callback_detector")
 # spirit is "things {user_name} said or did that Aiko might
 # meaningfully reach back to later". Excludes:
 #
-# - ``curiosity_seed`` / ``knowledge_gap`` / ``open_question`` — open
-#   loops, not closed beats
+# - ``knowledge_gap`` / ``open_question`` — open loops, not closed beats
 # - ``agenda`` / ``promise`` / ``goal`` / ``goal_progress`` /
 #   ``milestone`` — dynamic-state rows owned by other workers
 # - ``self`` is kept (Aiko's own self-disclosures are valid callback

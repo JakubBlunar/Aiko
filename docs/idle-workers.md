@@ -405,11 +405,13 @@ conservative while letting compute scale.
   — the other forty workers still ride the legacy path, which also means
   they are all charged to the LLM lane whether or not they touch a model.
 - **[P45](personality-backlog/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)**
-  — per-hour and per-day caps on user-visible output (curiosity seeds and
-  friends) are still fixed numbers. The intended replacement is a
-  satisfaction signal: a worker that produced a cue nobody engaged with
-  should report low pressure because it has said enough, not because a
-  counter hit five.
+  — partly done. The seven cue workers on the
+  [cue pool](cue-pool.md) report pressure from their unspent inventory,
+  which retired five `*_daily_cap` keys; the remaining `*_per_hour_cap`
+  keys on other workers are still fixed numbers. The intended
+  replacement there is the same idea: a worker that produced a cue
+  nobody engaged with should report low pressure because it has said
+  enough, not because a counter hit five.
 - **[P46](personality-backlog/perf.md#p46-parallel-compute-lane-drain)**
   — the compute lane drains sequentially. True parallelism is blocked on
   shared mutable state, notably the `WorldStore` in-memory mirror and

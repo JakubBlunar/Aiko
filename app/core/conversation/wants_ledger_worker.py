@@ -4,9 +4,9 @@ IdleWorker that keeps :mod:`app.core.conversation.wants_ledger`
 stocked from producers that already exist. No LLM call — ingestion is
 deterministic:
 
-- **Curiosity seeds** (K9, ``kind="curiosity_seed"`` memories) —
-  unconsumed seeds become ``ask`` wants ("bring up what you've been
-  curious about: ...").
+- **Curiosity seeds** (K9, pending ``curiosity_seed`` cues) — unspent
+  seeds become ``ask`` wants ("bring up what you've been curious
+  about: ...").
 - **Forward-curiosity questions** (K34 journal ring on kv_meta) —
   the newest drafted wonderings become ``ask`` wants ("ask {user}
   ...").
@@ -66,6 +66,7 @@ class WantsLedgerWorker:
         user_display_name_provider: Callable[[], str],
         memory_store: "MemoryStore | None" = None,
         goal_store: "GoalStore | None" = None,
+        cue_store_provider: Callable[[], Any] | None = None,
         enabled_provider: Callable[[], bool] | None = None,
         interval_seconds: float = 3600.0,
         cap: int = 8,
@@ -78,6 +79,7 @@ class WantsLedgerWorker:
         self._user_display_name_provider = user_display_name_provider
         self._memory_store = memory_store
         self._goal_store = goal_store
+        self._cue_store_provider = cue_store_provider
         self._enabled_provider = enabled_provider
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cap = max(1, int(cap))
@@ -160,34 +162,26 @@ class WantsLedgerWorker:
     ) -> tuple["wants_ledger.LedgerState", list[str]]:
         """Drop ``curiosity_seed`` wants whose backing seed is gone.
 
-        A seed's want is fed only while the seed is unconsumed + not
-        archived. Once the seed retires (topic surfaced) or is deleted,
+        A seed's want is fed only while the seed is still pending in the
+        cue pool. Once the seed retires (its topic came up) or expires,
         its want must retire with it — otherwise it lingers, grows
         pressure, and re-asks an answered question. Returns the pruned
-        state + the dropped want ids (best-effort; a memory-store hiccup
-        leaves the ledger untouched).
+        state + the dropped want ids (best-effort; a store hiccup leaves
+        the ledger untouched).
         """
-        memory = self._memory_store
-        if memory is None or not state.wants:
+        if not state.wants:
             return state, []
         seed_refs = {
             w.source_ref for w in state.wants
             if w.source == "curiosity_seed"
-            and w.source_ref.startswith("seed:")
+            and w.source_ref.startswith("cue:")
         }
         if not seed_refs:
             return state, []
-        active_refs: set[str] = set()
-        try:
-            for seed in memory.iter_by_kind("curiosity_seed"):
-                if (seed.metadata or {}).get("consumed_at"):
-                    continue
-                if seed.tier == "archive":
-                    continue
-                active_refs.add(f"seed:{seed.id}")
-        except Exception:
-            log.debug("wants: dead-seed prune iter failed", exc_info=True)
+        rows = self._pending_seeds(limit=64)
+        if rows is None:
             return state, []
+        active_refs = {f"cue:{row.id}" for row in rows}
         dead = seed_refs - active_refs
         if not dead:
             return state, []
@@ -196,38 +190,44 @@ class WantsLedgerWorker:
             log.info("wants-ledger pruned dead seed want: ref=%s", ref)
         return state, dropped
 
+    def _pending_seeds(self, *, limit: int) -> list[Any] | None:
+        """Unspent curiosity seeds, or ``None`` if the pool can't be read.
+
+        ``None`` and ``[]`` mean different things to the pruner: an
+        empty pool retires every seed want, a failed read must retire
+        none of them.
+        """
+        provider = self._cue_store_provider
+        if provider is None:
+            return None
+        try:
+            store = provider()
+            if store is None:
+                return None
+            return store.pending("curiosity_seed", limit=max(1, int(limit)))
+        except Exception:
+            log.debug("wants: seed pool read failed", exc_info=True)
+            return None
+
     # ── candidate producers ──────────────────────────────────────────
 
     def _candidates(self, name: str) -> list[tuple[str, str, str, str, float]]:
         """Yield ``(text, kind, source, source_ref, initial_pressure)``."""
         out: list[tuple[str, str, str, str, float]] = []
 
-        # 1. Curiosity seeds (oldest unconsumed first — same fairness
-        # rule as the K9 surfacing block).
-        memory = self._memory_store
-        if memory is not None:
-            try:
-                seeds = list(memory.iter_by_kind("curiosity_seed"))
-            except Exception:
-                log.debug("wants: seed iter failed", exc_info=True)
-                seeds = []
-            active = [
-                s for s in seeds
-                if not (s.metadata or {}).get("consumed_at")
-                and s.tier != "archive"
-            ]
-            active.sort(key=lambda m: m.created_at or "")
-            for seed in active[:_MAX_SEEDS_PER_RUN]:
-                topic = ((seed.metadata or {}).get("topic") or seed.content or "").strip()
-                if not topic:
-                    continue
-                out.append((
-                    f"bring up what you've been curious about: {_clip(topic)}",
-                    "ask",
-                    "curiosity_seed",
-                    f"seed:{seed.id}",
-                    0.15,
-                ))
+        # 1. Curiosity seeds, in the pool's own order — the same
+        # least-surfaced-first rule the K9 surfacing block sees.
+        for row in (self._pending_seeds(limit=_MAX_SEEDS_PER_RUN) or []):
+            topic = (row.subject or "").strip()
+            if not topic:
+                continue
+            out.append((
+                f"bring up what you've been curious about: {_clip(topic)}",
+                "ask",
+                "curiosity_seed",
+                f"cue:{row.id}",
+                0.15,
+            ))
 
         # 2. Forward-curiosity journal (newest entries first).
         try:

@@ -25,6 +25,8 @@ from app.core.proactive.idle_worker import (
     compute_urgency,
     derive_min_interval_s,
     evaluate_admission,
+    pressure_from_count,
+    pressure_from_deficit,
 )
 from app.core.proactive.llm_contention import (
     CONTENTION_NONE,
@@ -46,6 +48,46 @@ class WorkSignalTests(unittest.TestCase):
         self.assertEqual(
             WorkSignal(pressure=1.0, needs_llm=True).lane, LANE_LLM,
         )
+
+
+class PressureShapeTests(unittest.TestCase):
+    """The two directions a worker can want to run."""
+
+    def test_backlog_pressure_rises_with_the_pile(self) -> None:
+        self.assertEqual(pressure_from_count(0, saturation=4), 0.0)
+        self.assertEqual(pressure_from_count(1, saturation=4), 0.5)
+        self.assertEqual(pressure_from_count(4, saturation=4), 1.0)
+        self.assertEqual(pressure_from_count(99, saturation=4), 1.0)
+
+    def test_full_shelf_is_zero_pressure(self) -> None:
+        # The whole point: a cue worker with stock is never admitted.
+        self.assertEqual(pressure_from_deficit(3, want=3), 0.0)
+        self.assertEqual(pressure_from_deficit(9, want=3), 0.0)
+
+    def test_empty_shelf_is_maximum_pressure(self) -> None:
+        self.assertEqual(pressure_from_deficit(0, want=3), 1.0)
+        self.assertEqual(pressure_from_deficit(0, want=1), 1.0)
+
+    def test_one_short_already_clears_the_default_threshold(self) -> None:
+        # Being caught empty when the conversation opens a seam costs
+        # more than an extra restock, so the curve is eager on purpose.
+        self.assertGreaterEqual(pressure_from_deficit(5, want=6), 0.5)
+        self.assertGreaterEqual(pressure_from_deficit(2, want=3), 0.5)
+
+    def test_deficit_is_linear_in_the_shortfall(self) -> None:
+        self.assertEqual(pressure_from_deficit(2, want=8), 0.75)
+        self.assertEqual(pressure_from_deficit(4, want=8), 0.5)
+
+    def test_degenerate_inputs_do_not_explode(self) -> None:
+        self.assertEqual(pressure_from_deficit(-4, want=2), 1.0)
+        self.assertEqual(pressure_from_deficit(0, want=0), 1.0)
+        self.assertEqual(pressure_from_deficit(1, want=0), 0.0)
+
+    def test_the_two_helpers_are_genuine_inverses_at_the_ends(self) -> None:
+        self.assertEqual(pressure_from_count(0, saturation=3), 0.0)
+        self.assertEqual(pressure_from_deficit(3, want=3), 0.0)
+        self.assertEqual(pressure_from_count(3, saturation=3), 1.0)
+        self.assertEqual(pressure_from_deficit(0, want=3), 1.0)
 
 
 class MinIntervalTests(unittest.TestCase):

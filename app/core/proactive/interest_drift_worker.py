@@ -48,7 +48,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the stable per-topic key + the cheap "is the live turn on this
 # topic?" gate the F10f notice worker already ships.
@@ -194,6 +195,28 @@ def drift_relevant(entry: dict[str, Any], user_text: str) -> bool:
     return topic_relevant(str(entry.get("topic") or ""), user_text)
 
 
+def render_drift_cue(entry: dict[str, Any]) -> str:
+    """The prompt line for one interest drift, rising or fading.
+
+    Written into ``cue_pool`` at production time, so the pool row carries
+    the finished line and the provider does not re-derive it. Only the
+    finding; the handling text is the persona section this type hoists.
+    """
+    topic = str(entry.get("topic") or "").strip()
+    belief = " ".join(str(entry.get("belief") or "").split())[:200]
+    belief_clause = f" What you hold about it: {belief}." if belief else ""
+    if str(entry.get("direction") or "") == "fading":
+        return (
+            f"Heads-up: \"{topic}\" has quietly drifted out of your attention "
+            "lately — it used to come up more, and it's been going "
+            f"still.{belief_clause}"
+        )
+    return (
+        f"Heads-up: you've found yourself drawn to \"{topic}\" more and more "
+        f"lately — it's a budding interest of yours.{belief_clause}"
+    )
+
+
 class InterestDriftWorker:
     """IdleWorker that notices Aiko's own budding / fading interests."""
 
@@ -207,8 +230,8 @@ class InterestDriftWorker:
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
         view_provider: Callable[[], "ConceptView | None"] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         interval_seconds: float = 21600.0,
-        daily_cap: int = 3,
         journal_max: int = 6,
         min_size: int = 4,
         max_clusters: int = 40,
@@ -226,8 +249,8 @@ class InterestDriftWorker:
         # attach the belief behind the topic. None leaves the journal entry
         # exactly as it was.
         self._view_provider = view_provider
+        self._cues = CueProducer("interest_drift", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._min_size = max(2, int(min_size))
         self._max_clusters = max(1, int(max_clusters))
@@ -251,11 +274,32 @@ class InterestDriftWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from an empty shelf -- but the heartbeat still matters.
+
+        Unlike its four siblings this worker does two jobs in one run: it
+        drafts a drift cue *and* it appends this tick's cluster sizes to
+        the mass time-series that drift detection is computed from. A
+        fully-stocked worker reporting zero pressure would stop sampling,
+        and the series would go stale exactly while it looked healthy.
+
+        Nothing extra is needed for that, because
+        :func:`~app.core.proactive.idle_worker.evaluate_admission` admits
+        any worker a full heartbeat overdue regardless of pressure. So the
+        shelf decides whether it runs *early*, and ``interval_seconds``
+        remains the floor on how often the series is sampled -- which is
+        the cadence it always had.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand()
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -298,9 +342,6 @@ class InterestDriftWorker:
 
         # 2) Classify drift for each topic with enough samples and pick the
         #    strongest candidate that isn't on cooldown.
-        if not force and not self._under_daily_cap(now):
-            return {"drafted": 0, "skipped_daily_cap": True}
-
         cooldowns = self._load_cooldowns()
         candidates = self._rank_candidates(series, cooldowns, now, force=force)
         if not candidates:
@@ -324,13 +365,15 @@ class InterestDriftWorker:
             entry_out,
             max_entries=self._journal_max,
         )
+        cue_id = self._cues.publish(
+            chosen.topic, render_drift_cue(entry_out), payload=entry_out,
+        )
         cooldowns[chosen.key] = now.isoformat(timespec="seconds")
         self._save_cooldowns(cooldowns, now)
-        self._bump_daily(now)
         log.info(
-            "interest-drift drafted: topic=%r dir=%s %d->%d",
+            "interest-drift drafted: topic=%r dir=%s %d->%d cue=%s",
             chosen.topic[:80], chosen.direction,
-            chosen.from_size, chosen.to_size,
+            chosen.from_size, chosen.to_size, cue_id,
         )
         return {
             "drafted": 1,
@@ -338,6 +381,7 @@ class InterestDriftWorker:
             "direction": chosen.direction,
             "from_size": chosen.from_size,
             "to_size": chosen.to_size,
+            "cue_id": cue_id,
         }
 
     # ── MCP debug ─────────────────────────────────────────────────────
@@ -356,6 +400,9 @@ class InterestDriftWorker:
         *,
         force: bool,
     ) -> list[DriftCandidate]:
+        from app.core.proactive.cue_store import normalise_subject
+
+        pooled = set() if force else self._cues.spoken_for()
         out: list[DriftCandidate] = []
         for key, row in series.items():
             hist = row.get("history") or []
@@ -376,6 +423,8 @@ class InterestDriftWorker:
                 continue
             label = str(row.get("label") or "").strip()
             if not label:
+                continue
+            if normalise_subject(label) in pooled:
                 continue
             out.append(
                 DriftCandidate(
@@ -472,29 +521,6 @@ class InterestDriftWorker:
         elapsed_h = (now - last).total_seconds() / 3600.0
         return elapsed_h < self._topic_cooldown_hours
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe("interest_drift.day") != today:
-            return True
-        try:
-            count = int(self._kv_get_safe("interest_drift.day_count") or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
-    def _bump_daily(self, now: datetime) -> None:
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe("interest_drift.day") != today:
-            self._kv_set_safe("interest_drift.day", today)
-            self._kv_set_safe("interest_drift.day_count", "1")
-            return
-        try:
-            count = int(self._kv_get_safe("interest_drift.day_count") or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe("interest_drift.day_count", str(count + 1))
 
     # ── mass time-series persistence ───────────────────────────────────
 
@@ -597,4 +623,5 @@ __all__ = [
     "load_drifts",
     "append_drift",
     "drift_relevant",
+    "render_drift_cue",
 ]

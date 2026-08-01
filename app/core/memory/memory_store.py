@@ -133,22 +133,14 @@ VALID_KINDS = {
     # surface these as "I was reading about X — turns out..." rather
     # than recite them as bare facts.
     "curiosity_finding",
-    # K9 personality backlog — broad topic Aiko is quietly curious
-    # about that hasn't come up with the user yet. Written by
-    # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`
-    # during idle windows: an LLM proposes 3-5 candidate topics
-    # anchored on persona traits + recent rolling summary, the
-    # :class:`app.core.conversation.topic_graph.TopicGraph` rejects candidates
-    # that fall too close to existing memories ("we've already
-    # discussed that"), and the survivors land here. Carries
-    # ``{topic, prompt_text, source: 'llm'|'graph_gap',
-    # generated_at, consumed_at?, candidate_score}`` in the
-    # ``metadata`` JSON column. Surfaced as a Quiet-curiosity
-    # inner-life bullet during normal turns AND as a
-    # NarrativeWeaver candidate for typed proactive nudges. Auto-
-    # resolves (``consumed_at`` stamped, tier demoted to archive)
-    # once the conversation cosine-matches the seed.
-    "curiosity_seed",
+    # (``curiosity_seed`` lived here until schema v29. A seed is a topic
+    # Aiko has *not* raised yet, which is the opposite of a memory, and
+    # keeping it in this table gave it three behaviours nobody chose:
+    # RAG could surface it as a remembered fact, the topic graph
+    # clustered it into the graph it was derived from, and the
+    # scratchpad TTL applied. It now lives in ``cue_pool`` with the other
+    # six cue types -- see
+    # :mod:`app.core.proactive.curiosity_seed_worker`.)
     # K1 personality backlog — Aiko's own long-term personal goals
     # (the things she wants to grow into / explore / become better
     # at over time). Distinct from ``agenda`` (short-term follow-ups

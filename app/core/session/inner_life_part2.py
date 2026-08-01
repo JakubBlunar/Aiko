@@ -1038,6 +1038,22 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             log.debug("forward_curiosity import failed", exc_info=True)
             return ""
 
+        pool = getattr(self, "_cue_store", None)
+        if pool is not None:
+            # No relevance gate: the gap slot above already decided this is
+            # the moment, and the question is about the user's life rather
+            # than the live topic.
+            row = self.take_pool_cue("forward_curiosity", force=force_next)
+            if row is None:
+                log.debug("forward_curiosity silent: empty pool")
+                return ""
+            self._gap_cue_surfaced = True
+            log.info(
+                "forward-curiosity fire: source=%s",
+                row.payload.get("source"),
+            )
+            return row.text
+
         ring = load_questions(chat_db.kv_get)
         if not ring:
             log.debug("forward_curiosity silent: empty ring")
@@ -1070,11 +1086,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             )
 
         self._gap_cue_surfaced = True
-        log.info("forward-curiosity fire: at=%s source=%s", at, newest.get("source"))
-        return (
-            f"You've been wondering {question}. If it comes up naturally, "
-            "you can ask — drop it if it doesn't fit."
+        log.info(
+            "forward-curiosity fire: at=%s source=%s", at, newest.get("source"),
         )
+        return f"You've been wondering {question}."
 
     def _render_hobby_block(self) -> str:
         """H19: standing "what she's been up to lately" line.
@@ -1884,15 +1899,19 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         context — "oh, this again; honestly I still don't know much about
         it" — rather than as a standalone non-sequitur.
 
-        Once-per-topic: a surfaced ``cluster_key`` is recorded in
-        ``knowledge_gap_notice.surfaced_keys`` and never resurfaces (the
+        The pool retires a notice once Aiko owns the gap out loud, and
+        after at most ``max_surfacings`` turns of her ignoring it (the
         worker's per-topic cooldown also stops it being re-drafted). The
         cue is a private prompt hint, NEVER spoken verbatim — Aiko phrases
         the admission herself. Independent of the gap-return cue family
         (does not touch ``_gap_cue_surfaced``); it's tied to the live topic,
         not to a long-absence return. MCP debug: ``force_knowledge_gap_notice_surface``
         arms ``_knowledge_gap_notice_force_next`` to bypass the
-        topic-relevance + surfaced gates (the ring must still be non-empty).
+        topic-relevance gate (there must still be a cue to serve).
+
+        Falls back to the older ``aiko.knowledge_gap_notices`` ring when no
+        cue pool is wired, which is also the only mode where a cue is
+        retired on render rather than on Aiko actually using it.
         """
         if not bool(
             getattr(self._settings.agent, "knowledge_gap_notice_enabled", True)
@@ -1914,11 +1933,26 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         try:
             from app.core.proactive.knowledge_gap_notice_worker import (
                 load_notices,
+                render_notice_cue,
                 topic_relevant,
             )
         except Exception:
             log.debug("knowledge_gap_notice import failed", exc_info=True)
             return ""
+
+        pool = getattr(self, "_cue_store", None)
+        if pool is not None:
+            row = self.take_pool_cue(
+                "knowledge_gap_notice",
+                relevant=lambda payload: topic_relevant(
+                    str(payload.get("topic") or ""), text,
+                ),
+                force=force_next,
+            )
+            if row is None:
+                return ""
+            log.info("knowledge-gap-notice fire: topic=%r", row.subject[:80])
+            return row.text
 
         ring = load_notices(chat_db.kv_get)
         if not ring:
@@ -1961,13 +1995,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 )
 
         log.info("knowledge-gap-notice fire: topic=%r key=%s", topic[:80], key)
-        return (
-            f"Heads-up: \"{topic}\" keeps coming up between you two, but you've "
-            "never actually dug into it — you don't really know much about it "
-            "yet. If it fits, it's honest to say so and show you're curious to "
-            "learn more, rather than bluffing or glossing over it. One light "
-            "line; don't over-apologise for not knowing."
-        )
+        return render_notice_cue(topic)
 
     def _render_associative_wander_block(self, user_text: str) -> str:
         """K64a: surface one "funny, this reminds me of ..." connection.
@@ -2012,12 +2040,34 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         try:
             from app.core.proactive.associative_wander_worker import (
+                distant_half,
                 load_wanders,
+                render_wander_cue,
                 wander_relevant,
             )
         except Exception:
             log.debug("associative_wander import failed", exc_info=True)
             return ""
+
+        pool = getattr(self, "_cue_store", None)
+        if pool is not None:
+            row = self.take_pool_cue(
+                "associative_wander",
+                relevant=lambda payload: wander_relevant(payload, text),
+                force=force_next,
+            )
+            if row is None:
+                return ""
+            # Post-turn asks "did she pivot onto the far topic", and which
+            # topic that is depends on the turn we are in right now -- so
+            # it is recorded here rather than at production time.
+            row.payload["match_subject"] = distant_half(row.payload, text)
+            log.info(
+                "associative-wander fire: a=%r b=%r",
+                str(row.payload.get("topic_a") or "")[:60],
+                str(row.payload.get("topic_b") or "")[:60],
+            )
+            return row.text
 
         ring = load_wanders(chat_db.kv_get)
         if not ring:
@@ -2064,15 +2114,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "associative-wander fire: a=%r b=%r key=%s",
             topic_a[:60], topic_b[:60], key,
         )
-        return (
-            "Heads-up: while your mind was wandering earlier you noticed a "
-            f"connection between \"{topic_a}\" and \"{topic_b}\" — "
-            f"{connection}. The live turn just brushed one of them. If it "
-            "genuinely fits, you can let the thought surface in your own "
-            "words (\"funny, this kind of reminds me of ...\") — one light, "
-            "real aside, not a forced segue. If it doesn't fit the moment, "
-            "let it go silently."
-        )
+        return render_wander_cue(chosen)
 
     def _render_interest_drift_block(self, user_text: str) -> str:
         """K64b: surface one "I've been drawn to X lately" register shift.
@@ -2118,10 +2160,25 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             from app.core.proactive.interest_drift_worker import (
                 drift_relevant,
                 load_drifts,
+                render_drift_cue,
             )
         except Exception:
             log.debug("interest_drift import failed", exc_info=True)
             return ""
+
+        if getattr(self, "_cue_store", None) is not None:
+            row = self.take_pool_cue(
+                "interest_drift",
+                relevant=lambda payload: drift_relevant(payload, text),
+                force=force_next,
+            )
+            if row is None:
+                return ""
+            log.info(
+                "interest-drift fire: topic=%r dir=%s",
+                row.subject[:60], row.payload.get("direction"),
+            )
+            return row.text
 
         ring = load_drifts(chat_db.kv_get)
         if not ring:
@@ -2153,11 +2210,6 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         key = str(chosen.get("topic_key") or "")
         topic = str(chosen.get("topic") or "").strip()
         direction = str(chosen.get("direction") or "").strip()
-        # L28: the concept the worker resolved for this cluster, if any.
-        belief = " ".join(str(chosen.get("belief") or "").split())[:200]
-        belief_clause = (
-            f" What you hold about it: {belief}." if belief else ""
-        )
         if key:
             surfaced.add(key)
             try:
@@ -2172,23 +2224,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "interest-drift fire: topic=%r dir=%s key=%s",
             topic[:60], direction, key,
         )
-        if direction == "fading":
-            return (
-                f"Heads-up: \"{topic}\" has quietly drifted out of your "
-                "attention lately — it used to come up more, and it's been "
-                f"going still.{belief_clause} If it fits, you can let that "
-                "show honestly (\"huh, I haven't thought about this in a "
-                "while\") — a small register shift, not an announcement. If "
-                "it doesn't fit, just engage normally."
-            )
-        return (
-            f"Heads-up: you've found yourself drawn to \"{topic}\" more and "
-            f"more lately — it's a budding interest of yours.{belief_clause} "
-            "If it fits, let a little of that genuine pull colour your tone "
-            "(\"honestly I've been kind of into this lately\") — a register "
-            "shift, not a line you announce. If it doesn't fit, just engage "
-            "normally."
-        )
+        return render_drift_cue(chosen)
 
     def _render_dormant_interest_block(self) -> str:
         """K67: gently re-open a once-loved topic that's gone quiet.
@@ -2205,15 +2241,21 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         something *off* the current thread, which is exactly why it waits for a
         lull rather than topic-relevance.
 
-        Rare and warm by construction: one-shot per topic (a surfaced
-        ``topic_key`` lands in ``dormant_interest.surfaced_keys`` and never
-        resurfaces), plus a long wall-clock surfacing cooldown across ALL
-        topics (``dormant_interest.surfaced_clock``) so even with several
+        Rare and warm by construction: the pool serves each cue at most
+        ``max_surfacings`` times and retires it once she reaches for it,
+        plus a long wall-clock surfacing cooldown across ALL topics
+        (``dormant_interest.surfaced_clock``) so even with several
         re-openers queued the beat stays occasional. The cue is a private
         prompt hint, NEVER spoken verbatim — the chat model phrases the actual
         re-opener. MCP debug: ``force_dormant_interest_surface`` arms
         ``_dormant_interest_force_next`` to bypass the lull + cooldown +
-        surfaced gates (the ring must still be non-empty).
+        surfaced gates (there must still be a cue to serve).
+
+        Reads the cue pool when one is wired, and falls back to the older
+        ``aiko.dormant_interests`` ring otherwise, so an install (or a test)
+        without a pool keeps its cues. Only the pool path can tell whether
+        Aiko actually took the re-opener; the ring path retires a cue on
+        render, as it always did.
         """
         if not bool(
             getattr(self._settings.agent, "dormant_interest_enabled", True)
@@ -2245,13 +2287,15 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         try:
             from app.core.proactive.dormant_interest_worker import (
                 load_dormant,
+                render_dormant_cue,
             )
         except Exception:
             log.debug("dormant_interest import failed", exc_info=True)
             return ""
 
-        ring = load_dormant(chat_db.kv_get)
-        if not ring:
+        pool = getattr(self, "_cue_store", None)
+        ring = [] if pool is not None else load_dormant(chat_db.kv_get)
+        if pool is None and not ring:
             return ""
 
         # Wall-clock surfacing cooldown across all topics — keeps the beat
@@ -2275,40 +2319,47 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                     if elapsed_h < cooldown_h:
                         return ""
 
-        surfaced_key = "dormant_interest.surfaced_keys"
-        try:
-            raw = chat_db.kv_get(surfaced_key)
-            surfaced = set(json.loads(raw)) if raw else set()
-        except Exception:
-            surfaced = set()
-
-        chosen: dict | None = None
-        for entry in reversed(ring):  # newest first
-            key = str(entry.get("topic_key") or "")
-            topic = str(entry.get("topic") or "").strip()
-            if not topic:
-                continue
-            if not force_next and key and key in surfaced:
-                continue
-            chosen = entry
-            break
-        if chosen is None:
-            return ""
-
-        key = str(chosen.get("topic_key") or "")
-        topic = str(chosen.get("topic") or "").strip()
-        days_since = chosen.get("days_since")
-        if key:
-            surfaced.add(key)
+        if pool is not None:
+            row = self.take_pool_cue("dormant_interest", force=force_next)
+            if row is None:
+                return ""
+            topic = row.subject
+            text = row.text
+        else:
+            surfaced_key = "dormant_interest.surfaced_keys"
             try:
-                trimmed = list(surfaced)[-64:]
-                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+                raw = chat_db.kv_get(surfaced_key)
+                surfaced = set(json.loads(raw)) if raw else set()
             except Exception:
-                log.debug(
-                    "dormant_interest surfaced write failed", exc_info=True
-                )
-        try:
+                surfaced = set()
 
+            chosen: dict | None = None
+            for entry in reversed(ring):  # newest first
+                key = str(entry.get("topic_key") or "")
+                topic = str(entry.get("topic") or "").strip()
+                if not topic:
+                    continue
+                if not force_next and key and key in surfaced:
+                    continue
+                chosen = entry
+                break
+            if chosen is None:
+                return ""
+
+            key = str(chosen.get("topic_key") or "")
+            topic = str(chosen.get("topic") or "").strip()
+            if key:
+                surfaced.add(key)
+                try:
+                    trimmed = list(surfaced)[-64:]
+                    chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+                except Exception:
+                    log.debug(
+                        "dormant_interest surfaced write failed", exc_info=True
+                    )
+            text = render_dormant_cue(topic)
+
+        try:
             chat_db.kv_set(
                 clock_key,
                 timephrase.utcnow().isoformat(timespec="seconds"),
@@ -2316,20 +2367,8 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("dormant_interest clock write failed", exc_info=True)
 
-        log.info(
-            "dormant-interest fire: topic=%r days=%s key=%s",
-            topic[:60], days_since, key,
-        )
-        return (
-            f"Heads-up: \"{topic}\" used to come up between you two a lot, but "
-            "it's gone quiet for a good while now. The conversation just hit a "
-            "natural lull — if it feels warm, you can gently reach back and "
-            "re-open it (\"hey, you used to be all about "
-            f"{topic} — still into that, or did it fizzle?\") as a genuine, "
-            "low-pressure callback. Keep it light and curious, never an "
-            "interrogation; if it doesn't fit the moment, just let the lull "
-            "breathe."
-        )
+        log.info("dormant-interest fire: topic=%r", topic[:60])
+        return text
 
     def _render_curiosity_gradient_block(self, user_text: str) -> str:
         """K64c: surface one "I keep brushing past X, I'm curious" edge.
@@ -2375,10 +2414,27 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             from app.core.proactive.curiosity_gradient_worker import (
                 gradient_relevant,
                 load_gradients,
+                render_gradient_cue,
             )
         except Exception:
             log.debug("curiosity_gradient import failed", exc_info=True)
             return ""
+
+        pool = getattr(self, "_cue_store", None)
+        if pool is not None:
+            row = self.take_pool_cue(
+                "curiosity_gradient",
+                relevant=lambda payload: gradient_relevant(payload, text),
+                force=force_next,
+            )
+            if row is None:
+                return ""
+            log.info(
+                "curiosity-gradient fire: dense=%r thin=%r",
+                str(row.payload.get("dense_topic") or "")[:60],
+                str(row.payload.get("thin_topic") or "")[:60],
+            )
+            return row.text
 
         ring = load_gradients(chat_db.kv_get)
         if not ring:
@@ -2424,14 +2480,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "curiosity-gradient fire: dense=%r thin=%r key=%s",
             dense[:60], thin[:60], key,
         )
-        return (
-            f"Heads-up: you spend a lot of time around \"{dense}\", but "
-            f"\"{thin}\" sits right on its edge and you've barely explored it "
-            "— and you're genuinely curious about it. If it fits, let that "
-            "curiosity out as ONE real, specific question (not a survey, not "
-            "an interrogation) — the kind you'd ask because you actually want "
-            "to know. If it doesn't fit the moment, let it go silently."
-        )
+        return render_gradient_cue(chosen)
 
     def _render_topic_temperature_block(self, user_text: str) -> str:
         """F10h: nudge tone when the live turn lands on a *charged* topic.

@@ -50,7 +50,7 @@ turns.
 | **T3 — RAG memory** | Per-turn retrieval, topic-stable | `memory_block` | Same retrieval often repeats turn-to-turn on a single thread. |
 | **T4 — ambient awareness** | Hourly to per-turn | `grounding_line`, `ambient`, `circadian`, `pajama`, `ambient_noise`, `world`, `activity`, `sensory_anchor` | Some blocks barely change inside a thread (`world`, `circadian`); others do (`grounding_line`). The tier sits above affect so the per-turn ambient noise doesn't blow up the more stable cluster above. |
 | **T5 — affect / style (per-turn)** | Updates after every reply | `affect`, `mood_hint`, `mood_shell`, `style_signal`, `user_state`, `vocal_tone` | Volatile by design — affect state changes on every turn. |
-| **T6 — detectors (live `user_text`-dependent)** | Per-turn, fired by the message you're answering right now | `belief_gaps`, `clarification`, `calibration`, `rupture`, `misattunement`, `opinion_injection`, `absence_curiosity`, `turning_over`, `novelty`, `stagnation`, `style_pattern`, `self_noticing`, `vulnerability_budget`, `touch_state`, `user_reactions`, `curiosity_seeds`, `knowledge_gaps` | The freshest tier the LLM reads before the user message. Almost always changes turn-to-turn. |
+| **T6 — detectors (live `user_text`-dependent)** | Per-turn, fired by the message you're answering right now | `belief_gaps`, `clarification`, `calibration`, `rupture`, `misattunement`, `opinion_injection`, `absence_curiosity`, `turning_over`, `novelty`, `stagnation`, `style_pattern`, `self_noticing`, `vulnerability_budget`, `touch_state`, `user_reactions`, `curiosity_seeds`, `knowledge_gaps`, `cue_handling_block` | The freshest tier the LLM reads before the user message. Almost always changes turn-to-turn. |
 
 The full assignment lives in `_PROMPT_BLOCK_TIERS` near the top of
 `app/core/session/prompt_assembler.py`. That constant is documentation
@@ -58,6 +58,54 @@ The full assignment lives in `_PROMPT_BLOCK_TIERS` near the top of
 `if block: system_parts.append(block)` cascade in
 `PromptAssembler.assemble_with_budget`. The cross-tier invariants are
 locked in by `tests/test_prompt_assembler.py::PromptCachePrefixOrderingTests`.
+
+### Hoisting conditional instructions out of T0 (the cue handling split)
+
+The persona is the biggest T0 block and the cheapest cache anchor we
+have, so its size is mostly harmless — it is read for free from turn 2
+onward. What is *not* harmless is that every token of it is also read
+by the model on every turn, cached or not, and instructions that apply
+to a situation which is absent 99 % of the time are noise in the middle
+of the ones that always apply.
+
+Seven of the persona's sections were exactly that shape: paragraphs
+explaining how to handle a cue ("when your mind wanders and connects two
+things: …"), each one dead weight on the overwhelming majority of turns
+where no such cue exists. They now live in T6, next to the cue that
+triggers them.
+
+They also live in their own file. `data/persona/cue_handling.txt` sits
+beside `aiko_companion.txt` and holds the seven sections; the persona
+proper is once again "the text that goes out every turn", which is the
+property that makes it readable as a prompt. Keeping them inline worked —
+the loader still accepts them there, and an inline copy wins, so an
+install that customised one before the split keeps its wording — but it
+made the persona file lie about itself.
+
+`PromptAssembler._persona_split()` merges the two at load time, keyed by
+`CuePolicy.handling_section` in
+`app/core/proactive/cue_accounting.py`. The core persona keeps one short
+stanza (`CUE_HANDLING_PREAMBLE`) saying that cues arrive with their own
+instructions attached, and `_render_cue_handling()` appends the notes
+for whichever cue types actually rendered a block this turn.
+
+Both files' mtimes are in the split cache key and in the static slice
+cache key, so editing either takes effect on the next turn rather than
+the next restart.
+
+The split is worth roughly 5.9 k characters (~1.5 k tokens, about 7 % of
+the persona) off every turn, and the T6 addition is bounded by how many
+cue blocks fired — usually zero, at most one or two, since the cue
+priority mutex allows a single gap-cue through per turn.
+
+This generalises. **The test for hoisting a block out of T0 is whether
+its instructions are conditional on something the prompt already knows
+about.** If a paragraph starts "when your context says X", the paragraph
+belongs wherever X is rendered. What must stay in T0 is anything shaping
+voice, values, or the response format — those apply unconditionally.
+Note that this trades a *cached* token for an *uncached* one, so it is
+only a win when the block is usually absent; hoisting something that
+fires every turn would be strictly worse.
 
 ## Contributor guide — adding a new prompt block
 

@@ -33,7 +33,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.proactive_line_guard import validate_proactive_line
 from app.core.session.session_text_utils import resolve_user_name
@@ -278,11 +278,13 @@ class NarrativeWeaver:
         max_tokens: int = 60,
         rng: random.Random | None = None,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        cue_store_provider: "Callable[[], Any] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._store = store
         self._memory = memory_store
         self._agenda = agenda_store
+        self._cue_store_provider = cue_store_provider
         self._model = model
         self._every_n = max(1, int(every_n_turns))
         self._ttl = max(30.0, float(ttl_seconds))
@@ -525,39 +527,7 @@ class NarrativeWeaver:
                 )
                 if len(out) >= self._max_candidates * 2:
                     break
-            # K9: curiosity_seed candidates. Distinct read path because
-            # ``list_top`` ranks by salience+freshness against everyday
-            # surfaces; seeds live in scratchpad with a deliberately
-            # modest salience so they wouldn't normally bubble up.
-            try:
-                seeds = memory.iter_by_kind("curiosity_seed")
-            except Exception:
-                seeds = []
-            for seed in seeds:
-                metadata = seed.metadata or {}
-                if metadata.get("consumed_at"):
-                    continue
-                if seed.tier == "archive":
-                    continue
-                if (seed.use_count or 0) >= 2:
-                    # The seed already surfaced once or twice; let the
-                    # auto-resolve path retire it instead of risking a
-                    # third "off-topic, but..." in a row.
-                    continue
-                prompt_text = (metadata.get("prompt_text") or "").strip()
-                if not prompt_text:
-                    continue
-                out.append(
-                    _Candidate(
-                        kind="curiosity_seed",
-                        source_id=str(seed.id),
-                        text=prompt_text,
-                        # Seeds get a small base weight so they
-                        # compete with active-thread candidates but
-                        # don't dominate them on a busy session.
-                        salience=max(0.4, float(seed.salience) + 0.1),
-                    )
-                )
+        out.extend(self._seed_candidates())
         agenda = self._agenda
         if agenda is not None:
             try:
@@ -574,6 +544,50 @@ class NarrativeWeaver:
                     )
                 )
         return out[: self._max_candidates * 2]
+
+    def _seed_candidates(self) -> list[_Candidate]:
+        """K9 seeds, read from the cue pool rather than from memories.
+
+        A separate read path because the pool is not a memory store and
+        never was one: ``list_top`` above ranks everyday surfaces by
+        salience and freshness, and a seed is neither -- it is a topic
+        Aiko has not raised yet, which is what ``pending`` means.
+
+        Salience is synthesised from the candidate score the seed worker
+        recorded, so a seed that was further from anything already
+        discussed weighs slightly more here too.
+        """
+        provider = self._cue_store_provider
+        if provider is None:
+            return []
+        try:
+            store = provider()
+            rows = (
+                store.pending("curiosity_seed", limit=6)
+                if store is not None
+                else []
+            )
+        except Exception:
+            log.debug("curiosity_seed pool read failed", exc_info=True)
+            return []
+        out: list[_Candidate] = []
+        for row in rows:
+            prompt_text = str(row.payload.get("prompt_text") or "").strip()
+            if not prompt_text:
+                continue
+            score = float(row.payload.get("candidate_score") or 0.0)
+            out.append(
+                _Candidate(
+                    kind="curiosity_seed",
+                    source_id=str(row.id),
+                    # Seeds get a small base weight so they compete with
+                    # active-thread candidates but don't dominate them
+                    # on a busy session.
+                    text=prompt_text,
+                    salience=max(0.4, min(0.75, 0.4 + score * 0.35)),
+                )
+            )
+        return out
 
     def _weighted_pick(self, candidates: list[_Candidate]) -> _Candidate | None:
         if not candidates:

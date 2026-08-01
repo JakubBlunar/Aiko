@@ -16,19 +16,28 @@ that haven't come up yet". Each idle tick:
       existing memory, that's the "we already discussed that" gate);
     - a novelty filter against existing active seeds so the worker
       doesn't keep minting near-duplicates of itself.
-4. Writes the surviving top ``curiosity_seed_max_per_run`` entries
-   via :meth:`MemoryStore.add` with kind ``curiosity_seed`` and tier
-   ``scratchpad``.
+4. Writes the surviving top ``curiosity_seed_max_per_run`` entries into
+   :class:`~app.core.proactive.cue_store.CueStore` as ``curiosity_seed``
+   cues.
 
 Sibling of :class:`app.core.proactive.idle_curiosity_worker.IdleCuriosityWorker`
 but distinct in purpose: that one *answers* existing open questions
 via web search, this one *asks* new ones from inside Aiko's head.
 
-The worker is opt-out via ``agent.curiosity_seed_enabled`` and gated
-behind a max-active count so a long absence can't pile up dozens of
-never-mentioned topics. Auto-resolve (turning a seed off once the
-conversation drifts onto it) lives in
-:meth:`SessionController._post_turn_inner_life`.
+Seeds used to live in the ``memories`` table, which gave them three
+behaviours nobody chose: incidental RAG retrieval (a seed could surface
+in T3 as a plain memory bullet), topic-graph clustering into the graph
+they were derived from, and the scratchpad TTL / promotion lifecycle.
+A seed is not something Aiko remembers -- it is something she has not
+said yet -- so it belongs in the cue pool with the other six, and all
+three of those stop.
+
+The worker is opt-out via ``agent.curiosity_seed_enabled`` and paced by
+inventory: ``curiosity_seed_max_active`` is the pool's target stock, and
+a full shelf reports no demand rather than being caught by a cap after
+the fact. Consumption (retiring a seed once the conversation drifts onto
+it) is the pool's ``either_party`` fulfilment, in
+:mod:`app.core.session.cue_pool_mixin`.
 """
 from __future__ import annotations
 
@@ -40,13 +49,14 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
-    from app.core.memory.memory_store import Memory, MemoryStore
     from app.core.infra.settings import AgentSettings, MemorySettings
     from app.core.conversation.topic_graph import TopicGraph
+    from app.core.proactive.cue_store import CueRow
     from app.llm.embedder import Embedder
     from app.llm.ollama_client import OllamaClient
 
@@ -169,7 +179,7 @@ class CuriositySeedWorker:
     def __init__(
         self,
         *,
-        memory_store: "MemoryStore",
+        cue_store_provider: StoreProvider,
         topic_graph: "TopicGraph",
         embedder: "Embedder",
         ollama: "OllamaClient",
@@ -181,10 +191,19 @@ class CuriositySeedWorker:
         rolling_summary_provider: Callable[[], str] | None = None,
         user_display_name_provider: Callable[[], str] | None = None,
         assistant_display_name_provider: Callable[[], str] | None = None,
-        notify_memory_added: Callable[[dict[str, Any]], None] | None = None,
+        notify_cue_added: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self._memory_store = memory_store
+        self._cues = CueProducer(
+            "curiosity_seed",
+            cue_store_provider,
+            inventory_target=max(
+                1,
+                int(
+                    getattr(agent_settings, "curiosity_seed_max_active", 6)
+                ),
+            ),
+        )
         self._topic_graph = topic_graph
         self._embedder = embedder
         self._ollama = ollama
@@ -196,7 +215,7 @@ class CuriositySeedWorker:
         self._rolling_summary_provider = rolling_summary_provider
         self._user_display_name_provider = user_display_name_provider
         self._assistant_display_name_provider = assistant_display_name_provider
-        self._notify_memory_added = notify_memory_added
+        self._notify_cue_added = notify_cue_added
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ───────────────────────────────────────────
@@ -217,32 +236,28 @@ class CuriositySeedWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return bool(
+            getattr(self._agent_settings, "curiosity_seed_enabled", True)
+        )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from the shortfall against ``curiosity_seed_max_active``.
+
+        That key used to be a ceiling checked after the fact; here it is
+        the target stock, which is the same number doing the job it was
+        always describing. A comfortable seed set means no demand and the
+        worker -- which makes a real LLM call -- is simply not admitted.
+        """
         if not bool(
             getattr(self._agent_settings, "curiosity_seed_enabled", True)
         ):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        # No room to write -> skip the tick (keeps the worker quiet
-        # when the user is comfortable with the existing seed set).
-        max_active = max(
-            1,
-            int(
-                getattr(
-                    self._agent_settings, "curiosity_seed_max_active", 6,
-                )
-            ),
-        )
-        try:
-            active = self._count_active_seeds()
-        except Exception:
-            log.debug("curiosity_seed: count_active failed", exc_info=True)
-            return False
-        if active >= max_active:
-            return False
-        return True
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand(needs_llm=True)
 
     def run(self) -> dict[str, Any]:
         if not bool(
@@ -253,14 +268,7 @@ class CuriositySeedWorker:
             return {"skipped": True, "reason": "cancelled_before_start"}
 
         now = self._clock()
-        max_active = max(
-            1,
-            int(
-                getattr(
-                    self._agent_settings, "curiosity_seed_max_active", 6,
-                )
-            ),
-        )
+        max_active = self._cues.inventory_target
         max_per_run = max(
             1,
             int(
@@ -321,7 +329,7 @@ class CuriositySeedWorker:
 
         existing_seed_vecs = [
             seed.embedding for seed in active_seeds
-            if seed.embedding is not None and seed.embedding.size > 0
+            if seed.embedding is not None and len(seed.embedding) > 0
         ]
 
         wrote: list[int] = []
@@ -377,7 +385,7 @@ class CuriositySeedWorker:
                 rejected_novelty += 1
                 continue
 
-            mem = self._write_seed(
+            cue_id = self._write_seed(
                 topic=topic,
                 prompt_text=prompt_text,
                 why=str(candidate.get("why") or "")[:200],
@@ -385,18 +393,12 @@ class CuriositySeedWorker:
                 embedding=embedding,
                 now=now,
             )
-            if mem is None:
+            if not cue_id:
                 rejected_dup += 1
                 continue
-            wrote.append(int(mem.id))
+            wrote.append(cue_id)
             existing_seed_vecs.append(embedding)
-            if self._notify_memory_added is not None:
-                try:
-                    self._notify_memory_added(mem.to_dict())
-                except Exception:
-                    log.debug(
-                        "curiosity_seed notify_added failed", exc_info=True,
-                    )
+            self._notify(cue_id, topic=topic, prompt_text=prompt_text)
 
         log.info(
             "curiosity_seed run done: wrote=%d candidates=%d "
@@ -411,7 +413,7 @@ class CuriositySeedWorker:
         return {
             "checked": len(candidates),
             "wrote": len(wrote),
-            "memory_ids": wrote,
+            "cue_ids": wrote,
             "rejected_graph": rejected_graph,
             "rejected_novelty": rejected_novelty,
             "rejected_dedupe": rejected_dup,
@@ -460,14 +462,13 @@ class CuriositySeedWorker:
         return "\n".join(lines)
 
     def _active_seeds_block(
-        self, active_seeds: list["Memory"],
+        self, active_seeds: list["CueRow"],
     ) -> str:
         if not active_seeds:
             return "(none)"
         lines: list[str] = []
         for seed in active_seeds[:_MAX_ACTIVE_LIST]:
-            metadata = seed.metadata or {}
-            topic = (metadata.get("topic") or seed.content or "").strip()
+            topic = (seed.subject or "").strip()
             if not topic:
                 continue
             lines.append(f"- {_trim(topic, max_chars=80)}")
@@ -475,24 +476,8 @@ class CuriositySeedWorker:
 
     # ── seed lookups ──────────────────────────────────────────────────
 
-    def _active_seeds(self) -> list["Memory"]:
-        try:
-            seeds = self._memory_store.iter_by_kind("curiosity_seed")
-        except Exception:
-            log.debug("iter_by_kind curiosity_seed failed", exc_info=True)
-            return []
-        out: list[Memory] = []
-        for seed in seeds:
-            metadata = seed.metadata or {}
-            if metadata.get("consumed_at"):
-                continue
-            if seed.tier == "archive":
-                continue
-            out.append(seed)
-        return out
-
-    def _count_active_seeds(self) -> int:
-        return len(self._active_seeds())
+    def _active_seeds(self) -> list["CueRow"]:
+        return self._cues.stock_rows(with_embedding=True)
 
     # ── LLM ───────────────────────────────────────────────────────────
 
@@ -580,7 +565,7 @@ class CuriositySeedWorker:
             })
         return out
 
-    # ── memory write ─────────────────────────────────────────────────
+    # ── pool write ───────────────────────────────────────────────────
 
     def _write_seed(
         self,
@@ -591,29 +576,45 @@ class CuriositySeedWorker:
         candidate_score: float,
         embedding: Any,
         now: datetime,
-    ) -> "Memory | None":
+    ) -> int:
+        """Queue one seed in the pool. Returns the row id, or 0.
+
+        ``prompt_text`` -- the LLM's phrasing of the question -- rides in
+        the payload rather than in ``text``, because the seeds block lists
+        bare topics and the narrative weaver wants the sentence. Both
+        readers get what they need without either re-deriving it.
+        """
         try:
-            mem = self._memory_store.add(
-                content=topic,
-                kind="curiosity_seed",
-                embedding=embedding,
-                salience=0.45,
-                confidence=0.5,
-                tier="scratchpad",
-                metadata={
-                    "topic": topic,
+            return self._cues.publish(
+                topic,
+                topic,
+                payload={
                     "prompt_text": prompt_text,
                     "why": why,
                     "source": "llm",
                     "generated_at": now.isoformat(),
-                    "consumed_at": None,
                     "candidate_score": float(candidate_score),
                 },
+                embedding=embedding,
             )
         except Exception:
             log.debug("curiosity_seed write failed", exc_info=True)
-            return None
-        return mem
+            return 0
+
+    def _notify(self, cue_id: int, *, topic: str, prompt_text: str) -> None:
+        if self._notify_cue_added is None:
+            return
+        try:
+            self._notify_cue_added({
+                "id": cue_id,
+                "cue_type": "curiosity_seed",
+                "subject": topic,
+                "text": topic,
+                "prompt_text": prompt_text,
+                "state": "pending",
+            })
+        except Exception:
+            log.debug("curiosity_seed notify_added failed", exc_info=True)
 
     # ── name resolution ───────────────────────────────────────────────
 

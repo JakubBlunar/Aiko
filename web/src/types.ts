@@ -487,7 +487,6 @@ export type MemoryKind =
   | "shared_moment"
   | "knowledge_gap"
   | "curiosity_finding"
-  | "curiosity_seed"
   | "goal"
   | "goal_progress"
   | "diary";
@@ -507,7 +506,6 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "shared_moment",
   "knowledge_gap",
   "curiosity_finding",
-  "curiosity_seed",
   "goal",
   "goal_progress",
   "diary",
@@ -996,6 +994,74 @@ export interface ConceptsSnapshot {
     by_subject: Record<string, number>;
   };
   concepts: ConceptRow[];
+}
+
+/** Where a cue is in its life. ``used`` means Aiko actually said the
+ *  thing (post-turn matching found its subject in the transcript), not
+ *  merely that the block reached her prompt — that's `surfaced`. */
+export type CueState =
+  | "pending"
+  | "surfaced"
+  | "awaiting"
+  | "used"
+  | "expired"
+  | "superseded";
+
+export const CUE_STATES: readonly CueState[] = [
+  "pending",
+  "surfaced",
+  "awaiting",
+  "used",
+  "expired",
+  "superseded",
+];
+
+/** One row of ``cue_pool`` — a conversational move Aiko is holding.
+ *  ``surfaced_count`` counts turns she was shown it and didn't take it;
+ *  ``ask_count`` counts times she asked and got no answer. */
+export interface CueRow {
+  id: number;
+  cue_type: string;
+  subject: string;
+  text: string;
+  payload: Record<string, unknown>;
+  state: CueState;
+  surfaced_count: number;
+  ask_count: number;
+  last_surfaced_at: string | null;
+  last_asked_at: string | null;
+  not_before: string | null;
+  created_at: string;
+  expires_at: string | null;
+  used_at: string | null;
+  /** How the match was made, e.g. ``lexical:0.67`` / ``answered/cosine:0.81``
+   *  — or the reason it died (``max_surfacings/...``, ``unanswered``). */
+  used_evidence: string | null;
+}
+
+/** Per-type scoreboard. The mean is the number that says whether a cue
+ *  type earns its keep: one that routinely needs showing twice is one
+ *  whose framing isn't landing. */
+export interface CueTypeStats {
+  cue_type: string;
+  total: number;
+  asks: number;
+  mean_surfacings_before_use: number | null;
+  pending: number;
+  surfaced: number;
+  awaiting: number;
+  used: number;
+  expired: number;
+  superseded: number;
+}
+
+export interface CuePoolResponse {
+  cues: CueRow[];
+  count: number;
+  total: number;
+  stats: CueTypeStats[];
+  types: string[];
+  enabled: boolean;
 }
 
 /** One (kind, subject) row of the L22 label-register readout. Always read
@@ -1848,6 +1914,12 @@ export type WsServerEvent =
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }
+  | {
+      /** A cue was written by a worker, or just flipped to ``used``
+       *  because Aiko actually said the thing. Both are an upsert. */
+      type: "cue_pool_updated";
+      cue: CueRow;
+    }
   | { type: "belief_added"; belief: Belief }
   | { type: "belief_updated"; belief: Belief }
   | { type: "belief_deleted"; id: number }

@@ -994,115 +994,43 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             reaction,
         )
 
-    def _resolve_curiosity_seeds(  # noqa: C901
-        self,
-        *,
-        user_text: str,
-        assistant_text: str,
-    ) -> None:
-        """K9: stamp ``consumed_at`` on any seed the turn drifted onto.
+    def _combined_turn_vec(
+        self, *, user_text: str, assistant_text: str,
+    ) -> Any:
+        """The embedding of ``user_text + assistant_text``, computed once.
 
-        Embeds the combined ``user_text + assistant_text`` once and
-        cosines it against every active seed's stored embedding. Any
-        seed scoring above
-        ``agent.curiosity_seed_resolve_threshold`` (default 0.50) is
-        marked consumed and demoted to ``archive`` so it stops
-        eating the inner-life slot and no longer surfaces as a
-        proactive candidate.
+        Three post-turn paths want this exact vector -- seed resolve, gap
+        resolve, and the cue pool's turn-scoped matching -- and each used
+        to ask the embedder for it separately. The embedder's LRU made
+        that cheap rather than free; this makes it explicit, so adding a
+        fourth consumer does not quietly add a fourth round-trip on a
+        cache eviction.
 
-        No-op when the worker is disabled, when no active seeds
-        exist, or when the embedder isn't available -- stays cheap
-        on the cold path.
+        Memoised against the text pair rather than a turn counter,
+        because post-turn has no turn id in scope and the pair is what
+        identifies the vector anyway.
         """
-        if not bool(
-            getattr(self._settings.agent, "curiosity_seed_enabled", True)
-        ):
-            return
-        memory = getattr(self, "_memory_store", None)
-        embedder = getattr(self, "_embedder", None)
-        if memory is None or embedder is None:
-            return
-        try:
-            seeds = memory.iter_by_kind("curiosity_seed")
-        except Exception:
-            return
-        if not seeds:
-            return
-        active = [
-            seed for seed in seeds
-            if not (seed.metadata or {}).get("consumed_at")
-            and seed.tier != "archive"
-            and seed.embedding is not None
-            and seed.embedding.size > 0
-        ]
-        if not active:
-            return
         combined = " ".join(
             part for part in (user_text or "", assistant_text or "")
             if part and part.strip()
         ).strip()
         if not combined or len(combined) < 4:
-            return
+            return None
+        cached = getattr(self, "_turn_vec_cache", None)
+        if cached is not None and cached[0] == combined:
+            return cached[1]
+        embedder = getattr(self, "_embedder", None)
+        if embedder is None:
+            return None
         try:
-            turn_vec = embedder.embed(combined)
+            vec = embedder.embed(combined)
         except Exception:
-            log.debug(
-                "curiosity_seed resolve: embed failed", exc_info=True,
-            )
-            return
-        if turn_vec is None or turn_vec.size == 0:
-            return
-        threshold = float(
-            getattr(
-                self._settings.agent,
-                "curiosity_seed_resolve_threshold",
-                0.50,
-            )
-        )
-        now_iso = timephrase.utcnow().isoformat()
-        for seed in active:
-            try:
-                sim = float((turn_vec * seed.embedding).sum())
-            except Exception:
-                continue
-            if sim < threshold:
-                continue
-            try:
-                memory.update(
-                    seed.id,
-                    metadata={
-                        "consumed_at": now_iso,
-                        "consumed_similarity": round(sim, 4),
-                    },
-                    metadata_merge=True,
-                    tier="archive",
-                )
-            except Exception:
-                log.debug(
-                    "curiosity_seed mark consumed failed (id=%s)",
-                    seed.id,
-                    exc_info=True,
-                )
-                continue
-            log.info(
-                "curiosity_seed resolved: id=%s sim=%.2f topic=%r",
-                seed.id,
-                sim,
-                ((seed.metadata or {}).get("topic")
-                 or seed.content or "")[:80],
-            )
-            try:
-                fresh = memory.get(seed.id)
-            except Exception:
-                fresh = None
-            if fresh is not None and self._notify_memory_updated is not None:
-                try:
-                    self._notify_memory_updated(fresh.to_dict())
-                except Exception:
-                    log.debug(
-                        "curiosity_seed notify_updated failed",
-                        exc_info=True,
-                    )
+            log.debug("turn embed failed", exc_info=True)
+            return None
+        if vec is None or getattr(vec, "size", 0) == 0:
+            return None
+        self._turn_vec_cache = (combined, vec)
+        return vec
 
     # ── F2.1: post-turn user-answer gap resolver ─────────────────────
 
@@ -1114,10 +1042,9 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
     ) -> None:
         """F2.1: stamp ``resolved_at`` on any open gap the turn answered.
 
-        Mirrors :meth:`_resolve_curiosity_seeds` but for
-        ``knowledge_gap`` rows. Embeds the combined ``user_text +
-        assistant_text`` once and cosines it against every open gap's
-        stored embedding. Any gap scoring above
+        Cosines the combined ``user_text + assistant_text`` vector
+        (:meth:`_combined_turn_vec`, shared with the cue pool) against
+        every open gap's stored embedding. Any gap scoring above
         ``agent.gap_user_answer_resolve_threshold`` (default 0.50) is
         marked resolved with ``metadata.resolved_by="user_answer"``.
 
@@ -1146,20 +1073,10 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         ]
         if not active:
             return
-        combined = " ".join(
-            part for part in (user_text or "", assistant_text or "")
-            if part and part.strip()
-        ).strip()
-        if not combined or len(combined) < 4:
-            return
-        try:
-            turn_vec = embedder.embed(combined)
-        except Exception:
-            log.debug(
-                "knowledge_gap resolve: embed failed", exc_info=True,
-            )
-            return
-        if turn_vec is None or turn_vec.size == 0:
+        turn_vec = self._combined_turn_vec(
+            user_text=user_text, assistant_text=assistant_text,
+        )
+        if turn_vec is None:
             return
         threshold = float(
             getattr(

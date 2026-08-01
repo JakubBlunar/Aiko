@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 
@@ -59,10 +61,24 @@ def _vec(*xs: float) -> np.ndarray:
     return np.asarray(xs, dtype=np.float32)
 
 
+_NOW = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+
+
+def _cue_store():
+    """A real CueStore on a throwaway database."""
+    from tempfile import TemporaryDirectory
+
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.proactive.cue_store import CueStore
+
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+    return store, tmp
+
+
 def _make_worker(graph, kv, **kw) -> CuriosityGradientWorker:
     params: dict = {
         "interval_seconds": 5400.0,
-        "daily_cap": 5,
         "journal_max": 6,
         "dense_min_size": 8,
         "thin_min_size": 2,
@@ -204,14 +220,6 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(worker.run()["drafted"], 1)
         self.assertEqual(len(load_gradients(kv.kv_get)), 2)
 
-    def test_daily_cap_blocks(self) -> None:
-        kv = _KV()
-        worker = _make_worker(
-            _edge_graph(), kv, daily_cap=1, edge_cooldown_hours=0.0
-        )
-        self.assertEqual(worker.run()["drafted"], 1)
-        self.assertTrue(worker.run().get("skipped_daily_cap"))
-
     def test_journal_trims_to_max(self) -> None:
         kv = _KV()
         for i in range(10):
@@ -222,6 +230,70 @@ class WorkerTests(unittest.TestCase):
                 max_entries=6,
             )
         self.assertEqual(len(load_gradients(kv.kv_get)), 6)
+
+
+class PoolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+
+    def _worker(self, graph, kv=None, **kw) -> CuriosityGradientWorker:
+        return _make_worker(
+            graph,
+            kv or _KV(),
+            cue_store_provider=lambda: self.store,
+            **kw,
+        )
+
+    def test_run_queues_the_thin_topic_as_the_subject(self) -> None:
+        """The dense half is what she already talks about, so it is not it."""
+        result = self._worker(_edge_graph()).run()
+        self.assertGreater(result["cue_id"], 0)
+        rows = self.store.pending("curiosity_gradient")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, "trail navigation")
+        self.assertIn("hiking gear", rows[0].text)
+
+    def test_an_empty_shelf_reports_full_pressure(self) -> None:
+        worker = self._worker(_FakeGraph([]))
+        signal = worker.demand(now=_NOW, last_run_at=None)
+        self.assertEqual(signal.pressure, 1.0)
+
+    def test_a_stocked_worker_reports_no_pressure(self) -> None:
+        clusters = [
+            _Cluster(1, "hiking gear", 12, _vec(1, 0, 0)),
+            _Cluster(2, "trail navigation", 3, _vec(0.6, 0.8, 0)),
+            _Cluster(3, "boot repair", 3, _vec(0.7, 0.7, 0.1)),
+            _Cluster(4, "campsite cooking", 2, _vec(0.65, 0.6, 0.4)),
+        ]
+        worker = self._worker(_FakeGraph(clusters), edge_cooldown_hours=0.0)
+        for _ in range(3):
+            worker.run()
+        self.assertEqual(self.store.count_pending("curiosity_gradient"), 3)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_a_pooled_subject_is_not_re_drafted(self) -> None:
+        kv = _KV()
+        worker = self._worker(_edge_graph(), kv, edge_cooldown_hours=0.0)
+        worker.run()
+        kv.d.clear()
+        self.assertTrue(worker.run().get("all_on_cooldown"))
+
+    def test_demand_is_none_without_a_pool(self) -> None:
+        worker = _make_worker(_FakeGraph([]), _KV())
+        self.assertIsNone(worker.demand(now=_NOW, last_run_at=None))
+
+    def test_disabled_worker_reports_zero_not_none(self) -> None:
+        worker = self._worker(_FakeGraph([]), enabled_provider=lambda: False)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_is_ready_no_longer_gates_on_the_interval(self) -> None:
+        worker = self._worker(_FakeGraph([]))
+        self.assertTrue(worker.is_ready(now=_NOW, last_run_at=_NOW))
 
 
 # ── provider ─────────────────────────────────────────────────────────────

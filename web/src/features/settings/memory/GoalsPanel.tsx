@@ -14,7 +14,7 @@ import { EmptyState } from "@/components/EmptyState";
  *
  * Shows Aiko's active long-term goals + her most recent reflection
  * note per goal. Mirrors the cooperative shape of
- * {@link CuriositySeedsPanel}: a "reflect now" button forces one
+ * {@link CuesPanel}: a "reflect now" button forces one
  * ``GoalWorker.run()`` so a tester can watch the cold-start bootstrap
  * fill the ring or watch a reflection note land on the oldest-touched
  * goal without waiting for the next hourly tick. Archived goals stay
