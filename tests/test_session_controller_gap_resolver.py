@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -143,6 +144,12 @@ def _make_fixture(
         _knowledge_gap_store=gap_store,
         _embedder=embedder,
         _notify_memory_updated=MagicMock(),
+    )
+    # The turn vector is computed once per turn and shared with the cue
+    # pool, so the resolver asks the controller for it rather than
+    # embedding the text itself.
+    fixture._combined_turn_vec = partial(
+        SessionController._combined_turn_vec, fixture,
     )
     return fixture
 

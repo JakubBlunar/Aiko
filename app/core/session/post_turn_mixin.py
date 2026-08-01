@@ -279,21 +279,9 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("memory revival mark failed", exc_info=True)
 
-        # K9: auto-resolve any curiosity seed the conversation just
-        # touched. One embed call + N dot products (N <= max_active);
-        # cheap enough to land on the post-turn hot path.
-        try:
-            self._resolve_curiosity_seeds(
-                user_text=user_text,
-                assistant_text=assistant_text,
-            )
-        except Exception:
-            log.debug("curiosity seed auto-resolve failed", exc_info=True)
-
         # F2.1: auto-resolve any open knowledge_gap the user just
-        # answered. Same shape as the seed resolver above; reuses the
-        # combined user+assistant embedding budget (one embed per turn
-        # total whether seeds and gaps both run or only one does).
+        # answered. Reuses the combined user+assistant embedding budget
+        # (one embed per turn total, shared with the cue pool below).
         try:
             self._resolve_knowledge_gaps(
                 user_text=user_text,
@@ -303,6 +291,30 @@ class PostTurnMixin(PostTurnHelpersMixin):
             log.debug(
                 "knowledge_gap auto-resolve failed", exc_info=True,
             )
+
+        # The cue pool's two consumption stages, in this order because
+        # they read different turns. Stage B settles questions Aiko asked
+        # on an *earlier* turn against what the user just said, so it has
+        # to run before stage A can move this turn's cues into awaiting --
+        # otherwise a question asked seconds ago would be judged
+        # unanswered by the very message that preceded it. Stage A also
+        # subsumes K9's seed resolver: an ``either_party`` cue is spent
+        # when the turn lands on its subject, surfaced or not.
+        try:
+            self._settle_awaiting_cues(user_text=user_text)
+        except Exception:
+            log.debug("awaiting cue settle failed", exc_info=True)
+        try:
+            self._settle_pool_cues(
+                user_text=user_text,
+                assistant_text=assistant_text,
+                reply_vec=getattr(self, "_last_assistant_vec", None),
+                turn_vec=self._combined_turn_vec(
+                    user_text=user_text, assistant_text=assistant_text,
+                ),
+            )
+        except Exception:
+            log.debug("cue pool settle failed", exc_info=True)
 
         # P21: K29 opinion-injection borderline verdict. The hot-path
         # provider deferred the (0.5-8s) LLM YES/NO check to here so it

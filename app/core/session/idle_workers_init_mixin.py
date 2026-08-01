@@ -601,11 +601,13 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
                     ollama=self._maintenance_client,
                     model=self._effective_worker_model,
                     interval_seconds=mem.forward_curiosity_interval_seconds,
                     cooldown_seconds=mem.forward_curiosity_cooldown_seconds,
-                    daily_cap=mem.forward_curiosity_daily_cap,
                     journal_max=mem.forward_curiosity_journal_max,
                 )
                 self._idle_scheduler.register(self._forward_curiosity_worker)
@@ -643,6 +645,9 @@ class IdleWorkersInitMixin:
                             "knowledge_gap_notice_enabled",
                             True,
                         )
+                    ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
                     ),
                     interval_seconds=mem.knowledge_gap_notice_interval_seconds,
                     min_size=mem.knowledge_gap_notice_min_size,
@@ -696,9 +701,11 @@ class IdleWorkersInitMixin:
                     ),
                     ollama=self._maintenance_client,
                     model=self._effective_worker_model,
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
                     interval_seconds=mem.associative_wander_interval_seconds,
                     cooldown_seconds=mem.associative_wander_cooldown_seconds,
-                    daily_cap=mem.associative_wander_daily_cap,
                     journal_max=mem.associative_wander_journal_max,
                     min_size=mem.associative_wander_min_size,
                     max_pair_cosine=mem.associative_wander_max_pair_cosine,
@@ -747,8 +754,10 @@ class IdleWorkersInitMixin:
                         )
                     ),
                     view_provider=lambda: concept_view_from(self),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
                     interval_seconds=mem.interest_drift_interval_seconds,
-                    daily_cap=mem.interest_drift_daily_cap,
                     journal_max=mem.interest_drift_journal_max,
                     min_size=mem.interest_drift_min_size,
                     max_clusters=mem.interest_drift_max_clusters,
@@ -797,8 +806,10 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
                     interval_seconds=mem.dormant_interest_interval_seconds,
-                    daily_cap=mem.dormant_interest_daily_cap,
                     journal_max=mem.dormant_interest_journal_max,
                     min_size=mem.dormant_interest_min_size,
                     max_clusters=mem.dormant_interest_max_clusters,
@@ -842,8 +853,10 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
                     interval_seconds=mem.curiosity_gradient_interval_seconds,
-                    daily_cap=mem.curiosity_gradient_daily_cap,
                     journal_max=mem.curiosity_gradient_journal_max,
                     dense_min_size=mem.curiosity_gradient_dense_min_size,
                     thin_min_size=mem.curiosity_gradient_thin_min_size,
@@ -997,6 +1010,9 @@ class IdleWorkersInitMixin:
                     ),
                     memory_store=getattr(self, "_memory_store", None),
                     goal_store=getattr(self, "_goal_store", None),
+                    cue_store_provider=(
+                        lambda: getattr(self, "_cue_store", None)
+                    ),
                     enabled_provider=lambda: bool(
                         getattr(
                             self._settings.agent,
@@ -1143,6 +1159,29 @@ class IdleWorkersInitMixin:
             except Exception:
                 log.warning("CueDecisionStore init failed", exc_info=True)
                 self._cue_decision_store = None
+
+        # The cue pool. Unconditional where the decision ledger above is
+        # gated: the pool is not diagnostics, it is where seven workers
+        # keep the cues they have produced and where the providers read
+        # them from, so switching it off would switch those cues off.
+        # Cues surfaced into this turn's prompt, awaiting the post-turn
+        # verdict on whether Aiko actually raised any of them.
+        self._cue_store = None
+        self._surfaced_pool_cues = []
+        self._cue_pool_listeners = []
+        if self._chat_db is not None:
+            try:
+                from app.core.proactive.cue_store import CueStore
+
+                self._cue_store = CueStore(
+                    self._chat_db,
+                    user_id=self._user_id,
+                    embedder=getattr(self, "_embedder", None),
+                )
+                self._cue_store.sweep_expired()
+            except Exception:
+                log.warning("CueStore init failed", exc_info=True)
+                self._cue_store = None
 
         # F5 — conflicting-memory detector. Always builds the store
         # (REST endpoints and the ``[[conflict:reason]]`` tag dispatch

@@ -18,16 +18,25 @@ This worker is the silent producer. On an idle tick it:
     have gone quiet (``days_since >= dormant_days``) — :func:`classify_dormant`,
     pure size/age math, **no LLM**,
   * skips any topic re-opened within its (long) per-topic cooldown window,
-  * appends ``{at, topic, topic_key, days_since, size}`` to a small kv_meta
-    journal ring (``aiko.dormant_interests``).
+    or that the cue pool already holds a cue for in any state,
+  * queues ``render_dormant_cue(topic)`` into ``cue_pool`` and appends
+    ``{at, topic, topic_key, days_since, size}`` to the older kv_meta
+    journal ring (``aiko.dormant_interests``), which stays written so the
+    debug tools and any un-migrated reader keep working.
 
 The consumer is
 :meth:`InnerLifeProvidersMixin._render_dormant_interest_block`, which surfaces a
 drafted re-opener **only on a natural conversational lull** (the K18
-``TopicStagnationDetector`` standing reading), one-shot per topic, with a long
-wall-clock surfacing cooldown so it stays rare and warm — never an
-interrogation. It never speaks or fires a proactive nudge; the cue is a private
-prompt hint phrased by the chat model itself.
+``TopicStagnationDetector`` standing reading), with a long wall-clock surfacing
+cooldown so it stays rare and warm — never an interrogation. It never speaks or
+fires a proactive nudge; the cue is a private prompt hint phrased by the chat
+model itself.
+
+The old two-a-day cap is gone. It was a hand-picked constant approximating
+"she has enough re-openers for now", and the pool measures that directly:
+:meth:`DormantInterestWorker.demand` reports pressure from the shortfall
+against the type's ``inventory_target``, so a stocked worker is simply never
+admitted. See ``docs/idle-workers.md``.
 
 No LLM: the cue is just a topic + a dormancy age, so the worker is a cheap kv
 pass. Rarity is the point. Every failure path is swallowed and logged at debug
@@ -41,7 +50,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the stable per-topic key the F10f notice worker already ships, so a
 # dormant topic's identity survives cluster renumbering.
@@ -142,6 +152,26 @@ def load_dormant(
     return [e for e in blob if isinstance(e, dict)]
 
 
+def render_dormant_cue(topic: str) -> str:
+    """The prompt line for one dormant-interest cue.
+
+    Lives here rather than in the provider because the cue text is written
+    into ``cue_pool`` at production time -- the pool row is what the UI
+    shows and what the provider renders, so there can only be one place
+    that composes it.
+
+    Deliberately just the *finding*. How Aiko should handle it is in the
+    persona section this cue hoists (``CuePolicy.handling_section``), which
+    the assembler appends in T6 when the block renders, instead of it
+    sitting in the cache prefix on every turn.
+    """
+    return (
+        f"Heads-up: \"{topic}\" used to come up between you two a lot, but "
+        "it's gone quiet for a good while now. The conversation just hit a "
+        "natural lull."
+    )
+
+
 def append_dormant(
     kv_get: Callable[[str], str | None],
     kv_set: Callable[[str, str], None],
@@ -172,8 +202,8 @@ class DormantInterestWorker:
         kv_get: Callable[[str], str | None],
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         interval_seconds: float = 21600.0,
-        daily_cap: int = 2,
         journal_max: int = 6,
         min_size: int = 6,
         max_clusters: int = 40,
@@ -184,8 +214,8 @@ class DormantInterestWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("dormant_interest", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._min_size = max(2, int(min_size))
         self._max_clusters = max(1, int(max_clusters))
@@ -206,11 +236,27 @@ class DormantInterestWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # Hard veto only. The interval that used to gate here is now the
+        # heartbeat, and how much stock is on the shelf decides the rest
+        # (P36 + the cue pool).
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from an empty shelf, not from a backlog.
+
+        This worker produces rather than drains, so what should wake it is
+        running out of re-openers -- which is also what retired its old
+        two-a-day cap: the cap was approximating "enough for now", and the
+        pool measures it directly.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand()
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -230,9 +276,6 @@ class DormantInterestWorker:
             return {"drafted": 0, "no_graph": True}
 
         now = _utcnow()
-        if not force and not self._under_daily_cap(now):
-            return {"drafted": 0, "skipped_daily_cap": True}
-
         cooldowns = self._load_cooldowns()
         candidates = self._rank_candidates(
             entries, cooldowns, now, force=force,
@@ -241,30 +284,31 @@ class DormantInterestWorker:
             return {"drafted": 0, "no_candidate": True}
 
         chosen = candidates[0]
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "topic": chosen.topic[:200],
+            "topic_key": chosen.key,
+            "days_since": round(chosen.days_since, 1),
+            "size": chosen.size,
+        }
         append_dormant(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "topic": chosen.topic[:200],
-                "topic_key": chosen.key,
-                "days_since": round(chosen.days_since, 1),
-                "size": chosen.size,
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        cue_id = self._cues.publish(
+            chosen.topic, render_dormant_cue(chosen.topic), payload=entry,
         )
         cooldowns[chosen.key] = now.isoformat(timespec="seconds")
         self._save_cooldowns(cooldowns, now)
-        self._bump_daily(now)
         log.info(
-            "dormant-interest drafted: topic=%r days=%.0f size=%d",
-            chosen.topic[:80], chosen.days_since, chosen.size,
+            "dormant-interest drafted: topic=%r days=%.0f size=%d cue=%s",
+            chosen.topic[:80], chosen.days_since, chosen.size, cue_id,
         )
         return {
             "drafted": 1,
             "topic": chosen.topic,
             "days_since": chosen.days_since,
             "size": chosen.size,
+            "cue_id": cue_id,
         }
 
     # ── MCP debug ─────────────────────────────────────────────────────
@@ -283,6 +327,13 @@ class DormantInterestWorker:
         *,
         force: bool,
     ) -> list[DormantCandidate]:
+        from app.core.proactive.cue_store import normalise_subject
+
+        # Subjects the pool already holds a cue for, in any state. Broader
+        # than the kv cooldown beside it: that one forgets a topic once its
+        # window passes, while a topic already *used* or already expired
+        # unwanted should not come back as a fresh cue either.
+        pooled = set() if force else self._cues.spoken_for()
         out: list[DormantCandidate] = []
         for entry in entries:
             label = (getattr(entry, "label", "") or "").strip()
@@ -299,6 +350,8 @@ class DormantInterestWorker:
                 continue
             key = topic_key(label)
             if not force and self._on_cooldown(cooldowns, key, now):
+                continue
+            if normalise_subject(label) in pooled:
                 continue
             out.append(
                 DormantCandidate(
@@ -340,30 +393,6 @@ class DormantInterestWorker:
         elapsed_h = (now - last).total_seconds() / 3600.0
         return elapsed_h < self._topic_cooldown_hours
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe("dormant_interest.day") != today:
-            return True
-        try:
-            count = int(self._kv_get_safe("dormant_interest.day_count") or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
-    def _bump_daily(self, now: datetime) -> None:
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe("dormant_interest.day") != today:
-            self._kv_set_safe("dormant_interest.day", today)
-            self._kv_set_safe("dormant_interest.day_count", "1")
-            return
-        try:
-            count = int(self._kv_get_safe("dormant_interest.day_count") or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe("dormant_interest.day_count", str(count + 1))
-
     # ── per-topic cooldown persistence ─────────────────────────────────
 
     def _load_cooldowns(self) -> dict[str, str]:
@@ -399,20 +428,6 @@ class DormantInterestWorker:
         except Exception:
             log.debug("dormant_interest cooldown write failed", exc_info=True)
 
-    def _kv_get_safe(self, key: str) -> str | None:
-        try:
-            return self._kv_get(key)
-        except Exception:
-            return None
-
-    def _kv_set_safe(self, key: str, value: str) -> None:
-        try:
-            self._kv_set(key, value)
-        except Exception:
-            log.debug(
-                "dormant_interest kv_set failed key=%s", key, exc_info=True,
-            )
-
 
 __all__ = [
     "DormantInterestWorker",
@@ -421,4 +436,5 @@ __all__ = [
     "classify_dormant",
     "load_dormant",
     "append_dormant",
+    "render_dormant_cue",
 ]

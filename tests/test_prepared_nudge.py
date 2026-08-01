@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from app.core.goals.agenda import AgendaStore
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
+from app.core.proactive.cue_store import CueStore
 from app.core.proactive.prepared_nudge import (
     NarrativeWeaver,
     PreparedNudgeStore,
@@ -400,47 +401,47 @@ class NarrativeWeaverTests(unittest.TestCase):
 
 
 class CuriositySeedSourceTests(unittest.TestCase):
-    """K9: NarrativeWeaver picks up ``curiosity_seed`` memories.
+    """K9: NarrativeWeaver picks up pending ``curiosity_seed`` cues.
 
-    Seeds carry a fully-rendered ``metadata.prompt_text``; the weaver
+    Seeds carry a fully-rendered ``payload.prompt_text``; the weaver
     uses that verbatim and tags the resulting nudge with
     ``source_kind='curiosity_seed'`` so the proactive director can
-    label it correctly.
+    label it correctly. Since schema v29 they come from the cue pool
+    rather than the memories table.
     """
+
+    def _weave(self, f, ollama, cues):
+        # ``every_n_turns=1`` so the weaver runs immediately.
+        return NarrativeWeaver(
+            ollama=ollama,
+            store=f.store,
+            memory_store=f.memory,
+            agenda_store=None,
+            model="m",
+            every_n_turns=1,
+            rng=random.Random(0),
+            cue_store_provider=lambda: cues,
+        )
 
     def test_seed_becomes_prepared_nudge(self):
         f = _Fixture()
         try:
-            # Insert a single curiosity_seed; nothing else competes.
-            f.memory.add(
-                "your favourite tea ritual",
+            cues = CueStore(f.db)
+            cues.add(
                 "curiosity_seed",
-                _emb(7),
-                salience=0.5,
-                tier="scratchpad",
-                metadata={
-                    "topic": "your favourite tea ritual",
+                "your favourite tea ritual",
+                "your favourite tea ritual",
+                payload={
                     "prompt_text": (
                         "Off-topic, but I've been wondering "
                         "what your perfect tea moment looks like."
                     ),
                     "source": "llm",
-                    "generated_at": "2026-01-01T00:00:00+00:00",
-                    "consumed_at": None,
                     "candidate_score": 0.42,
                 },
             )
             ollama = _FakeOllama()
-            # ``every_n_turns=1`` so the weaver runs immediately.
-            weaver = NarrativeWeaver(
-                ollama=ollama,
-                store=f.store,
-                memory_store=f.memory,
-                agenda_store=None,
-                model="m",
-                every_n_turns=1,
-                rng=random.Random(0),
-            )
+            weaver = self._weave(f, ollama, cues)
             weaver.notify_user_turn()
             result = weaver.maybe_run("u1")
             self.assertIsNotNone(result)
@@ -458,31 +459,26 @@ class CuriositySeedSourceTests(unittest.TestCase):
         finally:
             f.close()
 
-    def test_consumed_seed_is_skipped(self):
+    def test_a_spent_seed_is_not_a_candidate(self):
         f = _Fixture()
         try:
-            # Mark the seed already consumed -> shouldn't surface.
-            f.memory.add(
-                "tea ritual",
-                "curiosity_seed",
-                _emb(8),
-                salience=0.5,
-                tier="scratchpad",
-                metadata={
-                    "topic": "tea ritual",
-                    "prompt_text": "p",
-                    "consumed_at": "2026-01-05T00:00:00+00:00",
-                },
+            cues = CueStore(f.db)
+            cue_id = cues.add(
+                "curiosity_seed", "tea ritual", "tea ritual",
+                payload={"prompt_text": "p"},
             )
-            ollama = _FakeOllama()
-            weaver = NarrativeWeaver(
-                ollama=ollama,
-                store=f.store,
-                memory_store=f.memory,
-                agenda_store=None,
-                model="m",
-                every_n_turns=1,
-            )
+            cues.mark_used(cue_id, evidence="test")
+            weaver = self._weave(f, _FakeOllama(), cues)
+            weaver.notify_user_turn()
+            self.assertIsNone(weaver.maybe_run("u1"))
+        finally:
+            f.close()
+
+    def test_no_pool_means_no_seeds(self):
+        """A weaver built without one behaves as it did before the pool."""
+        f = _Fixture()
+        try:
+            weaver = self._weave(f, _FakeOllama(), None)
             weaver.notify_user_turn()
             self.assertIsNone(weaver.maybe_run("u1"))
         finally:

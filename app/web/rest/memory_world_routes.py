@@ -208,6 +208,40 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(404, "knowledge gap not found")
         return JSONResponse({"gap": snapshot})
 
+    # ── REST: the cue pool ───────────────────────────────────────────
+
+    def _on_cue_pool(cue: dict[str, Any]) -> None:
+        hub.broadcast({"type": "cue_pool_updated", "cue": dict(cue)})
+
+    try:
+        session.add_cue_pool_listener(_on_cue_pool)
+    except Exception:
+        log.debug("cue pool listener subscription failed", exc_info=True)
+
+    @app.get("/api/cue-pool")
+    def list_cue_pool(
+        limit: int = 50,
+        offset: int = 0,
+        cue_type: str | None = None,
+        state: str | None = None,
+    ) -> JSONResponse:
+        """Everything Aiko is holding but has not said, and what became of it.
+
+        One page of rows plus the per-type scoreboard. Terminal rows stay
+        in the table, so filtering by ``state=used`` / ``expired`` is how
+        you see whether a cue type is landing or just accumulating.
+        """
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
+        type_norm = (cue_type or "").strip().lower() or None
+        state_norm = (state or "").strip().lower() or None
+        return JSONResponse(session.list_cue_pool(
+            limit=clamped_limit,
+            offset=clamped_offset,
+            cue_type=type_norm,
+            state=state_norm,
+        ))
+
     # ── REST: curiosity seeds (K9) ───────────────────────────────────
 
     @app.post("/api/curiosity-seeds/run")

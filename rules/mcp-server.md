@@ -93,7 +93,7 @@ Both answer "did any of this inner life *do* anything", which was unanswerable b
 | Tool | Args | Returns |
 |------|------|---------|
 | `get_surfacing_outcomes` | `window_days: int = 30`, `min_settled: int = 1`, `top: int = 20` | JSON: per-item leaderboard of surfaced concepts / memories / cues with engaged + echo counts *and* denominators, a per-lane rollup, echo-kind split, and the semantic-floor replay (`app/mcp/server_tools/surfacing_outcome_tools.py`). |
-| `get_cue_outcomes` | `window_days: int = 30`, `cue: str = ""` | JSON: per-cue armed-to-surfaced ratio, decline reasons, and the registered cues never armed at all (`app/mcp/server_tools/cue_outcome_tools.py`). |
+| `get_cue_outcomes` | `window_days: int = 30`, `cue: str = ""` | JSON: per-cue armed-to-surfaced ratio, decline reasons, the registered cues never armed at all, and a `pool` section with per-type shelf depth / used-vs-expired / mean surfacings before use (`app/mcp/server_tools/cue_outcome_tools.py`). |
 
 Reading them:
 
@@ -101,7 +101,8 @@ Reading them:
 - **`armed` is not "a worker ran".** It counts turns the cue had material waiting, so a worker writing ten findings before one gets through is one delivery and nine supersessions, not ten failures.
 - **A low `reach_rate` is not automatically a bug.** A topic-gated cue that stays quiet while the conversation is elsewhere is working. Act on a rate near zero over a long window — that is a gate that never matches, and for an LLM-calling worker it is wasted tokens.
 - **`never_armed` is the loudest signal**, and the easiest to miss because it is an absence: a registered cue with no rows either never gets written by its worker or is read wrongly by the arming model, and neither shows up as a bad rate.
-- **`coarse_arming` cues report a floor, not an estimate.** Those five dedupe by a per-topic key set rather than a watermark, so arming degrades to "the journal is non-empty" and over-counts.
+- **`coarse_arming` cues report a floor, not an estimate.** Those dedupe by a per-topic key set rather than a watermark, so arming degrades to "the journal is non-empty" and over-counts. Pooled cues are excluded — their stock is an exact count.
+- **`pool` is the stricter half, and the gap from `reach` is the point.** Reach stops at "the block rendered"; `used` means the cue's subject turned up in what was actually said. A type with reach and no uses is one Aiko is handed and drops, which reach alone scores as a success. Read `deficit` as *why a worker is dormant* (zero = full shelf, which is correct), and `mean_surfacings_before_use` as a framing check — near the type's `max_surfacings` means the cue line does not read as something to act on. See [`docs/cue-pool.md`](../docs/cue-pool.md).
 
 ### Virtual clock (DT1)
 

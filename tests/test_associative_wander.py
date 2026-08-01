@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 
@@ -98,11 +100,25 @@ def _vec(*xs: float) -> np.ndarray:
     return np.asarray(xs, dtype=np.float32)
 
 
+_NOW = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+
+
+def _cue_store():
+    """A real CueStore on a throwaway database."""
+    from tempfile import TemporaryDirectory
+
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.proactive.cue_store import CueStore
+
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+    return store, tmp
+
+
 def _make_worker(graph, kv, *, llm=None, store=None, **kw) -> AssociativeWanderWorker:
     params: dict = {
         "interval_seconds": 5400.0,
         "cooldown_seconds": 0.0,
-        "daily_cap": 5,
         "journal_max": 6,
         "min_size": 4,
         "max_pair_cosine": 0.25,
@@ -258,14 +274,6 @@ class WorkerTests(unittest.TestCase):
         # Different pair would exist, but the global cooldown gate fires.
         self.assertTrue(worker.run().get("skipped_cooldown"))
 
-    def test_daily_cap_blocks(self) -> None:
-        kv = _KV()
-        worker = _make_worker(
-            _two_distant(), kv, daily_cap=1, pair_cooldown_hours=0.0
-        )
-        self.assertEqual(worker.run()["drafted"], 1)
-        self.assertTrue(worker.run().get("skipped_daily_cap"))
-
     def test_journal_trims_to_max(self) -> None:
         kv = _KV()
         for i in range(10):
@@ -276,6 +284,60 @@ class WorkerTests(unittest.TestCase):
                 max_entries=6,
             )
         self.assertEqual(len(load_wanders(kv.kv_get)), 6)
+
+
+class PoolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+
+    def _worker(self, graph, kv=None, **kw) -> AssociativeWanderWorker:
+        return _make_worker(
+            graph,
+            kv or _KV(),
+            cue_store_provider=lambda: self.store,
+            **kw,
+        )
+
+    def test_run_queues_the_pair_as_one_subject(self) -> None:
+        result = self._worker(_two_distant()).run()
+        self.assertGreater(result["cue_id"], 0)
+        rows = self.store.pending("associative_wander")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, "hiking trails / rust debugging")
+        self.assertIn("both reward patience", rows[0].text)
+
+    def test_an_empty_shelf_reports_full_pressure(self) -> None:
+        signal = self._worker(_FakeGraph([])).demand(
+            now=_NOW, last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_a_pooled_pair_is_not_re_drafted(self) -> None:
+        """Even after the kv cooldown map is wiped."""
+        kv = _KV()
+        worker = self._worker(_two_distant(), kv, pair_cooldown_hours=0.0)
+        worker.run()
+        kv.d.clear()
+        self.assertTrue(worker.run().get("all_on_cooldown"))
+
+    def test_demand_is_none_without_a_pool(self) -> None:
+        worker = _make_worker(_FakeGraph([]), _KV())
+        self.assertIsNone(worker.demand(now=_NOW, last_run_at=None))
+
+    def test_disabled_worker_reports_zero_not_none(self) -> None:
+        worker = self._worker(_FakeGraph([]), enabled_provider=lambda: False)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_is_ready_still_vetoes_on_the_wall_clock_cooldown(self) -> None:
+        """The rate limiter guards an LLM call, so demand may not override."""
+        kv = _KV()
+        worker = self._worker(_two_distant(), kv, cooldown_seconds=3600.0)
+        worker.run()
+        self.assertFalse(worker.is_ready(now=_NOW, last_run_at=None))
 
 
 # ── provider ─────────────────────────────────────────────────────────────

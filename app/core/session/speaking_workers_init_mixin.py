@@ -1822,7 +1822,9 @@ class SpeakingWorkersInitMixin:
                             )
 
                         self._curiosity_seed_worker = CuriositySeedWorker(
-                            memory_store=self._memory_store,
+                            cue_store_provider=(
+                                lambda: getattr(self, "_cue_store", None)
+                            ),
                             topic_graph=self._topic_graph,
                             embedder=self._embedder,
                             # Idle-scheduler worker → maintenance tier.
@@ -1839,7 +1841,7 @@ class SpeakingWorkersInitMixin:
                             assistant_display_name_provider=(
                                 _assistant_name_provider
                             ),
-                            notify_memory_added=self._notify_memory_added,
+                            notify_cue_added=self._notify_cue_pool_added,
                         )
                         self._idle_scheduler.register(
                             self._curiosity_seed_worker,
@@ -2840,6 +2842,7 @@ class SpeakingWorkersInitMixin:
                 every_n_turns=4,
                 ttl_seconds=settings.agent.prepared_nudge_ttl_seconds,
                 user_display_name_provider=lambda: self.user_display_name,
+                cue_store_provider=lambda: getattr(self, "_cue_store", None),
             )
         except Exception:
             log.warning("PreparedNudgeStore/NarrativeWeaver init failed", exc_info=True)

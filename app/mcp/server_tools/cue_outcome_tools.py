@@ -12,6 +12,13 @@ This is the window onto that. Read ``armed`` as the denominator: it counts
 turns where the cue *had material waiting*, not turns where a worker ran,
 so a worker that writes ten findings before one gets through is not ten
 failures -- it is one delivery and nine supersessions.
+
+Since the cue pool landed there is a second, stricter measure alongside
+it. Reach stops at "the block rendered"; the pool's ``used`` only counts
+cues whose subject actually turned up in what was said. The gap between
+the two is the interesting part -- a cue with high reach and no uses is
+one Aiko is being handed and quietly dropping, which the reach number on
+its own reads as a success.
 """
 from __future__ import annotations
 
@@ -26,19 +33,65 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.mcp.server")
 
 
+def _pool_section(session: "SessionController") -> dict[str, Any]:
+    """Depth and outcomes per cue type, straight off ``cue_pool``.
+
+    Independent of the decision store: the pool is the workers' own
+    bookkeeping, so this stays readable even with cue accounting off.
+    """
+    from app.core.proactive.cue_accounting import CUE_POLICIES
+
+    try:
+        stats = session.cue_pool_stats()
+    except Exception:
+        log.debug("cue pool stats failed", exc_info=True)
+        stats = None
+    if stats is None:
+        return {"enabled": False}
+
+    by_type = {str(entry.get("cue_type") or ""): entry for entry in stats}
+    rows: list[dict[str, Any]] = []
+    for name, policy in sorted(CUE_POLICIES.items()):
+        entry = by_type.get(name, {})
+        pending = int(entry.get("pending", 0) or 0)
+        rows.append({
+            "cue": name,
+            # Depth against the shelf the worker is trying to fill --
+            # a deficit of zero is why a migrated worker stays dormant.
+            "pending": pending,
+            "target": policy.inventory_target,
+            "deficit": max(0, policy.inventory_target - pending),
+            "surfaced": int(entry.get("surfaced", 0) or 0),
+            "awaiting": int(entry.get("awaiting", 0) or 0),
+            "used": int(entry.get("used", 0) or 0),
+            "expired": int(entry.get("expired", 0) or 0),
+            "superseded": int(entry.get("superseded", 0) or 0),
+            "asks": int(entry.get("asks", 0) or 0),
+            "mean_surfacings_before_use": entry.get(
+                "mean_surfacings_before_use",
+            ),
+            "fulfilment": policy.fulfilment,
+        })
+    return {"enabled": True, "by_type": rows}
+
+
 def build_report(
     session: "SessionController",
     *,
     window_days: int | None,
     cue: str | None = None,
 ) -> dict[str, Any]:
+    pool = _pool_section(session)
     store = getattr(session, "_cue_decision_store", None)
     if store is None:
         return {
             "enabled": False,
+            "pool": pool,
             "hint": (
                 "Cue accounting is off (agent.cue_accounting_enabled) or the "
-                "chat database is unavailable, so nothing is being recorded."
+                "chat database is unavailable, so no reach rows are being "
+                "recorded. The pool section above is unaffected -- it is the "
+                "workers' own inventory, not a decision log."
             ),
         }
 
@@ -64,6 +117,7 @@ def build_report(
         "decline_reasons": declines,
         "never_armed": never_armed,
         "coarse_arming": sorted(COARSE_ARMING),
+        "pool": pool,
     }
     if total == 0:
         report["hint"] = (
@@ -97,7 +151,19 @@ def build_report(
         "never_armed is the loudest signal here -- a registered cue with "
         "no rows at all either never gets written by its worker or is "
         "being read wrongly by the arming model, and neither shows up as a "
-        "bad rate."
+        "bad rate. "
+        "pool.by_type is the stricter half and covers only the migrated "
+        "types. 'used' means post-turn matching found the cue's subject in "
+        "what was actually said, so used vs. expired is the real verdict "
+        "where reach_rate only says the block rendered -- a type with reach "
+        "and no uses is one Aiko is handed and drops. "
+        "deficit is why a migrated worker is dormant: at zero its shelf is "
+        "full and it reports no pressure, which is correct rather than "
+        "broken. "
+        "mean_surfacings_before_use is the framing check -- 1.0 means she "
+        "takes a cue the first time she sees it, and a number near the "
+        "type's max_surfacings means the cue line is not reading as "
+        "something to act on."
     )
     return report
 
@@ -114,6 +180,11 @@ def register(mcp, session: "SessionController") -> None:
         were declined, and which registered cues have never been armed at
         all. This is the first view that can distinguish a worker whose
         output never reaches the prompt from one quietly succeeding.
+
+        The ``pool`` section adds the stricter measure for the cue types
+        that have moved onto ``cue_pool``: shelf depth against each type's
+        inventory target, used vs. expired, and how many surfacings a cue
+        of that type needs on average before Aiko actually spends it.
 
         ``cue`` narrows ``decline_reasons`` to one cue name (the reach
         table always covers all of them, since the comparison between cues

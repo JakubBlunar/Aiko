@@ -33,9 +33,11 @@ speaking-window ``CuriosityWorker`` drafts next-turn follow-ups; and
 ``event_time``. K34 alone drafts forward questions about the *user's*
 life and surfaces them passively on gap-return.
 
-Paced by its own cooldown + daily cap (kv watermarks, local-midnight
-reset). Every failure path is swallowed and logged at debug — the worst
-case is a missed beat, never a broken insert or a crashed tick.
+Paced by its own wall-clock cooldown and, above that, by how many unasked
+questions are already in the cue pool: a stocked worker reports no demand
+and is simply not admitted. Every failure path is swallowed and logged at
+debug — the worst case is a missed beat, never a broken insert or a
+crashed tick.
 """
 from __future__ import annotations
 
@@ -46,7 +48,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -62,8 +65,6 @@ log = logging.getLogger("app.forward_curiosity_worker")
 # plus the shared journal key the surfacing provider reads.
 FORWARD_CURIOSITY_JOURNAL_KEY = "aiko.forward_curiosity"
 _KV_LAST_FIRED_AT = "forward_curiosity.last_fired_at"
-_KV_DAY = "forward_curiosity.day"
-_KV_DAY_COUNT = "forward_curiosity.day_count"
 
 # How many of the most recent ring entries to scan when de-duping a
 # candidate by source id. Bounds the "don't re-draft the same plan"
@@ -141,6 +142,17 @@ def append_question(
         log.debug("forward_curiosity journal write failed", exc_info=True)
 
 
+def render_question_cue(entry: dict[str, Any]) -> str:
+    """The prompt line for one forward question.
+
+    Written into ``cue_pool`` at production time. The "ask it if it fits"
+    handling that used to trail this now arrives with the hoisted persona
+    section, so it is only in the prompt on the turns the cue fires.
+    """
+    question = str(entry.get("question") or "").strip()
+    return f"You've been wondering {question}." if question else ""
+
+
 class ForwardCuriosityWorker:
     """IdleWorker that drafts forward questions about the user's life."""
 
@@ -156,11 +168,11 @@ class ForwardCuriosityWorker:
         user_display_name_provider: Callable[[], str],
         user_profile_store: "UserProfileStore | None" = None,
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         ollama: "ChatClient | None" = None,
         model: str | None = None,
         interval_seconds: float = 1800.0,
         cooldown_seconds: float = 3600.0,
-        daily_cap: int = 4,
         journal_max: int = 8,
         rng: random.Random | None = None,
     ) -> None:
@@ -171,11 +183,11 @@ class ForwardCuriosityWorker:
         self._user_display_name_provider = user_display_name_provider
         self._user_profile_store = user_profile_store
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("forward_curiosity", cue_store_provider)
         self._ollama = ollama
         self._model = model
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._rng = rng or random.Random()
         # MCP debug: arm a specific source_id for the next run().
@@ -193,28 +205,33 @@ class ForwardCuriosityWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        # Hard vetoes only: the feature flag and the wall-clock rate
+        # limiter, which stays a veto because composing a question can
+        # call a model.
+        return self._enabled() and self._cooldown_elapsed(_utcnow())
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from the shortfall of unasked questions.
+
+        The gap slot arms the *opportunity* to ask one and this worker
+        supplies the *content*, so what it must never be is empty when a
+        long absence ends. Stock is the only thing worth scheduling on.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand(needs_llm=self._ollama is not None)
 
     def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"drafted": 0, "disabled": True}
-            except Exception:
-                pass
+        if not self._enabled():
+            return {"drafted": 0, "disabled": True}
         now = _utcnow()
         if not self._cooldown_elapsed(now):
             return {"drafted": 0, "skipped_cooldown": True}
-        if not self._under_daily_cap(now):
-            return {"drafted": 0, "skipped_daily_cap": True}
 
         candidate = self._pick_candidate()
         if candidate is None:
@@ -225,34 +242,48 @@ class ForwardCuriosityWorker:
         if not question:
             return {"drafted": 0, "no_question": True}
 
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "question": question,
+            "source": candidate.source,
+            "source_id": candidate.source_id,
+        }
         append_question(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "question": question,
-                "source": candidate.source,
-                "source_id": candidate.source_id,
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        # The subject is the topic she is curious about, not the phrasing
+        # of the question -- the question is one wording of many, and post
+        # turn has to recognise the subject however she ends up asking.
+        cue_id = self._cues.publish(
+            candidate.topic,
+            render_question_cue(entry),
+            payload={**entry, "topic": candidate.topic},
         )
         self._mark_fired(now)
         log.info(
-            "forward_curiosity drafted: source=%s source_id=%s",
+            "forward_curiosity drafted: source=%s source_id=%s cue=%s",
             candidate.source,
             candidate.source_id,
+            cue_id,
         )
         return {
             "drafted": 1,
             "source": candidate.source,
             "source_id": candidate.source_id,
             "question": question,
+            "cue_id": cue_id,
         }
 
     # ── candidate selection ──────────────────────────────────────────
 
     def _pick_candidate(self) -> QuestionCandidate | None:
+        from app.core.proactive.cue_store import normalise_subject
+
         already = self._recent_source_ids()
+        # The pool remembers subjects the ring has long since rotated out,
+        # and across the terminal states too -- a question that was asked
+        # and answered is not worth drafting again either.
+        pooled = self._cues.spoken_for()
         candidates: list[QuestionCandidate] = []
 
         # Upcoming things the user mentioned (espresso machine, sister's
@@ -262,6 +293,8 @@ class ForwardCuriosityWorker:
             sid = str(getattr(mem, "id", "") or "")
             topic = (getattr(mem, "content", "") or "").strip()
             if not sid or not topic or sid in already:
+                continue
+            if normalise_subject(topic) in pooled:
                 continue
             candidates.append(
                 QuestionCandidate(
@@ -275,6 +308,8 @@ class ForwardCuriosityWorker:
             sid = str(getattr(mem, "id", "") or "")
             topic = (getattr(mem, "content", "") or "").strip()
             if not sid or not topic or sid in already:
+                continue
+            if normalise_subject(topic) in pooled:
                 continue
             candidates.append(
                 QuestionCandidate(
@@ -387,30 +422,16 @@ class ForwardCuriosityWorker:
             return True
         return (now - last).total_seconds() >= self._cooldown_seconds
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
             return True
         try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
+            return bool(self._enabled_provider())
+        except Exception:
+            return True
 
     def _mark_fired(self, now: datetime) -> None:
         self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -464,4 +485,5 @@ __all__ = [
     "FORWARD_CURIOSITY_JOURNAL_KEY",
     "load_questions",
     "append_question",
+    "render_question_cue",
 ]

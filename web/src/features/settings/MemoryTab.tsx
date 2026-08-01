@@ -6,7 +6,7 @@ import { Section } from "./SettingsSection";
 import { KnowledgeGapsPanel } from "./memory/KnowledgeGapsPanel";
 import { MemoryConflictsPanel } from "./memory/MemoryConflictsPanel";
 import { BeliefsPanel } from "./memory/BeliefsPanel";
-import { CuriositySeedsPanel } from "./memory/CuriositySeedsPanel";
+import { CuesPanel } from "./memory/CuesPanel";
 import { GoalsPanel } from "./memory/GoalsPanel";
 import { AgendaPanel } from "./memory/AgendaPanel";
 import { TopicGraphPanel } from "./memory/TopicGraphPanel";
@@ -44,7 +44,7 @@ type MemorySubTab =
   | "gaps"
   | "conflicts"
   | "beliefs"
-  | "curiosity"
+  | "cues"
   | "topics"
   | "concepts"
   | "discoveries"
@@ -56,7 +56,7 @@ const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
   { id: "gaps", label: "Knowledge gaps" },
   { id: "conflicts", label: "Conflicts" },
   { id: "beliefs", label: "Beliefs" },
-  { id: "curiosity", label: "Curiosity" },
+  { id: "cues", label: "Cues" },
   { id: "topics", label: "Topics" },
   { id: "concepts", label: "Concepts" },
   { id: "discoveries", label: "Discoveries" },
@@ -642,7 +642,7 @@ export function MemoryTab({
 
       {subTab === "beliefs" ? <BeliefsPanel /> : null}
 
-      {subTab === "curiosity" ? <CuriositySeedsPanel /> : null}
+      {subTab === "cues" ? <CuesPanel /> : null}
 
       {subTab === "topics" ? <TopicGraphPanel /> : null}
       {subTab === "concepts" ? <ConceptsPanel /> : null}

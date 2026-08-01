@@ -45,7 +45,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the cheap lexical "is the live turn on this topic?" gate the F10f
 # notice worker already ships — same shape, no need for a second copy.
@@ -66,8 +67,6 @@ log = logging.getLogger("app.associative_wander_worker")
 ASSOCIATIVE_WANDER_JOURNAL_KEY = "aiko.associative_wanders"
 _KV_PAIR_COOLDOWNS = "associative_wander.pair_cooldowns"
 _KV_LAST_FIRED_AT = "associative_wander.last_fired_at"
-_KV_DAY = "associative_wander.day"
-_KV_DAY_COUNT = "associative_wander.day_count"
 
 # Cap how much of any text we render in a single log line / feed the LLM.
 _LOG_PREVIEW_CHARS = 120
@@ -246,6 +245,40 @@ def wander_relevant(entry: dict[str, Any], user_text: str) -> bool:
     return topic_relevant(a, user_text) or topic_relevant(b, user_text)
 
 
+def distant_half(entry: dict[str, Any], user_text: str) -> str:
+    """The half of the pair the live turn is *not* on.
+
+    Which topic is the distant one is a property of the moment, not of the
+    cue: the connection is symmetric and either end can be the live one.
+    This is what makes the cue's consumption check meaningful -- matching
+    the near half against the reply would only prove she kept talking
+    about what she was already talking about.
+    """
+    a = str(entry.get("topic_a") or "")
+    b = str(entry.get("topic_b") or "")
+    if topic_relevant(a, user_text):
+        return b
+    if topic_relevant(b, user_text):
+        return a
+    return b
+
+
+def render_wander_cue(entry: dict[str, Any]) -> str:
+    """The prompt line for one drafted connection.
+
+    Written into ``cue_pool`` at production time. Only the finding -- the
+    persona section this type hoists carries the rest.
+    """
+    a = str(entry.get("topic_a") or "").strip()
+    b = str(entry.get("topic_b") or "").strip()
+    connection = str(entry.get("connection") or "").strip()
+    return (
+        "Heads-up: while your mind was wandering earlier you noticed a "
+        f"connection between \"{a}\" and \"{b}\" — {connection}. The live "
+        "turn just brushed one of them."
+    )
+
+
 class AssociativeWanderWorker:
     """IdleWorker that drafts genuine connections between distant topics."""
 
@@ -261,9 +294,9 @@ class AssociativeWanderWorker:
         enabled_provider: Callable[[], bool] | None = None,
         ollama: "ChatClient | None" = None,
         model: str | None = None,
+        cue_store_provider: "StoreProvider | None" = None,
         interval_seconds: float = 5400.0,
         cooldown_seconds: float = 7200.0,
-        daily_cap: int = 2,
         journal_max: int = 6,
         min_size: int = 4,
         max_pair_cosine: float = 0.25,
@@ -278,9 +311,9 @@ class AssociativeWanderWorker:
         self._enabled_provider = enabled_provider
         self._ollama = ollama
         self._model = model
+        self._cues = CueProducer("associative_wander", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._min_size = max(2, int(min_size))
         self._max_pair_cosine = float(max_pair_cosine)
@@ -303,11 +336,22 @@ class AssociativeWanderWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # Hard vetoes only: the feature flag, and the wall-clock rate
+        # limiter, which stays here because this worker calls a model and
+        # the limiter is exactly the kind of "must not run" the demand
+        # probe is not allowed to override.
+        return self._enabled() and self._cooldown_elapsed(_utcnow())
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from an empty shelf. Always an LLM run when admitted."""
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand(needs_llm=True)
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -318,8 +362,6 @@ class AssociativeWanderWorker:
         now = _utcnow()
         if not force and not self._cooldown_elapsed(now):
             return {"drafted": 0, "skipped_cooldown": True}
-        if not force and not self._under_daily_cap(now):
-            return {"drafted": 0, "skipped_daily_cap": True}
 
         graph = self._safe_graph()
         if graph is None:
@@ -355,24 +397,32 @@ class AssociativeWanderWorker:
             )
             return {"drafted": 0, "no_connection": True}
 
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "topic_a": chosen.label_a[:200],
+            "topic_b": chosen.label_b[:200],
+            "pair_key": chosen.key,
+            "connection": connection,
+        }
         append_wander(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "topic_a": chosen.label_a[:200],
-                "topic_b": chosen.label_b[:200],
-                "pair_key": chosen.key,
-                "connection": connection,
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        # The subject is the pair, because that is what supersession and
+        # the UI want. Which *half* to match against is only knowable at
+        # surfacing time -- whichever one the live turn was not already on
+        # -- so the provider writes ``match_subject`` then.
+        cue_id = self._cues.publish(
+            f"{chosen.label_a} / {chosen.label_b}",
+            render_wander_cue(entry),
+            payload=entry,
         )
         self._stamp_pair(cooldowns, chosen.key, now)
         self._mark_fired(now)
         log.info(
-            "associative-wander drafted: a=%r b=%r cos=%.3f connection=%r",
+            "associative-wander drafted: a=%r b=%r cos=%.3f connection=%r "
+            "cue=%s",
             _preview(chosen.label_a), _preview(chosen.label_b),
-            chosen.cosine, _preview(connection),
+            chosen.cosine, _preview(connection), cue_id,
         )
         return {
             "drafted": 1,
@@ -381,6 +431,7 @@ class AssociativeWanderWorker:
             "pair_key": chosen.key,
             "cosine": round(chosen.cosine, 3),
             "connection": connection,
+            "cue_id": cue_id,
         }
 
     # ── MCP debug ─────────────────────────────────────────────────────
@@ -406,10 +457,18 @@ class AssociativeWanderWorker:
         pick randomly among the most-distant handful so the drift has variety
         instead of always grabbing the same extreme pair.
         """
+        from app.core.proactive.cue_store import normalise_subject
+
         if force:
             return pairs[0]
+        # A pair already in the pool is skipped even if the kv cooldown map
+        # has been lost -- the pool outlives it and is the real record.
+        pooled = self._cues.spoken_for()
         available = [
-            p for p in pairs if not self._pair_on_cooldown(cooldowns, p.key, now)
+            p
+            for p in pairs
+            if not self._pair_on_cooldown(cooldowns, p.key, now)
+            and normalise_subject(f"{p.label_a} / {p.label_b}") not in pooled
         ]
         if not available:
             return None
@@ -531,30 +590,8 @@ class AssociativeWanderWorker:
             return True
         return (now - last).total_seconds() >= self._cooldown_seconds
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
     def _mark_fired(self, now: datetime) -> None:
         self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     def _pair_on_cooldown(
         self, cooldowns: dict[str, str], key: str, now: datetime,
@@ -625,6 +662,8 @@ __all__ = [
     "load_wanders",
     "append_wander",
     "wander_relevant",
+    "distant_half",
     "find_distant_pairs",
     "pair_key",
+    "render_wander_cue",
 ]

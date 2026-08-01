@@ -38,7 +38,8 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -139,6 +140,7 @@ class KnowledgeGapNoticeWorker:
         kv_get: Callable[[str], str | None],
         kv_set: Callable[[str, str], None],
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
         interval_seconds: float = 3600.0,
         min_size: int = 5,
         max_knowledge_fraction: float = 0.15,
@@ -149,6 +151,7 @@ class KnowledgeGapNoticeWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("knowledge_gap_notice", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
         self._min_size = max(2, int(min_size))
         self._max_knowledge_fraction = max(0.0, float(max_knowledge_fraction))
@@ -169,11 +172,20 @@ class KnowledgeGapNoticeWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # Hard veto only -- the interval became the heartbeat and stock
+        # decides the rest. See ``docs/idle-workers.md``.
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from the shortfall of unspent notices."""
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand()
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -197,12 +209,17 @@ class KnowledgeGapNoticeWorker:
         if not candidates:
             return {"drafted": 0, "no_candidate": True}
 
+        from app.core.proactive.cue_store import normalise_subject
+
         now = _utcnow()
         cooldowns = self._load_cooldowns()
+        pooled = set() if force else self._cues.spoken_for()
         chosen = None
         for cand in candidates:
             key = topic_key(cand.label)
             if not force and self._on_cooldown(cooldowns, key, now):
+                continue
+            if normalise_subject(cand.label) in pooled:
                 continue
             chosen = (cand, key)
             break
@@ -210,26 +227,29 @@ class KnowledgeGapNoticeWorker:
             return {"drafted": 0, "all_on_cooldown": True}
 
         cand, key = chosen
+        entry = {
+            "at": now.isoformat(timespec="seconds"),
+            "topic": cand.label[:200],
+            "cluster_key": key,
+            "size": int(cand.size),
+            "knowledge_count": int(cand.knowledge_count),
+        }
         append_notice(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "topic": cand.label[:200],
-                "cluster_key": key,
-                "size": int(cand.size),
-                "knowledge_count": int(cand.knowledge_count),
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        cue_id = self._cues.publish(
+            cand.label, render_notice_cue(cand.label), payload=entry,
         )
         cooldowns[key] = now.isoformat(timespec="seconds")
         self._save_cooldowns(cooldowns, now)
         log.info(
-            "knowledge-gap-notice drafted: topic=%r size=%d knowledge=%d frac=%.2f",
+            "knowledge-gap-notice drafted: topic=%r size=%d knowledge=%d "
+            "frac=%.2f cue=%s",
             cand.label[:80],
             cand.size,
             cand.knowledge_count,
             cand.knowledge_fraction,
+            cue_id,
         )
         return {
             "drafted": 1,
@@ -237,6 +257,7 @@ class KnowledgeGapNoticeWorker:
             "cluster_key": key,
             "size": cand.size,
             "knowledge_count": cand.knowledge_count,
+            "cue_id": cue_id,
         }
 
     # ── MCP debug ─────────────────────────────────────────────────────
@@ -304,6 +325,21 @@ class KnowledgeGapNoticeWorker:
             log.debug("knowledge_gap_notice cooldown write failed", exc_info=True)
 
 
+def render_notice_cue(topic: str) -> str:
+    """The prompt line for one knowledge-gap notice.
+
+    Composed here rather than in the provider because it is written into
+    ``cue_pool`` at production time, and the pool row is what the provider
+    renders and the Cues panel shows. Just the finding -- how to handle it
+    lives in the persona section this cue type hoists into T6.
+    """
+    return (
+        f"Heads-up: \"{topic}\" keeps coming up between you two, but you've "
+        "never actually dug into it — you don't really know much about it "
+        "yet."
+    )
+
+
 def topic_relevant(topic: str, user_text: str) -> bool:
     """True when the live turn looks like it's on ``topic``.
 
@@ -325,6 +361,7 @@ __all__ = [
     "KNOWLEDGE_GAP_JOURNAL_KEY",
     "load_notices",
     "append_notice",
+    "render_notice_cue",
     "topic_key",
     "topic_relevant",
 ]

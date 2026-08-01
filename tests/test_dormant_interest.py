@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 from app.core.proactive.dormant_interest_worker import (
     DormantInterestWorker,
@@ -55,10 +57,21 @@ class _KV:
         self.d[key] = value
 
 
+def _cue_store():
+    """A real CueStore on a throwaway database."""
+    from tempfile import TemporaryDirectory
+
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.proactive.cue_store import CueStore
+
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+    return store, tmp
+
+
 def _make_worker(graph, kv, **kw) -> DormantInterestWorker:
     params: dict = {
         "interval_seconds": 21600.0,
-        "daily_cap": 5,
         "journal_max": 6,
         "min_size": 6,
         "max_clusters": 40,
@@ -172,20 +185,6 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(worker.run()["drafted"], 1)
         self.assertEqual(len(load_dormant(kv.kv_get)), 2)
 
-    def test_daily_cap_blocks(self) -> None:
-        graph = _FakeGraph(
-            [
-                _Entry("guitar", 8, 45.0),
-                _Entry("painting", 7, 50.0),
-                _Entry("climbing", 9, 60.0),
-            ]
-        )
-        kv = _KV()
-        worker = _make_worker(graph, kv, daily_cap=2)
-        self.assertEqual(worker.run()["drafted"], 1)
-        self.assertEqual(worker.run()["drafted"], 1)
-        self.assertTrue(worker.run().get("skipped_daily_cap"))
-
     def test_journal_trims_to_max(self) -> None:
         kv = _KV()
         for i in range(10):
@@ -196,6 +195,98 @@ class WorkerTests(unittest.TestCase):
                 max_entries=6,
             )
         self.assertEqual(len(load_dormant(kv.kv_get)), 6)
+
+
+# ── the cue pool ─────────────────────────────────────────────────────────
+
+
+_NOW = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+
+class PoolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+
+    def _worker(self, graph, kv=None, **kw) -> DormantInterestWorker:
+        return _make_worker(
+            graph,
+            kv or _KV(),
+            cue_store_provider=lambda: self.store,
+            **kw,
+        )
+
+    def test_run_queues_the_cue_into_the_pool(self) -> None:
+        worker = self._worker(_FakeGraph([_Entry("garage band", 8, 45.0)]))
+        result = worker.run()
+        self.assertGreater(result["cue_id"], 0)
+        rows = self.store.pending("dormant_interest")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, "garage band")
+        self.assertIn("garage band", rows[0].text)
+        self.assertEqual(rows[0].payload["size"], 8)
+
+    def test_a_stocked_worker_reports_no_pressure(self) -> None:
+        """The whole point: with cues on the shelf it is never admitted."""
+        graph = _FakeGraph(
+            [_Entry("guitar", 8, 45.0), _Entry("painting", 7, 50.0)]
+        )
+        worker = self._worker(graph)
+        worker.run()
+        worker.run()
+        signal = worker.demand(now=_NOW, last_run_at=None)
+        self.assertEqual(self.store.count_pending("dormant_interest"), 2)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_an_empty_shelf_reports_full_pressure(self) -> None:
+        worker = self._worker(_FakeGraph([]))
+        signal = worker.demand(now=_NOW, last_run_at=None)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertIn("0/", signal.reason)
+
+    def test_using_a_cue_reopens_the_worker(self) -> None:
+        graph = _FakeGraph([_Entry("garage band", 8, 45.0)])
+        worker = self._worker(graph)
+        cue_id = worker.run()["cue_id"]
+        # Two in stock would be a full shelf; one leaves a deficit, and
+        # spending it leaves the worker empty and eager.
+        self.store.mark_used(cue_id)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 1.0,
+        )
+
+    def test_demand_is_none_without_a_pool(self) -> None:
+        """No store means fall back to plain interval scheduling."""
+        worker = _make_worker(_FakeGraph([]), _KV())
+        self.assertIsNone(worker.demand(now=_NOW, last_run_at=None))
+
+    def test_disabled_worker_reports_zero_not_none(self) -> None:
+        worker = self._worker(_FakeGraph([]), enabled_provider=lambda: False)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_is_ready_no_longer_gates_on_the_interval(self) -> None:
+        worker = self._worker(_FakeGraph([]))
+        self.assertTrue(worker.is_ready(now=_NOW, last_run_at=_NOW))
+
+    def test_a_pooled_subject_is_not_re_drafted(self) -> None:
+        """Even after the kv cooldown map is wiped."""
+        graph = _FakeGraph([_Entry("garage band", 8, 45.0)])
+        kv = _KV()
+        worker = self._worker(graph, kv)
+        worker.run()
+        kv.d.clear()
+        self.assertTrue(worker.run().get("no_candidate"))
+
+    def test_a_used_subject_still_blocks_a_redraft(self) -> None:
+        graph = _FakeGraph([_Entry("garage band", 8, 45.0)])
+        kv = _KV()
+        worker = self._worker(graph, kv)
+        cue_id = worker.run()["cue_id"]
+        self.store.mark_used(cue_id)
+        kv.d.clear()
+        self.assertTrue(worker.run().get("no_candidate"))
 
 
 # ── provider ─────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from app.core.infra import timephrase
 from app.core.session.debug_overrides import DebugOverridesHostMixin
 
@@ -1228,16 +1227,18 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
 
     def _render_curiosity_seeds_block(self) -> str:
-        """K9: surface up to two active "quiet curiosity" seeds.
+        """K9: surface up to two pending "quiet curiosity" seeds.
 
-        Reads the in-memory mirror via
-        :meth:`MemoryStore.iter_by_kind`; no per-turn LLM, no
-        embedder. Picks the oldest unconsumed seeds (oldest first
-        gives every seed a fair shot at being mentioned) and renders
-        them as a short "Quiet curiosity (only if a soft pivot lands
-        naturally):" bullet list. Empty when the worker is disabled,
-        when no seeds exist yet, or when every seed is already
-        ``consumed_at``.
+        Reads the cue pool; no per-turn LLM, no embedder. Two rather
+        than one because a seed is a topic, not a sentence, and a pair
+        gives the model somewhere to go when the first does not fit --
+        the only pooled block that surfaces more than a single cue.
+        Fairness comes from the pool's ordering, which puts a seed she
+        has never seen ahead of one she has already passed on.
+
+        Both are marked surfaced, so both are judged post-turn and both
+        burn a surfacing whether or not she takes either. That is the
+        honest accounting: they were in the prompt.
         """
         if not bool(
             getattr(self._settings.agent, "curiosity_seed_enabled", True)
@@ -1245,31 +1246,12 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
         if self._question_balance_suppressed():
             return ""
-        memory = getattr(self, "_memory_store", None)
-        if memory is None:
-            return ""
-        try:
-            seeds = memory.iter_by_kind("curiosity_seed")
-        except Exception:
-            log.debug("curiosity_seed iter failed", exc_info=True)
-            return ""
-        if not seeds:
-            return ""
-        active: list[Any] = []
-        for seed in seeds:
-            metadata = seed.metadata or {}
-            if metadata.get("consumed_at"):
-                continue
-            if seed.tier == "archive":
-                continue
-            active.append(seed)
-        if not active:
-            return ""
-        active.sort(key=lambda m: m.created_at or "")
         rendered: list[str] = []
-        for seed in active[:2]:
-            metadata = seed.metadata or {}
-            topic = (metadata.get("topic") or seed.content or "").strip()
+        for _ in range(2):
+            row = self.take_pool_cue("curiosity_seed")
+            if row is None:
+                break
+            topic = (row.subject or "").strip()
             if not topic:
                 continue
             if len(topic) > 120:
@@ -1277,8 +1259,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             rendered.append(f"- {topic}")
         if not rendered:
             return ""
-        header = "Quiet curiosity (only if a soft pivot lands naturally):"
-        return header + "\n" + "\n".join(rendered)
+        # Bare topics under the persona's own header. The "only if a soft
+        # pivot lands naturally" qualifier that used to be baked into this
+        # line is in that hoisted section, which arrives in T6 alongside
+        # this block whenever it renders.
+        return "Quiet curiosity:\n" + "\n".join(rendered)
 
     def _render_initiative_block(self, user_text: str) -> str:
         """K53: deterministic floor-taking directive.

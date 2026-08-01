@@ -352,31 +352,29 @@ class _KvStore:
         self.data[key] = value
 
 
-class _FakeMemory:
-    """Duck-typed seed row + memory store."""
+class _FakeCues:
+    """Duck-typed cue pool holding only the pending seeds.
+
+    A spent seed is simply absent, which is the pool's whole contract:
+    ``pending`` is the shelf, and the states the old fake modelled with
+    ``consumed_at`` / ``tier`` no longer appear in a read.
+    """
 
     class Row:
-        def __init__(
-            self,
-            id: int,
-            content: str,
-            consumed: bool = False,
-            tier: str = "scratchpad",
-        ) -> None:
+        def __init__(self, id: int, subject: str) -> None:
             self.id = id
-            self.content = content
-            self.metadata = {"topic": content} | (
-                {"consumed_at": "x"} if consumed else {}
-            )
-            self.tier = tier
-            self.created_at = "2026-06-01T00:00:00+00:00"
+            self.subject = subject
+            self.payload: dict = {}
 
-    def __init__(self, rows: list["Row"]) -> None:
-        self._rows = rows
+    def __init__(self, rows: list["Row"] | None = None) -> None:
+        self._rows = list(rows or [])
+        self.raises = False
 
-    def iter_by_kind(self, kind: str) -> list["Row"]:
-        assert kind == "curiosity_seed"
-        return list(self._rows)
+    def pending(self, cue_type: str, *, limit: int = 20) -> list["Row"]:
+        assert cue_type == "curiosity_seed"
+        if self.raises:
+            raise RuntimeError("pool unavailable")
+        return list(self._rows)[:limit]
 
 
 class _FakeGoals:
@@ -405,8 +403,8 @@ class WorkerTests(unittest.TestCase):
         kv = _KvStore()
         worker = self._worker(
             kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "whether he plays an instrument"),
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "whether he plays an instrument"),
             ]),
             goal_store=_FakeGoals([
                 _FakeGoals.Row(9, "Learn to recognise jazz chords"),
@@ -416,30 +414,21 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(stats["added"], 2)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         refs = {w.source_ref for w in state.wants}
-        self.assertEqual(refs, {"seed:1", "goal:9"})
+        self.assertEqual(refs, {"cue:1", "goal:9"})
 
     def test_second_run_dedupes(self) -> None:
         kv = _KvStore()
-        worker = self._worker(
-            kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "whether he plays an instrument"),
-            ]),
-        )
+        cues = _FakeCues([_FakeCues.Row(1, "whether he plays an instrument")])
+        worker = self._worker(kv, cue_store_provider=lambda: cues)
         worker.run()
         stats = worker.run()
         self.assertEqual(stats["added"], 0)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertEqual(len(state.wants), 1)
 
-    def test_skips_consumed_seeds(self) -> None:
+    def test_an_empty_pool_offers_nothing(self) -> None:
         kv = _KvStore()
-        worker = self._worker(
-            kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "old topic", consumed=True),
-            ]),
-        )
+        worker = self._worker(kv, cue_store_provider=lambda: _FakeCues())
         stats = worker.run()
         self.assertEqual(stats["added"], 0)
 
@@ -477,62 +466,53 @@ class WorkerTests(unittest.TestCase):
             text=f"bring up what you've been curious about: topic {seed_id}",
             kind="ask",
             source="curiosity_seed",
-            source_ref=f"seed:{seed_id}",
+            source_ref=f"cue:{seed_id}",
             created_at=iso,
             pressure=0.68,
             last_growth_at=iso,
         )
 
-    def test_prunes_want_when_seed_consumed(self) -> None:
-        # The reported bug: seed retired (consumed) but its want lingered
-        # and kept growing pressure, re-asking an answered question.
+    def test_prunes_want_when_seed_is_spent(self) -> None:
+        # The reported bug: seed retired but its want lingered and kept
+        # growing pressure, re-asking an answered question.
         kv = _KvStore()
         kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
         worker = self._worker(
-            kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "first adult purchase", consumed=True),
-            ]),
+            kv, cue_store_provider=lambda: _FakeCues(),
         )
         stats = worker.run()
         self.assertEqual(stats["pruned"], 1)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
-        self.assertNotIn("seed:1", {w.source_ref for w in state.wants})
+        self.assertNotIn("cue:1", {w.source_ref for w in state.wants})
 
-    def test_prunes_want_when_seed_archived(self) -> None:
+    def test_keeps_want_when_seed_is_still_pending(self) -> None:
         kv = _KvStore()
         kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
         worker = self._worker(
             kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "topic", tier="archive"),
-            ]),
-        )
-        stats = worker.run()
-        self.assertEqual(stats["pruned"], 1)
-
-    def test_prunes_want_when_seed_missing(self) -> None:
-        kv = _KvStore()
-        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(99))))
-        worker = self._worker(kv, memory_store=_FakeMemory([]))
-        stats = worker.run()
-        self.assertEqual(stats["pruned"], 1)
-        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
-        self.assertEqual(len(state.wants), 0)
-
-    def test_keeps_want_when_seed_active(self) -> None:
-        kv = _KvStore()
-        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
-        worker = self._worker(
-            kv,
-            memory_store=_FakeMemory([
-                _FakeMemory.Row(1, "still curious topic"),
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "still curious topic"),
             ]),
         )
         stats = worker.run()
         self.assertEqual(stats["pruned"], 0)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
-        self.assertIn("seed:1", {w.source_ref for w in state.wants})
+        self.assertIn("cue:1", {w.source_ref for w in state.wants})
+
+    def test_an_unreadable_pool_prunes_nothing(self) -> None:
+        """A failed read must not look like an empty shelf.
+
+        The two are one query apart and mean opposite things: retiring
+        every seed want because SQLite hiccuped would silently erase the
+        ledger's whole curiosity half.
+        """
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        cues = _FakeCues([_FakeCues.Row(1, "topic")])
+        cues.raises = True
+        worker = self._worker(kv, cue_store_provider=lambda: cues)
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 0)
 
     def test_growth_applies_each_tick(self) -> None:
         kv = _KvStore()

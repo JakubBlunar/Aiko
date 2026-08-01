@@ -721,10 +721,10 @@ Sibling of K6 that fires on the inverse signal: when the rolling distance-to-cen
 - `agent.coactivation_block_enabled` *(bool, `true`)* — L4: the co-activation prompt block, a hedged T1 (semi-stable) line naming the topics that keep lighting up together in the same conversations ("you've been circling X / Y / Z together lately") plus a cluster that's gone quiet, so Aiko carries a sense of the user's current "mode". Built from the topic graph's cluster co-activation signal (which clusters co-occur per session); no-op in the non-persistent topic-graph mode, silent while the graph is still immature (L21), dropped under aggressive context pressure.
 - `agent.coactivation_block_max_modes` *(int, `4`, min `1`)* — how many co-activation "modes" (groups of clusters that fire together) the signal may surface; only the strongest is rendered, but this bounds the underlying compute. Higher → considers more distinct modes. Lower → focuses on only the most dominant.
 - `agent.curiosity_seed_enabled` *(bool, `true`)* — master switch for the curiosity-seed worker.
-- `agent.curiosity_seed_max_active` *(int, `6`, min `1`)* — cap on un-consumed seeds the worker keeps alive. Higher → a fast-talking session can pile up many never-mentioned seeds.
+- `agent.curiosity_seed_max_active` *(int, `6`, min `1`)* — how many unspent seeds the worker keeps on the shelf. Since the seed moved onto the [cue pool](cue-pool.md) this is an *inventory target*, not a cap: the worker reports pressure from the shortfall against it, so a full shelf simply means the idle scheduler does not admit the worker.
 - `agent.curiosity_seed_max_per_run` *(int, `2`, min `1`)* — cap on candidates persisted per successful tick.
 - `agent.curiosity_seed_min_novelty` *(float, `0.85`, clamped `[0, 1]`)* — cosine floor against existing seeds. Higher → stricter (rejects more "kind of similar" candidates); lower → more eager to write.
-- `agent.curiosity_seed_resolve_threshold` *(float, `0.50`, clamped `[0, 1]`)* — cosine match for "the recent turn covered this seed; mark it consumed." Lower than the graph filter on purpose — partial / oblique mentions still count.
+- `agent.curiosity_seed_resolve_threshold` *(float, `0.50`, clamped `[0, 1]`)* — cosine match for "the recent turn covered this seed; mark it consumed." Lower than the graph filter on purpose — partial / oblique mentions still count. Now applied as an override on the seed's `CuePolicy.match_threshold`, so a value you already moved keeps working.
 - `agent.topic_graph_filter_threshold` *(float, `0.65`, clamped `[0, 1]`)* — cosine threshold for "we've already covered that topic." Higher → filter is stricter (lets more candidates through); lower → seed worker rejects "adjacent but new" candidates as duplicates.
 
 ### F2.1 — knowledge-gap resolver
@@ -922,7 +922,6 @@ The symmetric sibling of K64b (interest drift) and K34 (future plans): when a to
 
 - `agent.dormant_interest_enabled` *(bool, `true`)* — master switch. Off → the worker never registers and the provider stays empty.
 - `memory.dormant_interest_interval_seconds` *(int, `21600`, min `60`)* — how often the worker scans cluster activity (6h default; a dropped interest is a slow signal).
-- `memory.dormant_interest_daily_cap` *(int, `2`, min `0`)* — max re-openers drafted per local day. `0` disables drafting.
 - `memory.dormant_interest_journal_max` *(int, `6`, min `1`)* — size of the kv journal ring.
 - `memory.dormant_interest_min_size` *(int, `6`, min `2`)* — a cluster must have at least this many members to count as a genuine past interest (its accumulated members ≈ peak mass).
 - `memory.dormant_interest_max_clusters` *(int, `40`, min `1`)* — cap on how many of the largest clusters get scanned per tick.
@@ -1096,7 +1095,7 @@ Idle LLM workers were retuned to run more often (they no longer block the brain 
 - `memory.fact_checker_interval_seconds` *(int, `300`, min `30`)* — F1 `IdleFactChecker` cadence. Defaults to 5 min so newly written memories get verified mid-session.
 - `memory.schedule_learner_interval_seconds` *(int, `86400`, min `60`)* — G2 schedule-learner cadence. Once a day is plenty.
 - `memory.idle_curiosity_interval_seconds` *(int, `1800`, min `60`)* — G3 idle-curiosity-worker cadence.
-- `memory.curiosity_seed_interval_seconds` *(int, `3600`, min `60`)* — K9 curiosity-seed-worker cadence (a ceiling, not a floor — it short-circuits at `curiosity_seed_max_active`).
+- `memory.curiosity_seed_interval_seconds` *(int, `3600`, min `60`)* — K9 curiosity-seed-worker heartbeat. A liveness backstop rather than a cadence: what actually schedules the worker is the deficit against `curiosity_seed_max_active`.
 - `memory.conflict_detector_interval_seconds` *(int, `1800`, min `60`)* — F5 conflict-detector cadence.
 - `memory.belief_worker_interval_seconds` *(int, `1200`, min `60`)* — K2 belief-inference-worker cadence.
 - `memory.promise_worker_interval_seconds` *(int, `600`, min `60`)* — Phase 3c promise-extraction-worker cadence.

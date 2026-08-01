@@ -11,6 +11,7 @@ import { playDone, playThinking } from "../earcons";
 import { isMobileViewport } from "./useIsMobile";
 import { debugLog } from "../log";
 import { useAssistantStore } from "../store";
+import { useCuePoolStore } from "../stores/useCuePoolStore";
 import { useMemoryStore } from "../stores/useMemoryStore";
 import { useTasksStore } from "../stores/useTasksStore";
 import { useTogetherStore } from "../stores/useTogetherStore";
@@ -103,6 +104,7 @@ export function useAssistantSocket(): {
     // getState snapshots once per event so the dispatch cases below route to
     // the right store. Actions are stable, so this is cheap.
     const memory = useMemoryStore.getState();
+    const cuePool = useCuePoolStore.getState();
     const tasks = useTasksStore.getState();
     const together = useTogetherStore.getState();
     const world = useWorldStore.getState();
@@ -437,6 +439,10 @@ export function useAssistantSocket(): {
 
       case "memory_deleted":
         memory.applyMemoryDeleted(evt.id);
+        break;
+
+      case "cue_pool_updated":
+        cuePool.applyCuePoolUpdated(evt.cue);
         break;
 
       case "belief_added":

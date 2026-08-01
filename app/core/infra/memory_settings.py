@@ -491,9 +491,6 @@ class MemorySettings:
     # Global cooldown between drafts (independent of the per-tick interval),
     # so even a long idle stretch can't produce a flurry of connections.
     associative_wander_cooldown_seconds: int = 7200
-    # Max drafts per local day. Small — at most a couple of "this reminds me
-    # of ..." beats are available to surface in a day.
-    associative_wander_daily_cap: int = 2
     # Size of the kv journal ring of drafted connections.
     associative_wander_journal_max: int = 6
     # A cluster must have at least this many members to be worth connecting
@@ -517,9 +514,6 @@ class MemorySettings:
     # drift cue. Long (6h default): interests drift slowly, and each tick
     # just adds one sample to the per-topic mass time-series.
     interest_drift_interval_seconds: int = 21600
-    # Max drift cues drafted per local day. Small — drift is a rare,
-    # slow-burn signal.
-    interest_drift_daily_cap: int = 3
     # Size of the kv journal ring of drafted drift cues.
     interest_drift_journal_max: int = 6
     # A cluster must have at least this many members to track / count as a
@@ -548,9 +542,6 @@ class MemorySettings:
     # How often the DormantInterestWorker scans cluster activity + may draft
     # a re-opener. Long (6h default): a dropped interest is a slow signal.
     dormant_interest_interval_seconds: int = 21600
-    # Max re-openers drafted per local day. Tiny — re-opening a dropped
-    # thread is a rare, warm beat, never a sweep.
-    dormant_interest_daily_cap: int = 2
     # Size of the kv journal ring of drafted re-openers.
     dormant_interest_journal_max: int = 6
     # A cluster must have at least this many members to count as a genuine
@@ -572,8 +563,6 @@ class MemorySettings:
     # ── K64c: curiosity gradient (thin edge of a dense topic) ────────────
     # How often the CuriosityGradientWorker may draft a curiosity-edge cue.
     curiosity_gradient_interval_seconds: int = 5400
-    # Max curiosity-edge cues drafted per local day. Small — rarity matters.
-    curiosity_gradient_daily_cap: int = 3
     # Size of the kv journal ring of drafted curiosity edges.
     curiosity_gradient_journal_max: int = 6
     # A cluster must have at least this many members to be the *dense* anchor
@@ -1282,7 +1271,6 @@ class MemorySettings:
     # bounds the kv ring of drafted questions.
     forward_curiosity_interval_seconds: int = 900
     forward_curiosity_cooldown_seconds: int = 3600
-    forward_curiosity_daily_cap: int = 4
     forward_curiosity_min_gap_hours: float = 4.0
     forward_curiosity_journal_max: int = 8
     # FollowUpWorker cue ring size (``aiko.follow_up_cues``). Bounds the
@@ -2120,10 +2108,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     )
                 ),
             ),
-            associative_wander_daily_cap=max(
-                0,
-                int(memory_raw.get("associative_wander_daily_cap", 2)),
-            ),
             associative_wander_journal_max=max(
                 1,
                 int(memory_raw.get("associative_wander_journal_max", 6)),
@@ -2160,10 +2144,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get("interest_drift_interval_seconds", 21600)
                 ),
-            ),
-            interest_drift_daily_cap=max(
-                0,
-                int(memory_raw.get("interest_drift_daily_cap", 3)),
             ),
             interest_drift_journal_max=max(
                 1,
@@ -2211,10 +2191,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get("dormant_interest_interval_seconds", 21600)
                 ),
             ),
-            dormant_interest_daily_cap=max(
-                0,
-                int(memory_raw.get("dormant_interest_daily_cap", 2)),
-            ),
             dormant_interest_journal_max=max(
                 1,
                 int(memory_raw.get("dormant_interest_journal_max", 6)),
@@ -2254,10 +2230,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         "curiosity_gradient_interval_seconds", 5400,
                     )
                 ),
-            ),
-            curiosity_gradient_daily_cap=max(
-                0,
-                int(memory_raw.get("curiosity_gradient_daily_cap", 3)),
             ),
             curiosity_gradient_journal_max=max(
                 1,
@@ -3464,10 +3436,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             forward_curiosity_cooldown_seconds=max(
                 0,
                 int(memory_raw.get("forward_curiosity_cooldown_seconds", 3600)),
-            ),
-            forward_curiosity_daily_cap=max(
-                0,
-                int(memory_raw.get("forward_curiosity_daily_cap", 4)),
             ),
             forward_curiosity_min_gap_hours=max(
                 0.0,

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 from app.core.proactive.interest_drift_worker import (
     InterestDriftWorker,
+    _KV_MASS_SERIES,
     append_drift,
     classify_drift,
     drift_relevant,
@@ -99,10 +102,24 @@ class _KV:
         self.d[key] = value
 
 
+_NOW = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+
+
+def _cue_store():
+    """A real CueStore on a throwaway database."""
+    from tempfile import TemporaryDirectory
+
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.proactive.cue_store import CueStore
+
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+    return store, tmp
+
+
 def _make_worker(graph, kv, **kw) -> InterestDriftWorker:
     params: dict = {
         "interval_seconds": 21600.0,
-        "daily_cap": 5,
         "journal_max": 6,
         "min_size": 4,
         "max_clusters": 40,
@@ -260,6 +277,81 @@ class WorkerTests(unittest.TestCase):
                 max_entries=6,
             )
         self.assertEqual(len(load_drifts(kv.kv_get)), 6)
+
+
+class PoolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+
+    def _worker(self, graph, kv=None, **kw) -> InterestDriftWorker:
+        return _make_worker(
+            graph,
+            kv or _KV(),
+            cue_store_provider=lambda: self.store,
+            **kw,
+        )
+
+    @staticmethod
+    def _rising(topic: str = "rust debugging") -> _FakeGraph:
+        return _FakeGraph(
+            [[_Entry(topic, 4)], [_Entry(topic, 6)], [_Entry(topic, 9)]]
+        )
+
+    def test_run_queues_the_topic_into_the_pool(self) -> None:
+        worker = self._worker(self._rising())
+        worker.run()
+        worker.run()
+        result = worker.run()
+        self.assertGreater(result["cue_id"], 0)
+        rows = self.store.pending("interest_drift")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, "rust debugging")
+        self.assertEqual(rows[0].payload["direction"], "rising")
+
+    def test_an_empty_shelf_reports_full_pressure(self) -> None:
+        signal = self._worker(_FakeGraph([])).demand(
+            now=_NOW, last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 1.0)
+
+    def test_a_pooled_topic_is_not_re_drafted(self) -> None:
+        kv = _KV()
+        graph = _FakeGraph(
+            [
+                [_Entry("rust", 4)],
+                [_Entry("rust", 6)],
+                [_Entry("rust", 9)],
+                [_Entry("rust", 12)],
+            ]
+        )
+        worker = self._worker(graph, kv, topic_cooldown_hours=0.0)
+        worker.run()
+        worker.run()
+        self.assertEqual(worker.run()["drafted"], 1)
+        self.assertTrue(worker.run().get("no_candidate"))
+
+    def test_a_full_shelf_still_samples_the_time_series(self) -> None:
+        """Drift's other job is the mass series, and it must not go dark.
+
+        The heartbeat keeps admitting it at ``interval_seconds`` even at
+        zero pressure, so a stocked worker still records samples -- which
+        is what the classifier needs to stay warm.
+        """
+        kv = _KV()
+        worker = self._worker(self._rising(), kv)
+        worker.run()
+        self.assertIn(_KV_MASS_SERIES, kv.d)
+
+    def test_demand_is_none_without_a_pool(self) -> None:
+        worker = _make_worker(_FakeGraph([]), _KV())
+        self.assertIsNone(worker.demand(now=_NOW, last_run_at=None))
+
+    def test_disabled_worker_reports_zero_not_none(self) -> None:
+        worker = self._worker(_FakeGraph([]), enabled_provider=lambda: False)
+        self.assertEqual(
+            worker.demand(now=_NOW, last_run_at=None).pressure, 0.0,
+        )
 
 
 class BeliefAnnotationTests(unittest.TestCase):
@@ -458,7 +550,7 @@ class ProviderTests(unittest.TestCase):
         self._seed(host)
         out = host._render_interest_drift_block("planning a hiking trip")
         self.assertNotIn("What you hold about it", out)
-        self.assertIn("budding interest of yours. If it fits", out)
+        self.assertIn("budding interest of yours", out)
 
 
 if __name__ == "__main__":

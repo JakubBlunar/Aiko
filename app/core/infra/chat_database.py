@@ -1,6 +1,8 @@
 """First-party SQLite chat database for messages, summaries, and memories."""
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -9,7 +11,14 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 
-_SCHEMA_VERSION = 28
+log = logging.getLogger("app.chat_database")
+
+_SCHEMA_VERSION = 29
+
+# The single-user id every store defaults to. Only the v29 seed migration
+# needs it at this level: it writes ``cue_pool`` rows directly, before any
+# CueStore exists to supply its own.
+_DEFAULT_USER_ID = "default"
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -591,6 +600,66 @@ CREATE INDEX IF NOT EXISTS idx_cue_decisions_cue
     ON cue_decisions(cue, created_at);
 CREATE INDEX IF NOT EXISTS idx_cue_decisions_created
     ON cue_decisions(created_at);
+
+-- Schema v29: the cue pool. Live inventory of things Aiko has not said
+-- yet, replacing the ad-hoc kv_meta journal rings the cue workers used to
+-- keep.
+--
+-- The rings could not answer two questions the workers needed. First,
+-- "how much stock do I have?" -- a ring plus an external watermark says
+-- what is newest, not what is unspent, so a worker had no way to stay
+-- dormant while cues were already waiting and leaned on hand-picked daily
+-- caps instead. Second, "was this one actually used?" -- the watermark
+-- advanced the moment a provider rendered the block, so a cue Aiko
+-- ignored was retired exactly like one she acted on.
+--
+-- ``subject`` is the topic / pair / edge the cue is about, and it does
+-- three jobs: it is the supersession key (a newer cue about the same
+-- subject retires the older), it is what consumption matches against
+-- (matching the whole cue *sentence* would drown the subject in framing
+-- words that never appear in a reply), and it is what the UI groups by.
+--
+-- Two counters because there are two distinct failure modes and merging
+-- them would hide both. ``surfaced_count`` counts turns where the cue sat
+-- in the prompt and Aiko did not raise it -- the model ignoring the cue.
+-- ``ask_count`` counts times she did raise it and got no answer -- the
+-- user not biting. Only the second is meaningful for cues whose
+-- fulfilment is ``answered``; see ``CuePolicy`` in
+-- app/core/proactive/cue_accounting.py.
+--
+-- ``embedding`` is nullable and only populated for types whose matching
+-- or novelty check is semantic (curiosity seeds). Stored as the same
+-- float32 blob ``memories`` uses. Deliberately NOT mirrored to LanceDB:
+-- a pending cue is not something Aiko remembers, and letting these into
+-- RAG is one of the accidents that moving them out of ``memories`` fixes.
+CREATE TABLE IF NOT EXISTS cue_pool (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    cue_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    text TEXT NOT NULL,
+    payload TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    surfaced_count INTEGER NOT NULL DEFAULT 0,
+    ask_count INTEGER NOT NULL DEFAULT 0,
+    last_surfaced_at TEXT,
+    last_asked_at TEXT,
+    not_before TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    used_at TEXT,
+    used_evidence TEXT,
+    embedding BLOB
+);
+-- The hot read is "what is pending for this type", run by every migrated
+-- worker's demand() probe on every scheduler tick, so it gets a covering
+-- index rather than a scan plus filter.
+CREATE INDEX IF NOT EXISTS idx_cue_pool_type_state
+    ON cue_pool(user_id, cue_type, state);
+CREATE INDEX IF NOT EXISTS idx_cue_pool_subject
+    ON cue_pool(user_id, subject);
+CREATE INDEX IF NOT EXISTS idx_cue_pool_state
+    ON cue_pool(user_id, state, created_at);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced
@@ -1367,6 +1436,18 @@ class ChatDatabase:
                 )
             except sqlite3.OperationalError:
                 pass
+        # v28 -> v29: the ``cue_pool`` table (created by the idempotent
+        # script above). The kv_meta journal rings it replaces are left in
+        # place rather than deleted: the unmigrated cue types still read
+        # them, and for the migrated ones a stale ring is inert once the
+        # provider stops looking at it. Nothing is backfilled from the
+        # rings -- a ring entry carries no record of whether it was ever
+        # used, which is the entire deficiency the pool exists to fix, so
+        # importing them would fabricate exactly the state we cannot know.
+        # Existing curiosity_seed *memories* are a different case and are
+        # migrated properly by ``_migrate_curiosity_seeds_to_cue_pool``
+        # below, because those rows do carry consumption state.
+        self._migrate_curiosity_seeds_to_cue_pool(conn)
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:
@@ -1375,6 +1456,89 @@ class ChatDatabase:
                 pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
+
+    def _migrate_curiosity_seeds_to_cue_pool(
+        self, conn: sqlite3.Connection,
+    ) -> None:
+        """v28 -> v29: move K9 seeds from ``memories`` into ``cue_pool``.
+
+        The one journal-to-pool move worth doing, because a seed memory
+        already records everything the pool wants to know: ``consumed_at``
+        says whether the conversation reached it, the embedding is the
+        subject vector consumption matching needs, and ``use_count``
+        counts the times it was in the prompt without being taken. That is
+        a real history, so importing it is preserving evidence rather than
+        inventing it -- the opposite of what backfilling the rings would
+        have been.
+
+        The rows are deleted afterwards. Leaving them would mean a topic
+        Aiko has not raised yet stayed retrievable as a plain memory, and
+        RAG surfacing a seed as a fact she remembers is precisely the
+        confusion that motivated the move.
+        """
+        try:
+            rows = conn.execute(
+                "SELECT id, content, salience, embedding, created_at, "
+                "use_count, metadata FROM memories WHERE kind = ?",
+                ("curiosity_seed",),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        if not rows:
+            return
+        moved = 0
+        for row in rows:
+            try:
+                metadata = json.loads(row[6]) if row[6] else {}
+            except Exception:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            subject = str(metadata.get("topic") or row[1] or "").strip()
+            if not subject:
+                continue
+            consumed_at = metadata.get("consumed_at")
+            state = "used" if consumed_at else "pending"
+            payload = {
+                "prompt_text": str(metadata.get("prompt_text") or ""),
+                "why": str(metadata.get("why") or ""),
+                "source": str(metadata.get("source") or "llm"),
+                "generated_at": str(metadata.get("generated_at") or row[4]),
+                "candidate_score": float(
+                    metadata.get("candidate_score") or 0.0
+                ),
+                "migrated_from_memory_id": int(row[0]),
+            }
+            try:
+                conn.execute(
+                    "INSERT INTO cue_pool (user_id, cue_type, subject, text, "
+                    "payload, state, surfaced_count, created_at, used_at, "
+                    "used_evidence, embedding) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        _DEFAULT_USER_ID,
+                        "curiosity_seed",
+                        subject,
+                        subject,
+                        json.dumps(payload, ensure_ascii=False),
+                        state,
+                        int(row[5] or 0),
+                        str(row[4] or _now_iso()),
+                        str(consumed_at) if consumed_at else None,
+                        "migrated/k9" if consumed_at else None,
+                        row[3],
+                    ),
+                )
+            except sqlite3.Error:
+                continue
+            moved += 1
+        try:
+            conn.execute(
+                "DELETE FROM memories WHERE kind = ?", ("curiosity_seed",),
+            )
+        except sqlite3.Error:
+            return
+        log.info("migrated %d curiosity_seed memories into cue_pool", moved)
 
     # ── Phase-2/3/4 helper hooks (used by AffectStore et al.) ────────
 
@@ -1406,7 +1570,6 @@ class ChatDatabase:
             rows = conn.execute(
                 "SELECT id, session_id, message FROM message_store ORDER BY id"
             ).fetchall()
-            import json
             for _row_id, session_id, message_json in rows:
                 try:
                     msg = json.loads(message_json) if isinstance(message_json, str) else {}

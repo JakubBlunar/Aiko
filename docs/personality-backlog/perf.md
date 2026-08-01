@@ -1210,6 +1210,19 @@ can go in batches.
 
 ## P45. Retire the per-hour / per-day caps in favour of satisfaction
 
+**Status: partly shipped.** The seven subject-naming cue workers now run
+off the [cue pool](../cue-pool.md): they count unspent rows and report
+pressure from the deficit against `CuePolicy.inventory_target`, which
+retired five `*_daily_cap` keys outright. That is the *inventory* half
+of the idea — a full shelf means the worker is not admitted — and it
+lands the "she has said enough for now" intent through a mechanism that
+is exact rather than arbitrary, since the pool knows what is unspent
+where a ring never did. The *satisfaction* half below is still open, but
+its input now exists for the pooled types: `used` vs. `expired` per cue
+type is a direct read on whether the user is biting, at a resolution
+`engaged_rate` never had. The remaining `*_per_hour_cap` keys on
+non-pooled workers are untouched.
+
 **Motivation.** Keys like `idle_curiosity_per_hour_cap` /
 `idle_curiosity_per_day_cap` do two unrelated jobs. As *cost*
 protection they are now redundant with the [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
