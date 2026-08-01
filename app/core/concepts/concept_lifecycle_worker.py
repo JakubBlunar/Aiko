@@ -89,7 +89,7 @@ from app.core.concepts.concept_lifecycle import (
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import ConceptEdge
 from app.core.infra import timephrase
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_belief_reviser import ConceptBeliefReviser
@@ -174,10 +174,53 @@ class ConceptLifecycleWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None
     ) -> bool:
+        # Feature flags only; the interval became the heartbeat (P36).
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None
+    ) -> "WorkSignal | None":
+        """How many concepts are overdue for a lifecycle evaluation.
+
+        Entirely against the in-memory concept mirror -- ``list_stalest``
+        sorts a dict, it does not hit SQLite -- so this is microseconds.
+
+        Thinking is the thing that should get *more* time when the user
+        is away, and this worker is the closest thing Aiko has to it. A
+        backlog of never-evaluated concepts now pulls a run forward
+        instead of waiting out the five-minute interval.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="disabled")
+        batch_size = max(1, self._i("concept_lifecycle_batch_size", 100))
+        try:
+            batch = self._store.list_stalest(batch_size)
+        except Exception:
+            log.debug("concept_lifecycle: demand probe failed", exc_info=True)
+            return None
+        if not batch:
+            return WorkSignal(pressure=0.0, reason="no_concepts")
+
+        cutoff_s = max(1.0, self.interval_seconds)
+        overdue = 0
+        has_active = False
+        for concept in batch:
+            if getattr(concept, "status", "") == "active":
+                has_active = True
+            last = _parse_iso(getattr(concept, "last_lifecycle_at", None))
+            if last is None or (now - last).total_seconds() >= cutoff_s:
+                overdue += 1
+        # The contradiction detector runs a memory search and may call the
+        # worker LLM, but only for active concepts and only when wired.
+        needs_llm = bool(
+            has_active
+            and self._contradiction_detector is not None
+            and self._i("concept_contradiction_batch_size", 20) > 0
+        )
+        return WorkSignal(
+            pressure=pressure_from_count(overdue, saturation=batch_size),
+            reason=f"{overdue}/{len(batch)} overdue",
+            needs_llm=needs_llm,
         )
 
     def _enabled(self) -> bool:

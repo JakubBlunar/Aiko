@@ -31,7 +31,7 @@ import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -116,34 +116,56 @@ class CircadianSettleWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        # Hard veto only. The interval check that used to live here moved
+        # into demand(): leaving it would veto the worker before its
+        # pressure is ever consulted (P36).
         if self._enabled_provider is not None:
             try:
                 if not bool(self._enabled_provider()):
                     return False
             except Exception:
                 pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return True
 
-    def run(self) -> dict[str, Any]:
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Is there a move to make? Cheap: mirror reads and two kv gets.
+
+        Binary rather than graded -- either she is somewhere other than
+        her period-appropriate spot and every deferral gate is clear, or
+        there is nothing to do at all. No LLM on any path.
+        """
+        blocked, plan = self._evaluate(timephrase.utcnow())
+        if plan is None:
+            return WorkSignal(pressure=0.0, reason=blocked or "nothing_to_do")
+        return WorkSignal(pressure=1.0, reason="settle_due")
+
+    def _evaluate(
+        self, now: datetime,
+    ) -> tuple[str | None, tuple[Any, str, str] | None]:
+        """Shared gate chain for :meth:`demand` and :meth:`run`.
+
+        Returns ``(blocked_reason, plan)``: exactly one is non-None. The
+        reasons double as the ``run()`` result keys so the existing
+        result shape is unchanged.
+        """
         if self._enabled_provider is not None:
             try:
                 if not bool(self._enabled_provider()):
-                    return {"fired": 0, "disabled": True}
+                    return "disabled", None
             except Exception:
                 pass
-        now = timephrase.utcnow()
         if self._intentional_hold_active(now):
-            return {"fired": 0, "skipped_intentional_hold": True}
+            return "skipped_intentional_hold", None
         if self._garden_visit_outstanding(now):
-            return {"fired": 0, "skipped_garden_visit": True}
+            return "skipped_garden_visit", None
 
         try:
             state = self._store.get_state()
         except Exception:
             log.debug("circadian_settle get_state failed", exc_info=True)
-            return {"fired": 0, "no_state": True}
+            return "no_state", None
 
         # Staleness gate — only settle when she's been static a while.
         updated = _parse_iso(getattr(state, "updated_at", None))
@@ -152,12 +174,12 @@ class CircadianSettleWorker:
             and updated is not None
             and (now - updated).total_seconds() < self._settle_after_seconds
         ):
-            return {"fired": 0, "skipped_recent_activity": True}
+            return "skipped_recent_activity", None
 
         period = self._read_period()
         target = settle_target(period)
         if target is None:
-            return {"fired": 0, "no_target": True}
+            return "no_target", None
         slug, posture, activity = target
 
         loc = None
@@ -166,11 +188,21 @@ class CircadianSettleWorker:
         except Exception:
             loc = None
         if loc is None:
-            return {"fired": 0, "no_location": True}
+            return "no_location", None
 
         # Already at the period-appropriate spot — nothing to do.
         if getattr(state, "location_id", None) == loc.id:
-            return {"fired": 0, "already_there": True}
+            return "already_there", None
+        return None, (loc, posture, activity)
+
+    def run(self) -> dict[str, Any]:
+        now = timephrase.utcnow()
+        blocked, plan = self._evaluate(now)
+        if plan is None:
+            return {"fired": 0, str(blocked): True}
+        loc, posture, activity = plan
+        period = self._read_period()
+        slug = (settle_target(period) or ("", "", ""))[0]
 
         try:
             new_state = self._store.set_state(

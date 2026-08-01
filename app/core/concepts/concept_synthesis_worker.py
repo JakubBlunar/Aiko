@@ -53,7 +53,7 @@ from app.core.concepts.proposers import (
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.infra import timephrase
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_event_store import ConceptEventStore
@@ -234,6 +234,9 @@ class ConceptSynthesisWorker:
         self._style_signal_store = style_signal_store
         self._user_id_provider = user_id_provider
         self._llm_calls = 0
+        # P36: the previous pass's stats double as this worker's demand
+        # signal. See :meth:`demand`.
+        self._last_stats: dict[str, Any] | None = None
 
     @staticmethod
     def _resolve_name(
@@ -277,9 +280,44 @@ class ConceptSynthesisWorker:
         # (button / MCP) still bypasses this by calling ``run`` directly.
         if not self._graph_mature(now=now):
             return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
-        )
+        # The interval that used to close this method became the
+        # heartbeat; demand() decides the rest (P36).
+        return True
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None
+    ) -> "WorkSignal | None":
+        """Pressure from the *previous* pass's leftovers. Costs nothing.
+
+        Computing dirtiness properly means a cluster query plus a
+        signature diff per proposer family -- far too expensive to pay on
+        every tick just to usually learn there is nothing to do, which is
+        the trap this whole mechanism exists to avoid.
+
+        The last pass already did that work and recorded the answer. When
+        it drained only part of the backlog
+        (``user_dirty_remaining > 0``) we know more is waiting and can
+        come back immediately instead of sitting out another 30 minutes.
+        Newly-arrived dirt is still found by the heartbeat.
+        """
+        stats = self._last_stats
+        needs_llm = True
+        if not stats:
+            # Never run this process: let the heartbeat decide, but claim
+            # the LLM lane so a cold start does not misfile a generation.
+            return WorkSignal(
+                pressure=0.0, reason="no history", needs_llm=needs_llm,
+            )
+        remaining = int(stats.get("user_dirty_remaining", 0) or 0)
+        if remaining > 0:
+            return WorkSignal(
+                pressure=pressure_from_count(
+                    remaining, saturation=max(1, self._max_clusters_per_run),
+                ),
+                reason=f"{remaining} clusters queued",
+                needs_llm=needs_llm,
+            )
+        return WorkSignal(pressure=0.0, reason="drained", needs_llm=needs_llm)
 
     def _graph_mature(self, *, now: datetime | None = None) -> bool:
         """L21 maturity predicate: enough distinct clusters AND enough
@@ -708,6 +746,7 @@ class ConceptSynthesisWorker:
 
         stats["llm_calls"] = self._llm_calls
         stats["llm_ms"] = int((time.monotonic() - started) * 1000)
+        self._last_stats = stats
         return stats
 
     # ── cluster (user) pass ────────────────────────────────────────────

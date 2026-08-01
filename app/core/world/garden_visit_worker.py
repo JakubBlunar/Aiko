@@ -31,7 +31,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.world.idle_activity_worker import (
     append_journal,
 )
@@ -192,11 +192,11 @@ class GardenVisitWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # The interval check that used to sit here moved into the
+        # heartbeat / demand() pairing (P36). Everything below is a real
+        # state-machine gate and stays: this method was already a demand
+        # probe wearing a readiness predicate's name.
         if not self._enabled():
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
             return False
         garden = self._store.get_location("garden")
         if garden is None:
@@ -234,6 +234,33 @@ class GardenVisitWorker:
         if next_eligible is not None and now < next_eligible:
             return False
         return True
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Grade an already-eligible visit. Never calls an LLM.
+
+        ``is_ready`` above is the gate; this only ranks. Bringing her
+        back from an overdue visit outranks starting one, and a garden
+        that actually needs attention outranks a routine wander -- which
+        is the difference between "the timer fired" and "there is
+        something to do out there".
+        """
+        try:
+            garden = self._store.get_location("garden")
+            if garden is not None:
+                state = self._store.get_state()
+                if state.location_id == garden.id:
+                    return WorkSignal(pressure=1.0, reason="return_due")
+            if self._garden_needs_attention(now):
+                return WorkSignal(pressure=1.0, reason="plants_need_attention")
+        except Exception:
+            log.debug("garden_visit: demand probe failed", exc_info=True)
+            return None
+        return WorkSignal(pressure=0.6, reason="routine_visit")
 
     def _enabled(self) -> bool:
         if self._enabled_provider is None:

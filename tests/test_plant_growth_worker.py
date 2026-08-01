@@ -68,16 +68,49 @@ class PlantGrowthWorkerTests(unittest.TestCase):
             result = worker.run()
             self.assertEqual(result["promoted"], 0)
 
-    def test_is_ready_interval_gate(self) -> None:
+    def test_is_ready_is_no_longer_an_interval_gate(self) -> None:
+        # P36: the interval moved out of is_ready and became the
+        # heartbeat. Timing is now the scheduler's anti-thrash floor plus
+        # demand(); this worker has no hard veto of its own.
         with _TempWorld() as store:
             worker = PlantGrowthWorker(store, interval_seconds=3600)
             now = datetime.now(timezone.utc)
             self.assertTrue(worker.is_ready(now=now, last_run_at=None))
-            # Just ran — should not be ready again until interval elapses.
             recent = now - timedelta(seconds=120)
-            self.assertFalse(worker.is_ready(now=now, last_run_at=recent))
-            older = now - timedelta(seconds=3700)
-            self.assertTrue(worker.is_ready(now=now, last_run_at=older))
+            self.assertTrue(worker.is_ready(now=now, last_run_at=recent))
+
+    def test_demand_is_zero_when_nothing_would_promote(self) -> None:
+        with _TempWorld() as store:
+            worker = PlantGrowthWorker(store)
+            now = datetime.now(timezone.utc)
+            signal = worker.demand(now=now, last_run_at=None)
+            # Seed plants were just inserted, so none is due.
+            self.assertIsNotNone(signal)
+            self.assertEqual(signal.pressure, 0.0)
+            self.assertFalse(signal.needs_llm)
+
+    def test_demand_does_not_mutate_plant_state(self) -> None:
+        # list_items hands out live mirror references, so a probe that
+        # called promote_stage would advance a stage without persisting.
+        with _TempWorld() as store:
+            sprouts = [
+                i for i in store.list_items(kind="plant")
+                if (i.state or {}).get("stage") == "sprout"
+            ]
+            self.assertTrue(sprouts)
+            for plant in sprouts:
+                _age_plant(store, plant.id, hours_ago=48)
+            worker = PlantGrowthWorker(store)
+            now = datetime.now(timezone.utc)
+            before = [
+                dict(p.state or {}) for p in store.list_items(kind="plant")
+            ]
+            signal = worker.demand(now=now, last_run_at=None)
+            self.assertGreater(signal.pressure, 0.0)
+            after = [
+                dict(p.state or {}) for p in store.list_items(kind="plant")
+            ]
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

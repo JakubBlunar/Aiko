@@ -200,7 +200,7 @@ def register(mcp, session: "SessionController") -> None:
         sweep (``run_count``), and to surface any swallowed exception
         (``last_error``).
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return json.dumps(
                 {"enabled": False, "reason": "scheduler not running"},
@@ -235,8 +235,23 @@ def register(mcp, session: "SessionController") -> None:
         ``quiet``) so a single tool call answers "is the scheduler
         dormant because it's not quiet, or because nothing is due, or
         because the budget is too small?".
+
+        P36 adds the demand-driven view. Header: ``idle_depth`` /
+        ``idle_seconds`` / ``depth_multiplier`` (how far the user's
+        absence has stretched the budget), ``contention`` (``none`` /
+        ``queueing`` / ``swapping`` -- how badly worker LLM calls fight
+        the chat path for a GPU), and the two resulting lane budgets
+        ``effective_compute_budget_ms`` / ``effective_llm_budget_ms``.
+        Per worker: ``demand_aware`` (has a ``demand()`` probe),
+        ``last_pressure``, ``last_urgency``, ``last_lane``, and
+        ``last_admit_reason`` -- which is the one to read when a worker
+        is not running. Its values are ``first_run``, ``pressure``,
+        ``heartbeat`` and ``legacy`` (admitted), against ``idle`` (probe
+        says nothing to do), ``floor`` (ran too recently),
+        ``below_threshold`` (some work, not enough yet) and
+        ``lane_full`` (admitted but the lane budget ran out).
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return json.dumps(
                 {"enabled": False, "reason": "scheduler not running"},
@@ -252,6 +267,104 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_idle_workers_status failed: {exc}"
 
     @mcp.tool()
+    def force_idle_worker(name: str) -> str:
+        """Run any registered idle worker once, bypassing every gate.
+
+        The generic form of ``force_promotion_sweep`` /
+        ``force_decay_sweep``, which exist only for the two workers that
+        happened to be first. Pass a ``name`` from
+        ``get_idle_workers_status``; an unknown name returns the list of
+        registered ones.
+
+        Bypasses ``is_ready``, ``demand()`` and the lane budgets, so it
+        is the way to test a migrated worker's ``run()`` without waiting
+        for pressure to build. It does *not* bypass gates inside
+        ``run()`` itself (rate limiters, daily caps).
+        """
+        sched = session.idle_scheduler
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        wanted = (name or "").strip()
+        try:
+            result = sched.force_run(wanted)
+        except KeyError:
+            known = sorted(r["name"] for r in sched.get_records())
+            return json.dumps(
+                {"error": f"unknown worker: {wanted!r}", "registered": known},
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_idle_worker({wanted!r}) raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def probe_idle_worker_demand(name: str = "") -> str:
+        """P36 — ask workers what they think they have to do, right now.
+
+        Calls ``demand()`` out of band (no run, no state change) and
+        reports ``pressure`` / ``reason`` / ``needs_llm`` plus the lane
+        it would be charged to. Omit ``name`` to probe every registered
+        worker at once, which is the fastest way to see why an idle
+        scheduler is idle.
+
+        Workers with no ``demand()`` report ``demand_aware: false`` --
+        they are still on interval scheduling.
+        """
+        sched = session.idle_scheduler
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        from app.core.infra import timephrase
+
+        now = timephrase.utcnow()
+        wanted = (name or "").strip()
+        rows: list[dict[str, Any]] = []
+        workers = dict(getattr(sched, "_workers", {}))
+        records = dict(getattr(sched, "_records", {}))
+        if wanted and wanted not in workers:
+            return json.dumps(
+                {
+                    "error": f"unknown worker: {wanted!r}",
+                    "registered": sorted(workers),
+                },
+                indent=2,
+            )
+        for worker_name, worker in workers.items():
+            if wanted and worker_name != wanted:
+                continue
+            record = records.get(worker_name)
+            last_run_at = getattr(record, "last_run_at", None)
+            row: dict[str, Any] = {"name": worker_name}
+            try:
+                row["is_ready"] = bool(
+                    worker.is_ready(now=now, last_run_at=last_run_at)
+                )
+            except Exception as exc:
+                row["is_ready_error"] = str(exc)
+            probe = getattr(worker, "demand", None)
+            if not callable(probe):
+                row["demand_aware"] = False
+                rows.append(row)
+                continue
+            row["demand_aware"] = True
+            try:
+                signal = probe(now=now, last_run_at=last_run_at)
+            except Exception as exc:
+                row["error"] = f"{type(exc).__name__}: {exc}"
+                rows.append(row)
+                continue
+            if signal is None:
+                row["signal"] = None
+            else:
+                row["pressure"] = round(float(signal.pressure), 4)
+                row["reason"] = signal.reason
+                row["needs_llm"] = bool(signal.needs_llm)
+                row["lane"] = signal.lane
+            rows.append(row)
+        rows.sort(key=lambda r: -float(r.get("pressure") or 0.0))
+        return json.dumps({"probed_at": now.isoformat(), "workers": rows},
+                          indent=2, default=str)
+
+    @mcp.tool()
     def force_promotion_sweep() -> str:
         """Run the MemoryPromotionWorker once, ignoring its interval gate.
 
@@ -260,7 +373,7 @@ def register(mcp, session: "SessionController") -> None:
         ``pruned``). Useful when iterating on tier knobs -- skip the
         wait between scheduled sweeps.
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running (memory.tiers_enabled may be off)"
         try:
@@ -383,7 +496,7 @@ def register(mcp, session: "SessionController") -> None:
         the worker just installs the wall-clock anchor; the next call
         applies real decay.
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running (memory.tiers_enabled may be off)"
         try:
@@ -405,7 +518,7 @@ def register(mcp, session: "SessionController") -> None:
         ``privacy_gate``, …). Bypasses the interval gate but still
         honours the rate limiter inside ``run()``.
         """
-        sched = getattr(session, "_idle_scheduler", None)
+        sched = session.idle_scheduler
         if sched is None:
             return "scheduler not running (memory.tiers_enabled may be off)"
         try:

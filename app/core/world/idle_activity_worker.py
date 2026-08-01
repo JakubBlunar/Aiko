@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.world.activity_selection import weighted_pick
 from app.core.infra import timephrase
 
@@ -316,14 +316,62 @@ class IdleAwayActivityWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        # Feature flag only; the interval became the heartbeat (P36).
         if self._enabled_provider is not None:
             try:
                 if not bool(self._enabled_provider()):
                     return False
             except Exception:
                 pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        return True
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Is a beat due, and will composing it cost a generation?
+
+        Hoists the four gates that used to burn a scheduler slot inside
+        ``run()`` -- intentional hold, garden deferral, cooldown, daily
+        cap -- into a probe that is four kv reads.
+
+        Pressure rises with how long past the cooldown she is, so a long
+        absence produces beats promptly rather than at whatever cadence
+        the interval happened to be. That is the "what is she doing
+        while I'm gone" half of P36.
+
+        ``needs_llm`` is true whenever a worker model is wired, because
+        the summary rephrase runs for any non-precomposed plan even when
+        the ``away_activities_llm_ratio`` dice come up short.
+        """
+        if self._enabled_provider is not None:
+            try:
+                if not bool(self._enabled_provider()):
+                    return WorkSignal(pressure=0.0, reason="disabled")
+            except Exception:
+                pass
+        if self._intentional_hold_active(now):
+            return WorkSignal(pressure=0.0, reason="intentional_hold")
+        if self._garden_visit_outstanding(now):
+            return WorkSignal(pressure=0.0, reason="garden_visit")
+        if not self._cooldown_elapsed(now):
+            return WorkSignal(pressure=0.0, reason="cooldown")
+        if not self._under_daily_cap(now):
+            return WorkSignal(pressure=0.0, reason="daily_cap")
+
+        pressure = 1.0
+        if self._cooldown_seconds > 0:
+            last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))
+            if last is not None:
+                over = (now - last).total_seconds() / self._cooldown_seconds
+                # 1x cooldown -> 0.5, 2x or more -> saturated.
+                pressure = max(0.5, min(1.0, over / 2.0))
+        return WorkSignal(
+            pressure=pressure,
+            reason="beat_due",
+            needs_llm=bool(self._ollama is not None and self._model),
         )
 
     def run(self) -> dict[str, Any]:

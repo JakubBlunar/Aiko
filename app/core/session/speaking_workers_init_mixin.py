@@ -983,13 +983,21 @@ class SpeakingWorkersInitMixin:
                     MemoryPromotionWorker,
                 )
 
+                mem = self._memory_settings
                 self._idle_scheduler = IdleWorkerScheduler(
-                    wake_seconds=self._memory_settings.idle_worker_wake_seconds,
+                    wake_seconds=mem.idle_worker_wake_seconds,
                     is_quiet_callback=self._is_user_idle,
                     kv_get=self._chat_db.kv_get,
                     kv_set=self._chat_db.kv_set,
-                    tick_budget_ms=self._memory_settings.idle_worker_tick_budget_ms,
-                    max_per_tick=self._memory_settings.idle_worker_max_per_tick,
+                    tick_budget_ms=mem.idle_worker_tick_budget_ms,
+                    max_per_tick=mem.idle_worker_max_per_tick,
+                    compute_budget_ms=mem.idle_worker_compute_budget_ms,
+                    pressure_enabled=mem.idle_worker_pressure_enabled,
+                    urgency_threshold=mem.idle_worker_urgency_threshold,
+                    min_interval_ratio=mem.idle_worker_min_interval_ratio,
+                    depth_max_multiplier=mem.idle_worker_depth_max_multiplier,
+                    idle_depth_provider=self._idle_depth_seconds,
+                    contention_provider=self._llm_contention_grade,
                 )
                 self._idle_scheduler.register(
                     MemoryPromotionWorker(self._memory_store, self._memory_settings)

@@ -362,6 +362,64 @@ def _parse_iso(value: str | None) -> datetime | None:
     return ts
 
 
+def stage_promotion_due(
+    item: "Item",
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Which stage a plant *would* advance to, or ``None``. Read-only.
+
+    Split out of :func:`promote_stage` so a scheduler ``demand()`` probe
+    can ask the question without answering it. That matters more than it
+    looks: :meth:`WorldStore.list_items` hands out live references into
+    the in-memory mirror, so a probe that mutated ``item.state`` would
+    advance a plant's stage without ever persisting the row.
+    """
+    stage, _dry_hours = _evaluate_promotion(item, now=now)
+    return stage
+
+
+def _evaluate_promotion(
+    item: "Item",
+    *,
+    now: datetime | None = None,
+) -> tuple[str | None, float | None]:
+    """``(next_stage, dry_hours)``. Read-only.
+
+    ``dry_hours`` is non-None only when promotion was blocked by
+    drought, which is the one case where :func:`promote_stage` still has
+    bookkeeping to do despite not advancing.
+    """
+    if item.kind != "plant":
+        return None, None
+    state = item.state or {}
+    current = str(state.get("stage", "sprout")).lower()
+    if current not in VALID_PLANT_STAGES:
+        current = "sprout"
+    if current == "mature":
+        return None, None
+    try:
+        idx = VALID_PLANT_STAGES.index(current)
+    except ValueError:
+        return None, None
+    min_age = float(_STAGE_MIN_AGE_HOURS.get(current, 24.0))
+    now_dt = now or timephrase.utcnow()
+    last_promotion = _parse_iso(state.get("last_promotion_at")) or _parse_iso(
+        state.get("planted_at")
+    ) or _parse_iso(item.created_at)
+    if last_promotion is None:
+        return None, None
+    age_hours = (now_dt - last_promotion).total_seconds() / 3600.0
+    if age_hours < min_age:
+        return None, None
+    last_water = _parse_iso(state.get("last_watered_at"))
+    if last_water is not None:
+        dry_hours = (now_dt - last_water).total_seconds() / 3600.0
+        if dry_hours > _DRY_TOLERANCE_HOURS:
+            return None, dry_hours
+    return VALID_PLANT_STAGES[idx + 1], None
+
+
 def promote_stage(
     item: "Item",
     *,
@@ -378,40 +436,19 @@ def promote_stage(
 
     Mutates ``item.state`` in place when it advances (sets ``stage`` and
     ``last_promotion_at``). The caller is responsible for writing the
-    row back via ``WorldStore.update_item``.
+    row back via ``WorldStore.update_item``. Use
+    :func:`stage_promotion_due` when you only want the answer.
     """
-    if item.kind != "plant":
-        return None
-    state = item.state or {}
-    current = str(state.get("stage", "sprout")).lower()
-    if current not in VALID_PLANT_STAGES:
-        current = "sprout"
-    if current == "mature":
-        return None
-    try:
-        idx = VALID_PLANT_STAGES.index(current)
-    except ValueError:
-        return None
-    min_age = float(_STAGE_MIN_AGE_HOURS.get(current, 24.0))
     now_dt = now or timephrase.utcnow()
-    last_promotion = _parse_iso(state.get("last_promotion_at")) or _parse_iso(
-        state.get("planted_at")
-    ) or _parse_iso(item.created_at)
-    if last_promotion is None:
-        return None
-    age_hours = (now_dt - last_promotion).total_seconds() / 3600.0
-    if age_hours < min_age:
-        return None
-    last_water = _parse_iso(state.get("last_watered_at"))
-    if last_water is not None:
-        dry_hours = (now_dt - last_water).total_seconds() / 3600.0
-        if dry_hours > _DRY_TOLERANCE_HOURS:
+    next_stage, dry_hours = _evaluate_promotion(item, now=now_dt)
+    state = item.state or {}
+    if next_stage is None:
+        if dry_hours is not None:
             # Bump days_dry so callers / UI can show drought stress, but
             # don't advance the stage.
             state["days_dry"] = round(dry_hours / 24.0, 1)
             item.state = state
-            return None
-    next_stage = VALID_PLANT_STAGES[idx + 1]
+        return None
     state["stage"] = next_stage
     state["last_promotion_at"] = now_dt.isoformat()
     state["days_dry"] = 0
