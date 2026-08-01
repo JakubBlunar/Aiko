@@ -195,6 +195,67 @@ def prepare_tts_text(text: str) -> str:
     return cleaned
 
 
+# K49: the non-lexical hesitation sounds, longest-first so "uhm" wins over
+# "uh" and "mmhm" over "mm". Deliberately narrow -- these are the ones a
+# grapheme-driven engine has to guess at, and Pocket-TTS has no phoneme
+# control, so "uhm" can surface as "uh-em". Ordinary interjections ("wow",
+# "oh", "huh", "yeah", "oof") are real words the model already says
+# correctly, so they are never stripped and stay in the audio.
+_TTS_FILLER_WORDS = (
+    "uhm", "uhh", "uh",
+    "ummm", "umm", "um",
+    "mmhm", "mhm", "mmh", "mmm", "mm",
+    "hmmm", "hmm", "hm",
+    "erm", "er", "eh",
+)
+
+# A filler is only removed when it is its own clause: at the start of the
+# text or after sentence/clause punctuation, AND followed by punctuation of
+# its own. "it's, uhm, complicated" qualifies; "the uh oh moment" does not.
+# Requiring both sides is what keeps this from mangling grammar -- a bare
+# "it's uhm complicated" is left alone rather than guessed at.
+_TTS_FILLER_RE = re.compile(
+    r"(^|[.!?;:]\s+|,\s*|--\s*|\u2014\s*)"
+    r"(?:" + "|".join(_TTS_FILLER_WORDS) + r")"
+    r"\s*(?:\.{2,3}|[,.!?]|--|\u2014)\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_speech_fillers(text: str) -> str:
+    """Drop non-lexical hesitation fillers from text bound for TTS.
+
+    For ``agent.speech_texture_spoken = false``: the persona invites small
+    disfluencies, which read well in the transcript but are synthesised
+    letter-by-letter by an engine with no phoneme control. This removes only
+    the unpronounceable ones from the spoken stream, leaving the transcript
+    untouched (callers apply it on the TTS branch only).
+
+    Never returns empty for non-empty input. A reply that is *entirely* a
+    filler ("Mhm.") is a real acknowledgement rather than a stumble, so
+    stripping it would silence a deliberate turn; those pass through.
+    """
+    original = str(text or "")
+    if not original.strip():
+        return original
+    cleaned = original
+    # Repeat to catch runs ("uhm, mm, yeah") -- one pass consumes the
+    # separator the next match would need as its leading boundary. Bounded
+    # so a pathological input can't spin.
+    for _ in range(4):
+        stripped = _TTS_FILLER_RE.sub(r"\1", cleaned)
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    # Removing a trailing filler can leave dangling clause punctuation
+    # ("yeah, mm." -> "yeah,").
+    cleaned = re.sub(r"[,;:]+\s*$", ".", cleaned)
+    cleaned = " ".join(cleaned.split())
+    if not cleaned.strip(".,;:!? "):
+        return original
+    return cleaned
+
+
 def infer_tts_reaction(text: str) -> str:
     lowered = str(text or "").strip().lower()
     if not lowered:

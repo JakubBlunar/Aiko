@@ -270,22 +270,71 @@ persona grammar addendum.
 
 ## K49. Messiness permission — typed imperfection
 
-The `[[correct]]old[[/correct]]new` self-edit machinery is fully
-wired (grammar, strike-through UI, `tsk` earcon) but the persona
-never mentions it, and the persona's polish rules ("output exactly
-ONE short reply", no markdown) push every typed reply toward
-flawless copy — zero trailing thoughts, zero restarts, zero typos.
-Perfect output is itself a robotic tell. When closeness+trust sit
-high, render an occasional low-frequency "messiness permission" cue
-(allow an unfinished sentence, a "...", one `[[correct]]` per few
-sessions), and optionally track over-polish (20 turns of perfect
-punctuation + zero disfluency) as a style-rut variant that nudges
-variety. Must stay rare — the point is texture, not performance.
-Key files: [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(grammar addendum),
-[`app/core/affect/aiko_style_tracker.py`](../../app/core/affect/aiko_style_tracker.py)
-(over-polish band).
+**Phase 1 shipped (disfluency permission). The `[[correct]]` half is
+still open.**
+
+The original entry bundled two things that turned out to be
+independent, so they're split here.
+
+**Shipped — casual speech texture.** The persona now carries a
+`Speech texture:` subsection granting standing permission for small
+disfluencies inside a real thought, with the distinction that made
+the whole thing work spelled out explicitly: a disfluency sits
+*inside* a thought, throat-clearing ("That's a great question")
+sits *in front of* one and delays it. The old length-sprawl fix
+told her to "cut filler", which would have suppressed exactly what
+we were enabling, so it now says cut *padding* instead. Gated by
+`agent.speech_texture_enabled`, which lifts the subsection out of
+the loaded persona rather than keeping a second copy of the wording
+in code. A separate `agent.speech_texture_spoken` strips only the
+*non-lexical* fillers (`uhm`, `mm`, `hmm`, …) from the TTS stream,
+because Pocket-TTS has no phoneme control and synthesises them
+grapheme-by-grapheme; ordinary words like `wow` / `oh` / `huh` are
+spoken either way. See
+[`docs/configuration.md`](../configuration.md) for both keys.
+
+Two findings from verifying against a 9B in the throwaway
+container, worth knowing before touching the wording:
+
+- The model reads a disfluency list as an invitation to *open* with
+  one. First pass put a reaction word in the opener slot in 7 of 8
+  replies, which is the opener rut wearing a new coat. Reframing the
+  instruction positively ("start with the actual content; if a
+  reaction arrives first, move it a few words in") cut that to 4 of
+  8 — negations alone didn't land.
+- "Keep it sparse" is aspirational at this model size: the rate
+  settled around 75% of replies rather than the intended minority.
+  Zero throat-clearing across 22 probe turns, though, which was the
+  real risk.
+
+**Not built — over-polish band.** The proposed fourth
+`aiko_style_tracker` band (track `has_disfluency` in
+`_TurnFeatures`, fire when a window has none) was deliberately
+skipped: it exists to catch her drifting back to clean, and she
+drifts the *other* way. The existing opener-rut band already
+backstops the over-frequency direction, since reaction words in the
+opener slot count as openers like anything else. Revisit only if a
+larger model follows the sparsity instruction well enough to go
+clean again.
+
+**Still open — `[[correct]]` self-edit.** The
+`[[correct]]old[[/correct]]new` machinery is fully wired (grammar,
+strike-through UI, `tsk` earcon) but the persona still never
+mentions it, so it never fires. The original idea stands: when
+closeness+trust sit high, render an occasional low-frequency cue
+allowing an unfinished sentence or one `[[correct]]` per few
+sessions. Must stay rare — the point is texture, not performance.
+
+Key files:
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+[`app/core/session/session_text_utils.py`](../../app/core/session/session_text_utils.py)
+(`strip_speech_fillers`),
+[`app/core/session/prompt_support.py`](../../app/core/session/prompt_support.py)
+(`strip_persona_section`),
+[`app/core/voice/cadence.py`](../../app/core/voice/cadence.py)
+(double-filler guard in `_maybe_prefix`),
+[`app/core/persona/aiko_style_tracker.py`](../../app/core/persona/aiko_style_tracker.py)
+(where the over-polish band would go, if ever).
 
 ---
 

@@ -2764,6 +2764,7 @@ class SpeakingWorkersInitMixin:
             ),
             filler_threshold_ms=settings.agent.filler_first_token_ms,
             filler_enabled=settings.agent.filler_enabled,
+            speech_texture_spoken=settings.agent.speech_texture_spoken,
             listen_extensions_provider=lambda: int(
                 getattr(self, "_last_listen_extensions", 0) or 0
             ),

@@ -812,6 +812,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     agent_raw.get("style_tracker_cue_cooldown_turns", 5)
                 ),
             ),
+            speech_texture_enabled=bool(
+                agent_raw.get("speech_texture_enabled", True),
+            ),
+            speech_texture_spoken=bool(
+                agent_raw.get("speech_texture_spoken", True),
+            ),
             question_balance_enabled=bool(
                 agent_raw.get("question_balance_enabled", True),
             ),

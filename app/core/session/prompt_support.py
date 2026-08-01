@@ -28,6 +28,46 @@ log = logging.getLogger("app.prompt_assembler")
 
 DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 
+# K49: the persona subsection that grants disfluency permission. Named
+# here so ``agent.speech_texture_enabled = false`` can lift it back out of
+# the user-editable persona file rather than us keeping a second copy of
+# the guidance in code.
+SPEECH_TEXTURE_SECTION_HEADER = "Speech texture:"
+
+
+def strip_persona_section(text: str, header: str) -> str:
+    """Drop a labelled ``Header:`` subsection and its bullets from a persona.
+
+    Used to gate an optional persona subsection off without maintaining a
+    duplicate copy of it in code. Matches the header line exactly, then
+    consumes its bullet lines (``- ...`` plus indented continuations) and
+    one trailing blank line so the surrounding sections stay separated.
+
+    A no-op when the header isn't found -- the persona is user-editable, so
+    a renamed or deleted section simply means the toggle has nothing to do.
+    """
+    if not text or not header:
+        return text
+    lines = text.splitlines()
+    try:
+        start = next(
+            i for i, line in enumerate(lines) if line.strip() == header
+        )
+    except StopIteration:
+        return text
+    end = start + 1
+    while end < len(lines):
+        stripped = lines[end].strip()
+        if stripped.startswith("-") or (
+            stripped and lines[end][:1] in (" ", "\t")
+        ):
+            end += 1
+            continue
+        break
+    if end < len(lines) and not lines[end].strip():
+        end += 1
+    return "\n".join(lines[:start] + lines[end:]).strip()
+
 # Phase 1c: stage-direction grammar. Folded into the system prompt
 # right after the persona so the model knows about it without us having
 # to mutate the user-customisable persona file. The trailing

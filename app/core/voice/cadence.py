@@ -206,12 +206,27 @@ def derive_sentence_reaction(text: str, base_reaction: str) -> str:
     return base_reaction or "neutral"
 
 
+# K49: the sentence already opens on an interjection, so a micro-prefix
+# would stack two of them ("Oh, oh -- wow, okay"). Broader than the TTS
+# strip list on purpose: the collision here is about doubling a reaction,
+# not about whether the engine can pronounce it.
+_OPENING_INTERJECTION_RE = re.compile(
+    r"^\s*(?:uhm|uhh|uh|ummm|umm|um|mmhm|mhm|mmh|mmm|mm|hmmm|hmm|hm"
+    r"|erm|er|eh|oh|ah|aw|aww|wow|whoa|woah|oof|ugh|huh|hah|ha"
+    r"|yeah|yep|yup|nah|nope|okay|ok|well|so|hey|right|fair|true)"
+    r"\b[\s,.!?:;-]",
+    re.IGNORECASE,
+)
+
+
 def _maybe_prefix(
     text: str,
     ctx: CadenceContext,
 ) -> tuple[str, str]:
     """Return ``(prefix_text, prefix_reaction)`` or ``("", "")`` to skip."""
     if not text:
+        return "", ""
+    if _OPENING_INTERJECTION_RE.match(text):
         return "", ""
     rng = ctx.rng
     # Tired / late: occasional small "Mm." or "Yeah—".

@@ -19,6 +19,8 @@ from app.core.infra.chat_database import MessageRow, SummaryRow
 from app.core.session.prompt_support import (
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
+    SPEECH_TEXTURE_SECTION_HEADER,
+    strip_persona_section,
     _TOUCH_GRAMMAR_ADDENDUM,
     _safe_provider,
     _StaticSlices,
@@ -824,6 +826,11 @@ class PromptAssemblerHelpersMixin:
             self._persona_cache = (mtime, raw)
         if not raw:
             return ""
+        # K49: gate applied after the mtime cache so flipping the setting at
+        # runtime takes effect without a persona reload, and the cache keeps
+        # holding what the file actually says.
+        if not getattr(self, "_speech_texture_enabled", True):
+            raw = strip_persona_section(raw, SPEECH_TEXTURE_SECTION_HEADER)
         # Phase 4d: render the {user_name} placeholder per-call so a rename
         # via onboarding takes effect without invalidating the mtime cache.
         # If the persona file has stray ``{`` braces (e.g. literal JSON) the

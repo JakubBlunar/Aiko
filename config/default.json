@@ -216,6 +216,8 @@
     "style_tracker_avg_questions_threshold": 1.5,
     "style_tracker_length_avg_threshold": 50.0,
     "style_tracker_cue_cooldown_turns": 5,
+    "speech_texture_enabled": true,
+    "speech_texture_spoken": true,
     "question_balance_enabled": true,
     "question_balance_ratio_threshold": 0.55,
     "question_balance_window": 10,
