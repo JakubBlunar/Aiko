@@ -33,6 +33,16 @@ background task.
 Paced by a per-fire wall-clock cooldown (kv watermark). Every failure
 path is swallowed and logged at debug — the worst case is a missed
 beat, never a corrupt row.
+
+Why this one stays off the cue pool
+-----------------------------------
+A promise is a memory before it is a cue. ``memories`` already holds the
+commitment and its lifecycle, the post-turn hook already decides whether
+Aiko made good on it, and the row outlives any single nudge — so pooling
+the cue would mean two stores answering "has she dealt with this yet",
+which is the drift the pool exists to end. What it does take from P36 is
+:meth:`demand`: whether an owed loop-close is ready to say is two kv
+reads, and that is a better admission signal than a fixed interval.
 """
 from __future__ import annotations
 
@@ -42,7 +52,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.memory import promise_lifecycle as lifecycle
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -145,9 +155,39 @@ class PromiseFollowthroughWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        # Hard veto only. The interval is the heartbeat now, and whether
+        # there is a beat waiting to be armed decides the rest.
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Full pressure when a loop could be closed, none when it cannot.
+
+        Both gates are read from kv rather than from the promise table:
+        an occupied slot means a cue is already waiting to be said, and
+        an unspent cooldown means the next one must not be armed yet.
+        Either way the scan would find nothing it is allowed to use, so
+        it is not worth ranking the worker above one that has work.
+
+        ``run`` re-checks both. This is an ordering hint, and the
+        heartbeat can still admit the worker past it.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        if load_pending(self._kv_get) is not None:
+            return WorkSignal(pressure=0.0, reason="cue already waiting")
+        last_fired = _parse_iso(self._kv_safe_get(_KV_LAST_FIRED_AT))
+        if (
+            last_fired is not None
+            and (now - last_fired).total_seconds()
+            < self._cooldown_hours * 3600.0
+        ):
+            return WorkSignal(pressure=0.0, reason="cooling down")
+        return WorkSignal(pressure=1.0, reason="slot free")
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():

@@ -308,6 +308,27 @@ def render_inner_life_block(
     return core + tail
 
 
+def concern_subject(kind: str, detail: str = "") -> str:
+    """What a check-in about this finding would be *about*.
+
+    The cue pool decides Aiko used a cue by looking for its subject in
+    what she said, so this has to be the pattern rather than the
+    sentence: she is told to phrase the check-in herself, and the words
+    she reaches for ("have you eaten?") share almost nothing with the
+    cue text ("he's mentioned not keeping up with eating"). Short and
+    concrete for the lexical path; the cosine backstop in the policy
+    covers the two kinds whose natural phrasing avoids the noun
+    entirely.
+    """
+    if kind == KIND_LATE_NIGHTS:
+        return "late nights, up in the small hours"
+    if kind == KIND_SELF_NEGLECT:
+        return (detail or "looking after himself").strip()
+    if kind == KIND_ROUGH_STRETCH:
+        return "a rough stretch, weighing heavy for a while"
+    return ""
+
+
 # ── journal-ring helpers (mirror growth_witness / self_callback) ────────
 
 

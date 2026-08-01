@@ -55,12 +55,12 @@ def conditional_handling_path_for(persona_path: Path) -> Path:
 #
 # Keys must be names registered in ``_PROMPT_BLOCK_TIERS``; a block may
 # claim more than one header when one renderer covers several situations.
-# The three entries here share a reason for not being pool cues, and it
-# is the same test that decides the question generally: does acting on
-# the cue leave a lexical trace? Consumption is measured by looking for
-# the cue's subject in Aiko's reply, so a cue that changes *how* she
-# speaks rather than *what* she says can be followed perfectly and still
-# match nothing. All three are register instructions -- a welcome-back
+# Most entries here share a reason for not being pool cues, and it is the
+# same test that decides the question generally: does acting on the cue
+# leave a lexical trace? Consumption is measured by looking for the cue's
+# subject in Aiko's reply, so a cue that changes *how* she speaks rather
+# than *what* she says can be followed perfectly and still match nothing.
+# Three of the four below are register instructions -- a welcome-back
 # warmth, a feeling her face outran, a mood she has been carrying -- and
 # pooling them would only manufacture misses.
 HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
@@ -80,6 +80,15 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     # that follows it perfectly names nothing at all.
     "mood_drift_block": (
         "What I've been noticing over time:",
+    ),
+    # K43: the one entry that fails the test for a different reason. A
+    # promise names a subject and would match fine -- but the promise
+    # *memory* already carries its own lifecycle, and the post-turn hook
+    # already decides whether she made good on it. Pooling the cue would
+    # put a second store in charge of the same fact. The hoist still
+    # applies: it is a rare block either way.
+    "promise_followthrough_block": (
+        "Things you said you'd do:",
     ),
 }
 

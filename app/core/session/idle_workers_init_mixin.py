@@ -156,7 +156,8 @@ class IdleWorkersInitMixin:
 
             # K72 — wellbeing-concern worker (rare, hard-gated "you doing
             # okay?"). Reads recent message timestamps + text + the H3
-            # mood-drift ring. Watermark-gated cue-producer, long cooldown.
+            # mood-drift ring. Pooled cue-producer; the week-long spacing
+            # lives on the type's ``surface_cooldown_hours``.
             try:
                 from app.core.proactive.wellbeing_concern_worker import (
                     WellbeingConcernWorker,
@@ -173,13 +174,12 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: self._cue_store,
+                    user_name_provider=lambda: self.user_display_name,
                     interval_seconds=getattr(
                         agent,
                         "wellbeing_concern_check_interval_seconds",
                         21600,
-                    ),
-                    cooldown_days=getattr(
-                        agent, "wellbeing_concern_cooldown_days", 7.0
                     ),
                     window_days=getattr(
                         mem, "wellbeing_concern_window_days", 7
@@ -225,6 +225,8 @@ class IdleWorkersInitMixin:
                             True,
                         )
                     ),
+                    cue_store_provider=lambda: self._cue_store,
+                    user_name_provider=lambda: self.user_display_name,
                     interval_seconds=getattr(
                         agent, "shared_ritual_check_interval_seconds", 86400
                     ),

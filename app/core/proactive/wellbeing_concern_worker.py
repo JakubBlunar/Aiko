@@ -4,22 +4,30 @@ During a quiet window this worker reads multi-day signal — the user's
 recent message timestamps (small-hours activity), recent message text
 (explicit "haven't slept / eaten" mentions), and the H3 mood-drift ring
 (a heavy low stretch) — runs the pure :func:`pick_concern` detector, and
-only when a real worrying pattern clears a high bar AND the long cooldown
-has elapsed drafts ONE private cue into the ``aiko.wellbeing_concern`` kv
-ring. The consumer
-:meth:`InnerLifeProvidersMixin._render_wellbeing_concern_block` surfaces
-the newest unseen cue on a later turn (watermark-gated). This worker
-never speaks or fires a proactive nudge.
+only when a real worrying pattern clears a high bar queues ONE private
+cue into ``cue_pool``. The consumer
+:meth:`InnerLifeProvidersMixin._render_wellbeing_concern_block` claims it
+on a later turn. This worker never speaks or fires a proactive nudge.
 
-Pacing (kv watermarks, all swallow-and-log):
-  * ``wellbeing_concern.last_fired_at``  — wall-clock cooldown (days).
-  * ``wellbeing_concern.last_signature`` — same-pattern suppression so
-    the identical "a few late nights" never re-drafts; an *escalation*
-    (more nights / a new neglect category) is a different signature and
-    breaks through.
+Where the pacing went
+---------------------
+The seven-day ``last_fired_at`` cooldown is gone, and with it the
+accident it was standing in for: a producer that drafts one concern a
+week surfaces one a week, so nobody had to say out loud that weekly is
+the intended cadence. Deficit-driven scheduling would have turned that
+into "as often as the shelf empties", so the rarity moved to where it
+belongs — ``CuePolicy.surface_cooldown_hours``, which paces how often
+Aiko *raises* a concern rather than how often the worker looks for one.
+
+What did not move is the signature gate
+(``wellbeing_concern.last_signature``). That is not pacing, it is a
+domain rule: the identical ongoing pattern must not re-draft, while an
+*escalation* (more nights, a new neglect category) is a different
+signature and is meant to break through.
 
 Reads ``messages`` directly (timestamps + content for the lexical scan),
 local-tz the same way K3 ``ScheduleLearner`` does (``dt.astimezone()``).
+The ``aiko.wellbeing_concern`` ring is still written for the debug tools.
 Every failure path is swallowed and logged at debug — the worst case is
 a missed beat, never a crashed tick.
 """
@@ -30,7 +38,8 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect import mood_drift as _md
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.relationship import wellbeing_concern as _wc
 from app.core.infra import timephrase
 
@@ -42,7 +51,6 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.wellbeing_concern_worker")
 
 
-_KV_LAST_FIRED_AT = "wellbeing_concern.last_fired_at"
 _KV_LAST_SIGNATURE = "wellbeing_concern.last_signature"
 
 
@@ -77,8 +85,9 @@ class WellbeingConcernWorker:
         *,
         chat_db: "ChatDatabase",
         enabled_provider: Callable[[], bool] | None = None,
+        cue_store_provider: StoreProvider | None = None,
+        user_name_provider: Callable[[], str] | None = None,
         interval_seconds: float = 21600.0,
-        cooldown_days: float = 7.0,
         window_days: int = 7,
         late_night_min: int = _wc.DEFAULT_LATE_NIGHT_MIN,
         neglect_min_days: int = _wc.DEFAULT_NEGLECT_MIN_DAYS,
@@ -89,8 +98,9 @@ class WellbeingConcernWorker:
     ) -> None:
         self._chat_db = chat_db
         self._enabled_provider = enabled_provider
+        self._cues = CueProducer("wellbeing_concern", cue_store_provider)
+        self._user_name_provider = user_name_provider
         self._interval_seconds = max(60.0, float(interval_seconds))
-        self._cooldown_seconds = max(0.0, float(cooldown_days) * 86400.0)
         self._window_days = max(1, int(window_days))
         self._late_night_min = max(1, int(late_night_min))
         self._neglect_min_days = max(1, int(neglect_min_days))
@@ -98,7 +108,7 @@ class WellbeingConcernWorker:
         self._rough_threshold = float(rough_threshold)
         self._journal_max = max(1, int(journal_max))
         self._clock = clock or _utcnow
-        # MCP debug: bypass the cooldown + signature gates on next run().
+        # MCP debug: bypass the signature gate on next run().
         self._force_next = False
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -110,11 +120,23 @@ class WellbeingConcernWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        # Hard veto only. The interval is the heartbeat now; how much
+        # stock is on the shelf decides the rest.
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> WorkSignal | None:
+        """Pressure from an empty shelf, not from a wall-clock cooldown.
+
+        One concern is the whole inventory -- :func:`pick_concern`
+        returns at most one finding and Aiko should be carrying at most
+        one worry -- so this is effectively binary: something is on the
+        shelf or the worker should go looking.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return self._cues.demand()
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():
@@ -123,9 +145,6 @@ class WellbeingConcernWorker:
         now = self._clock()
         forced = self._force_next
         self._force_next = False
-
-        if not forced and not self._cooldown_elapsed(now):
-            return {"drafted": 0, "skipped_cooldown": True}
 
         late_dates, neglect_days, neglect_cats = self._collect_message_signal(now)
         drift_samples = _md.deserialize_samples(self._kv_get_safe(_md.KV_SAMPLES))
@@ -154,6 +173,25 @@ class WellbeingConcernWorker:
             if last_sig and last_sig == finding.signature:
                 return {"drafted": 0, "same_signature": finding.signature}
 
+        text = _wc.render_inner_life_block(
+            finding.kind,
+            user_display_name=self._user_name(),
+            detail=finding.detail,
+        )
+        subject = _wc.concern_subject(finding.kind, finding.detail)
+        if not text or not subject:
+            return {"drafted": 0, "unrenderable": finding.kind}
+
+        cue_id = self._cues.publish(
+            subject,
+            text,
+            payload={
+                "kind": finding.kind,
+                "detail": finding.detail,
+                "severity": finding.severity,
+                "signature": finding.signature,
+            },
+        )
         _wc.append_finding(
             self._chat_db.kv_get,
             self._chat_db.kv_set,
@@ -166,12 +204,13 @@ class WellbeingConcernWorker:
             },
             max_entries=self._journal_max,
         )
-        self._mark_fired(now, finding.signature)
+        self._kv_set_safe(_KV_LAST_SIGNATURE, finding.signature)
         log.info(
-            "wellbeing-concern drafted: kind=%s detail=%r severity=%.2f",
+            "wellbeing-concern drafted: kind=%s detail=%r severity=%.2f cue=%s",
             finding.kind,
             finding.detail,
             finding.severity,
+            cue_id,
         )
         return {
             "drafted": 1,
@@ -179,6 +218,7 @@ class WellbeingConcernWorker:
             "detail": finding.detail,
             "severity": finding.severity,
             "signature": finding.signature,
+            "cue_id": cue_id,
         }
 
     # ── signal collection ────────────────────────────────────────────
@@ -235,22 +275,18 @@ class WellbeingConcernWorker:
         except Exception:
             return True
 
-    def _cooldown_elapsed(self, now: datetime) -> bool:
-        if self._cooldown_seconds <= 0:
-            return True
-        last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))
-        if last is None:
-            return True
-        return (now - last).total_seconds() >= self._cooldown_seconds
-
-    def _mark_fired(self, now: datetime, signature: str) -> None:
-        self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        self._kv_set_safe(_KV_LAST_SIGNATURE, signature)
+    def _user_name(self) -> str:
+        if self._user_name_provider is None:
+            return "them"
+        try:
+            return str(self._user_name_provider() or "them")
+        except Exception:
+            return "them"
 
     # ── helpers ──────────────────────────────────────────────────────
 
     def force_next(self) -> None:
-        """Arm a one-shot bypass of the cooldown + signature gates."""
+        """Arm a one-shot bypass of the signature gate."""
         self._force_next = True
 
     def _kv_get_safe(self, key: str) -> str | None:

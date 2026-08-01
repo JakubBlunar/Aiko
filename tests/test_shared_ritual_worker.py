@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_store import CueStore
 from app.core.proactive.shared_ritual_worker import SharedRitualWorker
 from app.core.relationship import shared_ritual as sr
 
@@ -45,9 +49,20 @@ def _now() -> datetime:
     return datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _worker(db, **kw):
+def _worker(db, *, cues=None, **kw):
     kw.setdefault("min_messages", 3)
-    return SharedRitualWorker(chat_db=db, clock=_now, **kw)
+    return SharedRitualWorker(
+        chat_db=db,
+        clock=_now,
+        cue_store_provider=(lambda: cues) if cues is not None else None,
+        user_name_provider=lambda: "Jacob",
+        **kw,
+    )
+
+
+def _cue_store() -> tuple[CueStore, TemporaryDirectory]:
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    return CueStore(ChatDatabase(Path(tmp.name) / "chat.db")), tmp
 
 
 class WorkerTests(unittest.TestCase):
@@ -121,6 +136,69 @@ class WorkerTests(unittest.TestCase):
         w.run()
         again = sr.load_rituals(db.kv_get)
         self.assertTrue(again[0]["acknowledged"])
+
+
+class PoolProductionTests(unittest.TestCase):
+    """The offer lives in the pool; the ritual store only records that
+    one was made."""
+
+    def setUp(self) -> None:
+        self.cues, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+        self.db = FakeDB(_weekly(4, 20, 3, "hey how's it going"))
+
+    def test_a_named_ritual_is_offered_through_the_pool(self) -> None:
+        result = _worker(self.db, cues=self.cues).run()
+        self.assertEqual(result["drafted"], 1)
+        rows = self.cues.pending("shared_ritual")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, "our friday-evening check-ins")
+        self.assertIn("jacob", rows[0].text.lower())
+        self.assertEqual(
+            rows[0].payload["key"], "friday:evening:casual_check_in",
+        )
+
+    def test_publishing_is_what_flips_acknowledged(self) -> None:
+        _worker(self.db, cues=self.cues).run()
+        stored = sr.load_rituals(self.db.kv_get)
+        self.assertTrue(stored[0]["acknowledged"])
+
+    def test_a_second_sweep_does_not_re_offer(self) -> None:
+        worker = _worker(self.db, cues=self.cues)
+        worker.run()
+        self.assertEqual(worker.run()["drafted"], 0)
+        self.assertEqual(len(self.cues.pending("shared_ritual")), 1)
+
+    def test_a_used_offer_is_still_spoken_for(self) -> None:
+        """Broader than the acknowledged flag: even after the row leaves
+        the pending shelf its subject must not come back."""
+        _worker(self.db, cues=self.cues).run()
+        row = self.cues.pending("shared_ritual")[0]
+        self.cues.mark_used(row.id, evidence="test")
+        # Forget the acknowledgment so only the pool can rule it out.
+        sr.save_rituals(
+            self.db.kv_set,
+            [{**r, "acknowledged": False} for r in sr.load_rituals(self.db.kv_get)],
+        )
+        self.assertEqual(_worker(self.db, cues=self.cues).run()["drafted"], 0)
+
+    def test_pressure_falls_once_an_offer_is_waiting(self) -> None:
+        worker = _worker(self.db, cues=self.cues)
+        self.assertEqual(worker.demand(now=_now(), last_run_at=None).pressure, 1.0)
+        worker.run()
+        self.assertEqual(worker.demand(now=_now(), last_run_at=None).pressure, 0.0)
+
+    def test_a_disabled_worker_reports_no_pressure(self) -> None:
+        signal = _worker(
+            self.db, cues=self.cues, enabled_provider=lambda: False,
+        ).demand(now=_now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_no_pool_leaves_the_worker_on_plain_intervals(self) -> None:
+        self.assertIsNone(
+            _worker(self.db).demand(now=_now(), last_run_at=None)
+        )
 
 
 if __name__ == "__main__":

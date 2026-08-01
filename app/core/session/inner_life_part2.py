@@ -1765,17 +1765,16 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         Consumer side of the :class:`WellbeingConcernWorker` producer. The
         worker reads multi-day behavioral signal (small-hours activity,
         explicit "haven't slept / eaten" mentions, a heavy H3 low stretch)
-        and, only when a real worrying pattern clears a high bar + a long
-        cooldown, drafts one finding into ``aiko.wellbeing_concern``. This
-        provider folds the newest unseen finding into the prompt as one
-        optional, private cue Aiko phrases herself -- offered as care, one
-        soft check-in, dropped the instant he deflects. NEVER spoken
-        verbatim.
+        and, when a real worrying pattern clears a high bar, queues one
+        cue. This provider claims it as one optional, private line Aiko
+        phrases herself -- offered as care, one soft check-in, dropped the
+        instant he deflects. NEVER spoken verbatim.
 
-        Watermark-only (``wellbeing_concern.last_surfaced_at``),
-        independent of the gap-return cue family. MCP debug:
-        ``force_wellbeing_concern_surface`` arms
-        ``_wellbeing_concern_force_next`` (ring must be non-empty).
+        Rarity is the type's ``surface_cooldown_hours`` (a week), and it
+        gates opening a *new* concern only: a concern she was shown and
+        never voiced is still owed, so its retry is not made to wait out
+        the week. MCP debug: ``force_wellbeing_concern_surface`` arms
+        ``wellbeing_concern_force_next`` (the pool must hold a cue).
         """
         if not bool(
             getattr(self._settings.agent, "wellbeing_concern_enabled", True)
@@ -1785,132 +1784,45 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         force_next = bool(
             self._debug_overrides.take("wellbeing_concern_force_next", False)
         )
-
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None or not hasattr(chat_db, "kv_get"):
+        row = self.take_pool_cue("wellbeing_concern", force=force_next)
+        if row is None:
             return ""
-
-        try:
-            from app.core.relationship import wellbeing_concern as _wc
-        except Exception:
-            log.debug("wellbeing_concern import failed", exc_info=True)
-            return ""
-
-        ring = _wc.load_findings(chat_db.kv_get)
-        if not ring:
-            return ""
-
-        newest = ring[-1]
-        at = str(newest.get("at") or "")
-        kind = str(newest.get("kind") or "").strip()
-        if not kind:
-            return ""
-
-        watermark_key = "wellbeing_concern.last_surfaced_at"
-        if not force_next:
-            try:
-                last_surfaced = chat_db.kv_get(watermark_key)
-            except Exception:
-                last_surfaced = None
-            if last_surfaced and str(last_surfaced) == at:
-                return ""
-
-        line = _wc.render_inner_life_block(
-            kind,
-            user_display_name=self.user_display_name,
-            detail=str(newest.get("detail") or ""),
+        log.info(
+            "wellbeing-concern fire: cue=%s kind=%s",
+            row.id, row.payload.get("kind"),
         )
-        if not line:
-            return ""
-
-        try:
-            chat_db.kv_set(watermark_key, at)
-        except Exception:
-            log.debug(
-                "wellbeing_concern watermark write failed", exc_info=True,
-            )
-
-        log.info("wellbeing-concern fire: at=%s kind=%s", at, kind)
-        return line
+        return row.text
 
     def _render_shared_ritual_block(self) -> str:
         """K73: surface one warm "this has become our thing" cue.
 
         Consumer side of the :class:`SharedRitualWorker` producer. The
         worker names dyadic ``(cadence, shape)`` rituals into
-        ``aiko.shared_rituals``; this provider folds the newest
-        un-acknowledged one into the prompt as a warm, optional
-        acknowledgment Aiko phrases herself, then flags it acknowledged so
-        it never re-announces (it becomes a light standing reference).
-        NEVER spoken verbatim.
+        ``aiko.shared_rituals`` and queues an offer for the strongest one
+        still unnamed; this provider claims it as a warm, optional
+        acknowledgment Aiko phrases herself. NEVER spoken verbatim.
 
-        Gated by a per-acknowledgment wall-clock cooldown
-        (``shared_ritual.last_surfaced_at``) so a burst of newly-qualified
-        rituals doesn't announce back-to-back. MCP debug:
-        ``force_shared_ritual_surface`` arms ``_shared_ritual_force_next``
-        (bypasses both the cooldown and the acknowledged flag of the
-        strongest pending ritual; store must be non-empty).
+        Spacing is the type's ``surface_cooldown_hours`` (three days), so
+        a burst of newly-qualified rituals cannot announce back-to-back.
+        MCP debug: ``force_shared_ritual_surface`` arms
+        ``shared_ritual_force_next`` (the pool must hold a cue).
         """
-        agent = self._settings.agent
-        if not bool(getattr(agent, "shared_ritual_enabled", True)):
+        if not bool(
+            getattr(self._settings.agent, "shared_ritual_enabled", True)
+        ):
             return ""
 
         force_next = bool(
             self._debug_overrides.take("shared_ritual_force_next", False)
         )
-
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None or not hasattr(chat_db, "kv_get"):
+        row = self.take_pool_cue("shared_ritual", force=force_next)
+        if row is None:
             return ""
-
-
-        try:
-            from app.core.relationship import shared_ritual as _sr
-        except Exception:
-            log.debug("shared_ritual import failed", exc_info=True)
-            return ""
-
-        rituals = _sr.load_rituals(chat_db.kv_get)
-        if not rituals:
-            return ""
-        pick = _sr.pick_unacknowledged(rituals)
-        if pick is None:
-            return ""
-
-        watermark_key = "shared_ritual.last_surfaced_at"
-        now = timephrase.utcnow()
-        if not force_next:
-            cooldown_days = float(
-                getattr(agent, "shared_ritual_surface_cooldown_days", 3.0)
-            )
-            if cooldown_days > 0:
-                try:
-                    raw_last = chat_db.kv_get(watermark_key)
-                except Exception:
-                    raw_last = None
-                last = self._parse_iso_or_none(raw_last)
-                if last is not None and (
-                    (now - last).total_seconds() < cooldown_days * 86400.0
-                ):
-                    return ""
-
-        line = _sr.render_inner_life_block(
-            pick, user_display_name=self.user_display_name,
+        log.info(
+            "shared-ritual fire: cue=%s key=%s label=%r",
+            row.id, row.payload.get("key"), row.subject,
         )
-        if not line:
-            return ""
-
-        key = str(pick.get("key"))
-        try:
-            _sr.save_rituals(
-                chat_db.kv_set, _sr.mark_acknowledged(rituals, key),
-            )
-            chat_db.kv_set(watermark_key, now.isoformat(timespec="seconds"))
-        except Exception:
-            log.debug("shared_ritual ack/watermark write failed", exc_info=True)
-
-        log.info("shared-ritual fire: key=%s label=%r", key, pick.get("label"))
-        return line
+        return row.text
 
     @staticmethod
     def _parse_iso_or_none(value: object):

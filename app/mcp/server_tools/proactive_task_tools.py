@@ -1599,19 +1599,16 @@ def register(mcp, session: "SessionController") -> None:
                             21600,
                         )
                     ),
-                    "cooldown_days": float(
-                        getattr(agent, "wellbeing_concern_cooldown_days", 7.0)
-                    ),
                     "worker_registered": worker is not None,
                     "force_next": bool(
                         session.debug_overrides.peek("wellbeing_concern_force_next", False)
                     ),
+                    "cadence": session.cue_pool_cadence("wellbeing_concern"),
+                    "pool": session.list_cue_pool(
+                        cue_type="wellbeing_concern", limit=6,
+                    ).get("cues", []),
                     "findings": _wc.load_findings(session._chat_db.kv_get),
-                    "last_fired_at": kv("wellbeing_concern.last_fired_at"),
                     "last_signature": kv("wellbeing_concern.last_signature"),
-                    "last_surfaced_at": kv(
-                        "wellbeing_concern.last_surfaced_at"
-                    ),
                     "dry_run": dry,
                 },
                 indent=2,
@@ -1623,10 +1620,10 @@ def register(mcp, session: "SessionController") -> None:
     def force_wellbeing_concern_draft() -> str:
         """Run the wellbeing-concern worker once, right now.
 
-        Arms a one-shot bypass of the cooldown + signature gates, then
-        calls ``run()`` directly so a cue is drafted (when the live signal
-        actually shows a worrying pattern). Pairs with
-        ``force_wellbeing_concern_surface`` for the end-to-end repro.
+        Arms a one-shot bypass of the signature gate, then calls ``run()``
+        directly so a cue is queued (when the live signal actually shows a
+        worrying pattern). Pairs with ``force_wellbeing_concern_surface``
+        for the end-to-end repro.
         """
         try:
             worker = getattr(session, "_wellbeing_concern_worker", None)
@@ -1642,11 +1639,12 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def force_wellbeing_concern_surface() -> str:
-        """Arm a one-shot bypass on the wellbeing-concern cue watermark.
+        """Arm a one-shot bypass on the wellbeing-concern surfacing cadence.
 
         Sets ``_wellbeing_concern_force_next`` so the next provider call
-        ignores the last-surfaced watermark. The ring still has to be
-        non-empty (run ``force_wellbeing_concern_draft`` first if it isn't).
+        claims a cue regardless of the week-long spacing. The pool still
+        has to hold one (run ``force_wellbeing_concern_draft`` first if it
+        does not).
 
         Repro: ``force_wellbeing_concern_draft()`` ->
         ``force_wellbeing_concern_surface()`` -> ``send_message(skip_tts=
@@ -1660,7 +1658,7 @@ def register(mcp, session: "SessionController") -> None:
                     "armed": True,
                     "note": (
                         "next assembly ignores the wellbeing-concern "
-                        "watermark; ring must be non-empty"
+                        "cadence; the pool must hold a cue"
                     ),
                 },
                 indent=2,
@@ -1673,27 +1671,22 @@ def register(mcp, session: "SessionController") -> None:
         """K73 — dump the shared-ritual worker + surfacing state.
 
         The SharedRitualWorker names dyadic ``(cadence, shape)`` rituals
-        that genuinely recurred across weeks into ``aiko.shared_rituals``;
-        ``_render_shared_ritual_block`` surfaces the newest un-acknowledged
-        one once as a warm "this has become our thing" beat (cooldown +
-        acknowledged-flag gated). It is NEVER spoken verbatim.
+        that genuinely recurred across weeks into ``aiko.shared_rituals``
+        and queues an offer for the strongest unnamed one;
+        ``_render_shared_ritual_block`` claims it as a warm "this has
+        become our thing" beat. It is NEVER spoken verbatim.
 
-        Returns a JSON dict with the master switch, cadence + surface
-        cooldown, detection thresholds, whether the worker wired up, the
-        MCP force-next flag, the full ritual store, the strongest pending
-        ritual, and the surfacing watermark.
+        Returns a JSON dict with the master switch, the heartbeat,
+        detection thresholds, whether the worker wired up, the MCP
+        force-next flag, the full ritual store, the strongest ritual still
+        owed an offer, and where the type stands against its surfacing
+        cadence.
         """
         try:
             from app.core.relationship import shared_ritual as _sr
 
             agent = session._settings.agent
             mem = session._memory_settings
-
-            def kv(key: str) -> str | None:
-                try:
-                    return session._chat_db.kv_get(key)
-                except Exception:
-                    return None
 
             rituals = _sr.load_rituals(session._chat_db.kv_get)
             pending = _sr.pick_unacknowledged(rituals)
@@ -1707,11 +1700,6 @@ def register(mcp, session: "SessionController") -> None:
                             agent,
                             "shared_ritual_check_interval_seconds",
                             86400,
-                        )
-                    ),
-                    "surface_cooldown_days": float(
-                        getattr(
-                            agent, "shared_ritual_surface_cooldown_days", 3.0
                         )
                     ),
                     "window_days": int(
@@ -1735,7 +1723,10 @@ def register(mcp, session: "SessionController") -> None:
                     ),
                     "rituals": rituals,
                     "pending": pending,
-                    "last_surfaced_at": kv("shared_ritual.last_surfaced_at"),
+                    "cadence": session.cue_pool_cadence("shared_ritual"),
+                    "pool": session.list_cue_pool(
+                        cue_type="shared_ritual", limit=6,
+                    ).get("cues", []),
                 },
                 indent=2,
             )
@@ -1748,8 +1739,9 @@ def register(mcp, session: "SessionController") -> None:
 
         Arms a one-shot bypass of the min-messages floor, then calls
         ``run()`` directly so the ritual store is refreshed from the live
-        message history immediately. Pairs with
-        ``force_shared_ritual_surface`` for the end-to-end repro.
+        message history and an offer is queued for the strongest unnamed
+        ritual. Pairs with ``force_shared_ritual_surface`` for the
+        end-to-end repro.
         """
         try:
             worker = getattr(session, "_shared_ritual_worker", None)
@@ -1768,9 +1760,9 @@ def register(mcp, session: "SessionController") -> None:
         """Arm a one-shot bypass on the shared-ritual surfacing gates.
 
         Sets ``_shared_ritual_force_next`` so the next provider call
-        ignores both the surface cooldown and the acknowledged flag of the
-        strongest pending ritual. The store still has to be non-empty (run
-        ``force_shared_ritual_draft`` first if it isn't).
+        claims a cue regardless of the three-day spacing. The pool still
+        has to hold one (run ``force_shared_ritual_draft`` first if it
+        does not).
 
         Repro: ``force_shared_ritual_draft()`` ->
         ``force_shared_ritual_surface()`` -> ``send_message(skip_tts=true)``

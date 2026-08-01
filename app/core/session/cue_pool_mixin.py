@@ -535,6 +535,34 @@ class CuePoolMixin:
             "enabled": True,
         }
 
+    def cue_pool_cadence(self, cue_type: str) -> dict[str, Any]:
+        """Where a type stands against its surfacing cooldown.
+
+        For the per-feature MCP state tools, which used to read a
+        ``last_fired_at`` watermark of their own. That watermark is gone
+        for the types whose pacing moved onto ``CuePolicy``, so this is
+        the replacement answer to the question those tools were really
+        asking: may Aiko open a new one of these right now, and if not,
+        what is she waiting on.
+        """
+        policy = self._policy_for(cue_type)
+        store = self._cue_pool_store()
+        last: str | None = None
+        if store is not None:
+            try:
+                last = store.last_surfaced_at(cue_type)
+            except Exception:
+                log.debug(
+                    "cue cadence read failed: type=%s", cue_type, exc_info=True,
+                )
+        return {
+            "surface_cooldown_hours": float(
+                getattr(policy, "surface_cooldown_hours", 0.0) or 0.0
+            ),
+            "last_surfaced_at": last,
+            "blocked": self._cadence_blocked(cue_type),
+        }
+
     def cue_pool_stats(self) -> list[dict[str, Any]] | None:
         """The per-type scoreboard on its own, for the MCP debug view.
 

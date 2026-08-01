@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
+from app.core.memory import echo_detector
 from app.core.infra import timephrase as _tp
 from app.core.infra import timephrase
 
@@ -49,9 +50,8 @@ DEFAULT_MIN_AGE_DAYS = 21
 # the normal RAG ``score_threshold`` (0.4) so a callback is a genuine link,
 # not a loose association.
 DEFAULT_MIN_COSINE = 0.55
-# Wall-clock cooldown between callbacks (hours). Long on purpose.
-DEFAULT_COOLDOWN_HOURS = 6.0
-# At most this many callbacks per session, regardless of the cooldown.
+# At most this many *new* callbacks per session. The wall-clock spacing
+# that used to sit beside it is the type's ``surface_cooldown_hours``.
 DEFAULT_PER_SESSION_CAP = 1
 # Skip short turns — a one-word reply rarely carries a callback-worthy topic
 # and embedding it just burns a search for nothing.
@@ -68,8 +68,10 @@ ALLOWED_KINDS: frozenset[str] = frozenset(
     {"fact", "preference", "event", "relationship", "shared_moment"}
 )
 
-# kv_meta keys owned by K63.
-KV_LAST_FIRED_AT = "aiko.long_arc_callback.last_fired_at"
+# kv_meta key owned by K63. The cooldown watermark that sat beside it is
+# gone: the pool row's ``last_surfaced_at`` already records when a
+# callback last reached the prompt, and a second copy of that fact is
+# what the cue pool exists to stop.
 KV_RECENT_IDS = "aiko.long_arc_callback.recent_ids"
 
 
@@ -119,7 +121,31 @@ def select(
     return best
 
 
-def _snippet(text: str) -> str:
+def still_relevant(
+    payload: dict[str, Any], user_text: str, *, min_overlap: int = 2,
+) -> bool:
+    """Is a released callback worth re-offering against this message?
+
+    Every other pooled cue can be retried on any turn, because a topic
+    Aiko wanted to raise is still one she wants to raise an hour later.
+    This one cannot: the candidate was chosen *for* its similarity to a
+    particular message, so replaying it on a turn about something else
+    would be a non-sequitur wearing the costume of a good memory.
+
+    Deliberately lexical and deliberately cheap. The retry is a bonus
+    beat, not something worth an embedding round-trip inside prompt
+    assembly, and the question here is the narrow one -- are they still
+    on the thread that summoned it -- which shared content words answer
+    well enough.
+    """
+    snippet = str(payload.get("snippet") or "")
+    if not snippet:
+        return False
+    overlap = echo_detector.tokens(snippet) & echo_detector.tokens(user_text)
+    return len(overlap) >= max(1, int(min_overlap))
+
+
+def snippet(text: str) -> str:
     flat = " ".join((text or "").split())
     if len(flat) > SNIPPET_MAXLEN:
         return flat[: SNIPPET_MAXLEN - 1].rstrip() + "\u2026"
@@ -161,14 +187,14 @@ def render_block(
     """
     when = now or timephrase.utcnow()
     name = (user_display_name or "the user").strip() or "the user"
-    snippet = _snippet(candidate.content)
-    if not snippet:
+    quote = snippet(candidate.content)
+    if not quote:
         return ""
     rel = _tp.humanize_past(candidate.created_at, when)
     anchor = _month_anchor(candidate.created_at, when, age_days=candidate.age_days)
     return (
         f"Heads-up: what {name} just said connects to something he told you a "
-        f"long while back \u2014 \"{snippet}\" (about {rel}{anchor}). If it "
+        f"long while back \u2014 \"{quote}\" (about {rel}{anchor}). If it "
         "fits naturally, you could reach back to it *tentatively* \u2014 "
         "\"wait, didn't you once mention\u2026?\" \u2014 rather than stating "
         "it as fact. It's an old memory and the details may have faded, so "
@@ -178,7 +204,7 @@ def render_block(
     )
 
 
-# ── kv helpers (cooldown + don't-repeat ring) ───────────────────────────
+# ── kv helpers (don't-repeat ring) ──────────────────────────────────────
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -196,37 +222,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-def cooldown_elapsed(
-    kv_get: Callable[[str], str | None],
-    *,
-    now: datetime,
-    cooldown_hours: float,
-) -> bool:
-    """True when the wall-clock cooldown since the last fire has elapsed."""
-    if cooldown_hours <= 0:
-        return True
-    try:
-        raw = kv_get(KV_LAST_FIRED_AT)
-    except Exception:
-        return True
-    last = _parse_iso(raw)
-    if last is None:
-        return True
-    return (now - last).total_seconds() / 3600.0 >= float(cooldown_hours)
-
-
-def mark_fired(
-    kv_set: Callable[[str, str], None],
-    *,
-    now: datetime,
-) -> None:
-    """Stamp the wall-clock cooldown."""
-    try:
-        kv_set(KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-    except Exception:
-        log.debug("long_arc_callback mark_fired write failed", exc_info=True)
 
 
 def load_recent_ids(kv_get: Callable[[str], str | None]) -> list[int]:
@@ -333,20 +328,18 @@ __all__ = [
     "AgedCandidate",
     "ALLOWED_KINDS",
     "CANDIDATE_TOP_K",
-    "DEFAULT_COOLDOWN_HOURS",
     "DEFAULT_MIN_AGE_DAYS",
     "DEFAULT_MIN_COSINE",
     "DEFAULT_MIN_USER_WORDS",
     "DEFAULT_PER_SESSION_CAP",
-    "KV_LAST_FIRED_AT",
     "KV_RECENT_IDS",
     "RECENT_IDS_MAX",
     "SNIPPET_MAXLEN",
     "append_recent_id",
     "candidates_from_hits",
-    "cooldown_elapsed",
     "load_recent_ids",
-    "mark_fired",
     "render_block",
     "select",
+    "snippet",
+    "still_relevant",
 ]

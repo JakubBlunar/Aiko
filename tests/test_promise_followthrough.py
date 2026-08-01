@@ -10,7 +10,10 @@ Three pinned contracts:
    assistant promise past the age gate, stamps it ``surfaced``, writes
    the one-shot kv pending slot, respects cooldown / pending / disabled
    gates, and ages out stale promises to ``dropped``.
-3. ``force_arm`` (the MCP path) bypasses age + cooldown gates.
+3. ``demand()`` — the P36 admission signal: full pressure only when the
+   pending slot is free and the arm cooldown is spent, with ``is_ready``
+   reduced to the enable veto.
+4. ``force_arm`` (the MCP path) bypasses age + cooldown gates.
 """
 from __future__ import annotations
 
@@ -349,6 +352,80 @@ class WorkerArmingTests(unittest.TestCase):
         kv = _FakeKv()
         result = _make_worker(store, kv).run()
         self.assertEqual(result["armed"], 0)
+
+
+class WorkerDemandTests(unittest.TestCase):
+    """P36 admission: two kv reads instead of a fixed interval."""
+
+    def _store(self) -> "_FakeMemoryStore":
+        return _FakeMemoryStore([
+            _FakeMemory(1, "Aiko promised: look into LanceDB"),
+        ])
+
+    def test_a_free_slot_is_full_pressure(self) -> None:
+        signal = _make_worker(self._store(), _FakeKv()).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertFalse(signal.needs_llm)
+
+    def test_a_waiting_cue_drops_pressure_to_zero(self) -> None:
+        kv = _FakeKv()
+        kv.set(PENDING_KEY, json.dumps({"memory_id": 99, "what": "x"}))
+        signal = _make_worker(self._store(), kv).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "cue already waiting")
+
+    def test_an_unspent_cooldown_drops_pressure_to_zero(self) -> None:
+        now = datetime.now(timezone.utc)
+        kv = _FakeKv()
+        kv.set(
+            "promise_followthrough.last_fired_at",
+            (now - timedelta(hours=1)).isoformat(),
+        )
+        signal = _make_worker(self._store(), kv, cooldown_hours=6.0).demand(
+            now=now, last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "cooling down")
+
+    def test_a_spent_cooldown_lets_it_back_in(self) -> None:
+        now = datetime.now(timezone.utc)
+        kv = _FakeKv()
+        kv.set(
+            "promise_followthrough.last_fired_at",
+            (now - timedelta(hours=9)).isoformat(),
+        )
+        signal = _make_worker(self._store(), kv, cooldown_hours=6.0).demand(
+            now=now, last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 1.0)
+
+    def test_disabled_reports_no_pressure(self) -> None:
+        signal = _make_worker(self._store(), _FakeKv(), enabled=False).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_is_ready_is_only_the_enable_veto(self) -> None:
+        """The interval is the heartbeat now -- ``is_ready`` must not
+        re-apply the cooldown, or a never-run worker would never start."""
+        now = datetime.now(timezone.utc)
+        kv = _FakeKv()
+        kv.set("promise_followthrough.last_fired_at", now.isoformat())
+        self.assertTrue(
+            _make_worker(self._store(), kv).is_ready(
+                now=now, last_run_at=None,
+            )
+        )
+        self.assertFalse(
+            _make_worker(self._store(), kv, enabled=False).is_ready(
+                now=now, last_run_at=None,
+            )
+        )
 
 
 class ForceArmTests(unittest.TestCase):

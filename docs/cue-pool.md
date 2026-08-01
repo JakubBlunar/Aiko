@@ -192,7 +192,9 @@ prompt merely claims one. The gap-return family cannot work that way.
 Their arming event carries no content — `_pending_turning_over_seconds`
 is a float — and *which* reflection or journal beat gets used is picked
 when the block renders, against the message being answered. Drafting
-ahead would throw that query-awareness away.
+ahead would throw that query-awareness away. `long_arc_callback` is the
+same shape for a stronger reason: its candidate *is* a RAG hit against
+the message being answered.
 
 So the row is written at the moment it surfaces, by
 `CuePoolMixin.record_surfaced_cue()`, already in `surfaced` state and
@@ -356,10 +358,58 @@ heartbeat `demand()` — full pressure until today's sample lands, nothing
 after — so the lazy-sample fallback in its provider stops being
 load-bearing.
 
+## The relationship one-shots
+
+The third batch is the one where the two mechanisms above — the shelf
+and the ledger — landed side by side, and where one type declined both.
+
+**`wellbeing_concern`** and **`shared_ritual`** are ordinary shelf
+types: a worker drafts, `demand()` reports the deficit, the provider
+claims. Both had a producer cooldown (7 days, 3 days) that became
+`surface_cooldown_hours`. Neither keeps a wall-clock gate of its own,
+but both keep a *domain* gate, which is a different thing. The concern
+worker keeps `wellbeing_concern.last_signature` so an identical ongoing
+pattern does not re-draft while an escalation — more nights, a new
+neglect category — is a new signature and gets through. The ritual
+worker keeps `aiko.shared_rituals`, the durable model of which patterns
+exist and how many weeks each has run, and flips `acknowledged` when
+the cue is *published* rather than when it is said: from the store's
+side the only question is whether the ritual still needs an offer, and
+the pool answers everything after that.
+
+**`long_arc_callback`** is a ledger type. Its candidate is a RAG hit
+against the message being answered, so drafting ahead is impossible for
+the same reason as the gap-return family. It is also the one type whose
+`match_mode` had to be `lexical` on principle rather than by
+disposition: the candidate was *selected* by cosine against the user's
+message, so a cosine match afterwards is close to guaranteed and
+measures nothing. `min_overlap=3` compensates for judging a
+several-week-old memory by words alone.
+
+Its retry needed one thing the gap family does not. A released callback
+is about a specific old memory, and the conversation has moved on by the
+next turn — re-offering "you mentioned woodworking a month ago" while
+the user is talking about their tax return is worse than dropping it. So
+`take_pool_cue` gets a `relevant` predicate backed by
+`long_arc_callback.still_relevant()`, a lexical check of the cue's
+subject against the current message. The pool holds the row; relevance
+decides whether this is the turn for it. The per-session cap applies to
+first claims only — a retry is the same callback, not a second one.
+
+**`promise_followthrough`** stayed off the pool, and it is the clearest
+example of the boundary. A promise is a memory before it is a cue:
+`memories` holds the commitment and its lifecycle, the post-turn hook
+already decides whether Aiko made good on it, and the row outlives any
+single nudge. Pooling the cue would mean two stores answering "has she
+dealt with this yet", which is the drift the pool exists to end. It took
+`demand()` anyway — the pending slot and the arm cooldown are two kv
+reads, and that is a better admission signal than a fixed interval.
+
 ## What is not in the pool yet
 
-Twelve types are pooled: eight worker-produced, three on the
-surface-time ledger, and `self_correction` from the turn path. The
+Fifteen types are pooled: ten worker-produced, four on the surface-time
+ledger (`turning_over`, `sleep_return`, `away_activities`,
+`long_arc_callback`), and `self_correction` from the turn path. The
 remaining cue types in `CUE_SPECS` (`self_noticing`,
 `absence_curiosity`, and friends) still ride their `kv_meta` rings and
 are still exempt from consumption matching.
@@ -368,13 +418,6 @@ That exemption is correct for most of them, by the lexical-trace test:
 "echo is meaningless for a cue, because a cue is an instruction" holds
 for a tone or posture instruction and fails only for a cue that names a
 specific subject.
-
-The relationship one-shots (`wellbeing_concern`, `shared_ritual`,
-`promise_followthrough`, `long_arc_callback`) do name subjects and are
-the next candidates. All four are drafted by workers still on the legacy
-scheduling path, and for those the pool migration *is* the
-demand-driven migration: a `CueProducer` gets `demand()` almost for
-free, since shelf depth is the pressure signal.
 
 ## See also
 

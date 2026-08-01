@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.core.affect import mood_drift as md
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_store import CueStore
 from app.core.proactive.wellbeing_concern_worker import WellbeingConcernWorker
 from app.core.relationship import wellbeing_concern as wc
 
@@ -39,8 +43,19 @@ def _now() -> datetime:
     return datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _worker(db: FakeDB, **kw) -> WellbeingConcernWorker:
-    return WellbeingConcernWorker(chat_db=db, clock=_now, **kw)
+def _worker(db: FakeDB, *, cues=None, **kw) -> WellbeingConcernWorker:
+    return WellbeingConcernWorker(
+        chat_db=db,
+        clock=_now,
+        cue_store_provider=(lambda: cues) if cues is not None else None,
+        user_name_provider=lambda: "Jacob",
+        **kw,
+    )
+
+
+def _cue_store() -> tuple[CueStore, TemporaryDirectory]:
+    tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+    return CueStore(ChatDatabase(Path(tmp.name) / "chat.db")), tmp
 
 
 class WorkerTests(unittest.TestCase):
@@ -90,27 +105,10 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["drafted"], 0)
         self.assertTrue(result["no_finding"])
 
-    def test_cooldown_blocks(self) -> None:
+    def test_force_bypasses_the_signature_gate(self) -> None:
         rows = [(_local_ts(d, 3), "hi") for d in (1, 2, 3)]
-        kv = {
-            "wellbeing_concern.last_fired_at": (
-                _now() - timedelta(days=1)
-            ).isoformat(),
-        }
-        db = FakeDB(rows, kv=kv)
-        result = _worker(db, cooldown_days=7.0).run()
-        self.assertEqual(result["drafted"], 0)
-        self.assertTrue(result["skipped_cooldown"])
-
-    def test_force_bypasses_cooldown(self) -> None:
-        rows = [(_local_ts(d, 3), "hi") for d in (1, 2, 3)]
-        kv = {
-            "wellbeing_concern.last_fired_at": (
-                _now() - timedelta(days=1)
-            ).isoformat(),
-        }
-        db = FakeDB(rows, kv=kv)
-        w = _worker(db, cooldown_days=7.0)
+        db = FakeDB(rows, kv={"wellbeing_concern.last_signature": "late_nights:3"})
+        w = _worker(db)
         w.force_next()
         result = w.run()
         self.assertEqual(result["drafted"], 1)
@@ -137,6 +135,51 @@ class WorkerTests(unittest.TestCase):
         result = _worker(db).run()
         self.assertEqual(result["drafted"], 0)
         self.assertTrue(result["no_finding"])
+
+
+class PoolProductionTests(unittest.TestCase):
+    """What replaced the seven-day producer cooldown."""
+
+    def setUp(self) -> None:
+        self.cues, tmp = _cue_store()
+        self.addCleanup(tmp.cleanup)
+
+    def _late_nights(self) -> FakeDB:
+        return FakeDB([(_local_ts(d, 3), "just chatting") for d in (1, 2, 3)])
+
+    def test_a_drafted_concern_lands_in_the_pool(self) -> None:
+        _worker(self._late_nights(), cues=self.cues).run()
+        rows = self.cues.pending("wellbeing_concern")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("night", rows[0].subject)
+        # The rendered line, not the raw finding -- the pool row is what
+        # the provider drops into the prompt.
+        self.assertIn("jacob", rows[0].text.lower())
+        self.assertEqual(rows[0].payload["kind"], wc.KIND_LATE_NIGHTS)
+
+    def test_pressure_falls_once_a_worry_is_on_the_shelf(self) -> None:
+        now = _now()
+        worker = _worker(self._late_nights(), cues=self.cues)
+        self.assertEqual(
+            worker.demand(now=now, last_run_at=None).pressure, 1.0,
+        )
+        worker.run()
+        self.assertEqual(
+            worker.demand(now=now, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_a_disabled_worker_reports_no_pressure(self) -> None:
+        signal = _worker(
+            self._late_nights(), cues=self.cues,
+            enabled_provider=lambda: False,
+        ).demand(now=_now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_no_pool_leaves_the_worker_on_plain_intervals(self) -> None:
+        self.assertIsNone(
+            _worker(self._late_nights()).demand(now=_now(), last_run_at=None)
+        )
 
 
 if __name__ == "__main__":

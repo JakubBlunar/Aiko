@@ -882,6 +882,7 @@ class CuePolicyTests(unittest.TestCase):
                 "sleep_return",
                 "away_activities",
                 "self_correction",
+                "long_arc_callback",
             },
         )
 
