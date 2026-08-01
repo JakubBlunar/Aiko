@@ -28,21 +28,41 @@ log = logging.getLogger("app.prompt_assembler")
 
 DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 
-# The companion file holding the hoisted per-cue handling notes, resolved
-# next to whatever persona file is in use rather than pinned to
-# ``data/persona/``.
+# The companion file holding the hoisted handling notes, resolved next to
+# whatever persona file is in use rather than pinned to ``data/persona/``.
 #
 # It is a separate file because its contents do *not* behave like the rest
 # of the persona: everything in ``aiko_companion.txt`` is always-on prompt
 # text, while these sections are lifted out at load time and re-emitted in
-# T6 only on the turns their cue actually fires. Keeping them inline made
-# that invisible -- the file read as if all of it were the standing prompt.
-CUE_HANDLING_FILENAME = "cue_handling.txt"
+# T6 only on the turns their block actually renders. Keeping them inline
+# made that invisible -- the file read as if all of it were the standing
+# prompt.
+CONDITIONAL_HANDLING_FILENAME = "conditional_handling.txt"
 
 
-def cue_handling_path_for(persona_path: Path) -> Path:
-    """Where to look for the hoisted cue notes given a persona file."""
-    return persona_path.parent / CUE_HANDLING_FILENAME
+def conditional_handling_path_for(persona_path: Path) -> Path:
+    """Where to look for the hoisted handling notes given a persona file."""
+    return persona_path.parent / CONDITIONAL_HANDLING_FILENAME
+
+
+# Prompt block name -> the persona headers whose text rides with it.
+#
+# The pooled cue types carry their own pairing on ``CuePolicy`` (the header
+# sits next to the matching and retry rules it belongs with), and the
+# assembler merges the two maps. This table is for the conditional blocks
+# that are *not* pool cues -- a block can be rare enough to be worth
+# hoisting without having a subject to match consumption against.
+#
+# Keys must be names registered in ``_PROMPT_BLOCK_TIERS``; a block may
+# claim more than one header when one renderer covers several situations.
+HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
+    # K14: a register instruction built from the gap duration, with no
+    # subject of its own -- which is exactly why it is here rather than in
+    # the pool.
+    "absence_curiosity_block": (
+        "When they've been away a while (typed mode):",
+    ),
+}
 
 # K49: the persona subsection that grants disfluency permission. Named
 # here so ``agent.speech_texture_enabled = false`` can lift it back out of
@@ -98,16 +118,17 @@ def strip_persona_section(text: str, header: str) -> str:
     return split_persona_section(text, header)[0]
 
 
-# What replaces the seven hoisted cue sections in the always-on persona.
+# What replaces the hoisted handling sections in the always-on persona.
 #
-# Those sections were ~2,400 characters of "when your context says X, here
-# is how to handle it" sitting in the cache prefix on every single turn,
-# for cues that fire on a small minority of them. The instruction is only
-# actionable when its cue is present, so it now rides along with the cue
-# in T6 and this stanza is what T0 keeps: the general contract, which does
-# apply on every turn -- including, crucially, the turns with no cue at
-# all, where the rule is that nothing is owed.
-CUE_HANDLING_PREAMBLE = (
+# Those sections are "when your context says X, here is how to handle it"
+# -- thousands of characters sitting in the cache prefix on every single
+# turn, for blocks that render on a small minority of them. The
+# instruction is only actionable when its block is present, so it now
+# rides along with the block in T6 and this stanza is what T0 keeps: the
+# general contract, which does apply on every turn -- including,
+# crucially, the turns with no cue at all, where the rule is that nothing
+# is owed.
+HANDLING_PREAMBLE = (
     "Cues in your context:\n"
     "- Some turns your context carries a cue -- a short line about "
     "something that has been on your mind, or something of "

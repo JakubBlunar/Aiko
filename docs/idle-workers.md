@@ -407,7 +407,10 @@ conservative while letting compute scale.
 - **[P45](personality-backlog/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)**
   — partly done. The seven cue workers on the
   [cue pool](cue-pool.md) report pressure from their unspent inventory,
-  which retired five `*_daily_cap` keys; the remaining `*_per_hour_cap`
+  which retired five `*_daily_cap` keys. The three event-armed types that
+  joined the pool later need no scheduling work at all — nothing produces
+  them, so they carry `inventory_target=0` and never ask for a slot. The
+  remaining `*_per_hour_cap`
   keys on other workers are still fixed numbers. The intended
   replacement there is the same idea: a worker that produced a cue
   nobody engaged with should report low pressure because it has said

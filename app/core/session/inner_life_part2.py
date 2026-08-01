@@ -35,6 +35,27 @@ def _parse_dt_utc(value):
     return dt.astimezone(timezone.utc)
 
 
+# Assemblies an armed gap slot may go unspent before the moment is
+# written off. More than one because the pickers can come up empty on a
+# turn and be fruitful on the next; not many more because a welcome-back
+# goes stale, and holding the slot costs a picker run each time.
+_GAP_SLOT_ATTEMPTS = 3
+
+_DREAM_PREFIX = "[dream] "
+
+
+def _strip_dream_prefix(content: str) -> str:
+    """Reflection text without the ``[dream]`` marker, for subject matching.
+
+    The marker is storage bookkeeping. Leaving it on the cue's subject
+    would put a word in there that Aiko can never say.
+    """
+    text = str(content or "").strip()
+    if text.lower().startswith(_DREAM_PREFIX):
+        return text[len(_DREAM_PREFIX):].strip()
+    return text
+
+
 class InnerLifePart2Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 2 of 4)."""
 
@@ -429,12 +450,24 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         engagement tracker when the typed gap landed in the
         absence-curiosity band) and renders a short line nudging Aiko
         toward warm curiosity about where the user has been. One-shot:
-        the slot is cleared on read so the cue appears exactly once.
+        the slot is cleared once the cue reaches the prompt, so it
+        appears exactly once.
+
+        Alone in the gap family in staying off the cue pool, and for a
+        reason that is about the cue rather than about effort: what it
+        renders is a register instruction built from the duration, with
+        no subject in it. Consumption matching asks "did she say this
+        thing" and there is no thing -- a warm welcome-back can be
+        letter-perfect without reusing a single word of the cue. Pooling
+        it would manufacture misses.
 
         Empty string when the master switch is off, when no absence
-        result is pending, or when the duration falls outside the
-        configured band (defensive double-check against settings that
-        flipped between turns).
+        result is pending, or when the slot holds something unusable.
+        The clear moved below those checks so it happens on the path
+        that renders rather than on the path that reads -- the two
+        coincide today, since an unparseable duration is not worth
+        retrying either way, and the point is that a gate added later
+        cannot quietly spend the return.
         """
         if not bool(
             getattr(
@@ -447,11 +480,11 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         seconds = getattr(self, "_pending_absence_seconds", None)
         if seconds is None:
             return ""
-        self._pending_absence_seconds = None
         try:
             seconds_f = float(seconds)
         except (TypeError, ValueError):
-            return ""
+            seconds_f = 0.0
+        self._pending_absence_seconds = None
         if seconds_f <= 0.0:
             return ""
 
@@ -480,6 +513,32 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "explanation. The cue is curiosity, not absence-anxiety."
         )
 
+    def _spend_gap_slot(self, attr: str, *, fired: bool) -> None:
+        """Clear an armed gap slot, or leave it armed for another look.
+
+        The slot used to clear the instant it was read, which spent the
+        return-from-gap opportunity on turns where nothing reached the
+        prompt at all -- the picker found no candidate, the overnight
+        check failed. Those are exactly the turns worth trying again:
+        nothing was said, so nothing was used up.
+
+        Bounded by ``_GAP_SLOT_ATTEMPTS`` rather than held until it
+        fires. The retry that matters is for a cue Aiko *saw* and passed
+        on, and that one lives in the pool with its own budget; this only
+        covers the narrower case of a picker that came up empty, which
+        stops being worth re-running once the return is no longer recent.
+        """
+        attempts = getattr(self, "_gap_slot_attempts", None)
+        if attempts is None:
+            attempts = {}
+            self._gap_slot_attempts = attempts
+        spent = attempts.get(attr, 0) + 1
+        if fired or spent >= _GAP_SLOT_ATTEMPTS:
+            attempts.pop(attr, None)
+            setattr(self, attr, None)
+            return
+        attempts[attr] = spent
+
     def _render_turning_over_block(self) -> str:
         """K28: surface one recent reflection on the first turn after a gap.
 
@@ -490,12 +549,17 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         ``turning_over`` surfaces what Aiko's been thinking about
         in the meantime. The two stack on the 90 min - 4h overlap.
 
-        One-shot contract: reads ``self._pending_turning_over_seconds``
-        (armed by ``post_turn_mixin`` when ``engagement.latency_seconds
-        >= memory.turning_over_min_gap_minutes * 60``), clears the
-        slot, and runs the picker
-        (:func:`app.core.session.inner_life.turning_over.pick_turning_over`).
-        Falls silent when:
+        Two ways to fire. A released pool row -- a reflection she was
+        shown last time and did not pick up -- is preferred, because it
+        is a cue with unfinished business rather than a new one. Failing
+        that, the slot ``self._pending_turning_over_seconds`` (armed by
+        ``post_turn_mixin`` when ``engagement.latency_seconds >=
+        memory.turning_over_min_gap_minutes * 60``) runs the picker
+        (:func:`app.core.session.inner_life.turning_over.pick_turning_over`)
+        and what it chooses is logged to the pool as surfaced, so that
+        whether Aiko actually used it becomes a question with an answer.
+        The slot survives a fruitless picker for a couple of assemblies
+        (see :meth:`_spend_gap_slot`). Falls silent when:
 
         * the master switch is off,
         * the slot was never armed (no recent qualifying gap),
@@ -528,11 +592,36 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             self._debug_overrides.take("turning_over_force_next", False)
         )
 
+        # A reflection she was shown and did not pick up comes back
+        # before a fresh one is chosen -- it was worth sharing a turn ago
+        # and still is. The pool decides how many chances it gets, so
+        # this cannot loop.
+        row = self.take_pool_cue("turning_over")
+        if row is not None:
+            self._pending_turning_over_seconds = None
+            self._gap_cue_surfaced = True
+            log.info("turning-over retry: cue=%d", row.id)
+            return row.text
+
         seconds = getattr(self, "_pending_turning_over_seconds", None)
         if not force_next and seconds is None:
             return ""
-        self._pending_turning_over_seconds = None
 
+        block = self._turning_over_from_reflections(
+            seconds, force_next=force_next,
+        )
+        self._spend_gap_slot("_pending_turning_over_seconds", fired=bool(block))
+        return block
+
+    def _turning_over_from_reflections(
+        self, seconds: Any, *, force_next: bool,
+    ) -> str:
+        """Pick and render a reflection, or ``""`` when none qualifies.
+
+        Split from the provider so the slot's lifetime is decided in one
+        place: every path out of here is either a fire or a miss, and the
+        caller spends the slot accordingly.
+        """
         # Defensive threshold double-check: the post-turn arm has
         # already gated on the same threshold, but settings can flip
         # between turns and the slot might carry a stale value.
@@ -655,11 +744,31 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             )
             return ""
 
+        try:
+            block = _to.render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("turning-over render failed", exc_info=True)
+            return ""
+        if not block:
+            return ""
+
         # Stash diagnostics for the MCP debug tool.
         self._last_turning_over = result
         # K36 one-of guard: mark that a gap cue surfaced this assembly so
         # ``away_activities`` defers to this (reflection-based) cue.
         self._gap_cue_surfaced = True
+        # Log it as surfaced-not-yet-used. The subject is the reflection
+        # itself: there is no topic label to match on, which is why the
+        # policy asks for three shared words rather than one.
+        self.record_surfaced_cue(
+            "turning_over",
+            _strip_dream_prefix(result.content),
+            block,
+            payload={"memory_id": int(result.memory_id)},
+        )
 
         log.info(
             "turning-over fire: memory_id=%d age_h=%.1f topical=%.3f "
@@ -670,15 +779,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             result.topical_source or "-",
             result.dream,
         )
-
-        try:
-            return _to.render_inner_life_block(
-                result,
-                user_display_name=self.user_display_name,
-            )
-        except Exception:
-            log.debug("turning-over render failed", exc_info=True)
-            return ""
+        return block
 
     def _render_sleep_return_block(self) -> str:
         """H21: narrate having dozed off on return from an overnight gap.
@@ -690,15 +791,18 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         the desk while you were away". When a recent ``[dream]`` reflection
         exists, it's woven into the line so the dream finally has a cause.
 
-        One-shot contract: reads + clears
-        ``self._pending_sleep_return_seconds`` (armed in
+        Two ways to fire, the pool first: a line she was shown and did
+        not use comes back before a new one is composed. Otherwise the
+        slot ``self._pending_sleep_return_seconds`` (armed in
         ``post_turn_helpers_mixin._maybe_arm_sleep_return_slot`` on a typed
-        gap >= ``memory.sleep_return_min_gap_hours``), then applies the
-        finer return-hour-aware overnight gate
-        (:func:`sleep_return.looks_like_overnight`). A gap that doesn't read
-        as a sleep returns "" WITHOUT touching ``_gap_cue_surfaced`` so the
-        ordinary away / forward cues still get their turn. When it does
-        fire it sets ``_gap_cue_surfaced`` so the rest of the family defers.
+        gap >= ``memory.sleep_return_min_gap_hours``) opens the door and
+        the finer return-hour-aware overnight gate
+        (:func:`sleep_return.looks_like_overnight`) decides. A gap that
+        doesn't read as a sleep returns "" WITHOUT touching
+        ``_gap_cue_surfaced``, so the ordinary away / forward cues still
+        get their turn -- and now without burning the slot either, since
+        nothing was spent. When it does fire it sets ``_gap_cue_surfaced``
+        so the rest of the family defers, and logs the line to the pool.
 
         Defers to ``turning_over`` (which runs first and owns the
         ``_gap_cue_surfaced`` reset). MCP debug:
@@ -719,12 +823,28 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not force_next and getattr(self, "_gap_cue_surfaced", False):
             return ""
 
+        row = self.take_pool_cue("sleep_return")
+        if row is not None:
+            self._pending_sleep_return_seconds = None
+            self._gap_cue_surfaced = True
+            log.info("sleep-return retry: cue=%d", row.id)
+            return row.text
+
         seconds = getattr(self, "_pending_sleep_return_seconds", None)
         if not force_next and seconds is None:
             return ""
-        self._pending_sleep_return_seconds = None
 
+        block = self._sleep_return_line(seconds, force_next=force_next)
+        self._spend_gap_slot("_pending_sleep_return_seconds", fired=bool(block))
+        return block
 
+    def _sleep_return_line(self, seconds: Any, *, force_next: bool) -> str:
+        """Compose the dozed-off line, or ``""`` when the gap isn't one.
+
+        Split from the provider so the slot's lifetime is decided in one
+        place -- the overnight gate rejecting a gap is the commonest way
+        this returns nothing, and it used to cost the slot regardless.
+        """
         from app.core.world import sleep_return as _sr
 
         ms = self._memory_settings
@@ -781,6 +901,14 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         dream_gist = self._recent_dream_gist(now_local, ms)
 
         name = self.user_display_name
+        block = _sr.render_sleep_line(
+            spot_phrase,
+            user_display_name=name,
+            dream_gist=dream_gist,
+        )
+        if not block:
+            return ""
+
         self._gap_cue_surfaced = True
         self._last_sleep_return = {
             "gap_hours": round(gap_hours, 2),
@@ -789,15 +917,19 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "spot_slug": spot_slug,
             "dream": bool(dream_gist),
         }
+        # The dream is the part worth chasing; the spot is what's left
+        # when there wasn't one.
+        self.record_surfaced_cue(
+            "sleep_return",
+            dream_gist or spot_phrase,
+            block,
+            payload={"dream": bool(dream_gist), "spot_slug": spot_slug},
+        )
         log.info(
             "sleep-return fire: gap=%.1fh hour=%d spot=%s dream=%s",
             gap_hours, now_local.hour, spot_slug or "-", bool(dream_gist),
         )
-        return _sr.render_sleep_line(
-            spot_phrase,
-            user_display_name=name,
-            dream_gist=dream_gist,
-        )
+        return block
 
     def _recent_dream_gist(self, now_local: Any, memory_settings: Any) -> str | None:
         """Newest ``[dream]`` reflection content within the lookback window.
@@ -862,11 +994,18 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         ``post_turn_mixin._maybe_arm_away_activities_slot``), but reads
         the worker's kv journal instead of the reflection corpus.
 
-        One-shot contract: reads + clears
+        Pool first: a beat she was shown and let pass comes back before a
+        new one is taken off the journal. Otherwise it reads
         ``self._pending_away_activities_seconds``, re-checks the gap,
         reads the journal ring, and surfaces the newest entry that's
-        newer than the ``away_activity.last_surfaced_at`` watermark. The
-        watermark advances so the same beat never resurfaces.
+        newer than the ``away_activity.last_surfaced_at`` watermark.
+
+        The watermark still advances on render, and deliberately: its job
+        is "don't offer this beat off the journal twice", which is not the
+        job the pool took over. The pool answers the different question of
+        whether she *used* the beat, and holds the retry if she didn't --
+        so a miss now comes back as a released row rather than as a
+        second reading of the same journal entry.
 
         Defers to ``turning_over`` via the shared ``_gap_cue_surfaced``
         flag so at most one of the two gap cues fires per return —
@@ -891,11 +1030,34 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not force_next and getattr(self, "_gap_cue_surfaced", False):
             return ""
 
+        row = self.take_pool_cue("away_activities")
+        if row is not None:
+            self._pending_away_activities_seconds = None
+            self._gap_cue_surfaced = True
+            log.info("away-activities retry: cue=%d", row.id)
+            return row.text
+
         seconds = getattr(self, "_pending_away_activities_seconds", None)
         if not force_next and seconds is None:
             return ""
-        self._pending_away_activities_seconds = None
 
+        block = self._away_activities_from_journal(
+            seconds, force_next=force_next,
+        )
+        self._spend_gap_slot(
+            "_pending_away_activities_seconds", fired=bool(block),
+        )
+        return block
+
+    def _away_activities_from_journal(
+        self, seconds: Any, *, force_next: bool,
+    ) -> str:
+        """Render the newest unseen journal beat, or ``""``.
+
+        Split from the provider so the slot's lifetime is decided in one
+        place: an empty journal or an already-surfaced beat is a miss, and
+        used to cost the return-from-gap opportunity anyway.
+        """
         if not force_next and seconds is not None:
             try:
                 seconds_f = float(seconds)
@@ -957,11 +1119,20 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         # {turning_over, away_activities, forward_curiosity} surfaces
         # per return.
         self._gap_cue_surfaced = True
-        log.info("away-activities fire: at=%s key=%s", at, newest.get("key"))
-        return (
+        block = (
             f"While {name} was away, you {summary}. If it fits naturally, "
             "you can mention it in passing — drop it if it doesn't."
         )
+        # The summary clause is the subject: "repotted the basil" is what
+        # she'd actually say, with the framing around it hers to choose.
+        self.record_surfaced_cue(
+            "away_activities",
+            summary,
+            block,
+            payload={"at": at, "key": str(newest.get("key") or "")},
+        )
+        log.info("away-activities fire: at=%s key=%s", at, newest.get("key"))
+        return block
 
     def _render_forward_curiosity_block(self) -> str:
         """K34: surface one "you've been wondering ..." line after a gap.

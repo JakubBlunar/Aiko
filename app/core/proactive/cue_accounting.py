@@ -278,8 +278,13 @@ class CuePolicy:
     # and topic clustering to become a subject in the first place.
     min_overlap: int = 1
     # The persona header whose handling text rides along with this cue
-    # instead of sitting in the cache prefix on every turn.
+    # instead of sitting in the cache prefix on every turn, and the prompt
+    # block whose presence is the trigger for sending it. The block name
+    # is stated rather than derived from ``name`` because the two differ
+    # (``curiosity_seed`` renders as ``curiosity_seeds_block``), and a
+    # silent near-miss here would drop the note without any error.
     handling_section: str = ""
+    block: str = ""
 
 
 CUE_POLICIES: dict[str, CuePolicy] = {
@@ -294,6 +299,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             match_mode=MATCH_LEXICAL,
             inventory_target=3,
             handling_section="Topics you keep circling but never dug into:",
+            block="knowledge_gap_notice_block",
         ),
         CuePolicy(
             "interest_drift",
@@ -304,6 +310,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             inventory_target=2,
             ttl_hours=168.0,
             handling_section="When your interests shift over time:",
+            block="interest_drift_block",
         ),
         # ── off-topic by construction: a high cosine means she pivoted
         CuePolicy(
@@ -315,6 +322,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             inventory_target=3,
             ttl_hours=72.0,
             handling_section="When your mind wanders and connects two things:",
+            block="associative_wander_block",
         ),
         CuePolicy(
             "dormant_interest",
@@ -328,6 +336,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             handling_section=(
                 "When something {user_name} used to love has gone quiet:"
             ),
+            block="dormant_interest_block",
         ),
         CuePolicy(
             "curiosity_gradient",
@@ -339,6 +348,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             handling_section=(
                 "When you're curious about the edge of something familiar:"
             ),
+            block="curiosity_gradient_block",
         ),
         CuePolicy(
             "forward_curiosity",
@@ -349,6 +359,56 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             inventory_target=2,
             ttl_hours=72.0,
             handling_section="Things I've been wondering about you:",
+            block="forward_curiosity_block",
+        ),
+        # ── event-armed: nothing stocks these, the pool is a retry buffer
+        #
+        # ``inventory_target=0`` is the discriminator, not a tuning
+        # choice. No worker drafts these ahead of time: the arming event
+        # (a typed gap) carries a duration and nothing else, and *which*
+        # reflection or journal beat gets used is picked when the block
+        # renders, against the message being answered. A row appears only
+        # once one has surfaced, so the shelf is empty by design and the
+        # scheduler must never read that as a deficit to fill.
+        #
+        # Their TTLs are hours rather than days for the same reason a
+        # welcome-back is not worth saying on Thursday: the moment they
+        # belong to is the return itself.
+        CuePolicy(
+            "turning_over",
+            # A reflection she was mulling. The subject is the reflection
+            # text, which is a sentence rather than a topic -- hence the
+            # raised overlap, since one shared word between a sentence and
+            # a reply means nothing.
+            inventory_target=0,
+            ttl_hours=12.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=3,
+            handling_section="What I've been turning over (between sessions):",
+            block="turning_over_block",
+        ),
+        CuePolicy(
+            "sleep_return",
+            # The dream, or failing that the spot she dozed off in.
+            inventory_target=0,
+            ttl_hours=6.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            handling_section="When I dozed off:",
+            block="sleep_return_block",
+        ),
+        CuePolicy(
+            "away_activities",
+            # The journal entry's summary clause: "repotted the basil".
+            inventory_target=0,
+            ttl_hours=12.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            handling_section="Things I did while you were away:",
+            block="away_activities_block",
         ),
         # ── whole-turn, unchanged from what already runs
         CuePolicy(
@@ -365,6 +425,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             inventory_target=6,
             ttl_hours=336.0,
             handling_section="Quiet curiosity:",
+            block="curiosity_seeds_block",
         ),
     )
 }
@@ -475,11 +536,37 @@ def armed_cues(session: Any) -> set[str]:
     approximating. ``forward_curiosity`` still needs both halves -- the
     slot arms the opportunity, the pool supplies the content -- which is
     the same conjunction it needed when the content came from a ring.
+
+    The event-armed types invert that. Nothing stocks them, so their
+    shelf is empty on the arming turn and a conjunction would report them
+    unarmed exactly when they are about to fire. For those the pool is a
+    second, independent way to be armed: a row exists only because a
+    previous surfacing went unused, and that retry is an opportunity in
+    its own right, slot or no slot.
     """
     chat_db = getattr(session, "_chat_db", None)
     out: set[str] = set()
     for name, spec in CUE_SPECS.items():
         stock = _pool_stock(session, name)
+        policy = CUE_POLICIES.get(name)
+        retry_pool = (
+            stock is not None
+            and policy is not None
+            and policy.inventory_target <= 0
+        )
+        if retry_pool:
+            # Content comes from wherever it always did; the pool only
+            # adds the released rows on top.
+            fresh = not spec.journal_key or _journal_has_material(
+                chat_db, spec,
+            )
+            slot_armed = (
+                not spec.slot_attr
+                or getattr(session, spec.slot_attr, None) is not None
+            )
+            if (slot_armed and fresh) or stock > 0:
+                out.add(name)
+            continue
         has_content = (
             stock > 0
             if stock is not None

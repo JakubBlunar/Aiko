@@ -1,14 +1,21 @@
-"""The seven cue-handling sections move out of the cache prefix.
+"""Conditional handling sections move out of the cache prefix.
 
 Each one is "when your context says X, here is how to handle it" -- an
 instruction that can only be acted on when X is actually there. They were
 sitting in T0 on every turn regardless, which is both wasted prefix and,
-worse, seven standing invitations to behave as though a cue had fired.
+worse, a standing invitation to behave as though a cue had fired.
 
-So they live in their own ``cue_handling.txt`` beside the persona, and the
-assembler re-emits the ones whose cue rendered. What stays in T0 is the
-general contract, which really does apply every turn -- including the ones
-with no cue, where the rule is that nothing is owed.
+So they live in their own ``conditional_handling.txt`` beside the persona,
+and the assembler re-emits the ones whose *block* rendered. What stays in
+T0 is the general contract, which really does apply every turn --
+including the ones with no cue, where the rule is that nothing is owed.
+
+The pairing is block-keyed, from two registries: a pooled cue names its
+header on ``CuePolicy``, everything else in ``HANDLING_SECTIONS``. Both
+sides are matched literally against user-editable files and resolved
+against a frame's locals, so this module is mostly about the three ways
+that silently comes apart -- a renamed header, a block name that is not on
+the tier ladder, and a block name that never becomes a local.
 
 The loader still honours a section left inline in the persona, and prefers
 it, so an install that customised one before the files were split keeps its
@@ -23,11 +30,16 @@ import unittest
 from pathlib import Path
 
 from app.core.infra.chat_database import ChatDatabase
-from app.core.proactive.cue_accounting import CUE_POLICIES
-from app.core.session.prompt_assembler import PromptAssembler
+from app.core.session.prompt_assembler import (
+    _BLOCK_TIER_OF,
+    PromptAssembler,
+)
+from app.core.session.prompt_assembler_helpers_mixin import (
+    PromptAssemblerHelpersMixin,
+)
 from app.core.session.prompt_support import (
-    CUE_HANDLING_FILENAME,
-    CUE_HANDLING_PREAMBLE,
+    CONDITIONAL_HANDLING_FILENAME,
+    HANDLING_PREAMBLE,
     split_persona_section,
 )
 
@@ -79,6 +91,48 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(extracted, "")
 
 
+class RegistryTests(unittest.TestCase):
+    """The block name is the join, and nothing at runtime checks it.
+
+    A name that is not on the tier ladder, or that never becomes a local
+    in the assembly frame, extracts its section out of T0 and then has
+    nothing to bring it back -- the guidance is deleted rather than moved,
+    with no error anywhere.
+    """
+
+    def setUp(self) -> None:
+        self.registry = PromptAssemblerHelpersMixin._handling_headers()
+
+    def test_every_hoisted_block_is_on_the_tier_ladder(self) -> None:
+        for block in self.registry:
+            with self.subTest(block=block):
+                self.assertIn(block, _BLOCK_TIER_OF)
+
+    def test_every_hoisted_block_is_a_local_at_the_call_site(self) -> None:
+        """``_render_handling_notes`` reads the assembly frame's locals."""
+        names = set(PromptAssembler.assemble_with_budget.__code__.co_varnames)
+        for block in self.registry:
+            with self.subTest(block=block):
+                self.assertTrue(
+                    names & {block, f"{block}_block", f"{block}_text"},
+                    f"{block}: no matching local in assemble_with_budget",
+                )
+
+    def test_the_notes_come_out_in_prompt_order(self) -> None:
+        """So two notes read as a pair with the blocks they explain."""
+        ladder = list(_BLOCK_TIER_OF)
+        positions = [ladder.index(block) for block in self.registry]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_no_header_is_claimed_by_two_blocks(self) -> None:
+        """The first split would win and the second would go unexplained."""
+        seen: set[str] = set()
+        for headers in self.registry.values():
+            for header in headers:
+                self.assertNotIn(header, seen)
+                seen.add(header)
+
+
 class _AssemblerFixture(unittest.TestCase):
     def _assembler(
         self,
@@ -90,7 +144,7 @@ class _AssemblerFixture(unittest.TestCase):
         persona = Path(tmp.name) / "persona.txt"
         persona.write_text(persona_text, encoding="utf-8")
         if handling_text is not None:
-            (Path(tmp.name) / CUE_HANDLING_FILENAME).write_text(
+            (Path(tmp.name) / CONDITIONAL_HANDLING_FILENAME).write_text(
                 handling_text, encoding="utf-8",
             )
         db = ChatDatabase(Path(tmp.name) / "chat.db")
@@ -125,23 +179,23 @@ class LoaderTests(_AssemblerFixture):
         self.assertIn("Cues in your context:", core)
         self.assertIn("No cue = nothing owed", core)
 
-    def test_the_notes_are_retrievable_by_cue_type(self) -> None:
+    def test_the_notes_are_retrievable_by_block(self) -> None:
         assembler = self._assembler()
         self.assertIn(
             "drawn to X lately",
-            assembler.persona_cue_handling("interest_drift"),
+            assembler.persona_handling_notes("interest_drift_block"),
         )
         self.assertIn(
             "Mention at most ONE",
-            assembler.persona_cue_handling("curiosity_seed"),
+            assembler.persona_handling_notes("curiosity_seeds_block"),
         )
 
     def test_an_absent_section_yields_no_note(self) -> None:
         assembler = self._assembler()
         self.assertEqual(
-            assembler.persona_cue_handling("associative_wander"), "",
+            assembler.persona_handling_notes("associative_wander_block"), "",
         )
-        self.assertEqual(assembler.persona_cue_handling("not_a_cue"), "")
+        self.assertEqual(assembler.persona_handling_notes("not_a_block"), "")
 
     def test_a_persona_with_no_cue_sections_gets_no_stanza(self) -> None:
         """Nothing was hoisted, so there is nothing for the stanza to cover."""
@@ -156,7 +210,7 @@ class LoaderTests(_AssemblerFixture):
             "- Reach back once, lightly, for {user_name}.",
         ]))
         assembler.set_user_display_name_provider(lambda: "Jacob")
-        note = assembler.persona_cue_handling("dormant_interest")
+        note = assembler.persona_handling_notes("dormant_interest_block")
         self.assertIn("Reach back once, lightly, for Jacob.", note)
         self.assertNotIn("{user_name}", note)
 
@@ -181,17 +235,17 @@ _HANDLING = "\n".join([
 
 
 class CompanionFileTests(_AssemblerFixture):
-    """The notes' real home: cue_handling.txt next to the persona."""
+    """The notes' real home: conditional_handling.txt beside the persona."""
 
     def test_notes_load_from_the_companion_file(self) -> None:
         assembler = self._assembler(_CORE_ONLY, _HANDLING)
         self.assertIn(
             "drawn to X lately",
-            assembler.persona_cue_handling("interest_drift"),
+            assembler.persona_handling_notes("interest_drift_block"),
         )
         self.assertIn(
             "Mention at most ONE",
-            assembler.persona_cue_handling("curiosity_seed"),
+            assembler.persona_handling_notes("curiosity_seeds_block"),
         )
 
     def test_the_companion_file_earns_the_t0_stanza(self) -> None:
@@ -215,21 +269,23 @@ class CompanionFileTests(_AssemblerFixture):
         ])
         assembler = self._assembler(inline, _HANDLING)
         with self.assertLogs("app.prompt_assembler", level="INFO") as logs:
-            note = assembler.persona_cue_handling("interest_drift")
+            note = assembler.persona_handling_notes("interest_drift_block")
         # Silence here is how an upgraded install ends up editing a file
         # that does nothing.
-        self.assertIn("interest_drift", "".join(logs.output))
+        self.assertIn("When your interests shift over time:", "".join(logs.output))
         self.assertIn("My own hand-edited wording.", note)
         self.assertNotIn("drawn to X lately", note)
         # The section it does not override still comes from the file.
         self.assertIn(
             "Mention at most ONE",
-            assembler.persona_cue_handling("curiosity_seed"),
+            assembler.persona_handling_notes("curiosity_seeds_block"),
         )
 
     def test_a_missing_companion_file_is_not_an_error(self) -> None:
         assembler = self._assembler(_CORE_ONLY, handling_text=None)
-        self.assertEqual(assembler.persona_cue_handling("interest_drift"), "")
+        self.assertEqual(
+            assembler.persona_handling_notes("interest_drift_block"), "",
+        )
         self.assertNotIn("Cues in your context:", assembler._load_persona())
 
     def test_editing_the_companion_file_takes_effect(self) -> None:
@@ -237,16 +293,19 @@ class CompanionFileTests(_AssemblerFixture):
         assembler = self._assembler(_CORE_ONLY, _HANDLING)
         self.assertIn(
             "drawn to X lately",
-            assembler.persona_cue_handling("interest_drift"),
+            assembler.persona_handling_notes("interest_drift_block"),
         )
-        path = assembler._persona_path.parent / CUE_HANDLING_FILENAME
+        path = (
+            assembler._persona_path.parent / CONDITIONAL_HANDLING_FILENAME
+        )
         path.write_text(
             "When your interests shift over time:\n- Rewritten.",
             encoding="utf-8",
         )
         os.utime(path, (time.time() + 10, time.time() + 10))
         self.assertIn(
-            "Rewritten.", assembler.persona_cue_handling("interest_drift"),
+            "Rewritten.",
+            assembler.persona_handling_notes("interest_drift_block"),
         )
 
 
@@ -291,6 +350,18 @@ class AssemblyTests(_AssemblerFixture):
             system.index("drawn to X lately"),
         )
 
+    def test_a_non_cue_block_hoists_the_same_way(self) -> None:
+        """The registry is not cue-only -- ``absence_curiosity`` has no pool."""
+        assembler = self._assembler(_CORE_ONLY, "\n".join([
+            "When they've been away a while (typed mode):",
+            "- Land it as a warm welcome-back.",
+        ]))
+        assembler.set_inner_life_providers(
+            absence_curiosity=lambda: "Absence-curiosity: away an hour or so.",
+        )
+        system = self._system(assembler)
+        self.assertIn("Land it as a warm welcome-back.", system)
+
 
 class ShippedFileTests(unittest.TestCase):
     """The real files, because the headers are matched literally.
@@ -304,41 +375,41 @@ class ShippedFileTests(unittest.TestCase):
         self.persona = (persona_dir / "aiko_companion.txt").read_text(
             encoding="utf-8",
         )
-        self.handling = (persona_dir / CUE_HANDLING_FILENAME).read_text(
-            encoding="utf-8",
-        )
+        self.handling = (
+            persona_dir / CONDITIONAL_HANDLING_FILENAME
+        ).read_text(encoding="utf-8")
+        self.registry = PromptAssemblerHelpersMixin._handling_headers()
 
-    def test_every_policy_header_exists_in_the_handling_file(self) -> None:
-        for cue_type, policy in CUE_POLICIES.items():
-            with self.subTest(cue=cue_type):
-                self.assertTrue(policy.handling_section)
-                _remaining, extracted = split_persona_section(
-                    self.handling, policy.handling_section,
-                )
-                self.assertTrue(
-                    extracted,
-                    f"{cue_type}: {policy.handling_section!r} not found",
-                )
+    def test_every_registered_header_exists_in_the_handling_file(self) -> None:
+        for block, headers in self.registry.items():
+            for header in headers:
+                with self.subTest(block=block, header=header):
+                    _remaining, extracted = split_persona_section(
+                        self.handling, header,
+                    )
+                    self.assertTrue(extracted, f"{header!r} not found")
 
     def test_the_persona_no_longer_carries_them(self) -> None:
         """Otherwise the persona copy silently wins and the file is dead."""
-        for cue_type, policy in CUE_POLICIES.items():
-            with self.subTest(cue=cue_type):
-                _remaining, extracted = split_persona_section(
-                    self.persona, policy.handling_section,
-                )
-                self.assertEqual(
-                    extracted, "",
-                    f"{cue_type}: still inline in aiko_companion.txt",
-                )
+        for block, headers in self.registry.items():
+            for header in headers:
+                with self.subTest(block=block, header=header):
+                    _remaining, extracted = split_persona_section(
+                        self.persona, header,
+                    )
+                    self.assertEqual(
+                        extracted, "",
+                        f"{header!r} still inline in aiko_companion.txt",
+                    )
 
     def test_the_hoist_is_worth_doing(self) -> None:
         """The point of the exercise: a materially smaller cache prefix."""
         hoisted = sum(
-            len(split_persona_section(self.handling, p.handling_section)[1])
-            for p in CUE_POLICIES.values()
+            len(split_persona_section(self.handling, header)[1])
+            for headers in self.registry.values()
+            for header in headers
         )
-        self.assertGreater(hoisted - len(CUE_HANDLING_PREAMBLE), 2000)
+        self.assertGreater(hoisted - len(HANDLING_PREAMBLE), 5000)
 
 
 if __name__ == "__main__":

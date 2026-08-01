@@ -8,9 +8,9 @@ reads from. Avoids spinning up the full
 
 The picker itself is covered in ``tests/test_turning_over_picker.py``;
 this module focuses on the provider plumbing -- master-switch
-gate, force-next bypass, one-shot pending-slot clear, threshold
-double-check, INFO log emission, and the memory_store /
-goal_store / rag_store dependency surface.
+gate, force-next bypass, pending-slot lifetime, threshold
+double-check, INFO log emission, the cue-pool retry, and the
+memory_store / goal_store / rag_store dependency surface.
 """
 from __future__ import annotations
 
@@ -18,11 +18,16 @@ import logging
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_store import CueStore
+from app.core.session.cue_pool_mixin import CuePoolMixin
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 
 
@@ -94,8 +99,12 @@ def _make_memory_settings(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-class _Host(InnerLifeProvidersMixin):
-    """Minimal mixin host with the attributes the provider reads."""
+class _Host(InnerLifeProvidersMixin, CuePoolMixin):
+    """Minimal mixin host with the attributes the provider reads.
+
+    ``CuePoolMixin`` with no store attached: every pool call
+    short-circuits to ``None``, so these remain tests of the picker path.
+    """
 
     def __init__(
         self,
@@ -188,18 +197,76 @@ class PendingSlotTests(unittest.TestCase):
         # Last-fire diagnostic populated.
         self.assertIsNotNone(host._last_turning_over)
 
-    def test_one_shot_clears_slot_on_silent_picker(self) -> None:
-        # Picker returns None (orthogonal vectors → below threshold).
+    def test_a_silent_picker_keeps_the_slot_for_another_look(self) -> None:
+        """Nothing reached the prompt, so nothing was spent.
+
+        The picker weighs reflections against the live conversation, so
+        the same slot can come up empty this turn and land the next. It
+        used to clear on read, which threw the whole return-from-gap
+        opportunity away on the strength of one attempt.
+        """
         host = _Host(
             reflections=[_make_reflection(aligned_with=_VEC_ALIGNED)],
             goal_vecs=[_vec(0.0, 1.0, 0.0)],
             pending_seconds=120 * 60.0,
         )
-        out = host._render_turning_over_block()
-        self.assertEqual(out, "")
-        # Slot is still cleared on silent path so we don't reattempt
-        # the same picker on the next turn.
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(host._pending_turning_over_seconds, 120 * 60.0)
+
+    def test_the_retry_is_bounded(self) -> None:
+        """A welcome-back goes stale, and the picker is not free."""
+        host = _Host(
+            reflections=[_make_reflection(aligned_with=_VEC_ALIGNED)],
+            goal_vecs=[_vec(0.0, 1.0, 0.0)],
+            pending_seconds=120 * 60.0,
+        )
+        for _ in range(3):
+            self.assertEqual(host._render_turning_over_block(), "")
         self.assertIsNone(host._pending_turning_over_seconds)
+
+
+class PoolRetryTests(unittest.TestCase):
+    """A reflection she was shown and passed on comes back.
+
+    The slot is one-shot and the gap that armed it may not recur for
+    days, so before the pool a cue Aiko ignored was simply gone. Now the
+    render writes a row, post-turn releases it, and the next render
+    prefers it over picking something new -- no second gap required.
+    """
+
+    def _host(self) -> _Host:
+        tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        db = ChatDatabase(Path(tmp.name) / "chat.db")
+        self.addCleanup(lambda: db._get_conn().close())
+        host = _Host(
+            reflections=[_make_reflection()],
+            goal_vecs=[_VEC_ALIGNED],
+            pending_seconds=120 * 60.0,
+        )
+        host._cue_store = CueStore(db)
+        host._surfaced_pool_cues = []
+        host._cue_pool_listeners = []
+        host._embedder = None
+        return host
+
+    def test_an_ignored_reflection_re_renders_with_no_slot(self) -> None:
+        host = self._host()
+        first = host._render_turning_over_block()
+        self.assertTrue(first.startswith("Turning over:"))
+        self.assertIsNone(host._pending_turning_over_seconds)
+
+        host._settle_pool_cues(user_text="what's for dinner", assistant_text="mm")
+        second = host._render_turning_over_block()
+        self.assertEqual(second, first)
+        self.assertTrue(host._gap_cue_surfaced)
+
+    def test_a_reflection_she_used_does_not_come_back(self) -> None:
+        host = self._host()
+        block = host._render_turning_over_block()
+        host._settle_pool_cues(user_text="hey", assistant_text=block)
+        # Slot spent and the row retired, so nothing is left to render.
+        self.assertEqual(host._render_turning_over_block(), "")
 
 
 # ── Force-next bypass ──────────────────────────────────────────────────
@@ -245,8 +312,10 @@ class ThresholdDoubleCheckTests(unittest.TestCase):
             pending_seconds=10 * 60.0,
         )
         self.assertEqual(host._render_turning_over_block(), "")
-        # Slot is cleared regardless.
-        self.assertIsNone(host._pending_turning_over_seconds)
+        # Held like any other miss -- nothing rendered. Deterministic
+        # given the same slot value, so the retries cost one float
+        # compare each and then it clears.
+        self.assertEqual(host._pending_turning_over_seconds, 10 * 60.0)
 
     def test_threshold_at_boundary_passes(self) -> None:
         host = _Host(
