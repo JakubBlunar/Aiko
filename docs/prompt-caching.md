@@ -103,10 +103,11 @@ Both files' mtimes are in the split cache key and in the static slice
 cache key, so editing either takes effect on the next turn rather than
 the next restart.
 
-The split is worth roughly 9.7 k characters (~2.4 k tokens) off every
-turn so far, and the T6 addition is bounded by how many blocks fired —
-usually zero, at most one or two, since the cue priority mutex allows a
-single gap-cue through per turn.
+The split is worth roughly 14 k characters (~3.5 k tokens) off every
+turn so far — against a persona that is now ~65 k, so a fifth of what
+used to ship unconditionally. The T6 addition is bounded by how many
+blocks fired: usually zero, at most one or two, since the cue priority
+mutex allows a single gap-cue through per turn.
 
 Three ways the pairing comes apart silently, all covered in
 `tests/test_persona_hoist.py`: a header renamed in the file (the section
@@ -136,16 +137,38 @@ fires every turn would be strictly worse.
      the just-received turn → T6.
    - Pure affect / style derivatives → T5.
 
-2. **Append within the right cluster.** In-tier ordering preserves
+2. **If the block is usually absent, put it late.** This is the one
+   place where the honest answer to step 1 leads you wrong. "How often
+   does the content change?" invites you to reason about a rare cue as
+   *stable* — a self-callback that fires twice a month clearly is not
+   per-turn data — and stability points early. But an intermittent block
+   does not sit still at its tier; it **flickers**, and appearing and
+   disappearing are byte changes exactly like any other. Parked in T1 it
+   would invalidate T1 through T6 on the turn it arrives *and again* on
+   the turn it leaves, and it would do that for a payload the model sees
+   a handful of times a month.
+
+   So the question for a conditional block is not how often its content
+   changes but **how often its presence does**, and the answer for
+   anything cue-shaped is "twice per firing". Late placement makes those
+   two invalidations cost almost nothing, because there is almost nothing
+   after them.
+
+   The corollary is that rarity is *not* a reason to promote a block up
+   the ladder. It is the reason it is in T6 in the first place.
+
+3. **Append within the right cluster.** In-tier ordering preserves
    behavioural clusters — e.g. K28 `turning_over` must follow K14
    `absence_curiosity` (both T6). Read the surrounding comments in
-   `system_parts.append(...)` before slotting yours in.
+   `system_parts.append(...)` before slotting yours in. In-tier order has
+   no cache consequence, so this is purely about the model reading
+   related cues together.
 
-3. **Update `_PROMPT_BLOCK_TIERS`.** Add the block name to its
+4. **Update `_PROMPT_BLOCK_TIERS`.** Add the block name to its
    tier's tuple. The audit constant must stay in sync with the
    actual cascade so the tier doc here is honest.
 
-4. **Add a per-block test if you're new to the file.** The pattern
+5. **Add a per-block test if you're new to the file.** The pattern
    is in `tests/test_prompt_assembler.py` — one test that confirms
    the block renders, one test that confirms its in-tier position
    relative to a known neighbour. If your block introduces a brand
@@ -170,6 +193,10 @@ on sight:
   order.** "I added this block right next to the related one" is a
   fine behavioural heuristic when both blocks are in the same tier;
   it's a cache disaster across tiers.
+- **Promoting a rare block up the ladder because "it barely ever
+  changes".** See step 2: for a conditional block, arriving and leaving
+  are the changes, and they land on every firing. Stability of *content*
+  only earns an early tier when the block is also reliably *present*.
 - **Re-inserting `system_parts.append(circadian_block)` ahead of
   the persona** "because circadian should be one of the first
   things the model reads." The model reads the entire system block

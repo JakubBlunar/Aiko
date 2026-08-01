@@ -365,6 +365,127 @@ class SurfaceTimeLedgerTests(_Fixture):
         )
 
 
+class SurfacingCadenceTests(_Fixture):
+    """``surface_cooldown_hours``: how often she may open a *new* one.
+
+    The types that carry it are rare by nature rather than by scarcity,
+    and their rarity used to be an accident of production -- a worker
+    that drafted one cue a fortnight surfaced one a fortnight.
+    Deficit-driven scheduling keeps the shelf stocked, so the cadence had
+    to move to where it is actually about the reader.
+
+    ``self_callback`` is the type under test because it is the one with a
+    non-zero cooldown; the rest have no cadence and must be unaffected.
+    """
+
+    def _queue(self, subject: str) -> int:
+        return self.store.add("self_callback", subject, f"cue about {subject}")
+
+    def test_a_second_new_cue_waits_out_the_window(self) -> None:
+        self._queue("the restless stretch back in spring")
+        self.assertIsNotNone(self.host.take_pool_cue("self_callback"))
+        self._queue("wanting to get back into astronomy")
+        self.assertIsNone(self.host.take_pool_cue("self_callback"))
+
+    def test_a_retry_is_never_delayed_by_the_cadence(self) -> None:
+        """An in-flight cue is unfinished business, not a new one."""
+        cue_id = self._queue("the restless stretch back in spring")
+        self.host.take_pool_cue("self_callback")
+        self.host._settle_pool_cues(user_text="hi", assistant_text="mm")
+        self.assertEqual(self._state(cue_id), STATE_PENDING)
+
+        again = self.host.take_pool_cue("self_callback")
+        self.assertIsNotNone(again)
+        self.assertEqual(again.id, cue_id)
+
+    def test_a_retry_is_reachable_from_behind_a_blocked_new_cue(self) -> None:
+        """The reason the gate filters candidates instead of the winner.
+
+        ``pending`` sorts unseen cues first, so the fresh row is the one
+        offered up -- and rejecting it after the fact would hide the
+        retry sitting directly behind it.
+        """
+        retried = self._queue("the restless stretch back in spring")
+        self.host.take_pool_cue("self_callback")
+        self.host._settle_pool_cues(user_text="hi", assistant_text="mm")
+        fresh = self._queue("wanting to get back into astronomy")
+
+        claimed = self.host.take_pool_cue("self_callback")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.id, retried)
+        self.assertEqual(self._state(fresh), STATE_PENDING)
+
+    def test_a_used_cue_still_counts_as_a_recent_surfacing(self) -> None:
+        """Landing one is the strongest reason not to open another."""
+        self._queue("the restless stretch back in spring")
+        self.host.take_pool_cue("self_callback")
+        self.host._settle_pool_cues(
+            user_text="hey",
+            assistant_text=(
+                "funny, I told you about that restless stretch back in "
+                "spring -- it's settled down"
+            ),
+        )
+        self._queue("wanting to get back into astronomy")
+        self.assertIsNone(self.host.take_pool_cue("self_callback"))
+
+    def test_force_ignores_the_cadence(self) -> None:
+        self._queue("the restless stretch back in spring")
+        self.host.take_pool_cue("self_callback")
+        self._queue("wanting to get back into astronomy")
+        self.assertIsNotNone(
+            self.host.take_pool_cue("self_callback", force=True),
+        )
+
+    def test_a_type_without_a_cadence_is_untouched(self) -> None:
+        self.store.add("interest_drift", "film photography", "cue")
+        self.store.add("interest_drift", "bread", "cue")
+        self.assertIsNotNone(self.host.take_pool_cue("interest_drift"))
+        self.assertIsNotNone(self.host.take_pool_cue("interest_drift"))
+
+
+class SelfCorrectionPoolTests(_Fixture):
+    """K38's owed correction, now that it outlives the process."""
+
+    _SUBJECT = "I really love hiking in the mountains."
+
+    def test_an_owed_correction_survives_a_restart(self) -> None:
+        """The concrete thing the in-memory slot could not do.
+
+        A crash or a restart between the slip and the next turn used to
+        drop the correction silently, leaving Aiko's wrong statement
+        standing as the last word on it.
+        """
+        self.store.add("self_correction", self._SUBJECT, "Heads-up: ...")
+        restarted = _Host(self.store)
+        row = restarted.take_pool_cue("self_correction")
+        self.assertIsNotNone(row)
+        self.assertEqual(row.text, "Heads-up: ...")
+
+    def test_owning_the_correction_retires_it(self) -> None:
+        cue_id = self._surface(
+            "self_correction", self._SUBJECT, "Heads-up: ...",
+        )
+        self.host._settle_pool_cues(
+            user_text="wait, really?",
+            assistant_text=(
+                "oh hang on, I had that backwards -- I love hiking in the "
+                "mountains, I don't hate it"
+            ),
+        )
+        self.assertEqual(self._state(cue_id), STATE_USED)
+
+    def test_reading_past_it_gets_one_more_turn_then_stops(self) -> None:
+        cue_id = self._surface(
+            "self_correction", self._SUBJECT, "Heads-up: ...",
+        )
+        self.host._settle_pool_cues(user_text="ok", assistant_text="anyway")
+        self.assertEqual(self._state(cue_id), STATE_PENDING)
+        self.host.take_pool_cue("self_correction")
+        self.host._settle_pool_cues(user_text="ok", assistant_text="anyway")
+        self.assertEqual(self._state(cue_id), STATE_EXPIRED)
+
+
 class NoStoreTests(unittest.TestCase):
     """A session without a pool must behave as it did before one existed."""
 
@@ -372,6 +493,7 @@ class NoStoreTests(unittest.TestCase):
         host = _Host(None)
         self.assertIsNone(host.take_pool_cue("interest_drift"))
         self.assertIsNone(host.record_surfaced_cue("turning_over", "a", "b"))
+        self.assertFalse(host._queue_pool_cue("self_correction", "a", "b"))
         host._settle_pool_cues(user_text="a", assistant_text="b")
         host._settle_awaiting_cues(user_text="a")
 

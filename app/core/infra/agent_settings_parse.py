@@ -1644,10 +1644,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     )
                 ),
             ),
-            self_callback_cooldown_days=max(
-                0.0,
-                float(agent_raw.get("self_callback_cooldown_days", 10.0)),
-            ),
             self_callback_llm_enabled=bool(
                 agent_raw.get("self_callback_llm_enabled", True),
             ),

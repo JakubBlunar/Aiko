@@ -1725,75 +1725,39 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         """K71: surface one rare "close the loop on my own past" cue.
 
         Consumer side of the :class:`SelfCallbackWorker` producer. The
-        worker drafts an aged feeling / intention of Aiko's own into the
-        ``aiko.self_callback`` kv ring; this provider folds the newest
-        unseen one into the prompt as a private cue so Aiko revisits it in
-        her own words (the resolution read -- eased? followed through? --
-        is the model's, using her current affect in context). NEVER
-        spoken verbatim.
+        worker queues an aged feeling / intention of Aiko's own into the
+        pool; this claims one so she revisits it in her own words (the
+        resolution read -- eased? followed through? -- is the model's,
+        using her current affect in context). NEVER spoken verbatim.
 
-        Watermark-only (``self_callback.last_surfaced_at``), independent
-        of the gap-return cue family. MCP debug:
-        ``force_self_callback_surface`` arms ``_self_callback_force_next``.
+        Independent of the gap-return cue family. MCP debug:
+        ``force_self_callback_surface`` arms ``_self_callback_force_next``,
+        which now bypasses the type's surfacing cadence rather than a
+        watermark.
+
+        The cadence is what replaced that watermark, and it is a better
+        fit for what this cue is. A watermark says "each drafted callback
+        gets exactly one showing", which quietly meant a callback Aiko
+        read straight past was gone for good -- indistinguishable from one
+        she acted on. The pool keeps it for another try while
+        ``surface_cooldown_hours`` keeps the *type* as rare as it always
+        was.
         """
         if not bool(
             getattr(self._settings.agent, "self_callback_enabled", True)
         ):
             return ""
-
         force_next = bool(
             self._debug_overrides.take("self_callback_force_next", False)
         )
-
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None or not hasattr(chat_db, "kv_get"):
+        row = self.take_pool_cue("self_callback", force=force_next)
+        if row is None:
             return ""
-
-        try:
-            from app.core.affect import self_callback as _sc
-        except Exception:
-            log.debug("self_callback import failed", exc_info=True)
-            return ""
-
-        ring = _sc.load_callbacks(chat_db.kv_get)
-        if not ring:
-            return ""
-
-        newest = ring[-1]
-        at = str(newest.get("at") or "")
-        kind = str(newest.get("kind") or "").strip()
-        excerpt = str(newest.get("excerpt") or "").strip()
-        if not kind or not excerpt:
-            return ""
-
-        watermark_key = "self_callback.last_surfaced_at"
-        if not force_next:
-            try:
-                last_surfaced = chat_db.kv_get(watermark_key)
-            except Exception:
-                last_surfaced = None
-            if last_surfaced and str(last_surfaced) == at:
-                return ""
-
-        line = _sc.render_inner_life_block(
-            kind,
-            excerpt,
-            int(newest.get("age_days") or 0),
-            user_display_name=self.user_display_name,
-        )
-        if not line:
-            return ""
-
-        try:
-            chat_db.kv_set(watermark_key, at)
-        except Exception:
-            log.debug("self_callback watermark write failed", exc_info=True)
-
         log.info(
-            "self-callback fire: at=%s kind=%s id=%s",
-            at, kind, newest.get("memory_id"),
+            "self-callback fire: cue=%d id=%s",
+            row.id, row.payload.get("memory_id"),
         )
-        return line
+        return row.text
 
     def _render_wellbeing_concern_block(self) -> str:
         """K72: surface one rare, gentle "you doing okay?" concern cue.
@@ -3366,41 +3330,32 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         return str(cue)
 
     def _render_self_correction_block(self) -> str:
-        """K38: surface a one-shot self-correction cue.
+        """K38: surface an owed self-correction.
 
         The post-turn detector
-        (:meth:`PostTurnMixin._maybe_arm_self_correction`) stashes a
-        :class:`SelfCorrectionHit` on the controller when Aiko's last
-        reply contradicted one of her own high-confidence
-        ``fact`` / ``preference`` memories. We render it once and clear
-        the slot so she owns the slip naturally on this turn. Independent
-        of the gap-return cue family -- does NOT read or set
+        (:meth:`PostTurnMixin._maybe_arm_self_correction`) queues a cue
+        when Aiko's last reply contradicted one of her own
+        high-confidence ``fact`` / ``preference`` memories; this claims
+        it so she owns the slip naturally on this turn. Independent of
+        the gap-return cue family -- does NOT read or set
         ``_gap_cue_surfaced``. Survives ``aggressive=True`` (an owed
         correction must still land).
+
+        The cue comes from the pool, so post-turn matching decides
+        whether she actually took the correction. That verdict is worth
+        more here than for most types: a correction she read past is a
+        wrong belief still standing, which is the one failure the whole
+        feature exists to prevent, and the old one-shot slot could not
+        tell it apart from success. The retry budget is deliberately one
+        turn -- the line opens with "a moment ago you said", which is
+        true next turn and a fiction by the turn after.
         """
         if not bool(
             getattr(self._settings.agent, "self_correction_enabled", True)
         ):
             return ""
-        hit = getattr(self, "_pending_self_correction", None)
-        if hit is None:
-            return ""
-        self._pending_self_correction = None
-        try:
-            snippet = (hit.reply_snippet or "").strip()
-            memory = (hit.memory_content or "").strip()
-            if not snippet or not memory:
-                return ""
-            return (
-                f'Heads-up: a moment ago you said "{snippet}", but you\'d '
-                f"noted {memory}. If it still fits, own the correction "
-                "naturally and once -- 'oh wait, I think I had that "
-                "backwards' -- never a grovel, and drop it if it no longer "
-                "matters."
-            )
-        except Exception:
-            log.debug("self-correction render failed", exc_info=True)
-            return ""
+        row = self.take_pool_cue("self_correction")
+        return row.text if row is not None else ""
 
     def _render_misattunement_block(self, user_text: str) -> str:
         """K23: surface a per-turn ``mild_disengagement`` cue.

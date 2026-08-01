@@ -2223,14 +2223,17 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.growth_witness_journal_max, 1)
 
     def test_self_callback_round_trip(self) -> None:
-        # K71: agent master switch + cadence/cooldown + memory age floor.
+        # K71: agent master switch + heartbeat + memory age floor. The
+        # old ``self_callback_cooldown_days`` is gone -- rarity moved to
+        # ``CuePolicy.surface_cooldown_hours``, where it paces surfacing
+        # rather than production.
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.agent.self_callback_enabled)
         self.assertEqual(
             result.agent.self_callback_check_interval_seconds, 21600,
         )
-        self.assertAlmostEqual(
-            result.agent.self_callback_cooldown_days, 10.0,
+        self.assertFalse(
+            hasattr(result.agent, "self_callback_cooldown_days"),
         )
         self.assertTrue(result.agent.self_callback_llm_enabled)
         self.assertEqual(result.memory.self_callback_min_age_days, 14)

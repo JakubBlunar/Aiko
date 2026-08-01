@@ -82,6 +82,7 @@ so.
 | `ttl_hours` | How long the cue stays worth saying. A dormant topic keeps for weeks; "did the espresso machine arrive" does not. |
 | `max_surfacings` / `max_asks` | The two retry budgets. |
 | `reask_cooldown_hours` | How long an unanswered question waits before she may ask again. |
+| `surface_cooldown_hours` | How long after *any* cue of this type reached the prompt before a **new** one may. `0` (the default) means the shelf alone decides. |
 | `fulfilment` | `spoken` (she said it), `answered` (she said it *and* the user engaged), `either_party` (the conversation landed on the subject, no matter who steered it there). |
 | `match_mode` | `lexical` or `lexical_or_cosine`. |
 | `match_scope` | Match her reply, or the whole turn. |
@@ -103,6 +104,33 @@ a few hundred accumulate, comparing the distribution on turns where
 lexical fired against turns where it did not says where the real floor
 belongs, and the conservative types can be promoted on evidence rather
 than on a guess.
+
+### Scarcity is a surfacing property, not a production one
+
+`surface_cooldown_hours` exists because deficit-driven production broke
+something that used to work by accident. A few cue types are rare *by
+nature* rather than because material is short — `self_callback` is one
+per ten days or so, and always was. But that pacing lived in the
+producer: a worker gated on a ten-day `last_fired_at` drafted one cue a
+fortnight, and one drafted is one surfaced. Move the same worker onto an
+inventory target and the shelf fills, and a full shelf empties itself
+over consecutive turns.
+
+The fix is to state the rarity where it belongs. A producer cooldown was
+throttling the wrong thing anyway: it meant that when the shelf ran dry
+the cue simply did not exist for ten days, so a perfect moment inside
+the window found nothing to say. The cadence gate keeps the stock and
+paces the *saying*.
+
+It gates **first claims only**. A row that has already surfaced is
+unfinished business — Aiko was shown it and did not take it — and the
+retry is the whole point of holding it. `pick_pool_cue` implements this
+as a filter over candidates rather than a check on the winner, because
+`pending()` sorts unseen cues first: rejecting the row it returns would
+hide a legitimate retry sitting directly behind a fresh cue that is
+merely early. The clock is `CueStore.last_surfaced_at()`, the newest
+`last_surfaced_at` for the type across *all* states — a cue she used is
+the strongest possible reason not to open another.
 
 ## Production: demand instead of caps
 
@@ -189,11 +217,35 @@ reached the prompt, so nothing was used up, and the picker weighs
 reflections against a conversation that moves. Bounded because a
 welcome-back goes stale and each held turn costs another picker run.
 
-`absence_curiosity` is the one member of the family that stays off the
-pool, for a reason about the cue rather than about effort: it renders a
-register instruction built from the gap duration, with no subject in it.
-A warm welcome-back can be letter-perfect without reusing a word of the
-cue, so matching would manufacture misses.
+## Which cues belong in the pool: the lexical-trace test
+
+Not every conditional block should be a cue. `absence_curiosity` sits in
+the middle of the gap-return family and stays off the pool; `mood_drift`
+and `mood_inertia` are hoisted out of T0 like pool cues are, without
+being pool cues. The line between them is one question:
+
+> **If Aiko acts on this cue, will her reply contain the cue's subject?**
+
+Consumption is measured by looking for the subject in what she said. So
+a cue that names something — a topic, a claim, a thing she was mulling —
+leaves a lexical trace when she uses it, and the pool can tell success
+from silence. That is the whole mechanism, and it is what makes the
+retry loop safe.
+
+A cue that changes *how* she speaks rather than *what* she says leaves
+no such trace. `absence_curiosity` is a register instruction built from
+a gap duration; a warm welcome-back can be letter-perfect without
+reusing a word of it. `mood_inertia` says "let the words catch up",
+which shows in pacing. `mood_drift` explicitly says *don't* name the
+observation. Pool any of these and every single firing scores as a miss,
+which is worse than no measurement: the retry loop would keep re-showing
+a cue she followed perfectly, and the per-type scoreboard would report
+the feature as broken.
+
+The rule of thumb: **if you cannot say what string you would grep her
+reply for, it is not a pool cue.** Such a block can still be hoisted out
+of T0 — that is what `HANDLING_SECTIONS` is for — it just carries no
+ledger.
 
 ## The persona hoist
 
@@ -212,7 +264,7 @@ whichever blocks rendered this turn, as a `handling_notes_block` in T6.
 What stays in T0 is one short stanza (`HANDLING_PREAMBLE`) saying that
 cues arrive with their own instructions attached.
 
-This takes ~9.7 k characters off the always-on prompt and puts the
+This takes ~14 k characters off the always-on prompt and puts the
 instructions next to the thing they are about. See
 [`prompt-caching.md`](prompt-caching.md#hoisting-conditional-instructions-out-of-t0-the-handling-notes-split)
 for the general rule and the resolution mechanism.
@@ -267,28 +319,62 @@ Three numbers to read there:
   `max_surfacings` means the cue line is not reading as something to
   act on.
 
+## The self-state one-shots
+
+Two of the four self-state cues moved in the second batch, and how they
+moved is worth recording because they are opposite cases.
+
+**`self_correction`** is queued from the turn path, not by a worker: a
+contradiction only exists once Aiko has said the contradicting thing.
+`_maybe_arm_self_correction` composes the line (via
+`self_correction_detector.render_cue`) and writes it with
+`CuePoolMixin._queue_pool_cue()`, the session-side twin of
+`CueProducer.publish`. The subject is the memory she should correct
+*to*, never her own snippet — she is likely to quote the slip while
+owning it, and matching the snippet would read repeating the mistake as
+having fixed it. `ttl_hours=0.5`, because the line opens "a moment ago
+you said" and that is a fiction by the turn after next.
+
+The migration also closed a leak. The old provider cleared its one-shot
+slot and *then* validated the snippet and memory text, so a hit missing
+either half burned the arm having said nothing. Validation now happens
+at write time, and a cue that renders empty is simply never written — so
+the cooldown is not spent either.
+
+**`self_callback`** is the full-stack case: worker → `CueProducer` →
+pool → provider, plus `demand()` from shelf depth. It is also the type
+that motivated `surface_cooldown_hours`, since its rarity used to come
+from a producer cooldown (see above). Its `aiko.self_callback` kv ring
+is still written — `get_self_callback_state` reads it, and it is the
+signature source for the per-memory dedupe — but nothing surfaces from
+it any more, and its `last_surfaced_at` watermark is gone.
+
+`mood_inertia` and `mood_drift` stayed off the pool: they fail the
+lexical-trace test above. They were hoisted out of T0 through
+`HANDLING_SECTIONS` in the same pass, and `mood_drift`'s sampler got a
+heartbeat `demand()` — full pressure until today's sample lands, nothing
+after — so the lazy-sample fallback in its provider stops being
+load-bearing.
+
 ## What is not in the pool yet
 
-Ten types are pooled: seven worker-produced, three on the surface-time
-ledger. The remaining cue types in `CUE_SPECS` (`self_noticing`,
+Twelve types are pooled: eight worker-produced, three on the
+surface-time ledger, and `self_correction` from the turn path. The
+remaining cue types in `CUE_SPECS` (`self_noticing`,
 `absence_curiosity`, and friends) still ride their `kv_meta` rings and
 are still exempt from consumption matching.
 
-That exemption is correct for most of them. The old reasoning — "echo
-is meaningless for a cue, because a cue is an instruction" — holds for
-a tone or posture instruction; it fails only for a cue that names a
-specific subject, which is exactly the set that moved. **Migrating a
-type is worth doing only if it names a subject**, which is the test
-`absence_curiosity` fails and why it was left behind while its three
-siblings moved.
+That exemption is correct for most of them, by the lexical-trace test:
+"echo is meaningless for a cue, because a cue is an instruction" holds
+for a tone or posture instruction and fails only for a cue that names a
+specific subject.
 
-The self-state and relationship one-shots (`self_correction`,
-`mood_inertia`, `self_callback`, `mood_drift`, `wellbeing_concern`,
-`shared_ritual`, `promise_followthrough`, `long_arc_callback`) do name
-subjects and are the next candidates. Five of those are drafted by
-workers still on the legacy scheduling path, and for those the pool
-migration *is* the demand-driven migration: a `CueProducer` gets
-`demand()` almost for free, since shelf depth is the pressure signal.
+The relationship one-shots (`wellbeing_concern`, `shared_ritual`,
+`promise_followthrough`, `long_arc_callback`) do name subjects and are
+the next candidates. All four are drafted by workers still on the legacy
+scheduling path, and for those the pool migration *is* the
+demand-driven migration: a `CueProducer` gets `demand()` almost for
+free, since shelf depth is the pressure signal.
 
 ## See also
 

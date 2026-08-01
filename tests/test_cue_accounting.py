@@ -115,13 +115,18 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(flagged, sorted(GAP_CUE_ORDER))
 
     def test_every_spec_has_an_arming_signal(self) -> None:
-        # A spec with neither a slot nor a journal can never be armed, so
-        # it would sit in ``never_armed`` forever looking like a broken
-        # worker rather than a broken registry entry.
+        # A spec with no slot, no journal and no pool can never be armed,
+        # so it would sit in ``never_armed`` forever looking like a broken
+        # worker rather than a broken registry entry. The pool counts as a
+        # signal in its own right: for a pool-only type a queued row *is*
+        # the opportunity, which is the branch ``armed_cues`` takes when
+        # the other two are absent.
+        from app.core.proactive.cue_accounting import POOLED_CUES
+
         for name, spec in CUE_SPECS.items():
             with self.subTest(cue=name):
                 self.assertTrue(
-                    spec.slot_attr or spec.journal_key,
+                    spec.slot_attr or spec.journal_key or name in POOLED_CUES,
                     f"{name} has no way to be detected as armed",
                 )
 
@@ -871,7 +876,13 @@ class CuePolicyTests(unittest.TestCase):
             if policy.inventory_target == 0
         }
         self.assertEqual(
-            empty, {"turning_over", "sleep_return", "away_activities"},
+            empty,
+            {
+                "turning_over",
+                "sleep_return",
+                "away_activities",
+                "self_correction",
+            },
         )
 
     def test_policy_for_is_none_off_the_pool(self) -> None:

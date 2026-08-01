@@ -55,12 +55,31 @@ def conditional_handling_path_for(persona_path: Path) -> Path:
 #
 # Keys must be names registered in ``_PROMPT_BLOCK_TIERS``; a block may
 # claim more than one header when one renderer covers several situations.
+# The three entries here share a reason for not being pool cues, and it
+# is the same test that decides the question generally: does acting on
+# the cue leave a lexical trace? Consumption is measured by looking for
+# the cue's subject in Aiko's reply, so a cue that changes *how* she
+# speaks rather than *what* she says can be followed perfectly and still
+# match nothing. All three are register instructions -- a welcome-back
+# warmth, a feeling her face outran, a mood she has been carrying -- and
+# pooling them would only manufacture misses.
 HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     # K14: a register instruction built from the gap duration, with no
-    # subject of its own -- which is exactly why it is here rather than in
-    # the pool.
+    # subject of its own.
     "absence_curiosity_block": (
         "When they've been away a while (typed mode):",
+    ),
+    # K45: "your face jumped to X but underneath you're still Y". The
+    # subject would be a reaction label and a generic felt phrase, and
+    # letting the words catch up shows in pacing, not in vocabulary.
+    "mood_inertia_block": (
+        "When your face outruns the feeling:",
+    ),
+    # H3: a multi-day drift -- sustained low, lifting, or one relationship
+    # axis moving. The cue explicitly says don't announce it, so a reply
+    # that follows it perfectly names nothing at all.
+    "mood_drift_block": (
+        "What I've been noticing over time:",
     ),
 }
 

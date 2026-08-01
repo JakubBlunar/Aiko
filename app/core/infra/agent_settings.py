@@ -2162,10 +2162,6 @@ class AgentSettings:
     # How often the worker checks during quiet windows (default 6h;
     # clamped to >= 60s).
     self_callback_check_interval_seconds: int = 21600
-    # Wall-clock cooldown between drafted cues (per-memory signature
-    # de-dup is structural, so this just paces *how often* she circles
-    # back on herself at all).
-    self_callback_cooldown_days: float = 10.0
     # Use the worker model to select + classify the candidate (more robust
     # than the regex feeling/intention prefilter; rejects biographical
     # facts the regex false-positives). Falls back to the pure heuristic

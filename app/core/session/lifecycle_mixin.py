@@ -200,8 +200,10 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None
-        # K38 — wipe the self-correction slot + cooldown on switch.
-        self._pending_self_correction = None
+        # K38 — reset the self-correction cooldown on switch. The cue
+        # itself lives in cue_pool and is not session-scoped: an owed
+        # correction is owed whichever session she is in, and its own
+        # half-hour TTL retires it.
         self._self_correction_cooldown_remaining = 0
         # K53 — fresh initiative counter per session (warmup applies
         # again so a new session never opens with a floor-grab).
@@ -315,8 +317,7 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None
-        # K38 — clear the self-correction slot + cooldown on a wipe.
-        self._pending_self_correction = None
+        # K38 — clear the self-correction cooldown on a wipe.
         self._self_correction_cooldown_remaining = 0
         # K53 — a full wipe restarts the initiative cadence + warmup.
         self._initiative_director = None

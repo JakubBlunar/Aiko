@@ -62,11 +62,12 @@ class DetectorsInitMixin:
         )
         self._pending_inside_joke: Any = None
         # K38 — one-shot self-correction slot + per-fire cooldown.
-        # Post-turn detector fills the slot when Aiko's reply
+        # Post-turn detector queues a cue_pool row when Aiko's reply
         # contradicted one of her own high-confidence fact/preference
-        # memories; the next-turn provider clears it. The cooldown
-        # counter keeps a single slip from nagging every turn.
-        self._pending_self_correction: Any = None
+        # memories; the next-turn provider claims it. Only the cooldown
+        # lives here now -- it keeps a single slip from nagging every
+        # turn, and unlike the cue it is about this session's pacing
+        # rather than about anything Aiko owes.
         self._self_correction_cooldown_remaining: int = 0
         # K23 — misattunement detector state. Unlike K8/K17 the
         # detector runs provider-time (same-turn reaction), so we

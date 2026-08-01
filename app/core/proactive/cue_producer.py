@@ -181,6 +181,7 @@ def pick_pool_cue(
     relevant: Callable[[dict[str, Any]], bool] | None = None,
     force: bool = False,
     limit: int = 8,
+    allow_first_claim: bool = True,
 ) -> "CueRow | None":
     """The best pending cue of this type that fits the moment.
 
@@ -188,6 +189,13 @@ def pick_pool_cue(
     -- the topic-overlap tests these providers already run. ``force``
     bypasses it for the MCP debug surfaces, which is the same escape hatch
     the ring-based versions had.
+
+    ``allow_first_claim=False`` restricts the pick to rows that have
+    already surfaced at least once, which is how the per-type surfacing
+    cadence is enforced without also delaying a retry. It is a filter
+    rather than a check on the winner because ``pending`` sorts unseen
+    cues first: rejecting the row it returns would hide a legitimate
+    retry sitting directly behind a fresh cue that is merely early.
 
     Does **not** mark the cue surfaced. The provider does that, after it
     has decided the cue is actually going into the prompt, because a cue
@@ -206,6 +214,8 @@ def pick_pool_cue(
         log.debug("cue pool read failed: type=%s", cue_type, exc_info=True)
         return None
     for row in rows:
+        if not allow_first_claim and row.surfaced_count <= 0:
+            continue
         if force or relevant is None or relevant(row.payload):
             return row
     return None
