@@ -5,9 +5,9 @@
 # LanceDB index and the active avatar survive container recreation. But a
 # fresh/empty volume shadows two things baked into the image:
 #
-#   * the persona text (data/persona/aiko_companion.txt) — seeded here from
-#     /opt/aiko/seed/persona, copy-if-absent so a user edit is never
-#     clobbered.
+#   * the persona text (data/persona/*.txt) — seeded here from
+#     /opt/aiko/seed/persona, per file and copy-if-absent so a user edit is
+#     never clobbered.
 #   * the Live2D avatar bundle — NOT seeded here: the app self-heals it on
 #     boot from $AIKO_AVATAR_SEED_DIR/<name> (baked at
 #     /opt/aiko/seed/personas-active, outside the volume) into
@@ -27,6 +27,17 @@ set -e
 DATA_DIR="/app/data"
 SEED_DIR="/opt/aiko/seed"
 USER_CONFIG="${AIKO_USER_CONFIG:-${DATA_DIR}/user.json}"
+
+# The hoisted handling notes were called cue_handling.txt for one release
+# before growing past cues. Carry a volume's copy over under the new name
+# rather than seeding beside it, or an edit made to the old file would go
+# on sitting there doing nothing.
+if [ -f "${DATA_DIR}/persona/cue_handling.txt" ] \
+   && [ ! -e "${DATA_DIR}/persona/conditional_handling.txt" ]; then
+  mv "${DATA_DIR}/persona/cue_handling.txt" \
+     "${DATA_DIR}/persona/conditional_handling.txt"
+  echo "[entrypoint] renamed persona/cue_handling.txt -> conditional_handling.txt"
+fi
 
 if [ -d "${SEED_DIR}/persona" ]; then
   mkdir -p "${DATA_DIR}/persona"

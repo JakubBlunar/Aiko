@@ -299,12 +299,79 @@ class BroadcastTests(_Fixture):
         self.assertEqual(seen, [])
 
 
+class SurfaceTimeLedgerTests(_Fixture):
+    """Cues whose content is chosen when the block renders.
+
+    The gap family has no worker to draft ahead: the arming event is a
+    duration, and which reflection or journal beat gets used depends on
+    the message being answered. So the row is written at the moment it
+    surfaces -- and from there it is an ordinary pool cue, which is the
+    whole point of doing it this way.
+    """
+
+    # A reflection, which is what this cue's subject actually is -- a
+    # sentence rather than a topic label, which is why its policy asks
+    # for three shared content words instead of one.
+    _SUBJECT = "whether the interview prep is leaving him any sleep"
+    _TEXT = "Turning over: you've been thinking about this -- '...'"
+
+    def _record(self):
+        row = self.host.record_surfaced_cue(
+            "turning_over", self._SUBJECT, self._TEXT,
+        )
+        self.assertIsNotNone(row)
+        return row
+
+    def test_recording_lands_the_row_already_surfaced(self) -> None:
+        row = self._record()
+        self.assertEqual(self._state(row.id), "surfaced")
+        self.assertEqual(self._row(row.id).surfaced_count, 1)
+
+    def test_a_miss_comes_back_for_the_next_render(self) -> None:
+        """The leak this closes: a one-shot slot spent on a turn she ignored."""
+        row = self._record()
+        self.host._settle_pool_cues(
+            user_text="what's for dinner", assistant_text="pasta, probably",
+        )
+        self.assertEqual(self._state(row.id), STATE_PENDING)
+
+        again = self.host.take_pool_cue("turning_over")
+        self.assertIsNotNone(again)
+        self.assertEqual(again.id, row.id)
+        self.assertEqual(again.text, self._TEXT)
+
+    def test_using_it_retires_it(self) -> None:
+        row = self._record()
+        self.host._settle_pool_cues(
+            user_text="hey",
+            assistant_text=(
+                "honestly I kept wondering whether the interview prep was "
+                "leaving you any sleep"
+            ),
+        )
+        self.assertEqual(self._state(row.id), STATE_USED)
+        self.assertIsNone(self.host.take_pool_cue("turning_over"))
+
+    def test_the_retry_budget_still_applies(self) -> None:
+        row = self._record()
+        for _ in range(3):
+            self.host._settle_pool_cues(user_text="hi", assistant_text="mm")
+            self.host.take_pool_cue("turning_over")
+        self.assertEqual(self._state(row.id), STATE_EXPIRED)
+
+    def test_recording_without_a_store_is_a_no_op(self) -> None:
+        self.assertIsNone(
+            _Host(None).record_surfaced_cue("turning_over", "x", "y"),
+        )
+
+
 class NoStoreTests(unittest.TestCase):
     """A session without a pool must behave as it did before one existed."""
 
     def test_every_entry_point_is_a_no_op(self) -> None:
         host = _Host(None)
         self.assertIsNone(host.take_pool_cue("interest_drift"))
+        self.assertIsNone(host.record_surfaced_cue("turning_over", "a", "b"))
         host._settle_pool_cues(user_text="a", assistant_text="b")
         host._settle_awaiting_cues(user_text="a")
 

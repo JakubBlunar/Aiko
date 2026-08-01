@@ -93,12 +93,69 @@ class CuePoolMixin:
             store.mark_surfaced(row.id)
         except Exception:
             log.debug("cue mark_surfaced failed: id=%s", row.id, exc_info=True)
+        self._register_surfaced_cue(row)
+        return row
+
+    def record_surfaced_cue(
+        self,
+        cue_type: str,
+        subject: str,
+        text: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        ttl_hours: float | None = None,
+    ) -> "CueRow | None":
+        """Log a cue that was chosen at render time, already ``surfaced``.
+
+        The pool's other entry point assumes a worker drafted the cue in
+        advance and the prompt merely claims one. Several cues cannot work
+        that way: they are armed by an event carrying no content -- a typed
+        gap stores a duration and nothing else -- and *which* reflection or
+        journal entry gets used is picked when the block renders, against
+        the message being answered. Drafting ahead would throw that
+        query-awareness away.
+
+        So the row is written at the moment it surfaces. Everything after
+        that point is shared: the same post-turn matching decides whether
+        Aiko used it, and a miss releases it back to ``pending`` where the
+        block's next render finds it via :meth:`take_pool_cue`. That is
+        what turns a one-shot slot into something with retries.
+        """
+        store = self._cue_pool_store()
+        if store is None:
+            return None
+        try:
+            cue_id = store.add(
+                cue_type,
+                subject,
+                text,
+                payload=payload,
+                ttl_hours=ttl_hours,
+            )
+            if not cue_id:
+                return None
+            # Read before marking, matching what ``take_pool_cue``
+            # stashes: post-turn counts this surfacing itself, and a row
+            # carrying it already would have the cue expire a turn early.
+            row = store.get(cue_id, with_embedding=True)
+            store.mark_surfaced(cue_id)
+        except Exception:
+            log.debug(
+                "cue record_surfaced failed: type=%s", cue_type, exc_info=True,
+            )
+            return None
+        if row is None:
+            return None
+        self._register_surfaced_cue(row)
+        return row
+
+    def _register_surfaced_cue(self, row: "CueRow") -> None:
+        """Remember a row for this turn's post-turn verdict."""
         pending = getattr(self, "_surfaced_pool_cues", None)
         if pending is None:
             pending = []
             self._surfaced_pool_cues = pending
         pending.append(row)
-        return row
 
     # ── consumption, stage A: did Aiko raise it? ──────────────────────
 

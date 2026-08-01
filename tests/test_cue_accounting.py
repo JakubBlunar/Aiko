@@ -768,7 +768,7 @@ class CuePolicyTests(unittest.TestCase):
         # ring, so it has no CueSpec and never needed one.
         self.assertEqual(POOLED_CUES - set(CUE_SPECS), {"curiosity_seed"})
 
-    def test_handling_sections_exist_in_the_cue_file(self) -> None:
+    def test_handling_sections_exist_in_the_notes_file(self) -> None:
         """The hoist is silent when a header is wrong -- so check it here.
 
         ``strip_persona_section`` is deliberately a no-op on a header it
@@ -782,7 +782,7 @@ class CuePolicyTests(unittest.TestCase):
 
         from app.core.proactive.cue_accounting import CUE_POLICIES
 
-        notes = Path("data/persona/cue_handling.txt").read_text(
+        notes = Path("data/persona/conditional_handling.txt").read_text(
             encoding="utf-8",
         )
         headers = {line.strip() for line in notes.splitlines()}
@@ -792,8 +792,26 @@ class CuePolicyTests(unittest.TestCase):
             self.assertIn(
                 policy.handling_section,
                 headers,
-                f"{name}: handling_section is not a cue_handling.txt header",
+                f"{name}: handling_section is not a notes-file header",
             )
+
+    def test_every_hoisted_policy_names_its_block(self) -> None:
+        """A header with no block never ships; a block typo never warns.
+
+        ``_persona_split`` keys sections by block name, so a policy that
+        sets ``handling_section`` without a matching ``block`` extracts its
+        text out of T0 and then has nothing to trigger re-emission -- the
+        guidance disappears rather than moves.
+        """
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+        from app.core.session.prompt_assembler import _BLOCK_TIER_OF
+
+        for name, policy in CUE_POLICIES.items():
+            if not policy.handling_section:
+                continue
+            with self.subTest(cue=name):
+                self.assertTrue(policy.block, f"{name}: no block named")
+                self.assertIn(policy.block, _BLOCK_TIER_OF)
 
     def test_only_off_topic_cues_trust_cosine(self) -> None:
         """The two on-topic-by-construction types stay lexical-only.
@@ -835,12 +853,31 @@ class CuePolicyTests(unittest.TestCase):
             self.assertGreaterEqual(policy.max_asks, 1, name)
             self.assertLessEqual(policy.max_asks, 3, name)
             self.assertGreater(policy.ttl_hours, 0.0, name)
-            self.assertGreater(policy.inventory_target, 0, name)
+            self.assertGreaterEqual(policy.inventory_target, 0, name)
+
+    def test_only_event_armed_types_have_an_empty_shelf(self) -> None:
+        """``inventory_target=0`` is a claim, and things read it as one.
+
+        It means "nothing stocks this type, the pool is only a retry
+        buffer" -- which is what stops the scheduler seeing a permanent
+        deficit and what makes ``armed_cues`` treat a row as an
+        opportunity in its own right. A worker-produced type that landed
+        on 0 by accident would go quietly unstocked forever.
+        """
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
+        empty = {
+            name for name, policy in CUE_POLICIES.items()
+            if policy.inventory_target == 0
+        }
+        self.assertEqual(
+            empty, {"turning_over", "sleep_return", "away_activities"},
+        )
 
     def test_policy_for_is_none_off_the_pool(self) -> None:
         from app.core.proactive.cue_accounting import policy_for
 
-        self.assertIsNone(policy_for("turning_over"))
+        self.assertIsNone(policy_for("absence_curiosity"))
         self.assertIsNone(policy_for(""))
         self.assertIsNotNone(policy_for("dormant_interest"))
 
@@ -942,12 +979,20 @@ class PoolReportTests(unittest.TestCase):
         self.assertFalse(report["pool"]["enabled"])
 
     def test_an_untouched_pool_still_reports_its_shelves(self) -> None:
-        """Distinct from no pool at all -- an empty shelf is a deficit."""
+        """Distinct from no pool at all -- an empty shelf is a deficit.
+
+        Except for the event-armed types, whose shelf is empty at rest by
+        design; reporting those as short of stock would read as a stuck
+        worker when there is no worker.
+        """
+        from app.core.proactive.cue_accounting import CUE_POLICIES
+
         report = self._report()
         self.assertTrue(report["pool"]["enabled"])
-        self.assertTrue(
-            all(r["deficit"] > 0 for r in report["pool"]["by_type"]),
-        )
+        for row in report["pool"]["by_type"]:
+            target = CUE_POLICIES[row["cue"]].inventory_target
+            with self.subTest(cue=row["cue"]):
+                self.assertEqual(row["deficit"] > 0, target > 0)
 
 
 if __name__ == "__main__":

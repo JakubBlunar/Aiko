@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.session.cue_pool_mixin import CuePoolMixin
 from app.core.session.inner_life_part2 import InnerLifePart2Mixin
 from app.core.world import sleep_return as sr
 
@@ -161,7 +162,14 @@ def _iso_ago(hours: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
-class _Host(InnerLifePart2Mixin):
+class _Host(InnerLifePart2Mixin, CuePoolMixin):
+    """The provider now writes what it surfaces to the pool.
+
+    Mixed in without a store: every pool call short-circuits to ``None``,
+    which is also the shape of a session whose store failed to open, so
+    these stay tests of the journal path rather than of the pool.
+    """
+
     def __init__(
         self,
         *,
@@ -221,8 +229,11 @@ class ProviderTests(unittest.TestCase):
             memory_settings=_mem_settings(sleep_return_min_gap_hours=12.0),
         )
         self.assertEqual(host._render_sleep_return_block(), "")
-        # Slot consumed (one-shot) but the gap-cue family flag stays False.
-        self.assertIsNone(host._pending_sleep_return_seconds)
+        # Nothing rendered, so the slot is held for another look -- the
+        # overnight gate reads the current hour, and a gap that doesn't
+        # look like a sleep now can later. The gap-cue family flag stays
+        # False either way, so the away / forward cues still proceed.
+        self.assertEqual(host._pending_sleep_return_seconds, 5.5 * 3600.0)
         self.assertFalse(host._gap_cue_surfaced)
 
     def test_force_next_bypasses_gates(self) -> None:

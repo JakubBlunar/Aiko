@@ -308,11 +308,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # A thin cluster on the rim of a dense one; sits with the other
         # topic-graph-derived surfaces.
         "curiosity_gradient_block",
-        # The handling notes for whichever pooled cues rendered above,
-        # hoisted out of the persona so they cost nothing on the turns
-        # their cue is absent. Last in the tier because it is the only
+        # The handling notes for whichever hoisted blocks rendered above,
+        # lifted out of the persona so they cost nothing on the turns
+        # their block is absent. Last in the tier because it is the only
         # block that is *about* the others.
-        "cue_handling_block",
+        "handling_notes_block",
     ),
 }
 
@@ -372,8 +372,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self._persona_path = Path(persona_path)
         self._recent_window = max(2, int(recent_window))
         self._persona_cache: tuple[float, str] | None = None
-        # Raw text of the companion cue_handling.txt, keyed on its mtime.
-        self._cue_handling_cache: tuple[float, str] | None = None
+        # Raw text of the companion conditional_handling.txt, by mtime.
+        self._handling_notes_cache: tuple[float, str] | None = None
         # The two files merged and split into core + per-cue notes, keyed on
         # ``(persona mtime, cue mtime, speech_texture_enabled)`` -- see
         # ``_persona_split``.
@@ -3109,22 +3109,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # K64c: curiosity gradient — "I keep brushing past X" cue, last
             # of the topic-graph-derived surfaces.
             system_parts.append(curiosity_gradient_block)
-        cue_handling_block = self._render_cue_handling({
-            "knowledge_gap_notice": knowledge_gap_notice_block,
-            "interest_drift": interest_drift_block,
-            "associative_wander": associative_wander_block,
-            "dormant_interest": dormant_interest_block,
-            "curiosity_gradient": curiosity_gradient_block,
-            "forward_curiosity": forward_curiosity_block,
-            "curiosity_seed": curiosity_seeds_block,
-        })
-        if cue_handling_block:
-            # The persona's handling notes for the cues that actually
+        # Read off this frame's locals by the names the tier ladder
+        # registers -- the same resolution ``block_char_table`` uses, so
+        # adding a hoisted block needs no edit here. Must stay below every
+        # block that can claim a handling note.
+        handling_notes_block = self._render_handling_notes(locals())
+        if handling_notes_block:
+            # The persona's handling notes for the blocks that actually
             # fired, gathered into one section at the end of the cluster.
-            # They used to sit in T0 on every turn; a cue block is present
-            # on a small minority of them, and an instruction about a cue
-            # that isn't there is not guidance, it's ballast.
-            system_parts.append(cue_handling_block)
+            # They used to sit in T0 on every turn; each of these blocks is
+            # present on a small minority of them, and an instruction about
+            # a cue that isn't there is not guidance, it's ballast.
+            system_parts.append(handling_notes_block)
 
         # ── T3 relevant_context: reserve the surfacing budget BEFORE
         #    history is packed. Join the system BASE (everything except the

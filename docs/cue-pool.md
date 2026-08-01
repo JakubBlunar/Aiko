@@ -5,11 +5,12 @@ but has not made yet: a topic that has gone quiet she might reopen, a
 gap she noticed in what she knows, an association she wants to follow,
 a question about the user's life she has been sitting on.
 
-Seven workers produce these. Until schema v29 each of them kept its own
-bookkeeping in one of three mutually incompatible shapes — a `kv_meta`
-JSON ring plus a `surfaced_keys` set, a ring plus a watermark plus an
-in-memory slot, or rows in the `memories` table — and none of those
-could answer the two questions that decide whether any of it works.
+Seven workers produce these, and three more cues are chosen when their
+block renders. Until schema v29 each of them kept its own bookkeeping in
+one of three mutually incompatible shapes — a `kv_meta` JSON ring plus a
+`surfaced_keys` set, a ring plus a watermark plus an in-memory slot, or
+rows in the `memories` table — and none of those could answer the two
+questions that decide whether any of it works.
 
 **How much stock do I have?** A ring says what is newest, not what is
 unspent. A worker could not stay dormant while cues were already
@@ -77,14 +78,14 @@ so.
 
 | Field | Meaning |
 | --- | --- |
-| `inventory_target` | How many pending cues counts as stocked. This is what replaced the daily caps. |
+| `inventory_target` | How many pending cues counts as stocked. This is what replaced the daily caps. `0` means nothing stocks the type — see the surface-time ledger below. |
 | `ttl_hours` | How long the cue stays worth saying. A dormant topic keeps for weeks; "did the espresso machine arrive" does not. |
 | `max_surfacings` / `max_asks` | The two retry budgets. |
 | `reask_cooldown_hours` | How long an unanswered question waits before she may ask again. |
 | `fulfilment` | `spoken` (she said it), `answered` (she said it *and* the user engaged), `either_party` (the conversation landed on the subject, no matter who steered it there). |
 | `match_mode` | `lexical` or `lexical_or_cosine`. |
 | `match_scope` | Match her reply, or the whole turn. |
-| `handling_section` | The persona header hoisted into T6 alongside this cue — see below. |
+| `handling_section` / `block` | The persona header hoisted into T6 alongside this cue, and the prompt block whose presence triggers it — see below. |
 
 The `match_mode` split is the non-obvious one. **A cue whose subject is
 on-topic by construction cannot use cosine.** `knowledge_gap_notice`
@@ -156,24 +157,65 @@ reply for K22 and the combined turn for the gap resolver, and
 lazily and only when an `awaiting` row of a cosine-trusting type is
 actually present.
 
+## Cues chosen at render time (the surface-time ledger)
+
+Everything above assumes a worker drafted the cue in advance and the
+prompt merely claims one. The gap-return family cannot work that way.
+Their arming event carries no content — `_pending_turning_over_seconds`
+is a float — and *which* reflection or journal beat gets used is picked
+when the block renders, against the message being answered. Drafting
+ahead would throw that query-awareness away.
+
+So the row is written at the moment it surfaces, by
+`CuePoolMixin.record_surfaced_cue()`, already in `surfaced` state and
+registered for the same post-turn settle. Render order becomes: take a
+released row if one is pending, else run the existing picker and record
+what it chose. Everything after that point is shared — a miss releases
+the row, and the next render finds it via `take_pool_cue()` without
+needing a second gap to arm the slot.
+
+These types set `inventory_target=0`, which is a claim rather than a
+tuning choice: **nothing stocks them, the pool is only a retry buffer.**
+Two things read it. The scheduler must not see a permanently empty shelf
+as a deficit to fill, and `armed_cues()` treats a released row as an
+opportunity in its own right rather than requiring the slot too — the
+usual slot-and-content conjunction would report them unarmed on exactly
+the turn they are about to fire.
+
+The slot itself is no longer spent on read. `_spend_gap_slot()` clears it
+when the block fires and otherwise holds it for a couple of assemblies
+(`_GAP_SLOT_ATTEMPTS`): a picker that came up empty means nothing
+reached the prompt, so nothing was used up, and the picker weighs
+reflections against a conversation that moves. Bounded because a
+welcome-back goes stale and each held turn costs another picker run.
+
+`absence_curiosity` is the one member of the family that stays off the
+pool, for a reason about the cue rather than about effort: it renders a
+register instruction built from the gap duration, with no subject in it.
+A warm welcome-back can be letter-perfect without reusing a word of the
+cue, so matching would manufacture misses.
+
 ## The persona hoist
 
-Each pooled type names a header in `handling_section`, and the section
-under that header lives in
-[`cue_handling.txt`](../data/persona/cue_handling.txt) — a companion to
-the persona rather than part of it, because it is the one piece of
-Aiko's character text that is *not* always-on. At load time
+Handling text is paired to a **prompt block**, from two registries: a
+pooled cue names its header in `CuePolicy.handling_section` alongside
+`CuePolicy.block`, and anything else lives in `HANDLING_SECTIONS` in
+[`prompt_support.py`](../app/core/session/prompt_support.py). The
+sections themselves live in
+[`conditional_handling.txt`](../data/persona/conditional_handling.txt) —
+a companion to the persona rather than part of it, because they are the
+one piece of Aiko's character text that is *not* always-on. At load time
 `PromptAssembler._persona_split()` reads both files and caches the
-sections; `_render_cue_handling()` appends the notes for whichever cue
-types rendered a block this turn, as a `cue_handling_block` in T6.
+sections; `_render_handling_notes(locals())` appends the notes for
+whichever blocks rendered this turn, as a `handling_notes_block` in T6.
 
-What stays in T0 is one short stanza (`CUE_HANDLING_PREAMBLE`) saying
-that cues arrive with their own instructions attached.
+What stays in T0 is one short stanza (`HANDLING_PREAMBLE`) saying that
+cues arrive with their own instructions attached.
 
-This takes ~5.9 k characters off the always-on prompt and puts the
+This takes ~9.7 k characters off the always-on prompt and puts the
 instructions next to the thing they are about. See
-[`prompt-caching.md`](prompt-caching.md#hoisting-conditional-instructions-out-of-t0-the-cue-handling-split)
-for the general rule.
+[`prompt-caching.md`](prompt-caching.md#hoisting-conditional-instructions-out-of-t0-the-handling-notes-split)
+for the general rule and the resolution mechanism.
 
 A section left inline in
 [`aiko_companion.txt`](../data/persona/aiko_companion.txt) is still
@@ -183,10 +225,10 @@ carries none of them.
 
 That is also the shape of a container upgrade: the entrypoint seeds
 `data/persona/` copy-if-absent per file, so an existing volume keeps its
-old persona (sections inline) *and* gains `cue_handling.txt`, which is
-then ignored. The loader logs an `INFO` line naming the shadowed cue
-types when that happens — delete the sections from the persona to switch
-over.
+old persona (sections inline) *and* gains
+`conditional_handling.txt`, which is then ignored. The loader logs an
+`INFO` line naming the shadowed headers when that happens — delete the
+sections from the persona to switch over.
 
 The headers are matched literally and `split_persona_section` is a
 deliberate no-op on a header it cannot find (both files are
@@ -194,9 +236,10 @@ user-editable, so a rename must not crash a turn). That makes typos
 silent at runtime — the section simply stops being hoisted and its cue
 goes out with no handling note — which is why two tests check every
 header: one next to the policy definitions
-(`tests/test_cue_accounting.py::CuePolicyTests::test_handling_sections_exist_in_the_cue_file`)
-and one next to the loader, in `tests/test_persona_cue_hoist.py`, which
-also asserts the persona is not still carrying them.
+(`tests/test_cue_accounting.py::CuePolicyTests::test_handling_sections_exist_in_the_notes_file`)
+and one next to the loader, in `tests/test_persona_hoist.py`, which also
+asserts the persona is not still carrying them and that every registered
+block reaches the call site.
 
 ## Watching it work
 
@@ -226,16 +269,26 @@ Three numbers to read there:
 
 ## What is not in the pool yet
 
-Seven types are pooled. The other ~7 journal-backed cue types in
-`CUE_SPECS` (`turning_over`, `sleep_return`, `away_activities`,
-`self_noticing`, and friends) still ride their `kv_meta` rings and are
-still exempt from consumption matching.
+Ten types are pooled: seven worker-produced, three on the surface-time
+ledger. The remaining cue types in `CUE_SPECS` (`self_noticing`,
+`absence_curiosity`, and friends) still ride their `kv_meta` rings and
+are still exempt from consumption matching.
 
 That exemption is correct for most of them. The old reasoning — "echo
 is meaningless for a cue, because a cue is an instruction" — holds for
 a tone or posture instruction; it fails only for a cue that names a
-specific subject, which is exactly the set that moved. Migrating the
-rest is worth doing only for the ones that name a subject.
+specific subject, which is exactly the set that moved. **Migrating a
+type is worth doing only if it names a subject**, which is the test
+`absence_curiosity` fails and why it was left behind while its three
+siblings moved.
+
+The self-state and relationship one-shots (`self_correction`,
+`mood_inertia`, `self_callback`, `mood_drift`, `wellbeing_concern`,
+`shared_ritual`, `promise_followthrough`, `long_arc_callback`) do name
+subjects and are the next candidates. Five of those are drafted by
+workers still on the legacy scheduling path, and for those the pool
+migration *is* the demand-driven migration: a `CueProducer` gets
+`demand()` almost for free, since shelf depth is the pressure signal.
 
 ## See also
 
