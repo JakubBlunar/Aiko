@@ -109,6 +109,7 @@ class CuePoolMixin:
         text: str,
         *,
         payload: dict[str, Any] | None = None,
+        hold_hours: float = 0.0,
     ) -> bool:
         """Queue a cue the turn path detected, ``pending``, under its TTL.
 
@@ -121,6 +122,10 @@ class CuePoolMixin:
         Distinct from :meth:`record_surfaced_cue`, which writes a row that
         is *already* in the prompt. This one is written a turn early and
         waits to be claimed, which is what the ordinary pool cues do.
+
+        ``hold_hours`` seals it for longer than that: a cue that has to
+        ripen before it is worth saying, rather than one merely waiting
+        its turn.
         """
         store = self._cue_pool_store()
         if store is None:
@@ -133,6 +138,7 @@ class CuePoolMixin:
                 text,
                 payload=payload,
                 ttl_hours=policy.ttl_hours if policy is not None else None,
+                hold_hours=hold_hours,
             )
         except Exception:
             log.debug("cue queue failed: type=%s", cue_type, exc_info=True)
@@ -562,6 +568,28 @@ class CuePoolMixin:
             "last_surfaced_at": last,
             "blocked": self._cadence_blocked(cue_type),
         }
+
+    def discard_cues(self, cue_type: str | None = None) -> int:
+        """Retire every live cue of a type, returning how many.
+
+        For the debug surfaces that used to wipe a feature's private kv
+        key. Rows are marked ``expired`` rather than deleted, so the
+        scoreboard still shows they existed and a subject Aiko already
+        spent stays spent -- clearing the shelf should not also hand her
+        permission to re-raise everything that was on it.
+        """
+        store = self._cue_pool_store()
+        if store is None:
+            return 0
+        cleared = 0
+        try:
+            for state in ("pending", "surfaced", "awaiting"):
+                for row in store.in_state(state, cue_type=cue_type, limit=500):
+                    if store.expire(row.id, evidence="discarded"):
+                        cleared += 1
+        except Exception:
+            log.debug("cue discard failed: type=%s", cue_type, exc_info=True)
+        return cleared
 
     def cue_pool_stats(self) -> list[dict[str, Any]] | None:
         """The per-type scoreboard on its own, for the MCP debug view.

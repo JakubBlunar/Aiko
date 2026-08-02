@@ -165,6 +165,12 @@ CUE_SPECS: dict[str, CueSpec] = {
         # straight to ``cue_pool``, so a queued row is the whole of the
         # arming signal -- see the pure-pool branch in ``armed_cues``.
         CueSpec("self_correction"),
+        # Same shape: banked on the turn path when a pushback or a light
+        # offence lands, so a waiting row is the whole opportunity. Its
+        # rows also sit under a ``not_before`` for the first hour, which
+        # ``count_pending`` already honours -- a debt too fresh to be a
+        # callback correctly reports as unarmed.
+        CueSpec("tease_ledger"),
         # Also pool-only, and the one entry whose arming is knowably
         # under-reported: whether an aged memory relevant to this turn
         # exists is the *result* of the provider's vector search, so
@@ -249,6 +255,16 @@ MATCH_LEXICAL_OR_COSINE = "lexical_or_cosine"
 MATCH_SCOPE_REPLY = "reply"
 MATCH_SCOPE_TURN = "turn"
 
+# Which of several waiting cues to offer first. Newest is right for
+# almost everything: a cue is built from context, and the freshest
+# framing is the one that still fits the conversation.
+#
+# ``oldest`` exists for the one type where the wait is the point. A
+# tease collected an hour after it was banked is a comeback; the same
+# line a week later is a callback, which is the whole joke.
+PICK_NEWEST = "newest"
+PICK_OLDEST = "oldest"
+
 
 @dataclass(frozen=True, slots=True)
 class CuePolicy:
@@ -305,6 +321,10 @@ class CuePolicy:
     # term is distinctive by construction -- it survived stopword filtering
     # and topic clustering to become a subject in the first place.
     min_overlap: int = 1
+    # Which waiting cue to reach for first. Independent of the
+    # already-surfaced-last rule, which always leads: this only orders
+    # cues that have had the same number of chances.
+    pick_order: str = PICK_NEWEST
     # The persona header whose handling text rides along with this cue
     # instead of sitting in the cache prefix on every turn, and the prompt
     # block whose presence is the trigger for sending it. The block name
@@ -547,6 +567,41 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Catching myself:",
             block="self_correction_block",
+        ),
+        CuePolicy(
+            "tease_ledger",
+            # Banked on the turn path like ``self_correction``, and the
+            # only entry in the table that wants its cues *stale*. A
+            # mock-grudge collected an hour after it was banked is a
+            # comeback; the gap between banking and collecting is what
+            # makes it a callback, which is the whole joke.
+            inventory_target=0,
+            pick_order=PICK_OLDEST,
+            # Was ``agent.tease_expiry_days``. An old grudge stops being
+            # funny, and two weeks is where it stops.
+            ttl_hours=336.0,
+            # Deliberately looser than the default two. For every other
+            # cue an unused surfacing is a small failure; here the note
+            # itself says to skip it entirely when no opening shows up,
+            # so a miss is the expected outcome and retiring a debt after
+            # two of them would throw away good material.
+            max_surfacings=3,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Lexical, and the subject is the user's own quoted words --
+            # collecting means echoing them back ("like the time you
+            # swore my playlist was objectively chaotic"). Three shared
+            # words for the same reason ``long_arc_callback`` uses three:
+            # the subject is a phrase, not a topic label.
+            match_mode=MATCH_LEXICAL,
+            min_overlap=3,
+            # Zero, not because there is no cadence but because this
+            # one's cannot live here: ``tease_collect_cooldown_hours`` is
+            # divided by the J11 affection-style bias, so the interval
+            # moves with how well teasing lands for this user. The
+            # renderer spends it against ``last_surfaced_at``.
+            surface_cooldown_hours=0.0,
+            handling_section="Collecting on the ledger:",
+            block="tease_ledger_block",
         ),
         # ── whole-turn, unchanged from what already runs
         CuePolicy(

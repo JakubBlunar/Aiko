@@ -883,6 +883,7 @@ class CuePolicyTests(unittest.TestCase):
                 "away_activities",
                 "self_correction",
                 "long_arc_callback",
+                "tease_ledger",
             },
         )
 

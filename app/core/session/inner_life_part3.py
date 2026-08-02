@@ -234,12 +234,16 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         # material — bank the user's claim as a future callback
         # tease ("oh, like the time you swore...? I remember
         # things."). Best-effort; dedupe lives in the pure module.
+        # The quote is the subject: ``what`` is the same sentence on
+        # every pushback, so keying on it would have each debt
+        # supersede the last.
         try:
             quote = " ".join((user_text or "").split())[:120]
             self._bank_tease_debt(
                 what="they pushed back hard on a take of yours",
                 context=f'they said "{quote}"' if quote else "",
                 source="opinion_pushback",
+                subject=quote,
             )
         except Exception:
             log.debug("opinion-pushback tease bank failed", exc_info=True)
@@ -564,6 +568,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 what="they pushed back hard on a take of yours",
                 context=f'they said "{quote}"' if quote else "",
                 source="opinion_pushback",
+                subject=quote,
             )
         except Exception:
             log.debug(
@@ -1766,98 +1771,71 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
 
         Gate walk: master switch → humor-axis floor (the bit needs an
         established teasing register) → wall-clock cooldown since the
-        last offer (``aiko.tease_last_offer_at`` kv stamp) → a debt
-        old enough to be a *callback* (``tease_min_age_hours``).
-        On fire: stamps the row ``offered_at`` (the post-turn settle
-        pass checks the reply against it), bumps the cooldown stamp,
-        and renders the permission slip. MCP ``force_tease_collection``
-        arms a one-shot bypass of the humor + cooldown gates.
+        last offer → claim the oldest ripe debt from the pool. MCP
+        ``force_tease_collection`` arms a one-shot bypass of the humor
+        and cooldown gates.
+
+        Everything downstream of the claim is the pool's: the row is
+        marked ``surfaced`` by ``take_pool_cue``, post-turn matching
+        decides whether she collected, and a miss releases it to come
+        round again. The two gates left here are the two the pool cannot
+        express -- an axis floor, and a cooldown that J11 moves.
         """
-        if not bool(
-            getattr(self._settings.agent, "tease_economy_enabled", True)
-        ):
-            return ""
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None:
+        agent = self._settings.agent
+        if not bool(getattr(agent, "tease_economy_enabled", True)):
             return ""
         try:
-
-            from app.core.relationship import tease_ledger as _tl
-
             force = bool(
                 self._debug_overrides.take("tease_collection_force_next", False)
             )
-
-            agent = self._settings.agent
-            now = timephrase.utcnow()
-
-            if not force:
-                # Humor-axis floor.
-                humor = 0.0
-                axes_store = getattr(self, "_relationship_axes_store", None)
-                if axes_store is not None:
-                    try:
-                        humor = float(axes_store.get(self._user_id).humor)
-                    except Exception:
-                        humor = 0.0
-                if humor < float(getattr(agent, "tease_min_humor", 0.2)):
-                    return ""
-                # Wall-clock cooldown between offers. J11 tilts it: if
-                # teasing is the care language this user responds to, the
-                # cooldown shortens a little (lengthens if it lands flat),
-                # bounded by the bias band — never off.
-                cooldown_h = float(
-                    getattr(agent, "tease_collect_cooldown_hours", 12.0)
-                )
-                cooldown_h = cooldown_h / max(
-                    0.1, self._affection_style_bias("teasing")
-                )
-                last_raw = chat_db.kv_get("aiko.tease_last_offer_at")
-                if last_raw and cooldown_h > 0.0:
-                    last = _tl._parse_iso(str(last_raw))
-                    if last is not None:
-                        elapsed_h = (now - last).total_seconds() / 3600.0
-                        if elapsed_h < cooldown_h:
-                            return ""
-
-            state = _tl.expire(
-                _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER)),
-                now,
-                expiry_days=float(
-                    getattr(agent, "tease_expiry_days", 14.0)
-                ),
-            )
-            debt = _tl.pick_collectable(
-                state,
-                now,
-                min_age_hours=(
-                    0.0 if force
-                    else float(getattr(agent, "tease_min_age_hours", 1.0))
-                ),
-            )
-            if debt is None:
-                chat_db.kv_set(
-                    _tl.KV_TEASE_LEDGER, _tl.serialize(state),
-                )
+            if not force and not self._tease_collection_open(agent):
                 return ""
-            state = _tl.stamp_offered(state, debt.id, now)
-            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
-            chat_db.kv_set("aiko.tease_last_offer_at", now.isoformat())
+            row = self.take_pool_cue("tease_ledger", force=force)
+            if row is None:
+                return ""
             log.info(
-                "tease collection offered: what=%s source=%s age_h=%.1f",
-                debt.what[:80],
-                debt.source,
-                (
-                    (now - (_tl._parse_iso(debt.created_at) or now))
-                    .total_seconds() / 3600.0
-                ),
+                "tease collection offered: subject=%s source=%s",
+                row.subject[:80], row.payload.get("source", "-"),
             )
-            return _tl.render_block(
-                debt, user_display_name=self.user_display_name,
-            )
+            return row.text
         except Exception:
             log.debug("tease collection render failed", exc_info=True)
             return ""
+
+    def _tease_collection_open(self, agent: Any) -> bool:
+        """The two K59 gates the cue policy has no field for.
+
+        The humor floor is a relationship-axis read, which the pool
+        knows nothing about. The cooldown *could* have been
+        ``surface_cooldown_hours`` were it a constant, but J11 divides
+        it by the affection-style bias -- if teasing is the care
+        language this user responds to the interval shortens, and it
+        lengthens when the jabs land flat -- so it is spent here
+        instead, against the same ``last_surfaced_at`` the policy
+        version reads.
+        """
+        humor = 0.0
+        axes_store = getattr(self, "_relationship_axes_store", None)
+        if axes_store is not None:
+            try:
+                humor = float(axes_store.get(self._user_id).humor)
+            except Exception:
+                humor = 0.0
+        if humor < float(getattr(agent, "tease_min_humor", 0.2)):
+            return False
+        cooldown_h = float(
+            getattr(agent, "tease_collect_cooldown_hours", 12.0)
+        ) / max(0.1, self._affection_style_bias("teasing"))
+        if cooldown_h <= 0.0:
+            return True
+        store = self._cue_pool_store()
+        if store is None:
+            return True
+        last = timephrase.parse_iso(store.last_surfaced_at("tease_ledger"))
+        if last is None:
+            return True
+        elapsed_h = (timephrase.utcnow() - last).total_seconds() / 3600.0
+        return elapsed_h >= cooldown_h
 
     def _render_topic_appetite_block(self) -> str:
         """K54: once-per-conversation "tapped out" negotiation slip.

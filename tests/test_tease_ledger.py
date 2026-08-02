@@ -1,189 +1,123 @@
-"""Tests for K59 tease economy — the pure ledger math (bank /
-dedupe / cap / expiry / pick / offer / settle), the collection
-provider plumbing (via a minimal mixin host stub), the post-turn
-bank + settle hooks including the K57 light-miffed lane-picker, and
-the prompt-assembler slot wiring."""
+"""Tests for K59 tease economy — the mock-grudge ledger.
+
+The ledger is cue-pool rows now (``cue_type="tease_ledger"``), which
+deleted most of what this file used to cover: expiry, capping, the
+offer stamp and the collection match are the pool's, tested once in
+``test_cue_pool_consumption.py`` for every type at once.
+
+What is left is what is still K59's own:
+
+* The pure module — how a debt is named (:func:`subject_for`, load-
+  bearing because ``what`` is a constant on the K29 lane) and when two
+  grudges are the same one (:func:`is_duplicate`).
+* Banking, through a mixin host with a real :class:`CueStore`: the
+  near-duplicate refusal, and the hour the row spends sealed so a debt
+  cannot be collected in the sitting it was banked.
+* The collection provider: the two gates that stayed out of the policy
+  (humor floor, J11-tilted cooldown) and the oldest-first pick, which
+  is the one place the pool's own ordering is wrong for a cue.
+* The K57 lane-picker, which routes a light miffed here instead of
+  spawning a sulk.
+* The prompt-assembler slot.
+"""
 from __future__ import annotations
 
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from app.core.affect import emotion_episodes as ee
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_store import CueStore
 from app.core.relationship import tease_ledger as tl
+from app.core.session.cue_pool_mixin import CuePoolMixin
 from app.core.session.inner_life_providers_mixin import (
     InnerLifeProvidersMixin,
 )
 from app.core.session.post_turn_mixin import PostTurnMixin
 
 
-NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+CHAOTIC = "your playlist is objectively chaotic"
 
 
-def _bank(
-    state: tl.LedgerState | None = None,
-    what: str = "they swore your playlist was objectively chaotic",
-    context: str = "mid-banter about music taste",
-    now: datetime = NOW,
-    **kwargs,
-) -> tl.LedgerState:
-    state, added = tl.bank(
-        state or tl.LedgerState(),
-        what=what,
-        context=context,
-        source="test",
-        now=now,
-        **kwargs,
-    )
-    assert added
-    return state
+# ── Pure: naming a debt ──────────────────────────────────────────────
 
 
-class SerializationTests(unittest.TestCase):
-    def test_round_trip(self) -> None:
-        state = _bank()
-        state = tl.stamp_offered(state, state.debts[0].id, NOW)
-        round_tripped = tl.deserialize(tl.serialize(state))
-        self.assertEqual(len(round_tripped.debts), 1)
-        self.assertEqual(round_tripped.debts[0].what, state.debts[0].what)
-        self.assertIsNotNone(round_tripped.debts[0].offered_at)
+class SubjectTests(unittest.TestCase):
+    """``what`` is generic on the K29 lane, so the quote has to win."""
 
-    def test_corrupt_inputs_yield_empty(self) -> None:
-        for raw in (None, "", "nope", "[1]", '{"debts": 5}'):
-            self.assertEqual(tl.deserialize(raw).debts, ())
-
-
-class BankTests(unittest.TestCase):
-    def test_blank_what_refused(self) -> None:
-        state, added = tl.bank(
-            tl.LedgerState(), what="  ", context="c",
-            source="t", now=NOW,
+    def test_the_quote_wins_over_the_generic_what(self) -> None:
+        self.assertEqual(
+            tl.subject_for(
+                what="they pushed back hard on a take of yours",
+                context=CHAOTIC,
+            ),
+            CHAOTIC,
         )
-        self.assertFalse(added)
-        self.assertEqual(state.debts, ())
 
-    def test_dedupe_on_word_overlap(self) -> None:
-        state = _bank()
-        state, added = tl.bank(
-            state,
-            what="that time they called your playlist objectively chaotic",
-            context="",
-            source="t",
-            now=NOW,
+    def test_what_is_used_when_there_is_no_context(self) -> None:
+        """The K57 lane, where ``what`` is the trigger's own cause."""
+        self.assertEqual(
+            tl.subject_for(what="the sourdough thread got brushed off",
+                           context=""),
+            "the sourdough thread got brushed off",
         )
-        self.assertFalse(added)
-        self.assertEqual(len(state.debts), 1)
 
-    def test_cap_evicts_oldest(self) -> None:
-        # Word sets must be genuinely disjoint or the dedupe pass
-        # (>= 3 shared content words) refuses the newcomers.
-        grudges = [
-            "mocked sourdough starter ambitions ruthlessly",
-            "claimed pineapple belongs on pizza loudly",
-            "beat her at chess then gloated",
-            "called the cat smarter than aiko",
-            "laughed at karaoke rendition of bohemian",
-        ]
-        state = tl.LedgerState()
-        for i, what in enumerate(grudges):
-            state, added = tl.bank(
-                state, what=what, context="", source="t",
-                now=NOW + timedelta(hours=i), cap=5,
+    def test_whitespace_is_collapsed(self) -> None:
+        self.assertEqual(
+            tl.subject_for(what="", context="  tabs   are\nbetter "),
+            "tabs are better",
+        )
+
+    def test_nothing_in_nothing_out(self) -> None:
+        self.assertEqual(tl.subject_for(what="", context=""), "")
+
+
+class DuplicateTests(unittest.TestCase):
+    def test_a_reworded_grudge_is_the_same_grudge(self) -> None:
+        self.assertTrue(
+            tl.is_duplicate(
+                "that playlist of yours is objectively chaotic",
+                {CHAOTIC},
             )
-            self.assertTrue(added)
-        state, added = tl.bank(
-            state,
-            what="dismissed favourite anime opening entirely",
-            context="",
-            source="t",
-            now=NOW + timedelta(hours=10),
-            cap=5,
-        )
-        self.assertTrue(added)
-        self.assertEqual(len(state.debts), 5)
-        whats = [d.what for d in state.debts]
-        self.assertNotIn(grudges[0], whats)
-
-
-class ExpiryTests(unittest.TestCase):
-    def test_old_rows_drop(self) -> None:
-        state = _bank(now=NOW - timedelta(days=20))
-        state = tl.expire(state, NOW, expiry_days=14.0)
-        self.assertEqual(state.debts, ())
-
-    def test_fresh_rows_kept(self) -> None:
-        state = _bank(now=NOW - timedelta(days=3))
-        state = tl.expire(state, NOW, expiry_days=14.0)
-        self.assertEqual(len(state.debts), 1)
-
-
-class PickAndSettleTests(unittest.TestCase):
-    def test_pick_respects_min_age(self) -> None:
-        state = _bank(now=NOW - timedelta(minutes=10))
-        self.assertIsNone(
-            tl.pick_collectable(state, NOW, min_age_hours=1.0),
-        )
-        self.assertIsNotNone(
-            tl.pick_collectable(state, NOW, min_age_hours=0.0),
         )
 
-    def test_pick_returns_oldest(self) -> None:
-        state = _bank(
-            what="older grudge about something forgotten entirely",
-            now=NOW - timedelta(days=3),
+    def test_a_different_grudge_gets_in(self) -> None:
+        self.assertFalse(
+            tl.is_duplicate("tabs beat spaces every time", {CHAOTIC})
         )
-        state, added = tl.bank(
-            state,
-            what="newer completely different unrelated material here",
-            context="",
-            source="t",
-            now=NOW - timedelta(hours=2),
-        )
-        self.assertTrue(added)
-        picked = tl.pick_collectable(state, NOW, min_age_hours=1.0)
-        self.assertIn("older grudge", picked.what)
 
-    def test_settle_hit_deletes_row(self) -> None:
-        state = _bank()
-        state = tl.stamp_offered(state, state.debts[0].id, NOW)
-        state, settled = tl.settle_if_collected(
-            state,
-            "oh, like the time you swore my playlist was 'objectively "
-            "chaotic'? I remember things.",
-        )
-        self.assertIsNotNone(settled)
-        self.assertEqual(state.debts, ())
+    def test_an_empty_shelf_refuses_nothing(self) -> None:
+        self.assertFalse(tl.is_duplicate(CHAOTIC, set()))
 
-    def test_settle_miss_clears_stamp(self) -> None:
-        state = _bank()
-        state = tl.stamp_offered(state, state.debts[0].id, NOW)
-        state, settled = tl.settle_if_collected(
-            state, "anyway, what should we cook tonight?",
-        )
-        self.assertIsNone(settled)
-        self.assertEqual(len(state.debts), 1)
-        self.assertIsNone(state.debts[0].offered_at)
-
-    def test_settle_no_offered_rows_is_noop(self) -> None:
-        state = _bank()
-        same, settled = tl.settle_if_collected(state, "playlist chaotic")
-        self.assertIsNone(settled)
-        self.assertEqual(len(same.debts), 1)
+    def test_a_subject_with_no_content_words_is_not_a_duplicate(self) -> None:
+        """Otherwise "he did" would collide with everything."""
+        self.assertFalse(tl.is_duplicate("he did", {CHAOTIC}))
 
 
 class RenderTests(unittest.TestCase):
-    def test_render_carries_what_and_rails(self) -> None:
-        debt = _bank().debts[0]
-        block = tl.render_block(debt, user_display_name="Jacob")
+    def test_the_cue_line_carries_the_name_and_the_grudge(self) -> None:
+        block = tl.render_block(
+            what="they swore your playlist was objectively chaotic",
+            context="mid-banter about music taste",
+            user_display_name="Jacob",
+        )
         self.assertIn("Jacob", block)
-        self.assertIn(debt.what, block)
-        self.assertIn("ONE callback tease", block)
-        self.assertIn("repaid is repaid", block)
+        self.assertIn("objectively chaotic", block)
+        self.assertIn("mid-banter", block)
+
+    def test_the_rails_are_not_in_the_cue_line(self) -> None:
+        """They live in the hoisted handling note now, and shipping
+        them twice would be the note arriving in duplicate."""
+        block = tl.render_block(what="x", user_display_name="J")
+        self.assertNotIn("callback tease", block)
+        self.assertNotIn("needling", block)
 
 
-# ── host stubs ──────────────────────────────────────────────────────
+# ── host stub ────────────────────────────────────────────────────────
 
 
 class _FakeKv:
@@ -205,127 +139,211 @@ class _FakeAxesStore:
         return SimpleNamespace(humor=self._h)
 
 
-def _agent_ns(enabled: bool = True) -> SimpleNamespace:
+def _agent_ns(enabled: bool = True, **kw) -> SimpleNamespace:
     return SimpleNamespace(
         tease_economy_enabled=enabled,
-        tease_cap=5,
-        tease_expiry_days=14.0,
-        tease_collect_cooldown_hours=12.0,
+        tease_collect_cooldown_hours=kw.get("cooldown", 12.0),
         tease_min_humor=0.2,
-        tease_min_age_hours=1.0,
+        tease_min_age_hours=kw.get("min_age", 1.0),
         emotion_episodes_enabled=True,
         emotion_episode_cap=3,
     )
 
 
-class _Host(InnerLifeProvidersMixin, PostTurnMixin):
+class _Host(InnerLifeProvidersMixin, PostTurnMixin, CuePoolMixin):
     user_display_name = "Jacob"
     _user_id = "u1"
 
     def __init__(
         self,
+        store: CueStore,
         *,
         enabled: bool = True,
         humor: float = 0.6,
+        **agent_kw,
     ) -> None:
-        self._settings = SimpleNamespace(agent=_agent_ns(enabled))
+        self._settings = SimpleNamespace(agent=_agent_ns(enabled, **agent_kw))
         self._chat_db = _FakeKv()
         self._relationship_axes_store = _FakeAxesStore(humor)
         self._affect_store = None
+        self._cue_store = store
+        self._surfaced_pool_cues: list = []
+        self._cue_pool_listeners: list = []
+        self._embedder = None
 
-    def seed_debt(self, *, age_hours: float = 5.0) -> None:
-        state = tl.LedgerState()
-        state, _ = tl.bank(
-            state,
-            what="they swore your playlist was objectively chaotic",
-            context="",
-            source="test",
-            now=datetime.now(timezone.utc) - timedelta(hours=age_hours),
+    def bank(self, subject: str, *, source: str = "test") -> bool:
+        return self._bank_tease_debt(
+            what=f"they said {subject}", context="", source=source,
+            subject=subject,
         )
-        self._chat_db.kv_set(tl.KV_TEASE_LEDGER, tl.serialize(state))
 
 
-class ProviderTests(unittest.TestCase):
-    def test_fires_and_stamps(self) -> None:
-        host = _Host()
-        host.seed_debt()
-        block = host._render_tease_collection_block()
-        self.assertIn("objectively chaotic", block)
-        state = tl.deserialize(host._chat_db.data[tl.KV_TEASE_LEDGER])
-        self.assertIsNotNone(state.debts[0].offered_at)
-        self.assertTrue(host._chat_db.data["aiko.tease_last_offer_at"])
+class _PoolFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
 
-    def test_disabled_switch_silent(self) -> None:
-        host = _Host(enabled=False)
-        host.seed_debt()
-        self.assertEqual(host._render_tease_collection_block(), "")
+    def _host(self, **kw) -> _Host:
+        # Zero min-age by default: the seal is covered on its own, and
+        # every other test would otherwise have to backdate a row.
+        kw.setdefault("min_age", 0.0)
+        return _Host(self.store, **kw)
 
-    def test_cold_humor_silent(self) -> None:
-        host = _Host(humor=0.0)
-        host.seed_debt()
-        self.assertEqual(host._render_tease_collection_block(), "")
+    def _rows(self):
+        return self.store.list_for_user(cue_type="tease_ledger")
 
-    def test_cooldown_blocks_second_offer(self) -> None:
-        host = _Host()
-        host.seed_debt()
-        self.assertTrue(host._render_tease_collection_block())
-        host.seed_debt()  # fresh row, but cooldown stamp is set
-        self.assertEqual(host._render_tease_collection_block(), "")
-
-    def test_young_debt_not_offered(self) -> None:
-        host = _Host()
-        host.seed_debt(age_hours=0.1)
-        self.assertEqual(host._render_tease_collection_block(), "")
-
-    def test_empty_ledger_silent(self) -> None:
-        host = _Host()
-        self.assertEqual(host._render_tease_collection_block(), "")
-
-    def test_force_bypasses_gates(self) -> None:
-        host = _Host(humor=-1.0)
-        host.seed_debt(age_hours=0.1)
-        host._chat_db.kv_set(
-            "aiko.tease_last_offer_at",
-            datetime.now(timezone.utc).isoformat(),
+    def _ripen(self, subject: str, *, hours_ago: float) -> None:
+        """Backdate a banked row so oldest-first has something to sort."""
+        row = next(r for r in self._rows() if r.subject == subject)
+        when = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+        self.store._conn().execute(
+            "UPDATE cue_pool SET created_at = ? WHERE id = ?",
+            (when.isoformat(), row.id),
         )
-        host.debug_overrides.arm("tease_collection_force_next")
-        block = host._render_tease_collection_block()
-        self.assertIn("objectively chaotic", block)
-        self.assertFalse(host.debug_overrides.peek("tease_collection_force_next"))
+        self.store._conn().commit()
 
 
-class PostTurnHookTests(unittest.TestCase):
-    def test_bank_helper_writes_kv(self) -> None:
-        host = _Host()
-        added = host._bank_tease_debt(
+class BankTests(_PoolFixture):
+    def test_a_debt_lands_as_a_pending_row(self) -> None:
+        self.assertTrue(self._host().bank(CHAOTIC, source="opinion_pushback"))
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].subject, CHAOTIC)
+        self.assertEqual(rows[0].state, "pending")
+        self.assertEqual(rows[0].payload["source"], "opinion_pushback")
+        self.assertIn("Jacob", rows[0].text)
+
+    def test_the_quote_is_the_subject_not_the_generic_what(self) -> None:
+        """Two pushbacks in a row must be two debts.
+
+        Keyed on ``what`` they would share a subject, and ``add``
+        supersedes on subject -- so the second would silently retire the
+        first and the ledger could never hold more than one.
+        """
+        host = self._host()
+        host._bank_tease_debt(
             what="they pushed back hard on a take of yours",
-            context='they said "tabs are objectively better"',
+            context='they said "tabs beat spaces"',
             source="opinion_pushback",
+            subject="tabs beat spaces",
         )
-        self.assertTrue(added)
-        state = tl.deserialize(host._chat_db.data[tl.KV_TEASE_LEDGER])
-        self.assertEqual(len(state.debts), 1)
-        self.assertEqual(state.debts[0].source, "opinion_pushback")
+        host._bank_tease_debt(
+            what="they pushed back hard on a take of yours",
+            context=f'they said "{CHAOTIC}"',
+            source="opinion_pushback",
+            subject=CHAOTIC,
+        )
+        live = [r for r in self._rows() if r.state == "pending"]
+        self.assertEqual(len(live), 2)
 
-    def test_bank_disabled_refuses(self) -> None:
-        host = _Host(enabled=False)
+    def test_a_reworded_grudge_is_refused(self) -> None:
+        host = self._host()
+        self.assertTrue(host.bank(CHAOTIC))
         self.assertFalse(
-            host._bank_tease_debt(what="x y z", context="", source="t"),
+            host.bank("that playlist of yours is objectively chaotic")
+        )
+        self.assertEqual(len(self._rows()), 1)
+
+    def test_a_collected_grudge_is_not_re_banked(self) -> None:
+        """``recent_subjects`` spans terminal states, which is what
+        makes "repaid is repaid" survive the row not being deleted."""
+        host = self._host()
+        host.bank(CHAOTIC)
+        self.store.mark_used(self._rows()[0].id, evidence="test")
+        self.assertFalse(host.bank(CHAOTIC))
+
+    def test_a_fresh_debt_is_sealed_for_an_hour(self) -> None:
+        """A debt banked and collected in one sitting is a comeback."""
+        host = self._host(min_age=1.0)
+        self.assertTrue(host.bank(CHAOTIC))
+        self.assertEqual(self.store.count_pending("tease_ledger"), 0)
+        self.assertEqual(host._render_tease_collection_block(), "")
+
+    def test_the_seal_lifts(self) -> None:
+        host = self._host(min_age=1.0)
+        host.bank(CHAOTIC)
+        later = datetime.now(timezone.utc) + timedelta(hours=2)
+        self.assertEqual(
+            len(self.store.pending("tease_ledger", now=later)), 1,
         )
 
-    def test_settle_hook_deletes_collected_row(self) -> None:
-        host = _Host()
-        host.seed_debt()
-        host._render_tease_collection_block()  # stamps offered
-        host._settle_tease_debts(
-            "oh, like the time you swore my playlist was objectively "
-            "chaotic? I remember things.",
-        )
-        state = tl.deserialize(host._chat_db.data[tl.KV_TEASE_LEDGER])
-        self.assertEqual(state.debts, ())
+    def test_the_master_switch_refuses(self) -> None:
+        self.assertFalse(self._host(enabled=False).bank(CHAOTIC))
+        self.assertEqual(self._rows(), [])
 
-    def test_light_miffed_routes_to_ledger_not_episode(self) -> None:
-        host = _Host()
+    def test_a_blank_grudge_refuses(self) -> None:
+        host = self._host()
+        self.assertFalse(
+            host._bank_tease_debt(what="", context="", source="t")
+        )
+
+
+class CollectionTests(_PoolFixture):
+    def test_it_offers_the_debt_and_marks_it_surfaced(self) -> None:
+        host = self._host()
+        host.bank(CHAOTIC)
+        block = host._render_tease_collection_block()
+        self.assertIn("objectively chaotic", block)
+        self.assertEqual(self._rows()[0].state, "surfaced")
+        self.assertEqual(self._rows()[0].surfaced_count, 1)
+
+    def test_the_oldest_grudge_is_collected_first(self) -> None:
+        """The gap is the joke, so this type overrides the pool's
+        newest-first default through ``pick_order``."""
+        host = self._host()
+        host.bank(CHAOTIC)
+        host.bank("tabs beat spaces")
+        self._ripen(CHAOTIC, hours_ago=200.0)
+        self.assertIn("chaotic", host._render_tease_collection_block())
+
+    def test_an_empty_shelf_is_silent(self) -> None:
+        self.assertEqual(self._host()._render_tease_collection_block(), "")
+
+    def test_the_master_switch_is_silent(self) -> None:
+        host = self._host(enabled=False)
+        self._host().bank(CHAOTIC)
+        self.assertEqual(host._render_tease_collection_block(), "")
+
+    def test_cold_humor_is_silent(self) -> None:
+        host = self._host(humor=0.0)
+        host.bank(CHAOTIC)
+        self.assertEqual(host._render_tease_collection_block(), "")
+
+    def test_the_cooldown_blocks_a_second_offer(self) -> None:
+        host = self._host()
+        host.bank(CHAOTIC)
+        self.assertTrue(host._render_tease_collection_block())
+        host.bank("tabs beat spaces")
+        self.assertEqual(host._render_tease_collection_block(), "")
+
+    def test_the_cooldown_reads_the_pool_not_a_kv_stamp(self) -> None:
+        """It used to keep ``aiko.tease_last_offer_at`` beside the
+        ledger; the row's own ``last_surfaced_at`` is the same fact."""
+        host = self._host()
+        host.bank(CHAOTIC)
+        host._render_tease_collection_block()
+        self.assertNotIn("aiko.tease_last_offer_at", host._chat_db.data)
+        self.assertIsNotNone(self.store.last_surfaced_at("tease_ledger"))
+
+    def test_force_bypasses_humor_and_cooldown(self) -> None:
+        host = self._host(humor=-1.0)
+        host.bank(CHAOTIC)
+        host._render_tease_collection_block()  # spends the cooldown
+        host.debug_overrides.arm("tease_collection_force_next")
+        self.assertIn(
+            "chaotic", host._render_tease_collection_block(),
+        )
+        self.assertFalse(
+            host.debug_overrides.peek("tease_collection_force_next")
+        )
+
+
+class LanePickerTests(_PoolFixture):
+    """K57 routes a light miffed to comedy rather than to a sulk."""
+
+    def test_light_miffed_banks_a_debt(self) -> None:
+        host = self._host()
         host._queue_emotion_trigger(
             emotion="miffed",
             cause="the thread you opened (sourdough starters) got "
@@ -334,15 +352,17 @@ class PostTurnHookTests(unittest.TestCase):
             source="thread_pivot",
         )
         host._drain_emotion_triggers()
-        ledger = tl.deserialize(host._chat_db.data[tl.KV_TEASE_LEDGER])
-        self.assertEqual(len(ledger.debts), 1)
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("sourdough", rows[0].subject)
+        self.assertEqual(rows[0].payload["source"], "light_offence")
         episodes = ee.deserialize(
             host._chat_db.data.get(ee.KV_EMOTION_EPISODES),
         )
         self.assertEqual(episodes.episodes, ())
 
     def test_heavy_miffed_stays_an_episode(self) -> None:
-        host = _Host()
+        host = self._host()
         host._queue_emotion_trigger(
             emotion="miffed",
             cause="a real broken promise",
@@ -354,7 +374,21 @@ class PostTurnHookTests(unittest.TestCase):
             host._chat_db.data[ee.KV_EMOTION_EPISODES],
         )
         self.assertEqual(len(episodes.episodes), 1)
-        self.assertNotIn(tl.KV_TEASE_LEDGER, host._chat_db.data)
+        self.assertEqual(self._rows(), [])
+
+
+class DiscardTests(_PoolFixture):
+    def test_clearing_expires_rather_than_deletes(self) -> None:
+        host = self._host()
+        host.bank(CHAOTIC)
+        self.assertEqual(host.discard_cues("tease_ledger"), 1)
+        self.assertEqual(self._rows()[0].state, "expired")
+
+    def test_a_cleared_grudge_does_not_come_back(self) -> None:
+        host = self._host()
+        host.bank(CHAOTIC)
+        host.discard_cues("tease_ledger")
+        self.assertFalse(host.bank(CHAOTIC))
 
 
 class TeaseLedgerProviderSlotTests(unittest.TestCase):

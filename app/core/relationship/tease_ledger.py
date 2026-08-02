@@ -1,328 +1,117 @@
 """K59 — tease economy: "you'll pay for that one".
 
-A small payback ledger of mock-grudges. When the user pushes back
-hard on Aiko's stance (K29 already detects the contradiction), or a
-light offence comes through the K57 trigger lane (a brushed-off
-thread at comedy weight rather than sulk weight), Aiko banks a debt:
-``{what happened, one-line context, created_at}``. She collects
-later — a callback tease one or three conversations down the line
-("oh, like the time you swore my playlist was 'objectively chaotic'?
-I remember things."). The memory-backed callback is what makes it
-feel like a real ongoing relationship rather than per-turn improv.
+A small payback ledger of mock-grudges. When the user pushes back hard
+on Aiko's stance (K29 already detects the contradiction), or a light
+offence comes through the K57 trigger lane (a brushed-off thread at
+comedy weight rather than sulk weight), Aiko banks a debt. She collects
+later — a callback tease one or three conversations down the line ("oh,
+like the time you swore my playlist was 'objectively chaotic'? I
+remember things."). The memory-backed callback is what makes it feel
+like a real ongoing relationship rather than per-turn improv.
 
-Tonal rails:
+**Storage is the shared cue pool**, as ``cue_type="tease_ledger"``. This
+module used to carry its own ledger in a ``kv_meta`` JSON key along with
+hand-written versions of expiry, capping, offer-stamping and collection
+matching -- all five of which the pool already does, and does the same
+way for every other cue:
 
-- Rows **expire unrepaid after ~2 weeks** — a grudge that old stops
-  being funny.
-- Cap ~5 rows; the oldest unrepaid row is evicted by a newcomer.
-- Collection is **rare and humor-gated** (humor axis floor +
-  wall-clock cooldown) so the running-bit never tips into needling.
-- A collected row is deleted — done forever. Repaid means repaid.
-- Collection detection mirrors K52's acted-on pass: the provider
-  stamps ``offered_at`` on the row it surfaced; the post-turn hook
-  checks the reply for content-word overlap and deletes on a hit
-  (or clears the stamp on a miss, so it can come around again after
-  the cooldown).
+- banking is ``_queue_pool_cue``, and a debt is one ``pending`` row
+- the offer stamp is ``mark_surfaced`` / ``state=surfaced``
+- a collection miss is ``release()``, which is what brings it round again
+- the two-week expiry is ``ttl_hours``, swept with everything else
+- collection is ordinary stage-A matching: three shared content words
+  between the row's subject and Aiko's reply
 
-Pure module — no I/O. Storage is one kv_meta JSON key
-(``aiko.tease_ledger``), same convention as K15 / K52 / K57.
+Two behaviours the pool has no opinion about stay here, and both are
+about the *comedy* rather than the bookkeeping: which debt to reach for
+(the oldest -- see ``pick_order`` on the policy) and what counts as the
+same grudge banked twice (:func:`is_duplicate`).
+
+What survives in this module is the domain vocabulary: how to name a
+debt, how to tell two of them apart, and how the offer reads.
 """
 from __future__ import annotations
 
-import json
-import re
-import uuid
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from app.core.memory import echo_detector
 
 
-KV_TEASE_LEDGER = "aiko.tease_ledger"
-
-DEFAULT_EXPIRY_DAYS = 14.0
-DEFAULT_CAP = 5
-
-# Plain alpha runs (no apostrophes) so quoted words ('objectively')
-# still match their unquoted form in the reply overlap pass.
-_WORD_RE = re.compile(r"[a-zA-Z]{3,}")
-_STOPWORDS = frozenset(
-    "the and for you your with that this have has was were are not "
-    "but about just like what when where they them then than from "
-    "out our his her she him had did does can could would should "
-    "will into over under been being one time said says swore".split()
-)
+# Shared with consumption on purpose. The pool decides Aiko collected a
+# debt by looking for its subject in her reply, so "these two grudges are
+# the same" and "this reply is about that grudge" have to mean the same
+# thing by the same tokeniser -- otherwise a near-duplicate we let in
+# would settle its twin the moment either was offered.
+DUPLICATE_OVERLAP = 3
 
 
-@dataclass(frozen=True, slots=True)
-class TeaseDebt:
-    """One banked mock-grudge.
+def subject_for(*, what: str, context: str) -> str:
+    """The part of a debt that is actually about something.
 
-    ``what`` is the one-line description rendered to the LLM ("you
-    swore my playlist was 'objectively chaotic'"); ``context`` is a
-    short verbatim-ish quote or scene note; ``source`` is the
-    grep-friendly trigger (``opinion_pushback`` / ``light_offence``
-    / ``forced``). ``offered_at`` is the collection-pass stamp.
+    The subject is a key before it is a display string: it decides
+    supersession, and it is what a collection is matched against. That
+    makes the choice load-bearing here in a way it is not for most cues,
+    because ``what`` is *generic* on the K29 lane -- literally "they
+    pushed back hard on a take of yours" every single time. Keyed on
+    that, every pushback debt would supersede the one before it and the
+    ledger would never hold more than one; matched on it, a reply
+    containing "pushed", "back" and "hard" would settle a debt about
+    something else entirely.
+
+    So the specific half wins: the quote for a pushback, the trigger's
+    own cause for a light offence. Callers with a better subject than
+    either (the K29 sites, which hold the bare quote) pass it directly.
     """
-
-    id: str
-    what: str
-    context: str
-    source: str
-    created_at: str
-    offered_at: str | None = None
+    return " ".join((context or what or "").split())
 
 
-@dataclass(frozen=True, slots=True)
-class LedgerState:
-    debts: tuple[TeaseDebt, ...] = ()
-
-
-# ── ISO helpers ─────────────────────────────────────────────────────
-
-
-def _parse_iso(text: str | None) -> datetime | None:
-    if not text:
-        return None
-    candidate = str(text).strip()
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(candidate)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _as_utc(now: datetime) -> datetime:
-    if now.tzinfo:
-        return now.astimezone(timezone.utc)
-    return now.replace(tzinfo=timezone.utc)
-
-
-# ── serialisation ───────────────────────────────────────────────────
-
-
-def serialize(state: LedgerState) -> str:
-    return json.dumps({
-        "debts": [
-            {
-                "id": d.id,
-                "what": d.what,
-                "context": d.context,
-                "source": d.source,
-                "created_at": d.created_at,
-                "offered_at": d.offered_at,
-            }
-            for d in state.debts
-        ],
-    })
-
-
-def deserialize(text: str | None) -> LedgerState:
-    if not text:
-        return LedgerState()
-    try:
-        data = json.loads(text)
-    except (TypeError, ValueError):
-        return LedgerState()
-    if not isinstance(data, dict):
-        return LedgerState()
-    raw_debts = data.get("debts")
-    if not isinstance(raw_debts, list):
-        return LedgerState()
-    debts: list[TeaseDebt] = []
-    for raw in raw_debts:
-        if not isinstance(raw, dict):
-            continue
-        what = str(raw.get("what") or "").strip()
-        if not what:
-            continue
-        offered = raw.get("offered_at")
-        debts.append(TeaseDebt(
-            id=str(raw.get("id") or uuid.uuid4().hex[:8]),
-            what=what,
-            context=str(raw.get("context") or "").strip(),
-            source=str(raw.get("source") or "unknown"),
-            created_at=str(raw.get("created_at") or ""),
-            offered_at=str(offered) if offered else None,
-        ))
-    return LedgerState(tuple(debts))
-
-
-# ── lifecycle ───────────────────────────────────────────────────────
-
-
-def expire(
-    state: LedgerState,
-    now: datetime,
+def is_duplicate(
+    subject: str,
+    known: set[str],
     *,
-    expiry_days: float = DEFAULT_EXPIRY_DAYS,
-) -> LedgerState:
-    """Drop rows older than ``expiry_days`` — old grudges stop being funny."""
-    now_utc = _as_utc(now)
-    horizon = max(0.5, float(expiry_days)) * 86400.0
-    kept = tuple(
-        d for d in state.debts
-        if (created := _parse_iso(d.created_at)) is not None
-        and (now_utc - created).total_seconds() < horizon
+    min_overlap: int = DUPLICATE_OVERLAP,
+) -> bool:
+    """Is this grudge already on the shelf, give or take the wording?
+
+    The pool supersedes on an exact subject match, which is right for a
+    topic slug and too strict for a quote: "your playlist is objectively
+    chaotic" and "that playlist of yours is chaotic" are one grudge and
+    two strings. Banking both would have her collect twice on the same
+    joke, which is the one thing the running bit cannot survive.
+    """
+    words = echo_detector.tokens(subject)
+    if not words:
+        return False
+    threshold = max(1, int(min_overlap))
+    return any(
+        len(words & echo_detector.tokens(other)) >= threshold
+        for other in known
     )
-    return LedgerState(kept)
-
-
-def _content_words(text: str) -> set[str]:
-    return {
-        w.lower()
-        for w in _WORD_RE.findall(text or "")
-        if w.lower() not in _STOPWORDS
-    }
-
-
-def bank(
-    state: LedgerState,
-    *,
-    what: str,
-    context: str,
-    source: str,
-    now: datetime,
-    cap: int = DEFAULT_CAP,
-) -> tuple[LedgerState, bool]:
-    """Add a debt; returns ``(state, added)``.
-
-    Dedupes on content-word overlap with an existing row (>= 3 shared
-    words means it's the same grudge — don't double-bank). At the cap
-    the oldest row is evicted; comedy favours fresh material.
-    """
-    what = " ".join(str(what or "").split())[:160]
-    context = " ".join(str(context or "").split())[:160]
-    if not what:
-        return state, False
-    new_words = _content_words(what) | _content_words(context)
-    for d in state.debts:
-        overlap = new_words & (
-            _content_words(d.what) | _content_words(d.context)
-        )
-        if len(overlap) >= 3:
-            return state, False
-    debts = list(state.debts)
-    if len(debts) >= max(1, int(cap)):
-        oldest = min(
-            debts,
-            key=lambda d: _parse_iso(d.created_at)
-            or datetime.min.replace(tzinfo=timezone.utc),
-        )
-        debts.remove(oldest)
-    debts.append(TeaseDebt(
-        id=uuid.uuid4().hex[:8],
-        what=what,
-        context=context,
-        source=str(source or "unknown"),
-        created_at=_as_utc(now).isoformat(),
-    ))
-    return LedgerState(tuple(debts)), True
-
-
-def pick_collectable(
-    state: LedgerState,
-    now: datetime,
-    *,
-    min_age_hours: float = 1.0,
-) -> TeaseDebt | None:
-    """Pick the debt to offer for collection: the oldest row that has
-    aged past ``min_age_hours`` (an immediate callback isn't a
-    callback — the gap is the joke).
-    """
-    now_utc = _as_utc(now)
-    candidates = []
-    for d in state.debts:
-        created = _parse_iso(d.created_at)
-        if created is None:
-            continue
-        if (now_utc - created).total_seconds() >= min_age_hours * 3600.0:
-            candidates.append((created, d))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[0])
-    return candidates[0][1]
-
-
-def stamp_offered(
-    state: LedgerState, debt_id: str, now: datetime,
-) -> LedgerState:
-    return LedgerState(tuple(
-        replace(d, offered_at=_as_utc(now).isoformat())
-        if d.id == debt_id else d
-        for d in state.debts
-    ))
-
-
-def settle_if_collected(
-    state: LedgerState,
-    assistant_text: str,
-    *,
-    min_overlap: int = 3,
-) -> tuple[LedgerState, TeaseDebt | None]:
-    """Post-turn pass: did the reply actually collect the offered debt?
-
-    Checks the most recently offered row for content-word overlap
-    with the reply. A hit deletes the row (repaid is done forever);
-    a miss clears the ``offered_at`` stamp so the debt can come
-    around again after the cooldown. Returns ``(state, settled_row)``.
-    """
-    offered = [d for d in state.debts if d.offered_at]
-    if not offered:
-        return state, None
-    reply_words = _content_words(assistant_text)
-    settled: TeaseDebt | None = None
-    debts: list[TeaseDebt] = []
-    for d in state.debts:
-        if d.offered_at is None:
-            debts.append(d)
-            continue
-        overlap = reply_words & (
-            _content_words(d.what) | _content_words(d.context)
-        )
-        if settled is None and len(overlap) >= max(1, int(min_overlap)):
-            settled = d
-            continue  # drop the row — repaid forever
-        debts.append(replace(d, offered_at=None))
-    return LedgerState(tuple(debts)), settled
-
-
-# ── rendering ───────────────────────────────────────────────────────
 
 
 def render_block(
-    debt: TeaseDebt,
     *,
+    what: str,
+    context: str = "",
     user_display_name: str = "them",
 ) -> str:
+    """The cue line offering a collection.
+
+    Just the offer. The rails that used to ride along with it -- one
+    callback tease, light and affectionate, no opening means skip it --
+    are in the ``Collecting on the ledger:`` handling note now, which
+    goes out alongside this line whenever the block renders and is
+    editable in ``conditional_handling.txt`` like every other one.
+    """
     name = user_display_name or "them"
-    context = f" ({debt.context})" if debt.context else ""
+    detail = f" ({context})" if context else ""
     return (
         f"Tease ledger: {name} still owes you for this one -- "
-        f"{debt.what}{context}. If a natural opening shows up this "
-        "turn, collect it: ONE callback tease, light and visibly "
-        "affectionate ('oh, like the time you...? I remember "
-        "things.'), maybe [[reaction:mischievous]]. Then it's "
-        "settled -- repaid is repaid, never bring it up again. No "
-        "opening? Skip it entirely; a forced callback reads as "
-        "needling, and needling is the one way this stops being fun."
+        f"{what}{detail}."
     )
 
 
 __all__ = [
-    "DEFAULT_CAP",
-    "DEFAULT_EXPIRY_DAYS",
-    "KV_TEASE_LEDGER",
-    "LedgerState",
-    "TeaseDebt",
-    "bank",
-    "deserialize",
-    "expire",
-    "pick_collectable",
+    "DUPLICATE_OVERLAP",
+    "is_duplicate",
     "render_block",
-    "serialize",
-    "settle_if_collected",
-    "stamp_offered",
+    "subject_for",
 ]

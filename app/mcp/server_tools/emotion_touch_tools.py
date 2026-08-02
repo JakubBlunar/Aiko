@@ -261,20 +261,15 @@ def register(mcp, session: "SessionController") -> None:
     def get_tease_ledger() -> str:
         """K59 — dump the payback ledger.
 
-        Returns the master switch, the live humor axis vs the
-        collection floor, the last-offer cooldown stamp, and every
-        banked debt (what / context / source / age / offered stamp).
-        Read-only.
+        The debts are ``cue_type="tease_ledger"`` rows in the cue pool
+        now, so ``pool`` carries them in the shared shape (state,
+        surfaced_count, used_evidence) and ``stats`` says whether
+        collecting is actually working. The two gates the pool has no
+        field for are reported separately: the live humor axis against
+        its floor, and the offer cooldown, which J11 moves. Read-only.
         """
         try:
-
-            from app.core.relationship import tease_ledger as _tl
-
-            chat_db = getattr(session, "_chat_db", None)
-            if chat_db is None:
-                return json.dumps({"error": "no chat db"})
-            now = timephrase.utcnow()
-            state = _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER))
+            agent = session._settings.agent
             humor = None
             axes_store = getattr(
                 session, "_relationship_axes_store", None,
@@ -286,8 +281,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                 except Exception:
                     humor = None
-            agent = session._settings.agent
-            payload = {
+            return json.dumps({
                 "enabled": bool(
                     getattr(agent, "tease_economy_enabled", True)
                 ),
@@ -295,39 +289,20 @@ def register(mcp, session: "SessionController") -> None:
                 "min_humor": float(
                     getattr(agent, "tease_min_humor", 0.2)
                 ),
-                "last_offer_at": chat_db.kv_get(
-                    "aiko.tease_last_offer_at",
-                ),
                 "cooldown_hours": float(
                     getattr(agent, "tease_collect_cooldown_hours", 12.0)
+                ),
+                "min_age_hours": float(
+                    getattr(agent, "tease_min_age_hours", 1.0)
                 ),
                 "force_armed": bool(
                     session.debug_overrides.peek("tease_collection_force_next", False,)
                 ),
-                "debts": [
-                    {
-                        "id": d.id,
-                        "what": d.what,
-                        "context": d.context,
-                        "source": d.source,
-                        "created_at": d.created_at,
-                        "age_hours": (
-                            round(
-                                (
-                                    now - parsed
-                                ).total_seconds() / 3600.0, 1,
-                            )
-                            if (
-                                parsed := _tl._parse_iso(d.created_at)
-                            ) is not None
-                            else None
-                        ),
-                        "offered_at": d.offered_at,
-                    }
-                    for d in state.debts
-                ],
-            }
-            return json.dumps(payload)
+                "cadence": session.cue_pool_cadence("tease_ledger"),
+                "pool": session.list_cue_pool(
+                    cue_type="tease_ledger", limit=10,
+                ),
+            })
         except Exception as exc:
             return f"get_tease_ledger raised: {exc}"
 
@@ -337,7 +312,12 @@ def register(mcp, session: "SessionController") -> None:
 
         Pair with ``force_tease_collection`` to verify the full
         bank → offer → collect → settle loop without waiting for an
-        organic K29 pushback.
+        organic K29 pushback. Note the row lands sealed for
+        ``tease_min_age_hours`` (a debt has to ripen), so on default
+        settings the collection is offerable an hour later --
+        ``force_tease_collection`` does not bypass that, because the
+        seal is a ``not_before`` on the row rather than a gate in the
+        provider. Set the knob to 0 to test the loop end to end.
         """
         try:
             added = session._bank_tease_debt(
@@ -349,8 +329,8 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def force_tease_collection() -> str:
-        """K59 — arm a one-shot bypass of the humor / cooldown / age
-        gates so the next turn's provider offers the oldest debt."""
+        """K59 — arm a one-shot bypass of the humor and cooldown gates
+        so the next turn's provider offers the oldest ripe debt."""
         try:
             session.debug_overrides.arm("tease_collection_force_next")
             return json.dumps({"armed": True})
@@ -359,18 +339,16 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def clear_tease_ledger() -> str:
-        """K59 — wipe the ledger and the offer-cooldown stamp."""
-        try:
-            from app.core.relationship import tease_ledger as _tl
+        """K59 — retire every live debt.
 
-            chat_db = getattr(session, "_chat_db", None)
-            if chat_db is None:
-                return json.dumps({"error": "no chat db"})
-            chat_db.kv_set(
-                _tl.KV_TEASE_LEDGER, _tl.serialize(_tl.LedgerState()),
-            )
-            chat_db.kv_set("aiko.tease_last_offer_at", "")
-            return json.dumps({"cleared": True})
+        Rows go to ``expired`` rather than being deleted, so the
+        scoreboard keeps its history and a grudge already collected
+        stays collected.
+        """
+        try:
+            return json.dumps({
+                "cleared": session.discard_cues("tease_ledger"),
+            })
         except Exception as exc:
             return f"clear_tease_ledger raised: {exc}"
 
