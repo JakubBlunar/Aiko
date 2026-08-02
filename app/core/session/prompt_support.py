@@ -245,6 +245,35 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "promise_followthrough_block": (
         "Things you said you'd do:",
     ),
+    # ── split by hand out of a mixed-prose section ────────────────────
+    # These three arrived late because their handling was interleaved
+    # with always-on inline-tag grammar -- ``split_persona_section``
+    # moves whole sections, so hoisting one wholesale would have taken
+    # [[remember:]] or [[moment:]] down with it. Each now has a header of
+    # its own; see the note below the ``_STAYS_IN_T0`` tuple for the two
+    # that are still tangled.
+    #
+    # F-followup: a dated plan of his whose time has passed. Split out of
+    # "Memory:", where it sat among nine bullets of tag grammar and
+    # retrieved-memory handling. The cue is a private nudge that the note
+    # forbids reading aloud, so a perfect firing is a check-in phrased in
+    # her own words -- no trace of the cue itself.
+    "follow_up_block": (
+        "Asking how something went:",
+    ),
+    # Split out of "Shared moments and anniversaries:", which is now just
+    # "Shared moments:" -- the [[moment:]] grammar stayed and the header
+    # was renamed to stop promising the half that left.
+    "anniversary_block": (
+        "When today is an anniversary:",
+    ),
+    # K70: the rare "you've grown since we met" beat, split out of
+    # "Reading {user_name}:" alongside two bullets that stayed. Fires at
+    # most once a fortnight behind a worker cooldown, and the note's own
+    # rule is to say it once and never bring it up again.
+    "growth_witness_block": (
+        "Noticing {user_name} across time:",
+    ),
 }
 
 
@@ -275,28 +304,54 @@ _STAYS_IN_T0: tuple[tuple[str, str], ...] = (
     # K3: learned hours and routines, a static slice for any established
     # user.
     ("profile_block", "Rhythms and routines:"),
+    # K1: reads as the classic conditional ("your context MAY include an
+    # 'Aiko's quiet long-term goals' block") and is nothing of the sort.
+    # It renders whenever she has one active goal, and the onboarding
+    # seed writes one the first time a user sets their display name --
+    # so on any install past its first five minutes this is every turn.
+    ("goals_block", "Your quiet long-term goals:"),
+    # K16: the one entry here that is genuinely absent most of the time,
+    # and still must not hoist. ``grounding_line_mode`` defaults to
+    # ``off``, so a stock install pays for a section backing a block that
+    # never renders -- but the mode is binary, and every install that
+    # turns it on gets the fused line on essentially every turn. Hoisting
+    # optimises the configuration nobody using the feature is in, and
+    # penalises the one they are.
+    ("grounding_block", "Where you are right now (the grounding paragraph):"),
 )
 
-# The other reason a rare block is still in the persona: its section is not
-# separable. These interleave always-on tag grammar -- the inline tags Aiko
-# may emit on any turn -- with the conditional handling for one block, and
-# ``split_persona_section`` moves whole sections, so hoisting one wholesale
-# would take the grammar with it and quietly delete the tag:
+# Two sections are still mixed prose: always-on inline-tag grammar
+# interleaved with one block's conditional handling. ``split_persona_section``
+# moves whole sections, so hoisting either wholesale would take the tag
+# grammar with it and quietly delete the tag.
 #
-#   "Memory:"                              [[remember:]]  + follow_up_block
-#   "Theory-of-mind (...):"                [[predict:]]   + belief_gaps_block
-#   "Shared moments and anniversaries:"    [[moment:]]    + anniversary_block
-#   "Conversation arc (...):"              [[arc:]]       + arc_block
-#   "Your quiet long-term goals:"          [[goal:]]      + goals_block
-#   "Knowledge gaps (...):"                [[gap:]]       + knowledge_gaps_block
-#   "Where you are right now (...):"       [[activity:]]  + grounding_line
+#   "Theory-of-mind (...):"    [[predict:]]  + belief_gaps_block
+#   "Reading {user_name}:"     --            + implicit_need_block
 #
-# Plus "Reading {user_name}:", which is three blocks in one section and one
-# of them (``user_state_block``) is in ``_STAYS_IN_T0`` above.
+# Both are deferred on judgement rather than on difficulty. ``belief_gaps``
+# is one short bullet, so the split would cost more churn in a user-editable
+# file than the ~200 characters it reclaims. ``implicit_need`` is the larger
+# prize at ~900, but it is silent on neutral turns and then fires turn after
+# turn once a conversation turns heavy -- exactly the stretch where an
+# uncached re-send lands on every reply.
 #
-# Each needs its conditional half split into a new header of its own before
-# it can be registered. That is an edit to user-facing character text, so it
-# is deliberately not bundled with a mechanical move.
+# The rest of what this note used to list has been resolved rather than
+# postponed, and the corrections are worth keeping because the original
+# entries were derived from reading the prose rather than the providers:
+#
+#   "Memory:" / "Shared moments...:" / "Reading {user_name}:" -- split by
+#   hand into their own headers; registered above.
+#
+#   "Conversation arc (...):" and "Knowledge gaps (...):" have no
+#   conditional half at all. Both sections are pure tag grammar, and the
+#   blocks they were paired with emit *content* rather than handling for
+#   content -- ``arc_block`` is a direct state line ("Conversation arc:
+#   ..."), ``knowledge_gaps_block`` is a bullet list of the things she has
+#   been wondering. Nothing to split; they are not pending work.
+#
+#   "Your quiet long-term goals:" and "Where you are right now (...):"
+#   moved into ``_STAYS_IN_T0`` above once their blocks' real render
+#   frequency was checked.
 
 
 # K49: the persona subsection that grants disfluency permission. Named

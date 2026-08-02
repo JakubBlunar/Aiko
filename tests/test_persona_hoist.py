@@ -490,5 +490,76 @@ class ShippedFileTests(unittest.TestCase):
         self.assertGreater(hoisted - len(HANDLING_PREAMBLE), 5000)
 
 
+class MixedProseSplitTests(unittest.TestCase):
+    """The three sections whose conditional half was cut out by hand.
+
+    ``split_persona_section`` moves a whole section, so these could not be
+    hoisted until their handling had a header of its own. The hazard is
+    specific and silent: take too much and an **inline tag grammar** goes
+    with it, which does not fail anywhere -- Aiko simply stops being told
+    she may emit ``[[remember:]]``, and the feature behind it quietly
+    stops receiving writes.
+    """
+
+    def setUp(self) -> None:
+        persona_dir = Path("data/persona")
+        self.persona = (persona_dir / "aiko_companion.txt").read_text(
+            encoding="utf-8",
+        )
+        self.handling = (
+            persona_dir / CONDITIONAL_HANDLING_FILENAME
+        ).read_text(encoding="utf-8")
+
+    def test_the_tag_grammar_stayed_behind(self) -> None:
+        """Each tag must still be taught on every turn, unconditionally.
+
+        Emitting one is always available to her; only the *handling* for
+        the block that shared its section was conditional.
+        """
+        for tag in ("[[remember:", "[[moment:"):
+            with self.subTest(tag=tag):
+                self.assertIn(tag, self.persona)
+                self.assertNotIn(tag, self.handling)
+
+    def test_the_conditional_half_left(self) -> None:
+        for phrase in (
+            "you can gently ask how it went",
+            "a month ago today you and",
+            "Something you've quietly noticed",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.handling)
+                self.assertNotIn(phrase, self.persona)
+
+    def test_reading_keeps_the_bullets_that_are_not_rare(self) -> None:
+        """Two of its three blocks stayed, one of them in _STAYS_IN_T0."""
+        _rest, reading = split_persona_section(
+            self.persona, "Reading {user_name}:",
+        )
+        self.assertIn("User sounds", reading)
+        self.assertIn("Answer the *need*", reading)
+
+    def test_the_renamed_section_no_longer_promises_anniversaries(self) -> None:
+        """Its anniversary half hoisted, so the old title over-claimed."""
+        self.assertNotIn("Shared moments and anniversaries:", self.persona)
+        _rest, moments = split_persona_section(self.persona, "Shared moments:")
+        self.assertIn("[[moment:", moments)
+
+    def test_the_sections_with_no_conditional_half_are_untouched(self) -> None:
+        """``arc_block`` and ``knowledge_gaps_block`` emit content, not
+        handling for content, so there was never anything here to split."""
+        registry = PromptAssemblerHelpersMixin._handling_headers()
+        for block, header in (
+            ("arc_block", "Conversation arc (what kind of conversation "
+                          "we're in right now):"),
+            ("knowledge_gaps_block",
+             "Knowledge gaps (things you genuinely don't know):"),
+        ):
+            with self.subTest(block=block):
+                self.assertNotIn(block, registry)
+                _rest, section = split_persona_section(self.persona, header)
+                self.assertTrue(section, f"{header!r} vanished")
+
+
 if __name__ == "__main__":
     unittest.main()

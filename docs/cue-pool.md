@@ -267,7 +267,7 @@ whichever blocks rendered this turn, as a `handling_notes_block` in T6.
 What stays in T0 is one short stanza (`HANDLING_PREAMBLE`) saying that
 cues arrive with their own instructions attached.
 
-This takes ~41 k characters off the always-on prompt across 47 blocks and
+This takes ~44 k characters off the always-on prompt across 51 blocks and
 puts the instructions next to the thing they are about. Most of those
 blocks are not pool cues at all — the mechanism started with the cue
 families and then generalised, so `HANDLING_SECTIONS` now carries the
