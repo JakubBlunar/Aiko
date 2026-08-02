@@ -558,19 +558,88 @@ class TestIsReady(unittest.TestCase):
         )
         self.assertTrue(ready)
 
-    def test_within_interval_not_ready(self) -> None:
+    def test_timing_is_no_longer_a_veto(self) -> None:
+        # The interval moved into demand() at migration; is_ready() is
+        # the enable flag and nothing else.
         world = _build_world(interval_seconds=86400)
         now = datetime.now(timezone.utc)
-        last = now - timedelta(hours=1)
-        ready = world["worker"].is_ready(now=now, last_run_at=last)
-        self.assertFalse(ready)
+        self.assertTrue(
+            world["worker"].is_ready(
+                now=now, last_run_at=now - timedelta(hours=1),
+            )
+        )
 
-    def test_past_interval_is_ready(self) -> None:
-        world = _build_world(interval_seconds=3600)
+
+class TestDemand(unittest.TestCase):
+    """A COUNT(*) watermark stands in for recomputing the profile."""
+
+    def _probe(self, world: dict[str, Any], last_run_at):
+        return world["worker"].demand(
+            now=datetime.now(timezone.utc), last_run_at=last_run_at,
+        )
+
+    def test_a_worker_that_never_ran_is_full_pressure(self) -> None:
+        signal = self._probe(_build_world(), None)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "never run")
+        self.assertFalse(signal.needs_llm)
+
+    def test_no_new_messages_is_no_pressure(self) -> None:
+        world = _build_world()
         now = datetime.now(timezone.utc)
-        last = now - timedelta(hours=2)
-        ready = world["worker"].is_ready(now=now, last_run_at=last)
-        self.assertTrue(ready)
+        # Messages that predate the last run don't count as new.
+        for hours in range(8):
+            _insert_user_message(
+                world["chat_db"], when=now - timedelta(days=2, hours=hours),
+            )
+        signal = self._probe(world, now - timedelta(hours=1))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "0/5 new messages")
+
+    def test_below_the_sample_bar_is_no_pressure(self) -> None:
+        # A rolling 30-day histogram doesn't move on a couple of fresh
+        # samples, so these wait for the daily heartbeat.
+        world = _build_world(min_samples=5)
+        now = datetime.now(timezone.utc)
+        last = now - timedelta(hours=3)
+        for i in range(3):
+            _insert_user_message(
+                world["chat_db"], when=last + timedelta(minutes=i + 1),
+            )
+        signal = self._probe(world, last)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "3/5 new messages")
+
+    def test_clearing_the_bar_is_full_pressure(self) -> None:
+        world = _build_world(min_samples=5)
+        now = datetime.now(timezone.utc)
+        last = now - timedelta(hours=3)
+        for i in range(6):
+            _insert_user_message(
+                world["chat_db"], when=last + timedelta(minutes=i + 1),
+            )
+        signal = self._probe(world, last)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "6 new messages")
+
+    def test_disabled_is_no_pressure(self) -> None:
+        signal = self._probe(_build_world(enabled=False), None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_probing_never_writes_the_profile(self) -> None:
+        world = _build_world(min_samples=1)
+        now = datetime.now(timezone.utc)
+        last = now - timedelta(hours=3)
+        for i in range(6):
+            _insert_user_message(
+                world["chat_db"], when=last + timedelta(minutes=i + 1),
+            )
+        self._probe(world, last)
+        self._probe(world, last)
+        self.assertNotIn(
+            "usual_hours", world["profile_store"].fields(world["user_id"]),
+        )
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.tasks.task_events import TaskEventStore
@@ -111,10 +111,40 @@ class TaskCleanupWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled
+
+    def _cutoff(self, now: datetime) -> str:
+        return (now - timedelta(days=self._retention_days)).isoformat()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Count the prunable rows without deleting any.
+
+        ``list_terminal_older_than`` is a bounded ``SELECT`` and the
+        limit is the same per-tick cap ``run()`` uses, so the count is
+        "how much work is there for one tick" rather than the true
+        backlog — which is exactly what the ranking wants. On a healthy
+        install this returns zero and the worker never takes a slot.
+        """
         if not self._enabled:
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            stale = self._store.list_terminal_older_than(
+                self._cutoff(now), limit=self._max_rows_per_tick,
+            )
+        except Exception:
+            log.debug("task_cleanup: demand probe failed", exc_info=True)
+            return None
+        count = len(stale)
+        return WorkSignal(
+            pressure=pressure_from_count(
+                count, saturation=self._max_rows_per_tick,
+            ),
+            reason=f"{count} stale",
         )
 
     def run(self) -> dict[str, Any]:
@@ -125,10 +155,7 @@ class TaskCleanupWorker:
         """
         if not self._enabled:
             return {"skipped": True, "reason": "disabled"}
-        cutoff = (
-            datetime.now(timezone.utc)
-            - timedelta(days=self._retention_days)
-        ).isoformat()
+        cutoff = self._cutoff(datetime.now(timezone.utc))
         try:
             stale = self._store.list_terminal_older_than(
                 cutoff, limit=self._max_rows_per_tick

@@ -27,7 +27,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -65,17 +65,36 @@ class TopicGraphRebuildWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if not getattr(self._graph, "persistent", False):
-            return False
-        # Pressure trigger: enough memories have arrived that didn't fit
-        # an existing cluster -> refit early, ignoring the interval.
+        return bool(getattr(self._graph, "persistent", False))
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the unclustered backlog.
+
+        This worker already had the pressure idea before the scheduler
+        did — it used to short-circuit its own interval once
+        ``pending_unclustered`` crossed the threshold. That trigger is
+        now just the top of the ramp: at the threshold the count
+        saturates to 1.0 and the worker outranks its neighbours, which
+        reproduces "refit early after a burst of new topics" through the
+        general mechanism instead of a bespoke branch.
+
+        ``pending_count()`` reads one integer under the graph's lock.
+        The rebuild itself is heavy and mutating, and stays in ``run()``.
+        """
         try:
-            if self._graph.pending_count() >= self._pending_threshold:
-                return True
+            pending = self._graph.pending_count()
         except Exception:
-            pass
-        return default_is_ready(
-            self._interval, now=now, last_run_at=last_run_at,
+            return None
+        return WorkSignal(
+            pressure=pressure_from_count(
+                pending, saturation=self._pending_threshold,
+            ),
+            reason=f"{pending} unclustered",
         )
 
     def run(self) -> dict[str, Any]:

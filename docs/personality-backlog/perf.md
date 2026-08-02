@@ -1172,14 +1172,54 @@ Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
 
 ## P44. Migrate the remaining idle workers to `demand()`
 
+**Status: partly shipped.** Thirty-seven of fifty-five workers report
+demand. The most recent batch was the sixteen **pure-compute** ones —
+`day_color`, `vitality`, `affection_style_decay`, `humor_style_decay`,
+`weather`, `task_cleanup`, `gap_resolver`, `topic_graph_rebuild`,
+`concept_edge_integrity`, `memory_promotion`, `schedule_learner`,
+`wants_ledger`, `voice_adoption`, `growth_witness`,
+`aspiration_momentum`, `tension_cue` — which were the ones the lane
+split was actually about: none of them touches a model, and all sixteen
+were being charged to the LLM lane anyway. They now rank and drain in
+the compute lane, where the budget scales with idle depth alone.
+
+Cadence was deliberately held flat. Each probe reports zero pressure
+until there is real work, so the heartbeat still sets the rhythm and no
+worker started running more often than it used to. What changed is that
+a worker with a genuine backlog can now jump the queue, and a worker
+with nothing to do no longer spends a slot to find that out.
+
+The eighteen that remain all call a model, so the legacy path's "charge
+it to the LLM lane" is the right answer for them; what they are missing
+is ranking. Two probe-cost lessons from the compute batch carry over:
+prefer a cheap upstream gate to a full dry-run
+(`voice_adoption.promotion_blocked` settles a ten-day question with one
+kv read), and bound anything that walks a store (`memory_promotion`
+stops counting at saturation). Measured on a 3.3k-message install the
+slowest probe in the batch runs in ~0.5 ms against a 50 ms budget.
+
+**Cadence lesson, and four open regressions.** Probe *cost* turned out
+to be the easy half; probe *calibration* is the hard one, and the suite
+cannot see it — every one of these passed its tests. Reading a single
+35-minute log found four workers admitted far faster than their
+interval: `gap_resolver` (30 s, 59 no-op runs), `vitality` and
+`promise_followthrough` (both on the 91 s anti-thrash floor against a
+900 s interval), and `weather` (10 min against 30 min, on a network
+call). The four underlying mistakes — pressure meaning "not blocked",
+a discrete pressure floor on a continuous quantity, staleness returned
+as pressure, and a hard veto demoted to zero pressure — are written up
+in
+[`docs/idle-workers.md`](../idle-workers.md#four-ways-a-probe-goes-wrong).
+They are still live. **Verify the next batch against a log**, not only
+against the suite.
+
 **Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
-shipped the mechanism and migrated nine workers. The other ~40 still
-schedule on `interval_seconds` alone, which means two things: they spend
-a slot to discover they have nothing to do, and — because the scheduler
-cannot know whether they are cheap — they are all charged to the LLM
-lane, whether or not they touch a model. A pure-arithmetic worker
-sitting in the LLM lane is exactly the contention the split was meant to
-remove.
+shipped the mechanism and migrated nine workers. Workers that schedule
+on `interval_seconds` alone spend a slot to discover they have nothing
+to do, and — because the scheduler cannot know whether they are cheap —
+are charged to the LLM lane whether or not they touch a model. A
+pure-arithmetic worker sitting in the LLM lane is exactly the contention
+the split was meant to remove.
 
 **What to do per worker.** Split `is_ready()` in two. The hard vetoes
 (feature flags, cold-start guards, rate limiters) stay; the

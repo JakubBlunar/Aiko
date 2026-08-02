@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive import aspiration_momentum as _am
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 
@@ -89,35 +89,40 @@ class AspirationMomentumWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return self._enabled()
 
-    def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"drafted": 0, "disabled": True}
-            except Exception:
-                pass
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
+            return True
+        try:
+            return bool(self._enabled_provider())
+        except Exception:
+            # Matches run(): a provider that raises is not treated as a
+            # veto, it is treated as no opinion.
+            return True
 
-        now = _utcnow()
-        forced = self._force_next
-        self._force_next = False
+    def _select(
+        self, now: datetime, *, forced: bool,
+    ) -> "tuple[str | None, _am.MomentumCandidate | None, int]":
+        """Resolve the cue this tick would draft.
 
+        Returns ``(block_reason, candidate, active_count)``; a
+        ``block_reason`` of ``None`` means "draft this candidate".
+
+        Strictly read-only, which is what lets ``demand()`` share it.
+        ``view.core`` hands back **live** ``Concept`` objects from the
+        store's in-memory mirror, so this only ever reads attributes off
+        them, and every kv access is a ``kv_get``. The two writes — the
+        per-concept cooldown and the signature watermark — stay in
+        ``_mark_fired``, which only ``run()`` calls.
+        """
         view = None
         try:
             view = self._view_provider()
         except Exception:
             log.debug("aspiration_momentum view_provider raised", exc_info=True)
         if view is None or not getattr(view, "enabled", False):
-            return {"drafted": 0, "no_view": True}
+            return "no_view", None, 0
 
         concepts: list[Any] = []
         for subject in self._subjects:
@@ -134,7 +139,7 @@ class AspirationMomentumWorker:
                     "aspiration_momentum core(%s) raised", subject, exc_info=True
                 )
         if not concepts:
-            return {"drafted": 0, "no_active": True}
+            return "no_active", None, 0
 
         # Forced runs relax the staleness + per-concept cooldown gates so an
         # MCP poke always produces a cue when *any* aspiration exists.
@@ -147,12 +152,60 @@ class AspirationMomentumWorker:
             cooldown_days=0.0 if forced else self._cooldown_days,
         )
         if candidate is None:
-            return {"drafted": 0, "no_candidate": True, "active": len(concepts)}
+            return "no_candidate", None, len(concepts)
 
         if not forced:
             last_sig = self._kv_get_safe(_KV_LAST_SIGNATURE)
             if last_sig and last_sig == candidate.signature:
-                return {"drafted": 0, "same_signature": candidate.signature}
+                return "same_signature", candidate, len(concepts)
+        return None, candidate, len(concepts)
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """One draft per run, so the answer is binary.
+
+        Deliberately probes as an *unforced* run: ``_force_next`` is MCP
+        debug state that ``run()`` consumes, and every tool that arms it
+        calls ``run()`` directly rather than waiting for a tick. Reading
+        it here would let a probe silently eat the flag.
+
+        The gates that make this rare — a 7-day staleness floor and a
+        10-day per-concept cooldown — are all read-side, so on a typical
+        tick this costs a mirror filter plus a couple of kv reads and
+        reports nothing to do.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        reason, candidate, _active = self._select(now, forced=False)
+        if reason is not None or candidate is None:
+            return WorkSignal(pressure=0.0, reason=reason or "no_candidate")
+        return WorkSignal(
+            pressure=1.0, reason=f"aspiration {candidate.concept_id}",
+        )
+
+    def run(self) -> dict[str, Any]:
+        if self._enabled_provider is not None:
+            try:
+                if not bool(self._enabled_provider()):
+                    return {"drafted": 0, "disabled": True}
+            except Exception:
+                pass
+
+        now = _utcnow()
+        forced = self._force_next
+        self._force_next = False
+
+        reason, candidate, active = self._select(now, forced=forced)
+        if reason == "no_view":
+            return {"drafted": 0, "no_view": True}
+        if reason == "no_active":
+            return {"drafted": 0, "no_active": True}
+        if reason == "no_candidate":
+            return {"drafted": 0, "no_candidate": True, "active": active}
+        if reason == "same_signature" and candidate is not None:
+            return {"drafted": 0, "same_signature": candidate.signature}
+        assert candidate is not None
 
         _am.append_cue(
             self._kv_get,

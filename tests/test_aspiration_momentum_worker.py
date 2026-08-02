@@ -159,6 +159,89 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(out["concept_id"], 2)
 
 
+class WorkerDemandTests(unittest.TestCase):
+    """The probe answers "would this run draft?" without drafting."""
+
+    def _probe(self, worker: AspirationMomentumWorker):
+        return worker.demand(now=datetime.now(_UTC), last_run_at=None)
+
+    def test_is_ready_is_the_switch_alone(self) -> None:
+        # The interval moved into demand() at migration.
+        kv = _FakeKv()
+        w = _worker(_FakeView([]), kv)
+        now = datetime.now(_UTC)
+        self.assertTrue(w.is_ready(now=now, last_run_at=None))
+        self.assertTrue(
+            w.is_ready(now=now, last_run_at=now - timedelta(seconds=30))
+        )
+        off = _worker(_FakeView([]), kv, enabled_provider=lambda: False)
+        self.assertFalse(off.is_ready(now=now, last_run_at=None))
+
+    def test_a_stale_aspiration_is_full_pressure(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        signal = self._probe(_worker(view, kv))
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "aspiration 1")
+        self.assertFalse(signal.needs_llm)
+
+    def test_nothing_active_is_no_pressure(self) -> None:
+        signal = self._probe(_worker(_FakeView([]), _FakeKv()))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no_active")
+
+    def test_a_fresh_aspiration_is_no_pressure(self) -> None:
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(2))])
+        signal = self._probe(_worker(view, _FakeKv()))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no_candidate")
+
+    def test_the_per_concept_cooldown_shows_up_as_no_pressure(self) -> None:
+        kv = _FakeKv()
+        kv.store[_am.per_concept_cooldown_key(1)] = _stale_iso(2)
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        self.assertEqual(self._probe(_worker(view, kv)).pressure, 0.0)
+
+    def test_the_signature_watermark_shows_up_as_no_pressure(self) -> None:
+        kv = _FakeKv()
+        kv.store["aspiration_momentum.last_signature"] = _am.signature(1)
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        signal = self._probe(_worker(view, kv))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "same_signature")
+
+    def test_a_missing_view_is_no_pressure(self) -> None:
+        kv = _FakeKv()
+        w = _worker(_FakeView([]), kv, view_provider=lambda: None)
+        self.assertEqual(self._probe(w).reason, "no_view")
+
+    def test_disabled_is_no_pressure(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        w = _worker(view, kv, enabled_provider=lambda: False)
+        self.assertEqual(self._probe(w).reason, "disabled")
+
+    def test_probing_writes_nothing_and_drafts_nothing(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        w = _worker(view, kv)
+        self._probe(w)
+        self._probe(w)
+        self.assertEqual(kv.store, {})
+        self.assertEqual(_am.load_cues(kv.get), [])
+
+    def test_probing_does_not_eat_the_force_flag(self) -> None:
+        # force_next() is armed by an MCP tool that then calls run()
+        # directly. A probe landing in between must not consume it.
+        kv = _FakeKv()
+        kv.store[_am.per_concept_cooldown_key(1)] = _stale_iso(2)
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        w = _worker(view, kv)
+        w.force_next()
+        self.assertEqual(self._probe(w).pressure, 0.0)
+        self.assertEqual(w.run()["drafted"], 1)
+
+
 class SelectCandidateTests(unittest.TestCase):
     def test_aiko_subject_carried(self) -> None:
         now = datetime.now(_UTC)

@@ -164,5 +164,81 @@ class CleanupTests(unittest.TestCase):
             f.close()
 
 
+class DemandTests(unittest.TestCase):
+    def _worker(self, f: _Fixture, **kw) -> TaskCleanupWorker:
+        opts: dict = dict(
+            event_store=f.event_store,
+            input_store=f.input_store,
+            retention_days=30,
+            interval_seconds=3600,
+        )
+        opts.update(kw)
+        return TaskCleanupWorker(f.store, **opts)
+
+    def _probe(self, worker: TaskCleanupWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_an_empty_table_asks_for_nothing(self) -> None:
+        f = _Fixture()
+        try:
+            signal = self._probe(self._worker(f))
+            self.assertEqual(signal.pressure, 0.0)
+            self.assertEqual(signal.reason, "0 stale")
+            self.assertFalse(signal.needs_llm)
+        finally:
+            f.close()
+
+    def test_rows_inside_the_retention_window_are_not_work(self) -> None:
+        f = _Fixture()
+        try:
+            f._make_done_task(days_ago=1)
+            self.assertEqual(self._probe(self._worker(f)).pressure, 0.0)
+        finally:
+            f.close()
+
+    def test_one_prunable_row_clears_the_threshold(self) -> None:
+        f = _Fixture()
+        try:
+            f._make_done_task(days_ago=60)
+            signal = self._probe(self._worker(f))
+            self.assertGreaterEqual(signal.pressure, 0.5)
+            self.assertEqual(signal.reason, "1 stale")
+        finally:
+            f.close()
+
+    def test_a_full_tick_of_prunable_rows_saturates(self) -> None:
+        f = _Fixture()
+        try:
+            for _ in range(4):
+                f._make_done_task(days_ago=60)
+            worker = self._worker(f, max_rows_per_tick=2)
+            self.assertEqual(self._probe(worker).pressure, 1.0)
+        finally:
+            f.close()
+
+    def test_disabled_reports_no_pressure(self) -> None:
+        f = _Fixture()
+        try:
+            f._make_done_task(days_ago=60)
+            signal = self._probe(self._worker(f, enabled=False))
+            self.assertEqual(signal.pressure, 0.0)
+            self.assertEqual(signal.reason, "disabled")
+        finally:
+            f.close()
+
+    def test_probing_deletes_nothing(self) -> None:
+        f = _Fixture()
+        try:
+            tid = f._make_done_task(days_ago=60)
+            worker = self._worker(f)
+            self._probe(worker)
+            self._probe(worker)
+            self.assertIsNotNone(f.store.get(tid))
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

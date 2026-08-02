@@ -468,8 +468,36 @@ class IdleWorkerScheduler:
                 last_run_at=record.last_run_at,
             )
 
+    def _is_ready_legacy(
+        self, worker: IdleWorker, record: IdleWorkerRecord, now: datetime,
+    ) -> bool:
+        """:meth:`_is_ready`, plus the interval a migrated worker gave up.
+
+        Migrating a worker to ``demand()`` means moving the
+        ``default_is_ready(self.interval_seconds, …)`` timing check out
+        of ``is_ready()`` and into the probe, leaving ``is_ready()`` as
+        hard vetoes only. On the demand path that is exactly right --
+        the heartbeat and ``derive_min_interval_s`` floor take over. On
+        this path there is no probe, so a migrated worker would be
+        "ready" on every wake tick and run bounded only by the budget,
+        which is the opposite of what an escape hatch is for.
+
+        So re-impose the interval here, for migrated workers only.
+        Unmigrated workers still carry their own timing check inside
+        ``is_ready()`` and are untouched.
+        """
+        if not self._is_ready(worker, record, now):
+            return False
+        if not callable(getattr(worker, "demand", None)):
+            return True
+        return default_is_ready(
+            worker.interval_seconds,
+            now=now,
+            last_run_at=record.last_run_at,
+        )
+
     def _tick_legacy(self) -> None:
-        """The pre-P36 tick, preserved verbatim as the escape hatch.
+        """The pre-P36 tick, preserved as the escape hatch.
 
         Reached when ``memory.idle_worker_pressure_enabled`` is false.
         One budget, oldest-first ranking, slot 1 exempt from the fit
@@ -498,7 +526,7 @@ class IdleWorkerScheduler:
 
         for name, worker in ranked:
             record = self._records[name]
-            if not self._is_ready(worker, record, now):
+            if not self._is_ready_legacy(worker, record, now):
                 continue
             due_total += 1
 

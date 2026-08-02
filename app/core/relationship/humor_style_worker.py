@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.relationship import humor_style as _hs
 from app.core.infra import timephrase
 
@@ -53,42 +53,72 @@ class HumorStyleDecayWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
-        if not bool(getattr(self._settings, "humor_style_enabled", True)):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return bool(getattr(self._settings, "humor_style_enabled", True))
 
-    def run(self) -> dict[str, Any]:
-        if not bool(getattr(self._settings, "humor_style_enabled", True)):
-            return {"skipped": True, "reason": "disabled"}
+    def _peek_decay(self) -> tuple[str | None, "_hs.HumorStyleState | None"]:
+        """Dry-run one decay step. Returns ``(skip_reason, new_state)``.
+
+        Exactly one of the two is ``None``. Safe to share with the probe
+        because :func:`humor_style.decay_toward_uniform` returns a new
+        state rather than mutating the stored one.
+        """
         half_life = float(
             getattr(
                 self._settings, "humor_style_decay_half_life_days", 30.0,
             )
         )
         if half_life <= 0.0:
-            return {"skipped": True, "reason": "decay_disabled"}
+            return "decay_disabled", None
         try:
             stored = self._chat_db.kv_get(_hs.KV_HUMOR_STYLE)
         except Exception:
             log.debug("humor_style worker: kv_get failed", exc_info=True)
-            return {"skipped": True, "reason": "kv_get_failed"}
+            return "kv_get_failed", None
         if not stored:
-            return {"decayed": False, "reason": "empty"}
+            return "empty", None
 
         state = _hs.deserialize(stored)
-        now = timephrase.utcnow()
         floor = float(getattr(self._settings, "humor_style_floor", 0.05))
         new_state = _hs.decay_toward_uniform(
-            state, now, half_life_days=half_life, floor=floor,
+            state,
+            timephrase.utcnow(),
+            half_life_days=half_life,
+            floor=floor,
         )
         moved = any(
             abs(new_state.weight_of(k) - state.weight_of(k)) > 1e-6
             for k in _hs.HUMOR_KINDS
         )
         if not moved:
-            return {"decayed": False, "reason": "no_change"}
+            return "no_change", None
+        return None, new_state
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Ask the decay maths whether the weights would actually move.
+
+        Elapsed-time exponential against ``state.updated_at``, so
+        pressure-based admission leaves the effective half-life alone.
+        """
+        if not bool(getattr(self._settings, "humor_style_enabled", True)):
+            return WorkSignal(pressure=0.0, reason="disabled")
+        reason, new_state = self._peek_decay()
+        if new_state is None:
+            return WorkSignal(pressure=0.0, reason=reason or "no_change")
+        return WorkSignal(pressure=1.0, reason="decay due")
+
+    def run(self) -> dict[str, Any]:
+        if not bool(getattr(self._settings, "humor_style_enabled", True)):
+            return {"skipped": True, "reason": "disabled"}
+        reason, new_state = self._peek_decay()
+        if new_state is None:
+            if reason in ("decay_disabled", "kv_get_failed"):
+                return {"skipped": True, "reason": reason}
+            return {"decayed": False, "reason": reason}
         try:
             self._chat_db.kv_set(_hs.KV_HUMOR_STYLE, _hs.serialize(new_state))
         except Exception:

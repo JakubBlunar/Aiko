@@ -127,6 +127,41 @@ def eligible_candidates(
     return out
 
 
+def promotion_blocked(
+    adopted: Sequence[dict[str, Any]],
+    *,
+    now: datetime,
+    max_adopted: int = DEFAULT_MAX_ADOPTED,
+    min_days_between: float = DEFAULT_MIN_DAYS_BETWEEN,
+) -> str | None:
+    """Why :func:`promote` would refuse *regardless of the candidates*.
+
+    Both of those refusals — a full active set, and a last adoption
+    that's too recent — depend only on the adopted state, which is one
+    kv read. Split out so a caller can check them **before** paying to
+    build the candidate list, which costs a registry scan and possibly a
+    message-history lookup per phrase.
+
+    Returns a short reason, or ``None`` when a promotion is possible.
+    """
+    if max_adopted > 0 and len(adopted) >= max_adopted:
+        return "at ceiling"
+    gap = timedelta(days=max(0.0, float(min_days_between)))
+    if not gap:
+        return None
+    latest = max(
+        (
+            dt
+            for dt in (_parse_iso(r.get("adopted_at")) for r in adopted)
+            if dt is not None
+        ),
+        default=None,
+    )
+    if latest is not None and now - latest < gap:
+        return "spacing"
+    return None
+
+
 def promote(
     adopted: Sequence[dict[str, Any]],
     candidates: Sequence[AdoptionCandidate],
@@ -144,20 +179,13 @@ def promote(
     rows = [dict(a) for a in adopted]
     if not candidates:
         return rows, None
-    if max_adopted > 0 and len(rows) >= max_adopted:
+    if promotion_blocked(
+        rows,
+        now=now,
+        max_adopted=max_adopted,
+        min_days_between=min_days_between,
+    ):
         return rows, None
-    gap = timedelta(days=max(0.0, float(min_days_between)))
-    if gap:
-        latest = max(
-            (
-                dt
-                for dt in (_parse_iso(r.get("adopted_at")) for r in rows)
-                if dt is not None
-            ),
-            default=None,
-        )
-        if latest is not None and now - latest < gap:
-            return rows, None
     pick = candidates[0]
     rows.append(
         {
@@ -269,6 +297,7 @@ __all__ = [
     "load_state",
     "normalise_phrase",
     "promote",
+    "promotion_blocked",
     "render_block",
     "retire",
     "save_state",

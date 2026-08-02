@@ -44,7 +44,7 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -171,22 +171,37 @@ class IdleGapResolver:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if not bool(
+        return bool(
             getattr(self._agent_settings, "gap_resolver_enabled", True)
-        ):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        # Cheap "is there anything to do" check — list_open walks the
-        # in-memory mirror, no SQL roundtrip.
+        )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the open-gap backlog.
+
+        This is the "is there anything to do" check that already lived
+        in ``is_ready()`` — ``list_open`` walks the in-memory mirror
+        with no SQL roundtrip — now expressed as pressure so the
+        scheduler can rank it instead of only seeing a yes/no.
+
+        It counts *open* gaps rather than *resolvable* ones. Resolvable
+        would mirror ``run()`` exactly but costs a cosine search per gap
+        against the whole memory store, which is run-shaped work, not
+        probe-shaped.
+        """
         try:
-            if not self._gap_store.list_open():
-                return False
+            open_gaps = self._gap_store.list_open()
         except Exception:
-            return False
-        return True
+            return None
+        count = len(open_gaps)
+        return WorkSignal(
+            pressure=pressure_from_count(count, saturation=self.per_tick_cap),
+            reason=f"{count} open",
+        )
 
     def run(self) -> dict[str, Any]:
         if not bool(

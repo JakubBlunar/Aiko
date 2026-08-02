@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.infra import timephrase
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.relationship import voice_adoption as _va
 
 
@@ -77,10 +77,74 @@ class VoiceAdoptionWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Cheap spacing gate first, registry scan only if it clears.
+
+        The scheduler probes on every wake tick, so an unconditional
+        ``_catchphrase_rows()`` here would run a 128-row registry scan
+        every 15 seconds to answer a question whose answer is "no" for
+        ten days at a stretch. :func:`voice_adoption.promotion_blocked`
+        settles that from the adopted state alone — one kv read — and
+        only when it clears do we pay for the scan.
+
+        The scan is also run without the ``origin_resolver``: resolving
+        a legacy row's provenance means a message-history lookup per
+        phrase, which is run-shaped work. So the probe can *undercount*
+        eligible phrases on installs still carrying pre-K26 rows with no
+        stamped ``metadata.origin``. Those get picked up by the daily
+        heartbeat run, which is the cadence they had before this
+        migration anyway.
+
+        Retirement is not counted as pressure for the same reason: it is
+        bookkeeping with no user-visible deadline, and the heartbeat
+        already sweeps it once a day.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        if self._memory is None:
+            return WorkSignal(pressure=0.0, reason="no store")
+        now_ = self._clock()
+        try:
+            state = _va.load_state(self._chat_db.kv_get)
+        except Exception:
+            log.debug("voice adoption demand: state read failed", exc_info=True)
+            return None
+        blocked = _va.promotion_blocked(
+            state,
+            now=now_,
+            max_adopted=self._max_adopted,
+            min_days_between=self._min_days_between,
+        )
+        if blocked is not None:
+            return WorkSignal(pressure=0.0, reason=blocked)
+
+        try:
+            rows = self._catchphrase_rows(resolve_origin=False)
+        except Exception:
+            log.debug("voice adoption demand: registry scan failed", exc_info=True)
+            return None
+        eligible = _va.eligible_candidates(
+            [
+                _va.AdoptionCandidate(
+                    phrase=str(r["phrase"]),
+                    first_seen=r["first_seen"],
+                    salience=float(r.get("salience", 0.5) or 0.5),
+                )
+                for r in rows
+                if r.get("origin") == "user"
+            ],
+            adopted=state,
+            now=now_,
+            min_age_days=self._min_age_days,
+        )
+        if not eligible:
+            return WorkSignal(pressure=0.0, reason="nothing adoptable")
+        return WorkSignal(
+            pressure=1.0, reason=f"{len(eligible)} adoptable",
         )
 
     def run(self) -> dict[str, Any]:
@@ -142,8 +206,15 @@ class VoiceAdoptionWorker:
 
     # ── helpers ──────────────────────────────────────────────────────
 
-    def _catchphrase_rows(self) -> list[dict[str, Any]]:
-        """Registry rows with provenance + age resolved."""
+    def _catchphrase_rows(
+        self, *, resolve_origin: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Registry rows with provenance + age resolved.
+
+        ``resolve_origin=False`` keeps the stamped ``metadata.origin``
+        and skips the history lookup for legacy rows, which is what
+        makes this affordable from ``demand()``.
+        """
         store = self._memory
         if store is None:
             return []
@@ -165,17 +236,21 @@ class VoiceAdoptionWorker:
                     "phrase": phrase,
                     "first_seen": first_seen,
                     "salience": getattr(mem, "salience", 0.5),
-                    "origin": self._origin_of(mem, phrase),
+                    "origin": self._origin_of(
+                        mem, phrase, resolve=resolve_origin,
+                    ),
                 }
             )
         return out
 
-    def _origin_of(self, mem: Any, phrase: str) -> str | None:
+    def _origin_of(
+        self, mem: Any, phrase: str, *, resolve: bool = True,
+    ) -> str | None:
         meta = getattr(mem, "metadata", None) or {}
         origin = meta.get("origin") if isinstance(meta, dict) else None
         if origin in ("user", "assistant"):
             return str(origin)
-        if self._origin_resolver is None:
+        if not resolve or self._origin_resolver is None:
             return None
         try:
             resolved = self._origin_resolver(phrase)
