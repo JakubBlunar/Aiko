@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -290,21 +290,60 @@ class IdleKnowledgeWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, with a search token left in the bucket.
+
+        The cluster scoring that used to run here has moved into
+        ``run``. It rebuilds the topic-graph snapshot, which was
+        affordable when the interval gate meant it happened once an
+        hour, and is not affordable on every 15-second wake tick now
+        that the scheduler asks about readiness continuously.
+        """
         if not self._enabled():
             return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+        except Exception:
+            log.debug("knowledge: rate snapshot failed", exc_info=True)
             return False
-        snapshot = self._rate_limiter.snapshot(now)
         if snapshot["hour_used"] >= snapshot["hour_cap"]:
             return False
-        if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
-        # Cheapest "is there anything to research" check last — it
-        # rebuilds the (cached) topic graph, so we only pay it once the
-        # interval + budget gates have already passed.
-        return self._pick_cluster(now=now) is not None
+        return snapshot["day_used"] < snapshot["day_cap"]
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the research queue only — never from scoring.
+
+        The queue is one kv read, and a query sitting in it is a
+        question the planner already decided was worth asking, so it
+        deserves to jump ahead of a worker running on staleness alone.
+
+        An *empty* queue reports zero rather than paying
+        ``_score_candidates`` to find out whether some cluster has
+        drifted into researchable territory: that walk builds a topic
+        graph snapshot, which is run-shaped work. The hourly heartbeat
+        is what triggers a fresh scoring pass, exactly as the interval
+        gate used to.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            queued = sum(len(v) for v in self._load_queue().values())
+        except Exception:
+            log.debug("knowledge demand probe failed", exc_info=True)
+            return None
+        if queued <= 0:
+            return WorkSignal(
+                pressure=0.0, reason="queue empty", needs_llm=True,
+            )
+        return WorkSignal(
+            pressure=pressure_from_count(queued, saturation=8),
+            reason=f"{queued} queued",
+            needs_llm=True,
+        )
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():

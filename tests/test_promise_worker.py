@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -336,6 +336,46 @@ class RateLimitTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.assertTrue(limiter.allow(now))
         self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+
+
+class DemandTests(unittest.TestCase):
+    """Same watermark shape as the belief worker: new turns or nothing."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_unmined_transcript_reports_pressure(self) -> None:
+        worker, _store, _ollama, _limiter = _build_world()
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_nothing_new_since_the_last_run_is_zero(self) -> None:
+        worker, _store, _ollama, _limiter = _build_world()
+        later = self._now() + timedelta(hours=1)
+        signal = worker.demand(now=later, last_run_at=later)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no new turns")
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        worker, _store, _ollama, limiter = _build_world(
+            cap_hour=1, cap_day=1,
+        )
+        self.assertTrue(limiter.allow(self._now()))
+        self.assertEqual(
+            worker.demand(now=self._now(), last_run_at=None).pressure, 0.0,
+        )
+
+    def test_probe_neither_spends_a_token_nor_writes(self) -> None:
+        worker, store, ollama, limiter = _build_world()
+        now = self._now()
+        before = limiter.snapshot(now)["hour_used"]
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(limiter.snapshot(now)["hour_used"], before)
+        self.assertEqual(len(ollama.chat_calls), 0)
+        self.assertEqual(store.calls, [])
 
 
 class PrivacyScrubTests(unittest.TestCase):

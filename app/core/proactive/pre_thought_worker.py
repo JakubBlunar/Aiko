@@ -41,7 +41,10 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import (
+    WorkSignal,
+    pressure_from_deficit,
+)
 from app.core.services.response_text_service import strip_all_meta_tags
 from app.core.infra import timephrase
 
@@ -219,25 +222,67 @@ class PreThoughtWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, budget left, and room on the shelf.
+
+        All three were already here before the demand migration and all
+        three stay: each one makes a run a guaranteed no-op, and the
+        heartbeat is checked ahead of pressure, so demoting them to
+        zero pressure would not actually hold the worker back.
+
+        ``snapshot`` rather than ``allow`` — the latter *spends* a
+        token, and a readiness check must not.
+        """
+        return self._headroom(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the gap between the shelf and its target.
+
+        The same shape the cue producers use: this worker *stocks*
+        inventory rather than draining a backlog, so what should wake
+        it is running low, not piling up. An empty shelf is the
+        expensive failure — a seam opens in the conversation and there
+        is no pre-thought ready — so the curve is eager, and the
+        hour/day caps vetoed above are what bound the spend.
+        """
         if not bool(getattr(self._agent_settings, "pre_thought_enabled", True)):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
+            return WorkSignal(pressure=0.0, reason="disabled")
+        headroom = self._headroom(now)
+        if headroom is None:
+            return WorkSignal(pressure=0.0, reason="no headroom")
+        active, max_active = headroom
+        return WorkSignal(
+            pressure=pressure_from_deficit(active, want=max_active),
+            reason=f"{active}/{max_active} active",
+            needs_llm=True,
+        )
+
+    def _headroom(self, now: datetime) -> tuple[int, int] | None:
+        """``(active, max_active)`` if a run could write, else ``None``."""
+        if not bool(getattr(self._agent_settings, "pre_thought_enabled", True)):
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+        except Exception:
+            log.debug("pre_thought: rate snapshot failed", exc_info=True)
+            return None
         if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
+            return None
         if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
+            return None
         max_active = self._max_active()
         try:
-            if len(self._active_pre_thoughts()) >= max_active:
-                return False
+            active = len(self._active_pre_thoughts())
         except Exception:
             log.debug("pre_thought: active count failed", exc_info=True)
-            return False
-        return True
+            return None
+        if active >= max_active:
+            return None
+        return active, max_active
 
     def run(self) -> dict[str, Any]:
         if not bool(getattr(self._agent_settings, "pre_thought_enabled", True)):

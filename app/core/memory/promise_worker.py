@@ -48,7 +48,7 @@ from app.core.memory.promise_lifecycle import (
     promise_status,
     promise_what,
 )
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -226,7 +226,7 @@ class PromiseExtractionWorker:
         self._assistant_name_provider = assistant_name_provider
         self._clock = clock or _utcnow
 
-    # ── IdleWorker protocol ──────────────────────────────────────────
+    # ?? IdleWorker protocol ??????????????????????????????????????????
 
     def update_runtime(self, *, model: str | None = None) -> None:
         """Hot-swap the worker LLM model (model-cascade hook)."""
@@ -254,18 +254,65 @@ class PromiseExtractionWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, with budget for the extraction call."""
+        return self._fresh_turns(now, last_run_at) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from transcript that has not been mined yet.
+
+        Same shape as the belief worker, and for the same reason:
+        there is no queue of un-extracted promises to count, only a
+        window of recent turns that either has new material in it or
+        does not. Re-running against an unchanged window spends a
+        generation to rediscover promises already in the store.
+        """
+        fresh = self._fresh_turns(now, last_run_at)
+        if fresh is None:
+            return WorkSignal(pressure=0.0, reason="disabled or no budget")
+        new_messages, window = fresh
+        if new_messages <= 0:
+            return WorkSignal(pressure=0.0, reason="no new turns")
+        return WorkSignal(
+            pressure=pressure_from_count(new_messages, saturation=window),
+            reason=f"{new_messages} new messages",
+            needs_llm=True,
+        )
+
+    def _fresh_turns(
+        self, now: datetime, last_run_at: datetime | None,
+    ) -> tuple[int, int] | None:
+        """``(new_messages, window)`` if a run could extract, else ``None``."""
         if not self._enabled():
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
-        if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
-        if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
-        return True
+            return None
+        lookback_turns = int(
+            getattr(self._memory_settings, "promise_worker_lookback_turns", 12)
+        )
+        if lookback_turns <= 0:
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+            if snapshot["hour_used"] >= snapshot["hour_cap"]:
+                return None
+            if snapshot["day_used"] >= snapshot["day_cap"]:
+                return None
+            session_id = (
+                self._session_id_provider()
+                if self._session_id_provider else None
+            )
+            if not session_id:
+                return None
+            fresh = self._chat_db.count_messages_since(
+                session_id, last_run_at,
+            )
+        except Exception:
+            log.debug("promise-worker demand probe failed", exc_info=True)
+            return None
+        return fresh, max(1, lookback_turns * 2)
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():
@@ -396,7 +443,7 @@ class PromiseExtractionWorker:
         log.info("promise-worker done: %s", result)
         return result
 
-    # ── transcript snapshot ──────────────────────────────────────────
+    # ?? transcript snapshot ??????????????????????????????????????????
 
     def _snapshot_transcript(
         self,
@@ -464,7 +511,7 @@ class PromiseExtractionWorker:
         lines.reverse()
         return "\n".join(lines)
 
-    # ── LLM extractor ────────────────────────────────────────────────
+    # ?? LLM extractor ????????????????????????????????????????????????
 
     def _extract_with_llm(self, scrubbed_transcript: str) -> list[Promise] | None:
         user_content = _USER_TEMPLATE.format(transcript=scrubbed_transcript)
@@ -568,7 +615,7 @@ class PromiseExtractionWorker:
             )
         return out
 
-    # ── dedupe + persistence ─────────────────────────────────────────
+    # ?? dedupe + persistence ?????????????????????????????????????????
 
     def _existing_promise_word_sets(self) -> list[set[str]]:
         """Content-word sets of existing still-active promise bodies."""
@@ -646,7 +693,7 @@ class PromiseExtractionWorker:
             )
         return mem is not None
 
-    # ── debug surface ────────────────────────────────────────────────
+    # ?? debug surface ????????????????????????????????????????????????
 
     def debug_state(self) -> dict[str, Any]:
         """Snapshot for the MCP ``get_promise_stats`` tool."""

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import random
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -198,6 +199,72 @@ class HobbyWorkerTests(unittest.TestCase):
         worker = _worker(db=db, enabled=False)
         r = worker.run()
         self.assertTrue(r.get("skipped"))
+        self.assertIsNone(load_hobby(db.kv_get))
+
+
+class HobbyDemandTests(unittest.TestCase):
+    """The P44 probe: which transition is due, and will it cost a GPU."""
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_cold_install_wants_to_start(self) -> None:
+        db = _FakeChatDb()
+        worker = _worker(db=db)
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.reason, "start")
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertFalse(signal.needs_llm)
+
+    def test_pacing_floor_vetoes(self) -> None:
+        """Between advances there is nothing a run could accomplish."""
+        db = _FakeChatDb()
+        worker = _worker(db=db)
+        worker.run()  # start
+        worker.run()  # first advance
+        now = self._now()
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "pacing")
+
+    def test_needs_llm_only_when_a_seed_is_composed(self) -> None:
+        """An ordinary advance is a kv write; a rotation writes prose."""
+        db = _FakeChatDb()
+        worker = _worker(db=db, mem=_mem(hobby_max_advances=2),
+                         ollama=_FakeOllama())
+        worker.run()  # start
+        worker._force_advance = True
+        worker.run()
+        worker._force_advance = True
+        worker.run()  # advances==2 → a rotation is now due
+
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.reason, "rotate")
+        self.assertTrue(signal.needs_llm)
+
+    def test_probe_does_not_consume_force_flags(self) -> None:
+        """Spending a one-shot on a probe would lose the forced run."""
+        db = _FakeChatDb()
+        worker = _worker(db=db)
+        worker.run()  # start
+        worker.run()  # advance, so pacing now blocks
+        worker._force_advance = True
+
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.reason, "advance")
+        self.assertTrue(worker._force_advance)
+
+        self.assertTrue(worker.run().get("advanced"))
+        self.assertFalse(worker._force_advance)
+
+    def test_probe_never_starts_a_hobby(self) -> None:
+        """``_start_hobby`` rolls the RNG and writes — run-only work."""
+        db = _FakeChatDb()
+        worker = _worker(db=db)
+        worker.demand(now=self._now(), last_run_at=None)
+        worker.is_ready(now=self._now(), last_run_at=None)
+        self.assertEqual(db.store, {})
         self.assertIsNone(load_hobby(db.kv_get))
 
 

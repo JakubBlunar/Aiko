@@ -40,7 +40,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -226,13 +226,80 @@ class GoalWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, with budget and a branch to take.
+
+        The rate limit joins the vetoes here. Both branches of ``run``
+        spend a token before doing anything, so a run with the hour
+        used up returns ``rate_limited`` having achieved nothing —
+        which was the whole point of moving these gates out of the
+        probe and back into readiness.
+        """
+        return self._branch(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Bootstrap outranks reflection; reflection scales with the shelf.
+
+        Having *no* goals at all is the one state worth jumping the
+        queue for — until bootstrap lands, every goal-shaped prompt
+        block is empty. Reflection is steady maintenance over an
+        existing set, so it ranks by how many goals are waiting their
+        turn, one per run.
+        """
+        branch = self._branch(now)
+        if branch is None:
+            return WorkSignal(pressure=0.0, reason="no budget or goals")
+        kind, active = branch
+        if kind == "bootstrap":
+            return WorkSignal(
+                pressure=1.0, reason="no goals yet", needs_llm=True,
+            )
+        # Saturate against the shelf's capacity, not against ``active``
+        # itself — the latter divides by its own numerator and would
+        # pin every reflection at 1.0, which is the "pressure floor"
+        # anti-pattern that made the first migration batch over-run.
+        shelf = max(1, int(getattr(self._goal_store, "max_active", 5) or 5))
+        return WorkSignal(
+            pressure=pressure_from_count(active, saturation=shelf),
+            reason=f"{active} active",
+            needs_llm=True,
+        )
+
+    def _branch(self, now: datetime) -> tuple[str, int] | None:
+        """``("bootstrap"|"reflection", active_count)`` or ``None``.
+
+        Read-only: ``snapshot`` rather than ``allow`` on the limiter,
+        and ``list_active`` rather than ``pick_for_reflection`` — the
+        latter is also read-only today, but counting is what the probe
+        wants and it keeps the two from drifting apart.
+        """
         if not bool(getattr(self._agent_settings, "goals_enabled", True)):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        return True
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+            if snapshot["hour_used"] >= snapshot["hour_cap"]:
+                return None
+            if snapshot["day_used"] >= snapshot["day_cap"]:
+                return None
+            active = list(self._goal_store.list_active())
+        except Exception:
+            log.debug("goal_worker readiness probe failed", exc_info=True)
+            return None
+        if not active:
+            if not bool(
+                getattr(
+                    self._agent_settings,
+                    "goal_worker_bootstrap_enabled",
+                    True,
+                )
+            ):
+                return None
+            return "bootstrap", 0
+        return "reflection", len(active)
 
     def run(self) -> dict[str, Any]:
         if not bool(getattr(self._agent_settings, "goals_enabled", True)):

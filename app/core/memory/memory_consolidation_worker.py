@@ -53,7 +53,7 @@ import numpy as np
 
 from app.core.memory.cluster_scope import partition_by_cluster
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -174,10 +174,81 @@ class MemoryConsolidationWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from scratchpad rows written since the last sweep.
+
+        The true backlog — how many near-duplicate *clusters* are
+        waiting to be merged — cannot be known without doing the
+        all-pairs cosine pass, which is most of ``run``. So this
+        reports the cheap upstream proxy instead: a merge candidate has
+        to be a scratchpad row, and a row that was already in the
+        corpus last sweep was already considered. No new rows means
+        nothing new to merge, and the six-hour heartbeat still comes
+        round in case a threshold or a cluster boundary moved.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        min_cluster = max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "consolidation_min_cluster_size",
+                    2,
+                )
+            ),
+        )
+        try:
+            fresh = self._count_new_scratchpad(last_run_at)
+        except Exception:
+            log.debug(
+                "memory-consolidation demand probe failed", exc_info=True,
+            )
+            return None
+        if fresh < min_cluster:
+            return WorkSignal(
+                pressure=0.0, reason=f"{fresh} new rows",
+            )
+        return WorkSignal(
+            pressure=pressure_from_count(
+                fresh, saturation=max(min_cluster, 20),
+            ),
+            reason=f"{fresh} new rows",
+            needs_llm=True,
+        )
+
+    def _count_new_scratchpad(self, since: datetime | None) -> int:
+        """Scratchpad rows created after ``since`` — a mirror walk.
+
+        Counts against the same predicate ``_snapshot_candidates``
+        uses to build the corpus (unpinned, embedded, non-empty) so
+        the probe cannot promise work the sweep would filter out.
+        """
+        rows = self._memory_store.iter_by_tier("scratchpad")
+        if since is None:
+            return sum(1 for m in rows if self._mergeable(m))
+        count = 0
+        for mem in rows:
+            if not self._mergeable(mem):
+                continue
+            created = _parse_iso(mem.created_at)
+            if created is None or created >= since:
+                count += 1
+        return count
+
+    @staticmethod
+    def _mergeable(mem: "Memory") -> bool:
+        return (
+            not getattr(mem, "pinned", False)
+            and getattr(mem, "embedding", None) is not None
+            and bool((mem.content or "").strip())
         )
 
     def run(self) -> dict[str, Any]:

@@ -360,5 +360,72 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result["merged"], 1)
 
 
+class DemandTests(unittest.TestCase):
+    """Pressure from scratchpad rows written since the last sweep.
+
+    The real backlog (how many dup clusters exist) costs the all-pairs
+    pass, so the probe uses the upstream proxy: no new rows, nothing
+    new to merge.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _rows(self, n: int, *, age_days: float = 1.0) -> list[_FakeMemory]:
+        return [
+            _FakeMemory(
+                i + 1, f"trip {i}", embedding=_DUP_A,
+                created_at=_iso_ago(age_days),
+            )
+            for i in range(n)
+        ]
+
+    def test_fresh_rows_report_pressure(self) -> None:
+        worker = _make_worker(_FakeStore(self._rows(6)))
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_nothing_new_since_the_last_sweep_is_zero(self) -> None:
+        worker = _make_worker(_FakeStore(self._rows(6, age_days=10)))
+        # Every row predates the watermark.
+        signal = worker.demand(
+            now=self._now(), last_run_at=self._now() - timedelta(days=1),
+        )
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_below_min_cluster_size_is_zero(self) -> None:
+        worker = _make_worker(_FakeStore(self._rows(1)))
+        self.assertEqual(
+            worker.demand(now=self._now(), last_run_at=None).pressure, 0.0,
+        )
+
+    def test_disabled_reports_nothing(self) -> None:
+        worker = _make_worker(
+            _FakeStore(self._rows(6)),
+            agent=_agent(memory_consolidation_enabled=False),
+        )
+        self.assertEqual(
+            worker.demand(now=self._now(), last_run_at=None).pressure, 0.0,
+        )
+        self.assertFalse(worker.is_ready(now=self._now(), last_run_at=None))
+
+    def test_probe_neither_merges_nor_spends_a_token(self) -> None:
+        store = _FakeStore(self._rows(6))
+        limiter = _FakeRateLimiter()
+        ollama = _FakeOllama()
+        embedder = _FakeEmbedder()
+        worker = _make_worker(
+            store, embedder=embedder, ollama=ollama, rate_limiter=limiter,
+        )
+        worker.demand(now=self._now(), last_run_at=None)
+        worker.is_ready(now=self._now(), last_run_at=None)
+        self.assertEqual(limiter.calls, 0)
+        self.assertEqual(ollama.calls, 0)
+        self.assertEqual(embedder.calls, [])
+        self.assertEqual(store.updates, [])
+
+
 if __name__ == "__main__":
     unittest.main()

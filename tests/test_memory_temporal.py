@@ -942,6 +942,68 @@ class TestFollowUpWorker(unittest.TestCase):
         assert updated is not None
         self.assertTrue(updated.metadata.get("followup_dropped"))
 
+    # ── demand ──────────────────────────────────────────────────────
+
+    def _add_plan(self, store: MemoryStore, content: str, offset: timedelta):
+        return store.add(
+            content=content,
+            kind="event",
+            embedding=_emb(content),
+            temporal_type="future_plan",
+            event_time=(datetime.now(timezone.utc) + offset).isoformat(),
+        )
+
+    def test_demand_zero_with_no_plans(self) -> None:
+        _store, _db, worker = self._setup()
+        signal = worker.demand(now=datetime.now(timezone.utc), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_demand_rises_with_plans_inside_the_window(self) -> None:
+        store, _db, worker = self._setup()
+        self._add_plan(store, "Jacob is going to the gym", timedelta(minutes=-5))
+        now = datetime.now(timezone.utc)
+        one = worker.demand(now=now, last_run_at=None)
+        self.assertGreater(one.pressure, 0.0)
+
+        self._add_plan(store, "Jacob has a dentist appointment",
+                       timedelta(minutes=-10))
+        self._add_plan(store, "Jacob is meeting Sam for coffee",
+                       timedelta(minutes=-15))
+        many = worker.demand(now=now, last_run_at=None)
+        self.assertGreater(many.pressure, one.pressure)
+
+    def test_demand_ignores_plans_outside_the_window(self) -> None:
+        store, _db, worker = self._setup()
+        self._add_plan(store, "far future plan", timedelta(hours=4))
+        signal = worker.demand(now=datetime.now(timezone.utc), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_stale_plans_are_ready_but_not_pressure(self) -> None:
+        """Retiring a dropped plan is bookkeeping with no deadline."""
+        store, _db, worker = self._setup()
+        self._add_plan(store, "long-gone plan", timedelta(hours=-10))
+        now = datetime.now(timezone.utc)
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertIn("retire", signal.reason)
+
+    def test_demand_never_fires_or_marks_a_plan(self) -> None:
+        from app.core.proactive.follow_up_worker import load_follow_up_cues
+
+        store, db, worker = self._setup()
+        mem = self._add_plan(
+            store, "Jacob is going to the gym", timedelta(minutes=-5),
+        )
+        assert mem is not None
+        now = datetime.now(timezone.utc)
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(load_follow_up_cues(db.kv_get), [])
+        updated = store.get(mem.id)
+        assert updated is not None
+        self.assertNotIn("followup_fired_at", updated.metadata)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

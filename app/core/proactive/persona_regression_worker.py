@@ -29,7 +29,7 @@ import logging
 from datetime import datetime
 from typing import Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 
 
 log = logging.getLogger("app.persona_regression_worker")
@@ -87,10 +87,29 @@ class PersonaRegressionWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Always zero pressure — this worker has no backlog at all.
+
+        It replays a fixed set of golden turns to see whether the
+        persona still answers them in character. Nothing accumulates
+        between runs, so there is no honest quantity to report and no
+        reason it should ever outrank a worker with real work: it is a
+        pure heartbeat, admitted once a day by the liveness path.
+
+        It reports a signal rather than ``None`` on purpose. ``None``
+        would drop it onto the legacy path, where every ready worker is
+        admitted every tick; a zero-pressure signal keeps it inside the
+        demand path, subject to the anti-thrash floor, and lets it
+        declare that it is going to spend a generation per golden turn.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        return WorkSignal(
+            pressure=0.0, reason="scheduled replay", needs_llm=True,
         )
 
     def run(self) -> dict[str, Any]:

@@ -162,27 +162,34 @@ class DemandTests(unittest.TestCase):
         self.assertEqual(signal.pressure, 1.0)
         self.assertEqual(signal.reason, "no snapshot")
 
-    def test_a_just_fetched_snapshot_is_effectively_idle(self) -> None:
-        # Weather pressure is a ramp rather than a flag -- there is no
-        # discrete "nothing to do" state, so a snapshot fetched moments
-        # ago reads as a hair above zero. Well under the 0.35 urgency
-        # threshold, which is what actually matters for admission.
-        db = _FakeDb()
-        self._aged(db, 0.0)
-        worker = _build(
-            db=db, provider=_FakeProvider(), home=(51.5, -0.1, "London"),
-        )
-        self.assertLess(self._probe(worker).pressure, 0.01)
+    def test_a_snapshot_inside_its_interval_reports_nothing(self) -> None:
+        """The P44 regression: a 30-minute cadence became a 10-minute one.
 
-    def test_pressure_rises_with_the_snapshot_age(self) -> None:
+        The probe returned ``compute_staleness`` directly, and since
+        urgency is ``0.7 * pressure + 0.3 * staleness`` that collapsed
+        to ``urgency = staleness`` — admission the moment staleness
+        crossed 0.35, i.e. at 0.35 x interval, on a public API. Pressure
+        is now measured from the *due* point, so a snapshot that is
+        merely fresh has nothing to say and the heartbeat sets the pace.
+        """
         db = _FakeDb()
-        self._aged(db, 900.0)  # half of the 1800s interval
         worker = _build(
             db=db, provider=_FakeProvider(), home=(51.5, -0.1, "London"),
         )
-        signal = self._probe(worker)
-        self.assertGreater(signal.pressure, 0.4)
-        self.assertLess(signal.pressure, 0.6)
+        for age in (0.0, 630.0, 900.0, 1799.0):  # 1800s interval
+            self._aged(db, age)
+            with self.subTest(age=age):
+                self.assertEqual(self._probe(worker).pressure, 0.0)
+
+    def test_pressure_rises_once_the_snapshot_is_overdue(self) -> None:
+        db = _FakeDb()
+        worker = _build(
+            db=db, provider=_FakeProvider(), home=(51.5, -0.1, "London"),
+        )
+        self._aged(db, 2700.0)  # half an interval past due
+        half = self._probe(worker).pressure
+        self.assertGreater(half, 0.4)
+        self.assertLess(half, 0.6)
 
     def test_an_overdue_snapshot_saturates(self) -> None:
         db = _FakeDb()

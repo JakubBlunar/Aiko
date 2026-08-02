@@ -155,9 +155,22 @@ class PromiseFollowthroughWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        # Hard veto only. The interval is the heartbeat now, and whether
-        # there is a beat waiting to be armed decides the rest.
-        return self._enabled()
+        """Enabled, the slot is free, and the scan has something to do.
+
+        All four are **hard vetoes**, because each one makes the run a
+        guaranteed no-op and the heartbeat is evaluated before pressure
+        — reporting zero pressure only deprioritises, it does not stop
+        a worker whose interval has elapsed.
+
+        Overdue promises count even though they arm nothing: retiring
+        them is the other half of what ``run`` does.
+        """
+        if not self._enabled():
+            return False
+        if self._blocked(now) is not None:
+            return False
+        armable, overdue = self._survey(now)
+        return bool(armable or overdue)
 
     def demand(
         self,
@@ -165,29 +178,75 @@ class PromiseFollowthroughWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> WorkSignal | None:
-        """Full pressure when a loop could be closed, none when it cannot.
+        """Pressure from promises old enough to be worth asking about.
 
-        Both gates are read from kv rather than from the promise table:
-        an occupied slot means a cue is already waiting to be said, and
-        an unspent cooldown means the next one must not be armed yet.
-        Either way the scan would find nothing it is allowed to use, so
-        it is not worth ranking the worker above one that has work.
+        The earlier version reported ``1.0, "slot free"`` whenever the
+        two kv gates were clear, which answers *am I allowed to run*
+        rather than *is there work* — both were clear almost always,
+        and the scan then found nothing to arm 21 times out of 21. The
+        gates are now vetoes in ``is_ready`` and this counts the thing
+        the run would actually consume.
 
-        ``run`` re-checks both. This is an ordering hint, and the
-        heartbeat can still admit the worker past it.
+        The count comes from :meth:`_survey`, a read-only twin of
+        ``_scan``: the real scan stamps promises past ``drop_after_days``
+        as dropped so it stops reconsidering them, and a probe must not
+        write. Both walk the same in-memory ``promise`` mirror.
+
+        Only one promise is armed per run, so a single eligible one is
+        already full pressure; overdue-only rows are bookkeeping with no
+        deadline and rank at the floor.
         """
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
+        blocked = self._blocked(now)
+        if blocked is not None:
+            return WorkSignal(pressure=0.0, reason=blocked)
+        armable, overdue = self._survey(now)
+        if armable:
+            return WorkSignal(
+                pressure=1.0, reason=f"{armable} owed",
+            )
+        if overdue:
+            return WorkSignal(
+                pressure=0.0, reason=f"{overdue} to retire",
+            )
+        return WorkSignal(pressure=0.0, reason="nothing owed")
+
+    def _blocked(self, now: datetime) -> str | None:
+        """Why a run would arm nothing, or ``None`` if it could.
+
+        Read from kv rather than the promise table: an occupied slot
+        means a cue is already waiting to be said, and an unspent
+        cooldown means the next one must not be armed yet.
+        """
         if load_pending(self._kv_get) is not None:
-            return WorkSignal(pressure=0.0, reason="cue already waiting")
+            return "cue already waiting"
         last_fired = _parse_iso(self._kv_safe_get(_KV_LAST_FIRED_AT))
         if (
             last_fired is not None
             and (now - last_fired).total_seconds()
             < self._cooldown_hours * 3600.0
         ):
-            return WorkSignal(pressure=0.0, reason="cooling down")
-        return WorkSignal(pressure=1.0, reason="slot free")
+            return "cooling down"
+        return None
+
+    def _survey(self, now: datetime) -> "tuple[int, int]":
+        """``(armable, overdue)`` over the promise mirror — no writes."""
+        armable = 0
+        overdue = 0
+        for mem in self._iter_promises():
+            if lifecycle.promise_status(mem) != lifecycle.STATUS_OPEN:
+                continue
+            if not lifecycle.is_assistant_promise(mem):
+                continue
+            age_hours = lifecycle.promise_age_hours(mem, now=now)
+            if age_hours is None:
+                continue
+            if age_hours > self._drop_after_days * 24.0:
+                overdue += 1
+            elif age_hours >= self._min_age_hours:
+                armable += 1
+        return armable, overdue
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():

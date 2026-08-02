@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
@@ -2000,6 +2001,28 @@ class ChatDatabase:
         conn = self._get_conn()
         row = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def count_messages_since(
+        self, session_id: str, since: datetime | None,
+    ) -> int:
+        """How many messages landed in ``session_id`` after ``since``.
+
+        The demand-probe primitive for the workers that re-mine the
+        recent transcript every interval (belief, promise,
+        memory-consolidation): "has anything new arrived to mine" is a
+        counting question, and answering it in SQLite is far cheaper
+        than pulling the rows out to count them in Python. ``since is
+        None`` means the worker has never run, so everything counts.
+        """
+        conn = self._get_conn()
+        if since is None:
+            return self.get_message_count(session_id)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE session_id = ? AND created_at >= ?",
+            (session_id, since.astimezone(timezone.utc).isoformat()),
         ).fetchone()
         return row[0] if row else 0
 

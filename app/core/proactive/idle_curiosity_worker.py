@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -197,24 +197,66 @@ class IdleCuriosityWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, search budget left, and a question worth asking.
+
+        Every one of these stays a hard veto: with no eligible question
+        or no budget a run cannot do anything, and the heartbeat is
+        checked before pressure, so demoting them to zero pressure
+        would let a 30-minute heartbeat wake the worker anyway.
+        """
+        return self._askable(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from how many questions are waiting to be answered.
+
+        The worker resolves exactly one per run and the hourly cap is
+        typically two, so a backlog deeper than the cap is saturated —
+        ranking it higher would not get it drained any faster.
+        """
         if not bool(
             getattr(self._agent_settings, "idle_curiosity_enabled", True)
         ):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        askable = self._askable(now)
+        if askable is None:
+            return WorkSignal(pressure=0.0, reason="nothing askable")
+        pending, hour_cap = askable
+        return WorkSignal(
+            pressure=pressure_from_count(pending, saturation=hour_cap),
+            reason=f"{pending} open",
+            needs_llm=True,
+        )
+
+    def _askable(self, now: datetime) -> tuple[int, int] | None:
+        """``(open_questions, hour_cap)`` if a run could research one.
+
+        ``snapshot`` rather than ``allow``: the latter spends a token,
+        and neither a readiness check nor a probe may do that.
+        """
+        if not bool(
+            getattr(self._agent_settings, "idle_curiosity_enabled", True)
         ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+        except Exception:
+            log.debug("curiosity: rate snapshot failed", exc_info=True)
+            return None
         if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
+            return None
         if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
+            return None
         # Cheap "is there anything to do" check. ``iter_by_kind`` is
         # a mirror walk; no SQL roundtrip.
-        if self._pick_next_question(now=now) is None:
-            return False
-        return True
+        pending = len(self._eligible_questions(now=now))
+        if pending <= 0:
+            return None
+        return pending, max(1, int(snapshot["hour_cap"]))
 
     def run(self) -> dict[str, Any]:
         if not bool(
@@ -383,17 +425,21 @@ class IdleCuriosityWorker:
 
     # ── question selection ───────────────────────────────────────────
 
-    def _pick_next_question(
-        self, *, now: datetime,
-    ) -> "Memory | None":
-        """Oldest unresolved ``open_question`` not in cooldown."""
+    def _eligible_questions(self, *, now: datetime) -> list["Memory"]:
+        """Unresolved ``open_question`` rows not in cooldown, oldest first.
+
+        Shared by :meth:`_pick_next_question` and :meth:`demand` so the
+        probe's count and the run's choice can never disagree about
+        what counts as askable. Read-only — the skip / resolved /
+        inconclusive stamps are written elsewhere.
+        """
         try:
             candidates = self._memory_store.iter_by_kind("open_question")
         except Exception:
             log.debug(
                 "curiosity: iter_by_kind raised", exc_info=True,
             )
-            return None
+            return []
         # ``iter_by_kind`` returns a mirror snapshot in arbitrary order.
         # Sort by ``created_at`` so the *oldest* question is tried
         # first; that gives every question a chance over time even
@@ -403,6 +449,7 @@ class IdleCuriosityWorker:
             candidates,
             key=lambda m: m.created_at or "",
         )
+        out: list["Memory"] = []
         for mem in candidates_sorted:
             metadata = mem.metadata or {}
             if metadata.get("curiosity_resolved_at"):
@@ -421,8 +468,15 @@ class IdleCuriosityWorker:
             content = (mem.content or "").strip()
             if not content:
                 continue
-            return mem
-        return None
+            out.append(mem)
+        return out
+
+    def _pick_next_question(
+        self, *, now: datetime,
+    ) -> "Memory | None":
+        """Oldest unresolved ``open_question`` not in cooldown."""
+        eligible = self._eligible_questions(now=now)
+        return eligible[0] if eligible else None
 
     # ── pieces ───────────────────────────────────────────────────────
 

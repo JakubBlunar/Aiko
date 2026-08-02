@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -170,24 +170,83 @@ class ThreadResummaryWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, budget left, and the note actually out of date.
+
+        This one barely changed in the demand migration: the redraft
+        test was already the readiness test, and it stays a hard veto
+        because a run without it returns ``not_due`` having done
+        nothing.
+        """
+        return self._drift(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from how far the thread has run past its note.
+
+        There is only ever one thread to resummarise, so the useful
+        quantity is not a queue depth but a *staleness in messages* —
+        how many turns have landed since the note was written, against
+        the ``thread_resummary_message_interval`` that defines "out of
+        date". A note that is due purely on age reports the floor.
+
+        Saturation is twice the interval rather than the interval
+        itself: the redraft trigger *is* the interval, so dividing by
+        it would pin every due note at 1.0 and throw away the ranking
+        this probe exists to provide. At 2x, a note that is merely due
+        sits mid-scale and one that has fallen a full extra window
+        behind tops out.
+        """
+        drift = self._drift(now)
+        if drift is None:
+            return WorkSignal(pressure=0.0, reason="note current")
+        new_messages, interval = drift
+        return WorkSignal(
+            pressure=pressure_from_count(
+                max(1, new_messages), saturation=interval * 2,
+            ),
+            reason=f"{new_messages} new messages",
+            needs_llm=True,
+        )
+
+    def _drift(self, now: datetime) -> tuple[int, int] | None:
+        """``(new_messages, interval)`` if a redraft is owed, else ``None``.
+
+        Read-only throughout: ``snapshot`` rather than ``allow`` on the
+        rate limiter, and two bounded reads (``COUNT(*)`` on messages,
+        one ``thread_notes`` row) for the redraft test itself.
+        """
         if not self._enabled():
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
-        if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
-        if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
+            return None
         try:
+            snapshot = self._rate_limiter.snapshot(now)
+            if snapshot["hour_used"] >= snapshot["hour_cap"]:
+                return None
+            if snapshot["day_used"] >= snapshot["day_cap"]:
+                return None
             session_key = self._session_key()
             msg_count = self._chat_db.get_message_count(session_key)
+            if not self._should_redraft(session_key, msg_count, now):
+                return None
+            note = self._chat_db.get_thread_note(session_key)
         except Exception:
             log.debug("thread_resummary readiness probe failed", exc_info=True)
-            return False
-        return self._should_redraft(session_key, msg_count, now)
+            return None
+        interval = max(
+            1,
+            int(
+                getattr(
+                    self._agent_settings,
+                    "thread_resummary_message_interval",
+                    50,
+                )
+            ),
+        )
+        seen = int(getattr(note, "messages_at", 0) or 0) if note else 0
+        return max(0, msg_count - seen), interval
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():

@@ -53,7 +53,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -65,7 +65,7 @@ from app.core.memory.conflict_heuristics import (
     classify_pair,
 )
 from app.core.memory.cluster_scope import partition_by_cluster
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.memory.memory_conflict_store import (
     FLAGGED_BY_AUTO,
     MemoryConflictStore,
@@ -82,6 +82,22 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger("app.memory_conflict_worker")
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Lenient ISO parse for ``created_at`` — ``None`` on anything odd."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 # ── allow-listed kinds ──────────────────────────────────────────────
@@ -245,13 +261,73 @@ class MemoryConflictWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return bool(
+            getattr(self._agent_settings, "conflict_detector_enabled", True)
+        )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from allow-listed memories written since the last scan.
+
+        "How many contradicting pairs are still unscanned" would need
+        the banded cosine pass plus a ``has_pair`` lookup per
+        candidate — that is the run, not a probe. The cheap upstream
+        proxy is that a *new* pair requires a *new* memory: rows the
+        last scan already saw were already compared against each
+        other, so with nothing new the only pairs left are the ones
+        the heuristic has already declined.
+
+        ``needs_llm`` is honest rather than optimistic: definite
+        contradictions are committed by the heuristic alone and only
+        borderline ones reach the model, but the probe cannot tell
+        which it will find, and mis-parking a generation in the
+        compute lane is the worse error.
+        """
         if not bool(
             getattr(self._agent_settings, "conflict_detector_enabled", True)
         ):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            fresh = self._count_new_candidates(last_run_at)
+        except Exception:
+            log.debug("conflict-detector demand probe failed", exc_info=True)
+            return None
+        if fresh < 2:
+            return WorkSignal(pressure=0.0, reason=f"{fresh} new rows")
+        return WorkSignal(
+            pressure=pressure_from_count(fresh, saturation=20),
+            reason=f"{fresh} new rows",
+            needs_llm=True,
         )
+
+    def _count_new_candidates(self, since: datetime | None) -> int:
+        """Allow-listed, embedded rows created after ``since``."""
+        count = 0
+        for kind in _ALLOWED_KINDS:
+            try:
+                rows = self._memory_store.iter_by_kind(kind)
+            except Exception:
+                log.debug(
+                    "conflict-detector: iter_by_kind(%s) raised",
+                    kind,
+                    exc_info=True,
+                )
+                continue
+            for mem in rows:
+                if getattr(mem, "embedding", None) is None:
+                    continue
+                if not (mem.content or "").strip():
+                    continue
+                if since is not None:
+                    created = _parse_iso(mem.created_at)
+                    if created is not None and created < since:
+                        continue
+                count += 1
+        return count
 
     def run(self) -> dict[str, Any]:
         if not bool(

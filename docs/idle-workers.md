@@ -19,7 +19,7 @@ the backlog history see [P36](personality-backlog/perf.md#p36-idle-worker-llm-pi
 - [Idle depth](#idle-depth)
 - [LLM contention grades](#llm-contention-grades)
 - [Fit rules and anti-starvation](#fit-rules-and-anti-starvation)
-- [Legacy workers](#legacy-workers)
+- [Where pressure comes from](#where-pressure-comes-from)
 - [Writing or migrating a worker](#writing-or-migrating-a-worker)
 - [Observability](#observability)
 - [Configuration](#configuration)
@@ -256,10 +256,10 @@ with two escape valves so the tightened rule does not become a trap:
   every few minutes pins depth at `just_left` indefinitely, and without
   this a long worker would never see a tick it fits in.
 
-## Legacy workers
+## Where pressure comes from
 
-Thirty-seven workers implement `demand()` today. Grouped by where their
-pressure comes from:
+Every registered worker implements `demand()` — fifty-five of them.
+Grouped by the shape of the signal:
 
 - **Cue producers** (ten: `curiosity_seed`, `forward_curiosity`,
   `associative_wander`, `curiosity_gradient`, `interest_drift`,
@@ -295,18 +295,51 @@ new-message `COUNT(*)`). Measured on a 3.3k-message / 1k-memory install,
 the slowest of them is `memory_promotion` at ~0.5 ms — two orders of
 magnitude under the 50 ms probe budget.
 
-Eighteen workers still do not implement `demand()`, and are handled by
-an explicit legacy path in `evaluate_admission`: already ready means
-already admitted, ranked by staleness alone, and charged to the **LLM
-lane**. That reproduces pre-P36 behaviour for them, and for this set it
-is also the honest lane — every one of the eighteen calls a model
-(`diary`, `follow_up`, `hobby`, `goal`, `belief`, `world_notice`,
-`pre_thought`, `thread_resummary`, `topic_digest`, `topic_label`,
-`idle_curiosity`, `idle_knowledge`, `knowledge_map_reflection`,
-`memory_conflict`, `memory_consolidation`, `idle_fact_checker`,
-`promise_extraction`, `persona_regression`). What they are missing is
-ranking, not lane accounting. Migration is tracked as
-[P44](personality-backlog/perf.md#p44-migrate-the-remaining-idle-workers-to-demand).
+The eighteen LLM workers came last, and they needed a different kind of
+probe from the compute batch. A compute worker's backlog is a number you
+can `COUNT`; an LLM worker's is usually "is there anything new worth
+spending a generation on", which is not the same question. Four shapes
+cover them:
+
+- **Real queues** (`idle_fact_checker`, `idle_curiosity`, `follow_up`,
+  `topic_label`, `topic_digest`, `idle_knowledge`) genuinely have
+  something to count — pending claims, open questions, plans inside
+  their window, unnamed clusters, undigested clusters, queued research.
+  These are the compute pattern with `needs_llm=True`.
+- **New-material watermarks** (`belief`, `promise_extraction`,
+  `memory_consolidation`, `memory_conflict`, `thread_resummary`) re-mine
+  the same window every interval, so their honest signal is how much has
+  arrived since they last looked.
+  [`ChatDatabase.count_messages_since`](../app/core/infra/chat_database.py)
+  is the shared primitive for the transcript miners; the two memory
+  sweepers count rows created after their watermark instead, because the
+  true backlog (how many near-duplicate *clusters* exist) needs the
+  all-pairs cosine pass that is most of `run()`.
+- **Binary "a run is owed"** (`diary`, `hobby`, `world_notice`,
+  `knowledge_map_reflection`, `goal` on its bootstrap branch) have no
+  backlog at all — either the cooldown has expired and there is context
+  to write about, or there is not. These report a flat pressure and lean
+  on their hard vetoes.
+- **Pure heartbeat** (`persona_regression`) reports `0.0` forever and is
+  admitted only by the liveness backstop. Replaying golden turns to
+  check for drift has no backlog to be behind on, and saying so is more
+  honest than inventing a number.
+
+Two things bit this batch that did not bite the compute one. First, the
+cooldown-gated workers had accumulated their gates *inside* `run()` as
+early returns, so migrating the interval out of `is_ready()` left them
+with nothing to veto on and they woke every heartbeat to no-op — the
+same failure as (4) below. Each grew a read-only `_blocker()` /
+`_next_move()` / `_trigger()` helper that both `is_ready()` and `run()`
+call, so the two can never disagree. Second, several of these hold a
+force flag (`_forced`, `_force_next`) that `run()` consumes; a probe
+must **peek** at it, never clear it. That has a test each.
+
+`needs_llm` earns its keep here: `hobby` only composes a seed when it
+starts or rotates, `follow_up` writes its cue from a deterministic
+summary when no worker model is wired, `topic_label` and `topic_digest`
+re-apply cached labels without a generation. A static per-worker flag
+would charge all four to the LLM lane on every run.
 
 ## Writing or migrating a worker
 
@@ -349,6 +382,13 @@ plants it was only supposed to count. **A probe must not mutate.** If
 the cheap read does not exist yet, factor it out of `run()` rather than
 letting the probe call the mutating path.
 
+That rule is enforced registry-wide:
+[`scripts/audit_demand_probes.py`](../scripts/audit_demand_probes.py)
+walks every `demand()` in `app/core` for writes, budget spends, and
+model calls, and `tests/test_demand_probe_audit.py` runs it in the
+suite. A probe-local memo is the one legitimate exception and goes in
+that script's `ALLOW` list with a reason.
+
 Other things worth knowing:
 
 - Set `needs_llm` from the same condition `run()` will use to decide
@@ -368,24 +408,25 @@ replaced by the worker *knowing* something, not by a hardcoded constant.
 That is the bar for retiring the remaining `*_interval_seconds` and
 `*_per_hour_cap` keys.
 
-### Four ways a probe goes wrong
+### Five ways a probe goes wrong
 
-All four were found by reading a single 35-minute log after the P44
-compute batch shipped, and none of them failed a test — the worker
+The first four were found by reading a single 35-minute log after the
+P44 compute batch shipped, and none of them failed a test — the worker
 behaved correctly, it just ran at the wrong rate. **Check a migration
 against a real log**, not only against the suite: tally runs per worker,
 divide by wall time, and compare with the configured interval. Anything
 running faster than its interval had better be doing work every time.
 
 **1. Pressure that means "nothing is blocking me".** `pressure` answers
-*is there work*, not *am I allowed*. `promise_followthrough` reports
-`1.0, "slot free"` when its cue slot is empty and its cooldown is
-spent — both true almost always — and then its scan finds nothing to
-arm. Full pressure plus any staleness clears the threshold immediately,
-so the worker lands on the anti-thrash floor: it ran every 91 s against
-a 900 s interval and did nothing 21 times out of 21. If the honest
-answer needs the expensive scan, report the *cheap* proxy for it, or
-report nothing and let the heartbeat carry the worker.
+*is there work*, not *am I allowed*. `promise_followthrough` reported
+`1.0, "slot free"` when its cue slot was empty and its cooldown spent —
+both true almost always — and then its scan found nothing to arm. Full
+pressure plus any staleness clears the threshold immediately, so the
+worker landed on the anti-thrash floor: it ran every 91 s against a
+900 s interval and did nothing 21 times out of 21. The two gates are
+now vetoes in `is_ready()` and the probe counts promises old enough to
+ask about, via a read-only twin of the scan (`_survey`, which counts
+where `_scan` also stamps overdue rows as dropped).
 
 **2. Pressure floors on a continuous quantity.** `pressure_from_count`
 and `pressure_from_deficit` floor at 0.5 on purpose: one pending item
@@ -394,9 +435,10 @@ one is real work. Copying that floor onto a continuous signal pins the
 worker at 0.5 forever. `VitalityWorker` reported `max(0.5, gap)`
 whenever recovery would move the energy at all — but recovery is
 asymptotic, so it always moves by more than the epsilon, and a 900 s
-worker ran every 91 s. For a continuous quantity, scale pressure by the
-quantity and return **0.0** below the smallest change anyone can
-observe.
+worker ran every 91 s. It now reports the size of the *pending
+correction*, zero below a move nothing downstream would notice. For a
+continuous quantity, scale pressure by the quantity and return **0.0**
+below the smallest change anyone can observe.
 
 **3. Staleness returned as pressure.** Urgency is
 `0.7 * pressure + 0.3 * staleness`, so a probe that returns its own
@@ -405,7 +447,9 @@ admitted the moment staleness crosses the threshold — at
 `0.35 × interval`, every time, for any interval. `WeatherWorker` did
 this and turned a 30-minute cadence into a 10-minute one against a
 public API. If the thing you actually care about is age, report pressure
-from age *past* the interval, not age scaled by it.
+from age *past* the interval, not age scaled by it —
+`compute_staleness(elapsed - interval, interval)` rather than
+`compute_staleness(elapsed, interval)`, which is what it now does.
 
 **4. A hard veto demoted to zero pressure.** The heartbeat is checked
 **before** pressure in `evaluate_admission`, so `pressure=0.0` does not
@@ -416,6 +460,26 @@ probe. `IdleGapResolver` moved its empty-store check into `demand()` and
 went from never running to waking every 30 s to report `no_open_gaps`,
 59 times in 35 minutes. Keep the veto; let `demand()` rank the non-empty
 case.
+
+A useful sanity check for the first three, since none of them failed a
+test: take the pressure your probe reports in the *typical* state, feed
+it and the staleness at the anti-thrash floor into
+`compute_urgency`, and confirm the result is below the threshold. If it
+is not, the worker will run at its floor rather than its heartbeat.
+`tests/test_vitality_worker.py` does exactly this.
+
+**5. A saturation that pins the probe at 1.0.** The second argument to
+`pressure_from_count` is *where fully loaded is*, and picking it badly
+throws away the ranking the probe exists to provide. Two ways to get it
+wrong, both caught while writing tests for the LLM batch:
+`pressure_from_count(active, saturation=active)` divides by its own
+numerator, so `goal`'s reflection branch reported 1.0 for a shelf of one
+and a shelf of five; and saturating at the value that *triggers* the
+work — `thread_resummary` used its own `message_interval`, the very
+threshold `_should_redraft` fires on — means a worker is at 1.0 the
+instant it becomes due. Saturation must be a bound the backlog can sit
+*below*: a capacity (`max_active`), a per-run drain (`max_per_run`), or
+a multiple of the trigger.
 
 ## Observability
 
@@ -488,21 +552,13 @@ conservative while letting compute scale.
 
 ## Known gaps
 
-- **Four probes are still mis-rated**, each an instance of one of the
-  four failure modes above, all found in the first log after the compute
-  batch shipped and none of them fixed yet: `gap_resolver` (wakes every
-  30 s to find nothing), `vitality` and `promise_followthrough` (both
-  pinned to the 91 s anti-thrash floor against a 900 s interval), and
-  `weather` (10-minute cadence against a 30-minute interval, on a
-  network call). None costs measurable CPU; all three of the migrated
-  ones contradict the "cadence must not change" bar the batch was held
-  to.
-- **[P44](personality-backlog/perf.md#p44-migrate-the-remaining-idle-workers-to-demand)**
-  — partly done. The pure-compute workers are migrated, so nothing is
-  charged to the LLM lane any more unless it really does call a model.
-  The eighteen that remain are all LLM workers; what they still lack is
-  demand *ranking*, so a diary entry and a stale topic label compete on
-  age alone.
+- **Nothing has been read back off a log since the last two batches.**
+  Every worker reports demand now, and the four mis-rated probes the
+  first log turned up are fixed, but both of those statements rest on
+  the suite — and a miscalibrated probe is precisely the bug the suite
+  does not catch. The next long session's `app.log` wants the same
+  runs-per-worker tally: divide each worker's run count by wall time
+  and compare against its configured interval.
 - **[P45](personality-backlog/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)**
   — partly done. The seven cue workers on the
   [cue pool](cue-pool.md) report pressure from their unspent inventory,

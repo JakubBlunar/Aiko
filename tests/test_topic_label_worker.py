@@ -12,6 +12,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -274,6 +275,76 @@ class ClusterLabelWorkerTests(unittest.TestCase):
         self.assertEqual(fake.calls, 1)
         self.assertEqual(result["labeled"], 1)
         self.assertGreaterEqual(result["pending"], 1)
+
+
+class DemandTests(unittest.TestCase):
+    """Pressure counts clusters that still read as a bare id."""
+
+    def _worker(self, db, g, mem, fake, settings=None) -> ClusterLabelWorker:
+        return ClusterLabelWorker(
+            topic_graph=g,
+            memory_store=mem,
+            ollama=fake,
+            chat_model="x",
+            cancel_event=threading.Event(),
+            agent_settings=settings or _agent_settings(),
+            kv_get=db.kv_get,
+            kv_set=db.kv_set,
+        )
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_named_clusters_report_nothing(self) -> None:
+        mem = _two_cluster_store()
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = self._worker(db, g, mem, _FakeOllama(label="cosy cats"))
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertFalse(signal.needs_llm)
+
+    def test_unnamed_clusters_raise_pressure(self) -> None:
+        mem = _two_cluster_store()
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = self._worker(db, g, mem, _FakeOllama(label="cosy cats"))
+        blanks = [
+            SimpleNamespace(cluster_id=i, summary="", representative_id=i)
+            for i in range(2)
+        ]
+        worker._topic_graph.topic_clusters = lambda: blanks  # type: ignore[method-assign]
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_disabled_reports_nothing(self) -> None:
+        mem = _two_cluster_store()
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = self._worker(
+            db, g, mem, _FakeOllama(),
+            settings=_agent_settings(topic_label_enabled=False),
+        )
+        self.assertEqual(
+            worker.demand(now=self._now(), last_run_at=None).pressure, 0.0,
+        )
+        self.assertFalse(worker.is_ready(now=self._now(), last_run_at=None))
+
+    def test_probe_never_labels_or_calls_the_model(self) -> None:
+        mem = _two_cluster_store()
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        fake = _FakeOllama(label="cosy cats")
+        worker = self._worker(db, g, mem, fake)
+        before = {c.cluster_id: c.summary for c in g.topic_clusters()}
+        worker.demand(now=self._now(), last_run_at=None)
+        worker.is_ready(now=self._now(), last_run_at=None)
+        self.assertEqual(fake.calls, 0)
+        self.assertEqual(
+            {c.cluster_id: c.summary for c in g.topic_clusters()}, before,
+        )
 
 
 class HelperTests(unittest.TestCase):

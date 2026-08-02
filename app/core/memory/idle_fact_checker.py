@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -153,20 +153,56 @@ class IdleFactChecker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, something queued, and budget to check it with.
+
+        All three stay hard vetoes after the demand migration: an empty
+        queue or a spent hour makes a run a guaranteed no-op, and the
+        heartbeat is checked before pressure, so expressing them as
+        zero pressure would not hold the worker back.
+        """
+        return self._backlog(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the depth of the claim queue.
+
+        The cleanest backlog in the whole registry: one kv read gives
+        the exact number of claims waiting, and the worker drains
+        exactly one per run. Saturation is the hourly budget, since a
+        queue deeper than that cannot be drained faster however it is
+        ranked.
+        """
+        backlog = self._backlog(now)
+        if backlog is None:
+            return WorkSignal(pressure=0.0, reason="nothing queued")
+        pending, hour_cap = backlog
+        return WorkSignal(
+            pressure=pressure_from_count(pending, saturation=hour_cap),
+            reason=f"{pending} queued",
+            needs_llm=True,
+        )
+
+    def _backlog(self, now: datetime) -> tuple[int, int] | None:
+        """``(queued, hour_cap)`` if a run could check something."""
         if not bool(getattr(self._agent_settings, "fact_checker_enabled", True)):
-            return False
-        if not self._queue.has_pending():
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
-        ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
-        if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
-        if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
-        return True
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+            if snapshot["hour_used"] >= snapshot["hour_cap"]:
+                return None
+            if snapshot["day_used"] >= snapshot["day_cap"]:
+                return None
+            pending = len(self._queue.peek_all())
+        except Exception:
+            log.debug("fact-check readiness probe failed", exc_info=True)
+            return None
+        if pending <= 0:
+            return None
+        return pending, max(1, int(snapshot["hour_cap"]))
 
     def run(self) -> dict[str, Any] | None:
         if not bool(getattr(self._agent_settings, "fact_checker_enabled", True)):

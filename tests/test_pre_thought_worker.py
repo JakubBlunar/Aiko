@@ -410,6 +410,77 @@ class IsReadyTests(unittest.TestCase):
         )
 
 
+class DemandTests(unittest.TestCase):
+    """The P44 probe: pressure from the gap between shelf and target."""
+
+    _NOW = datetime(2026, 6, 21, tzinfo=timezone.utc)
+
+    def test_empty_shelf_is_full_pressure(self) -> None:
+        worker = _make_worker(
+            store=_FakeMemoryStore(), client=_FakeClient("{}"),
+        )
+        signal = worker.demand(now=self._NOW, last_run_at=None)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_pressure_falls_as_the_shelf_fills(self) -> None:
+        empty = _make_worker(
+            store=_FakeMemoryStore(), client=_FakeClient("{}"),
+        )
+        stocked_store = _FakeMemoryStore()
+        for i in range(9):
+            stocked_store.add(
+                content=f"q{i}", kind="pre_thought", embedding=_unit(i),
+            )
+        stocked = _make_worker(
+            store=stocked_store, client=_FakeClient("{}"),
+        )
+        self.assertGreater(
+            empty.demand(now=self._NOW, last_run_at=None).pressure,
+            stocked.demand(now=self._NOW, last_run_at=None).pressure,
+        )
+
+    def test_full_shelf_reports_nothing(self) -> None:
+        store = _FakeMemoryStore()
+        for i in range(12):
+            store.add(
+                content=f"q{i}", kind="pre_thought", embedding=_unit(i),
+            )
+        worker = _make_worker(store=store, client=_FakeClient("{}"))
+        self.assertFalse(worker.is_ready(now=self._NOW, last_run_at=None))
+        signal = worker.demand(now=self._NOW, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        worker = _make_worker(
+            store=_FakeMemoryStore(), client=_FakeClient("{}"),
+            rate_limiter=_FakeRateLimiter(hour_used=6),
+        )
+        self.assertEqual(
+            worker.demand(now=self._NOW, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_probe_never_spends_a_rate_token(self) -> None:
+        """``snapshot`` reads the bucket; ``allow`` drains it."""
+        limiter = _FakeRateLimiter()
+        worker = _make_worker(
+            store=_FakeMemoryStore(), client=_FakeClient("{}"),
+            rate_limiter=limiter,
+        )
+        worker.demand(now=self._NOW, last_run_at=None)
+        worker.is_ready(now=self._NOW, last_run_at=None)
+        self.assertEqual(limiter.allow_calls, 0)
+
+    def test_probe_writes_no_memories(self) -> None:
+        store = _FakeMemoryStore()
+        client = _FakeClient("{}")
+        worker = _make_worker(store=store, client=client)
+        worker.demand(now=self._NOW, last_run_at=None)
+        worker.is_ready(now=self._NOW, last_run_at=None)
+        self.assertEqual(store.add_calls, [])
+        self.assertEqual(client.surfaces, [])
+
+
 class KindAndSurfacingTests(unittest.TestCase):
     def test_pre_thought_is_a_valid_kind(self) -> None:
         from app.core.memory.memory_store import VALID_KINDS

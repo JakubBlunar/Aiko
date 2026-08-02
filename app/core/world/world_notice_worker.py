@@ -40,7 +40,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -133,23 +133,77 @@ class WorldNoticeWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        """Enabled, and something to say.
+
+        The cooldown and the daily cap are hard vetoes rather than
+        pressure, because a run that fails either is a *guaranteed*
+        no-op — and the heartbeat is checked before pressure in
+        ``evaluate_admission``, so expressing them as zero pressure
+        would not stop it. The cooldown is 3600s against a 300s
+        heartbeat, so leaving them to the probe meant eleven wasted
+        admissions per cooldown window.
+        """
+        if not self._enabled():
+            return False
+        return self._trigger(now) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Which of the two triggers is live, and does it cost a GPU.
+
+        A gift outranks a room beat: it is a response to something the
+        user just did, and it goes stale in a way an ambient "I've been
+        pottering about" line does not.
+
+        ``needs_llm`` follows :meth:`_llm_line`, which falls back to a
+        deterministic template when no worker model is wired — on that
+        install this worker belongs in the compute lane.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        trigger = self._trigger(now)
+        if trigger is None:
+            return WorkSignal(pressure=0.0, reason="cooling down")
+        return WorkSignal(
+            pressure=1.0 if trigger == "gift" else 0.6,
+            reason=trigger,
+            needs_llm=bool(self._ollama is not None and self._model),
         )
 
+    def _trigger(self, now: datetime) -> str | None:
+        """``"gift"`` / ``"room"`` / ``None`` — read-only, no writes.
+
+        The same decision ``run`` makes, minus the composing. Shared so
+        the probe and the run can never disagree about whether there
+        was anything to do.
+        """
+        if not self._resolve(self._user_id_provider):
+            return None
+        try:
+            if self._fresh_gift() is not None:
+                return "gift"
+            if self._cooldown_elapsed(now) and self._under_daily_cap(now):
+                return "room"
+        except Exception:
+            log.debug("world_notice trigger probe failed", exc_info=True)
+            return None
+        return None
+
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
+            return True
+        try:
+            return bool(self._enabled_provider())
+        except Exception:
+            return True
+
     def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"fired": 0, "disabled": True}
-            except Exception:
-                pass
+        if not self._enabled():
+            return {"fired": 0, "disabled": True}
         user_id = self._resolve(self._user_id_provider)
         if not user_id:
             return {"fired": 0, "skipped_no_user": True}
