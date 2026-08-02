@@ -255,6 +255,48 @@ def current_baseline(
     return baseline, rhythm
 
 
+def peek_baseline(
+    chat_db,
+    now: datetime,
+    *,
+    enabled: bool = True,
+) -> tuple[float, Rhythm]:
+    """:func:`current_baseline` without the roll — safe to call from a probe.
+
+    :func:`resolve_daily_rhythm` *writes* on the first touch of each
+    local day, which is correct for a run and wrong for a ``demand()``
+    probe: deciding today's rhythm as a side effect of asking whether
+    there is work would mean the answer depends on who looked first.
+
+    So this reads the stored rhythm when today's roll has already
+    happened and otherwise assumes :data:`NORMAL` — the same answer
+    :func:`roll_rhythm` gives most days, and only ever used to *estimate*
+    how far body-energy sits from its resting level. The run that
+    follows does the real roll.
+    """
+    if not enabled or chat_db is None:
+        return _vit.circadian_baseline(now), NORMAL
+    rhythm = NORMAL
+    try:
+        stored_at = chat_db.kv_get(KV_RHYTHM_SET_AT)
+    except Exception:
+        stored_at = None
+    if not _dc.is_stale(stored_at, now):
+        try:
+            existing = get_rhythm_by_name(chat_db.kv_get(KV_RHYTHM))
+        except Exception:
+            existing = None
+        if existing is not None:
+            rhythm = existing
+    baseline = _vit.circadian_baseline(
+        now,
+        phase_shift_hours=rhythm.phase_shift_hours,
+        energy_scale=rhythm.energy_scale,
+        floor_boost=rhythm.floor_boost,
+    )
+    return baseline, rhythm
+
+
 __all__ = [
     "KV_RHYTHM",
     "KV_RHYTHM_SET_AT",
@@ -263,6 +305,7 @@ __all__ = [
     "Rhythm",
     "current_baseline",
     "get_rhythm_by_name",
+    "peek_baseline",
     "resolve_daily_rhythm",
     "roll_rhythm",
 ]

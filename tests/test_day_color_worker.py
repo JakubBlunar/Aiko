@@ -74,22 +74,17 @@ class IsReadyTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.assertTrue(worker.is_ready(now=now, last_run_at=None))
 
-    def test_within_interval_not_ready(self) -> None:
+    def test_timing_is_no_longer_a_veto(self) -> None:
+        # The interval moved into demand() when the worker migrated, so
+        # is_ready() is the master switch and nothing else. A worker
+        # that ran ten minutes ago is still "ready" -- it just won't be
+        # admitted, because its probe reports no pressure.
         worker = DayColorWorker(
             chat_db=_FakeChatDB(),
             settings=_FakeSettings(day_color_check_interval_seconds=3600),
         )
         now = datetime.now(timezone.utc)
-        last_run = now - timedelta(seconds=600)  # 10 min ago
-        self.assertFalse(worker.is_ready(now=now, last_run_at=last_run))
-
-    def test_after_interval_ready(self) -> None:
-        worker = DayColorWorker(
-            chat_db=_FakeChatDB(),
-            settings=_FakeSettings(day_color_check_interval_seconds=3600),
-        )
-        now = datetime.now(timezone.utc)
-        last_run = now - timedelta(seconds=4000)  # >1h ago
+        last_run = now - timedelta(seconds=600)
         self.assertTrue(worker.is_ready(now=now, last_run_at=last_run))
 
     def test_interval_seconds_property_reads_settings(self) -> None:
@@ -227,6 +222,78 @@ class RunTests(unittest.TestCase):
         self.assertEqual(stats.get("reason"), "roll_failed")
         # Nothing should have been written on a failed roll.
         self.assertEqual(chat_db.kv_set_calls, 0)
+
+
+# ── demand() ─────────────────────────────────────────────────────────
+
+
+class DemandTests(unittest.TestCase):
+    def _worker(self, chat_db: _FakeChatDB, **kw) -> DayColorWorker:
+        return DayColorWorker(chat_db=chat_db, settings=_FakeSettings(**kw))
+
+    def _probe(self, worker: DayColorWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_a_fresh_colour_asks_for_nothing(self) -> None:
+        chat_db = _FakeChatDB()
+        chat_db._store[KV_DAY_COLOR] = "cozy"
+        chat_db._store[KV_DAY_COLOR_SET_AT] = (
+            datetime.now().astimezone().isoformat()
+        )
+        signal = self._probe(self._worker(chat_db))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "fresh")
+
+    def test_a_stale_colour_is_maximum_pressure(self) -> None:
+        chat_db = _FakeChatDB(
+            initial={
+                KV_DAY_COLOR: "low_key",
+                KV_DAY_COLOR_SET_AT: (
+                    datetime.now(timezone.utc) - timedelta(days=2)
+                ).isoformat(),
+            }
+        )
+        signal = self._probe(self._worker(chat_db))
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "stale")
+
+    def test_a_never_rolled_install_is_maximum_pressure(self) -> None:
+        signal = self._probe(self._worker(_FakeChatDB()))
+        self.assertEqual(signal.pressure, 1.0)
+
+    def test_the_probe_never_claims_the_llm_lane(self) -> None:
+        signal = self._probe(self._worker(_FakeChatDB()))
+        self.assertFalse(signal.needs_llm)
+        self.assertEqual(signal.lane, "compute")
+
+    def test_disabled_reports_no_pressure(self) -> None:
+        signal = self._probe(
+            self._worker(_FakeChatDB(), day_color_enabled=False)
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_an_unreadable_key_reads_as_stale(self) -> None:
+        # Matching day_color.is_stale's own posture: rolling a colour we
+        # didn't need beats showing yesterday's all day.
+        chat_db = _FakeChatDB()
+        worker = self._worker(chat_db)
+        with mock.patch.object(
+            chat_db, "kv_get", side_effect=RuntimeError("db locked"),
+        ):
+            signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "kv unreadable")
+
+    def test_probing_does_not_roll(self) -> None:
+        chat_db = _FakeChatDB()
+        worker = self._worker(chat_db)
+        self._probe(worker)
+        self._probe(worker)
+        self.assertEqual(chat_db.kv_set_calls, 0)
+        self.assertEqual(chat_db._store, {})
 
 
 # ── name / IdleWorker protocol shape ────────────────────────────────

@@ -177,6 +177,60 @@ class LaneAdmissionTests(unittest.TestCase):
         self.assertEqual(worker.runs, 1)
 
 
+class LegacyIntervalTests(unittest.TestCase):
+    """The escape hatch has to hold the interval for migrated workers.
+
+    A migrated worker's ``is_ready()`` is hard vetoes only -- its timing
+    check lives in the probe, which the legacy path never calls. Without
+    re-imposing the interval here, turning the escape hatch on would run
+    every migrated worker on every wake tick.
+    """
+
+    def test_a_migrated_worker_does_not_rerun_inside_its_interval(
+        self,
+    ) -> None:
+        sched = _sched(pressure_enabled=False)
+        worker = _DemandWorker("busy", interval_seconds=300.0, pressure=1.0)
+        sched.register(worker)
+        sched._tick()
+        self.assertEqual(worker.runs, 1)
+        sched._tick()
+        sched._tick()
+        self.assertEqual(worker.runs, 1)
+
+    def test_a_migrated_worker_runs_again_once_its_interval_elapses(
+        self,
+    ) -> None:
+        sched = _sched(pressure_enabled=False)
+        worker = _DemandWorker("busy", interval_seconds=300.0, pressure=1.0)
+        sched.register(worker)
+        sched._tick()
+        _age(sched, "busy", 301.0)
+        sched._tick()
+        self.assertEqual(worker.runs, 2)
+        # Still no probing on this path.
+        self.assertEqual(worker.probes, 0)
+
+    def test_an_unmigrated_worker_keeps_its_own_timing(self) -> None:
+        # No demand() means is_ready() still owns the interval, so a
+        # worker that says "always ready" keeps running every tick
+        # exactly as it did pre-P36.
+        sched = _sched(pressure_enabled=False)
+        worker = _LegacyWorker("old")
+        sched.register(worker)
+        sched._tick()
+        sched._tick()
+        self.assertEqual(worker.runs, 2)
+
+    def test_a_hard_veto_still_wins_over_the_interval(self) -> None:
+        sched = _sched(pressure_enabled=False)
+        worker = _DemandWorker("busy", interval_seconds=300.0, pressure=1.0)
+        worker.is_ready = lambda **_kw: False  # type: ignore[assignment]
+        sched.register(worker)
+        sched._tick()
+        self.assertEqual(worker.runs, 0)
+
+
 class LaneOrderingTests(unittest.TestCase):
     def test_compute_drains_before_llm(self) -> None:
         sched = _sched()

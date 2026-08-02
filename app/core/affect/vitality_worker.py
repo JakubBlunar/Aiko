@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect import vitality as _vit
 from app.core.affect import vitality_rhythm as _vr
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -72,10 +72,53 @@ class VitalityWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        return bool(getattr(self._agent, "vitality_enabled", True))
+
+    def _half_life_hours(self) -> float:
+        return float(
+            getattr(self._memory, "vitality_recover_half_life_hours", 2.0)
+        )
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """How far body-energy has drifted from where it should rest.
+
+        Recovery is elapsed-time exponential against ``last_update_at``,
+        so the effective half-life does not depend on how often this is
+        admitted — a run that waited longer simply applies more of the
+        curve.
+
+        Uses :func:`vitality_rhythm.peek_baseline` rather than
+        ``current_baseline``: the latter rolls and persists today's
+        rhythm on first touch, and a probe must not be the thing that
+        decides it.
+        """
         if not bool(getattr(self._agent, "vitality_enabled", True)):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            local = timephrase.now()
+            baseline, _rhythm = _vr.peek_baseline(
+                self._chat_db,
+                local,
+                enabled=bool(
+                    getattr(self._agent, "vitality_rhythm_enabled", True)
+                ),
+            )
+            raw = self._chat_db.kv_get(_vit.KV_VITALITY)
+        except Exception:
+            log.debug("vitality worker demand probe failed", exc_info=True)
+            return None
+        state = _vit.deserialize(raw, baseline=baseline, now=local)
+        new_state = _vit.step_recover(
+            state, baseline, local, half_life_hours=self._half_life_hours(),
+        )
+        if abs(new_state.energy - state.energy) <= 1e-6:
+            return WorkSignal(pressure=0.0, reason="at baseline")
+        gap = abs(float(state.energy) - float(baseline))
+        return WorkSignal(
+            pressure=max(0.5, min(1.0, gap)),
+            reason=f"gap {gap:.2f}",
         )
 
     def run(self) -> dict[str, Any]:
@@ -103,11 +146,7 @@ class VitalityWorker:
             state = _vit.deserialize(raw, baseline=baseline, now=now)
             new_state = _vit.step_recover(
                 state, baseline, now,
-                half_life_hours=float(
-                    getattr(
-                        self._memory, "vitality_recover_half_life_hours", 2.0
-                    )
-                ),
+                half_life_hours=self._half_life_hours(),
             )
             moved = abs(new_state.energy - state.energy) > 1e-6
             try:

@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, compute_staleness
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -36,6 +36,23 @@ log = logging.getLogger("app.weather_worker")
 # kv_meta keys, namespaced under ``aiko.*`` like the K27 day-colour state.
 KV_WEATHER_SNAPSHOT = "aiko.weather_snapshot"
 KV_WEATHER_FETCHED_AT = "aiko.weather_fetched_at"
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def persist_weather_snapshot(chat_db: "ChatDatabase", snapshot: dict[str, Any]) -> None:
@@ -113,12 +130,46 @@ class WeatherWorker:
         if not self._enabled():
             return False
         try:
-            if self._home_provider() is None:
-                return False
+            return self._home_provider() is not None
         except Exception:
             return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from the age of the cached snapshot.
+
+        Deliberately reads ``aiko.weather_fetched_at`` rather than the
+        scheduler's ``last_run_at``: the kv timestamp is what the prompt
+        overlay actually reads, and a run that failed to reach the API
+        advances ``last_run_at`` without refreshing anything. Keying off
+        the snapshot means a failed fetch stays at full pressure instead
+        of looking satisfied for another interval.
+
+        This is the one compute-lane worker in the batch that blocks on
+        network I/O rather than arithmetic — two Open-Meteo round-trips
+        bounded by ``weather.timeout_seconds`` (default 10s). The probe
+        itself is a single kv read; the lane fit check learns the real
+        cost from the duration EMA after the first run.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            if self._home_provider() is None:
+                return WorkSignal(pressure=0.0, reason="no location")
+        except Exception:
+            return WorkSignal(pressure=0.0, reason="no location")
+        try:
+            fetched = _parse_iso(self._chat_db.kv_get(KV_WEATHER_FETCHED_AT))
+        except Exception:
+            fetched = None
+        if fetched is None:
+            return WorkSignal(pressure=1.0, reason="no snapshot")
+        elapsed = max(0.0, (now - fetched).total_seconds())
+        interval = self.interval_seconds
+        return WorkSignal(
+            pressure=compute_staleness(elapsed, interval),
+            reason=f"age {elapsed:.0f}s/{interval:.0f}s",
         )
 
     def run(self) -> dict[str, Any]:

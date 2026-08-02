@@ -335,6 +335,150 @@ class WorkerTests(unittest.TestCase):
         worker2, _kv2 = _worker([])
         self.assertTrue(worker2.is_ready(now=_NOW, last_run_at=None))
 
+    def test_timing_is_no_longer_a_veto(self) -> None:
+        worker, _kv = _worker([])
+        self.assertTrue(
+            worker.is_ready(
+                now=_NOW, last_run_at=_NOW - timedelta(seconds=30),
+            )
+        )
+
+
+class PromotionBlockedTests(unittest.TestCase):
+    """The state-only half of ``promote``, split out for the probe."""
+
+    def test_an_empty_state_is_never_blocked(self) -> None:
+        self.assertIsNone(va.promotion_blocked([], now=_NOW))
+
+    def test_a_full_set_is_blocked_by_the_ceiling(self) -> None:
+        rows = [
+            {"phrase": f"p{i}", "adopted_at": (
+                _NOW - timedelta(days=400)
+            ).isoformat()}
+            for i in range(3)
+        ]
+        self.assertEqual(
+            va.promotion_blocked(rows, now=_NOW, max_adopted=3), "at ceiling",
+        )
+
+    def test_a_recent_adoption_is_blocked_by_spacing(self) -> None:
+        rows = [{
+            "phrase": "p", "adopted_at": (_NOW - timedelta(days=2)).isoformat(),
+        }]
+        self.assertEqual(
+            va.promotion_blocked(rows, now=_NOW, min_days_between=10.0),
+            "spacing",
+        )
+
+    def test_an_elapsed_gap_clears(self) -> None:
+        rows = [{
+            "phrase": "p",
+            "adopted_at": (_NOW - timedelta(days=30)).isoformat(),
+        }]
+        self.assertIsNone(
+            va.promotion_blocked(rows, now=_NOW, min_days_between=10.0)
+        )
+
+
+class WorkerDemandTests(unittest.TestCase):
+    """Cheap spacing gate first; registry scan only once it clears."""
+
+    def _probe(self, worker: VoiceAdoptionWorker):
+        return worker.demand(now=_NOW, last_run_at=None)
+
+    def test_an_adoptable_phrase_is_full_pressure(self) -> None:
+        worker, _kv = _worker([_mem("fair enough", age_days=40)])
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "1 adoptable")
+        self.assertFalse(signal.needs_llm)
+
+    def test_an_empty_registry_asks_for_nothing(self) -> None:
+        worker, _kv = _worker([])
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "nothing adoptable")
+
+    def test_her_own_phrases_are_not_adoptable(self) -> None:
+        worker, _kv = _worker(
+            [_mem("fair enough", age_days=40, origin="assistant")],
+        )
+        self.assertEqual(self._probe(worker).pressure, 0.0)
+
+    def test_a_young_phrase_is_not_adoptable(self) -> None:
+        worker, _kv = _worker([_mem("fair enough", age_days=2)])
+        self.assertEqual(self._probe(worker).pressure, 0.0)
+
+    def test_the_spacing_gate_short_circuits_the_scan(self) -> None:
+        # The whole point of the cheap gate: for the ten days after an
+        # adoption the probe must not touch the registry at all.
+        kv = _Kv()
+        va.save_state(
+            kv.kv_set,
+            [{
+                "phrase": "already mine",
+                "adopted_at": (_NOW - timedelta(days=1)).isoformat(),
+            }],
+        )
+        scans: list[int] = []
+
+        class _CountingStore(_Store):
+            def list_recent(self, *, limit: int = 128, kind=None):
+                scans.append(1)
+                return super().list_recent(limit=limit, kind=kind)
+
+        worker = VoiceAdoptionWorker(
+            chat_db=kv,
+            memory_store=_CountingStore([_mem("fair enough", age_days=40)]),
+            clock=lambda: _NOW,
+        )
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "spacing")
+        self.assertEqual(scans, [])
+
+    def test_the_probe_skips_the_origin_resolver(self) -> None:
+        # Resolving a legacy row's provenance is a message-history
+        # lookup per phrase -- run-shaped work. The probe undercounts
+        # those rather than paying for them; the daily heartbeat run
+        # still adopts them.
+        calls: list[str] = []
+
+        def resolver(phrase: str) -> str:
+            calls.append(phrase)
+            return "user"
+
+        worker, _kv = _worker(
+            [_mem("fair enough", age_days=40, origin=None)],
+            origin_resolver=resolver,
+        )
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(calls, [])
+        # ...but the run still adopts it.
+        self.assertEqual(worker.run()["adopted"], "fair enough")
+        self.assertEqual(calls, ["fair enough"])
+
+    def test_disabled_and_storeless_report_no_pressure(self) -> None:
+        off, _kv = _worker([_mem("fair enough", age_days=40)], enabled=False)
+        self.assertEqual(self._probe(off).reason, "disabled")
+        storeless = VoiceAdoptionWorker(
+            chat_db=_Kv(), memory_store=None, clock=lambda: _NOW,
+        )
+        self.assertEqual(self._probe(storeless).reason, "no store")
+
+    def test_probing_never_adopts(self) -> None:
+        worker, kv = _worker([_mem("fair enough", age_days=40)])
+        self._probe(worker)
+        self._probe(worker)
+        self.assertEqual(kv.store, {})
+
+    def test_probing_does_not_eat_the_force_flag(self) -> None:
+        worker, _kv = _worker([_mem("fair enough", age_days=2)])
+        worker.force_next()
+        self.assertEqual(self._probe(worker).pressure, 0.0)
+        self.assertEqual(worker.run()["adopted"], "fair enough")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive import tension_cue as _tc
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 
@@ -84,35 +84,37 @@ class TensionCueWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return self._enabled()
 
-    def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"drafted": 0, "disabled": True}
-            except Exception:
-                pass
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
+            return True
+        try:
+            return bool(self._enabled_provider())
+        except Exception:
+            # Matches run(): a raising provider is no opinion, not a veto.
+            return True
 
-        now = _utcnow()
-        forced = self._force_next
-        self._force_next = False
+    def _select(
+        self, now: datetime, *, forced: bool,
+    ) -> "tuple[str | None, _tc.TensionCue | None, int]":
+        """Resolve the cue this tick would draft.
 
+        Returns ``(block_reason, candidate, active_count)``; a
+        ``block_reason`` of ``None`` means "draft this candidate".
+
+        Read-only, so ``demand()`` can share it: ``view.core`` returns
+        live mirror objects that this only reads from, and the cooldown
+        and signature checks are ``kv_get``. Both writes live in
+        ``_mark_fired``, which only ``run()`` calls.
+        """
         view = None
         try:
             view = self._view_provider()
         except Exception:
             log.debug("tension_cue view_provider raised", exc_info=True)
         if view is None or not getattr(view, "enabled", False):
-            return {"drafted": 0, "no_view": True}
+            return "no_view", None, 0
 
         concepts: list[Any] = []
         for subject in self._subjects:
@@ -129,7 +131,7 @@ class TensionCueWorker:
                     "tension_cue core(%s) raised", subject, exc_info=True
                 )
         if not concepts:
-            return {"drafted": 0, "no_active": True}
+            return "no_active", None, 0
 
         # Forced runs relax the per-concept cooldown so an MCP poke always
         # produces a cue when *any* qualifying tension exists.
@@ -141,12 +143,54 @@ class TensionCueWorker:
             cooldown_days=0.0 if forced else self._cooldown_days,
         )
         if candidate is None:
-            return {"drafted": 0, "no_candidate": True, "active": len(concepts)}
+            return "no_candidate", None, len(concepts)
 
         if not forced:
             last_sig = self._kv_get_safe(_KV_LAST_SIGNATURE)
             if last_sig and last_sig == candidate.signature:
-                return {"drafted": 0, "same_signature": candidate.signature}
+                return "same_signature", candidate, len(concepts)
+        return None, candidate, len(concepts)
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """One draft per run, so the answer is binary.
+
+        Probes as an unforced run — ``_force_next`` is MCP debug state
+        that ``run()`` consumes, and reading it from a probe would let a
+        tick silently eat the flag.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        reason, candidate, _active = self._select(now, forced=False)
+        if reason is not None or candidate is None:
+            return WorkSignal(pressure=0.0, reason=reason or "no_candidate")
+        return WorkSignal(
+            pressure=1.0, reason=f"tension {candidate.concept_id}",
+        )
+
+    def run(self) -> dict[str, Any]:
+        if self._enabled_provider is not None:
+            try:
+                if not bool(self._enabled_provider()):
+                    return {"drafted": 0, "disabled": True}
+            except Exception:
+                pass
+
+        now = _utcnow()
+        forced = self._force_next
+        self._force_next = False
+
+        reason, candidate, active = self._select(now, forced=forced)
+        if reason == "no_view":
+            return {"drafted": 0, "no_view": True}
+        if reason == "no_active":
+            return {"drafted": 0, "no_active": True}
+        if reason == "no_candidate":
+            return {"drafted": 0, "no_candidate": True, "active": active}
+        if reason == "same_signature" and candidate is not None:
+            return {"drafted": 0, "same_signature": candidate.signature}
+        assert candidate is not None
 
         _tc.append_cue(
             self._kv_get,

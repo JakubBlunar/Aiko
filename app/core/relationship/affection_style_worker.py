@@ -25,7 +25,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.relationship import affection_style as _af
 from app.core.infra import timephrase
 
@@ -69,13 +69,81 @@ class AffectionStyleDecayWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return bool(
+            getattr(self._settings, "affection_style_enabled", True)
+        )
+
+    def _peek_decay(self) -> tuple[str | None, "_af.AffectionStyleState | None"]:
+        """Dry-run one decay step. Returns ``(skip_reason, new_state)``.
+
+        Exactly one of the two is ``None``. Shared by the probe and
+        ``run()``, which is only safe because
+        :func:`affection_style.decay_toward_uniform` returns a new state
+        instead of mutating — the probe computes the same answer and
+        throws it away, and only ``run()`` writes it back.
+        """
+        half_life = float(
+            getattr(
+                self._settings,
+                "affection_style_decay_half_life_days",
+                30.0,
+            )
+        )
+        if half_life <= 0.0:
+            return "decay_disabled", None
+
+        try:
+            stored = self._chat_db.kv_get(_af.KV_AFFECTION_STYLE)
+        except Exception:
+            log.debug("affection_style worker: kv_get failed", exc_info=True)
+            return "kv_get_failed", None
+
+        # Nothing learned yet -> nothing to decay. Avoids writing a
+        # uniform row on every tick for a brand-new install.
+        if not stored:
+            return "empty", None
+
+        state = _af.deserialize(stored)
+        floor = float(getattr(self._settings, "affection_style_floor", 0.05))
+        new_state = _af.decay_toward_uniform(
+            state,
+            timephrase.utcnow(),
+            half_life_days=half_life,
+            floor=floor,
+        )
+
+        # Detect a meaningful move so we don't churn kv_meta on a tick
+        # where the elapsed time rounded to no change.
+        moved = any(
+            abs(new_state.weight_of(k) - state.weight_of(k)) > 1e-6
+            for k in _af.AFFECTION_KINDS
+        )
+        if not moved:
+            return "no_change", None
+        return None, new_state
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Ask the decay maths whether the weights would actually move.
+
+        Decay is elapsed-time exponential against ``state.updated_at``,
+        not a fixed step per run, so admitting on pressure rather than
+        on a fixed 6h cadence does not change the effective half-life —
+        whenever the worker does run, it applies the whole elapsed
+        interval.
+        """
         if not bool(
             getattr(self._settings, "affection_style_enabled", True)
         ):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        reason, new_state = self._peek_decay()
+        if new_state is None:
+            return WorkSignal(pressure=0.0, reason=reason or "no_change")
+        return WorkSignal(pressure=1.0, reason="decay due")
 
     def run(self) -> dict[str, Any]:
         """Apply one decay step toward uniform.
@@ -91,42 +159,11 @@ class AffectionStyleDecayWorker:
         ):
             return {"skipped": True, "reason": "disabled"}
 
-        half_life = float(
-            getattr(
-                self._settings,
-                "affection_style_decay_half_life_days",
-                30.0,
-            )
-        )
-        if half_life <= 0.0:
-            return {"skipped": True, "reason": "decay_disabled"}
-
-        try:
-            stored = self._chat_db.kv_get(_af.KV_AFFECTION_STYLE)
-        except Exception:
-            log.debug("affection_style worker: kv_get failed", exc_info=True)
-            return {"skipped": True, "reason": "kv_get_failed"}
-
-        # Nothing learned yet -> nothing to decay. Avoids writing a
-        # uniform row on every tick for a brand-new install.
-        if not stored:
-            return {"decayed": False, "reason": "empty"}
-
-        state = _af.deserialize(stored)
-        now = timephrase.utcnow()
-        floor = float(getattr(self._settings, "affection_style_floor", 0.05))
-        new_state = _af.decay_toward_uniform(
-            state, now, half_life_days=half_life, floor=floor,
-        )
-
-        # Detect a meaningful move so we don't churn kv_meta on a tick
-        # where the elapsed time rounded to no change.
-        moved = any(
-            abs(new_state.weight_of(k) - state.weight_of(k)) > 1e-6
-            for k in _af.AFFECTION_KINDS
-        )
-        if not moved:
-            return {"decayed": False, "reason": "no_change"}
+        reason, new_state = self._peek_decay()
+        if new_state is None:
+            if reason in ("decay_disabled", "kv_get_failed"):
+                return {"skipped": True, "reason": reason}
+            return {"decayed": False, "reason": reason}
 
         try:
             self._chat_db.kv_set(

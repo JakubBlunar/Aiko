@@ -398,5 +398,120 @@ class TestPromotionWorker(unittest.TestCase):
         self.assertEqual(store.get(mem.id).tier, "archive")
 
 
+class TestPromotionWorkerDemand(unittest.TestCase):
+    """The probe runs the same four predicates without moving anything."""
+
+    def _settings(self, **over) -> SimpleNamespace:
+        base = dict(
+            tiers_enabled=True,
+            promotion_worker_interval_seconds=3600,
+            scratchpad_promote_min_age_days=7,
+            scratchpad_promote_min_use_count=3,
+            scratchpad_promote_min_revival=0.3,
+            scratchpad_ttl_days=14,
+            archive_demote_idle_days=180,
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def _probe(self, worker: MemoryPromotionWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_is_ready_is_the_tiers_flag_alone(self) -> None:
+        _, store = _store_factory()
+        now = datetime.now(timezone.utc)
+        worker = MemoryPromotionWorker(store, self._settings())
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        self.assertTrue(
+            worker.is_ready(now=now, last_run_at=now - timedelta(seconds=30))
+        )
+        off = MemoryPromotionWorker(store, self._settings(tiers_enabled=False))
+        self.assertFalse(off.is_ready(now=now, last_run_at=None))
+
+    def test_a_settled_store_asks_for_nothing(self) -> None:
+        _, store = _store_factory()
+        store.add("fresh", "fact", _emb("f"), tier="scratchpad", salience=0.4)
+        worker = MemoryPromotionWorker(store, self._settings())
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "0 tier moves")
+        self.assertFalse(signal.needs_llm)
+
+    def test_a_promotable_row_shows_up_as_one_move(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "rumor", "fact", _emb("r"), tier="scratchpad", salience=0.6,
+        )
+        assert mem is not None
+        store.update(mem.id, revival_score=0.5)
+        worker = MemoryPromotionWorker(store, self._settings())
+        signal = self._probe(worker)
+        self.assertGreaterEqual(signal.pressure, 0.5)
+        self.assertEqual(signal.reason, "1 tier moves")
+
+    def test_a_demotable_row_shows_up_too(self) -> None:
+        _, store = _store_factory()
+        mem = store.add("cold", "fact", _emb("c"), tier="long_term", salience=0.4)
+        assert mem is not None
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+        conn = store._get_conn()  # noqa: SLF001
+        conn.execute(
+            "UPDATE memories SET last_used_at = ? WHERE id = ?",
+            (old_iso, int(mem.id)),
+        )
+        conn.commit()
+        store._reload_mirror()  # noqa: SLF001
+        worker = MemoryPromotionWorker(store, self._settings())
+        self.assertGreaterEqual(self._probe(worker).pressure, 0.5)
+
+    def test_disabled_tiers_report_no_pressure(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "rumor", "fact", _emb("r"), tier="scratchpad", salience=0.6,
+        )
+        assert mem is not None
+        store.update(mem.id, revival_score=0.5)
+        worker = MemoryPromotionWorker(
+            store, self._settings(tiers_enabled=False),
+        )
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "tiers disabled")
+
+    def test_the_probe_moves_nothing(self) -> None:
+        _, store = _store_factory()
+        promotable = store.add(
+            "rumor", "fact", _emb("r"), tier="scratchpad", salience=0.6,
+        )
+        assert promotable is not None
+        store.update(promotable.id, revival_score=0.5)
+        worker = MemoryPromotionWorker(store, self._settings())
+        self._probe(worker)
+        self._probe(worker)
+        self.assertEqual(store.get(promotable.id).tier, "scratchpad")
+
+    def test_the_count_stops_at_saturation(self) -> None:
+        # The probe must not scale with the store: it stops counting
+        # once it has seen enough to rank the worker top of its lane.
+        from app.core.memory.memory_promotion_worker import _DEMAND_SATURATION
+
+        _, store = _store_factory({"scratchpad": 500})
+        for i in range(_DEMAND_SATURATION + 10):
+            mem = store.add(
+                f"rumor {i}", "fact", _emb(f"r{i}"),
+                tier="scratchpad", salience=0.6,
+            )
+            assert mem is not None
+            store.update(mem.id, revival_score=0.5)
+        worker = MemoryPromotionWorker(store, self._settings())
+        signal = self._probe(worker)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(
+            signal.reason, f"{_DEMAND_SATURATION} tier moves",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

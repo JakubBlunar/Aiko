@@ -33,7 +33,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -371,13 +371,62 @@ class ScheduleLearner:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return bool(
+            getattr(self._agent_settings, "schedule_learner_enabled", True)
+        )
+
+    def _min_samples(self) -> int:
+        return max(
+            1,
+            int(
+                getattr(
+                    self._agent_settings, "schedule_learner_min_samples", 5,
+                )
+            ),
+        )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Has enough new evidence arrived to move ``usual_hours``?
+
+        Answered with a ``COUNT(*)`` watermark rather than an actual
+        dry-run. Recomputing the profile means pulling a 30-day window
+        of user-message timestamps and bucketing every one of them in
+        Python — affordable once a day, not once per wake tick. The
+        count is served by the same ``idx_messages_role_created`` index
+        as the real query and touches no rows.
+
+        The bar is ``schedule_learner_min_samples`` *new* messages, and
+        the answer is deliberately binary. A rolling 30-day histogram
+        does not visibly move on one or two fresh samples, so anything
+        below the bar reports nothing to do and waits for the daily
+        heartbeat, which keeps this worker's cadence where it was.
+
+        Not counted: samples ageing *out* of the far end of the window,
+        which can also shift the profile. That drift is slow and the
+        heartbeat covers it.
+        """
         if not bool(
             getattr(self._agent_settings, "schedule_learner_enabled", True)
         ):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        if last_run_at is None:
+            return WorkSignal(pressure=1.0, reason="never run")
+        try:
+            fresh = self._count_user_messages_since(last_run_at)
+        except Exception:
+            log.debug("schedule-learner demand probe failed", exc_info=True)
+            return None
+        minimum = self._min_samples()
+        if fresh < minimum:
+            return WorkSignal(
+                pressure=0.0, reason=f"{fresh}/{minimum} new messages",
+            )
+        return WorkSignal(pressure=1.0, reason=f"{fresh} new messages")
 
     def run(self) -> dict[str, Any]:
         now = self._clock()
@@ -391,16 +440,7 @@ class ScheduleLearner:
                 )
             ),
         )
-        min_samples = max(
-            1,
-            int(
-                getattr(
-                    self._agent_settings,
-                    "schedule_learner_min_samples",
-                    5,
-                )
-            ),
-        )
+        min_samples = self._min_samples()
         cutoff = now - timedelta(days=window_days)
         log.info(
             "schedule-learner start: window_days=%d min_samples=%d cutoff=%s",
@@ -636,6 +676,22 @@ class ScheduleLearner:
             "ORDER BY created_at ASC",
             (cutoff.astimezone(timezone.utc).isoformat(),),
         )
+
+    def _count_user_messages_since(self, since: datetime) -> int:
+        """How many user messages have landed since ``since``.
+
+        The ``demand()`` counterpart to
+        :meth:`_fetch_user_message_timestamps` — same index, same
+        predicate, but the rows never leave SQLite.
+        """
+        rows = self._chat_db.execute_fetchall(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE role = 'user' AND created_at >= ?",
+            (since.astimezone(timezone.utc).isoformat(),),
+        )
+        if not rows:
+            return 0
+        return int(rows[0][0] or 0)
 
     def _bucket_rows(
         self, rows: Iterable[tuple[Any, ...]],

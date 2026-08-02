@@ -55,6 +55,85 @@ class IsReadyTests(unittest.TestCase):
             w.is_ready(now=datetime.now(timezone.utc), last_run_at=None)
         )
 
+    def test_timing_is_no_longer_a_veto(self) -> None:
+        # The interval moved into demand() at migration; is_ready() is
+        # the master switch alone.
+        w = AffectionStyleDecayWorker(
+            chat_db=_FakeChatDB(), settings=_FakeSettings(),
+        )
+        now = datetime.now(timezone.utc)
+        self.assertTrue(
+            w.is_ready(now=now, last_run_at=now - timedelta(seconds=5))
+        )
+
+
+class DemandTests(unittest.TestCase):
+    def _probe(self, worker: AffectionStyleDecayWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_a_skewed_state_left_alone_for_a_month_wants_decay(self) -> None:
+        old = datetime.now(timezone.utc) - timedelta(days=30)
+        skewed = _af.apply_observation(
+            _af.uniform_state(old), ["touch"], 1.0, old,
+            learning_rate=0.5, floor=0.05,
+        )
+        db = _FakeChatDB({_af.KV_AFFECTION_STYLE: _af.serialize(skewed)})
+        w = AffectionStyleDecayWorker(chat_db=db, settings=_FakeSettings())
+        signal = self._probe(w)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "decay due")
+        self.assertFalse(signal.needs_llm)
+
+    def test_a_state_updated_just_now_reports_no_change(self) -> None:
+        now = datetime.now(timezone.utc)
+        fresh = _af.apply_observation(
+            _af.uniform_state(now), ["teasing"], 1.0, now,
+            learning_rate=0.5, floor=0.05,
+        )
+        db = _FakeChatDB({_af.KV_AFFECTION_STYLE: _af.serialize(fresh)})
+        w = AffectionStyleDecayWorker(chat_db=db, settings=_FakeSettings())
+        signal = self._probe(w)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no_change")
+
+    def test_a_brand_new_install_reports_empty(self) -> None:
+        w = AffectionStyleDecayWorker(
+            chat_db=_FakeChatDB(), settings=_FakeSettings(),
+        )
+        signal = self._probe(w)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "empty")
+
+    def test_disabled_and_zero_half_life_both_report_no_pressure(
+        self,
+    ) -> None:
+        off = AffectionStyleDecayWorker(
+            chat_db=_FakeChatDB(),
+            settings=_FakeSettings(affection_style_enabled=False),
+        )
+        self.assertEqual(self._probe(off).reason, "disabled")
+        frozen = AffectionStyleDecayWorker(
+            chat_db=_FakeChatDB(),
+            settings=_FakeSettings(affection_style_decay_half_life_days=0.0),
+        )
+        self.assertEqual(self._probe(frozen).reason, "decay_disabled")
+
+    def test_probing_never_writes_the_decayed_state_back(self) -> None:
+        old = datetime.now(timezone.utc) - timedelta(days=30)
+        skewed = _af.apply_observation(
+            _af.uniform_state(old), ["touch"], 1.0, old,
+            learning_rate=0.5, floor=0.05,
+        )
+        serialized = _af.serialize(skewed)
+        db = _FakeChatDB({_af.KV_AFFECTION_STYLE: serialized})
+        w = AffectionStyleDecayWorker(chat_db=db, settings=_FakeSettings())
+        self._probe(w)
+        self._probe(w)
+        self.assertEqual(db.kv_set_calls, 0)
+        self.assertEqual(db._store[_af.KV_AFFECTION_STYLE], serialized)
+
 
 class RunTests(unittest.TestCase):
     def test_empty_kv_is_noop(self) -> None:

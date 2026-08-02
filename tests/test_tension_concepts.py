@@ -690,6 +690,73 @@ class CueProducerTests(unittest.TestCase):
         self.assertEqual(_cue_worker(view, kv).run()["drafted"], 1)
 
 
+class CueProducerDemandTests(unittest.TestCase):
+    """The probe answers "would this run draft?" without drafting."""
+
+    def _probe(self, worker: TensionCueWorker):
+        return worker.demand(now=datetime.now(_UTC), last_run_at=None)
+
+    def test_is_ready_is_the_switch_alone(self) -> None:
+        kv = _FakeKv()
+        w = _cue_worker(_FakeView([]), kv)
+        now = datetime.now(_UTC)
+        self.assertTrue(w.is_ready(now=now, last_run_at=None))
+        self.assertTrue(
+            w.is_ready(now=now, last_run_at=now - timedelta(seconds=30))
+        )
+
+    def test_an_active_tension_is_full_pressure(self) -> None:
+        signal = self._probe(_cue_worker(_FakeView([_concept(1)]), _FakeKv()))
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "tension 1")
+        self.assertFalse(signal.needs_llm)
+
+    def test_nothing_active_is_no_pressure(self) -> None:
+        signal = self._probe(_cue_worker(_FakeView([]), _FakeKv()))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no_active")
+
+    def test_the_per_concept_cooldown_shows_up_as_no_pressure(self) -> None:
+        kv = _FakeKv()
+        kv.store[_tc.per_concept_cooldown_key(1)] = (
+            datetime.now(_UTC) - timedelta(days=1)
+        ).isoformat()
+        w = _cue_worker(_FakeView([_concept(1)]), kv)
+        self.assertEqual(self._probe(w).pressure, 0.0)
+
+    def test_the_signature_watermark_shows_up_as_no_pressure(self) -> None:
+        kv = _FakeKv()
+        kv.store["tension_cue.last_signature"] = _tc.signature(1)
+        signal = self._probe(_cue_worker(_FakeView([_concept(1)]), kv))
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "same_signature")
+
+    def test_disabled_is_no_pressure(self) -> None:
+        w = _cue_worker(
+            _FakeView([_concept(1)]), _FakeKv(),
+            enabled_provider=lambda: False,
+        )
+        self.assertEqual(self._probe(w).reason, "disabled")
+
+    def test_probing_writes_nothing_and_drafts_nothing(self) -> None:
+        kv = _FakeKv()
+        w = _cue_worker(_FakeView([_concept(1)]), kv)
+        self._probe(w)
+        self._probe(w)
+        self.assertEqual(kv.store, {})
+        self.assertEqual(_tc.load_cues(kv.get), [])
+
+    def test_probing_does_not_eat_the_force_flag(self) -> None:
+        kv = _FakeKv()
+        kv.store[_tc.per_concept_cooldown_key(1)] = (
+            datetime.now(_UTC).isoformat()
+        )
+        w = _cue_worker(_FakeView([_concept(1)]), kv)
+        w.force_next()
+        self.assertEqual(self._probe(w).pressure, 0.0)
+        self.assertEqual(w.run()["drafted"], 1)
+
+
 class _FakeChatDb:
     def __init__(self) -> None:
         self.store: dict[str, str] = {}

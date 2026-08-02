@@ -530,6 +530,119 @@ class WorkerTests(unittest.TestCase):
         self.assertGreater(state.wants[0].pressure, 0.5)
 
 
+class WorkerDemandTests(unittest.TestCase):
+    """The probe dry-runs the ingest and throws the result away."""
+
+    def _worker(self, kv: _KvStore, **kwargs) -> WantsLedgerWorker:
+        return WantsLedgerWorker(
+            kv_get=kv.get,
+            kv_set=kv.set,
+            user_display_name_provider=lambda: "Jacob",
+            **kwargs,
+        )
+
+    def _probe(self, worker: WantsLedgerWorker):
+        return worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def _seed_want(self, seed_id: int) -> wl.Want:
+        iso = datetime.now(timezone.utc).isoformat()
+        return wl.Want(
+            id=f"sw{seed_id}",
+            text=f"bring up what you've been curious about: topic {seed_id}",
+            kind="ask",
+            source="curiosity_seed",
+            source_ref=f"cue:{seed_id}",
+            created_at=iso,
+            pressure=0.68,
+            last_growth_at=iso,
+        )
+
+    def test_is_ready_is_the_switch_alone(self) -> None:
+        kv = _KvStore()
+        w = self._worker(kv)
+        now = datetime.now(timezone.utc)
+        self.assertTrue(w.is_ready(now=now, last_run_at=None))
+        self.assertTrue(
+            w.is_ready(now=now, last_run_at=now - timedelta(seconds=10))
+        )
+        off = self._worker(kv, enabled_provider=lambda: False)
+        self.assertFalse(off.is_ready(now=now, last_run_at=None))
+
+    def test_new_candidates_produce_pressure(self) -> None:
+        kv = _KvStore()
+        w = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "whether he plays an instrument"),
+            ]),
+            goal_store=_FakeGoals([
+                _FakeGoals.Row(9, "Learn to recognise jazz chords"),
+            ]),
+        )
+        signal = self._probe(w)
+        self.assertGreaterEqual(signal.pressure, 0.5)
+        self.assertEqual(signal.reason, "2 new, 0 dead")
+        self.assertFalse(signal.needs_llm)
+
+    def test_an_already_stocked_ledger_asks_for_nothing(self) -> None:
+        kv = _KvStore()
+        cues = _FakeCues([_FakeCues.Row(1, "whether he plays an instrument")])
+        w = self._worker(kv, cue_store_provider=lambda: cues)
+        w.run()
+        signal = self._probe(w)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "ledger current")
+
+    def test_a_dead_seed_want_counts_as_work(self) -> None:
+        kv = _KvStore()
+        kv.set(
+            wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))),
+        )
+        w = self._worker(kv, cue_store_provider=lambda: _FakeCues())
+        signal = self._probe(w)
+        self.assertGreaterEqual(signal.pressure, 0.5)
+        self.assertEqual(signal.reason, "0 new, 1 dead")
+
+    def test_growth_alone_is_not_worth_a_slot(self) -> None:
+        # Growth is elapsed-time and the provider applies it lazily
+        # through the same pure function, so re-persisting grown
+        # pressures changes nothing observable.
+        kv = _KvStore()
+        old = datetime.now(timezone.utc) - timedelta(days=2)
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(
+            _state_with(_want(pressure=0.15, created_at=old)),
+        ))
+        w = self._worker(kv, growth_per_day=0.25)
+        self.assertEqual(self._probe(w).pressure, 0.0)
+
+    def test_disabled_reports_no_pressure(self) -> None:
+        kv = _KvStore()
+        w = self._worker(
+            kv,
+            enabled_provider=lambda: False,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "whether he plays an instrument"),
+            ]),
+        )
+        signal = self._probe(w)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "disabled")
+
+    def test_probing_never_persists_the_ledger(self) -> None:
+        kv = _KvStore()
+        w = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "whether he plays an instrument"),
+            ]),
+        )
+        self._probe(w)
+        self._probe(w)
+        self.assertEqual(kv.data, {})
+
+
 # ── assembler slot ──────────────────────────────────────────────────
 
 

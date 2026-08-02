@@ -75,6 +75,17 @@ class ConceptEdgeReconciler:
 
     # ── idle integrity sweep (prune() bypasses delete listeners) ────────
 
+    def orphan_backlog(self, limit: int = 200) -> int:
+        """How many orphaned edges :meth:`sweep` would find, without
+        dropping any.
+
+        Exists so :class:`ConceptEdgeIntegrityWorker` can answer the
+        scheduler's ``demand()`` probe without reaching past the
+        reconciler into the store, and without the sweep's deletes. The
+        underlying query is a bounded read-only ``SELECT``.
+        """
+        return len(self._store.orphaned_memory_edges(int(limit)))
+
     def sweep(self, limit: int = 200) -> dict[str, Any]:
         """Garbage-collect edges whose memory endpoint no longer exists and
         reconcile the affected concepts. Bounded by ``limit`` so it stays a

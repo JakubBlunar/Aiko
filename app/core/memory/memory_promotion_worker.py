@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -68,6 +68,12 @@ class _Gates:
     demote_idle_days: int
 
 
+# Enough pending tier moves to call the sweep urgent. The probe stops
+# counting at this point, which keeps its cost from scaling with the
+# size of the memory store.
+_DEMAND_SATURATION = 25
+
+
 class MemoryPromotionWorker:
     """IdleWorker that shuffles memories between tiers each pass."""
 
@@ -93,19 +99,10 @@ class MemoryPromotionWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if not self._settings.tiers_enabled:
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return bool(self._settings.tiers_enabled)
 
-    def run(self) -> dict[str, Any]:
-        if not self._settings.tiers_enabled:
-            return {
-                "skipped": True,
-                "reason": "tiers_disabled",
-            }
-        gates = _Gates(
+    def _resolve_gates(self) -> _Gates:
+        return _Gates(
             interval_seconds=self.interval_seconds,
             promote_min_age_days=int(self._settings.scratchpad_promote_min_age_days),
             promote_min_use_count=int(
@@ -124,6 +121,74 @@ class MemoryPromotionWorker:
             ),
             demote_idle_days=int(self._settings.archive_demote_idle_days),
         )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Count the tier moves this sweep would make, without making them.
+
+        Runs the same four predicates ``run()`` uses over the store's
+        in-memory tier mirrors — no SQL, no writes — and stops at
+        :data:`_DEMAND_SATURATION`, so the probe's cost is bounded even
+        on a large store.
+
+        The trailing ``prune()`` in ``run()`` is not counted. It only
+        does anything when a tier grew past its cap, which in practice
+        happens as a *consequence* of the promotions above, and the
+        heartbeat run covers the rare case where it wouldn't.
+        """
+        if not self._settings.tiers_enabled:
+            return WorkSignal(pressure=0.0, reason="tiers disabled")
+        try:
+            pending = self._pending_moves(
+                self._resolve_gates(), now, limit=_DEMAND_SATURATION,
+            )
+        except Exception:
+            log.debug("memory_promotion demand probe failed", exc_info=True)
+            return None
+        return WorkSignal(
+            pressure=pressure_from_count(
+                pending, saturation=_DEMAND_SATURATION,
+            ),
+            reason=f"{pending} tier moves",
+        )
+
+    def _pending_moves(
+        self, gates: _Gates, now: datetime, *, limit: int,
+    ) -> int:
+        """How many rows the sweep would move, counted up to ``limit``."""
+        pending = 0
+        for mem in self._store.iter_by_tier("scratchpad"):
+            if self._should_promote(mem, gates, now) or self._should_delete(
+                mem, gates, now,
+            ):
+                pending += 1
+                if pending >= limit:
+                    return pending
+        for mem in self._store.iter_by_tier("long_term"):
+            if self._should_demote(mem, gates, now):
+                pending += 1
+                if pending >= limit:
+                    return pending
+        # Scratchpad's pinned rows are already counted by
+        # _should_promote, so only archive is left for the coerce stage.
+        for mem in self._store.iter_by_tier("archive"):
+            if self._should_coerce(mem):
+                pending += 1
+                if pending >= limit:
+                    return pending
+        return pending
+
+    def run(self) -> dict[str, Any]:
+        if not self._settings.tiers_enabled:
+            return {
+                "skipped": True,
+                "reason": "tiers_disabled",
+            }
+        gates = self._resolve_gates()
         now = _utcnow()
         promoted = self._promote_scratchpad(gates, now)
         deleted = self._delete_dead_scratchpad(gates, now)
@@ -146,26 +211,59 @@ class MemoryPromotionWorker:
         log.info("memory_promotion sweep: %s", result)
         return result
 
+    # ── tier predicates (read-only; shared with demand()) ────────────
+
+    def _should_promote(
+        self, mem: "Memory", gates: _Gates, now: datetime,
+    ) -> bool:
+        """Scratchpad row that has earned long_term."""
+        if mem.pinned:
+            # Pinned rows shouldn't sit in scratchpad anyway; the coerce
+            # step would pick them up too, but handling them here avoids
+            # double work.
+            return True
+        age_days = self._age_days(mem, now)
+        qualifies_age_use = (
+            age_days >= gates.promote_min_age_days
+            and mem.use_count >= gates.promote_min_use_count
+        )
+        return qualifies_age_use or mem.revival_score >= gates.promote_min_revival
+
+    def _should_delete(
+        self, mem: "Memory", gates: _Gates, now: datetime,
+    ) -> bool:
+        """Scratchpad row nothing ever came back to."""
+        if mem.pinned:
+            return False
+        return (
+            self._age_days(mem, now) >= gates.ttl_days
+            and mem.use_count == 0
+            and mem.revival_score < gates.ttl_min_revival
+        )
+
+    def _should_demote(
+        self, mem: "Memory", gates: _Gates, now: datetime,
+    ) -> bool:
+        """long_term row idle long enough to fall back to archive."""
+        if mem.pinned or mem.revival_score >= 0.05:
+            return False
+        anchor = _parse_iso(mem.last_used_at) or _parse_iso(mem.created_at)
+        if anchor is None:
+            return False
+        idle_days = (now - anchor).total_seconds() / 86400.0
+        return idle_days >= gates.demote_idle_days
+
+    @staticmethod
+    def _should_coerce(mem: "Memory") -> bool:
+        """Pinned row that drifted out of long_term."""
+        return bool(mem.pinned) and mem.tier != "long_term"
+
     # ── sweep stages ─────────────────────────────────────────────────
 
     def _promote_scratchpad(self, gates: _Gates, now: datetime) -> int:
-        rows = self._store.iter_by_tier("scratchpad")
         promoted = 0
-        for mem in rows:
-            if mem.pinned:
-                # Pinned rows shouldn't sit in scratchpad anyway; the
-                # coerce step picks them up too, but doing it here
-                # avoids double work.
-                self._update_tier(mem, "long_term")
-                promoted += 1
-                continue
-            age_days = self._age_days(mem, now)
-            qualifies_age_use = (
-                age_days >= gates.promote_min_age_days
-                and mem.use_count >= gates.promote_min_use_count
-            )
-            qualifies_revival = mem.revival_score >= gates.promote_min_revival
-            if qualifies_age_use or qualifies_revival:
+        for mem in self._store.iter_by_tier("scratchpad"):
+            if self._should_promote(mem, gates, now):
                 self._update_tier(mem, "long_term")
                 promoted += 1
         return promoted
@@ -190,39 +288,23 @@ class MemoryPromotionWorker:
           quoted is still spared exactly as before, while one that was
           merely on topic is not.
         """
-        rows = self._store.iter_by_tier("scratchpad")
         deleted = 0
-        for mem in rows:
-            if mem.pinned:
+        for mem in self._store.iter_by_tier("scratchpad"):
+            if not self._should_delete(mem, gates, now):
                 continue
-            age_days = self._age_days(mem, now)
-            if (
-                age_days >= gates.ttl_days
-                and mem.use_count == 0
-                and mem.revival_score < gates.ttl_min_revival
-            ):
-                try:
-                    if self._store.delete(mem.id):
-                        deleted += 1
-                except Exception:
-                    log.debug(
-                        "scratchpad delete failed id=%s", mem.id, exc_info=True,
-                    )
+            try:
+                if self._store.delete(mem.id):
+                    deleted += 1
+            except Exception:
+                log.debug(
+                    "scratchpad delete failed id=%s", mem.id, exc_info=True,
+                )
         return deleted
 
     def _demote_idle_long_term(self, gates: _Gates, now: datetime) -> int:
-        rows = self._store.iter_by_tier("long_term")
         demoted = 0
-        for mem in rows:
-            if mem.pinned:
-                continue
-            if mem.revival_score >= 0.05:
-                continue
-            anchor = _parse_iso(mem.last_used_at) or _parse_iso(mem.created_at)
-            if anchor is None:
-                continue
-            idle_days = (now - anchor).total_seconds() / 86400.0
-            if idle_days >= gates.demote_idle_days:
+        for mem in self._store.iter_by_tier("long_term"):
+            if self._should_demote(mem, gates, now):
                 self._update_tier(mem, "archive")
                 demoted += 1
         return demoted
@@ -232,7 +314,7 @@ class MemoryPromotionWorker:
         coerced = 0
         for tier in ("scratchpad", "archive"):
             for mem in self._store.iter_by_tier(tier):
-                if mem.pinned and mem.tier != "long_term":
+                if self._should_coerce(mem):
                     self._update_tier(mem, "long_term")
                     coerced += 1
         return coerced

@@ -32,7 +32,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from app.core.affect import day_color
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -108,11 +108,39 @@ class DayColorWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        return bool(getattr(self._settings, "day_color_enabled", True))
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Full pressure until today's colour is on the board.
+
+        One ``kv_get`` and a date compare — the same check ``run()``
+        opens with, which is the point: the twenty-three hourly ticks
+        that find today's roll already done now cost a probe rather
+        than a slot.
+
+        The clock here is :func:`timephrase.now` rather than the
+        scheduler's UTC ``now``, because the roll is per *local* day and
+        probing in the wrong timezone would fire it at the wrong hour.
+
+        An unreadable key reads as stale, matching
+        :func:`day_color.is_stale`'s own corrupt-means-stale posture: a
+        roll we didn't need is cheaper than a day spent showing
+        yesterday's colour.
+        """
         if not bool(getattr(self._settings, "day_color_enabled", True)):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            stored_at = self._chat_db.kv_get(KV_DAY_COLOR_SET_AT)
+        except Exception:
+            return WorkSignal(pressure=1.0, reason="kv unreadable")
+        if day_color.is_stale(stored_at, timephrase.now()):
+            return WorkSignal(pressure=1.0, reason="stale")
+        return WorkSignal(pressure=0.0, reason="fresh")
 
     def run(self) -> dict[str, Any]:
         """Roll if today's colour isn't set; otherwise no-op.

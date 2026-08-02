@@ -545,8 +545,10 @@ compound across every K-series entry:
   hand-maintained denylist of ~30 providers that has drifted (belief_gaps
   dropped, its sibling clarification kept). Generalise the T3 selector
   across the whole block set; learned weights once G4 exists.
-- **P44.** Migrate the remaining ~40 idle workers to `demand()`; each one
-  that lands frees an `*_interval_seconds` key from config.
+- **P44.** Partly shipped — the sixteen pure-compute workers now report
+  demand and drain in the compute lane. The eighteen left all call a
+  model, so they need ranking rather than re-laning; each one that lands
+  frees an `*_interval_seconds` key from config.
 - **P45.** Retire the per-hour / per-day cue caps in favour of a
   satisfaction signal fed back from whether the cues were engaged with.
 - **P46.** Drain the compute lane in parallel — blocked on shared

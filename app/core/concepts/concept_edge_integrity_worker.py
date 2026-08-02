@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_edge_reconciler import ConceptEdgeReconciler
@@ -54,10 +54,41 @@ class ConceptEdgeIntegrityWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None
     ) -> bool:
+        return self._enabled()
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None
+    ) -> "WorkSignal | None":
+        """Count orphaned edges without dropping them.
+
+        This is a safety net for the one path that can create orphans
+        (``MemoryStore.prune`` batch-deletes without firing delete
+        listeners), so on an install where nothing has been pruned the
+        count is zero and the worker never takes a slot — which is most
+        of the time.
+        """
         if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="disabled")
+        batch = self._batch_size()
+        try:
+            count = self._reconciler.orphan_backlog(batch)
+        except Exception:
+            return None
+        return WorkSignal(
+            pressure=pressure_from_count(count, saturation=batch),
+            reason=f"{count} orphan edges",
+        )
+
+    def _batch_size(self) -> int:
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_edge_integrity_batch_size",
+                    200,
+                )
+            ),
         )
 
     def _enabled(self) -> bool:
@@ -74,17 +105,7 @@ class ConceptEdgeIntegrityWorker:
     def run(self) -> dict[str, Any]:
         if not self._enabled():
             return {"skipped": True, "reason": "disabled"}
-        batch = max(
-            1,
-            int(
-                getattr(
-                    self._memory_settings,
-                    "concept_edge_integrity_batch_size",
-                    200,
-                )
-            ),
-        )
-        return self._reconciler.sweep(batch)
+        return self._reconciler.sweep(self._batch_size())
 
 
 __all__ = ["ConceptEdgeIntegrityWorker"]

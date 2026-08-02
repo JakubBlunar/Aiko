@@ -299,29 +299,65 @@ class ResolverNoOpTests(unittest.TestCase):
 
 
 class ResolverIsReadyTests(unittest.TestCase):
-    def test_is_ready_false_when_no_open_gaps(self) -> None:
-        _, _, _, resolver = _make_resolver()
-        now = datetime.now(timezone.utc)
-        self.assertFalse(resolver.is_ready(now=now, last_run_at=None))
-
-    def test_is_ready_true_first_run_with_open_gap(self) -> None:
-        _, _, gaps, resolver = _make_resolver()
-        gaps.add_gap(topic="x", question="something to ponder")
+    def test_is_ready_is_the_feature_flag_alone(self) -> None:
+        # Both the interval and the "any open gaps" check moved into
+        # demand() at migration, so is_ready() is just the switch.
+        _, _, _, resolver = _make_resolver(interval=600)
         now = datetime.now(timezone.utc)
         self.assertTrue(resolver.is_ready(now=now, last_run_at=None))
-
-    def test_is_ready_false_within_interval(self) -> None:
-        _, _, gaps, resolver = _make_resolver(interval=600)
-        gaps.add_gap(topic="x", question="something to ponder")
-        now = datetime.now(timezone.utc)
-        recent = now - timedelta(seconds=120)  # 2 min ago, < 10 min
-        self.assertFalse(resolver.is_ready(now=now, last_run_at=recent))
+        self.assertTrue(
+            resolver.is_ready(
+                now=now, last_run_at=now - timedelta(seconds=120),
+            )
+        )
 
     def test_is_ready_false_when_disabled(self) -> None:
         _, _, gaps, resolver = _make_resolver(enabled=False)
         gaps.add_gap(topic="x", question="something to ponder")
         now = datetime.now(timezone.utc)
         self.assertFalse(resolver.is_ready(now=now, last_run_at=None))
+
+
+class ResolverDemandTests(unittest.TestCase):
+    def _probe(self, resolver):
+        return resolver.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+
+    def test_no_open_gaps_is_no_pressure(self) -> None:
+        _, _, _, resolver = _make_resolver()
+        signal = self._probe(resolver)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "0 open")
+
+    def test_one_open_gap_clears_the_threshold(self) -> None:
+        _, _, gaps, resolver = _make_resolver()
+        gaps.add_gap(topic="x", question="something to ponder")
+        signal = self._probe(resolver)
+        self.assertGreaterEqual(signal.pressure, 0.5)
+        self.assertEqual(signal.reason, "1 open")
+
+    def test_a_full_tick_of_gaps_saturates(self) -> None:
+        _, _, gaps, resolver = _make_resolver(per_tick=2)
+        gaps.add_gap(topic="a", question="first thing to ponder")
+        gaps.add_gap(topic="b", question="second thing to ponder")
+        self.assertEqual(self._probe(resolver).pressure, 1.0)
+
+    def test_the_probe_stays_on_the_compute_lane(self) -> None:
+        # Pure cosine, no LLM and no web -- the whole reason this
+        # worker should never have been billed to the LLM lane.
+        _, _, gaps, resolver = _make_resolver()
+        gaps.add_gap(topic="x", question="something to ponder")
+        signal = self._probe(resolver)
+        self.assertFalse(signal.needs_llm)
+        self.assertEqual(signal.lane, "compute")
+
+    def test_probing_does_not_resolve_anything(self) -> None:
+        _, _, gaps, resolver = _make_resolver()
+        gaps.add_gap(topic="x", question="something to ponder")
+        self._probe(resolver)
+        self._probe(resolver)
+        self.assertEqual(len(gaps.list_open()), 1)
 
 
 class ResolverLogsAuditTrailTests(unittest.TestCase):

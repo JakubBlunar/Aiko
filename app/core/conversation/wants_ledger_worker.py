@@ -24,11 +24,12 @@ function, so semantics are identical).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.conversation import wants_ledger
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -44,6 +45,8 @@ log = logging.getLogger("app.wants_ledger_worker")
 _MAX_SEEDS_PER_RUN = 2
 _MAX_FORWARD_PER_RUN = 2
 _MAX_GOALS_PER_RUN = 2
+# Most a single tick can ingest -- the saturation point for demand().
+_MAX_PER_RUN = _MAX_SEEDS_PER_RUN + _MAX_FORWARD_PER_RUN + _MAX_GOALS_PER_RUN
 # Goal-derived wants start lower than ask/share wants: steering toward
 # a goal is a background pull, not a fresh itch.
 _GOAL_INITIAL_PRESSURE = 0.05
@@ -51,6 +54,25 @@ _GOAL_INITIAL_PRESSURE = 0.05
 
 def _utcnow() -> datetime:
     return timephrase.utcnow()
+
+
+@dataclass(frozen=True)
+class _IngestPlan:
+    """What one tick would do to the ledger, before anything is written.
+
+    Every stage of the ingest is a pure function over an immutable
+    :class:`~app.core.conversation.wants_ledger.LedgerState`, so the
+    whole next state can be computed and then either persisted (by
+    ``run()``) or discarded (by ``demand()``).
+    """
+
+    state: "wants_ledger.LedgerState"
+    added: tuple[tuple[str, str], ...]
+    """``(source, source_ref)`` per want that would be added."""
+    dropped: tuple[str, ...]
+    """Want ids that would be retired."""
+    dead_refs: tuple[str, ...]
+    """``source_ref``s whose backing curiosity seed is gone."""
 
 
 class WantsLedgerWorker:
@@ -99,25 +121,26 @@ class WantsLedgerWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return False
-            except Exception:
-                pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        return self._enabled()
 
-    def run(self) -> dict[str, Any]:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return {"added": 0, "disabled": True}
-            except Exception:
-                pass
-        now = _utcnow()
-        state = wants_ledger.deserialize(self._kv_get_safe(wants_ledger.KV_WANTS_LEDGER))
+    def _enabled(self) -> bool:
+        if self._enabled_provider is None:
+            return True
+        try:
+            return bool(self._enabled_provider())
+        except Exception:
+            # Matches run(): a raising provider is no opinion, not a veto.
+            return True
+
+    def _plan(self, now: datetime) -> _IngestPlan:
+        """Compute the ledger this tick would persist, without writing it.
+
+        Shared by ``run()`` and ``demand()``. Emits no log lines — the
+        caller decides whether this is a real tick worth narrating.
+        """
+        state = wants_ledger.deserialize(
+            self._kv_get_safe(wants_ledger.KV_WANTS_LEDGER)
+        )
         state = wants_ledger.apply_growth(
             state, now,
             growth_per_day=self._growth_per_day,
@@ -130,9 +153,9 @@ class WantsLedgerWorker:
         # removed the live row, so its pressure kept climbing and drove
         # Aiko to re-ask a question she'd already had answered. Self-heal
         # every tick.
-        state, pruned = self._prune_dead_seed_wants(state)
+        state, dropped, dead_refs = self._prune_dead_seed_wants(state)
 
-        added = 0
+        added: list[tuple[str, str]] = []
         name = self._safe_name()
         for text, kind, source, ref, pressure in self._candidates(name):
             state, ok = wants_ledger.add_want(
@@ -146,49 +169,103 @@ class WantsLedgerWorker:
                 initial_pressure=pressure,
             )
             if ok:
-                added += 1
-                log.info("wants-ledger added: source=%s ref=%s", source, ref)
+                added.append((source, ref))
+        return _IngestPlan(
+            state=state,
+            added=tuple(added),
+            dropped=tuple(dropped),
+            dead_refs=tuple(dead_refs),
+        )
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Count the wants this tick would add or retire.
+
+        Pressure deliberately ignores the growth step. Growth is
+        elapsed-time exponential and the provider applies it lazily on
+        the next turn through the same pure function, so a tick spent
+        only to re-persist grown pressures changes nothing anyone can
+        observe. What is worth a slot is a genuinely new want, or a
+        stale seed want that would otherwise keep climbing toward
+        re-asking a question already answered.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        try:
+            plan = self._plan(now)
+        except Exception:
+            log.debug("wants ledger demand probe failed", exc_info=True)
+            return None
+        pending = len(plan.added) + len(plan.dropped)
+        if not pending:
+            return WorkSignal(pressure=0.0, reason="ledger current")
+        return WorkSignal(
+            pressure=pressure_from_count(pending, saturation=_MAX_PER_RUN),
+            reason=f"{len(plan.added)} new, {len(plan.dropped)} dead",
+        )
+
+    def run(self) -> dict[str, Any]:
+        if self._enabled_provider is not None:
+            try:
+                if not bool(self._enabled_provider()):
+                    return {"added": 0, "disabled": True}
+            except Exception:
+                pass
+        plan = self._plan(_utcnow())
+        for ref in sorted(plan.dead_refs):
+            log.info("wants-ledger pruned dead seed want: ref=%s", ref)
+        for source, ref in plan.added:
+            log.info("wants-ledger added: source=%s ref=%s", source, ref)
 
         try:
-            self._kv_set(wants_ledger.KV_WANTS_LEDGER, wants_ledger.serialize(state))
+            self._kv_set(
+                wants_ledger.KV_WANTS_LEDGER,
+                wants_ledger.serialize(plan.state),
+            )
         except Exception:
             log.debug("wants ledger persist failed", exc_info=True)
-        return {"added": added, "pruned": len(pruned), "live": len(state.wants)}
+        return {
+            "added": len(plan.added),
+            "pruned": len(plan.dropped),
+            "live": len(plan.state.wants),
+        }
 
     # ── maintenance ──────────────────────────────────────────────────
 
     def _prune_dead_seed_wants(
         self, state: "wants_ledger.LedgerState",
-    ) -> tuple["wants_ledger.LedgerState", list[str]]:
+    ) -> tuple["wants_ledger.LedgerState", list[str], list[str]]:
         """Drop ``curiosity_seed`` wants whose backing seed is gone.
 
         A seed's want is fed only while the seed is still pending in the
         cue pool. Once the seed retires (its topic came up) or expires,
         its want must retire with it — otherwise it lingers, grows
         pressure, and re-asks an answered question. Returns the pruned
-        state + the dropped want ids (best-effort; a store hiccup leaves
-        the ledger untouched).
+        state, the dropped want ids, and the dead ``source_ref``s
+        (best-effort; a store hiccup leaves the ledger untouched).
         """
         if not state.wants:
-            return state, []
+            return state, [], []
         seed_refs = {
             w.source_ref for w in state.wants
             if w.source == "curiosity_seed"
             and w.source_ref.startswith("cue:")
         }
         if not seed_refs:
-            return state, []
+            return state, [], []
         rows = self._pending_seeds(limit=64)
         if rows is None:
-            return state, []
+            return state, [], []
         active_refs = {f"cue:{row.id}" for row in rows}
         dead = seed_refs - active_refs
         if not dead:
-            return state, []
+            return state, [], []
         state, dropped = wants_ledger.drop_source_refs(state, dead)
-        for ref in sorted(dead):
-            log.info("wants-ledger pruned dead seed want: ref=%s", ref)
-        return state, dropped
+        return state, dropped, sorted(dead)
 
     def _pending_seeds(self, *, limit: int) -> list[Any] | None:
         """Unspent curiosity seeds, or ``None`` if the pool can't be read.
