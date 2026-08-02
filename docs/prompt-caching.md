@@ -110,24 +110,44 @@ Both files' mtimes are in the split cache key and in the static slice
 cache key, so editing either takes effect on the next turn rather than
 the next restart.
 
-The split is worth roughly 41 k characters (~10 k tokens) off every turn
-across 47 blocks and 43 headers — against a persona that is now ~37 k, so
+The split is worth roughly 44 k characters (~11 k tokens) off every turn
+across 51 blocks and 47 headers — against a persona that is now ~35 k, so
 rather more than half of what used to ship unconditionally. The T6
 addition is bounded by how many blocks fired: usually zero, at most one
 or two, since the cue priority mutex allows a single gap-cue through per
 turn.
 
-Not everything conditional-sounding moved. Two categories deliberately
-stayed, both recorded in `prompt_support.py`. `_STAYS_IN_T0` names the
-four blocks that read like cues but render on most turns — `wants`,
-`user_state`, `day_color`, `profile` — where the trade below runs the
-wrong way; `tests/test_persona_hoist.py` asserts none of them is ever
-registered. The comment beneath it names the sections that interleave
-always-on inline-tag grammar (`[[remember:]]`, `[[predict:]]`, `[[arc:]]`,
-…) with the handling for one block: `split_persona_section` moves whole
-sections, so hoisting one of those wholesale would take the grammar with
-it and silently delete the tag. Each needs its conditional half split
-into a header of its own first.
+Not everything conditional-sounding moved, and the reasons are worth
+knowing before adding to the registry — both are recorded in
+`prompt_support.py`, and `tests/test_persona_hoist.py` asserts nothing on
+either list is ever registered.
+
+`_STAYS_IN_T0` names the blocks that **read** like cues and **render**
+most turns, where the trade below runs the wrong way. Four are obvious
+once stated (`wants`, `user_state`, `day_color`, `profile`). Two were
+caught only by checking the provider against the prose: `goals_block`
+says "your context *may* include" and in fact renders whenever a single
+goal is active, which the onboarding seed guarantees from the first time
+a user sets their name; and `grounding_block` is the inverted case —
+`grounding_line_mode` defaults to `off`, so a stock install pays for a
+section whose block never renders, but the mode is binary and every
+install that enables it gets the fused line on essentially every turn.
+Hoisting it would optimise the configuration nobody using the feature is
+in.
+
+The second list is the sections interleaving always-on inline-tag
+grammar (`[[remember:]]`, `[[moment:]]`, `[[predict:]]`, …) with the
+handling for one block. `split_persona_section` moves whole sections, so
+hoisting one wholesale would take the grammar with it and silently
+delete the tag — Aiko simply stops being told she may emit it, and the
+feature behind it stops receiving writes with nothing raising anywhere.
+Three of these have since been split by hand into headers of their own
+(`follow_up`, `anniversary`, `growth_witness`), which is what
+`MixedProseSplitTests` guards. Two more turned out to have no
+conditional half at all: `arc_block` and `knowledge_gaps_block` emit
+*content* rather than handling for content — a direct state line and a
+bullet list respectively — so their persona sections are pure tag
+grammar and there is nothing to hoist.
 
 Three ways the pairing comes apart silently, all covered in
 `tests/test_persona_hoist.py`: a header renamed in the file (the section
