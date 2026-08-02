@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import datetime, timezone
 from typing import Any
 
 from app.core.proactive.diary_worker import DiaryWorker, build_recent_context
@@ -196,6 +197,81 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result["fired"], 1)
         # force flag is consumed after one run.
         self.assertFalse(worker._forced)
+
+
+class DemandTests(unittest.TestCase):
+    """The P44 probe. One entry is owed or it isn't."""
+
+    def test_entry_due_reports_pressure(self) -> None:
+        worker = _make_worker()
+        now = datetime.now(timezone.utc)
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_client_connected_vetoes(self) -> None:
+        worker = _make_worker(away=False)
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "client_connected")
+
+    def test_cooldown_vetoes(self) -> None:
+        kv = {
+            "diary_worker.last_fired_at": datetime.now(
+                timezone.utc,
+            ).isoformat(timespec="seconds"),
+        }
+        worker = _make_worker(kv=kv, cooldown_seconds=10800.0)
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        self.assertEqual(
+            worker.demand(now=now, last_run_at=None).reason, "cooldown",
+        )
+
+    def test_thin_context_vetoes(self) -> None:
+        worker = _make_worker(context="hi", min_context_chars=80)
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        self.assertEqual(
+            worker.demand(now=now, last_run_at=None).reason, "no_context",
+        )
+
+    def test_probe_does_not_consume_the_force_flag(self) -> None:
+        """Only ``run`` may spend a one-shot.
+
+        A probe that consumed ``_forced`` would silently swallow the
+        MCP force, and the run it was armed for would take the normal
+        cooled-down path.
+        """
+        kv = {
+            "diary_worker.last_fired_at": datetime.now(
+                timezone.utc,
+            ).isoformat(timespec="seconds"),
+        }
+        worker = _make_worker(kv=kv, cooldown_seconds=10800.0)
+        worker.force_next()
+        now = datetime.now(timezone.utc)
+
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.reason, "forced")
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        self.assertTrue(worker._forced)
+
+        worker.run()
+        self.assertFalse(worker._forced)
+
+    def test_probe_writes_nothing(self) -> None:
+        kv: dict[str, str] = {}
+        store = _FakeStore()
+        worker = _make_worker(kv=kv, store=store)
+        now = datetime.now(timezone.utc)
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(kv, {})
+        self.assertEqual(len(store.added), 0)
 
 
 class StateTests(unittest.TestCase):

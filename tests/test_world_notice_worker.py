@@ -185,5 +185,74 @@ class GateTests(unittest.TestCase):
         self.assertTrue(result.get("skipped_no_user"))
 
 
+class DemandTests(unittest.TestCase):
+    """The P44 probe: a gift outranks a room beat, cooling down is zero.
+
+    The regression these guard is the one the first post-migration log
+    caught elsewhere in the registry: this worker fired 54 times in 35
+    minutes and skipped on cooldown for 53 of them, because the gate
+    lived in ``run`` where the scheduler could not see it.
+    """
+
+    def test_cooling_down_is_not_ready_and_has_no_pressure(self) -> None:
+        kv, nudges = _FakeKV(), _FakeNudgeStore()
+        worker = _make_worker(kv=kv, nudges=nudges)
+        now = datetime.now(timezone.utc)
+        kv.set(
+            "world_notice.last_fired_at",
+            (now - timedelta(minutes=5)).isoformat(timespec="seconds"),
+        )
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "cooling down")
+
+    def test_gift_outranks_a_room_beat(self) -> None:
+        kv, nudges = _FakeKV(), _FakeNudgeStore()
+        worker = _make_worker(kv=kv, nudges=nudges)
+        now = datetime.now(timezone.utc)
+
+        room = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(room.reason, "room")
+
+        _stamp_gift(kv)
+        gift = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(gift.reason, "gift")
+        self.assertGreater(gift.pressure, room.pressure)
+
+    def test_daily_cap_reached_reports_nothing(self) -> None:
+        kv, nudges = _FakeKV(), _FakeNudgeStore()
+        worker = _make_worker(kv=kv, nudges=nudges, daily_cap=2)
+        now = datetime.now(timezone.utc)
+        kv.set("world_notice.day", now.astimezone().strftime("%Y-%m-%d"))
+        kv.set("world_notice.day_count", "2")
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        self.assertEqual(
+            worker.demand(now=now, last_run_at=None).pressure, 0.0,
+        )
+
+    def test_probe_writes_nothing(self) -> None:
+        kv, nudges = _FakeKV(), _FakeNudgeStore()
+        _stamp_gift(kv)
+        worker = _make_worker(kv=kv, nudges=nudges)
+        now = datetime.now(timezone.utc)
+        before = dict(kv.store)
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(kv.store, before)
+        self.assertEqual(len(nudges.upserts), 0)
+
+    def test_needs_llm_follows_the_wiring(self) -> None:
+        """No worker model means the deterministic fallback, i.e. compute."""
+        kv, nudges = _FakeKV(), _FakeNudgeStore()
+        worker = _make_worker(kv=kv, nudges=nudges)
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker.demand(now=now, last_run_at=None).needs_llm)
+
+        worker._ollama = object()
+        worker._model = "qwen"
+        self.assertTrue(worker.demand(now=now, last_run_at=None).needs_llm)
+
+
 if __name__ == "__main__":
     unittest.main()

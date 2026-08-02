@@ -55,7 +55,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -287,11 +287,79 @@ class FollowUpWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, and at least one plan to fire or retire."""
         if not self._enabled():
             return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        due, stale = self._scan(now)
+        return bool(due or stale)
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from plans inside their follow-up window.
+
+        Stale plans — the ones past ``lookback`` that ``run`` retires
+        on sight — are counted for readiness but contribute no
+        pressure. Retiring them is bookkeeping with no deadline, and
+        the heartbeat sweeps it; a cue whose moment is *now* is the
+        thing worth jumping the queue for.
+
+        ``needs_llm`` is per-run: without a worker model wired,
+        ``_draft_question`` returns an empty string and the cue is
+        still written from the deterministic plan summary.
+        """
+        if not self._enabled():
+            return WorkSignal(pressure=0.0, reason="disabled")
+        due, stale = self._scan(now)
+        if not due:
+            return WorkSignal(
+                pressure=0.0,
+                reason=f"{stale} to retire" if stale else "nothing due",
+            )
+        return WorkSignal(
+            pressure=pressure_from_count(due, saturation=self._max_per_run),
+            reason=f"{due} due",
+            needs_llm=bool(self._ollama is not None and self._model),
         )
+
+    def _scan(self, now: datetime) -> tuple[int, int]:
+        """``(due, stale)`` over the future-plan rows — no writes.
+
+        The same window test ``run`` applies, minus the one side effect
+        in that loop: ``run`` stamps rows past ``lookback`` as dropped
+        so it stops scanning them, and a probe must not. It also peeks
+        at ``_forced_source_id`` rather than consuming it.
+        """
+        try:
+            candidates = self._memory_store.list_by_temporal_type(
+                "future_plan",
+            )
+        except Exception:
+            log.debug("follow_up: list future_plan failed", exc_info=True)
+            return 0, 0
+        forced = self._forced_source_id
+        due = stale = 0
+        for mem in candidates:
+            if forced is not None and str(mem.id) == forced:
+                due += 1
+                continue
+            metadata = mem.metadata or {}
+            if metadata.get("followup_fired_at"):
+                continue
+            event_dt = _parse_iso(mem.event_time)
+            if event_dt is None:
+                continue
+            delta = event_dt - now
+            if delta > self._lookahead:
+                continue
+            if delta < -self._lookback:
+                stale += 1
+                continue
+            due += 1
+        return due, stale
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():

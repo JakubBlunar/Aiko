@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -213,25 +213,63 @@ class KnowledgeMapReflectionWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if not self._enabled():
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        """Enabled, wired, and past the 20-hour cooldown.
+
+        The cooldown is a hard veto: a run inside it returns
+        ``skipped_cooldown`` without touching the graph, so admitting
+        one achieves nothing the next admission would not.
+        """
+        return self._blocker(now) is None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """One reflection per cooldown window, so a flat signal.
+
+        Deliberately does **not** check whether the graph is rich
+        enough. That answer lives in ``_read_shape``, which walks
+        cluster activity and annotates concepts — run-shaped work, not
+        probe-shaped, and this worker's 2.4-hour anti-thrash floor
+        already bounds how often a thin graph gets re-examined.
+        """
+        blocker = self._blocker(now)
+        if blocker is not None:
+            return WorkSignal(pressure=0.0, reason=blocker)
+        return WorkSignal(
+            pressure=1.0 if self._force_next else 0.5,
+            reason="forced" if self._force_next else "reflection due",
+            needs_llm=True,
         )
+
+    def _blocker(
+        self, now: datetime, *, force: bool | None = None,
+    ) -> str | None:
+        """First reason a run would do nothing, or ``None``.
+
+        ``force=None`` peeks at the one-shot instead of consuming it.
+        """
+        if force is None:
+            force = self._force_next
+        if not self._enabled():
+            return "disabled"
+        if self._ollama is None or not self._model:
+            return "no_llm"
+        if self._embedder is None:
+            return "no_embedder"
+        if not force and not self._cooldown_elapsed(now):
+            return "skipped_cooldown"
+        return None
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
         self._force_next = False
-        if not self._enabled():
-            return {"wrote": 0, "disabled": True}
-        if self._ollama is None or not self._model:
-            return {"wrote": 0, "no_llm": True}
-        if self._embedder is None:
-            return {"wrote": 0, "no_embedder": True}
-
         now = _utcnow()
-        if not force and not self._cooldown_elapsed(now):
-            return {"wrote": 0, "skipped_cooldown": True}
+        blocker = self._blocker(now, force=force)
+        if blocker is not None:
+            return {"wrote": 0, blocker: True}
 
         graph = self._safe_graph()
         if graph is None:

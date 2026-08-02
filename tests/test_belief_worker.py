@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -219,6 +219,52 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(result.get("reason"), "rate_limited")
         # Worker shouldn't have called the LLM.
         self.assertEqual(len(ollama.chat_calls), 0)
+
+
+class DemandTests(unittest.TestCase):
+    """The P44 probe: has any new transcript arrived to mine.
+
+    This worker has no backlog. Left on a pure interval it would spend
+    a generation re-deriving the same beliefs from an unchanged
+    window, so the signal is new material rather than pending work.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_unmined_transcript_reports_pressure(self) -> None:
+        worker, _store, _ollama, _limiter = _build_world()
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_nothing_new_since_the_last_run_is_zero(self) -> None:
+        worker, _store, _ollama, _limiter = _build_world()
+        # Everything in the fixture predates this watermark.
+        later = self._now() + timedelta(hours=1)
+        signal = worker.demand(now=later, last_run_at=later)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "no new turns")
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        worker, _store, _ollama, limiter = _build_world(
+            cap_hour=1, cap_day=1,
+        )
+        self.assertTrue(limiter.allow(self._now()))
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertFalse(worker.is_ready(now=self._now(), last_run_at=None))
+
+    def test_probe_neither_spends_a_token_nor_calls_the_model(self) -> None:
+        worker, store, ollama, limiter = _build_world()
+        before = limiter.snapshot(self._now())["hour_used"]
+        now = self._now()
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(limiter.snapshot(now)["hour_used"], before)
+        self.assertEqual(len(ollama.chat_calls), 0)
+        self.assertEqual(len(store.list_active(user_id="u1")), 0)
 
 
 class PrivacyScrubTests(unittest.TestCase):

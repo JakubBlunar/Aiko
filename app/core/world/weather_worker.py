@@ -146,6 +146,16 @@ class WeatherWorker:
         the snapshot means a failed fetch stays at full pressure instead
         of looking satisfied for another interval.
 
+        Pressure is age *past* the interval, not age scaled by it.
+        Urgency is ``0.7 * pressure + 0.3 * staleness``, so returning
+        staleness as pressure collapses that to ``urgency = staleness``
+        and admits the worker the moment staleness crosses the
+        threshold — at ``0.35 x interval``, which turned a 30-minute
+        cadence into a 10-minute one against a public API. Measuring
+        from the due point instead means a snapshot that is merely due
+        is left to the heartbeat, and only one that is genuinely
+        overdue (a failed fetch, a long sleep) outranks its neighbours.
+
         This is the one compute-lane worker in the batch that blocks on
         network I/O rather than arithmetic — two Open-Meteo round-trips
         bounded by ``weather.timeout_seconds`` (default 10s). The probe
@@ -167,8 +177,9 @@ class WeatherWorker:
             return WorkSignal(pressure=1.0, reason="no snapshot")
         elapsed = max(0.0, (now - fetched).total_seconds())
         interval = self.interval_seconds
+        overdue = compute_staleness(elapsed - interval, interval)
         return WorkSignal(
-            pressure=compute_staleness(elapsed, interval),
+            pressure=overdue,
             reason=f"age {elapsed:.0f}s/{interval:.0f}s",
         )
 

@@ -14,6 +14,11 @@ from datetime import datetime, timedelta, timezone
 from app.core.affect import vitality as _vit
 from app.core.affect import vitality_rhythm as _vr
 from app.core.affect.vitality_worker import VitalityWorker
+from app.core.proactive.idle_worker import compute_staleness, compute_urgency
+
+# The scheduler's ``urgency_threshold`` default. Mirrored rather than
+# imported because it is a constructor argument, not a module constant.
+_THRESHOLD = 0.35
 
 
 class _FakeChatDB:
@@ -102,6 +107,52 @@ class DemandTests(unittest.TestCase):
         db = _FakeChatDB()
         _store_energy(db, 0.02, hours_ago=0.0)
         self.assertEqual(self._probe(_worker(db)).pressure, 0.0)
+
+    def _deepest_deficit(self, db: _FakeChatDB, *, seconds_ago: float) -> float:
+        """Store the worst possible deficit and return its urgency.
+
+        The circadian baseline moves through the day, so the test pins
+        the *deficit* rather than the energy: whichever end of the scale
+        is further from where she should be resting right now.
+        """
+        baseline, _rhythm = _vr.peek_baseline(
+            db, datetime.now().astimezone(), enabled=False,
+        )
+        energy = 0.0 if baseline >= 0.5 else 1.0
+        _store_energy(db, energy, hours_ago=seconds_ago / 3600.0)
+        signal = self._probe(_worker(db))
+        return compute_urgency(
+            signal.pressure, compute_staleness(seconds_ago, 900),
+        )
+
+    def test_a_deep_deficit_just_after_a_run_stays_off_the_floor(self) -> None:
+        """The P44 regression: 91 s cadence against a 900 s heartbeat.
+
+        The old probe floored at 0.5 whenever recovery would move the
+        level *at all*, which — recovery being asymptotic — was always.
+        Full pressure plus any staleness clears the 0.35 threshold, so
+        the worker sat on the anti-thrash floor and ran ten times more
+        often than configured to move a few thousandths each time.
+        """
+        urgency = self._deepest_deficit(_FakeChatDB(), seconds_ago=90.0)
+        self.assertLess(urgency, _THRESHOLD)
+
+    def test_a_deep_deficit_outranks_the_heartbeat_once_it_matters(self) -> None:
+        # Same deficit, half a heartbeat later: now worth jumping ahead
+        # of the workers that are merely due.
+        urgency = self._deepest_deficit(_FakeChatDB(), seconds_ago=450.0)
+        self.assertGreater(urgency, _THRESHOLD)
+
+    def test_sitting_at_baseline_never_gains_pressure_from_age(self) -> None:
+        """What separates this probe from staleness-as-pressure."""
+        db = _FakeChatDB()
+        baseline, _rhythm = _vr.peek_baseline(
+            db, datetime.now().astimezone(), enabled=False,
+        )
+        for hours in (1.0, 12.0, 96.0):
+            _store_energy(db, baseline, hours_ago=hours)
+            with self.subTest(hours=hours):
+                self.assertEqual(self._probe(_worker(db)).pressure, 0.0)
 
     def test_disabled_reports_no_pressure(self) -> None:
         db = _FakeChatDB()

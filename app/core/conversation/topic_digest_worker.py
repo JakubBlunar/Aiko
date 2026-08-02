@@ -56,7 +56,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.session.session_text_utils import resolve_user_name
 from app.core.infra import timephrase
 
@@ -186,10 +186,45 @@ class TopicDigestWorker:
     def is_ready(self, *, now: datetime, last_run_at: datetime | None) -> bool:
         if not bool(getattr(self._agent_settings, "topic_digest_enabled", True)):
             return False
+        return bool(getattr(self._topic_graph, "persistent", False))
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from dense clusters with no digest behind them.
+
+        ``cluster_digest_map`` is rebuilt at the end of every run and
+        held in memory, so "which dense clusters are undigested" costs
+        one dict lookup each — no ``kv_get`` per cluster the way
+        rebuilding ``run``'s ``todo`` list would. Drift (a digested
+        cluster that has since grown) is left to the heartbeat, since
+        a stale digest still answers the retriever and a missing one
+        does not.
+        """
+        if not bool(getattr(self._agent_settings, "topic_digest_enabled", True)):
+            return WorkSignal(pressure=0.0, reason="disabled")
         if not getattr(self._topic_graph, "persistent", False):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="not persistent")
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            log.debug("topic_digest: demand probe failed", exc_info=True)
+            return None
+        min_size = max(
+            2, int(getattr(self._agent_settings, "topic_digest_min_cluster_size", 6))
+        )
+        missing = sum(
+            1 for c in clusters
+            if int(c.size) >= min_size
+            and int(c.cluster_id) not in self.cluster_digest_map
+        )
+        max_per_run = max(
+            1, int(getattr(self._agent_settings, "topic_digest_max_per_run", 3))
+        )
+        return WorkSignal(
+            pressure=pressure_from_count(missing, saturation=max_per_run),
+            reason=f"{missing} undigested",
+            needs_llm=missing > 0,
         )
 
     def run(self) -> dict[str, Any]:

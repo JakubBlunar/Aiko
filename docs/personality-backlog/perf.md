@@ -1172,8 +1172,9 @@ Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
 
 ## P44. Migrate the remaining idle workers to `demand()`
 
-**Status: partly shipped.** Thirty-seven of fifty-five workers report
-demand. The most recent batch was the sixteen **pure-compute** ones —
+**Status: shipped, pending a log read-back.** All fifty-five workers
+report demand. The batch before last was the sixteen **pure-compute**
+ones —
 `day_color`, `vitality`, `affection_style_decay`, `humor_style_decay`,
 `weather`, `task_cleanup`, `gap_resolver`, `topic_graph_rebuild`,
 `concept_edge_integrity`, `memory_promotion`, `schedule_learner`,
@@ -1189,29 +1190,59 @@ worker started running more often than it used to. What changed is that
 a worker with a genuine backlog can now jump the queue, and a worker
 with nothing to do no longer spends a slot to find that out.
 
-The eighteen that remain all call a model, so the legacy path's "charge
-it to the LLM lane" is the right answer for them; what they are missing
-is ranking. Two probe-cost lessons from the compute batch carry over:
-prefer a cheap upstream gate to a full dry-run
-(`voice_adoption.promotion_blocked` settles a ten-day question with one
-kv read), and bound anything that walks a store (`memory_promotion`
-stops counting at saturation). Measured on a 3.3k-message install the
-slowest probe in the batch runs in ~0.5 ms against a 50 ms budget.
+Two probe-cost lessons from that batch carried over: prefer a cheap
+upstream gate to a full dry-run (`voice_adoption.promotion_blocked`
+settles a ten-day question with one kv read), and bound anything that
+walks a store (`memory_promotion` stops counting at saturation).
+Measured on a 3.3k-message install the slowest probe in the batch runs
+in ~0.5 ms against a 50 ms budget.
 
-**Cadence lesson, and four open regressions.** Probe *cost* turned out
-to be the easy half; probe *calibration* is the hard one, and the suite
-cannot see it — every one of these passed its tests. Reading a single
-35-minute log found four workers admitted far faster than their
-interval: `gap_resolver` (30 s, 59 no-op runs), `vitality` and
+**The cadence lesson.** Probe *cost* turned out to be the easy half;
+probe *calibration* is the hard one, and the suite cannot see it —
+every one of these passed its tests. Reading a single 35-minute log
+found four workers admitted far faster than their interval:
+`gap_resolver` (30 s, 59 no-op runs), `vitality` and
 `promise_followthrough` (both on the 91 s anti-thrash floor against a
 900 s interval), and `weather` (10 min against 30 min, on a network
 call). The four underlying mistakes — pressure meaning "not blocked",
 a discrete pressure floor on a continuous quantity, staleness returned
 as pressure, and a hard veto demoted to zero pressure — are written up
 in
-[`docs/idle-workers.md`](../idle-workers.md#four-ways-a-probe-goes-wrong).
-They are still live. **Verify the next batch against a log**, not only
+[`docs/idle-workers.md`](../idle-workers.md#five-ways-a-probe-goes-wrong).
+
+All four are fixed: `gap_resolver` restored its empty-store veto,
+`promise_followthrough` moved both kv gates into `is_ready` and counts
+askable promises through a read-only twin of its scan, `vitality`
+reports the size of the pending correction instead of flooring at 0.5,
+and `weather` measures age *past* its interval rather than scaled by
+it. Each carries a regression test that feeds the probe's own pressure
+plus the staleness at the anti-thrash floor through `compute_urgency`
+and asserts the result stays under the threshold — the assertion the
+original tests were missing. **Verify against a log anyway**, not only
 against the suite.
+
+**The final batch: eighteen LLM workers.** These were already in the
+right lane — every one calls a model — so this pass was about ranking,
+not re-laning. Their probes split four ways: real queues
+(`idle_fact_checker`, `idle_curiosity`, `follow_up`, `topic_label`,
+`topic_digest`, `idle_knowledge`), new-material watermarks against a
+last-run timestamp (`belief`, `promise_extraction`,
+`memory_consolidation`, `memory_conflict`, `thread_resummary`), binary
+"a run is owed" (`diary`, `hobby`, `world_notice`,
+`knowledge_map_reflection`, `goal`), and one pure heartbeat
+(`persona_regression`, which has no backlog and now says so). A shared
+`ChatDatabase.count_messages_since` serves the transcript miners.
+
+Two things were specific to this batch. The cooldown-gated workers kept
+their gates as early returns *inside* `run()`, so moving the interval
+out of `is_ready()` would have left them waking every heartbeat to
+no-op — failure mode (4). Each grew a read-only helper that both
+`is_ready()` and `run()` call. And several hold a force flag that
+`run()` consumes, so every probe has a test asserting it peeks rather
+than clears. Writing those tests also surfaced failure mode (5), a
+saturation that pins the probe at 1.0: `goal` divided by its own
+numerator and `thread_resummary` saturated at the value that triggers
+the redraft. Both were fixed before shipping.
 
 **Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
 shipped the mechanism and migrated nine workers. Workers that schedule

@@ -386,10 +386,22 @@ class PersonaRegressionWorkerTests(unittest.TestCase):
     def test_ready_when_never_run(self) -> None:
         self.assertTrue(self._worker().is_ready(now=_NOW, last_run_at=None))
 
-    def test_not_ready_before_the_interval(self) -> None:
+    def test_readiness_ignores_the_interval(self) -> None:
+        """Pacing is the scheduler's job after the demand migration.
+
+        The daily interval is now the heartbeat, and since this worker
+        reports zero pressure the heartbeat is the *only* thing that
+        ever admits it — so the cadence is unchanged even though
+        ``is_ready`` no longer looks at the clock.
+        """
         worker = self._worker()
         recent = _NOW - timedelta(hours=1)
-        self.assertFalse(worker.is_ready(now=_NOW, last_run_at=recent))
+        self.assertTrue(worker.is_ready(now=_NOW, last_run_at=recent))
+
+    def test_demand_is_pure_heartbeat(self) -> None:
+        signal = self._worker().demand(now=_NOW, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
 
     def test_interval_is_floored_at_an_hour(self) -> None:
         worker = prw.PersonaRegressionWorker(

@@ -20,7 +20,7 @@ import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.world import hobby as hobby_mod
 from app.core.world.idle_activity_worker import append_idle_seed
 from app.core.infra import timephrase
@@ -100,43 +100,90 @@ class HobbyWorker:
     def is_ready(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> bool:
+        """Enabled, and a move actually available.
+
+        The wall-clock advance floor (``hobby_advance_min_hours``, 6h by
+        default) is a hard veto rather than pressure: between advances
+        there is nothing for a run to do but re-read one kv key, and
+        the heartbeat would otherwise wake it six times per floor.
+        """
         if not bool(getattr(self._agent, "hobby_worker_enabled", True)):
             return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
+        return self._next_move(now)[0] is not None
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Which transition is due, and whether it will compose a seed.
+
+        ``needs_llm`` is genuinely per-run here: a rotation always
+        composes a wrap-up seed, a milestone advance composes one every
+        ``hobby_milestone_every`` advances, and an ordinary advance is a
+        single kv write. Two runs out of three belong in the compute
+        lane, which a per-worker flag could not express.
+        """
+        if not bool(getattr(self._agent, "hobby_worker_enabled", True)):
+            return WorkSignal(pressure=0.0, reason="disabled")
+        move, composes = self._next_move(now)
+        if move is None:
+            return WorkSignal(pressure=0.0, reason="pacing")
+        return WorkSignal(
+            pressure=1.0 if move in ("start", "rotate") else 0.6,
+            reason=move,
+            needs_llm=bool(
+                composes and self._ollama is not None and self._model
+            ),
         )
+
+    def _next_move(self, now: datetime) -> tuple[str | None, bool]:
+        """``(move, composes_seed)`` for the transition a run would make.
+
+        Read-only, and in particular it *peeks* at the two MCP one-shots
+        instead of consuming them — spending a force flag on a probe
+        would mean the run it was meant for never sees it.
+        """
+        try:
+            state = load_hobby(self._chat_db.kv_get)
+        except Exception:
+            log.debug("hobby demand probe failed", exc_info=True)
+            return None, False
+        if state is None:
+            return "start", False
+        if self._force_rotate or hobby_mod.should_rotate(
+            progress=int(state.get("progress", 0)),
+            advances=int(state.get("advances", 0)),
+            max_advances=int(getattr(self._mem, "hobby_max_advances", 12)),
+        ):
+            return "rotate", True
+        if not self._force_advance and not self._advance_due(now, state):
+            return None, False
+        milestone = hobby_mod.is_milestone(
+            advances=int(state.get("advances", 0)) + 1,
+            every=int(getattr(self._mem, "hobby_milestone_every", 3)),
+        )
+        return "advance", milestone
 
     def run(self) -> dict[str, Any]:
         if not bool(getattr(self._agent, "hobby_worker_enabled", True)):
             return {"skipped": True, "reason": "disabled"}
 
         now = _utcnow()
-        state = load_hobby(self._chat_db.kv_get)
-
-        # No hobby yet → start one.
-        if state is None:
-            return self._start_hobby(now)
-
-        # Rotate if it's run long enough (or forced).
-        max_advances = int(
-            getattr(self._mem, "hobby_max_advances", 12)
-        )
-        force_rotate = self._force_rotate
+        move, _composes = self._next_move(now)
+        # Consume the one-shots only now that the decision is made; the
+        # probe above deliberately left them armed.
         self._force_rotate = False
-        if force_rotate or hobby_mod.should_rotate(
-            progress=int(state.get("progress", 0)),
-            advances=int(state.get("advances", 0)),
-            max_advances=max_advances,
-        ):
-            return self._rotate_hobby(now, state)
-
-        # Pace progress with a wall-clock floor so it doesn't climb every
-        # idle tick — a hobby that advances 24×/day reads as fake.
-        force_advance = self._force_advance
         self._force_advance = False
-        if not force_advance and not self._advance_due(now, state):
-            return {"waiting": True, "label": state.get("label")}
 
+        state = load_hobby(self._chat_db.kv_get)
+        if move == "start" or state is None:
+            return self._start_hobby(now)
+        if move == "rotate":
+            return self._rotate_hobby(now, state)
+        if move is None:
+            # Pace progress with a wall-clock floor so it doesn't climb
+            # every idle tick — a hobby that advances 24x/day reads as
+            # fake.
+            return {"waiting": True, "label": state.get("label")}
         return self._advance_hobby(now, state)
 
     # ── transitions ──────────────────────────────────────────────────

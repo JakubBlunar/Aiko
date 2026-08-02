@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -325,6 +326,66 @@ class WorkerTests(unittest.TestCase):
         worker, _kv = _make_worker(graph=graph, gap_top_n=0)
         worker.run()
         self.assertEqual(graph.gap_calls, 0)
+
+
+class WorkerDemandTests(unittest.TestCase):
+    """The P44 probe: cheap gates only, and never the graph read."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_reflection_due_reports_pressure(self) -> None:
+        worker, _kv = _make_worker(graph=_FakeGraph(rich=_rich(5)))
+        now = self._now()
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_cooldown_vetoes(self) -> None:
+        worker, _kv = _make_worker(graph=_FakeGraph(rich=_rich(5)))
+        self.assertEqual(worker.run()["wrote"], 1)
+        now = self._now()
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "skipped_cooldown")
+
+    def test_probe_never_reads_the_graph(self) -> None:
+        """``_read_shape`` walks cluster activity — run-shaped, not probe.
+
+        A thin graph is discovered by ``run``; the worker's 2.4-hour
+        anti-thrash floor is what stops it being rediscovered often.
+        """
+        graph = _FakeGraph(rich=_rich(5), gaps=[_Entry("x", 6)])
+        worker, _kv = _make_worker(graph=graph)
+        now = self._now()
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(graph.gap_calls, 0)
+
+    def test_probe_does_not_consume_force_next(self) -> None:
+        worker, _kv = _make_worker(graph=_FakeGraph(rich=_rich(5)))
+        worker.run()
+        worker.force_next()
+        now = self._now()
+
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.reason, "forced")
+        self.assertTrue(worker._force_next)
+
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertFalse(worker._force_next)
+
+    def test_probe_writes_nothing(self) -> None:
+        store = _FakeStore()
+        worker, kv = _make_worker(graph=_FakeGraph(rich=_rich(5)), store=store)
+        now = self._now()
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(kv.d, {})
+        self.assertEqual(len(store.added), 0)
 
 
 class RecencyPhraseTests(unittest.TestCase):

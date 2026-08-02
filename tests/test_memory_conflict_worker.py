@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -478,6 +478,62 @@ class IsReadyTests(unittest.TestCase):
         w = _build_world()
         now = datetime.now(timezone.utc)
         self.assertTrue(w["worker"].is_ready(now=now, last_run_at=None))
+
+
+class DemandTests(unittest.TestCase):
+    """Pressure from allow-listed memories written since the last scan.
+
+    Same shape as the consolidation sweep: the true backlog needs the
+    all-pairs pass, so the probe counts fresh candidates instead.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_fresh_candidates_report_pressure(self) -> None:
+        w = _build_world()
+        for i in range(4):
+            _add_fact(w["memory_store"], w["embedder"], f"jacob likes tea {i}")
+        signal = w["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_nothing_new_since_the_last_scan_is_zero(self) -> None:
+        w = _build_world()
+        for i in range(4):
+            _add_fact(w["memory_store"], w["embedder"], f"jacob likes tea {i}")
+        later = self._now() + timedelta(hours=1)
+        signal = w["worker"].demand(now=later, last_run_at=later)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_empty_corpus_is_zero(self) -> None:
+        w = _build_world()
+        self.assertEqual(
+            w["worker"].demand(now=self._now(), last_run_at=None).pressure,
+            0.0,
+        )
+
+    def test_disabled_reports_nothing(self) -> None:
+        w = _build_world(enabled=False)
+        _add_fact(w["memory_store"], w["embedder"], "jacob likes tea")
+        self.assertEqual(
+            w["worker"].demand(now=self._now(), last_run_at=None).pressure,
+            0.0,
+        )
+
+    def test_probe_neither_spends_a_token_nor_calls_the_model(self) -> None:
+        w = _build_world()
+        for i in range(4):
+            _add_fact(w["memory_store"], w["embedder"], f"jacob likes tea {i}")
+        now = self._now()
+        before = w["rate_limiter"].snapshot(now)["hour_used"]
+        w["worker"].demand(now=now, last_run_at=None)
+        w["worker"].is_ready(now=now, last_run_at=None)
+        self.assertEqual(w["rate_limiter"].snapshot(now)["hour_used"], before)
+        self.assertEqual(w["ollama"].chat_calls, [])
+        self.assertEqual(w["updated_calls"], [])
+        self.assertEqual(w["conflict_store"].list_open(), [])
 
 
 class ParseVerdictTests(unittest.TestCase):

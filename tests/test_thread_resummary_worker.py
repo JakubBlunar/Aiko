@@ -215,6 +215,49 @@ class TriggerTests(unittest.TestCase):
         self.assertTrue(w.is_ready(now=_now(), last_run_at=None))
 
 
+# ── demand ──────────────────────────────────────────────────────────
+
+
+class DemandTests(unittest.TestCase):
+    """Pressure tracks how far the note has drifted from the thread."""
+
+    def test_no_redraft_owed_is_zero(self) -> None:
+        note = _Note("t", "n", 60, _now().isoformat())
+        db = _FakeDB(count=70, note=note)
+        w = _make_worker(db, _FakeClient(_GOOD_REPLY))
+        signal = w.demand(now=_now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_pressure_grows_with_untracked_messages(self) -> None:
+        near = _make_worker(
+            _FakeDB(count=70, note=_Note("t", "n", 20, _now().isoformat())),
+            _FakeClient(_GOOD_REPLY),
+        ).demand(now=_now(), last_run_at=None)
+        far = _make_worker(
+            _FakeDB(count=200, note=_Note("t", "n", 20, _now().isoformat())),
+            _FakeClient(_GOOD_REPLY),
+        ).demand(now=_now(), last_run_at=None)
+        self.assertGreater(far.pressure, near.pressure)
+        self.assertTrue(far.needs_llm)
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        db = _FakeDB(count=20, note=None)
+        w = _make_worker(db, _FakeClient(_GOOD_REPLY),
+                         limiter=_FakeRateLimiter(hour_used=6))
+        self.assertEqual(w.demand(now=_now(), last_run_at=None).pressure, 0.0)
+
+    def test_probe_neither_spends_a_token_nor_writes(self) -> None:
+        db = _FakeDB(count=20, note=None)
+        limiter = _FakeRateLimiter()
+        client = _FakeClient(_GOOD_REPLY)
+        w = _make_worker(db, client, limiter=limiter)
+        w.demand(now=_now(), last_run_at=None)
+        w.is_ready(now=_now(), last_run_at=None)
+        self.assertEqual(limiter.allow_calls, 0)
+        self.assertEqual(client.surfaces, [])
+        self.assertEqual(db.saved, [])
+
+
 # ── run ─────────────────────────────────────────────────────────────
 
 

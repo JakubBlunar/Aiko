@@ -333,16 +333,23 @@ class TestIsReady(unittest.TestCase):
             worker.is_ready(now=datetime.now(timezone.utc), last_run_at=None)
         )
 
-    def test_recent_run_blocks_run(self) -> None:
+    def test_recent_run_does_not_block_readiness(self) -> None:
+        """Timing is the scheduler's business now, not the worker's.
+
+        Before the demand migration a run 10s into a 300s interval was
+        vetoed here. The interval is now the heartbeat and the
+        anti-thrash floor, both applied by the scheduler; ``is_ready``
+        answers only "would a run accomplish anything", and with a
+        claim queued it would.
+        """
         world = _build_world()
         world["queue"].enqueue(
             memory_id=1, claim_text="2023", claim_kind="year",
         )
         worker: IdleFactChecker = world["worker"]
         now = datetime.now(timezone.utc)
-        # Last run was 10s ago — interval is 300s so we're not ready.
         last_run = now - timedelta(seconds=10)
-        self.assertFalse(worker.is_ready(now=now, last_run_at=last_run))
+        self.assertTrue(worker.is_ready(now=now, last_run_at=last_run))
 
     def test_rate_limit_blocks_run(self) -> None:
         world = _build_world(per_hour_cap=1, per_day_cap=5)
@@ -365,6 +372,63 @@ class TestIsReady(unittest.TestCase):
         self.assertTrue(
             worker.is_ready(now=datetime.now(timezone.utc), last_run_at=None)
         )
+
+
+class TestDemand(unittest.TestCase):
+    """The P44 probe: the cleanest backlog in the registry.
+
+    One kv read gives the exact number of claims waiting, and the
+    worker drains exactly one per run.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_empty_queue_is_zero_pressure(self) -> None:
+        world = _build_world()
+        signal = world["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "nothing queued")
+
+    def test_pressure_rises_with_queue_depth(self) -> None:
+        world = _build_world(per_hour_cap=10)
+        worker: IdleFactChecker = world["worker"]
+        world["queue"].enqueue(
+            memory_id=1, claim_text="2023", claim_kind="year",
+        )
+        shallow = worker.demand(now=self._now(), last_run_at=None).pressure
+        for i in range(2, 12):
+            world["queue"].enqueue(
+                memory_id=i, claim_text=f"20{i}", claim_kind="year",
+            )
+        deep = worker.demand(now=self._now(), last_run_at=None).pressure
+        self.assertGreater(deep, shallow)
+        self.assertEqual(deep, 1.0)
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        world = _build_world(per_hour_cap=1, per_day_cap=5)
+        world["queue"].enqueue(
+            memory_id=1, claim_text="2023", claim_kind="year",
+        )
+        world["rate_limiter"].allow()
+        signal = world["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_probe_neither_pops_the_queue_nor_spends_a_token(self) -> None:
+        world = _build_world()
+        world["queue"].enqueue(
+            memory_id=1, claim_text="2023", claim_kind="year",
+        )
+        limiter = world["rate_limiter"]
+        before = limiter.snapshot()["hour_used"]
+
+        now = self._now()
+        world["worker"].demand(now=now, last_run_at=None)
+        world["worker"].is_ready(now=now, last_run_at=None)
+
+        self.assertEqual(len(world["queue"].peek_all()), 1)
+        self.assertEqual(limiter.snapshot()["hour_used"], before)
 
 
 # ── F1.5 — verdict parser ──────────────────────────────────────────────

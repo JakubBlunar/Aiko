@@ -13,6 +13,7 @@ import json
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -402,6 +403,58 @@ class TopicDigestWorkerTests(unittest.TestCase):
         # A fresh worker warm-loads the map from kv.
         worker2 = _worker(db, g, mem, _FakeOllama())
         self.assertEqual(worker2.cluster_digest_map, worker.cluster_digest_map)
+
+
+class DemandTests(unittest.TestCase):
+    """Pressure counts dense clusters with no digest behind them."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_undigested_dense_cluster_reports_pressure(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = _worker(db, g, mem, _FakeOllama())
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_pressure_drops_to_zero_once_digested(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = _worker(db, g, mem, _FakeOllama())
+        worker.run()
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertFalse(signal.needs_llm)
+
+    def test_disabled_reports_nothing(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        worker = _worker(
+            db, g, mem, _FakeOllama(),
+            settings=_agent_settings(topic_digest_enabled=False),
+        )
+        self.assertEqual(
+            worker.demand(now=self._now(), last_run_at=None).pressure, 0.0,
+        )
+        self.assertFalse(worker.is_ready(now=self._now(), last_run_at=None))
+
+    def test_probe_writes_no_digest(self) -> None:
+        mem = _dense_store(5)
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        fake = _FakeOllama()
+        worker = _worker(db, g, mem, fake)
+        worker.demand(now=self._now(), last_run_at=None)
+        worker.is_ready(now=self._now(), last_run_at=None)
+        self.assertEqual(fake.calls, 0)
+        self.assertEqual(worker.cluster_digest_map, {})
+        self.assertEqual(mem.iter_by_kind("topic_digest"), [])
 
 
 class HelperTests(unittest.TestCase):

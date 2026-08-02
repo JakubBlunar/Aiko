@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -176,17 +176,75 @@ class DiaryWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        if self._forced:
-            return True
+        """Every gate that makes a run a guaranteed no-op.
+
+        These are hard vetoes rather than pressure because the
+        heartbeat is checked before pressure: a 30-minute heartbeat
+        against a 3-hour cooldown would otherwise wake this worker five
+        times per cooldown to re-read the same three kv keys.
+
+        Ordered cheapest-first so the transcript read at the end is
+        only paid on the rare tick where everything else has cleared.
+        """
+        return self._blocker(now) is None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """One entry is either owed or it isn't.
+
+        There is no backlog to count — the away diary writes at most one
+        entry per cooldown window — so this reports a flat pressure
+        whenever :meth:`_blocker` finds nothing in the way. It ranks
+        below a worker draining a real queue and above one running only
+        on staleness.
+        """
+        blocker = self._blocker(now)
+        if blocker is not None:
+            return WorkSignal(pressure=0.0, reason=blocker)
+        return WorkSignal(
+            pressure=1.0 if self._forced else 0.7,
+            reason="forced" if self._forced else "entry due",
+            needs_llm=True,
+        )
+
+    def _blocker(
+        self, now: datetime, *, forced: bool | None = None,
+    ) -> str | None:
+        """First reason a run would do nothing, or ``None`` if it would.
+
+        Read-only. ``forced=None`` *peeks* at ``_forced`` rather than
+        consuming it, which is what the probe wants; :meth:`run` has
+        already spent the one-shot by the time it calls in, so it
+        passes the consumed value explicitly.
+        """
+        if forced is None:
+            forced = self._forced
         if self._enabled_provider is not None:
             try:
                 if not bool(self._enabled_provider()):
-                    return False
+                    return "disabled"
             except Exception:
                 pass
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        )
+        if self._ollama is None or not self._model:
+            return "no_llm"
+        if not forced:
+            if not self._away():
+                return "client_connected"
+            if not self._cooldown_elapsed(now):
+                return "cooldown"
+            if not self._under_daily_cap(now):
+                return "daily_cap"
+        try:
+            if len(self._recent_context()) < self._min_context_chars:
+                return "no_context"
+        except Exception:
+            log.debug("diary readiness probe failed", exc_info=True)
+            return "no_context"
+        return None
 
     def run(self) -> dict[str, Any]:
         forced = self._forced
@@ -202,31 +260,15 @@ class DiaryWorker:
         return out
 
     def _run(self, *, forced: bool) -> DiaryResult:
-        if self._enabled_provider is not None:
-            try:
-                if not bool(self._enabled_provider()):
-                    return DiaryResult(reason="disabled")
-            except Exception:
-                pass
-
-        # The defining gate: only the *away* diary. While a UI client is
-        # connected, the live ``[[diary:...]]`` tag owns the channel.
-        if not forced and not self._away():
-            return DiaryResult(reason="client_connected")
-
+        # The defining gate is the away check inside ``_blocker``: only
+        # the *away* diary runs here, because while a UI client is
+        # connected the live ``[[diary:...]]`` tag owns the channel.
         now = _utcnow()
-        if not forced and not self._cooldown_elapsed(now):
-            return DiaryResult(reason="cooldown")
-        if not forced and not self._under_daily_cap(now):
-            return DiaryResult(reason="daily_cap")
-
-        if self._ollama is None or not self._model:
-            return DiaryResult(reason="no_llm")
+        blocker = self._blocker(now, forced=forced)
+        if blocker is not None:
+            return DiaryResult(reason=blocker)
 
         context = self._recent_context()
-        if len(context) < self._min_context_chars:
-            return DiaryResult(reason="no_context")
-
         entry = self._compose(context)
         if not entry or len(entry) < _MIN_ENTRY_CHARS:
             return DiaryResult(reason="empty")

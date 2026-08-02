@@ -267,14 +267,25 @@ class TestGating(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.assertFalse(worker.is_ready(now=now, last_run_at=None))
 
-    def test_is_ready_default_interval(self) -> None:
+    def test_is_ready_ignores_timing(self) -> None:
+        """The interval moved to the scheduler in the demand migration.
+
+        ``is_ready`` now answers only "would a run accomplish
+        anything": with goals enabled and budget left there is always
+        a branch to take, so it holds regardless of ``last_run_at``.
+        Pacing is the heartbeat plus the anti-thrash floor.
+        """
         payload = "{}"
         _, worker, _, _, _ = _harness(payload=payload)
         now = datetime.now(timezone.utc)
-        # Never ran -> always ready.
         self.assertTrue(worker.is_ready(now=now, last_run_at=None))
-        # Last ran just now -> not ready until interval elapses.
-        self.assertFalse(worker.is_ready(now=now, last_run_at=now))
+        self.assertTrue(worker.is_ready(now=now, last_run_at=now))
+
+    def test_is_ready_false_when_budget_spent(self) -> None:
+        """A spent hour makes a run a guaranteed ``rate_limited``."""
+        _, worker, _, _, _ = _harness(payload="{}", per_hour_cap=0)
+        now = datetime.now(timezone.utc)
+        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
 
     def test_rate_limit_skips_llm_call(self) -> None:
         payload = json.dumps({"goals": [{"summary": "any goal"}]})
@@ -298,6 +309,52 @@ class TestGating(unittest.TestCase):
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "disabled")
         self.assertEqual(ollama.calls, 0)
+
+
+class TestDemand(unittest.TestCase):
+    """Bootstrap jumps the queue; reflection ranks by shelf occupancy."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_cold_ring_is_full_pressure(self) -> None:
+        _, worker, _, _, _ = _harness(payload="{}")
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 1.0)
+        self.assertEqual(signal.reason, "no goals yet")
+        self.assertTrue(signal.needs_llm)
+
+    def test_reflection_ranks_below_bootstrap_and_scales(self) -> None:
+        store, worker, _, _, _ = _harness(payload="{}")
+        store.add_goal(summary="learn to bake a decent sourdough loaf",
+                       source="user")
+        thin = worker.demand(now=self._now(), last_run_at=None)
+        self.assertLess(thin.pressure, 1.0)
+        self.assertGreater(thin.pressure, 0.0)
+
+        for label in ("alpha", "bravo", "charlie", "delta"):
+            store.add_goal(
+                summary=f"keep the slow {label} ritual alive every week",
+                source="user",
+            )
+        full = worker.demand(now=self._now(), last_run_at=None)
+        self.assertGreater(full.pressure, thin.pressure)
+
+    def test_spent_budget_reports_nothing(self) -> None:
+        _, worker, _, _, _ = _harness(payload="{}", per_hour_cap=0)
+        signal = worker.demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_probe_neither_spends_a_token_nor_calls_the_model(self) -> None:
+        _, worker, ollama, limiter, notified = _harness(payload="{}")
+        now = self._now()
+        before = limiter.snapshot(now)["hour_used"]
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(limiter.snapshot(now)["hour_used"], before)
+        self.assertEqual(ollama.calls, 0)
+        self.assertEqual(notified, [])
 
 
 class TestCancellation(unittest.TestCase):

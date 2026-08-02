@@ -299,10 +299,11 @@ class ResolverNoOpTests(unittest.TestCase):
 
 
 class ResolverIsReadyTests(unittest.TestCase):
-    def test_is_ready_is_the_feature_flag_alone(self) -> None:
-        # Both the interval and the "any open gaps" check moved into
-        # demand() at migration, so is_ready() is just the switch.
-        _, _, _, resolver = _make_resolver(interval=600)
+    def test_is_ready_ignores_timing(self) -> None:
+        # The interval moved to the scheduler at migration; a recent
+        # run is no longer a veto, the anti-thrash floor handles pacing.
+        _, _, gaps, resolver = _make_resolver(interval=600)
+        gaps.add_gap(topic="x", question="something to ponder")
         now = datetime.now(timezone.utc)
         self.assertTrue(resolver.is_ready(now=now, last_run_at=None))
         self.assertTrue(
@@ -310,6 +311,18 @@ class ResolverIsReadyTests(unittest.TestCase):
                 now=now, last_run_at=now - timedelta(seconds=120),
             )
         )
+
+    def test_an_empty_store_is_a_hard_veto(self) -> None:
+        """The P44 regression: 59 no-op runs in 35 minutes.
+
+        This check was demoted to ``pressure=0.0`` at migration, but
+        the heartbeat is evaluated *before* pressure — so a 30 s
+        heartbeat meant waking every single tick to report
+        ``no_open_gaps``. A guaranteed no-op belongs in ``is_ready``.
+        """
+        _, _, _, resolver = _make_resolver()
+        now = datetime.now(timezone.utc)
+        self.assertFalse(resolver.is_ready(now=now, last_run_at=None))
 
     def test_is_ready_false_when_disabled(self) -> None:
         _, _, gaps, resolver = _make_resolver(enabled=False)

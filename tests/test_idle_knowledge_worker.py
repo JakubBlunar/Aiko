@@ -677,13 +677,21 @@ class TestIsReady(unittest.TestCase):
             )
         )
 
-    def test_no_cluster_not_ready(self) -> None:
+    def test_ready_ignores_cluster_scoring(self) -> None:
+        """Scoring moved out of readiness in the demand migration.
+
+        ``_score_candidates`` rebuilds the topic-graph snapshot. That
+        was affordable behind the old interval gate, which let it run
+        once an hour; it is not affordable now that the scheduler
+        checks readiness on every wake tick. So readiness is the budget
+        check alone and the empty-graph case is discovered by ``run``.
+        """
         world = _build_world()
         with _patched_snapshot(_snapshot()):
             ready = world["worker"].is_ready(
                 now=datetime.now(timezone.utc), last_run_at=None,
             )
-        self.assertFalse(ready)
+        self.assertTrue(ready)
 
     def test_ready_when_cluster_pending(self) -> None:
         world = _build_world()
@@ -692,6 +700,16 @@ class TestIsReady(unittest.TestCase):
                 now=datetime.now(timezone.utc), last_run_at=None,
             )
         self.assertTrue(ready)
+
+    def test_demand_zero_on_empty_queue(self) -> None:
+        """An empty research queue must not pay for a scoring pass."""
+        world = _build_world()
+        signal = world["worker"].demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "queue empty")
+        self.assertTrue(signal.needs_llm)
 
 
 if __name__ == "__main__":

@@ -410,22 +410,100 @@ class WorkerDemandTests(unittest.TestCase):
         self.assertEqual(signal.pressure, 0.0)
         self.assertEqual(signal.reason, "disabled")
 
-    def test_is_ready_is_only_the_enable_veto(self) -> None:
-        """The interval is the heartbeat now -- ``is_ready`` must not
-        re-apply the cooldown, or a never-run worker would never start."""
+    def test_nothing_owed_reports_nothing(self) -> None:
+        """The P44 regression: pressure meant "nothing is blocking me".
+
+        The old probe returned ``1.0, "slot free"`` whenever the two kv
+        gates were clear — both true almost always — and then the scan
+        found nothing to arm, 21 runs out of 21. It answered *am I
+        allowed to run* rather than *is there work*.
+        """
+        signal = _make_worker(_FakeMemoryStore([]), _FakeKv()).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "nothing owed")
+
+    def test_a_promise_too_young_to_ask_about_is_not_work(self) -> None:
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: look into LanceDB",
+                created_at=_iso_ago(0.1),
+            ),
+        ])
+        signal = _make_worker(store, _FakeKv(), min_age_hours=4.0).demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_is_ready_vetoes_every_guaranteed_no_op(self) -> None:
+        """Each gate makes the run a no-op, so each is a hard veto.
+
+        The heartbeat is checked before pressure, so leaving these as
+        ``pressure=0.0`` would only deprioritise the worker — it would
+        still wake on every interval to find nothing it may do.
+        """
         now = datetime.now(timezone.utc)
-        kv = _FakeKv()
-        kv.set("promise_followthrough.last_fired_at", now.isoformat())
+        store = self._store()
         self.assertTrue(
-            _make_worker(self._store(), kv).is_ready(
+            _make_worker(store, _FakeKv()).is_ready(now=now, last_run_at=None)
+        )
+
+        cooling = _FakeKv()
+        cooling.set("promise_followthrough.last_fired_at", now.isoformat())
+        self.assertFalse(
+            _make_worker(store, cooling, cooldown_hours=6.0).is_ready(
+                now=now, last_run_at=None,
+            )
+        )
+
+        waiting = _FakeKv()
+        waiting.set(PENDING_KEY, json.dumps({"memory_id": 99, "what": "x"}))
+        self.assertFalse(
+            _make_worker(store, waiting).is_ready(now=now, last_run_at=None)
+        )
+
+        self.assertFalse(
+            _make_worker(_FakeMemoryStore([]), _FakeKv()).is_ready(
                 now=now, last_run_at=None,
             )
         )
         self.assertFalse(
-            _make_worker(self._store(), kv, enabled=False).is_ready(
+            _make_worker(store, _FakeKv(), enabled=False).is_ready(
                 now=now, last_run_at=None,
             )
         )
+
+    def test_an_overdue_promise_is_ready_but_not_pressure(self) -> None:
+        """Retiring a dropped promise is bookkeeping with no deadline."""
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: look into LanceDB",
+                created_at=_iso_ago(24 * 30),  # past drop_after_days
+            ),
+        ])
+        worker = _make_worker(store, _FakeKv(), drop_after_days=14.0)
+        now = datetime.now(timezone.utc)
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        signal = worker.demand(now=now, last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertIn("retire", signal.reason)
+
+    def test_the_probe_never_drops_a_promise(self) -> None:
+        """``_scan`` stamps overdue rows; ``_survey`` must only count."""
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: look into LanceDB",
+                created_at=_iso_ago(24 * 30),
+            ),
+        ])
+        kv = _FakeKv()
+        worker = _make_worker(store, kv, drop_after_days=14.0)
+        now = datetime.now(timezone.utc)
+        worker.demand(now=now, last_run_at=None)
+        worker.is_ready(now=now, last_run_at=None)
+        self.assertEqual(store.update_calls, [])
+        self.assertIsNone(kv.get(PENDING_KEY))
 
 
 class ForceArmTests(unittest.TestCase):

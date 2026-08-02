@@ -59,7 +59,7 @@ from app.core.relationship.belief_store import (
     VALID_KINDS,
 )
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -256,24 +256,82 @@ class BeliefInferenceWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
+        """Both enable flags, plus budget for the extraction call."""
+        return self._fresh_turns(now, last_run_at) is not None
+
+    def demand(
+        self,
+        *,
+        now: datetime,
+        last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from transcript that has not been mined yet.
+
+        This worker has no backlog to count — it re-reads the last
+        dozen turns and asks a model what the user believes. Run it
+        against an unchanged transcript and it spends a generation to
+        re-derive tuples it already has, so the honest signal is *new
+        material*: how many messages have landed since the last run,
+        against the lookback window the extraction actually reads.
+
+        A session with no new turns reports zero and rides the
+        heartbeat, which is what re-mines the window occasionally in
+        case a later turn recontextualises an earlier one.
+        """
+        fresh = self._fresh_turns(now, last_run_at)
+        if fresh is None:
+            return WorkSignal(pressure=0.0, reason="disabled or no budget")
+        new_messages, window = fresh
+        if new_messages <= 0:
+            return WorkSignal(pressure=0.0, reason="no new turns")
+        return WorkSignal(
+            pressure=pressure_from_count(new_messages, saturation=window),
+            reason=f"{new_messages} new messages",
+            needs_llm=True,
+        )
+
+    def _fresh_turns(
+        self, now: datetime, last_run_at: datetime | None,
+    ) -> tuple[int, int] | None:
+        """``(new_messages, window)`` if a run could extract, else ``None``.
+
+        ``snapshot`` rather than ``allow``: ``run`` spends the token,
+        a probe never may.
+        """
         if not bool(
             getattr(self._agent_settings, "belief_tracking_enabled", True)
         ):
-            return False
+            return None
         if not bool(
             getattr(self._agent_settings, "belief_worker_enabled", True)
         ):
-            return False
-        if not default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at,
-        ):
-            return False
-        snapshot = self._rate_limiter.snapshot(now)
-        if snapshot["hour_used"] >= snapshot["hour_cap"]:
-            return False
-        if snapshot["day_used"] >= snapshot["day_cap"]:
-            return False
-        return True
+            return None
+        lookback_turns = int(
+            getattr(
+                self._belief_settings, "belief_worker_lookback_turns", 12,
+            )
+        )
+        if lookback_turns <= 0:
+            return None
+        try:
+            snapshot = self._rate_limiter.snapshot(now)
+            if snapshot["hour_used"] >= snapshot["hour_cap"]:
+                return None
+            if snapshot["day_used"] >= snapshot["day_cap"]:
+                return None
+            session_id = (
+                self._session_id_provider()
+                if self._session_id_provider else None
+            )
+            if not session_id:
+                return None
+            fresh = self._chat_db.count_messages_since(
+                session_id, last_run_at,
+            )
+        except Exception:
+            log.debug("belief-worker demand probe failed", exc_info=True)
+            return None
+        return fresh, max(1, lookback_turns * 2)
 
     def run(self) -> dict[str, Any]:
         if not bool(

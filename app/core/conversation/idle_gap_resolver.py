@@ -171,9 +171,20 @@ class IdleGapResolver:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        return bool(
+        """Enabled, and at least one gap is open.
+
+        The empty-store check is a **hard veto**, not zero pressure.
+        The heartbeat is evaluated before pressure, so a worker that
+        reports 0.0 is still admitted once its interval has elapsed —
+        which for a 30 s heartbeat meant waking every tick to report
+        ``no_open_gaps``. An empty store guarantees the run is a no-op,
+        and that is what ``is_ready`` is for.
+        """
+        if not bool(
             getattr(self._agent_settings, "gap_resolver_enabled", True)
-        )
+        ):
+            return False
+        return self._open_count() > 0
 
     def demand(
         self,
@@ -183,25 +194,28 @@ class IdleGapResolver:
     ) -> "WorkSignal | None":
         """Pressure from the open-gap backlog.
 
-        This is the "is there anything to do" check that already lived
-        in ``is_ready()`` — ``list_open`` walks the in-memory mirror
-        with no SQL roundtrip — now expressed as pressure so the
-        scheduler can rank it instead of only seeing a yes/no.
+        Only ranks the non-empty case — ``is_ready`` has already
+        rejected the empty one. ``list_open`` walks the in-memory
+        mirror with no SQL roundtrip, so paying for it on both sides is
+        cheaper than caching it between them.
 
         It counts *open* gaps rather than *resolvable* ones. Resolvable
         would mirror ``run()`` exactly but costs a cosine search per gap
         against the whole memory store, which is run-shaped work, not
         probe-shaped.
         """
-        try:
-            open_gaps = self._gap_store.list_open()
-        except Exception:
-            return None
-        count = len(open_gaps)
+        count = self._open_count()
         return WorkSignal(
             pressure=pressure_from_count(count, saturation=self.per_tick_cap),
             reason=f"{count} open",
         )
+
+    def _open_count(self) -> int:
+        try:
+            return len(self._gap_store.list_open())
+        except Exception:
+            log.debug("gap_resolver: list_open probe failed", exc_info=True)
+            return 0
 
     def run(self) -> dict[str, Any]:
         if not bool(

@@ -38,6 +38,19 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("app.vitality_worker")
 
+# Energy is a continuous ``[0, 1]`` scalar, so its probe cannot use the
+# discrete pressure floor: recovery is asymptotic, so "would this step
+# move the level at all" is true almost always, and flooring on it
+# pinned the worker at 0.5 and had it running every 91 s against a
+# 900 s heartbeat. Scale by the size of the pending correction instead,
+# reporting zero below a move nothing downstream would notice — the
+# controller debounces the WS broadcast at a 0.03 step, and 0.005 of
+# energy is 0.0025 of the gesture-amplitude multiplier. Saturating at
+# 0.05 puts one heartbeat's worth of recovery from a half-scale deficit
+# near the top of the range.
+_MOVE_DEADBAND = 0.005
+_MOVE_SATURATION = 0.05
+
 
 class VitalityWorker:
     """IdleWorker that recovers body-energy toward the circadian baseline.
@@ -82,12 +95,21 @@ class VitalityWorker:
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> "WorkSignal | None":
-        """How far body-energy has drifted from where it should rest.
+        """How much recovery this run would actually apply.
 
+        The pending correction, not the gap and not the elapsed time.
         Recovery is elapsed-time exponential against ``last_update_at``,
-        so the effective half-life does not depend on how often this is
-        admitted — a run that waited longer simply applies more of the
-        curve.
+        so the move is ``gap x (1 - 2^-(elapsed/half_life))`` — it grows
+        with both, and is zero if either is. That last part is what
+        keeps this from being staleness wearing pressure's clothes
+        (failure mode 3): energy already at its baseline reports zero no
+        matter how long the worker has waited, where a staleness-shaped
+        signal would climb to 1.0 with nothing to do.
+
+        It also means the probe can safely under-report. A run that
+        waited longer simply applies more of the curve, so a delayed
+        admission catches up rather than losing ground, and the
+        effective half-life does not depend on the cadence at all.
 
         Uses :func:`vitality_rhythm.peek_baseline` rather than
         ``current_baseline``: the latter rolls and persists today's
@@ -113,12 +135,13 @@ class VitalityWorker:
         new_state = _vit.step_recover(
             state, baseline, local, half_life_hours=self._half_life_hours(),
         )
-        if abs(new_state.energy - state.energy) <= 1e-6:
+        move = abs(float(new_state.energy) - float(state.energy))
+        if move <= _MOVE_DEADBAND:
             return WorkSignal(pressure=0.0, reason="at baseline")
         gap = abs(float(state.energy) - float(baseline))
         return WorkSignal(
-            pressure=max(0.5, min(1.0, gap)),
-            reason=f"gap {gap:.2f}",
+            pressure=min(1.0, move / _MOVE_SATURATION),
+            reason=f"gap {gap:.2f}, move {move:.3f}",
         )
 
     def run(self) -> dict[str, Any]:

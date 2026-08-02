@@ -39,7 +39,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.core.proactive.idle_worker import default_is_ready
+from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -129,10 +129,39 @@ class ClusterLabelWorker:
     def is_ready(self, *, now: datetime, last_run_at: datetime | None) -> bool:
         if not bool(getattr(self._agent_settings, "topic_label_enabled", True)):
             return False
+        return bool(getattr(self._topic_graph, "persistent", False))
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> "WorkSignal | None":
+        """Pressure from clusters that have no readable name yet.
+
+        Counts unnamed clusters off ``cluster.summary`` rather than
+        rebuilding ``run``'s ``todo`` list, which needs one ``kv_get``
+        per cluster to spot *drifted* labels as well. An unnamed
+        cluster is the case worth ranking — it reads as a bare id
+        everywhere it surfaces — while re-labelling a cluster that
+        merely grew is maintenance the heartbeat can carry.
+        """
+        if not bool(getattr(self._agent_settings, "topic_label_enabled", True)):
+            return WorkSignal(pressure=0.0, reason="disabled")
         if not getattr(self._topic_graph, "persistent", False):
-            return False
-        return default_is_ready(
-            self.interval_seconds, now=now, last_run_at=last_run_at
+            return WorkSignal(pressure=0.0, reason="not persistent")
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            log.debug("topic_label: demand probe failed", exc_info=True)
+            return None
+        unnamed = sum(
+            1 for c in clusters if not str(c.summary or "").strip()
+        )
+        max_per_run = max(
+            1, int(getattr(self._agent_settings, "topic_label_max_per_run", 4))
+        )
+        return WorkSignal(
+            pressure=pressure_from_count(unnamed, saturation=max_per_run),
+            reason=f"{unnamed} unnamed",
+            needs_llm=unnamed > 0,
         )
 
     def run(self) -> dict[str, Any]:

@@ -555,5 +555,65 @@ class TestIsReady(unittest.TestCase):
         self.assertTrue(ready)
 
 
+class TestDemand(unittest.TestCase):
+    """Pressure is the open-question backlog against the hourly cap."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_no_questions_is_zero(self) -> None:
+        world = _build_world()
+        signal = world["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_pressure_grows_with_the_backlog(self) -> None:
+        world = _build_world()
+        store, embedder = world["memory_store"], world["embedder"]
+        _seed_open_question(store, embedder, "When did the violin originate?")
+        thin = world["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertGreater(thin.pressure, 0.0)
+        self.assertTrue(thin.needs_llm)
+
+        for text in (
+            "How does a heat pump move warmth uphill?",
+            "Why did the Bronze Age collapse so suddenly?",
+            "What makes sourdough starter sour over time?",
+            "Where do migrating swifts sleep in flight?",
+            "When was the first submarine cable laid?",
+            "Which pigment gives autumn leaves their red?",
+        ):
+            _seed_open_question(store, embedder, text)
+        deep = world["worker"].demand(now=self._now(), last_run_at=None)
+        self.assertGreater(deep.pressure, thin.pressure)
+
+    def test_disabled_reports_nothing(self) -> None:
+        world = _build_world(enabled=False)
+        _seed_open_question(
+            world["memory_store"], world["embedder"], "Anything?",
+        )
+        self.assertEqual(
+            world["worker"].demand(now=self._now(), last_run_at=None).pressure,
+            0.0,
+        )
+
+    def test_probe_neither_searches_nor_spends_a_token(self) -> None:
+        world = _build_world()
+        _seed_open_question(
+            world["memory_store"], world["embedder"],
+            "When did the violin originate?",
+        )
+        now = self._now()
+        before = world["rate_limiter"].snapshot(now)["hour_used"]
+        world["worker"].demand(now=now, last_run_at=None)
+        world["worker"].is_ready(now=now, last_run_at=None)
+        self.assertEqual(
+            world["rate_limiter"].snapshot(now)["hour_used"], before,
+        )
+        self.assertEqual(world["web_search"].calls, [])
+        self.assertEqual(world["ollama"].chat_calls, [])
+        self.assertEqual(world["updated_calls"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
