@@ -266,10 +266,17 @@ whichever blocks rendered this turn, as a `handling_notes_block` in T6.
 What stays in T0 is one short stanza (`HANDLING_PREAMBLE`) saying that
 cues arrive with their own instructions attached.
 
-This takes ~14 k characters off the always-on prompt and puts the
-instructions next to the thing they are about. See
+This takes ~41 k characters off the always-on prompt across 47 blocks and
+puts the instructions next to the thing they are about. Most of those
+blocks are not pool cues at all — the mechanism started with the cue
+families and then generalised, so `HANDLING_SECTIONS` now carries the
+turn-taking permissions, the topic-pitch reads, the repair detectors and
+the register nudges alongside them. The registry is also many-to-many in
+both directions: one renderer may claim several headers, and one passage
+may cover a family of blocks. See
 [`prompt-caching.md`](prompt-caching.md#hoisting-conditional-instructions-out-of-t0-the-handling-notes-split)
-for the general rule and the resolution mechanism.
+for the general rule, the two categories that deliberately stayed behind,
+and the resolution mechanism.
 
 A section left inline in
 [`aiko_companion.txt`](../data/persona/aiko_companion.txt) is still
