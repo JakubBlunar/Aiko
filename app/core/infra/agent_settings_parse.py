@@ -522,10 +522,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             tease_economy_enabled=bool(
                 agent_raw.get("tease_economy_enabled", True),
             ),
-            tease_cap=max(1, int(agent_raw.get("tease_cap", 5))),
-            tease_expiry_days=max(
-                0.5, float(agent_raw.get("tease_expiry_days", 14.0)),
-            ),
             tease_collect_cooldown_hours=max(
                 0.0,
                 float(

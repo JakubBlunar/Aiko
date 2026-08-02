@@ -1969,14 +1969,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("emotion trigger drain raised", exc_info=True)
 
-        # K59 — tease-ledger settle. If the collection provider
-        # offered a debt this turn, check whether the reply actually
-        # collected it (content-word overlap) and delete on a hit —
-        # repaid is done forever.
-        try:
-            self._settle_tease_debts(assistant_text)
-        except Exception:
-            log.debug("tease settle hook raised", exc_info=True)
+        # K59 no longer settles here. The tease ledger is cue-pool rows
+        # now, so a collection is decided by the same stage-A matching
+        # as every other cue -- three shared content words between the
+        # debt's subject and the reply -- and a miss releases the row
+        # instead of clearing a private stamp.
 
         # K55 — thread-ownership stamp. When this turn carried a K53
         # initiative directive or a K52 imperative want (the provider

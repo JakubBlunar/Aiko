@@ -24,7 +24,11 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from app.core.proactive.cue_accounting import CuePolicy, policy_for
+from app.core.proactive.cue_accounting import (
+    PICK_OLDEST,
+    CuePolicy,
+    policy_for,
+)
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_deficit
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
@@ -203,12 +207,18 @@ def pick_pool_cue(
     """
     if store is None:
         return None
+    policy = policy_for(cue_type)
     try:
         # With embeddings: the row is handed to post-turn matching after
         # the turn, and re-reading it there would mean a second query per
         # surfaced cue for a few kilobytes we already have in hand.
         rows = store.pending(
-            cue_type, limit=max(1, int(limit)), with_embedding=True,
+            cue_type,
+            limit=max(1, int(limit)),
+            with_embedding=True,
+            oldest_first=(
+                policy is not None and policy.pick_order == PICK_OLDEST
+            ),
         )
     except Exception:
         log.debug("cue pool read failed: type=%s", cue_type, exc_info=True)

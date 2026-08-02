@@ -86,6 +86,7 @@ so.
 | `fulfilment` | `spoken` (she said it), `answered` (she said it *and* the user engaged), `either_party` (the conversation landed on the subject, no matter who steered it there). |
 | `match_mode` | `lexical` or `lexical_or_cosine`. |
 | `match_scope` | Match her reply, or the whole turn. |
+| `pick_order` | Which waiting cue to reach for first among those with the same number of chances. `newest` (the default) because a cue is built from context and the freshest framing still fits; `oldest` only for `tease_ledger`, where the wait *is* the content. |
 | `handling_section` / `block` | The persona header hoisted into T6 alongside this cue, and the prompt block whose presence triggers it — see below. |
 
 The `match_mode` split is the non-obvious one. **A cue whose subject is
@@ -403,6 +404,35 @@ subject against the current message. The pool holds the row; relevance
 decides whether this is the turn for it. The per-session cap applies to
 first claims only — a retry is the same callback, not a second one.
 
+**`tease_ledger`** is the migration that replaced a store rather than a
+schedule. K59's mock-grudges lived in one `kv_meta` JSON key with
+hand-written versions of five things the pool already did — a cap, an
+expiry sweep, an `offered_at` stamp, a settle pass and a re-offer on the
+miss. All five went; a debt is now a `pending` row, an offer is
+`mark_surfaced`, and a collection is ordinary stage-A matching.
+
+It is worth reading for the two places the shared machinery was
+*wrong* rather than merely absent. Its cues want to be **stale** —
+collecting an hour after banking is a comeback, and the gap is what
+makes it a callback — so it is the one type that sets
+`pick_order=oldest`, and its rows go in sealed for an hour through
+`hold_hours` on `add()`. And its subject is the user's quote rather
+than the cue's own description, because `what` is a *constant* on the
+K29 lane ("they pushed back hard on a take of yours", every time):
+keyed on that, each new pushback would have superseded the one before
+it, and matched on that, any reply containing "pushed", "back" and
+"hard" would have settled a debt about something else.
+
+Three gates stayed outside the policy because no field expresses them.
+The humor-axis floor is a relationship read. The offer cooldown is
+divided by the J11 affection-style bias, so it moves with how well
+teasing lands for this user — `surface_cooldown_hours=0` and the
+renderer spends it against `last_surfaced_at` instead. And the pool
+supersedes on an *exact* normalised subject, which is right for a topic
+slug and too strict for a quote, so banking keeps a near-duplicate
+check: three shared content words against `recent_subjects()`, using
+the same tokeniser consumption uses.
+
 **`promise_followthrough`** stayed off the pool, and it is the clearest
 example of the boundary. A promise is a memory before it is a cue:
 `memories` holds the commitment and its lifecycle, the post-turn hook
@@ -414,12 +444,13 @@ reads, and that is a better admission signal than a fixed interval.
 
 ## What is not in the pool yet
 
-Fifteen types are pooled: ten worker-produced, four on the surface-time
+Sixteen types are pooled: ten worker-produced, four on the surface-time
 ledger (`turning_over`, `sleep_return`, `away_activities`,
-`long_arc_callback`), and `self_correction` from the turn path. The
-remaining cue types in `CUE_SPECS` (`self_noticing`,
-`absence_curiosity`, and friends) still ride their `kv_meta` rings and
-are still exempt from consumption matching.
+`long_arc_callback`), and two banked on the turn path
+(`self_correction`, `tease_ledger`). The remaining cue types in
+`CUE_SPECS` (`self_noticing`, `absence_curiosity`, and friends) still
+ride their `kv_meta` rings and are still exempt from consumption
+matching.
 
 That exemption is correct for most of them, by the lexical-trace test:
 "echo is meaningless for a cue, because a cue is an instruction" holds

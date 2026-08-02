@@ -390,85 +390,61 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         what: str,
         context: str,
         source: str,
+        subject: str = "",
     ) -> bool:
-        """K59: bank one mock-grudge into the kv-backed tease ledger.
+        """K59: bank one mock-grudge as a pending cue-pool row.
 
         Called from the K29 opinion-injection fire site and the K57
-        drain's light-offence lane. Best-effort; returns whether a
-        row was actually added (dedupe / blank input refuse).
+        drain's light-offence lane. Best-effort; returns whether a row
+        was actually added (a blank or duplicate grudge refuses).
+
+        Two gates before the write, neither of which the pool provides.
+        The near-duplicate check is here because the pool supersedes on
+        an exact subject and these subjects are quotes; and the row goes
+        in sealed for ``tease_min_age_hours``, because a debt banked and
+        collected in the same sitting is a comeback rather than a
+        callback, and the gap is the joke.
         """
-        if not bool(
-            getattr(self._settings.agent, "tease_economy_enabled", True)
-        ):
-            return False
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None:
+        agent = self._settings.agent
+        if not bool(getattr(agent, "tease_economy_enabled", True)):
             return False
         try:
-
             from app.core.relationship import tease_ledger as _tl
 
-            now = timephrase.utcnow()
-            state = _tl.expire(
-                _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER)),
-                now,
-                expiry_days=float(
-                    getattr(self._settings.agent, "tease_expiry_days", 14.0)
-                ),
+            subject = _tl.subject_for(
+                what=subject or what, context=subject or context,
             )
-            state, added = _tl.bank(
-                state,
-                what=what,
-                context=context,
-                source=source,
-                now=now,
-                cap=max(
-                    1, int(getattr(self._settings.agent, "tease_cap", 5)),
+            if not subject:
+                return False
+            store = self._cue_pool_store()
+            if store is None:
+                return False
+            if _tl.is_duplicate(subject, store.recent_subjects("tease_ledger")):
+                log.debug("tease bank skipped, already owed: %s", subject[:80])
+                return False
+            banked = self._queue_pool_cue(
+                "tease_ledger",
+                subject,
+                _tl.render_block(
+                    what=what,
+                    context=context,
+                    user_display_name=self.user_display_name,
                 ),
+                payload={
+                    "what": what,
+                    "context": context,
+                    "source": source,
+                },
+                hold_hours=float(getattr(agent, "tease_min_age_hours", 1.0)),
             )
-            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
-            if added:
+            if banked:
                 log.info(
-                    "tease banked: source=%s what=%s",
-                    source, what[:80],
+                    "tease banked: source=%s what=%s", source, subject[:80],
                 )
-            return added
+            return banked
         except Exception:
             log.debug("tease bank failed", exc_info=True)
             return False
-
-    def _settle_tease_debts(self, assistant_text: str) -> None:
-        """K59: post-turn collection check on the offered ledger row.
-
-        If the reply's content words overlap the row the provider
-        offered this turn, the debt is deleted — repaid is done
-        forever. A miss just clears the offered stamp so the row can
-        come around again after the cooldown.
-        """
-        if not bool(
-            getattr(self._settings.agent, "tease_economy_enabled", True)
-        ):
-            return
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None:
-            return
-        try:
-            from app.core.relationship import tease_ledger as _tl
-
-            state = _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER))
-            if not any(d.offered_at for d in state.debts):
-                return
-            state, settled = _tl.settle_if_collected(
-                state, assistant_text,
-            )
-            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
-            if settled is not None:
-                log.info(
-                    "tease collected: what=%s source=%s",
-                    settled.what[:80], settled.source,
-                )
-        except Exception:
-            log.debug("tease settle failed", exc_info=True)
 
     def _peak_emotion_intensity(self) -> float:
         """K68 helper: strongest live K57 emotion-episode intensity, decayed.

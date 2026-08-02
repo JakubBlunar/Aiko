@@ -877,11 +877,12 @@ class AgentSettings:
     # Master switch for the payback ledger (bank on K29 pushback /
     # light offences, collect later as a callback tease).
     tease_economy_enabled: bool = True
-    # Most debts kept at once; the oldest is evicted by a newcomer.
-    tease_cap: int = 5
-    # Unrepaid debts expire after this many days — an old grudge
-    # stops being funny.
-    tease_expiry_days: float = 14.0
+    # How many debts to keep and how long they stay funny are the cue
+    # pool's now: ``tease_cap`` is gone (a shelf is bounded by its TTL
+    # and the near-duplicate check, the same as every other cue type)
+    # and the fortnight is ``CuePolicy.ttl_hours`` in
+    # ``app/core/proactive/cue_accounting.py``.
+    #
     # Wall-clock hours between collection offers — the running bit
     # must never tip into needling.
     tease_collect_cooldown_hours: float = 12.0

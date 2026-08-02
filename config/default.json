@@ -188,8 +188,6 @@
     "emotion_lonely_threshold_hours": 5.0,
     "emotion_high_band": 0.5,
     "tease_economy_enabled": true,
-    "tease_cap": 5,
-    "tease_expiry_days": 14.0,
     "tease_collect_cooldown_hours": 12.0,
     "tease_min_humor": 0.2,
     "tease_min_age_hours": 1.0,

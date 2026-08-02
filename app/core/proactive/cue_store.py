@@ -272,6 +272,7 @@ class CueStore:
         ttl_hours: float | None = None,
         embedding: Sequence[float] | None = None,
         now: datetime | None = None,
+        hold_hours: float = 0.0,
     ) -> int:
         """Queue a cue, retiring any live cue about the same subject.
 
@@ -281,6 +282,13 @@ class CueStore:
         subject twice from two angles -- which reads as a loop rather than
         as depth. The newer cue wins because its framing is built from
         fresher context.
+
+        ``hold_hours`` seals the cue for a while by setting ``not_before``
+        at insert. The column already gates every read, and ``release()``
+        already writes it after an unanswered ask -- this closes the
+        write-side gap for a cue that has to *ripen* rather than cool
+        down. A tease banked and collected in the same sitting is a
+        comeback, not a callback.
 
         Returns the new row id, or 0 if the write failed or the input was
         unusable.
@@ -299,6 +307,11 @@ class CueStore:
             if ttl_hours and float(ttl_hours) > 0
             else None
         )
+        hold = (
+            (when + timedelta(hours=float(hold_hours))).isoformat()
+            if hold_hours and float(hold_hours) > 0
+            else None
+        )
         try:
             conn = self._conn()
             conn.execute(
@@ -315,8 +328,8 @@ class CueStore:
             cursor = conn.execute(
                 "INSERT INTO cue_pool "
                 "(user_id, cue_type, subject, text, payload, state, "
-                " created_at, expires_at, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " created_at, expires_at, not_before, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._user_id,
                     cue_type,
@@ -326,6 +339,7 @@ class CueStore:
                     STATE_PENDING,
                     created,
                     expires,
+                    hold,
                     _encode_vec(embedding),
                 ),
             )
@@ -501,21 +515,29 @@ class CueStore:
         limit: int = 20,
         now: datetime | None = None,
         with_embedding: bool = False,
+        oldest_first: bool = False,
     ) -> list[CueRow]:
         """Cues available to surface, best candidate first.
 
         Ordered by ``surfaced_count`` ascending before recency, so a cue
         Aiko has already ignored once yields to one she has not seen. Both
         still get their turn; this only decides which comes first.
+
+        ``oldest_first`` flips the tie-break among cues with the same
+        number of chances. Freshest framing wins by default, because a cue
+        is built from the context that produced it; the exception is a cue
+        whose *age* is the content, which the caller declares through
+        ``CuePolicy.pick_order``.
         """
         where, params = self._available_clause(_stamp(now))
         if cue_type:
             where += " AND cue_type = ?"
             params.append(str(cue_type))
+        recency = "ASC" if oldest_first else "DESC"
         return self._select(
             where,
             params,
-            order="surfaced_count ASC, created_at DESC",
+            order=f"surfaced_count ASC, created_at {recency}",
             limit=limit,
             with_embedding=with_embedding,
         )
