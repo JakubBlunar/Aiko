@@ -87,8 +87,15 @@ pairing is **keyed on the prompt block name**, from two registries: a
 pooled cue names its header on `CuePolicy` in
 `app/core/proactive/cue_accounting.py`, next to the matching and retry
 rules for the same cue; anything else is listed in `HANDLING_SECTIONS`
-in `app/core/session/prompt_support.py`. A block may claim more than one
-header when one renderer covers several situations.
+in `app/core/session/prompt_support.py`. The relation is many-to-many. A
+block may claim several headers when one renderer covers several
+situations (`emotion_episode_block` takes both the feeling and the mask),
+and a header may be claimed by several blocks when one passage covers a
+family — the three repair detectors share "When you missed the beat:",
+because the failure mode it warns about is the same for all of them. The
+split therefore resolves each header *once* and hands the text to every
+claimant, and `_render_handling_notes` deduplicates, so two of a family
+firing together still ship the paragraph once.
 
 The core persona keeps one short stanza (`HANDLING_PREAMBLE`) saying that
 cues arrive with their own instructions attached, and
@@ -103,11 +110,24 @@ Both files' mtimes are in the split cache key and in the static slice
 cache key, so editing either takes effect on the next turn rather than
 the next restart.
 
-The split is worth roughly 14 k characters (~3.5 k tokens) off every
-turn so far — against a persona that is now ~65 k, so a fifth of what
-used to ship unconditionally. The T6 addition is bounded by how many
-blocks fired: usually zero, at most one or two, since the cue priority
-mutex allows a single gap-cue through per turn.
+The split is worth roughly 41 k characters (~10 k tokens) off every turn
+across 47 blocks and 43 headers — against a persona that is now ~37 k, so
+rather more than half of what used to ship unconditionally. The T6
+addition is bounded by how many blocks fired: usually zero, at most one
+or two, since the cue priority mutex allows a single gap-cue through per
+turn.
+
+Not everything conditional-sounding moved. Two categories deliberately
+stayed, both recorded in `prompt_support.py`. `_STAYS_IN_T0` names the
+four blocks that read like cues but render on most turns — `wants`,
+`user_state`, `day_color`, `profile` — where the trade below runs the
+wrong way; `tests/test_persona_hoist.py` asserts none of them is ever
+registered. The comment beneath it names the sections that interleave
+always-on inline-tag grammar (`[[remember:]]`, `[[predict:]]`, `[[arc:]]`,
+…) with the handling for one block: `split_persona_section` moves whole
+sections, so hoisting one of those wholesale would take the grammar with
+it and silently delete the tag. Each needs its conditional half split
+into a header of its own first.
 
 Three ways the pairing comes apart silently, all covered in
 `tests/test_persona_hoist.py`: a header renamed in the file (the section

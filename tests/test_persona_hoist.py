@@ -38,6 +38,7 @@ from app.core.session.prompt_assembler_helpers_mixin import (
     PromptAssemblerHelpersMixin,
 )
 from app.core.session.prompt_support import (
+    _STAYS_IN_T0,
     CONDITIONAL_HANDLING_FILENAME,
     HANDLING_PREAMBLE,
     split_persona_section,
@@ -124,13 +125,37 @@ class RegistryTests(unittest.TestCase):
         positions = [ladder.index(block) for block in self.registry]
         self.assertEqual(positions, sorted(positions))
 
-    def test_no_header_is_claimed_by_two_blocks(self) -> None:
-        """The first split would win and the second would go unexplained."""
-        seen: set[str] = set()
-        for headers in self.registry.values():
-            for header in headers:
-                self.assertNotIn(header, seen)
-                seen.add(header)
+    def test_a_shared_header_reaches_every_block_that_claims_it(self) -> None:
+        """One passage may cover a family -- the three repair detectors.
+
+        The split has to resolve each header once and hand the text to all
+        of them. Cutting per block would take the section out of the
+        persona on the first claimant, leaving the rest to fall through to
+        the shipped file, or to nothing.
+        """
+        shared = [
+            block
+            for block, headers in self.registry.items()
+            if "When you missed the beat:" in headers
+        ]
+        self.assertEqual(
+            sorted(shared),
+            ["clarification_block", "misattunement_block", "rupture_block"],
+        )
+
+    def test_no_block_hoists_a_section_that_has_to_stay(self) -> None:
+        """Every one of these reads like a cue and is present most turns.
+
+        Hoisting swaps a cached token for an uncached one, so it only pays
+        while the block is absent. Registering one of these would quietly
+        make the prompt worse on the majority of turns, and nothing else
+        would notice.
+        """
+        claimed = {h for headers in self.registry.values() for h in headers}
+        for block, header in _STAYS_IN_T0:
+            with self.subTest(block=block):
+                self.assertNotIn(block, self.registry)
+                self.assertNotIn(header, claimed)
 
 
 class _AssemblerFixture(unittest.TestCase):
@@ -281,6 +306,42 @@ class CompanionFileTests(_AssemblerFixture):
             assembler.persona_handling_notes("curiosity_seeds_block"),
         )
 
+    _SHARED = "\n".join([
+        "When you missed the beat:",
+        "- One repair beat, then move on.",
+    ])
+
+    def test_a_shared_section_is_read_by_all_three_blocks(self) -> None:
+        assembler = self._assembler(_CORE_ONLY, self._SHARED)
+        for block in (
+            "misattunement_block", "rupture_block", "clarification_block",
+        ):
+            with self.subTest(block=block):
+                self.assertIn(
+                    "One repair beat", assembler.persona_handling_notes(block),
+                )
+
+    def test_a_shared_section_left_inline_reaches_all_three(self) -> None:
+        """The case the per-block split got wrong.
+
+        The first claimant used to cut the section out of the persona, so
+        the other two fell through to the shipped file -- reading different
+        wording from the one the user actually edited.
+        """
+        inline = _CORE_ONLY + "\n\n" + "\n".join([
+            "When you missed the beat:",
+            "- My own hand-edited repair wording.",
+        ])
+        assembler = self._assembler(inline, handling_text=None)
+        for block in (
+            "misattunement_block", "rupture_block", "clarification_block",
+        ):
+            with self.subTest(block=block):
+                self.assertIn(
+                    "hand-edited repair wording",
+                    assembler.persona_handling_notes(block),
+                )
+
     def test_a_missing_companion_file_is_not_an_error(self) -> None:
         assembler = self._assembler(_CORE_ONLY, handling_text=None)
         self.assertEqual(
@@ -349,6 +410,23 @@ class AssemblyTests(_AssemblerFixture):
             system.index(self._DRIFT),
             system.index("drawn to X lately"),
         )
+
+    def test_a_shared_note_ships_once_when_two_blocks_fire(self) -> None:
+        """Two of a family firing together is the likely case, not the odd
+        one -- a doubled paragraph would read as emphasis."""
+        assembler = self._assembler(_CORE_ONLY, "\n".join([
+            "When you missed the beat:",
+            "- One repair beat, then move on.",
+        ]))
+        assembler.set_inner_life_providers(
+            misattunement=lambda _text: "He went short on you.",
+            clarification=lambda: "He sounded confused.",
+        )
+        system = self._system(assembler)
+        # Both really rendered, or the dedupe is not what is being tested.
+        self.assertIn("He went short on you.", system)
+        self.assertIn("He sounded confused.", system)
+        self.assertEqual(system.count("One repair beat, then move on."), 1)
 
     def test_a_non_cue_block_hoists_the_same_way(self) -> None:
         """The registry is not cue-only -- ``absence_curiosity`` has no pool."""

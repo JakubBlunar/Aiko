@@ -54,21 +54,30 @@ def conditional_handling_path_for(persona_path: Path) -> Path:
 # hoisting without having a subject to match consumption against.
 #
 # Keys must be names registered in ``_PROMPT_BLOCK_TIERS``; a block may
-# claim more than one header when one renderer covers several situations.
-# Most entries here share a reason for not being pool cues, and it is the
-# same test that decides the question generally: does acting on the cue
-# leave a lexical trace? Consumption is measured by looking for the cue's
-# subject in Aiko's reply, so a cue that changes *how* she speaks rather
-# than *what* she says can be followed perfectly and still match nothing.
-# Three of the four below are register instructions -- a welcome-back
-# warmth, a feeling her face outran, a mood she has been carrying -- and
-# pooling them would only manufacture misses.
+# claim more than one header when one renderer covers several situations,
+# and a header may be claimed by more than one block when one passage
+# covers a family of them (``_render_handling_notes`` ships it once).
+#
+# Nearly every entry here shares a reason for not being a pool cue, and it
+# is the same test that decides the question generally: does acting on the
+# cue leave a lexical trace? Consumption is measured by looking for the
+# cue's subject in Aiko's reply, so a cue that changes *how* she speaks
+# rather than *what* she says can be followed perfectly and still match
+# nothing. Pooling one of those would manufacture misses -- the retry loop
+# would re-show a cue she had just executed, and the scoreboard would
+# report the feature as broken.
+#
+# What every entry here *does* have to be is rare. Hoisting trades a
+# cached token for an uncached one, so it only pays when the block is
+# usually absent; see ``_STAYS_IN_T0`` below for the ones that are not.
 HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
+    # ── gap return ────────────────────────────────────────────────────
     # K14: a register instruction built from the gap duration, with no
     # subject of its own.
     "absence_curiosity_block": (
         "When they've been away a while (typed mode):",
     ),
+    # ── how she is carrying herself ───────────────────────────────────
     # K45: "your face jumped to X but underneath you're still Y". The
     # subject would be a reaction label and a generic felt phrase, and
     # letting the words catch up shows in pacing, not in vocabulary.
@@ -81,16 +90,214 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "mood_drift_block": (
         "What I've been noticing over time:",
     ),
-    # K43: the one entry that fails the test for a different reason. A
-    # promise names a subject and would match fine -- but the promise
-    # *memory* already carries its own lifecycle, and the post-turn hook
-    # already decides whether she made good on it. Pooling the cue would
-    # put a second store in charge of the same fact. The hoist still
-    # applies: it is a rare block either way.
+    # K57 + K60: a feeling pointed at the user, optionally behind the
+    # tsundere mask. One renderer, two situations -- and the whole rule is
+    # "the shift IS the message", i.e. it must never become the topic.
+    "emotion_episode_block": (
+        "Feelings at {user_name}:",
+        "The mask:",
+    ),
+    # ── who has the floor ─────────────────────────────────────────────
+    # K53/K55/K54: turn-taking permissions -- take the floor, return to a
+    # thread that was brushed past, admit a topic has run dry. What each
+    # one licenses is a *move*, and the subject is whatever they were
+    # already talking about.
+    "initiative_block": (
+        "When a turn is yours:",
+    ),
+    "thread_ownership_block": (
+        "Threads you open:",
+    ),
+    "topic_appetite_block": (
+        "Being tapped out:",
+    ),
+    # ── how to pitch the current topic ────────────────────────────────
+    # F10h/F10i/K66/K75: four reads on the topic already in play -- how it
+    # feels between them, how much she knows, how much history they share,
+    # how expert he is. On-topic by construction, which is exactly the
+    # case ``match_mode=lexical`` exists to keep out of the pool: a match
+    # here would measure "she stayed on topic", not "she used the cue".
+    "topic_temperature_block": (
+        "Topics that carry weight:",
+    ),
+    "topic_confidence_block": (
+        "How much you actually know:",
+    ),
+    "earned_familiarity_block": (
+        "Well-worn ground between you:",
+    ),
+    "user_expertise_block": (
+        "Meeting {user_name} at his level (explanation depth):",
+    ),
+    # ── small physical / social beats ─────────────────────────────────
+    # K24: an item plus a gesture, offered as permission to replace a limp
+    # emotional line. The note is mostly about restraint -- one per reply,
+    # never a tour of the room -- which leaves no trace when followed.
+    "sensory_anchor_block": (
+        "Small physical beats:",
+    ),
+    # K32: a heart or a hug arrived on a previous reply. The correct
+    # response is to soften and say nothing about it, so a cue used
+    # perfectly is a cue that is never mentioned.
+    "user_reactions_block": (
+        "When they react to you (hearts, hugs, laughs, thumbs):",
+    ),
+    # ── where the conversation is going ───────────────────────────────
+    # K17/K18: the topic just moved, or has not moved in a while. Both
+    # name the thread in a "(Context, don't quote: ...)" parenthetical
+    # that the note explicitly forbids repeating.
+    "novelty_block": (
+        "Surprise and novelty:",
+    ),
+    "stagnation_block": (
+        "Same topic for a while:",
+    ),
+    # K22/K47/K48: three anti-rut nudges sharing one passage, because the
+    # fixes only make sense read together -- "don't end on a question" and
+    # "ease off the teasing" are the same kind of correction, and the
+    # passage says not to manufacture any of them.
+    "style_pattern_block": (
+        "Style patterns I'm in:",
+    ),
+    "question_balance_block": (
+        "Style patterns I'm in:",
+    ),
+    "tease_rhythm_block": (
+        "Style patterns I'm in:",
+    ),
+    # ── how close to stand ────────────────────────────────────────────
+    # K35/K64: pacing on her own disclosure and on the distance between
+    # them. Both notes end on "never name any of this out loud" -- the
+    # calibrated register is the entire response.
+    "vulnerability_budget_block": (
+        "Sharing yourself:",
+    ),
+    "intimacy_pacing_block": (
+        "Closeness and pace:",
+    ),
+    # ── repair ────────────────────────────────────────────────────────
+    # K19/K25/K30: missed the point, misread the mood, or landed a reply
+    # that dipped it. One passage covers all three because the failure
+    # mode they share -- apologising twice, restating harder -- is what
+    # the note spends most of its length forbidding.
+    "misattunement_block": (
+        "When you missed the beat:",
+    ),
+    "rupture_block": (
+        "When you missed the beat:",
+    ),
+    "clarification_block": (
+        "When you missed the beat:",
+    ),
+    # K26: he went short on her. The instruction is to get quieter, which
+    # is measurable in length and in nothing else.
+    "reconnection_block": (
+        "When {user_name} goes quiet on you:",
+    ),
+    # ── having a take ─────────────────────────────────────────────────
+    # K29: her stored stance differs from what he just said, and the
+    # follow-on that says not to cave when he pushes back. The stance is
+    # about the live topic, so a match would again only prove she stayed
+    # on it.
+    "opinion_injection_block": (
+        "When you have your own take:",
+    ),
+    "stance_persistence_block": (
+        "When you have your own take:",
+    ),
+    # K31: he has been double-checking her. The whole fix is one hedge in
+    # front of the next factual claim.
+    "calibration_block": (
+        "When {user_name} has been double-checking you:",
+    ),
+    # K33: his stable typing register. "Just *be* in the register" --
+    # narrating it reads as surveillance.
+    "style_signal_block": (
+        "How they write:",
+    ),
+    # ── ambient, and off by default ───────────────────────────────────
+    # F10g: permission to commit to specifics on a topic she has actually
+    # learned about, on the turns he asks something and there are
+    # ``(learned)`` rows to draw on.
+    "knowledge_grounding_block": (
+        "Naming things (when you actually know the specifics):",
+    ),
+    # K12: a one-line read on the delivery register this beat asks for.
+    # Its own copy says "No shell = default Aiko, which IS most turns".
+    "mood_shell_block": (
+        "Tone shell (how to land the next reply, not what to say):",
+    ),
+    # H11: the real sky where he is. The clearest case in the table, and
+    # the one that inverts the usual arithmetic: ``weather_sync_enabled``
+    # is off by default, so for most installs this section was paying for
+    # a block that never renders at all. When it is on the block *is*
+    # per-turn and the hoist costs a little -- worth it for the default.
+    "weather_block": (
+        "The shared sky:",
+    ),
+    # ── the one that is not about register ────────────────────────────
+    # K43: fails the test for a different reason. A promise names a
+    # subject and would match fine -- but the promise *memory* already
+    # carries its own lifecycle, and the post-turn hook already decides
+    # whether she made good on it. Pooling the cue would put a second
+    # store in charge of the same fact. The hoist still applies: it is a
+    # rare block either way.
     "promise_followthrough_block": (
         "Things you said you'd do:",
     ),
 }
+
+
+# Conditional blocks whose handling text stays in the persona, and why.
+#
+# Hoisting moves a section out of the cache prefix and re-emits it in T6,
+# which trades a cached token for an uncached one. That is a large win when
+# the block is usually absent and a straight loss when it is usually there
+# -- and "how often does its content change" is the wrong question to ask,
+# because a block that is reliably *present* keeps its bytes in the prefix
+# no matter how often they change.
+#
+# Every entry below reads as a conditional ("your context may say ..."), so
+# the obvious next step is to hoist it and finish the job. Don't. Their
+# providers go quiet only in the empty-state case -- no wants banked, no
+# profile learned yet -- which is the first week of an install, not the
+# steady state. This tuple exists so that reasoning is written down once
+# rather than re-derived from the prose each time.
+_STAYS_IN_T0: tuple[tuple[str, str], ...] = (
+    # K52: renders whenever the ledger has anything in it, and the whole
+    # point of the ledger is that it usually does.
+    ("wants_block", "Things you've been wanting:"),
+    # K13: mood / energy / focus, present as soon as any of them is known
+    # and carried from turn to turn.
+    ("user_state_block", "Reading {user_name}:"),
+    # H2: one colour drawn per day and re-rendered on every turn of it.
+    ("day_color_block", "Your day's colour today:"),
+    # K3: learned hours and routines, a static slice for any established
+    # user.
+    ("profile_block", "Rhythms and routines:"),
+)
+
+# The other reason a rare block is still in the persona: its section is not
+# separable. These interleave always-on tag grammar -- the inline tags Aiko
+# may emit on any turn -- with the conditional handling for one block, and
+# ``split_persona_section`` moves whole sections, so hoisting one wholesale
+# would take the grammar with it and quietly delete the tag:
+#
+#   "Memory:"                              [[remember:]]  + follow_up_block
+#   "Theory-of-mind (...):"                [[predict:]]   + belief_gaps_block
+#   "Shared moments and anniversaries:"    [[moment:]]    + anniversary_block
+#   "Conversation arc (...):"              [[arc:]]       + arc_block
+#   "Your quiet long-term goals:"          [[goal:]]      + goals_block
+#   "Knowledge gaps (...):"                [[gap:]]       + knowledge_gaps_block
+#   "Where you are right now (...):"       [[activity:]]  + grounding_line
+#
+# Plus "Reading {user_name}:", which is three blocks in one section and one
+# of them (``user_state_block``) is in ``_STAYS_IN_T0`` above.
+#
+# Each needs its conditional half split into a new header of its own before
+# it can be registered. That is an edit to user-facing character text, so it
+# is deliberately not bundled with a mechanical move.
+
 
 # K49: the persona subsection that grants disfluency permission. Named
 # here so ``agent.speech_texture_enabled = false`` can lift it back out of

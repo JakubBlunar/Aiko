@@ -951,21 +951,32 @@ class PromptAssemblerHelpersMixin:
             raw = strip_persona_section(raw, SPEECH_TEXTURE_SECTION_HEADER)
         core = raw
         handling_raw = self._read_handling_notes(handling_mtime)
-        sections: dict[str, str] = {}
+        registry = self._handling_headers()
         shadowed: list[str] = []
-        for block, headers in self._handling_headers().items():
+        # Resolve each header once, then hand the text to every block that
+        # claims it. Cutting per block instead would break the sharing on
+        # the inline path only: the first block's ``split_persona_section``
+        # takes the section out of ``core``, so the second would find
+        # nothing there and quietly fall back to the shipped file -- two
+        # blocks in one family reading different wording, or none at all if
+        # the user had also deleted it from the file.
+        by_header: dict[str, str] = {}
+        for header in dict.fromkeys(
+            header for headers in registry.values() for header in headers
+        ):
+            core, extracted = split_persona_section(core, header)
+            _rest, from_file = split_persona_section(handling_raw, header)
+            if extracted and from_file:
+                shadowed.append(header)
+            text = extracted or from_file
+            if text:
+                by_header[header] = text
+        sections: dict[str, str] = {}
+        for block, headers in registry.items():
             # A block may claim several headers -- one renderer covering
             # several situations. They are joined in declaration order so
             # the note reads as one passage rather than a pile.
-            found: list[str] = []
-            for header in headers:
-                core, extracted = split_persona_section(core, header)
-                _rest, from_file = split_persona_section(handling_raw, header)
-                if extracted and from_file:
-                    shadowed.append(header)
-                extracted = extracted or from_file
-                if extracted:
-                    found.append(extracted)
+            found = [by_header[h] for h in headers if h in by_header]
             if found:
                 sections[block] = "\n\n".join(found)
         if shadowed:
@@ -1003,8 +1014,15 @@ class PromptAssemblerHelpersMixin:
         of the cluster; and on the rare turn two fire, the model reads
         their instructions together, which is where "never stack two of
         them" from the T0 stanza has to be legible.
+
+        Notes are deduplicated because a passage may cover a family of
+        blocks -- the three repair detectors share one, since the failure
+        mode they warn about is the same one. Two of a family firing on the
+        same turn is the *likely* case rather than the exotic one, and
+        printing the paragraph twice would read as emphasis.
         """
         parts: list[str] = []
+        seen: set[str] = set()
         for block in self._handling_headers():
             rendered = next(
                 (
@@ -1017,7 +1035,8 @@ class PromptAssemblerHelpersMixin:
             if not isinstance(rendered, str) or not rendered:
                 continue
             note = self.persona_handling_notes(block)
-            if note:
+            if note and note not in seen:
+                seen.add(note)
                 parts.append(note)
         if not parts:
             return ""
