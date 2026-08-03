@@ -80,6 +80,14 @@ class ChatUsage:
     eval_duration_ms: float = 0.0
     prompt_eval_duration_ms: float = 0.0
     done_reason: str | None = None
+    # True when ``eval_duration_ms`` was derived from wall clock rather
+    # than reported by the provider. Only Ollama measures generation time
+    # natively; OpenAI-compatible endpoints report no such field, which
+    # used to leave ``tokens_per_second`` reading 0 on every cloud turn.
+    # The streaming clients now fill it from (stream end - first token),
+    # which is honest but includes network jitter, so the flag exists to
+    # keep the two kinds of number distinguishable in telemetry.
+    eval_duration_estimated: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -126,6 +134,12 @@ class ChatUsage:
                 self.prompt_eval_duration_ms + other.prompt_eval_duration_ms
             ),
             done_reason=merged_reason,
+            # OR rather than sum: the flag is "is any part of this
+            # number a wall-clock guess", and summing two bools would
+            # give 2 (truthy but nonsense as a field value).
+            eval_duration_estimated=(
+                self.eval_duration_estimated or other.eval_duration_estimated
+            ),
         )
 
 

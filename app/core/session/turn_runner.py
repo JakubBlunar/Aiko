@@ -27,8 +27,16 @@ from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.voice.filler_injector import FillerInjector
-from app.core.infra.log_context import reset_turn_id, set_turn_id
-from app.core.session.prompt_assembler import PromptAssembler, PromptTelemetry
+from app.core.infra.log_context import get_turn_id, reset_turn_id, set_turn_id
+from app.core.session.prompt_assembler import (
+    PromptAssembler,
+    PromptTelemetry,
+    _BLOCK_TIER_OF,
+)
+from app.core.session.prompt_prefix_telemetry import (
+    emit_prefix_record,
+    prompt_cache_sink_enabled,
+)
 from app.core.services.response_text_service import (
     extract_diary_entries,
     parse_reaction_at_start,
@@ -53,7 +61,11 @@ from app.core.session.tool_pass_gate import (
     should_run_tool_pass,
 )
 from app.llm.ollama_client import OllamaClient, OllamaUsage
-from app.llm.token_utils import estimate_tokens, observe_actual_usage
+from app.llm.token_utils import (
+    calibration_state,
+    estimate_tokens,
+    observe_actual_usage,
+)
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import MemoryStore
@@ -1128,6 +1140,21 @@ class TurnRunner:
             telemetry.tool_pass_ms,
         )
 
+        # P44: the same turn, in machine-readable form, in its own file.
+        # Off unless ``logging.prompt_cache_log_enabled`` is set.
+        self._emit_prompt_cache_record(
+            session_key=session_key,
+            telemetry=telemetry,
+            usage=usage,
+            messages=messages,
+            stream_prompt_tokens=int(self._ollama.last_usage.prompt_tokens),
+            tool_prompt_tokens=int(tool_usage.prompt_tokens),
+            context_prompt_tokens=context_prompt_tokens,
+            ctx_pct=ctx_pct,
+            first_token_ms=first_token_ms,
+            duration_ms=duration_ms,
+        )
+
         # Carry-over for the *next* turn's filler tone.
         self._last_reaction = mood or self._last_reaction
 
@@ -1147,6 +1174,102 @@ class TurnRunner:
         )
 
     # ── helpers ───────────────────────────────────────────────────────
+
+    def _emit_prompt_cache_record(
+        self,
+        *,
+        session_key: str,
+        telemetry: PromptTelemetry,
+        usage: OllamaUsage,
+        messages: list[dict[str, Any]],
+        stream_prompt_tokens: int,
+        tool_prompt_tokens: int,
+        context_prompt_tokens: int,
+        ctx_pct: float,
+        first_token_ms: float | None,
+        duration_ms: float,
+    ) -> None:
+        """One JSONL record per turn for ``scripts/prefix_break_report.py``.
+
+        Pairs our *prediction* (where the prefix diverged, what the
+        estimator thought the prompt cost) with the provider's *answer*
+        (``cached_tokens``, real ``prompt_tokens``) so each record is
+        self-validating rather than needing a join against ``app.log``.
+
+        The estimate logged here is deliberately the RAW one. The metrics
+        the UI renders are rescaled to the provider's real count
+        (``chat_turn_mixin``); recording the scaled figure instead would
+        drive ``est_error_pct`` to zero by construction and quietly
+        destroy the measurement.
+
+        Never raises: telemetry must not be able to fail a turn.
+        """
+        if not prompt_cache_sink_enabled():
+            return
+        try:
+            tier_chars: dict[str, int] = {}
+            for name, chars in (telemetry.block_chars or {}).items():
+                tier = _BLOCK_TIER_OF.get(name)
+                if tier and chars:
+                    tier_chars[tier] = tier_chars.get(tier, 0) + int(chars)
+
+            estimate = int(telemetry.prompt_tokens_estimate)
+            actual = int(context_prompt_tokens)
+            est_error_pct = (
+                round(100.0 * (estimate - actual) / actual, 1)
+                if actual > 0 else 0.0
+            )
+            calibration = calibration_state()
+
+            record: dict[str, Any] = {
+                "turn_id": get_turn_id() or "-",
+                "session": session_key,
+                "model": self._model,
+                # Where the cacheable prefix ended.
+                "diverged": telemetry.prefix_diverged or None,
+                "tier": telemetry.prefix_tier or None,
+                "lost_chars": int(telemetry.prefix_lost_chars),
+                "lost_pct": float(telemetry.prefix_lost_pct),
+                "changed": int(telemetry.prefix_changed),
+                "history_diverged": int(telemetry.history_diverged_at),
+                "history_slid": int(telemetry.history_slid),
+                "history_msgs": int(telemetry.history_messages_kept),
+                "sys_chars": len(telemetry.system_prompt or ""),
+                "tier_chars": tier_chars,
+                # What the provider actually cached.
+                "cached_tokens": int(usage.cached_tokens),
+                "cached_pct": round(float(usage.cached_tokens_pct), 1),
+                # Estimator accuracy, raw.
+                "est_prompt_tokens": estimate,
+                "actual_prompt_tokens": actual,
+                "est_error_pct": est_error_pct,
+                "prompt_chars": sum(
+                    len(m.get("content", "") or "") for m in messages
+                ),
+                "chars_per_token": calibration.get("chars_per_token"),
+                "calibration_samples": calibration.get("samples"),
+                # Occupancy, and the split that makes the merged prompt
+                # token count look ~2x on tool turns.
+                "context_window": int(self._context_window),
+                "ctx_pct": round(float(ctx_pct), 2),
+                "tool_pass_tokens": int(tool_prompt_tokens),
+                "stream_pass_tokens": int(stream_prompt_tokens),
+                "merged_prompt_tokens": int(usage.prompt_tokens),
+                "completion_tokens": int(usage.completion_tokens),
+                # Timing, including whether eval duration was measured by
+                # the provider or derived from wall clock.
+                "first_token_ms": (
+                    round(float(first_token_ms), 1)
+                    if first_token_ms is not None else None
+                ),
+                "total_ms": round(float(duration_ms), 1),
+                "eval_ms": round(float(usage.eval_duration_ms), 1),
+                "eval_estimated": bool(usage.eval_duration_estimated),
+                "tokens_per_second": float(usage.tokens_per_second),
+            }
+            emit_prefix_record(record)
+        except Exception:
+            log.debug("prompt-cache record failed", exc_info=True)
 
     def _gate_tool_pass(
         self,

@@ -332,6 +332,10 @@
     "file_path": "data/app.log",
     "file_max_bytes": 5242880,
     "file_backup_count": 5,
+    "prompt_cache_log_enabled": false,
+    "prompt_cache_log_path": "data/prompt-cache.jsonl",
+    "prompt_cache_log_max_bytes": 2097152,
+    "prompt_cache_log_backup_count": 2,
     "ui_log_enabled": false,
     "ui_log_categories": [
       "ws",

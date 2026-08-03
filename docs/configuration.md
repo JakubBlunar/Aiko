@@ -1459,6 +1459,10 @@ Backend log discipline. The companion file `data/app.log` is the source of truth
 - `logging.file_path` *(string, `"data/app.log"`)* — log file path.
 - `logging.file_max_bytes` *(int, `5242880`, min `65 536`)* — rotate at this many bytes (default 5 MB).
 - `logging.file_backup_count` *(int, `5`, min `0`)* — number of rotated siblings to keep (`app.log.1` … `.5`).
+- `logging.prompt_cache_log_enabled` *(bool, `false`)* — P44 prompt-cache telemetry: one JSONL record per turn describing where the prompt's cacheable prefix broke and how far the token estimate drifted from the provider's real count. Deliberately **not** in `app.log` (a per-turn line would bloat it) — the `app.promptcache` logger sets `propagate = False` and writes its own file. Turn it on for a measuring session, then run `python scripts/prefix_break_report.py`. See [`prompt-caching.md`](prompt-caching.md#measuring-where-the-prefix-breaks-p44).
+- `logging.prompt_cache_log_path` *(string, `"data/prompt-cache.jsonl"`)* — where those records go.
+- `logging.prompt_cache_log_max_bytes` *(int, `2097152`, min `65 536`)* — rotate at this many bytes. At roughly 300 bytes per turn, 2 MB holds ~7k turns.
+- `logging.prompt_cache_log_backup_count` *(int, `2`, min `0`)* — rotated siblings to keep.
 - `logging.ui_log_enabled` *(bool, `false`)* — UI debug-log bridge: when on, the browser POSTs structured events (WS dispatch, avatar channel decisions, settings changes) to `/api/logs/ui` which interleaves them into `data/app.log` with a `[ui]` prefix. Flip on via Settings drawer → Diagnostics when reproducing a bug.
 - `logging.ui_log_categories` *(list, `["ws", "channel", "settings", "voice"]`)* — allow-list of `source` values the endpoint accepts. Keeps a misbehaving client from spamming arbitrary lines.
 - `logging.ui_log_max_batch` *(int, `50`, clamped `[1, 500]`)* — max entries per request.

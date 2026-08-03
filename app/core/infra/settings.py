@@ -333,6 +333,17 @@ class LoggingSettings:
     file_path: str = "data/app.log"
     file_max_bytes: int = 5 * 1024 * 1024
     file_backup_count: int = 5
+    # P44 prompt-cache telemetry — one JSONL record per turn describing
+    # where the prompt's cacheable prefix broke and how far the token
+    # estimate drifted from the provider's real count. Kept out of
+    # ``app.log`` (a per-turn line would bloat it) and OFF by default,
+    # since the only consumer is ``scripts/prefix_break_report.py``.
+    # Turn it on for a measuring session, read the file, turn it off.
+    # At roughly 300 bytes per turn the 2 MB default holds ~7k turns.
+    prompt_cache_log_enabled: bool = False
+    prompt_cache_log_path: str = "data/prompt-cache.jsonl"
+    prompt_cache_log_max_bytes: int = 2 * 1024 * 1024
+    prompt_cache_log_backup_count: int = 2
     # UI debug log bridge — when ``ui_log_enabled`` is true the browser
     # POSTs structured events (WS dispatch, avatar channel decisions,
     # settings changes) to ``/api/logs/ui`` which interleaves them into
@@ -1945,6 +1956,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             file_path=str(logging_raw.get("file_path", "data/app.log") or "data/app.log"),
             file_max_bytes=max(64 * 1024, int(logging_raw.get("file_max_bytes", 5 * 1024 * 1024))),
             file_backup_count=max(0, int(logging_raw.get("file_backup_count", 5))),
+            prompt_cache_log_enabled=bool(
+                logging_raw.get("prompt_cache_log_enabled", False),
+            ),
+            prompt_cache_log_path=str(
+                logging_raw.get("prompt_cache_log_path")
+                or "data/prompt-cache.jsonl"
+            ),
+            prompt_cache_log_max_bytes=max(
+                64 * 1024,
+                int(logging_raw.get("prompt_cache_log_max_bytes", 2 * 1024 * 1024)),
+            ),
+            prompt_cache_log_backup_count=max(
+                0, int(logging_raw.get("prompt_cache_log_backup_count", 2)),
+            ),
             ui_log_enabled=bool(logging_raw.get("ui_log_enabled", False)),
             ui_log_categories=[
                 str(token).strip().lower()

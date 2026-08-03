@@ -278,7 +278,83 @@ rg -B 2 'turn done:.*cached_pct=[0-9]\.[0-9]' data/app.log
 
 For a live-running app, the MCP `get_last_response_detail` tool
 returns the same numbers (under `usage.cached_tokens` /
-`usage.cached_tokens_pct`) without needing a log read.
+`usage.cached_tokens_pct`) without needing a log read. They also ride
+the per-turn WS metrics as `cached_tokens` / `cached_pct`.
+
+## Measuring *where* the prefix breaks (P44)
+
+The hit-rate above tells you the prefix broke. It does not tell you
+which block broke it, and guessing from a 30 KB prompt is hopeless. The
+P44 telemetry answers that directly: every turn, hash each registered
+block, compare against last turn, and report the **earliest** change in
+ladder order plus the characters sitting at and after it.
+
+Turn it on for a measuring session:
+
+```json
+"logging": { "prompt_cache_log_enabled": true }
+```
+
+Records go to `data/prompt-cache.jsonl`, **not** `app.log` — one line
+per turn would bloat the main log, and the only consumer is a script.
+The `app.promptcache` logger sets `propagate = False` precisely so these
+records never reach the stderr / rotating-file / ring-buffer handlers
+attached to `app`. Off by default; ~300 bytes per turn.
+
+Then read it back:
+
+```sh
+python scripts/prefix_break_report.py
+```
+
+Each record pairs our *prediction* with the provider's *answer*:
+
+| Field | Meaning |
+| --- | --- |
+| `diverged` / `tier` | earliest block whose content changed |
+| `lost_chars` / `lost_pct` | characters at and after the break |
+| `changed` / `changed_by_tier` | how many blocks moved, and where |
+| `history_diverged` | first history index differing from last turn |
+| `history_slid` | `>0` window shift, `-1` messages rewritten in place |
+| `cached_tokens` / `cached_pct` | what the provider actually cached |
+| `est_prompt_tokens` vs `actual_prompt_tokens` | estimator accuracy, **raw** |
+
+Two notes on reading it:
+
+- **`history_slid` is the discriminator.** A positive number is the
+  window sliding, which is expected and leaves a stable tail for next
+  turn. `-1` means messages that stayed in the window had their text
+  rewritten — the fingerprint of the K-time1 relative-age prefixes
+  (`history_age_prefix_enabled`, on by default) re-stamping `[3 min
+  ago]` to `[4 min ago]` as the clock ticks. That defeats history
+  caching in a way a slide does not.
+- **The logged estimate is deliberately unscaled.** The breakdown rows
+  in the UI are rescaled onto the provider's real token count
+  (`_estimate_scale` in `chat_turn_mixin.py`) because a char heuristic
+  and a real tokenizer cannot agree. Recording the scaled figure would
+  drive `est_error_pct` to zero by construction.
+
+### Open question this exists to settle
+
+Observed on a Grok (`xai` / `grok-4.3`) session: `cached_tokens` is
+**bimodal with nothing in between** — `192` on most turns, `10304` /
+`10496` on a few. Every value is a multiple of 64, so xAI caches in
+64-token blocks: 3 blocks on a miss, ~161 on a hit, out of a
+~15,400-token prompt.
+
+Two explanations, and the divergence data separates them:
+
+- Break point stays put while `cached_tokens` swings → the misses are
+  xAI routing or cache TTL, and no prompt restructuring helps.
+- Break point moves in step with `cached_tokens` → something inside the
+  first ~192 tokens (~670 chars, the very front of `T0_stable`) changes
+  most turns and discards everything behind it.
+
+Until that is settled, **within-tier cue cycling is not worth
+building.** Rotating cue order inside T6 to preserve a prefix only pays
+off if the prefix survives T5, and today ~10,300 tokens is the most this
+setup has ever cached — a ceiling that sits around the T4/T5 boundary,
+below where the cue blocks live.
 
 ## Worker prompts and the cache
 
@@ -307,3 +383,8 @@ no longer dominated by the main chat.
   the audit constant pinned next to the actual cascade.
 - `tests/test_prompt_assembler.py::PromptCachePrefixOrderingTests` —
   the cross-tier invariants enforced in CI.
+- `tests/test_prompt_assembler.py::PromptLadderOrderTests` — asserts the
+  constant's order equals the real `system_parts` cascade, which
+  `lost_chars` depends on.
+- `app/core/session/prompt_prefix_telemetry.py` — the P44 divergence
+  diagnosis and its JSONL sink.
