@@ -980,6 +980,26 @@ class PromptTelemetry:
     # instead, exposed via ``GET /api/debug/last-prompt`` for the Diagnostics
     # panel + the MCP ``get_last_response_detail`` debug tool.
     system_prompt: str = ""
+    # P44: where this turn's prompt stopped matching the previous turn's.
+    # Prompt caching is prefix caching, so the earliest changed block is
+    # the only one that matters — everything after it pays full price.
+    # ``prefix_diverged`` is the ladder name of that block ("" when the
+    # whole system prompt was byte-identical, which is the ideal), and
+    # ``prefix_lost_chars`` is what sat at and after the break.
+    # ``history_diverged_at`` is the index of the first history message
+    # that changed, with ``-1`` meaning the shared prefix ran clean to
+    # the end of the shorter list. ``history_slid`` separates the two
+    # ways history can diverge: a positive count is the window shifting
+    # (expected, and it still leaves a stable tail), while ``-1`` means
+    # retained messages were rewritten in place — the fingerprint of the
+    # K-time1 relative-age prefixes re-stamping every message.
+    prefix_diverged: str = ""
+    prefix_tier: str = ""
+    prefix_lost_chars: int = 0
+    prefix_lost_pct: float = 0.0
+    prefix_changed: int = 0
+    history_diverged_at: int = -1
+    history_slid: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1030,6 +1050,16 @@ class PromptTelemetry:
             "coactivation_surfaced": dict(self.coactivation_surfaced),
             # Unified context-budget breakdown.
             "context_budget": dict(self.context_budget),
+            # P44: prefix-divergence scalars. Small enough to ride the
+            # per-turn WS metrics (unlike ``block_chars``), and the
+            # Diagnostics panel needs them next to the cache figures.
+            "prefix_diverged": str(self.prefix_diverged),
+            "prefix_tier": str(self.prefix_tier),
+            "prefix_lost_chars": int(self.prefix_lost_chars),
+            "prefix_lost_pct": round(float(self.prefix_lost_pct), 1),
+            "prefix_changed": int(self.prefix_changed),
+            "history_diverged_at": int(self.history_diverged_at),
+            "history_slid": int(self.history_slid),
         }
 
 @dataclass(slots=True)

@@ -15,14 +15,21 @@ that don't need telemetry.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
 from app.core.infra.chat_database import ChatDatabase
+from app.core.session.prompt_prefix_telemetry import (
+    PrefixDivergence,
+    PrefixSnapshot,
+    diagnose_divergence,
+    message_digest,
+)
 from app.llm.token_utils import estimate_tokens
 
 if TYPE_CHECKING:
@@ -99,16 +106,21 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "voice_adoption_block",
     ),
     # T1 — per-arc / per-day. Changes a few times a day at most.
+    # Order matches the append cascade exactly: anniversary + milestone
+    # cluster with relationship ("how do we know each other") ahead of
+    # axes. P44 made this load-bearing — divergence ``lost_chars`` sums
+    # the blocks at and after the break in ladder order, so a constant
+    # that disagrees with the cascade misreports the cost.
     "T1_semi_stable": (
         "relationship_block",
+        "anniversary_block",
+        "milestone_block",
         "axes_block",
         "arc_block",
         "agenda_block",
         "goals_block",
         "coactivation_block",
         "day_color_block",
-        "anniversary_block",
-        "milestone_block",
     ),
     # T2 — compaction only. Only mutates when a SummaryWorker run
     # collapses old history into a new summary row.
@@ -324,6 +336,44 @@ _BLOCK_TIER_OF: dict[str, str] = {
 }
 
 
+def _resolve_blocks(local_vars: dict[str, Any]) -> Iterator[tuple[str, str]]:
+    """Yield ``(ladder name, rendered text)`` for every registered block.
+
+    Names resolve as ``<name>``, then ``<name>_block``, then
+    ``<name>_text`` — the three shapes the assembler actually uses. The
+    first spelling that exists wins even if it holds a non-string (a
+    provider result object rather than text), because falling through to
+    a suffixed sibling would silently measure the wrong local.
+    """
+    for name in _BLOCK_TIER_OF:
+        for candidate in (name, f"{name}_block", f"{name}_text"):
+            if candidate in local_vars:
+                value = local_vars[candidate]
+                if isinstance(value, str):
+                    yield name, value
+                break
+
+
+def block_hash_table(local_vars: dict[str, Any]) -> dict[str, str]:
+    """Per-block content digest, keyed by ``_PROMPT_BLOCK_TIERS`` name.
+
+    The change-detection half of :func:`block_char_table`. Comparing two
+    of these across consecutive turns says *which* block moved, and the
+    char table says what that cost — together they locate where the
+    provider's prompt cache stopped matching.
+
+    Digests are truncated blake2b: this is drift detection between two
+    turns of one process, not a security boundary, so 8 bytes is ample
+    and keeps the JSONL record small.
+    """
+    return {
+        name: hashlib.blake2b(
+            text.encode("utf-8"), digest_size=8,
+        ).hexdigest()
+        for name, text in _resolve_blocks(local_vars)
+    }
+
+
 def block_char_table(local_vars: dict[str, Any]) -> dict[str, int]:
     """Per-block character cost, keyed by ``_PROMPT_BLOCK_TIERS`` name.
 
@@ -338,21 +388,19 @@ def block_char_table(local_vars: dict[str, Any]) -> dict[str, int]:
     registered name stops resolving (a rename or a typo), which the
     ladder had no protection against before.
 
-    Names resolve as ``<name>``, then ``<name>_block``, then
-    ``<name>_text`` — the three shapes the assembler actually uses.
-    Blocks that rendered empty are reported as ``0`` rather than
-    omitted, so "renders every turn, always empty" is visible: that's
-    exactly the content-gating candidate P31 is hunting.
+    Names resolve via :func:`_resolve_blocks`. Blocks that rendered
+    empty are reported as ``0`` rather than omitted, so "renders every
+    turn, always empty" is visible: that's exactly the content-gating
+    candidate P31 is hunting.
     """
-    out: dict[str, int] = {}
-    for name in _BLOCK_TIER_OF:
-        for candidate in (name, f"{name}_block", f"{name}_text"):
-            if candidate in local_vars:
-                value = local_vars[candidate]
-                if isinstance(value, str):
-                    out[name] = len(value)
-                break
-    return out
+    return {name: len(text) for name, text in _resolve_blocks(local_vars)}
+
+
+# P44: how many sessions keep a prefix snapshot alive. Divergence only
+# ever compares against the immediately preceding turn, so this exists
+# purely so a few interleaved sessions (main chat + a background replay)
+# do not evict each other.
+_PREFIX_SNAPSHOT_SESSIONS = 8
 
 
 class PromptAssembler(PromptAssemblerHelpersMixin):
@@ -387,6 +435,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``[just now]``, ``[yesterday 18:45]``). Set False for a
         # byte-identical history to the pre-K-time1 behaviour.
         self._history_age_prefix_enabled = bool(history_age_prefix_enabled)
+        # P44: last turn's prompt shape per session, for prefix-divergence
+        # diagnosis. Bounded because a long-lived process accumulates
+        # sessions it will never assemble for again.
+        self._prefix_snapshots: dict[str, PrefixSnapshot] = {}
         # K51 toggle. When True, cue blocks that open with the literal
         # ``Heads-up:`` get their prefix rotated across a few register
         # shapes at assembly time (deterministic per turn) so the
@@ -972,6 +1024,49 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # caller didn't wire it, which is fine for tests / fixtures.
         self._user_display_name_provider: Callable[[], str] | None = None
 
+    # ── P44: prompt-cache prefix divergence ───────────────────────────────
+
+    def _diagnose_prefix(
+        self,
+        session_key: str,
+        *,
+        block_hashes: dict[str, str],
+        block_chars: dict[str, int],
+        history_dicts: list[dict[str, Any]],
+        sys_chars: int,
+    ) -> PrefixDivergence:
+        """Compare this turn's prompt shape against the previous one.
+
+        History messages are hashed with their role folded in, because a
+        role flip alone changes the rendered prompt. The snapshot is
+        replaced (not merged) so the comparison is always against the
+        immediately preceding turn -- that is the only comparison the
+        provider's prefix cache actually makes.
+        """
+        current = PrefixSnapshot(
+            block_hashes=block_hashes,
+            block_chars=block_chars,
+            history_hashes=tuple(
+                message_digest(
+                    f"{msg.get('role', '')}\n{msg.get('content', '') or ''}",
+                )
+                for msg in history_dicts
+            ),
+            history_chars=sum(
+                len(msg.get("content", "") or "") for msg in history_dicts
+            ),
+            sys_chars=int(sys_chars),
+        )
+        divergence = diagnose_divergence(
+            self._prefix_snapshots.get(session_key), current,
+        )
+        # Pop before setting so re-insertion moves the key to the end and
+        # eviction below drops the least recently assembled session.
+        self._prefix_snapshots.pop(session_key, None)
+        self._prefix_snapshots[session_key] = current
+        while len(self._prefix_snapshots) > _PREFIX_SNAPSHOT_SESSIONS:
+            self._prefix_snapshots.pop(next(iter(self._prefix_snapshots)))
+        return divergence
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -3273,6 +3368,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             or (history_msgs and not history_dicts and not aggressive)
         )
 
+        # P44: both tables are read off this frame's locals, so they must
+        # be taken here rather than inside the constructor call below --
+        # by then ``locals()`` would also carry the telemetry object.
+        block_chars = block_char_table(locals())
+        block_hashes = block_hash_table(locals())
+        divergence = self._diagnose_prefix(
+            session_key,
+            block_hashes=block_hashes,
+            block_chars=block_chars,
+            history_dicts=history_dicts,
+            sys_chars=len(system_prompt),
+        )
+
         telemetry = PromptTelemetry(
             context_window=int(context_window),
             budget_tokens=budget_tokens,
@@ -3309,7 +3417,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # P31a: per-block character cost. Read off this frame's locals
             # by the names the tier ladder registers -- see
             # ``block_char_table``. One dict snapshot per assembly.
-            block_chars=block_char_table(locals()),
+            block_chars=block_chars,
+            # P44: where this prompt stopped matching the previous one.
+            prefix_diverged=divergence.diverged or "",
+            prefix_tier=divergence.tier or "",
+            prefix_lost_chars=divergence.lost_chars,
+            prefix_lost_pct=divergence.lost_pct,
+            prefix_changed=divergence.changed,
+            history_diverged_at=(
+                -1 if divergence.history_diverged is None
+                else divergence.history_diverged
+            ),
+            history_slid=divergence.history_slid,
             rag_lookup_ms=round(rag_lookup_ms, 2),
             assemble_ms=round(
                 (time.perf_counter() - assemble_started_at) * 1000.0, 2,

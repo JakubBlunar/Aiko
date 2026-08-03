@@ -1249,6 +1249,7 @@ class OpenAICompatibleClient:
             raise
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         usage.total_duration_ms = elapsed_ms
+        _fill_wall_clock_eval_duration(usage, first_token_ms, elapsed_ms)
         self.last_usage = usage
         _warn_if_truncated(usage, model=model, surface=surface)
         self._announce_connection(model)
@@ -1491,6 +1492,7 @@ class OpenAICompatibleClient:
             raise
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         usage.total_duration_ms = elapsed_ms
+        _fill_wall_clock_eval_duration(usage, first_token_ms, elapsed_ms)
         self.last_usage = usage
         _warn_if_truncated(usage, model=use_model, surface=surface)
         self._announce_connection(use_model)
@@ -2009,6 +2011,34 @@ def _responses_usage(
             usage.cached_tokens = int(details.get("cached_tokens", 0) or 0)
     usage.done_reason = done_reason
     return usage
+
+
+def _fill_wall_clock_eval_duration(
+    usage: ChatUsage,
+    first_token_ms: float | None,
+    elapsed_ms: float,
+) -> None:
+    """Derive generation time from the stream when the provider won't say.
+
+    Ollama reports ``eval_duration`` natively; no OpenAI-compatible
+    endpoint does. ``ChatUsage.tokens_per_second`` divides by that field,
+    so every cloud turn used to render as ``0 tok/s`` in the UI and log a
+    flat ``eval_ms=0``.
+
+    The stream itself already knows enough: the span between the first
+    content delta and the last byte IS the generation phase, with
+    time-to-first-token (queueing plus prompt eval) excluded. It carries
+    network jitter that Ollama's server-side number does not, hence the
+    ``eval_duration_estimated`` flag rather than pretending the two are
+    the same measurement.
+
+    Only fills a field the provider left empty, so a future endpoint that
+    starts reporting real timings silently wins.
+    """
+    if usage.eval_duration_ms > 0 or first_token_ms is None:
+        return
+    usage.eval_duration_ms = max(0.0, elapsed_ms - first_token_ms)
+    usage.eval_duration_estimated = True
 
 
 __all__ = ["OpenAICompatibleClient"]

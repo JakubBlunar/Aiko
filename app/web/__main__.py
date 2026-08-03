@@ -108,6 +108,18 @@ def main() -> int:
         file_path=getattr(logging_settings, "file_path", None),
         file_max_bytes=int(getattr(logging_settings, "file_max_bytes", 5 * 1024 * 1024)),
         file_backup_count=int(getattr(logging_settings, "file_backup_count", 5)),
+        prompt_cache_log_enabled=bool(
+            getattr(logging_settings, "prompt_cache_log_enabled", False),
+        ),
+        prompt_cache_log_path=getattr(
+            logging_settings, "prompt_cache_log_path", None,
+        ),
+        prompt_cache_log_max_bytes=int(
+            getattr(logging_settings, "prompt_cache_log_max_bytes", 2 * 1024 * 1024),
+        ),
+        prompt_cache_log_backup_count=int(
+            getattr(logging_settings, "prompt_cache_log_backup_count", 2),
+        ),
     )
 
     log.info("Booting Aiko (web mode)...")

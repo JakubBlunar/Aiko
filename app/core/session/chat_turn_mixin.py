@@ -32,6 +32,28 @@ log = logging.getLogger("app.session")
 # on the turn thread.
 _POST_TURN_SLOW_MS = 400.0
 
+# P44: how far the per-block breakdown may be rescaled toward the
+# provider's real prompt-token count. A healthy estimator lands within a
+# few percent; anything beyond this band means the char heuristic is so
+# far off that "correcting" it would be inventing numbers, so the raw
+# estimate is shown instead and the discrepancy stays visible.
+_MIN_BREAKDOWN_SCALE = 0.5
+_MAX_BREAKDOWN_SCALE = 2.0
+
+
+def _estimate_scale(*, estimate: int, actual: int) -> float:
+    """Factor mapping estimated prompt tokens onto the provider's count.
+
+    Returns ``1.0`` (no rescale) when either side is missing or the ratio
+    falls outside the sane band.
+    """
+    if estimate <= 0 or actual <= 0:
+        return 1.0
+    scale = actual / float(estimate)
+    if scale < _MIN_BREAKDOWN_SCALE or scale > _MAX_BREAKDOWN_SCALE:
+        return 1.0
+    return scale
+
 
 class ChatTurnMixin:
     """Chat loop + per-turn metrics + next-turn scheduling helpers."""
@@ -294,6 +316,19 @@ class ChatTurnMixin:
             "context_tokens": int(context_tokens),
             "completion_tokens": int(usage.completion_tokens),
             "total_tokens": int(usage.total_tokens),
+            # P44: prompt-cache hit rate. Parsed by the OpenAI-compatible
+            # client since the beginning but never surfaced past the
+            # "turn done:" log line, which left ``docs/prompt-caching.md``
+            # claiming ``get_last_response_detail`` exposed it when it
+            # did not. 0 on Ollama, which reports no such signal.
+            "cached_tokens": int(usage.cached_tokens),
+            "cached_pct": round(float(usage.cached_tokens_pct), 1),
+            # True when tok/s came from wall clock rather than the
+            # provider's own generation timer -- see
+            # ``_fill_wall_clock_eval_duration``.
+            "eval_estimated": bool(
+                getattr(usage, "eval_duration_estimated", False),
+            ),
             "total_duration_ms": round(usage.total_duration_ms, 1),
             "eval_duration_ms": round(usage.eval_duration_ms, 1),
             "prompt_eval_duration_ms": round(usage.prompt_eval_duration_ms, 1),
@@ -322,14 +357,44 @@ class ChatTurnMixin:
         }
         if telemetry is not None:
             tdict = telemetry.as_dict()
+            # P44: the breakdown rows are char-heuristic estimates while
+            # the bar above them is the provider's real prompt_tokens, so
+            # the two are computed different ways and cannot agree --
+            # visibly so since the switch to a cloud model whose
+            # tokenizer the estimator was never calibrated against.
+            # Rescaling the rows onto the real total keeps their relative
+            # shape (which is the informative part) while making the
+            # column sum truthful.
+            #
+            # The RAW estimates are what the P44 JSONL records, in
+            # ``TurnRunner._emit_prompt_cache_record``. Recording these
+            # scaled values instead would force est_error_pct to zero by
+            # construction and destroy the very measurement that tells us
+            # how far off the estimator is.
+            scale = _estimate_scale(
+                estimate=int(tdict["prompt_tokens_estimate"]),
+                actual=int(context_tokens),
+            )
             metrics.update({
-                "system_tokens": tdict["system_tokens"],
-                "summary_tokens": tdict["summary_tokens"],
-                "rag_tokens": tdict["rag_tokens"],
-                "history_tokens": tdict["history_tokens"],
-                "user_tokens": tdict["user_tokens"],
+                "system_tokens": round(tdict["system_tokens"] * scale),
+                "summary_tokens": round(tdict["summary_tokens"] * scale),
+                "rag_tokens": round(tdict["rag_tokens"] * scale),
+                "history_tokens": round(tdict["history_tokens"] * scale),
+                "user_tokens": round(tdict["user_tokens"] * scale),
+                # The tool pass is a separate LLM call with its own
+                # prompt, so its two rows are outside the identity the
+                # scale factor enforces and stay as measured.
                 "tool_tokens": tdict["tool_tokens"],
                 "tool_schema_tokens": tdict["tool_schema_tokens"],
+                "breakdown_scale": round(scale, 3),
+                # P44 prefix divergence, for the Diagnostics panel.
+                "prefix_diverged": tdict["prefix_diverged"],
+                "prefix_tier": tdict["prefix_tier"],
+                "prefix_lost_chars": tdict["prefix_lost_chars"],
+                "prefix_lost_pct": tdict["prefix_lost_pct"],
+                "prefix_changed": tdict["prefix_changed"],
+                "history_diverged_at": tdict["history_diverged_at"],
+                "history_slid": tdict["history_slid"],
                 "history_messages_kept": tdict["history_messages_kept"],
                 "history_dropped_count": tdict["history_messages_dropped"],
                 "summary_active": tdict["summary_active"],

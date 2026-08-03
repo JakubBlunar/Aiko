@@ -28,6 +28,8 @@ _lock = threading.Lock()
 _fault_file = None
 _logger: logging.Logger | None = None
 _log_file_path: Path | None = None
+# P44: the separate prompt-cache JSONL sink; None while it is disabled.
+_prompt_cache_log_path: Path | None = None
 
 
 class _SpamFilter(logging.Filter):
@@ -149,12 +151,21 @@ def configure_logging_full(
     file_path: str | os.PathLike[str] | None = None,
     file_max_bytes: int = 5 * 1024 * 1024,
     file_backup_count: int = 5,
+    prompt_cache_log_enabled: bool = False,
+    prompt_cache_log_path: str | os.PathLike[str] | None = None,
+    prompt_cache_log_max_bytes: int = 2 * 1024 * 1024,
+    prompt_cache_log_backup_count: int = 2,
 ) -> None:
     """Configure ``app.*`` logging: stderr + optional rotating file + ring buffer.
 
     Idempotent — clears existing handlers on the ``app`` and root loggers.
     The same formatter (``LOG_FORMAT``) and ``_TurnIdFilter`` are attached
     to every handler so log lines look identical wherever they end up.
+
+    The P44 prompt-cache sink is the one exception: it is a *separate*
+    file in a different format, configured last so ``module_levels``
+    cannot accidentally re-enable it. See
+    :func:`configure_prompt_cache_log`.
     """
     global _logger
 
@@ -226,6 +237,88 @@ def configure_logging_full(
                 logging.getLogger(str(name)).setLevel(_coerce_level(str(lvl), default=level))
             except Exception:  # pragma: no cover
                 pass
+
+    configure_prompt_cache_log(
+        enabled=prompt_cache_log_enabled,
+        path=prompt_cache_log_path,
+        max_bytes=prompt_cache_log_max_bytes,
+        backup_count=prompt_cache_log_backup_count,
+    )
+
+
+def configure_prompt_cache_log(
+    *,
+    enabled: bool = False,
+    path: str | os.PathLike[str] | None = None,
+    max_bytes: int = 2 * 1024 * 1024,
+    backup_count: int = 2,
+) -> None:
+    """Point the P44 prompt-cache telemetry at its own JSONL file.
+
+    One record per turn would be a meaningful share of ``app.log``, and
+    the only consumer is ``scripts/prefix_break_report.py``, so it gets a
+    separate file in a machine-readable format instead.
+
+    Two details carry the whole design:
+
+    * ``propagate = False`` — ``app.promptcache`` is a child of ``app``,
+      so without this every record would *also* reach the stderr,
+      rotating-file and ring-buffer handlers, which is exactly what the
+      separate file exists to avoid.
+    * a bare ``%(message)s`` formatter, so each line is valid JSON rather
+      than JSON wrapped in ``LOG_FORMAT``'s timestamp/level preamble.
+      Correlation ids ride *inside* the payload instead (the emitter
+      reads ``get_turn_id()`` directly), so records still join back to
+      the ``turn=<id>`` lines in ``app.log``.
+
+    When disabled the logger is pinned above ``CRITICAL`` so the
+    ``isEnabledFor`` check on the hot path is the only cost.
+    """
+    global _prompt_cache_log_path
+
+    logger = logging.getLogger("app.promptcache")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:  # pragma: no cover - best-effort
+            pass
+    logger.propagate = False
+    _prompt_cache_log_path = None
+
+    if not enabled:
+        logger.setLevel(logging.CRITICAL + 1)
+        return
+
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        resolved = Path(path) if path else (DATA_DIR / "prompt-cache.jsonl")
+        if not resolved.is_absolute():
+            resolved = (DATA_DIR.parent / resolved).resolve()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            resolved,
+            maxBytes=max(64 * 1024, int(max_bytes)),
+            backupCount=max(0, int(backup_count)),
+            encoding="utf-8",
+            delay=True,
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        _prompt_cache_log_path = resolved
+    except Exception as exc:  # pragma: no cover - best-effort
+        logger.setLevel(logging.CRITICAL + 1)
+        sys.stderr.write(
+            f"[crash_logging] prompt-cache logging disabled: {exc!r}\n"
+        )
+
+
+def get_prompt_cache_log_path() -> Path | None:
+    """Return the active prompt-cache JSONL path, if the sink is on."""
+    return _prompt_cache_log_path
 
 
 def _coerce_level(value: str | int | None, *, default: int) -> int:

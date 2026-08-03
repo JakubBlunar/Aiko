@@ -5,8 +5,11 @@ verbatim-deduplication against the rolling summary, and overflow detection.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import logging
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -5472,6 +5475,114 @@ class BlockCharTableTests(unittest.TestCase):
         # result object shares the stem; only strings are measurable.
         table = block_char_table({"relevant_context": object()})
         self.assertNotIn("relevant_context", table)
+
+
+def _cascade_block_order() -> list[str]:
+    """The order blocks really reach ``system_parts``, read off the source.
+
+    Parsing the cascade beats assembling a prompt with 106 sentinel
+    providers: it sees every block, not just the ones a test managed to
+    wire, and it cannot be fooled by a block that renders empty. The T3
+    region is spliced rather than appended, so the
+    ``t3_insert_index = len(system_parts)`` assignment stands in for its
+    position.
+    """
+    source = textwrap.dedent(
+        inspect.getsource(PromptAssembler.assemble_with_budget),
+    )
+    events: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "append"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "system_parts"
+                and len(node.args) == 1
+                and isinstance(node.args[0], ast.Name)
+            ):
+                events.append((node.lineno, node.args[0].id))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "t3_insert_index"
+                ):
+                    events.append((node.lineno, "relevant_context_block"))
+    events.sort()
+    return [name for _, name in events]
+
+
+def _ladder_name(local_var: str) -> str:
+    """Map a cascade local back to its ``_PROMPT_BLOCK_TIERS`` name."""
+    if local_var in _BLOCK_TIER_OF:
+        return local_var
+    for suffix in ("_block", "_text"):
+        if local_var.endswith(suffix):
+            stem = local_var[: -len(suffix)]
+            if stem in _BLOCK_TIER_OF:
+                return stem
+    return local_var
+
+
+class PromptLadderOrderTests(unittest.TestCase):
+    """P44 — the tier constant must agree with the append cascade.
+
+    Divergence accounting sums ``lost_chars`` over every block at and
+    after the break *in ladder order*, so a constant that lists blocks
+    in a different order than the prompt actually renders them silently
+    misattributes the cost of a cache miss. Before P44 the constant
+    called itself "purely documentation" and had drifted: T1 listed
+    ``axes_block`` ahead of ``anniversary_block`` / ``milestone_block``
+    while the cascade appends them the other way round.
+    """
+
+    def test_ladder_order_matches_the_cascade(self) -> None:
+        cascade = [_ladder_name(var) for var in _cascade_block_order()]
+        ladder = [name for names in _PROMPT_BLOCK_TIERS.values() for name in names]
+        # Compare only the registered blocks; an unregistered append is
+        # caught by the membership test below with a clearer message.
+        cascade_registered = [n for n in cascade if n in _BLOCK_TIER_OF]
+        self.assertEqual(
+            cascade_registered, ladder,
+            "_PROMPT_BLOCK_TIERS disagrees with the system_parts cascade. "
+            "lost_chars is computed from ladder order, so the constant "
+            "has to match the order blocks are actually appended in.",
+        )
+
+    def test_every_appended_block_is_registered(self) -> None:
+        cascade = [_ladder_name(var) for var in _cascade_block_order()]
+        unregistered = sorted({n for n in cascade if n not in _BLOCK_TIER_OF})
+        self.assertEqual(
+            unregistered, [],
+            "these blocks are appended to the prompt but missing from "
+            f"_PROMPT_BLOCK_TIERS, so they are invisible to divergence "
+            f"accounting: {unregistered}",
+        )
+
+    def test_every_registered_block_is_appended(self) -> None:
+        cascade = {_ladder_name(var) for var in _cascade_block_order()}
+        orphans = sorted(set(_BLOCK_TIER_OF) - cascade)
+        self.assertEqual(
+            orphans, [],
+            f"registered but never appended (stale ladder entries): {orphans}",
+        )
+
+    def test_tiers_are_contiguous_in_the_cascade(self) -> None:
+        # The whole point of the ladder: no volatile block may sit above
+        # a stable one. Tier indices must be non-decreasing.
+        tier_rank = {tier: i for i, tier in enumerate(_PROMPT_BLOCK_TIERS)}
+        ranks = [
+            tier_rank[_BLOCK_TIER_OF[name]]
+            for name in (_ladder_name(v) for v in _cascade_block_order())
+            if name in _BLOCK_TIER_OF
+        ]
+        self.assertEqual(
+            ranks, sorted(ranks),
+            "a block is appended out of tier order, which breaks the "
+            "cache prefix for everything after it",
+        )
 
 
 if __name__ == "__main__":
