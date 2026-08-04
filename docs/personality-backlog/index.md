@@ -92,9 +92,9 @@ A follow-up pass found the surfacing gap is an instance of a broader
 pattern — information the system works hard to produce, which then
 terminates in a database write instead of becoming conversation:
 
-- **F13.** The user *explicitly correcting her* is the highest-quality
-  evidence available and has no detector at all, while F5, K29 and K38 —
-  the other three corners of the contradiction family — each have one.
+- **F13.** ✅ **Shipped** — the user *explicitly correcting her* is the
+  highest-quality evidence available and now has a detector + supersede path,
+  joining F5, K29 and K38 as the fourth corner of the contradiction family.
 - **F14.** The fact-checker can discover she told him something wrong,
   rewrite the memory, and say nothing; the only outward signal is a UI
   list refresh.
@@ -189,11 +189,14 @@ Dev / debug tooling (DT-series):
   the L37 ledger uses too. **Still open:** crediting the *user's* engagement
   rather than only whether Aiko repeated herself. See
   [shipped](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes).
-- **F13.** The contradiction family's missing fourth corner — F5, K29 and
-  K38 all have detectors; *the user explicitly correcting her* has none,
-  despite being the highest-quality evidence the system will ever get. A
-  correction should supersede what it corrects, not sit beside it at equal
-  confidence.
+- **F13.** ✅ **Shipped** — the contradiction family's fourth corner. F5, K29
+  and K38 each had a detector; *the user explicitly correcting her* now has one
+  too. A cheap post-turn pattern gate stashes candidates and an off-turn
+  `UserCorrectionWorker` confirms (rate-limited LLM), supersedes the corrected
+  memory (new row 0.9, old row demoted + `superseded_by`), propagates the
+  demotion to any backed concept (no LLM), and arms a low-key acknowledgment
+  cue. Correction-of-fact only — `self` stance rows stay K29's lane. See
+  [shipped](shipped/awareness.md#f13-the-contradiction-familys-fourth-corner--the-user-corrects-aiko).
 - **F14.** "I was wrong about that" — the fact-checker can reverse a claim
   she told him and the loop ends in a SQLite write plus a UI refresh. She
   never mentions it.

@@ -429,11 +429,30 @@ on P5/P17) → Large (d, mirror eviction / LRU rework).
 [`shipped/perf.md`](shipped/perf.md#p31a-get_prompt_block_costs--per-block-prompt-cost-weighted-by-tier).
 It ranks blocks by tokens × the tier's cache-miss probability, and
 reports empty blocks as `0` rather than omitting them, so (c)'s
-content-gating candidates surface directly. The first thing it says is
-that the persona (~78k chars, ~19.5k estimated tokens) dominates
+content-gating candidates surface directly.
+
+**Correction, and it inverts this item's conclusion.** The figure recorded
+here was "the persona (~78k chars, ~19.5k estimated tokens) dominates
 everything else combined — so (b), the persona trim, is where the value
-is, and it wants its own pass because the persona is user-editable
-content rather than code.
+is". Both halves were wrong. A live re-measure on 2026-08-04 puts the
+persona at **35,938 chars / 8,103 tokens** — the old char count was larger
+than the entire system prompt, so it cannot have been the persona alone.
+More importantly, the persona sits in `T0_stable`, and now that the
+prefix-stability work has the early tiers actually caching, `effective_tokens`
+ranks it **third**:
+
+| Block | Tier | Tokens | Effective |
+| --- | --- | --- | --- |
+| `relevant_context` | T3_rag | 3,378 | **2,027** |
+| `handling_notes_block` | T6 | 1,216 | **1,216** |
+| `persona` | T0 | 8,103 | 405 |
+
+A cached T0 block is billed at the cache discount, so the biggest block in
+the prompt is not the most expensive one. The remaining value is in the
+volatile tail — the T3 retrieval budget and the T6 detectors — which is
+P42 + P43 below rather than a persona pass. Re-run
+`get_prompt_block_costs` before acting on any number in this entry; the one
+above is the only measured one.
 
 **Motivation.** On a *fresh* session with a single message the
 system prompt already measures ~25-30k tokens — that's the resting

@@ -1238,11 +1238,16 @@ class PromiseFollowthroughProviderTests(unittest.TestCase):
 
         t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
         self.assertIn("promise_followthrough_block", t6)
-        # Pinned ordering: right after the self-correction slot — both
-        # are "own what you owe" beats.
+        # Pinned ordering: the "own what you owe" cluster runs
+        # self_correction (own your slip) -> user_correction (own the fix
+        # the user made, F13) -> promise_followthrough (close the loop).
+        self.assertEqual(
+            t6.index("user_correction_block"),
+            t6.index("self_correction_block") + 1,
+        )
         self.assertEqual(
             t6.index("promise_followthrough_block"),
-            t6.index("self_correction_block") + 1,
+            t6.index("user_correction_block") + 1,
         )
 
 

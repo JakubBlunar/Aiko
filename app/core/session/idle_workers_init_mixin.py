@@ -1267,6 +1267,77 @@ class IdleWorkersInitMixin:
                 self._memory_conflict_worker = None
                 self._memory_conflict_rate_limiter = None
 
+        # F13 — user-correction worker. The off-turn half of the "the user
+        # just corrected me" path: the post-turn hook stashes candidate
+        # pairs, this worker confirms them with a rate-limited LLM call,
+        # supersedes the corrected memory, propagates the demotion to any
+        # concept it backed, and arms the acknowledgment cue. Its own
+        # ``FactCheckRateLimiter`` state_key keeps the budget independent
+        # of F1 / F5 / K35 / K29. Needs the embedder (to embed the
+        # corrected fact) and a worker LLM.
+        self._user_correction_worker = None
+        self._user_correction_rate_limiter = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+            and self._embedder is not None
+            and self._fact_check_cancel is not None
+            and bool(
+                getattr(settings.agent, "user_correction_enabled", True)
+            )
+        ):
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+                from app.core.memory.user_correction_worker import (
+                    UserCorrectionWorker,
+                )
+
+                self._user_correction_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "user_correction_per_hour_cap",
+                            12,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "user_correction_per_day_cap",
+                            60,
+                        )
+                    ),
+                    state_key="user_correction.rate_state",
+                )
+                self._user_correction_worker = UserCorrectionWorker(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    rate_limiter=self._user_correction_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    drain_candidates=self.drain_correction_candidates,
+                    pending_count=lambda: len(
+                        getattr(self, "_pending_correction_candidates", ())
+                    ),
+                    queue_cue=self.queue_user_correction_cue,
+                    concept_store=getattr(self, "_concept_store", None),
+                    notify_memory_updated=self._notify_memory_updated,
+                )
+                self._idle_scheduler.register(self._user_correction_worker)
+            except Exception:
+                log.warning(
+                    "UserCorrectionWorker init failed", exc_info=True,
+                )
+                self._user_correction_worker = None
+                self._user_correction_rate_limiter = None
+
         # K35 — memory consolidation worker. Fuses near-duplicate
         # scratchpad rows into one long_term memory during quiet
         # windows. Needs the embedder (re-embeds merged text) + a worker

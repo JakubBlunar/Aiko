@@ -924,6 +924,157 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             },
         )
 
+    def _maybe_capture_user_correction(self, user_text: str) -> None:
+        """F13: cheap post-turn gate for "the user just corrected me".
+
+        Does nothing expensive -- no LLM call, no memory write. Runs the
+        pattern-only
+        (:func:`app.core.conversation.user_correction_detector.detect_user_correction`)
+        detector against the rows RAG surfaced last turn and, on a
+        candidate, stashes it on ``_pending_correction_candidates`` for the
+        off-turn :class:`UserCorrectionWorker` to confirm and act on. The
+        turn path never blocks on the risky half; a false positive here
+        costs a queue slot, not a rewritten memory.
+        """
+        if not bool(
+            getattr(self._settings.agent, "user_correction_enabled", True)
+        ):
+            return
+        text = (user_text or "").strip()
+        if not text:
+            return
+        if getattr(self, "_memory_store", None) is None:
+            return
+        try:
+            from app.core.conversation import user_correction_detector
+
+            memories = self._user_correction_candidate_memories()
+            if not memories:
+                return
+            hit = user_correction_detector.detect_user_correction(
+                text,
+                memories,
+                min_confidence=float(
+                    getattr(
+                        self._memory_settings,
+                        "user_correction_min_confidence",
+                        0.4,
+                    )
+                ),
+                min_overlap=int(
+                    getattr(
+                        self._memory_settings,
+                        "user_correction_min_overlap",
+                        2,
+                    )
+                ),
+                max_candidates=int(
+                    getattr(
+                        self._memory_settings,
+                        "user_correction_max_candidates",
+                        50,
+                    )
+                ),
+            )
+            if hit is None:
+                return
+            self._pending_correction_candidates.append(
+                {"hit": hit, "user_text": text},
+            )
+            log.info(
+                "F13 user-correction candidate: memory_id=%s kind=%s "
+                "marker=%r overlap=%d label=%s",
+                hit.memory_id,
+                hit.kind,
+                hit.marker,
+                hit.overlap,
+                hit.label,
+            )
+        except Exception:
+            log.debug("user-correction capture raised", exc_info=True)
+
+    def _user_correction_candidate_memories(self) -> list[Any]:
+        """Rows a user correction could plausibly be aimed at.
+
+        Preferred source is what RAG surfaced last turn -- a correction is
+        a response to something Aiko just said, so the note being corrected
+        is almost always one she just quoted, and that narrows the set to a
+        handful. Falls back to a kind scan (the same durable-truth kinds
+        the F5 sweep uses) when nothing was surfaced; the detector's
+        overlap filter does the narrowing in that case.
+        """
+        store = self._memory_store
+        retriever = getattr(self, "_rag_retriever", None)
+        ids = (
+            list(getattr(retriever, "last_surfaced_memory_ids", []) or [])
+            if retriever is not None
+            else []
+        )
+        if ids:
+            try:
+                rows = store.get_many(ids)
+                surfaced = [rows[i] for i in ids if i in rows]
+                if surfaced:
+                    return surfaced
+            except Exception:
+                log.debug(
+                    "user-correction: surfaced-id fetch failed", exc_info=True,
+                )
+        out: list[Any] = []
+        for kind in ("fact", "preference", "relationship", "event"):
+            try:
+                out.extend(store.iter_by_kind(kind))
+            except Exception:
+                log.debug(
+                    "user-correction: iter_by_kind(%s) raised",
+                    kind,
+                    exc_info=True,
+                )
+        return out
+
+    def drain_correction_candidates(self) -> list[Any]:
+        """Pop every stashed F13 candidate, oldest first, for the worker.
+
+        ``popleft`` in a loop rather than ``list()`` + ``clear()`` so a
+        candidate appended by the turn thread mid-drain is never dropped:
+        both ends of a :class:`collections.deque` are atomic under the GIL,
+        the two-step is not.
+        """
+        queue = getattr(self, "_pending_correction_candidates", None)
+        if not queue:
+            return []
+        out: list[Any] = []
+        while True:
+            try:
+                out.append(queue.popleft())
+            except IndexError:
+                break
+        return out
+
+    def queue_user_correction_cue(self, *, wrong: str, corrected: str) -> bool:
+        """Arm the F13 acknowledgment cue after a confirmed correction.
+
+        Called by the worker, not the turn path -- the corrected fact is
+        only known once the LLM confirms it. Subject is the *corrected*
+        fact so post-turn matching credits her for stating the right thing,
+        not for quoting the old version while owning the slip.
+        """
+        from app.core.conversation import user_correction_detector
+
+        cue = user_correction_detector.render_cue(
+            wrong=wrong,
+            corrected=corrected,
+            user_display_name=getattr(self, "user_display_name", "") or "",
+        )
+        if not cue:
+            return False
+        return self._queue_pool_cue(
+            "user_correction",
+            corrected,
+            cue,
+            payload={"wrong": (wrong or "")[:200], "corrected": (corrected or "")[:200]},
+        )
+
     def _maybe_arm_mood_inertia(
         self,
         *,

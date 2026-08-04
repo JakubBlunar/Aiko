@@ -369,6 +369,69 @@ context stats read ~27% high all session. `observe_actual_usage` now uses
 observation snaps to the provider's ratio and it reverts to the slow EMA
 after ~20 samples.
 
+### Re-measured after the fixes: two of three worked, and the total barely moved
+
+A second 20-turn `grok-4.3` session, run against a snapshot of the real
+data in a container, says the three fixes above each did their job and the
+number they were supposed to move **did not move**:
+
+| | Aug 3, before | Aug 4, after |
+| --- | --- | --- |
+| `lost_pct` mean | 39.3% | **38.1%** |
+| earliest break | `anniversary_block` 7, `profile_block` 7, `narrative_block` 1 | `arc_block` **17**, `axes_block` 1, `profile_block` 1 |
+| `cached_pct` max | 59.9% | 63.9% |
+| `est_error_pct` | 27% on turn 1, 50–100 turns to settle | 25.4% on turn 1, **0.2% from turn 2** |
+| `chars_per_token` | 3.5 start, never converged | 4.397 first → 4.435 |
+
+The estimator fix is unambiguous and needs no follow-up. The three
+prefix-breakers are all gone from the `diverged` column — `profile_block`
+fell from 7/16 to 1/20 and the two re-tiered blocks vanished entirely. But
+`arc_block` immediately took over at 85%, and the cost of the break is
+unchanged, because **`diverged` only ever names the *earliest* break.**
+Fixing the top of the list promotes whatever was hiding behind it. `arc_block`
+was invisible in the Aug 3 data purely because `anniversary_block` and
+`profile_block` sat earlier in ladder order.
+
+The lesson is structural rather than about any one block: **the early tiers
+contain a population of per-turn-mutating blocks, so this is iterative by
+construction, and each pass needs a fresh measurement.** Treat a
+`diverged` histogram as one layer of an onion, not a to-do list.
+
+`arc_block`'s own defect is worth naming because it is a pattern, not a
+one-off. [`ConversationArcStore.render_block`](../app/core/conversation/conversation_arc.py)
+renders `Conversation arc: playful banter (last ~4 turns).`, where the
+count comes from `current_turn - state.since_turn` and `current_turn` is
+the session's message count. That is **a monotonic counter baked into
+cacheable text**: it is guaranteed to differ every turn the block renders,
+no matter how stable the arc itself is. `axes_block` is the same shape with
+continuous floats (four axes drifting up to ±0.08 per turn), and the
+`history_slid = -1` churn is the same shape again (K-time1 re-stamping
+`[3 min ago]` to `[4 min ago]`).
+
+Two fixes are available and the second is better. Re-tiering to T6 is
+mechanical and would work, but it evicts a semantically stable block from
+the tier it belongs in for a formatting reason. **Quantising the varying
+part** — bucketing `elapsed` to "just started" / "the last few turns" /
+"a while now", the same medicine as the `profile_block` confidence
+quantisation — fixes the churn *and* lets the block stay in T1, where a
+slowly-changing conversation arc genuinely belongs. The distinction between
+`~3 turns` and `~4 turns` is not one the model can act on.
+
+The general rule this implies: **no monotonic counter and no unquantised
+float may reach the rendered text of a T0–T2 block.** Worth a test rather
+than a convention, since it is invisible until someone runs a 20-turn
+measuring session.
+
+Also settled by the same run: the persona measures **35,938 chars / 8,103
+tokens**, not the "~78k chars, ~19.5k tokens" recorded in
+[`perf.md`](personality-backlog/perf.md) under P31. And because T0 now
+caches, `get_prompt_block_costs` ranks it *third* by effective cost behind
+`relevant_context` (2,027) and `handling_notes_block` (1,216) — so the
+persona trim is no longer where the value is. Note the shape of the loss
+while you are here: `T1_semi_stable` renders **231 tokens in total**, and a
+~50-token block in it is discarding roughly 7,000 tokens of T2–T6 behind it.
+The blocks that cost the most are not the ones that are large.
+
 ### The original open question
 
 Observed on a Grok (`xai` / `grok-4.3`) session: `cached_tokens` is

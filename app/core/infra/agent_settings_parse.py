@@ -1671,6 +1671,15 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             self_correction_enabled=bool(
                 agent_raw.get("self_correction_enabled", True),
             ),
+            user_correction_enabled=bool(
+                agent_raw.get("user_correction_enabled", True),
+            ),
+            user_correction_per_hour_cap=max(
+                0, int(agent_raw.get("user_correction_per_hour_cap", 12)),
+            ),
+            user_correction_per_day_cap=max(
+                0, int(agent_raw.get("user_correction_per_day_cap", 60)),
+            ),
             mood_inertia_enabled=bool(
                 agent_raw.get("mood_inertia_enabled", True),
             ),
