@@ -496,6 +496,13 @@ class AssociativeWanderWorker:
             text = (getattr(mem, "content", "") or "").strip() if mem else ""
             if not text:
                 continue
+            # K-time10: these snippets are the substance the LLM draws its
+            # connecting observation from, and that observation is stored
+            # as a cue. A "tonight" carried in from a member note can end
+            # up quoted in the connection itself.
+            text = timephrase.resolve_deictics(
+                text, getattr(mem, "created_at", None),
+            )
             if len(text) > _MEMBER_SNIPPET_CHARS:
                 text = text[: _MEMBER_SNIPPET_CHARS - 1].rsplit(" ", 1)[0] + "…"
             out.append(text)

@@ -255,5 +255,120 @@ class WorkerToolkitTests(unittest.TestCase):
         self.assertEqual(tp.format_transcript(rows, _NOW), "")
 
 
+class HasRelativeDeicticTests(unittest.TestCase):
+    """K-time10 — the predicate behind the ``MemoryStore.add`` backstop."""
+
+    def test_detects_the_stale_wordings(self) -> None:
+        for text in (
+            "Jacob mowed the lawn today",
+            "he wants a long bath tonight",
+            "the interview is tomorrow",
+            "Yesterday went badly",
+            "he's currently between jobs",
+            "swamped right now",
+            "he's been quiet lately",
+            "they're driving to the coast this weekend",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(tp.has_relative_deictic(text))
+
+    def test_leaves_genuinely_durable_facts_alone(self) -> None:
+        for text in (
+            "Jacob is a software engineer",
+            "Jacob prefers cozy stories over horror",
+            "Jacob always drinks tea in the morning",
+            "Jacob's sister is called Mira",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(tp.has_relative_deictic(text))
+
+    def test_word_boundaries(self) -> None:
+        # "todays" / "Tomorrowland" are not the deictics we are after.
+        self.assertFalse(tp.has_relative_deictic("he read Tomorrowland"))
+        self.assertFalse(tp.has_relative_deictic("the sooner the better"))
+
+    def test_case_insensitive_and_empty(self) -> None:
+        self.assertTrue(tp.has_relative_deictic("TODAY was rough"))
+        self.assertFalse(tp.has_relative_deictic(""))
+        self.assertFalse(tp.has_relative_deictic(None))
+
+
+class ResolveDeicticsTests(unittest.TestCase):
+    """K-time10 — rewriting frozen text against its own write time."""
+
+    _WRITTEN = datetime(2026, 5, 27, 19, 0, tzinfo=timezone.utc)
+
+    def _resolve(self, text: str) -> str:
+        return tp.resolve_deictics(text, self._WRITTEN, _NOW)
+
+    def test_day_words_become_real_dates(self) -> None:
+        self.assertEqual(
+            self._resolve("Jacob mowed the lawn today"),
+            "Jacob mowed the lawn on May 27",
+        )
+        self.assertEqual(
+            self._resolve("the interview is tomorrow"),
+            "the interview is on May 28",
+        )
+        self.assertEqual(
+            self._resolve("yesterday went badly"),
+            "on May 26 went badly",
+        )
+
+    def test_vaguer_words_become_vaguer_phrases(self) -> None:
+        # No date is invented for a word that never named one.
+        self.assertEqual(
+            self._resolve("he wants a long bath tonight"),
+            "he wants a long bath that evening",
+        )
+        self.assertEqual(
+            self._resolve("he's been quiet lately"),
+            "he's been quiet around then",
+        )
+
+    def test_same_day_text_is_untouched(self) -> None:
+        fresh = _NOW - timedelta(hours=3)
+        self.assertEqual(
+            tp.resolve_deictics("a bath tonight", fresh, _NOW),
+            "a bath tonight",
+        )
+
+    def test_unusable_timestamp_returns_input(self) -> None:
+        for bad in (None, "", "not-a-date"):
+            with self.subTest(source=bad):
+                self.assertEqual(
+                    tp.resolve_deictics("lawn today", bad, _NOW),
+                    "lawn today",
+                )
+
+    def test_capitalisation_is_preserved(self) -> None:
+        self.assertEqual(
+            self._resolve("Today he rested"), "On May 27 he rested",
+        )
+
+    def test_cross_year_source_carries_the_year(self) -> None:
+        old = datetime(2024, 12, 30, 9, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            tp.resolve_deictics("shipped it today", old, _NOW),
+            "shipped it on Dec 30, 2024",
+        )
+
+    def test_text_without_deictics_is_returned_verbatim(self) -> None:
+        self.assertEqual(
+            self._resolve("Jacob is a software engineer"),
+            "Jacob is a software engineer",
+        )
+
+    def test_accepts_an_iso_string_source(self) -> None:
+        self.assertEqual(
+            tp.resolve_deictics("lawn today", self._WRITTEN.isoformat(), _NOW),
+            "lawn on May 27",
+        )
+
+    def test_is_idempotent(self) -> None:
+        once = self._resolve("mowed the lawn today, bath tonight")
+        self.assertEqual(tp.resolve_deictics(once, self._WRITTEN, _NOW), once)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -19,6 +19,7 @@ from app.core.proactive.forward_curiosity_worker import (
     FORWARD_CURIOSITY_JOURNAL_KEY,
     ForwardCuriosityWorker,
     load_questions,
+    render_question_cue,
 )
 
 
@@ -218,6 +219,27 @@ class JournalTests(unittest.TestCase):
         kv = _FakeKV()
         kv.set(FORWARD_CURIOSITY_JOURNAL_KEY, "not json")
         self.assertEqual(load_questions(kv.get), [])
+
+
+class QuestionCueRenderTests(unittest.TestCase):
+    """K-time10 — the question is drafted from a memory's raw wording."""
+
+    def test_a_deictic_resolves_against_the_source_note(self) -> None:
+        written = (_NOW - timedelta(days=40)).isoformat()
+        line = render_question_cue(
+            {"question": "how the move went today", "source_at": written},
+        )
+        self.assertNotIn("today", line)
+        self.assertIn("on Nov", line)
+
+    def test_no_source_timestamp_leaves_the_question_alone(self) -> None:
+        # Older journal entries predate ``source_at``; they must still
+        # render rather than blow up or lose their text.
+        line = render_question_cue({"question": "how the move went today"})
+        self.assertEqual(line, "You've been wondering how the move went today.")
+
+    def test_an_empty_question_renders_nothing(self) -> None:
+        self.assertEqual(render_question_cue({"question": "  "}), "")
 
 
 class GateTests(unittest.TestCase):

@@ -392,6 +392,9 @@ class ThreadResummaryWorker:
         user_name = self._resolve_user_name()
         assistant_name = self._resolve_assistant_name()
         lines: list[str] = []
+        # K-time10: stamped, because a thread note is prompt-facing (T2)
+        # and gets redrafted from a window that can span days.
+        now = _utcnow()
         for row in rows:
             role = getattr(row, "role", "") or ""
             content = (getattr(row, "content", "") or "").strip()
@@ -402,7 +405,11 @@ class ThreadResummaryWorker:
                 else user_name if role == "user"
                 else role or "system"
             )
-            lines.append(f"{who}: {_trim(content, max_chars=_MAX_MSG_CHARS)}")
+            age = timephrase.age_prefix(getattr(row, "created_at", None), now)
+            stamp = f"[{age}] " if age else ""
+            lines.append(
+                f"{stamp}{who}: {_trim(content, max_chars=_MAX_MSG_CHARS)}"
+            )
         return "\n".join(lines)
 
     def _summary_block(self, session_key: str) -> str:
@@ -432,9 +439,15 @@ class ThreadResummaryWorker:
         summary_text: str,
         prev_note: str,
     ) -> tuple[str, str]:
-        system = _SYSTEM_PROMPT.format(
-            assistant_name=self._resolve_assistant_name(),
-            user_name=self._resolve_user_name(),
+        system = (
+            timephrase.today_anchor()
+            + "\n\n"
+            + _SYSTEM_PROMPT.format(
+                assistant_name=self._resolve_assistant_name(),
+                user_name=self._resolve_user_name(),
+            )
+            + "\n\n"
+            + timephrase.STORED_TEXT_TIME_RULE
         )
         user_payload = _USER_TEMPLATE.format(
             summary=summary_text or "(none yet)",

@@ -1307,6 +1307,86 @@ went quiet months ago" instead of just "big vs. small". Tests:
 
 ---
 
+## K-time10. Finishing the wiring K-time7 shipped unused — SHIPPED
+
+**The failure mode, stated plainly, because it is the reason the rule now
+exists.** `format_transcript()` landed complete in `dd2ab58` with a
+docstring naming "promise / belief / moments / summary" as its callers.
+Not one of them ever called it. `format_memory_block()` had a single
+consumer. K-time8 gave five workers `today_anchor()` — a date in the
+system prompt — while still feeding them bare `Speaker: text` and bare
+`- {content}`, so each worker knew what day it was and nothing about when
+anything it was reading had happened. A complete toolkit with no stated
+contract does not get used; it rots quietly and the entry above reads as
+if it shipped.
+
+**What that cost.** 851 of 1,089 memories (78%) sat at
+`temporal_type='durable'`, which renders with **no time tag at all**, and
+the persona read an untagged bullet as present-tense and fair game. 74 of
+those rows contained a relative-time phrase in their own text — `Jacob
+mowed the lawn today`, written May 27 — and 53 were 30+ days old. Aiko
+was reading a two-month-old note as a report about this afternoon, and
+she was right to: nothing in the prompt said otherwise.
+
+**Three defensive layers, cheapest first.** Rendering, then the write
+boundary, then the prompts:
+
+- **Layer 1 — rendering.** [`rag_retriever.format_block`](../../../app/core/rag/rag_retriever.py)
+  falls back to a `(noted 3 days ago)` recorded-at tag when
+  `temporal_suffix()` returns empty, suppressed under 48h so fresh rows
+  stay clean. The wording is deliberately *not* the existing `(3 days
+  ago)`: that one asserts the event happened then, this one only says
+  when the note was written. Message snippets gained an `age_prefix`, and
+  the `relevant_context` header gained a compact `Today is …` anchor
+  (T3 is assembled before the T4 "Right now it's…" line). Persona line 86
+  was rewritten to explain the distinction. This layer fixed every row
+  already in the database, which is why **no backfill of the 74 rows was
+  needed**.
+- **Layer 2 — the write boundary.** `has_relative_deictic()` (word-boundary
+  regex over today / tonight / tomorrow / yesterday / currently / lately /
+  soon / …) plus a guard in [`MemoryStore.add()`](../../../app/core/memory/memory_store.py):
+  a `durable` or `preference` row whose text trips the predicate is
+  reclassified to `past_event` anchored at `created_at`. **The text is
+  never edited** — a mis-tag is recoverable, rewriting what was recorded
+  is not. One funnel, so this covers all ~35 producers and anything added
+  later.
+- **Layer 3 — the prompts, where it should actually be prevented.**
+  `format_transcript` / `format_memory_block` wired into the Tier-0
+  writers whose output lands in `memories.content` (`memory_extractor`,
+  `topic_digest_worker`, `topic_label_worker`, `memory_consolidator`),
+  then `today_anchor()` + tagged input across the rest. One canonical
+  `STORED_TEXT_TIME_RULE` constant carries the anti-relative wording so
+  it cannot drift between workers — paste the constant, never retype it.
+
+**Layer 3b — cue text has a separate failure mode.** A cue is frozen at
+draft time and pending rows have surfaced 44 hours later. `resolve_deictics(text,
+source_created_at, now)` rewrites "today" to "on May 27" and "currently"
+to "at the time", applied at the render sites that quote raw
+`mem.content` (`forward_curiosity_worker`, `follow_up_worker`,
+`self_callback`, `interest_drift_worker`, `prepared_nudge`,
+`associative_wander_worker`) — note the anchor there is the *source
+memory's* timestamp, usually much older than the draft. Separately
+`CuePoolMixin.take_pool_cue` appends "(you first noticed this yesterday)"
+past a 6h draft-to-surface lag, **on a copy**, because post-turn
+accounting has to judge the producer's original text.
+
+**Still exempt by design** (unchanged from K-time5–9, restated so nobody
+"completes" them): `memory_conflict_worker` judges logical contradiction
+between two memories and ages would be noise in that call;
+`idle_curiosity_worker` writes about the world, not about the user.
+
+The contract is now written down in three places —
+[`AGENTS.md`](../../../AGENTS.md) core rules, a "Temporal awareness
+contract (K-time)" entry in [`rules/code-conventions.md`](../../../rules/code-conventions.md)
+beside the "now" seam, and [`.cursorrules`](../../../.cursorrules) —
+because fixing the code without stating the rule just means the next
+worker added reintroduces it. Tests: `tests/test_timephrase.py`
+(`HasRelativeDeicticTests`, `ResolveDeicticsTests`),
+`tests/test_memory_temporal.py` (Layer 1 rendering +
+`DeicticWriteGuardTests`), `tests/test_cue_pool_consumption.py::DraftAgeDisclosureTests`.
+
+---
+
 ## G4. Cue outcome accounting — which of the 50-odd workers earn their keep?
 
 **Motivation.** `get_idle_workers_status` could say that a worker **ran** —

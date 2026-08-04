@@ -2407,8 +2407,19 @@ class ConceptSynthesisWorker:
     # ── llm ─────────────────────────────────────────────────────────────
 
     def _call_llm(self, system: str, user: str) -> list[dict[str, Any]]:
+        # K-time10: every proposer funnels through here, so the anchor is
+        # added once rather than in each of the dozen prompt builders.
+        # A concept label is quoted verbatim into cues and the self-model
+        # for months, so it must not carry a "currently" from the note
+        # that suggested it.
         messages = [
-            {"role": "system", "content": system},
+            {
+                "role": "system",
+                "content": (
+                    f"{timephrase.today_anchor()}\n\n{system}\n\n"
+                    f"{timephrase.STORED_TEXT_TIME_RULE}"
+                ),
+            },
             {"role": "user", "content": user},
         ]
         chunks: list[str] = []

@@ -496,6 +496,11 @@ class PromiseExtractionWorker:
             return ""
         lines: list[str] = []
         total = 0
+        # K-time10: stamp each line with its age. The system prompt asks
+        # the model to resolve "tomorrow" into a concrete day, which needs
+        # to know the day the word was *said* -- the run-time anchor alone
+        # is the wrong operand once the lookback spans more than a day.
+        now = self._clock()
         for row in reversed(rows):
             text = (row.content or "").strip()
             if not text:
@@ -503,7 +508,9 @@ class PromiseExtractionWorker:
             if len(text) > max_msg_chars:
                 text = text[: max_msg_chars - 1] + "\u2026"
             speaker = user_name if row.role == "user" else "Aiko"
-            line = f"{speaker}: {text}"
+            age = timephrase.age_prefix(getattr(row, "created_at", None), now)
+            stamp = f"[{age}] " if age else ""
+            line = f"{stamp}{speaker}: {text}"
             if total + len(line) > max_transcript_chars and lines:
                 break
             lines.append(line)
@@ -522,8 +529,11 @@ class PromiseExtractionWorker:
             _SYSTEM_PROMPT
             + "\n\n"
             + timephrase.today_anchor(self._clock())
-            + " If a deadline is relative ('tomorrow', 'tonight', 'next "
-            "Monday'), resolve it against this into a concrete day/time."
+            + " Each transcript line is prefixed with when it was said; "
+            "resolve a relative deadline ('tomorrow', 'tonight', 'next "
+            "Monday') against THAT line's timestamp, not against today, "
+            "and write a concrete day/time. "
+            + timephrase.STORED_TEXT_TIME_RULE
         )
         messages = [
             {"role": "system", "content": system_content},

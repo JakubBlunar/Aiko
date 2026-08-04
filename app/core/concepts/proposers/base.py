@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.core.infra import timephrase
+
 MIN_SOURCES = 2
 AIKO_SELF_KINDS: tuple[str, ...] = ("self", "reflection", "diary")
 
@@ -187,6 +189,23 @@ def snippet(text: str) -> str:
     return text
 
 
+def mem_line(mem: Any, now: datetime | None = None) -> str:
+    """``[id] content (3 days ago)`` -- one evidence row for a proposer.
+
+    K-time10: the age is load-bearing evidence here, not decoration. A
+    proposer is judging whether a handful of notes add up to a standing
+    trait, and "he was anxious" three times last May is a different claim
+    from three times this week. Undated, the two are indistinguishable --
+    and a note worded "currently" reads as though it still were.
+    """
+    when = now or timephrase.utcnow()
+    body = snippet(getattr(mem, "content", "") or "")
+    created_at = str(getattr(mem, "created_at", "") or "")
+    if timephrase.parse_iso(created_at) is not None:
+        body = f"{body} ({timephrase.humanize_past(created_at, when)})"
+    return f"[{int(mem.id)}] {body}"
+
+
 def resolve_reinforces(raw: Any, existing_ids: set[int]) -> int | None:
     """Return a valid existing concept id to reinforce, or ``None`` (a
     brand-new proposal, or an LLM-hallucinated id we ignore)."""
@@ -249,7 +268,7 @@ def propose_aiko_hybrid(
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
-        line = f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}"
+        line = mem_line(mem)
         if mid in aff_mems:
             line += f"  (felt: {aff_mems[mid]})"
         mem_lines.append(line)
@@ -386,8 +405,7 @@ def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str) -> s
                 f"  ... ({len(mems) - _MAX_STEPS_SHOWN} step(s) elided) ..."
             )
             continue
-        mid = int(mem.id)
-        lines.append(f"  {pos + 1}. [{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+        lines.append(f"  {pos + 1}. {mem_line(mem)}")
     return f'{block_word} [{index}] -- theme "{cand.label}":\n' + "\n".join(lines)
 
 
@@ -574,7 +592,7 @@ def propose_boundary(
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
-        mem_lines.append(f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+        mem_lines.append(mem_line(mem))
 
     if not valid_reps and not valid_mem_ids:
         return []
@@ -712,7 +730,7 @@ def propose_communication_style(
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
-        mem_lines.append(f"[{mid}] {snippet(getattr(mem, 'content', '') or '')}")
+        mem_lines.append(mem_line(mem))
 
     if not valid_reps and not valid_mem_ids:
         return []

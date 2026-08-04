@@ -442,6 +442,58 @@ def _temporal_boost(mem) -> float:
 _temporal_suffix = _tp.temporal_suffix
 
 
+# Below this age a bullet renders bare. Inside a couple of days "noted"
+# is not something anyone would say out loud, and the tag is pure prompt
+# cost on exactly the rows that need it least.
+_RECORDED_MIN_AGE = timedelta(hours=48)
+
+
+def _recorded_suffix(created_at: str | None, now: datetime) -> str:
+    """``(noted N ago)`` for a memory the v10 tense tag left untagged.
+
+    :func:`temporal_suffix` deliberately says nothing about ``durable`` /
+    ``preference`` rows, on the theory that a standing fact is timeless.
+    That holds for "Jacob is a software engineer" and fails badly for the
+    rest: ``durable`` is the *default* temporal type, so it collects every
+    one-off event the extractor never classified ("Jacob mowed the lawn
+    today", stored in May). An untagged bullet is then read present-tense,
+    because the persona says in as many words that no tag means fair game.
+
+    Stamping the *recording* date is the honest fallback. It never claims
+    when the thing happened -- only when Aiko learned it, which is true of
+    every row regardless of type -- so it reads correctly for a standing
+    fact and defuses a stale event at the same time. Deliberately worded
+    "noted" rather than the bare "(3 days ago)" that
+    :func:`temporal_suffix` emits for ``past_event``: those two tags mean
+    different things and the persona keys off the difference.
+    """
+    when = _tp.parse_iso(created_at)
+    if when is None:
+        return ""
+    if _tp.to_aware(now) - when < _RECORDED_MIN_AGE:
+        return ""
+    return f" (noted {_tp.humanize_past(created_at, now)})"
+
+
+def _today_line() -> str:
+    """Date-only anchor for the head of the recall block.
+
+    The full "right now it's ..." sentence lives at T4, which the
+    assembler appends *after* this region -- so without this the model
+    reads a page of dated recall before it is ever told what day it is,
+    and "(noted 2 months ago)" has nothing to be two months before.
+
+    Date only, no clock: every tag below is measured in days, and a
+    ticking HH:MM would rewrite the block on every single turn to say
+    nothing new.
+    """
+    try:
+        today = _tp.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    return f"(Today is {today}. The time tags below are relative to it.)"
+
+
 def _is_anniversary_today(metadata: dict | None) -> bool:
     """True if ``metadata.when`` falls inside an anniversary window today.
 
@@ -2196,6 +2248,13 @@ class RagRetriever:
                     created_at=getattr(hit.record, "created_at", None),
                     now=now,
                 )
+                # K-time10: a row the tense tag skipped still gets an
+                # anchor, so nothing reaches the prompt claiming to be
+                # about now purely because nobody classified it.
+                if not time_suffix:
+                    time_suffix = _recorded_suffix(
+                        getattr(hit.record, "created_at", None), now,
+                    )
                 if kind in ("self", "self_tagged"):
                     self_lines.append(f"- {text}{suffix}{time_suffix}")
                 else:
@@ -2205,7 +2264,17 @@ class RagRetriever:
                 speaker = (
                     f"{user_display_name} said" if role == "user" else "You said"
                 )
-                message_lines.append(f'- {speaker}: "{_truncate(text, 200)}"')
+                # K-time10: a recalled snippet used to render with no
+                # timestamp at all, so a line from three weeks ago looked
+                # exactly like one from this morning. The K-time1 bracket
+                # is reused deliberately -- the persona already explains
+                # that register for history messages, so this needs no
+                # new vocabulary taught.
+                age = _tp.age_prefix(getattr(hit.record, "created_at", None), now)
+                stamp = f"[{age}] " if age else ""
+                message_lines.append(
+                    f'- {stamp}{speaker}: "{_truncate(text, 200)}"'
+                )
             elif hit.source == "document":
                 title = getattr(hit.record, "title", "")
                 head = f"({title}) " if title else ""
@@ -2240,6 +2309,11 @@ class RagRetriever:
                 "before — lean on them only if they fit naturally):\n"
                 + "\n".join(expansion_lines)
             )
+        if not sections:
+            return ""
+        today_line = _today_line()
+        if today_line:
+            sections.insert(0, today_line)
         return "\n\n".join(sections)
 
     def format_hits(

@@ -843,6 +843,31 @@ class MemoryStore:
         # Real insert.
         conn = self._get_conn()
         now = _now_iso()
+        # K-time10 backstop. A note worded "today" / "currently" is only
+        # true on the day it was written, but ``durable`` is the *default*
+        # temporal type and renders with no time tag at all -- so such a
+        # row keeps reaching the prompt months later still asserting the
+        # present. Re-reading it as an event anchored at write time is the
+        # honest interpretation, and it makes retrieval tag the bullet
+        # "(N days ago)" instead of leaving it bare.
+        #
+        # This lives at the store rather than in each producer's prompt on
+        # purpose: every long-term write funnels through here, so one
+        # branch covers all ~35 producers and anything added later.
+        # Prompts should still be taught not to write the phrase (that is
+        # the K-time worker toolkit's job); this only catches what slips
+        # past. The text itself is never rewritten -- editing what was
+        # recorded to satisfy a regex would be worse than mis-tagging it.
+        if temporal_type_normalized in (
+            "durable", "preference",
+        ) and timephrase.has_relative_deictic(cleaned):
+            temporal_type_normalized = "past_event"
+            if event_time_clean is None:
+                event_time_clean = now
+            log.debug(
+                "memory reclassified durable -> past_event (relative wording): %s",
+                cleaned[:80],
+            )
         meta_json = _encode_metadata(metadata)
         pinned_int = 1 if pinned else 0
         cursor = conn.execute(

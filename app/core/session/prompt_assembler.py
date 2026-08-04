@@ -96,7 +96,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # communication_style lines that surface at T3. Constant text, so
         # it belongs in the cache prefix alongside the other addenda.
         "learned_style_addendum",
-        "narrative_block",
         "profile_block",
         "petname_block",
         "catchphrase_block",
@@ -113,7 +112,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # that disagrees with the cascade misreports the cost.
     "T1_semi_stable": (
         "relationship_block",
-        "anniversary_block",
         "milestone_block",
         "axes_block",
         "arc_block",
@@ -223,6 +221,17 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K73: warm "this has become our thing" shared-ritual beat.
         # Sibling cue-producer; cooldown + acknowledged-flag gated.
         "shared_ritual_block",
+        # P44 measurement moved these two down from T0/T1. Both looked
+        # stable and neither is: ``anniversary_block`` stamps
+        # ``last_anniversaried_at`` as a side effect of rendering, so it
+        # alternates between content and nothing on a 6h rotation, and
+        # ``narrative_block`` is re-read from disk every turn by design.
+        # Sitting high in the ladder they were breaking the prefix on
+        # 8 of 16 turns and taking ~28 KB of otherwise-cacheable prompt
+        # down with them. Here, among the other one-shot cue-producer
+        # surfaces they behave like, a flip costs only what follows.
+        "anniversary_block",
+        "narrative_block",
         # K80: "that line just became a bit" — the phrase-sized sibling
         # of the K73 ritual beat. One-shot, watermark-gated.
         "inside_joke_block",
@@ -2624,8 +2633,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 self._resolve_user_display_name(),
             )
             system_parts.append(learned_style_addendum)
-        if narrative_block:
-            system_parts.append(narrative_block)
         if profile_block:
             system_parts.append(profile_block)
         if petname_block:
@@ -2648,11 +2655,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # anniversary. Changes a few times a day at most.
         if relationship_block:
             system_parts.append(relationship_block)
-        # Anniversary + axes sit right after the relationship block so
-        # the three "how do we know each other" pieces cluster together
-        # in the system prompt.
-        if anniversary_block:
-            system_parts.append(anniversary_block)
+        # Milestone + axes sit right after the relationship block so the
+        # "how do we know each other" pieces cluster together in the
+        # system prompt. Anniversary used to lead this group and now
+        # renders down in T6 -- see the ladder note there.
         if milestone_block:
             system_parts.append(milestone_block)
         if axes_block:
@@ -2989,6 +2995,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer family; cooldown + acknowledged-flag gated
             # one-shot. NOT in the K16 suppression set.
             system_parts.append(shared_ritual_block)
+        # Relocated from T0/T1 by the P44 prefix-break measurements. Both
+        # are volatile in practice despite reading as background: see the
+        # note beside them in ``_PROMPT_BLOCK_TIERS``. The constant and
+        # this cascade have to move together -- ``PromptLadderOrderTests``
+        # enforces it, because ``lost_chars`` is computed by summing the
+        # blocks at and after the break in ladder order.
+        if anniversary_block:
+            system_parts.append(anniversary_block)
+        if narrative_block:
+            system_parts.append(narrative_block)
         if inside_joke_block:
             # K80: the phrase-sized sibling of K73 — a bit that just
             # became theirs. Right after the ritual beat so both

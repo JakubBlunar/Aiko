@@ -266,6 +266,11 @@ class ReflectionWorker:
                         + _build_reflection_prompt(
                             resolve_user_name(self._user_display_name_provider),
                         )
+                        # K-time10: reflections and the callbacks they
+                        # spawn are stored as memories and re-surfaced
+                        # much later, so the wording has to survive ageing.
+                        + "\n\n"
+                        + timephrase.STORED_TEXT_TIME_RULE
                     ),
                 },
                 {

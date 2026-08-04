@@ -80,7 +80,11 @@ def _build_merge_prompt(user_display_name: str = "the user") -> str:
         "Rules:\n"
         "- Output only the consolidated note. No prose, no bullets, no quotes.\n"
         "- Stay concrete. Don't invent facts not present in the inputs.\n"
-        "- If the inputs disagree, take the most recent / specific one."
+        "- If the inputs disagree, take the most recent / specific one.\n"
+        "- Each input ends with how long ago it was recorded. Use that to "
+        "pick the fresher claim, and never carry a stale one forward as "
+        "though it were current.\n"
+        "- " + timephrase.STORED_TEXT_TIME_RULE
     )
 
 
@@ -275,7 +279,15 @@ class MemoryConsolidator:
             # Fallback: take the most-salient member's content as-is.
             survivor, _ = _split_survivor(cluster)
             return survivor.content
-        bullets = [f"- {m.content.strip()}" for m in cluster if (m.content or "").strip()]
+        # K-time10: age-tagged, matching what the K-time9 sibling
+        # (``memory_consolidation_worker``) already does. "Take the most
+        # recent one" was in the prompt long before the model was given
+        # any way to tell which that was.
+        bullets = [
+            timephrase.format_memory_line(m)
+            for m in cluster
+            if (m.content or "").strip()
+        ]
         if len(bullets) < 2:
             survivor, _ = _split_survivor(cluster)
             return survivor.content
@@ -283,7 +295,11 @@ class MemoryConsolidator:
             messages = [
                 {
                     "role": "system",
-                    "content": _build_merge_prompt(self._resolve_user_name()),
+                    "content": (
+                        timephrase.today_anchor()
+                        + "\n\n"
+                        + _build_merge_prompt(self._resolve_user_name())
+                    ),
                 },
                 {"role": "user", "content": "\n".join(bullets)},
             ]

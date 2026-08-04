@@ -142,9 +142,24 @@ class UserProfileStore:
     def fields(self, user_id: str) -> dict[str, ProfileEntry]:
         if not user_id:
             return {}
+        # P44: the ordering is prompt-cache-critical. ``render_block``
+        # walks this dict in insertion order, so the row order IS the
+        # bullet order, and the block sits high in the prefix ladder --
+        # two bullets swapping places invalidates the cache for the whole
+        # rest of the prompt.
+        #
+        # Plain ``ORDER BY confidence DESC`` was not stable enough on two
+        # counts. It has no tie-breaker, so equal-confidence rows come
+        # back in whatever order SQLite feels like; and confidence is an
+        # EMA that drifts by thousandths on every write, so two bullets
+        # sitting a hair apart trade places for no visible reason. The
+        # bucket quantises the drift away (0.05 bands, far coarser than
+        # the drift and far finer than any real confidence difference)
+        # and ``field`` settles whatever is left.
         rows = self._db.execute_fetchall(
             "SELECT user_id, field, value, confidence, updated_at "
-            "FROM user_profile WHERE user_id = ? ORDER BY confidence DESC",
+            "FROM user_profile WHERE user_id = ? "
+            "ORDER BY CAST(confidence * 20 AS INTEGER) DESC, field ASC",
             (user_id,),
         )
         out: dict[str, ProfileEntry] = {}

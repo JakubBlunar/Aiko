@@ -482,6 +482,12 @@ class MomentDetector:
                         + _build_llm_prompt(
                             resolve_user_name(self._user_display_name_provider),
                         )
+                        # K-time10: a moment summary is stored and then
+                        # replayed by the anniversary block months later
+                        # ("a year ago today: ..."), so a "tonight" baked
+                        # into it is read back at the worst possible time.
+                        + "\n\n"
+                        + timephrase.STORED_TEXT_TIME_RULE
                     ),
                 },
                 {"role": "user", "content": block},

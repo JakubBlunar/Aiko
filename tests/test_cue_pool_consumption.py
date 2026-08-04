@@ -12,11 +12,13 @@ machine under test is the store's.
 from __future__ import annotations
 
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.proactive.cue_store import (
     STATE_AWAITING,
@@ -363,6 +365,61 @@ class SurfaceTimeLedgerTests(_Fixture):
         self.assertIsNone(
             _Host(None).record_surfaced_cue("turning_over", "x", "y"),
         )
+
+
+class DraftAgeDisclosureTests(_Fixture):
+    """K-time10 — cue text is frozen at draft time, then read much later.
+
+    A worker writes the line while the user is away and it waits in the
+    pool for a fitting moment. Pending rows have been observed surfacing
+    44 hours after they were drafted, by which point "you've been
+    wondering how his interview went" reads as a thought Aiko is having
+    right now, and she relays it as fresh news.
+    """
+
+    def _age_cue(self, cue_id: int, hours: float) -> None:
+        when = (
+            timephrase.utcnow() - timedelta(hours=hours)
+        ).isoformat()
+        conn = self.store._conn()
+        conn.execute(
+            "UPDATE cue_pool SET created_at = ? WHERE id = ?", (when, cue_id),
+        )
+        conn.commit()
+
+    def test_a_stale_cue_says_when_it_was_noticed(self) -> None:
+        cue_id = self.store.add("interest_drift", "film photography", "cue")
+        self._age_cue(cue_id, 30)
+        row = self.host.take_pool_cue("interest_drift")
+        self.assertIn("you first noticed this", row.text)
+        self.assertIn("yesterday", row.text)
+
+    def test_a_fresh_cue_is_left_clean(self) -> None:
+        self.store.add("interest_drift", "film photography", "cue")
+        row = self.host.take_pool_cue("interest_drift")
+        self.assertEqual(row.text, "cue")
+
+    def test_the_stored_row_is_not_rewritten(self) -> None:
+        # The note is for this render only; post-turn accounting and any
+        # later surfacing should see the producer's original wording.
+        cue_id = self.store.add("interest_drift", "film photography", "cue")
+        self._age_cue(cue_id, 30)
+        self.host.take_pool_cue("interest_drift")
+        self.assertEqual(self._row(cue_id).text, "cue")
+
+    def test_the_note_does_not_disturb_the_used_verdict(self) -> None:
+        cue_id = self.store.add(
+            "interest_drift",
+            "film photography",
+            "Heads-up: you've been drawn to film photography.",
+        )
+        self._age_cue(cue_id, 30)
+        self.host.take_pool_cue("interest_drift")
+        self.host._settle_pool_cues(
+            user_text="hey",
+            assistant_text="I've been weirdly into film photography lately.",
+        )
+        self.assertEqual(self._state(cue_id), STATE_USED)
 
 
 class SurfacingCadenceTests(_Fixture):

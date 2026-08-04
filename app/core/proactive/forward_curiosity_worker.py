@@ -100,6 +100,10 @@ class QuestionCandidate:
     source: str  # "future_plan" | "callback"
     source_id: str
     topic: str
+    # When the source memory was written. ``topic`` is that memory's raw
+    # content, so any "tonight" in it belongs to this moment, not to
+    # whenever the cue eventually surfaces (K-time10).
+    source_at: str = ""
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -150,7 +154,14 @@ def render_question_cue(entry: dict[str, Any]) -> str:
     section, so it is only in the prompt on the turns the cue fires.
     """
     question = str(entry.get("question") or "").strip()
-    return f"You've been wondering {question}." if question else ""
+    if not question:
+        return ""
+    # K-time10: the question was drafted from a memory's raw wording, so
+    # a "tonight" in it means the evening that memory was written --
+    # possibly months back. Resolved here, at render, so the journal
+    # entry keeps the original phrasing.
+    question = timephrase.resolve_deictics(question, entry.get("source_at"))
+    return f"You've been wondering {question}."
 
 
 class ForwardCuriosityWorker:
@@ -247,6 +258,7 @@ class ForwardCuriosityWorker:
             "question": question,
             "source": candidate.source,
             "source_id": candidate.source_id,
+            "source_at": candidate.source_at,
         }
         append_question(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
@@ -298,7 +310,10 @@ class ForwardCuriosityWorker:
                 continue
             candidates.append(
                 QuestionCandidate(
-                    source="future_plan", source_id=sid, topic=topic,
+                    source="future_plan",
+                    source_id=sid,
+                    topic=topic,
+                    source_at=str(getattr(mem, "created_at", "") or ""),
                 )
             )
 
@@ -313,7 +328,10 @@ class ForwardCuriosityWorker:
                 continue
             candidates.append(
                 QuestionCandidate(
-                    source="callback", source_id=sid, topic=topic,
+                    source="callback",
+                    source_id=sid,
+                    topic=topic,
+                    source_at=str(getattr(mem, "created_at", "") or ""),
                 )
             )
 
@@ -342,10 +360,18 @@ class ForwardCuriosityWorker:
         routine_clause = (
             f" Their usual rhythms: {routines}." if routines else ""
         )
+        # K-time10: the note's age changes the question that fits. "How's
+        # the interview prep going?" for a note from this morning becomes
+        # "how did the interview go?" for one from three weeks ago.
+        age = ""
+        if timephrase.parse_iso(candidate.source_at) is not None:
+            age = " (noted {})".format(
+                timephrase.humanize_past(candidate.source_at, timephrase.utcnow())
+            )
         prompt = (
             f"You are Aiko. Between conversations you've been wondering "
             f"about something in {user_name}'s life. Here's the note you "
-            f"have: \"{candidate.topic}\".{routine_clause} Draft the gist "
+            f"have: \"{candidate.topic}\"{age}.{routine_clause} Draft the gist "
             "of ONE warm, natural follow-up question you'd want to ask "
             f"{user_name} about it next time it fits — first person, no "
             "greeting, no preamble, ONE short question, no emoji. Keep it "
@@ -357,6 +383,12 @@ class ForwardCuriosityWorker:
                     {
                         "role": "system",
                         "content": (
+                            timephrase.today_anchor()
+                            + " Phrase the question against the note's age "
+                            "-- ask retrospectively about something long "
+                            "past -- and do not use 'today' / 'tonight' / "
+                            "'tomorrow' in it, because the question waits "
+                            "in a queue before it is asked.\n\n"
                             'Reply with JSON only: {"question": "<one '
                             'short first-person question>"}.'
                         ),

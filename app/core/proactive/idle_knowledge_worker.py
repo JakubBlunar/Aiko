@@ -825,7 +825,14 @@ class IdleKnowledgeWorker:
             f"- {note[:_PLAN_NOTE_CHARS]}"
             for note in pick.members[:_PLAN_MAX_NOTES]
         ) or "(no additional notes)"
-        system = _PLAN_SYSTEM_PROMPT.replace("{max_queries}", str(max_queries))
+        # K-time10: the anchor lets the planner turn a note phrased
+        # "the release is next week" into a query about a real date
+        # rather than one about whenever this happens to run.
+        system = (
+            timephrase.today_anchor()
+            + "\n\n"
+            + _PLAN_SYSTEM_PROMPT.replace("{max_queries}", str(max_queries))
+        )
         user = _PLAN_USER_TEMPLATE.format(summary=pick.topic, notes=notes)
         messages = [
             {"role": "system", "content": system},

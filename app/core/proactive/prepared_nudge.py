@@ -505,6 +505,14 @@ class NarrativeWeaver:
                 content = (mem.content or "").strip()
                 if not content:
                     continue
+                # K-time10: this raw content is woven into an opener that
+                # is stored and spoken at the *start of the next session*
+                # -- possibly days later. A note reading "he's off to the
+                # dentist tomorrow" would otherwise greet him with a
+                # tomorrow that is already behind us.
+                content = timephrase.resolve_deictics(
+                    content, getattr(mem, "created_at", None),
+                )
                 if kind == "promise":
                     # Promise memories are stored as
                     # "{actor} promised: {predicate}" (see

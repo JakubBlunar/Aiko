@@ -165,8 +165,17 @@ class RelationshipPulseWorker:
             messages = [
                 {
                     "role": "system",
-                    "content": _build_pulse_prompt(
-                        resolve_user_name(self._user_display_name_provider),
+                    # K-time10: the pulse writes a self_tagged memory that
+                    # is recalled long afterwards, so it needs both the
+                    # anchor and the no-stale-wording rule.
+                    "content": (
+                        timephrase.today_anchor()
+                        + "\n\n"
+                        + _build_pulse_prompt(
+                            resolve_user_name(self._user_display_name_provider),
+                        )
+                        + "\n\n"
+                        + timephrase.STORED_TEXT_TIME_RULE
                     ),
                 },
                 {
@@ -232,7 +241,10 @@ class RelationshipPulseWorker:
             if not content or key in seen:
                 continue
             seen.add(key)
-            bullets.append(content)
+            # K-time10: age-tagged. The pulse reads these as evidence of
+            # where the relationship is *heading*, which is meaningless
+            # without knowing whether a note is from Tuesday or from May.
+            bullets.append(timephrase.format_memory_line(mem).lstrip("- "))
             if len(bullets) >= self._max_memories:
                 break
         return bullets

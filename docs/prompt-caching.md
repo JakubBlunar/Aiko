@@ -334,7 +334,42 @@ Two notes on reading it:
   and a real tokenizer cannot agree. Recording the scaled figure would
   drive `est_error_pct` to zero by construction.
 
-### Open question this exists to settle
+### Settled: the telemetry is validated, and the prefix was breaking on 15 of 16 turns
+
+A 16-turn Grok session answered the open question below, and it is the
+second explanation: **the break point moves with `cached_tokens`.** On the
+three turns where xAI's cache was warm, the provider's `cached_pct`
+(59.9%) landed within half a point of our predicted `100 - lost_pct`
+(59.4%). The prediction and the provider's answer are independent
+measurements of the same thing, so agreement at that margin means the
+`diverged` field can be trusted as the real cause and acted on directly.
+
+What it said: the prefix broke on **15 of 16 turns**, losing a mean of
+27,720 chars — **39.3%** of a 70 KB prompt. Three blocks, all fixed:
+
+| Block | Breaks | Why it moved | Fix |
+| --- | --- | --- | --- |
+| `anniversary_block` | 7/16 | Renders, then stamps `last_anniversaried_at`, so it alternates content and empty on a 6h rotation | Re-tiered T1 → T6 |
+| `profile_block` | 7/16 | Rebuilt every message, and `ORDER BY confidence DESC` had no tie-breaker, so equal-confidence bullets reordered on EMA jitter | `, field ASC` tie-breaker + confidence quantised for sorting |
+| `narrative_block` | 1/16 | Read fresh per turn by design | Re-tiered T0 → T6 |
+
+**The re-tiering is a real behaviour change, not a constant edit.**
+`_PROMPT_BLOCK_TIERS` has to match the physical append cascade in
+`assemble_with_budget` (`PromptLadderOrderTests.test_ladder_order_matches_the_cascade`
+enforces exactly this), so both blocks moved to just before the user
+message. Anniversaries and the narrative arc now read as late context
+rather than standing instruction — worth watching in conversation, not
+just in the hit-rate.
+
+A separate estimator bug fell out of the same data: `chars_per_token`
+starts at 3.5 against Grok's real 4.45 and its EMA (`alpha=0.05`) needed
+50–100 turns to close that, resetting on every restart, which is why UI
+context stats read ~27% high all session. `observe_actual_usage` now uses
+`alpha = max(_CALIBRATION_ALPHA, 1/(samples+1))`, so the first real
+observation snaps to the provider's ratio and it reverts to the slow EMA
+after ~20 samples.
+
+### The original open question
 
 Observed on a Grok (`xai` / `grok-4.3`) session: `cached_tokens` is
 **bimodal with nothing in between** — `192` on most turns, `10304` /
@@ -350,11 +385,14 @@ Two explanations, and the divergence data separates them:
   first ~192 tokens (~670 chars, the very front of `T0_stable`) changes
   most turns and discards everything behind it.
 
-Until that is settled, **within-tier cue cycling is not worth
-building.** Rotating cue order inside T6 to preserve a prefix only pays
-off if the prefix survives T5, and today ~10,300 tokens is the most this
-setup has ever cached — a ceiling that sits around the T4/T5 boundary,
-below where the cue blocks live.
+**Within-tier cue cycling is still not worth building**, and the
+resolution above does not change that. Rotating cue order inside T6 to
+preserve a prefix only pays off once the prefix reliably survives T5, and
+the ~10,300-token ceiling this setup has cached sits around the T4/T5
+boundary, below where the cue blocks live. Revisit only after a session
+measured *post*-fix shows `lost_pct` down near 10% and the ceiling
+actually risen — the three fixes above predict that, but predicting it is
+not the same as having seen it.
 
 ## Worker prompts and the cache
 
