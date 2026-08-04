@@ -180,6 +180,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "calibration_block",
         "rupture_block",
         "self_correction_block",
+        # F13: owning a user correction. Sits with K38 self-correction --
+        # both are one-shot "own what you got wrong" beats, K38 for a slip
+        # in her own reply, F13 for a fact the user set straight.
+        "user_correction_block",
         "promise_followthrough_block",
         "misattunement_block",
         # K69: implicit-need response-mode steer. Sits right after
@@ -641,6 +645,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # high-confidence fact/preference memories; this provider renders
         # the cue once on the next turn and clears the slot.
         self._self_correction_provider: Callable[[], str] | None = None
+        # F13 — user-correction one-shot. The off-turn UserCorrectionWorker
+        # queues a cue after it confirms the user corrected a stored fact
+        # and superseded it; this provider renders the acknowledgment once
+        # on a following turn and clears the slot.
+        self._user_correction_provider: Callable[[], str] | None = None
         # K43 — promise follow-through one-shot. The idle worker arms a
         # pending cue in kv_meta when an assistant-side promise has sat
         # open past the age gate; this provider renders it once ("close
@@ -1659,6 +1668,20 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("self-correction provider raised", exc_info=True)
                     self_correction_block = ""
 
+        # F13 — user-correction one-shot. Sibling of the self-correction
+        # provider; same one-shot pool-backed contract and same
+        # not-gated-on-aggressive policy (an owed acknowledgment of a
+        # correction the user made must land even when the prompt is
+        # trimmed).
+        user_correction_block = ""
+        if self._user_correction_provider is not None:
+            with _timed_phase(provider_ms, "user_correction"):
+                try:
+                    user_correction_block = self._user_correction_provider() or ""
+                except Exception:
+                    log.debug("user-correction provider raised", exc_info=True)
+                    user_correction_block = ""
+
         # K43 — promise follow-through one-shot. Same one-shot contract
         # as rupture/self-correction (provider consumes a pending slot)
         # and the same not-gated-on-aggressive policy: the provider
@@ -2513,6 +2536,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "calibration_block",
             "rupture_block",
             "self_correction_block",
+            "user_correction_block",
             "promise_followthrough_block",
             "misattunement_block",
             "opinion_injection_block",
@@ -2533,6 +2557,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "calibration_block": calibration_block,
             "rupture_block": rupture_block,
             "self_correction_block": self_correction_block,
+            "user_correction_block": user_correction_block,
             "promise_followthrough_block": promise_followthrough_block,
             "misattunement_block": misattunement_block,
             "opinion_injection_block": opinion_injection_block,
@@ -2566,6 +2591,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             calibration_block = cue_blocks["calibration_block"]
             rupture_block = cue_blocks["rupture_block"]
             self_correction_block = cue_blocks["self_correction_block"]
+            user_correction_block = cue_blocks["user_correction_block"]
             promise_followthrough_block = cue_blocks[
                 "promise_followthrough_block"
             ]
@@ -2867,6 +2893,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # self-correction = "own the slip you just made". Survives
             # aggressive mode -- an owed correction must land.
             system_parts.append(self_correction_block)
+        if user_correction_block:
+            # F13: owning a user correction sits right after the K38
+            # self-correction cue. Both are one-shot "own what you got
+            # wrong" beats -- K38 for a slip in her own reply, F13 for a
+            # fact the user set straight. Survives aggressive mode: an
+            # owed acknowledgment of a correction must land.
+            system_parts.append(user_correction_block)
         if promise_followthrough_block:
             # K43: promise follow-through sits right after the
             # self-correction cue — both are "own what you owe" beats

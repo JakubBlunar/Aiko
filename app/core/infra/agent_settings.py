@@ -2217,6 +2217,22 @@ class AgentSettings:
     # ``MemorySettings.self_correction_*``.
     self_correction_enabled: bool = True
 
+    # ── F13: user-correction detector ─────────────────────────────────
+    # Master switch for "the user just corrected a stored fact". When ON,
+    # a cheap post-turn pattern gate stashes candidate pairs and the
+    # off-turn ``UserCorrectionWorker`` confirms them with a rate-limited
+    # LLM call, supersedes the corrected memory, propagates the demotion
+    # to any concept it backed, and arms a next-turn acknowledgment cue.
+    # Thresholds + cadence live on ``MemorySettings.user_correction_*``.
+    user_correction_enabled: bool = True
+    # Hourly + daily caps on the worker's LLM confirmation calls, on their
+    # own ``FactCheckRateLimiter`` state_key so the F13 budget is
+    # independent of F1 / F5 / K35 / K29. A touch higher than F5's because
+    # a correction is only apt for a turn or two, so a confirmation
+    # deferred by the cap is a beat missed rather than merely delayed.
+    user_correction_per_hour_cap: int = 12
+    user_correction_per_day_cap: int = 60
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that

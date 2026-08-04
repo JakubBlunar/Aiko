@@ -165,6 +165,10 @@ CUE_SPECS: dict[str, CueSpec] = {
         # straight to ``cue_pool``, so a queued row is the whole of the
         # arming signal -- see the pure-pool branch in ``armed_cues``.
         CueSpec("self_correction"),
+        # Pool-only, same shape as self_correction: the F13 worker writes
+        # straight to ``cue_pool`` once a correction is confirmed, so a
+        # queued row is the whole of the arming signal.
+        CueSpec("user_correction"),
         # Same shape: banked on the turn path when a pushback or a light
         # offence lands, so a waiting row is the whole opportunity. Its
         # rows also sit under a ``not_before`` for the first hour, which
@@ -567,6 +571,29 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Catching myself:",
             block="self_correction_block",
+        ),
+        CuePolicy(
+            "user_correction",
+            # F13: armed off-turn by the UserCorrectionWorker once it has
+            # confirmed the user corrected a stored fact and superseded it.
+            # Like self_correction the content is settled at write time, so
+            # it is queued ahead and claimed normally rather than picked at
+            # render.
+            inventory_target=0,
+            # The line opens "just corrected you", apt for a turn or two and
+            # a fiction after that. The worker also runs at seconds cadence,
+            # so a confirmed correction usually surfaces on the very next
+            # turn; this bound is the backstop.
+            ttl_hours=1.0,
+            max_surfacings=2,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Lexical only: the subject is the corrected fact, which is
+            # whatever they are talking about, so a cosine hit would mostly
+            # measure her staying on topic rather than owning the slip.
+            match_mode=MATCH_LEXICAL,
+            min_overlap=2,
+            handling_section="Owning a correction (the user set me straight):",
+            block="user_correction_block",
         ),
         CuePolicy(
             "tease_ledger",

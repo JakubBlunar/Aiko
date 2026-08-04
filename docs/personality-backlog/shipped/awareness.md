@@ -292,6 +292,52 @@ plus extensions to `tests/test_response_text_service.py` and
 
 ---
 
+## F13. The contradiction family's fourth corner — the user corrects Aiko
+
+Closes the hole the K38 docstring named: F5 catches two stored
+memories that clash, K29 catches Aiko's stance vs. the user's claim,
+K38 catches Aiko's reply vs. her own stored fact — and F13 catches the
+**user explicitly correcting a stored fact** ("no, it's my sister, not
+my brother", "I never said that", "actually it's Tuesday"). That is the
+highest-quality supervisory signal the system ever gets, so instead of
+landing beside the wrong memory at equal confidence it now *supersedes*
+it. All LLM work and the memory rewrite run off the turn path so latency
+is untouched.
+
+A cheap, pure, embedding-free detector
+([`user_correction_detector.py`](../../../app/core/conversation/user_correction_detector.py),
+sibling of `self_correction_detector.py`) runs post-turn against the
+rows RAG surfaced last turn: it requires an explicit correction marker
+**and** a content-word overlap with a candidate, and only ever targets
+durable-truth kinds (`fact` / `preference` / `relationship` / `event`) —
+never a `self` stance row, which keeps the **correction-of-fact vs
+disagreement-of-opinion** boundary (that is K29's lane). A hit is stashed
+on a bounded `_pending_correction_candidates` queue by
+[`post_turn_helpers_mixin.py`](../../../app/core/session/post_turn_helpers_mixin.py);
+no LLM, no writes on the turn path.
+
+The off-turn
+[`UserCorrectionWorker`](../../../app/core/memory/user_correction_worker.py)
+(registered in `idle_workers_init_mixin.py`, modelled on the F5 worker)
+drains the queue, confirms each candidate with a `FactCheckRateLimiter`-
+gated one-line-JSON LLM call (its own `state_key`), and on `YES` writes
+the corrected fact as a new memory at high confidence (0.9) and demotes
+the corrected row with the exact F5 supersede stamp (`confidence` 0.20,
+`tier="archive"`, `metadata.superseded_by` / `superseded_reason`). It
+then propagates the demotion to any backed concept **with no LLM** —
+`affected_concepts_for_memory` + `apply_contradiction_penalty` +
+`concept_store.update` — and arms a low-key `user_correction` T6 cue so
+Aiko owns the slip once, naturally ("ah, I had that backwards"), never
+"I've updated my database". Cue policy in
+[`cue_accounting.py`](../../../app/core/proactive/cue_accounting.py),
+rendered by `_render_user_correction_block`. Settings:
+`agent.user_correction_enabled` + caps, `memory.user_correction_*`
+(overlap / confidence thresholds, worker cadence + per-tick cap, concept
+penalty, supersede confidence). Tests:
+[`tests/test_user_correction.py`](../../../tests/test_user_correction.py).
+
+---
+
 ## G2. Schedule-learning worker
 
 Idle worker that buckets `messages.created_at` (user messages

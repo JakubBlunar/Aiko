@@ -1366,6 +1366,22 @@ class MemorySettings:
     self_correction_min_overlap: int = 2
     self_correction_max_candidates: int = 50
     self_correction_cooldown_turns: int = 3
+    # F13 user-correction detector + worker. ``min_confidence`` is the
+    # floor a memory must clear to be a correction target (lower than K38's
+    # 0.6: a surfaced note the user bothered to correct is worth catching
+    # even at middling confidence). ``min_overlap`` / ``max_candidates``
+    # bound the pattern-gate candidate pool the same way K38's do.
+    # ``interval_seconds`` / ``max_per_run`` pace the off-turn worker;
+    # ``concept_penalty`` is the plasticity-damped confidence step applied
+    # to a concept whose evidence was corrected; ``confidence`` is what the
+    # corrected fact is written at.
+    user_correction_min_confidence: float = 0.4
+    user_correction_min_overlap: int = 2
+    user_correction_max_candidates: int = 50
+    user_correction_interval_seconds: int = 45
+    user_correction_max_per_run: int = 8
+    user_correction_concept_penalty: float = 0.25
+    user_correction_confidence: float = 0.9
     # K45 mood inertia: effective-mismatch score (whiplash bonus
     # included) at or above which the one-shot cue arms (floor 0.1),
     # and how many post-turn assessments to skip after a fire so one
@@ -3605,6 +3621,43 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             self_correction_cooldown_turns=max(
                 0,
                 int(memory_raw.get("self_correction_cooldown_turns", 3)),
+            ),
+            user_correction_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("user_correction_min_confidence", 0.4)),
+                ),
+            ),
+            user_correction_min_overlap=max(
+                1,
+                int(memory_raw.get("user_correction_min_overlap", 2)),
+            ),
+            user_correction_max_candidates=max(
+                1,
+                int(memory_raw.get("user_correction_max_candidates", 50)),
+            ),
+            user_correction_interval_seconds=max(
+                1,
+                int(memory_raw.get("user_correction_interval_seconds", 45)),
+            ),
+            user_correction_max_per_run=max(
+                1,
+                int(memory_raw.get("user_correction_max_per_run", 8)),
+            ),
+            user_correction_concept_penalty=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("user_correction_concept_penalty", 0.25)),
+                ),
+            ),
+            user_correction_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("user_correction_confidence", 0.9)),
+                ),
             ),
             mood_inertia_mismatch_threshold=max(
                 0.1,

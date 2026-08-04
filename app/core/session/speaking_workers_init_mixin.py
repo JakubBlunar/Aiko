@@ -624,6 +624,7 @@ class SpeakingWorkersInitMixin:
             mood_inertia=self._render_mood_inertia_block,
             mood_drift=self._render_mood_drift_block,
             self_correction=self._render_self_correction_block,
+            user_correction=self._render_user_correction_block,
             promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
             implicit_need=self._render_implicit_need_block,

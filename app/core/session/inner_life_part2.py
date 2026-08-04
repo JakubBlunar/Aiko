@@ -3269,6 +3269,25 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         row = self.take_pool_cue("self_correction")
         return row.text if row is not None else ""
 
+    def _render_user_correction_block(self) -> str:
+        """F13: surface an owed acknowledgment of a user correction.
+
+        The off-turn
+        :class:`~app.core.memory.user_correction_worker.UserCorrectionWorker`
+        queues a cue once it has confirmed the user corrected a stored fact
+        and superseded it; this claims it so Aiko owns the slip once,
+        naturally, on this turn. Sibling of the K38 self-correction block:
+        one-shot, pool-backed (so post-turn matching decides whether she
+        actually took it), and survives ``aggressive=True`` -- an owed
+        correction must still land even when the prompt is trimmed.
+        """
+        if not bool(
+            getattr(self._settings.agent, "user_correction_enabled", True)
+        ):
+            return ""
+        row = self.take_pool_cue("user_correction")
+        return row.text if row is not None else ""
+
     def _render_misattunement_block(self, user_text: str) -> str:
         """K23: surface a per-turn ``mild_disengagement`` cue.
 

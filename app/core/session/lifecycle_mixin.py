@@ -205,6 +205,12 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # correction is owed whichever session she is in, and its own
         # half-hour TTL retires it.
         self._self_correction_cooldown_remaining = 0
+        # F13 — drop any un-drained user-correction candidates on switch.
+        # The corrected note belongs to a memory the previous session
+        # surfaced; carrying the candidate across would confirm it against
+        # the wrong context.
+        if hasattr(self, "_pending_correction_candidates"):
+            self._pending_correction_candidates.clear()
         # K53 — fresh initiative counter per session (warmup applies
         # again so a new session never opens with a floor-grab).
         self._initiative_director = None
@@ -318,6 +324,9 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._user_expertise_last = None
         # K38 — clear the self-correction cooldown on a wipe.
         self._self_correction_cooldown_remaining = 0
+        # F13 — drop any un-drained user-correction candidates on a wipe.
+        if hasattr(self, "_pending_correction_candidates"):
+            self._pending_correction_candidates.clear()
         # K53 — a full wipe restarts the initiative cadence + warmup.
         self._initiative_director = None
         # K55 — drop any opened thread with the history it lived in.

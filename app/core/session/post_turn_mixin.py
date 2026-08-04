@@ -916,6 +916,16 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("clarification detector raised", exc_info=True)
 
+        # F13 — user-correction capture. Cheap pattern gate on the user's
+        # message; a candidate is stashed for the off-turn worker to
+        # confirm and supersede. Sits in the same "shape of this turn"
+        # cluster as K17 since both read the user's text. No LLM, no
+        # writes on the turn path.
+        try:
+            self._maybe_capture_user_correction(user_text)
+        except Exception:
+            log.debug("user-correction capture failed", exc_info=True)
+
         # K80 — inside-joke birth. Runs against the *previous* assistant
         # turns (the ring below is rolled after this), because the phrase
         # the user just echoed came from a reply that already went out.

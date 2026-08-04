@@ -69,6 +69,15 @@ class DetectorsInitMixin:
         # turn, and unlike the cue it is about this session's pacing
         # rather than about anything Aiko owes.
         self._self_correction_cooldown_remaining: int = 0
+        # F13 — user-correction candidate queue. The post-turn hook does
+        # only the cheap pattern gate and stashes any candidate pair here;
+        # the off-turn ``UserCorrectionWorker`` drains it, runs the LLM
+        # confirmation + memory supersede, and arms the acknowledgment
+        # cue. A bounded ring so a burst of corrections while the worker
+        # is idle cannot grow without limit; the oldest simply age out
+        # (a stale correction candidate is worthless anyway). Lost on
+        # restart, which is an acceptable miss.
+        self._pending_correction_candidates: deque[Any] = deque(maxlen=16)
         # K23 — misattunement detector state. Unlike K8/K17 the
         # detector runs provider-time (same-turn reaction), so we
         # only need a cooldown counter -- no pending-result slot.
