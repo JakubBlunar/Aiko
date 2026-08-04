@@ -145,6 +145,22 @@ class RenderTests(unittest.TestCase):
             sc.render_inner_life_block("bogus", "something", 30), ""
         )
 
+    def test_a_quoted_deictic_is_resolved_against_the_note(self) -> None:
+        # K-time10: the excerpt is a self-note reproduced verbatim, and
+        # this cue only fires on rows weeks old, so a "today" inside the
+        # quotation marks is guaranteed wrong by the time it is read.
+        line = sc.render_inner_life_block(
+            sc.KIND_FEELING, "I've felt off all day today", 30,
+        )
+        self.assertNotIn("today", line)
+        self.assertIn("on ", line)
+
+    def test_a_note_without_deictics_is_quoted_verbatim(self) -> None:
+        line = sc.render_inner_life_block(
+            sc.KIND_INTENTION, "I want to get into astronomy", 50,
+        )
+        self.assertIn('"I want to get into astronomy"', line)
+
 
 class GatherAndSelectionTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -31,6 +31,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from app.core.affect.affect_state import felt_phrase
+from app.core.infra import timephrase
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -188,10 +189,19 @@ class DreamWorker:
                 [
                     {
                         "role": "system",
-                        "content": _build_dream_prompt(
-                            resolve_user_name(
-                                self._user_display_name_provider,
-                            ),
+                        # K-time10: a dream is stored as a reflection
+                        # memory and recalled later; the anchor keeps its
+                        # imagery from being dated to whenever it is read.
+                        "content": (
+                            timephrase.today_anchor()
+                            + "\n\n"
+                            + _build_dream_prompt(
+                                resolve_user_name(
+                                    self._user_display_name_provider,
+                                ),
+                            )
+                            + "\n\n"
+                            + timephrase.STORED_TEXT_TIME_RULE
                         ),
                     },
                     {"role": "user", "content": prompt_user},

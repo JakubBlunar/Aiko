@@ -36,6 +36,7 @@ and every relative phrase across the app moves together.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -263,6 +264,136 @@ def temporal_suffix(
     return ""
 
 
+# ── relative deictics: the words that go stale in storage ────────────────
+# Words whose meaning is pinned to the moment they were WRITTEN. Harmless
+# in a chat message, corrosive in a stored note: "Jacob mowed the lawn
+# today" is true for one day and actively misleading for every day after,
+# and the memory store keeps it for months.
+#
+# The list is deliberately conservative -- only phrases that genuinely
+# re-anchor to whenever they are next read. Words like "always" or
+# "usually" describe a standing pattern and are left alone.
+_RELATIVE_DEICTICS: tuple[str, ...] = (
+    "today",
+    "tonight",
+    "tomorrow",
+    "yesterday",
+    "currently",
+    "right now",
+    "just now",
+    "at the moment",
+    "this morning",
+    "this afternoon",
+    "this evening",
+    "this week",
+    "this weekend",
+    "next week",
+    "these days",
+    "lately",
+    "recently",
+    "soon",
+)
+
+_DEICTIC_RE = re.compile(
+    r"\b(" + "|".join(re.escape(word) for word in _RELATIVE_DEICTICS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def has_relative_deictic(text: str | None) -> bool:
+    """True when ``text`` contains wording that will go stale once stored.
+
+    The predicate behind the ``MemoryStore.add`` backstop. It answers a
+    narrow question -- "will this sentence still mean what it says in a
+    month?" -- and nothing more; deciding what to *do* about it is the
+    caller's business.
+    """
+    if not text:
+        return False
+    return _DEICTIC_RE.search(str(text)) is not None
+
+
+# What each deictic becomes once it is read on a later day. The vaguer
+# ones collapse to "at the time" / "around then" rather than to a date:
+# "currently" never named a specific moment, so inventing one would be
+# more wrong than the staleness it fixes.
+_DEICTIC_REWRITES: dict[str, str] = {
+    "tonight": "that evening",
+    "this evening": "that evening",
+    "this morning": "that morning",
+    "this afternoon": "that afternoon",
+    "this week": "that week",
+    "this weekend": "that weekend",
+    "next week": "the following week",
+    "currently": "at the time",
+    "right now": "at the time",
+    "just now": "at the time",
+    "at the moment": "at the time",
+    "these days": "around then",
+    "lately": "around then",
+    "recently": "around then",
+}
+
+# These three name a real day, so they resolve to a date instead of a
+# vaguer phrase. "soon" is deliberately in neither table: it was never
+# precise, and "soon after that" would read worse than leaving it.
+_DEICTIC_DATE_OFFSETS: dict[str, int] = {
+    "yesterday": -1,
+    "today": 0,
+    "tomorrow": 1,
+}
+
+
+def resolve_deictics(
+    text: str,
+    source_created_at: str | datetime | None,
+    now_dt: datetime | None = None,
+) -> str:
+    """Rewrite relative time words against the moment ``text`` was written.
+
+    For text that was drafted once and is read back later -- a pooled cue
+    is drafted by a background worker and can wait a day before it
+    surfaces, so "you mentioned wanting a bath tonight" arrives the
+    following evening still saying "tonight".
+
+    Resolving rather than deleting is the point: dropping the word would
+    leave a grammatical hole, while "that evening" keeps the sentence
+    intact and moves it into the past where it belongs.
+
+    Same-day text is returned untouched, since "tonight" written this
+    morning still means tonight. So is text whose timestamp will not
+    parse -- a cue with an awkward tense beats no cue at all.
+    """
+    if not text:
+        return text or ""
+    when = (
+        source_created_at
+        if isinstance(source_created_at, datetime)
+        else parse_iso(source_created_at)
+    )
+    if when is None:
+        return text
+    when = to_aware(when)
+    current = to_aware(now_dt) if now_dt is not None else now()
+    if when.astimezone().date() == current.astimezone().date():
+        return text
+
+    def _swap(match: re.Match[str]) -> str:
+        word = match.group(0)
+        offset = _DEICTIC_DATE_OFFSETS.get(word.lower())
+        if offset is not None:
+            target = (when + timedelta(days=offset)).astimezone()
+            fmt = "%b %d" if target.year == current.year else "%b %d, %Y"
+            replacement = "on " + target.strftime(fmt).replace(" 0", " ")
+        else:
+            replacement = _DEICTIC_REWRITES.get(word.lower(), word)
+        if word[:1].isupper():
+            replacement = replacement[:1].upper() + replacement[1:]
+        return replacement
+
+    return _DEICTIC_RE.sub(_swap, text)
+
+
 # ── K-time1 history-message age phrase ───────────────────────────────────
 def age_prefix(created_at_iso: str | None, now: datetime) -> str:
     """Clock-anchored relative age for a chat-history / transcript message.
@@ -323,6 +454,24 @@ def today_anchor(now_dt: datetime | None = None) -> str:
     when = to_aware(now_dt) if now_dt is not None else now()
     human = when.strftime("%A, %B %d, %Y, %H:%M %Z").strip()
     return f"Today is {human} ({when.isoformat()})."
+
+
+# The rule every worker that writes *stored* text pastes into its system
+# prompt, right after :func:`today_anchor`. Kept here rather than retyped
+# per worker so the wording cannot drift and a future improvement lands
+# everywhere at once.
+#
+# It exists because the anchor alone is not enough: telling a model what
+# day it is does not stop it echoing the user's "tonight" straight into a
+# note that will be read back in November.
+STORED_TEXT_TIME_RULE: str = (
+    "What you write here gets stored and read back weeks or months from "
+    "now, so it must not contain a relative time word. Resolve "
+    "'today' / 'tonight' / 'tomorrow' / 'currently' / 'recently' against "
+    "the date above and write the concrete day instead, or leave the "
+    "timing out entirely when it does not matter. Write finished events "
+    "in the past tense."
+)
 
 
 # ── worker memory / transcript renderers (K-time7) ───────────────────────

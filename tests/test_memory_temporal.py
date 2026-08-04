@@ -52,10 +52,11 @@ from app.core.rag.rag_retriever import (
     RagRetriever,
     _humanize_future,
     _humanize_past,
+    _recorded_suffix,
     _temporal_filter_drops,
     _temporal_suffix,
 )
-from app.core.rag.rag_store import MemoryRecord
+from app.core.rag.rag_store import MemoryRecord, MessageRecord
 from app.core.proactive.follow_up_worker import FollowUpWorker
 
 
@@ -79,6 +80,88 @@ def _store_factory() -> "tuple[Path, MemoryStore]":
 
 def _emb(text: str) -> np.ndarray:
     return _FakeEmbedder().embed(text)
+
+
+class DeicticWriteGuardTests(unittest.TestCase):
+    """K-time10 Layer 2 — the ``MemoryStore.add()`` backstop.
+
+    ``durable`` is the default temporal type and renders with no time tag,
+    so a note worded "today" reaches the prompt months later still
+    claiming the present. Every long-term write funnels through ``add()``,
+    which makes it the one place that covers all ~35 producers at once.
+    """
+
+    def test_relative_wording_is_reclassified(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob mowed the lawn today",
+            "fact",
+            _emb("lawn"),
+            temporal_type="durable",
+        )
+        self.assertIsNotNone(mem)
+        self.assertEqual(mem.temporal_type, "past_event")
+        self.assertTrue(mem.event_time)
+
+    def test_the_text_itself_is_left_alone(self) -> None:
+        # Mis-tagging is recoverable; rewriting what was recorded is not.
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob is currently between jobs",
+            "fact",
+            _emb("jobs"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.content, "Jacob is currently between jobs")
+
+    def test_preferences_are_guarded_too(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob is really into ambient records lately",
+            "preference",
+            _emb("ambient"),
+            temporal_type="preference",
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+
+    def test_genuinely_durable_facts_are_untouched(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob is a software engineer",
+            "fact",
+            _emb("engineer"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "durable")
+        self.assertIsNone(mem.event_time)
+
+    def test_an_explicit_event_time_is_respected(self) -> None:
+        # The guard supplies an anchor where none exists; it does not
+        # overwrite one the caller took the trouble to compute.
+        _, store = _store_factory()
+        stated = "2026-05-27T18:00:00+00:00"
+        mem = store.add(
+            "Jacob mowed the lawn today",
+            "event",
+            _emb("lawn 2"),
+            temporal_type="durable",
+            event_time=stated,
+        )
+        self.assertEqual(mem.event_time, stated)
+        self.assertEqual(mem.temporal_type, "past_event")
+
+    def test_other_temporal_types_are_not_downgraded(self) -> None:
+        # A future_plan phrased "tomorrow" is correctly typed already --
+        # flipping it to past_event would invert its meaning.
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob has the interview tomorrow",
+            "event",
+            _emb("interview"),
+            temporal_type="future_plan",
+            event_time="2026-06-01T09:00:00+00:00",
+        )
+        self.assertEqual(mem.temporal_type, "future_plan")
 
 
 # ── 1. Schema migration ────────────────────────────────────────────
@@ -669,6 +752,118 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
         )
         self.assertIn("planned for", block)
 
+    # ── K-time10: the recorded-at fallback + snippet stamps ───────────
+
+    @staticmethod
+    def _durable_hit(content: str, created_at: str) -> RagHit:
+        return RagHit(
+            source="memory",
+            score=0.9,
+            record=MemoryRecord(
+                id="1",
+                content=content,
+                kind="fact",
+                salience=0.5,
+                source_session="s1",
+                source_message_id=None,
+                created_at=created_at,
+                last_used_at=None,
+                use_count=0,
+            ),
+            temporal_type="durable",
+            event_time=None,
+        )
+
+    def test_recorded_suffix_only_past_the_threshold(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.assertEqual(
+            _recorded_suffix((now - timedelta(hours=3)).isoformat(), now), "",
+        )
+        self.assertEqual(
+            _recorded_suffix((now - timedelta(days=5)).isoformat(), now),
+            " (noted 5 days ago)",
+        )
+
+    def test_recorded_suffix_tolerates_a_bad_timestamp(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.assertEqual(_recorded_suffix("not-a-date", now), "")
+        self.assertEqual(_recorded_suffix(None, now), "")
+
+    def test_untagged_memory_gets_a_noted_tag(self) -> None:
+        # A durable row is untagged by ``_temporal_suffix``; without the
+        # fallback the persona reads it as present-tense.
+        now = datetime.now(timezone.utc)
+        block = RagRetriever.format_block(
+            [
+                self._durable_hit(
+                    "Jacob mowed the lawn today",
+                    (now - timedelta(days=40)).isoformat(),
+                )
+            ],
+            user_display_name="Jacob",
+        )
+        self.assertIn("(noted ", block)
+        self.assertIn("month", block)
+
+    def test_fresh_untagged_memory_stays_bare(self) -> None:
+        now = datetime.now(timezone.utc)
+        block = RagRetriever.format_block(
+            [
+                self._durable_hit(
+                    "Jacob is a software engineer",
+                    (now - timedelta(hours=2)).isoformat(),
+                )
+            ],
+            user_display_name="Jacob",
+        )
+        self.assertIn("- Jacob is a software engineer", block)
+        self.assertNotIn("(noted", block)
+
+    def test_noted_tag_never_overrides_a_real_tense_tag(self) -> None:
+        # "(3 days ago)" asserts when the event happened and must win over
+        # "(noted ...)", which only says when it was written down.
+        now = datetime.now(timezone.utc)
+        hit = self._durable_hit(
+            "Jacob shipped the release",
+            (now - timedelta(days=40)).isoformat(),
+        )
+        hit.temporal_type = "past_event"
+        hit.event_time = (now - timedelta(days=3)).isoformat()
+        block = RagRetriever.format_block([hit], user_display_name="Jacob")
+        self.assertIn("(3 days ago)", block)
+        self.assertNotIn("(noted", block)
+
+    def test_message_snippets_carry_a_timestamp(self) -> None:
+        now = datetime.now(timezone.utc)
+        hit = RagHit(
+            source="message",
+            score=0.9,
+            record=MessageRecord(
+                id="s1:4",
+                session_id="s1",
+                message_id=4,
+                role="user",
+                content="I finally booked the flights",
+                created_at=(now - timedelta(days=3)).isoformat(),
+            ),
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Jacob")
+        self.assertRegex(block, r"- \[[^\]]+\] Jacob said: ")
+
+    def test_block_leads_with_the_date_anchor(self) -> None:
+        # T3 is assembled before the T4 "right now it's ..." line, so the
+        # recall block has to carry its own anchor or the ages below it
+        # have nothing to be relative to.
+        now = datetime.now(timezone.utc)
+        block = RagRetriever.format_block(
+            [self._durable_hit("Jacob likes ramen", now.isoformat())],
+            user_display_name="Jacob",
+        )
+        self.assertTrue(block.startswith("(Today is "))
+
+    def test_empty_hits_render_no_anchor(self) -> None:
+        self.assertEqual(RagRetriever.format_block([]), "")
+
     def test_temporal_filter_drops_expired_past_events(self) -> None:
         now = datetime(2026, 5, 28, 12, 0, tzinfo=timezone.utc)
         emb = np.zeros(16, dtype=np.float32)
@@ -1003,6 +1198,35 @@ class TestFollowUpWorker(unittest.TestCase):
         updated = store.get(mem.id)
         assert updated is not None
         self.assertNotIn("followup_fired_at", updated.metadata)
+
+
+class FollowUpPlanSummaryTests(unittest.TestCase):
+    """K-time10 — the cue quotes the plan memory's own wording.
+
+    A follow-up fires *after* the event, which is precisely when a plan
+    recorded as "dinner with Sam tonight" would produce a cue saying
+    "tonight" about an evening that has already been and gone.
+    """
+
+    def test_a_deictic_resolves_against_the_note(self) -> None:
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        written = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        out = _plan_summary("Jacob is having dinner with Sam tonight", "Jacob", written)
+        self.assertNotIn("tonight", out)
+        self.assertIn("that evening", out)
+
+    def test_no_timestamp_leaves_the_wording_alone(self) -> None:
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        out = _plan_summary("Jacob is going to the gym", "Jacob")
+        self.assertIn("gym", out)
+
+    def test_the_second_person_rewrite_still_applies(self) -> None:
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        out = _plan_summary("Jacob is going to the gym", "Jacob")
+        self.assertTrue(out.startswith("you "), out)
 
 
 if __name__ == "__main__":  # pragma: no cover

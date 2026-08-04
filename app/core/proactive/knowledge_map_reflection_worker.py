@@ -108,6 +108,12 @@ def _build_system_prompt() -> str:
         "is suddenly hot. NOT a greeting, NOT a question, NOT a to-do — just "
         "a private note to yourself.\n"
         "\n"
+        # K-time10: this lands in ``memories`` as a "[mindmap] "
+        # reflection and gets recalled weeks later, when "lately" no
+        # longer means what it meant at writing time.
+        + timephrase.STORED_TEXT_TIME_RULE
+        + "\n"
+        "\n"
         "Output ONLY the sentence(s). No quotes, no JSON, no preamble."
     )
 
@@ -469,7 +475,14 @@ class KnowledgeMapReflectionWorker:
         try:
             raw = self._ollama.chat(
                 [
-                    {"role": "system", "content": _build_system_prompt()},
+                    {
+                        "role": "system",
+                        "content": (
+                            timephrase.today_anchor()
+                            + "\n\n"
+                            + _build_system_prompt()
+                        ),
+                    },
                     {"role": "user", "content": user_payload},
                 ],
                 options={"temperature": 0.6, "num_predict": self._max_tokens},

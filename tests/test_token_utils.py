@@ -96,5 +96,47 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(chars_per_token(), before)
 
 
+class CalibrationWarmupTests(unittest.TestCase):
+    """P44 — the warm-up must not take 50 turns to leave the default.
+
+    The sample counter resets on every restart, so with the slow EMA alone
+    the estimator spent most of its life walking from the 3.5 guess toward
+    the provider's real ratio, and the UI context gauge read ~27% high in
+    the meantime.
+    """
+
+    def setUp(self) -> None:
+        reset_calibration()
+
+    def tearDown(self) -> None:
+        reset_calibration()
+
+    def test_first_observation_replaces_the_guess(self) -> None:
+        observe_actual_usage(prompt_chars=4450, actual_prompt_tokens=1000)
+        self.assertAlmostEqual(chars_per_token(), 4.45, places=3)
+
+    def test_converged_within_a_handful_of_samples(self) -> None:
+        # The old alpha=0.05 EMA was still at ~3.7 after five samples.
+        for _ in range(5):
+            observe_actual_usage(prompt_chars=4450, actual_prompt_tokens=1000)
+        self.assertAlmostEqual(chars_per_token(), 4.45, places=2)
+
+    def test_settles_into_the_slow_ema_once_warm(self) -> None:
+        # Past the warm-up the running mean hands over to the constant, so
+        # a single outlier can no longer yank the ratio around.
+        for _ in range(40):
+            observe_actual_usage(prompt_chars=4450, actual_prompt_tokens=1000)
+        warm = chars_per_token()
+        observe_actual_usage(prompt_chars=3000, actual_prompt_tokens=1000)
+        self.assertLess(abs(chars_per_token() - warm), 0.1)
+
+    def test_still_clamped_during_warmup(self) -> None:
+        # A first sample at the band edge must not escape the clamp just
+        # because alpha is 1.0.
+        observe_actual_usage(prompt_chars=5000, actual_prompt_tokens=1000)
+        self.assertLessEqual(chars_per_token(), 5.0)
+        self.assertGreaterEqual(chars_per_token(), 2.5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -204,6 +204,13 @@ def render_drift_cue(entry: dict[str, Any]) -> str:
     """
     topic = str(entry.get("topic") or "").strip()
     belief = " ".join(str(entry.get("belief") or "").split())[:200]
+    # K-time10: both are quoted from elsewhere -- the topic is a cluster
+    # label and the belief is a stored concept line, either of which can
+    # be months old and phrased in the present. ``at`` is this cue's draft
+    # time, the tightest upper bound on their age available here.
+    source_at = entry.get("at")
+    topic = timephrase.resolve_deictics(topic, source_at)
+    belief = timephrase.resolve_deictics(belief, source_at)
     belief_clause = f" What you hold about it: {belief}." if belief else ""
     if str(entry.get("direction") or "") == "fading":
         return (

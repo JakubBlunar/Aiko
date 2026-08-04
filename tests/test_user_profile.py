@@ -139,6 +139,50 @@ class UserProfileStoreTests(unittest.TestCase):
         finally:
             f.close()
 
+    def test_bullet_order_survives_confidence_drift(self):
+        # P44: the block sits high in the prompt-cache prefix ladder, so a
+        # reordered bullet invalidates every token after it. Confidence is
+        # an EMA that wobbles by thousandths on each write, which used to
+        # be enough to swap two adjacent bullets and cost ~28 KB of cache.
+        f = _Fixture()
+        try:
+            f.store.upsert("drift", "name", "Jacob", 0.81)
+            f.store.upsert("drift", "occupation", "engineer", 0.80)
+            before = f.store.render_block("drift")
+            # Nudge them past each other by less than one bucket.
+            f.store.upsert("drift", "name", "Jacob", 0.795)
+            f.store.upsert("drift", "occupation", "engineer", 0.805)
+            self.assertEqual(f.store.render_block("drift"), before)
+        finally:
+            f.close()
+
+    def test_equal_confidence_rows_have_a_stable_order(self):
+        f = _Fixture()
+        try:
+            for field, value in (
+                ("occupation", "engineer"),
+                ("name", "Jacob"),
+                ("hobbies", "chess"),
+            ):
+                f.store.upsert("tied", field, value, 0.8)
+            order = list(f.store.fields("tied"))
+            self.assertEqual(order, sorted(order))
+            self.assertEqual(list(f.store.fields("tied")), order)
+        finally:
+            f.close()
+
+    def test_a_real_confidence_gap_still_orders_bullets(self):
+        # Quantising must not flatten genuine differences: 0.9 vs 0.5 is a
+        # real ranking and has to survive the bucketing.
+        f = _Fixture()
+        try:
+            f.store.upsert("gap", "occupation", "engineer", 0.5)
+            f.store.upsert("gap", "name", "Jacob", 0.9)
+            block = f.store.render_block("gap")
+            self.assertLess(block.index("Jacob"), block.index("engineer"))
+        finally:
+            f.close()
+
     def test_as_dict_includes_all_fields(self):
         f = _Fixture()
         try:

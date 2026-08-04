@@ -32,8 +32,10 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Sequence
+
+from app.core.infra import timephrase
 
 
 log = logging.getLogger("app.self_callback")
@@ -326,6 +328,14 @@ def render_inner_life_block(
     quote = (excerpt or "").strip()
     if not quote:
         return ""
+    # K-time10: the quote is a self-note reproduced verbatim, and this cue
+    # only fires on rows that are weeks old by construction -- so a "today"
+    # inside the quotation marks is guaranteed to be wrong by the time it
+    # is read. ``age_days`` is enough to place it; day granularity is all
+    # the resolver needs.
+    quote = timephrase.resolve_deictics(
+        quote, timephrase.now() - timedelta(days=max(0, int(age_days))),
+    )
     phrase = _age_phrase(int(age_days))
     lead = phrase[0].upper() + phrase[1:]
 

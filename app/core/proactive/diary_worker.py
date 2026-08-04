@@ -319,6 +319,17 @@ class DiaryWorker:
                     {
                         "role": "system",
                         "content": (
+                            # K-time10: a diary entry is stored as a
+                            # memory and re-read months later. "Today" is
+                            # native to the diary register, so rather than
+                            # banning it we anchor it -- an entry that
+                            # says "Tuesday the 4th" still reads as a
+                            # diary and survives being recalled in
+                            # November.
+                            timephrase.today_anchor()
+                            + " Write dates concretely rather than as "
+                            "'today' or 'tomorrow'; this entry gets read "
+                            "back long after it was written.\n\n"
                             'Reply with JSON only: {"entry": "<diary entry, '
                             'or empty string if nothing sat with you>"}.'
                         ),

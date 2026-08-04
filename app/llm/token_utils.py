@@ -83,10 +83,19 @@ def observe_actual_usage(prompt_chars: int, actual_prompt_tokens: int) -> None:
         return
     global _chars_per_token, _calibration_samples
     with _lock:
-        blended = (
-            (1.0 - _CALIBRATION_ALPHA) * _chars_per_token
-            + _CALIBRATION_ALPHA * observed
-        )
+        # P44: warm-up. ``_CALIBRATION_ALPHA`` alone needs 50-100 samples
+        # to walk from the 3.5 default to a provider's real ratio (Grok
+        # measures ~4.45), and the counter resets on every restart -- so
+        # in practice the estimator spent most of its life wrong, and the
+        # UI context gauge read ~27% high for the first hour of use.
+        #
+        # A running mean for the first samples fixes it without giving up
+        # the slow EMA: at n=0 alpha is 1.0 and the first real observation
+        # simply replaces the guess, then the weight decays until the
+        # constant takes over around the twentieth sample and the ratio
+        # is once again slow to move.
+        alpha = max(_CALIBRATION_ALPHA, 1.0 / (_calibration_samples + 1))
+        blended = (1.0 - alpha) * _chars_per_token + alpha * observed
         _chars_per_token = min(
             _MAX_CHARS_PER_TOKEN, max(_MIN_CHARS_PER_TOKEN, blended),
         )

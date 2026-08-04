@@ -489,10 +489,17 @@ class PreThoughtWorker:
         active_text: str,
         candidate_cap: int,
     ) -> list[str]:
-        system = _SYSTEM_PROMPT.format(
-            assistant_name=self._resolve_assistant_name(),
-            user_name=self._resolve_user_name(),
-            max_questions=candidate_cap,
+        # K-time10: the drafted answer is stored as a pre_thought memory
+        # and leaned on turns (or days) later, so it must not be written
+        # as though the moment of drafting were the moment of use.
+        system = (
+            timephrase.today_anchor()
+            + "\n\n"
+            + _SYSTEM_PROMPT.format(
+                assistant_name=self._resolve_assistant_name(),
+                user_name=self._resolve_user_name(),
+                max_questions=candidate_cap,
+            )
         )
         user_payload = _USER_TEMPLATE.format(
             persona=persona_text or "(persona unavailable)",

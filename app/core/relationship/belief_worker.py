@@ -687,6 +687,11 @@ class BeliefInferenceWorker:
             return ""
         user_msgs = user_msgs[-lookback_turns:]
         user_name = self._resolve_user_name()
+        # K-time10: age-prefixed. A belief is a claim about what the user
+        # is like *now*, and the lookback window can span days -- without
+        # stamps, "he's been stressed all week" said last Tuesday reads as
+        # though it were said this morning.
+        now = self._clock()
         chunks: list[str] = []
         for row in user_msgs:
             text = (row.content or "").strip()
@@ -694,7 +699,9 @@ class BeliefInferenceWorker:
                 continue
             if len(text) > 600:
                 text = text[:597] + "\u2026"
-            chunks.append(f"{user_name}: {text}")
+            age = timephrase.age_prefix(getattr(row, "created_at", None), now)
+            stamp = f"[{age}] " if age else ""
+            chunks.append(f"{stamp}{user_name}: {text}")
         return "\n".join(chunks)
 
     # ── LLM extractor ────────────────────────────────────────────────
@@ -721,7 +728,10 @@ class BeliefInferenceWorker:
         user_content = "\n\n".join(sections)
         # K-time8: anchor "now" so the model resolves relative phrases in the
         # transcript ("he was stressed yesterday") instead of guessing.
-        system_content = f"{timephrase.today_anchor(self._clock())}\n\n{_SYSTEM_PROMPT}"
+        system_content = (
+            f"{timephrase.today_anchor(self._clock())}\n\n"
+            f"{_SYSTEM_PROMPT}\n\n{timephrase.STORED_TEXT_TIME_RULE}"
+        )
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},

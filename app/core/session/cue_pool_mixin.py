@@ -63,6 +63,40 @@ _UNREACHABLE_COSINE = 2.0
 # pathological pool cannot turn a post-turn hook into a table scan.
 _EITHER_PARTY_SCAN = 20
 
+# A cue drafted inside this window is close enough to "just now" that
+# saying when it was noticed would be noise. Past it, the gap is worth
+# disclosing: cue text is frozen at draft time and pending rows have been
+# observed surfacing up to 44 hours later.
+_DRAFT_AGE_DISCLOSE_HOURS = 6.0
+
+
+def _draft_age_note(created_at: str | None) -> str:
+    """A parenthetical telling Aiko when a cue was actually noticed.
+
+    The pool's whole design is that a worker drafts a line while the user
+    is away and it waits for a fitting moment -- but the line is written
+    in the present tense of the draft. Surfaced a day later, "you've been
+    wondering how his interview went" reads as a thought she is having
+    right now, and she relays it as fresh news.
+
+    Disclosing the lag is cheaper and safer than rewriting the sentence:
+    the text keeps whatever nuance the worker gave it, and Aiko is simply
+    told how old the thought is so she can pitch it accordingly.
+    """
+    when = timephrase.parse_iso(created_at)
+    if when is None:
+        return ""
+    now = timephrase.utcnow()
+    if (timephrase.to_aware(now) - when) < timedelta(
+        hours=_DRAFT_AGE_DISCLOSE_HOURS
+    ):
+        return ""
+    return (
+        " (you first noticed this "
+        f"{timephrase.humanize_past(str(created_at), now)}, not just now -- "
+        "bring it up as something you've been sitting on)"
+    )
+
 
 class CuePoolMixin:
     """Mixed into :class:`~app.core.session.session_controller.SessionController`."""
@@ -100,6 +134,13 @@ class CuePoolMixin:
         except Exception:
             log.debug("cue mark_surfaced failed: id=%s", row.id, exc_info=True)
         self._register_surfaced_cue(row)
+        # K-time10. The note goes on a copy: the registered row is what
+        # post-turn accounting judges, and it should see the cue exactly
+        # as its producer wrote it rather than with our parenthetical
+        # glued on.
+        note = _draft_age_note(row.created_at)
+        if note:
+            return replace(row, text=f"{row.text}{note}")
         return row
 
     def _queue_pool_cue(

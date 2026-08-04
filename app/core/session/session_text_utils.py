@@ -49,6 +49,27 @@ def speaker_label(
     return assistant_name
 
 
+def speaker_labels(
+    user_display_name: str,
+    *,
+    assistant_name: str = "Aiko",
+) -> dict[str, str]:
+    """The same mapping as :func:`speaker_label`, as a role -> label dict.
+
+    ``timephrase.format_transcript`` takes its labels as a dict so it can
+    render rows without a per-row callback. Building that dict here keeps
+    the two spellings of "who is speaking" from drifting apart as workers
+    move onto the age-tagged renderer.
+    """
+    name = (user_display_name or "the user").strip() or "the user"
+    return {
+        "user": name,
+        "assistant": assistant_name,
+        "aiko": assistant_name,
+        "system": assistant_name,
+    }
+
+
 def extract_json_object(raw_text: str) -> dict | None:
     try:
         direct = json.loads(raw_text)

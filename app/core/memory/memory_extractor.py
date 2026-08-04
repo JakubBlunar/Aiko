@@ -40,7 +40,7 @@ from app.core.memory.memory_store import (
     MemoryStore,
     _DEFAULT_TEMPORAL_TYPE,
 )
-from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.core.session.session_text_utils import resolve_user_name, speaker_labels
 from app.llm.chat_client import content_looks_complete
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
@@ -481,25 +481,28 @@ class MemoryExtractor:
         return inserted
 
     def _format_transcript(self, rows: list[MessageRow]) -> str:
+        # K-time10: age-prefixed, so "see you tomorrow" said on Friday
+        # resolves to Saturday rather than to whenever this batch happens
+        # to run. The system prompt asks for absolute ``event_time``
+        # values; without per-line stamps the model was being asked to do
+        # that arithmetic with only one of the two operands.
         user_name = resolve_user_name(self._user_display_name_provider)
-        parts: list[str] = []
-        for row in rows:
-            speaker = speaker_label(row.role, user_name)
-            content = (row.content or "").strip()
-            if not content:
-                continue
-            parts.append(f"{speaker}: {content}")
-        return "\n".join(parts)
+        return timephrase.format_transcript(
+            rows, role_labels=speaker_labels(user_name),
+        )
 
     def _format_existing(self) -> str:
         # Just enough recent + salient memories to discourage duplicates.
         recent = self._store.list_top(limit=20)
         if not recent:
             return ""
-        lines = ["Existing memories (do NOT re-emit these):"]
-        for mem in recent:
-            lines.append(f"- {mem.content}")
-        return "\n".join(lines)
+        # Age-tagged (K-time10): the dedupe judgement is partly temporal.
+        # "Jacob has a headache" from six weeks ago is not the same claim
+        # as one from this morning, and an undated list invited the model
+        # to treat them as duplicates.
+        return timephrase.format_memory_block(
+            recent, header="Existing memories (do NOT re-emit these):",
+        )
 
     def _parse_response(self, raw: str) -> list[dict]:
         """Validate the model's JSON and return a list of candidate dicts."""

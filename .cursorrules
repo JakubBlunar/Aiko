@@ -22,6 +22,7 @@ You are an expert in Python 3.11+, FastAPI, PixiJS/React frontends, Ollama funct
 - One-shot debug overrides go in `session.debug_overrides` (registered in `KNOWN_OVERRIDES`), never a new `_force_*` attribute.
 - TTS text processing (`prepare_tts_text`) applies to the spoken stream only, not the chat transcript.
 - Long-term memory writes go through `MemoryStore.add(...)` (SQLite) and are mirrored into LanceDB by `MemoryStore` itself when a `RagStore` is attached.
+- Worker prompts that feed transcripts or memories to an LLM must age-tag them via `timephrase.format_transcript()` / `format_memory_block()` and include `today_anchor()`; anything written to storage gets `timephrase.STORED_TEXT_TIME_RULE` so "today" / "tonight" never gets frozen into a stored row.
 - Inline tags Aiko emits: `[[reaction:...]]` for mood, `[[remember:...]]` and `[[remember:self:...]]` for memory writes. Both are stripped from the spoken/transcript output by the response-text service.
 
 ## Embedded MCP server

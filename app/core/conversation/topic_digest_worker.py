@@ -97,7 +97,11 @@ def _build_system_prompt(
         "never 'the user' or 'the AI companion'. Be concrete; do NOT add "
         "facts that are not in the snippets, do NOT use the words "
         "'memories', 'cluster', 'topic', or 'snippets', and do NOT add a "
-        'preamble. Reply with ONE JSON object on a single line and nothing '
+        "preamble. Each snippet ends with how long ago it was recorded -- "
+        "respect that: something noted months ago is part of the history, "
+        "not the present. "
+        + timephrase.STORED_TEXT_TIME_RULE
+        + ' Reply with ONE JSON object on a single line and nothing '
         'else: {"digest": "<2-4 sentences>"}.'
     )
 
@@ -519,6 +523,7 @@ class TopicDigestWorker:
 
     def _snippets_block(self, cluster: Any) -> str:
         lines: list[str] = []
+        now = timephrase.utcnow()
         for mid in list(cluster.member_ids)[:_MAX_SNIPPETS]:
             try:
                 mem = self._memory_store.get(int(mid))
@@ -531,6 +536,15 @@ class TopicDigestWorker:
                 continue
             snippet = _trim(getattr(mem, "content", ""), max_chars=_MAX_SNIPPET_CHARS)
             if snippet:
+                # K-time10: age-tag each snippet. A digest summarises a
+                # topic *over time*, and feeding the whole cluster in
+                # undated is how "Jacob was ill" from May gets written
+                # into a digest as though it were the current state.
+                created_at = str(getattr(mem, "created_at", "") or "")
+                if timephrase.parse_iso(created_at) is not None:
+                    snippet = (
+                        f"{snippet} ({timephrase.humanize_past(created_at, now)})"
+                    )
                 lines.append(f"- {snippet}")
         return "\n".join(lines)
 
@@ -546,8 +560,15 @@ class TopicDigestWorker:
         max_tokens = max(
             32, int(getattr(self._agent_settings, "topic_digest_max_tokens", 256))
         )
-        system_prompt = _build_system_prompt(
-            self._resolve_user_name(), self._resolve_assistant_name()
+        # Anchor resolved per call, not at module import: ``_SYSTEM_PROMPT``
+        # is built once at load and would freeze the date to whenever the
+        # process started.
+        system_prompt = (
+            timephrase.today_anchor()
+            + "\n\n"
+            + _build_system_prompt(
+                self._resolve_user_name(), self._resolve_assistant_name()
+            )
         )
         messages = [
             {"role": "system", "content": system_prompt},

@@ -61,6 +61,10 @@ _SYSTEM_PROMPT = (
     "naming the shared topic (e.g. 'weekend hiking plans', 'taste in music', "
     "'work stress', 'childhood in Poland'). Be specific and concrete. Do NOT "
     "use the words 'memories', 'cluster', 'topic', or 'group'. "
+    "Each snippet ends with how long ago it was recorded; the label names "
+    "what the group is ABOUT, so keep it timeless -- never fold a "
+    "'today' / 'tonight' / 'tomorrow' from a snippet into the label, "
+    "because the label outlives the day it was written. "
     "Reply with ONE JSON object on a single line and nothing else: "
     '{"label": "<2-5 word phrase>"}.'
 )
@@ -279,6 +283,7 @@ class ClusterLabelWorker:
 
     def _snippets_block(self, cluster: Any) -> str:
         lines: list[str] = []
+        now = timephrase.utcnow()
         for mid in list(cluster.member_ids)[:_MAX_SNIPPETS]:
             try:
                 mem = self._memory_store.get(int(mid))
@@ -288,6 +293,17 @@ class ClusterLabelWorker:
                 continue
             snippet = _trim(getattr(mem, "content", ""), max_chars=_MAX_SNIPPET_CHARS)
             if snippet:
+                # K-time10: the label this produces is reused far beyond
+                # this worker -- it names the cluster in the interest map
+                # and gets quoted verbatim into drift / gradient / dormant
+                # cues. An undated snippet reading "Jacob plans to bathe
+                # this evening" is exactly how that phrasing ends up
+                # frozen into a cue that surfaces a day later.
+                created_at = str(getattr(mem, "created_at", "") or "")
+                if timephrase.parse_iso(created_at) is not None:
+                    snippet = (
+                        f"{snippet} ({timephrase.humanize_past(created_at, now)})"
+                    )
                 lines.append(f"- {snippet}")
         return "\n".join(lines)
 

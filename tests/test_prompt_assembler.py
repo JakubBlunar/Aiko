@@ -5584,6 +5584,25 @@ class PromptLadderOrderTests(unittest.TestCase):
             "cache prefix for everything after it",
         )
 
+    def test_the_two_measured_prefix_breakers_sit_in_t6(self) -> None:
+        """P44 — ``anniversary_block`` and ``narrative_block`` are volatile.
+
+        Both read as background and neither is. Anniversary stamps
+        ``last_anniversaried_at`` as a side effect of rendering, so it
+        alternates between content and nothing on a 6h rotation;
+        narrative is re-read from disk every turn by design. In T0/T1 the
+        pair broke the prefix on 8 of 16 measured turns and took ~28 KB
+        of otherwise-cacheable prompt down with them.
+        """
+        for name in ("anniversary_block", "narrative_block"):
+            with self.subTest(block=name):
+                self.assertEqual(
+                    _BLOCK_TIER_OF[name], "T6_detectors",
+                    f"{name} renders per-turn; promoting it back up the "
+                    "ladder re-breaks the cache prefix for the whole "
+                    "prompt beneath it.",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

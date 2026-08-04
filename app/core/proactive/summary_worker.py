@@ -189,13 +189,11 @@ class SummaryWorker:
         if not rows:
             return False
 
-        transcript_lines: list[str] = []
-        for row in rows:
-            speaker = "User" if row.role == "user" else "Aiko"
-            content = (row.content or "").strip()
-            if content:
-                transcript_lines.append(f"{speaker}: {content}")
-        transcript = "\n".join(transcript_lines)
+        # K-time10: age-prefixed. A summary window can span days, and the
+        # prompt already asks for relative phrases to be rewritten as
+        # concrete dates -- which is unanswerable unless each line says
+        # when it was said.
+        transcript = timephrase.format_transcript(rows, now_dt=timephrase.utcnow())
 
         prior = (latest.summary if latest else "").strip()
         user_prompt_parts: list[str] = []
@@ -210,9 +208,11 @@ class SummaryWorker:
             timephrase.today_anchor()
             + "\n\n"
             + _SYSTEM_PROMPT
-            + " When the transcript uses relative time ('yesterday', 'next "
-            "week'), rewrite it as a concrete date so the summary stays "
-            "accurate when read later."
+            + " Each transcript line is prefixed with when it was sent. "
+            "When the transcript uses relative time ('yesterday', 'next "
+            "week'), resolve it against that line's stamp and rewrite it "
+            "as a concrete date, so the summary stays accurate when it is "
+            "re-read days later."
         )
         messages = [
             {"role": "system", "content": system_content},

@@ -220,6 +220,39 @@ reached the prompt, so nothing was used up, and the picker weighs
 reflections against a conversation that moves. Bounded because a
 welcome-back goes stale and each held turn costs another picker run.
 
+## Draft-to-surface staleness: the text is frozen, the clock is not
+
+A pooled cue is written once and read later, and "later" is not small —
+`pending` rows have surfaced **44 hours** after they were drafted. The
+text does not age with them, so a worker that wrote "you mentioned this
+morning that…" is putting a claim into Aiko's mouth that was true when
+drafted and false when spoken. This is the same class of bug as the
+untagged-memory regression (K-time10 in
+[`shipped/awareness.md`](personality-backlog/shipped/awareness.md)) but it
+needs a different fix, because the staleness is in the pool row rather
+than in the memory it came from.
+
+Two mechanisms, and they anchor against **different** timestamps:
+
+- **At draft time**, the render sites that interpolate raw `mem.content`
+  into cue text (`forward_curiosity_worker.render_question_cue`,
+  `follow_up_worker._plan_summary`, `self_callback.render_inner_life_block`,
+  `interest_drift_worker.render_drift_cue`, `prepared_nudge`,
+  `associative_wander_worker`) run `timephrase.resolve_deictics` against
+  the **source memory's** `created_at` — usually weeks older than the
+  draft. A memory saying "Jacob mowed the lawn today" becomes "on May 27"
+  before it is ever frozen into a cue.
+- **At surface time**, `CuePoolMixin.take_pool_cue` appends a short
+  "(you first noticed this yesterday)" once draft-to-surface lag exceeds
+  6h, anchored on the **row's own** `created_at`. This one is stamped
+  onto a *copy*: post-turn consumption has to judge the text the producer
+  actually wrote, so rewriting the stored row would corrupt the
+  used/unused verdict described above.
+
+Workers drafting cue text should not rely on either. Both are backstops;
+`timephrase.STORED_TEXT_TIME_RULE` in the drafting prompt is the actual
+fix.
+
 ## Which cues belong in the pool: the lexical-trace test
 
 Not every conditional block should be a cue. `absence_curiosity` sits in

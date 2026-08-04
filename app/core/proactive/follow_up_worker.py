@@ -218,12 +218,23 @@ def _to_second_person_plan(content: str, user_display_name: str) -> str | None:
     return None
 
 
-def _plan_summary(content: str, user_display_name: str) -> str:
+def _plan_summary(
+    content: str,
+    user_display_name: str,
+    source_created_at: str | None = None,
+) -> str:
     """Best-effort second-person plan summary for the cue.
 
     Falls back to a trimmed snippet of the raw content when the memory
     isn't phrased in a way we can cleanly reshape.
+
+    ``source_created_at`` is the memory's write time. Both paths below
+    quote the memory's own wording, so a plan recorded as "dinner with
+    Sam tonight" would otherwise produce a cue saying "tonight" on the
+    day it fires -- which is the day *after* the dinner, since that is
+    when a follow-up is worth asking (K-time10).
     """
+    content = timephrase.resolve_deictics(content, source_created_at)
     predicate = _to_second_person_plan(content, user_display_name)
     if predicate:
         if len(predicate) > 160:
@@ -421,11 +432,16 @@ class FollowUpWorker:
                     continue
 
             try:
-                plan = _plan_summary(mem.content or "", user_name)
-                clock = _humanize_clock(event_dt)
-                question = self._draft_question(
-                    user_name, mem.content or "", clock,
+                # K-time10: resolved once, against the note's own write
+                # time, and shared by the summary and the drafted
+                # question so the two cannot disagree about when
+                # "tonight" was.
+                grounded = timephrase.resolve_deictics(
+                    mem.content or "", getattr(mem, "created_at", None),
                 )
+                plan = _plan_summary(grounded, user_name)
+                clock = _humanize_clock(event_dt)
+                question = self._draft_question(user_name, grounded, clock)
                 append_follow_up_cue(
                     self._kv_get,
                     self._kv_set,
@@ -492,6 +508,10 @@ class FollowUpWorker:
                     {
                         "role": "system",
                         "content": (
+                            timephrase.today_anchor()
+                            + " The question sits in a queue before it is "
+                            "asked, so keep 'today' / 'tonight' out of "
+                            "it.\n\n"
                             'Reply with JSON only: {"question": "<one '
                             'short first-person question>"}.'
                         ),
