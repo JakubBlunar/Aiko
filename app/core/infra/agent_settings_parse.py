@@ -1680,6 +1680,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             user_correction_per_day_cap=max(
                 0, int(agent_raw.get("user_correction_per_day_cap", 60)),
             ),
+            fact_reversal_enabled=bool(
+                agent_raw.get("fact_reversal_enabled", True),
+            ),
             mood_inertia_enabled=bool(
                 agent_raw.get("mood_inertia_enabled", True),
             ),

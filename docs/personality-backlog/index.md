@@ -95,9 +95,10 @@ terminates in a database write instead of becoming conversation:
 - **F13.** ✅ **Shipped** — the user *explicitly correcting her* is the
   highest-quality evidence available and now has a detector + supersede path,
   joining F5, K29 and K38 as the fourth corner of the contradiction family.
-- **F14.** The fact-checker can discover she told him something wrong,
-  rewrite the memory, and say nothing; the only outward signal is a UI
-  list refresh.
+- **F14.** ✅ **Shipped** — the fact-checker's own research can now reverse a
+  claim she surfaced and bring it back unprompted ("I looked into that and had
+  it wrong"), gated on the L37 surfaced ledger and suppressed when F13 already
+  handled it, rather than terminating in a silent UI list refresh.
 - **F15.** Decay makes her progressively vaguer and never prompts her to
   ask, so a fading memory can only be refreshed if he happens to raise it.
 - **F16.** Testimony and inference are stored identically, so she can
@@ -197,9 +198,15 @@ Dev / debug tooling (DT-series):
   demotion to any backed concept (no LLM), and arms a low-key acknowledgment
   cue. Correction-of-fact only — `self` stance rows stay K29's lane. See
   [shipped](shipped/awareness.md#f13-the-contradiction-familys-fourth-corner--the-user-corrects-aiko).
-- **F14.** "I was wrong about that" — the fact-checker can reverse a claim
-  she told him and the loop ends in a SQLite write plus a UI refresh. She
-  never mentions it.
+- **F14.** ✅ **Shipped** — "I was wrong about that": the F1 fact-checker's own
+  research can reverse a claim she surfaced, and instead of ending in a silent
+  SQLite write + UI refresh it now arms a low-key next-turn cue so she owns it
+  ("I looked into that and had it backwards, it's actually Y"). Fires only on a
+  genuine reversal (contradict + min-delta + a content rewrite), gated on the
+  L37 surfaced ledger ("she must actually have said it") and suppressed when F13
+  already handled it. Mirror of F13, third corner of the "own what you got
+  wrong" family beside K38. See
+  [shipped](shipped/awareness.md#f14-i-was-wrong-about-that--let-fact-check-reversals-reach-the-user).
 - **F15.** Memory repair requests — decay currently only ever makes her
   *vaguer*. Admitting the hole ("I've lost the detail, remind me?") is both
   the honest surface of a decay system and the only rehydration path the

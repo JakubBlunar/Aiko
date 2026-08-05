@@ -1075,6 +1075,44 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             payload={"wrong": (wrong or "")[:200], "corrected": (corrected or "")[:200]},
         )
 
+    def queue_fact_reversal_cue(
+        self, *, wrong: str, corrected: str, memory_id: int
+    ) -> bool:
+        """Arm the F14 acknowledgment cue after a self-discovered reversal.
+
+        Called by the F1 :class:`IdleFactChecker` (not the turn path) once
+        its own web research contradicts and rewrites a claim Aiko had
+        surfaced. Unlike F13 nobody corrected her -- she checked it herself
+        -- so the line owns the earlier miss and lands the right version
+        without narrating the machinery.
+
+        Subject is the *corrected* fact so post-turn matching credits her
+        for stating the right thing, not for quoting the old version while
+        owning the reversal.
+        """
+        wrong_s = (wrong or "").strip()
+        corrected_s = (corrected or "").strip()
+        if not corrected_s or corrected_s == wrong_s:
+            return False
+        had = f'you had told them "{wrong_s}", but ' if wrong_s else ""
+        cue = (
+            f"Heads-up: you went back and looked into something you'd said "
+            f"earlier, and you had it wrong -- {had}"
+            f'it\'s actually "{corrected_s}". Bring it up once, low-key -- '
+            "'that thing I mentioned? I looked it up and I had it backwards' "
+            "-- never a grovel, never narrate updating any notes, then move on."
+        )
+        return self._queue_pool_cue(
+            "fact_reversal",
+            corrected_s,
+            cue,
+            payload={
+                "wrong": wrong_s[:200],
+                "corrected": corrected_s[:200],
+                "memory_id": int(memory_id or 0),
+            },
+        )
+
     def _maybe_arm_mood_inertia(
         self,
         *,

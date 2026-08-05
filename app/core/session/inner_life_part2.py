@@ -3288,6 +3288,25 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         row = self.take_pool_cue("user_correction")
         return row.text if row is not None else ""
 
+    def _render_fact_reversal_block(self) -> str:
+        """F14: surface an owed acknowledgment of a self-discovered reversal.
+
+        The F1
+        :class:`~app.core.memory.idle_fact_checker.IdleFactChecker` queues a
+        cue once its own web research contradicts and rewrites a claim Aiko
+        had already surfaced to the user; this claims it so she owns the
+        reversal once, naturally, on this turn. Sibling of the F13
+        user-correction block: gated on its master toggle and left standing
+        under ``aggressive`` trims, since owning a self-found mistake must
+        still land when the prompt is tight.
+        """
+        if not bool(
+            getattr(self._settings.agent, "fact_reversal_enabled", True)
+        ):
+            return ""
+        row = self.take_pool_cue("fact_reversal")
+        return row.text if row is not None else ""
+
     def _render_misattunement_block(self, user_text: str) -> str:
         """K23: surface a per-turn ``mild_disengagement`` cue.
 

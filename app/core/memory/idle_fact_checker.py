@@ -118,6 +118,8 @@ class IdleFactChecker:
         user_names_provider: Any | None = None,
         assistant_name_provider: Any | None = None,
         query_reformulator: Any | None = None,
+        arm_reversal: Any | None = None,
+        was_surfaced: Any | None = None,
     ) -> None:
         self._queue = queue
         self._memory_store = memory_store
@@ -140,6 +142,14 @@ class IdleFactChecker:
         # claims are rewritten into neutral topic queries (post-filtered
         # by the deterministic scrubber) before search.
         self._query_reformulator = query_reformulator
+        # F14: arm a next-turn "I looked into that and had it wrong" cue
+        # when this worker's own research reverses a claim Aiko surfaced.
+        # ``arm_reversal(wrong, corrected, memory_id) -> bool`` writes the
+        # cue; ``was_surfaced(memory_id) -> bool`` reads the L37 ledger to
+        # confirm she actually said it. Both late-bound so init order (and
+        # a session without the controller) is irrelevant.
+        self._arm_reversal = arm_reversal
+        self._was_surfaced = was_surfaced
 
     # ── IdleWorker protocol ──────────────────────────────────────────
 
@@ -552,6 +562,12 @@ class IdleFactChecker:
         new_conf = current_conf
         new_content = memory.content
         details: dict[str, Any] = {}
+        # F14: snapshot the pre-update claim + provenance before ``update``
+        # mutates (or replaces) the row, so the reversal cue owns the text
+        # Aiko actually said and the suppression reads the original state.
+        orig_content = memory.content
+        orig_meta = dict(memory.metadata) if memory.metadata else {}
+        orig_tier = str(getattr(memory, "tier", ""))
 
         if verdict.kind == "support":
             new_conf = min(0.95, current_conf + verdict.delta)
@@ -639,7 +655,102 @@ class IdleFactChecker:
 
         details["confidence_before"] = float(current_conf)
         details["confidence_after"] = float(new_conf)
+
+        # F14: if this check reversed a claim Aiko actually surfaced, arm a
+        # next-turn cue so she owns it. Uses the pre-update snapshot (old
+        # content + original metadata/tier) and the freshly written
+        # ``new_content``.
+        self._maybe_arm_reversal(
+            memory_id=int(claim.memory_id),
+            verdict=verdict,
+            wrong_text=orig_content,
+            corrected_text=new_content,
+            rewrote=bool(details.get("rewrote", False)),
+            meta=orig_meta,
+            tier=orig_tier,
+        )
         return details
+
+    def _maybe_arm_reversal(
+        self,
+        *,
+        memory_id: int,
+        verdict: Verdict,
+        wrong_text: str,
+        corrected_text: str,
+        rewrote: bool,
+        meta: dict[str, Any],
+        tier: str,
+    ) -> None:
+        """Arm the F14 "I looked into that and had it wrong" cue.
+
+        Fires only on a genuine reversal Aiko already told the user: the
+        verdict contradicts, the confidence drop clears
+        ``memory.fact_reversal_min_delta``, and the content was actually
+        rewritten (drift with no rewrite is not a conversational event).
+        Then two more gates: she must have surfaced the claim (L37 ledger),
+        and F13 must not have already handled it (a user correction arriving
+        first makes the fact-checker redundant and a little insulting).
+        """
+        if not bool(getattr(self._agent_settings, "fact_reversal_enabled", True)):
+            return
+        if self._arm_reversal is None or self._was_surfaced is None:
+            return
+        if verdict.kind != "contradict" or not rewrote:
+            return
+        min_delta = float(
+            getattr(self._memory_settings, "fact_reversal_min_delta", 0.25)
+        )
+        if abs(verdict.delta) < min_delta:
+            return
+
+        mid = int(memory_id or 0)
+        if mid <= 0:
+            return
+
+        # F13 suppression: skip a row the user already set straight, or one
+        # that has since been archived/superseded.
+        if isinstance(meta, dict) and (
+            meta.get("superseded_reason") == "user_correction"
+            or meta.get("superseded_by")
+            or meta.get("archived_at")
+        ):
+            return
+        if str(tier or "").strip().lower() == "archive":
+            return
+
+        # She must actually have said it -- a low-confidence note quietly
+        # fixed before it ever surfaced is nothing to apologise for.
+        try:
+            if not bool(self._was_surfaced(mid)):
+                return
+        except Exception:
+            log.debug("fact-reversal surfaced-gate raised", exc_info=True)
+            return
+
+        wrong = str(wrong_text or "").strip()
+        corrected = (corrected_text or "").strip()
+        if not corrected or corrected == wrong:
+            return
+        try:
+            armed = bool(
+                self._arm_reversal(
+                    wrong=wrong,
+                    corrected=corrected,
+                    memory_id=mid,
+                )
+            )
+            log.info(
+                "fact-reversal cue armed=%s: memory_id=%s delta=%+.2f "
+                "wrong=%r corrected=%r",
+                armed,
+                mid,
+                verdict.delta,
+                _preview(wrong),
+                _preview(corrected),
+            )
+        except Exception:
+            log.debug("fact-reversal arm raised", exc_info=True)
 
     @staticmethod
     def _pick_answer_text(verdict: Verdict, claim: "ClaimItem") -> str | None:

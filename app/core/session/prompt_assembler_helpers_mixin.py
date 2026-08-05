@@ -199,6 +199,7 @@ class PromptAssemblerHelpersMixin:
         mood_drift: Callable[[], str] | None = None,
         self_correction: Callable[[], str] | None = None,
         user_correction: Callable[[], str] | None = None,
+        fact_reversal: Callable[[], str] | None = None,
         promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
         implicit_need: Callable[[str], str] | None = None,
@@ -353,6 +354,8 @@ class PromptAssemblerHelpersMixin:
             self._self_correction_provider = self_correction
         if user_correction is not None:
             self._user_correction_provider = user_correction
+        if fact_reversal is not None:
+            self._fact_reversal_provider = fact_reversal
         if promise_followthrough is not None:
             self._promise_followthrough_provider = promise_followthrough
         if misattunement is not None:

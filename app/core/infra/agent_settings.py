@@ -2233,6 +2233,15 @@ class AgentSettings:
     user_correction_per_hour_cap: int = 12
     user_correction_per_day_cap: int = 60
 
+    # ── F14: fact-reversal cue ────────────────────────────────────────
+    # Master switch for "my own research reversed something I told you".
+    # When ON, the F1 ``IdleFactChecker`` arms a next-turn acknowledgment
+    # cue whenever a background check contradicts + rewrites a claim Aiko
+    # had actually surfaced (gated by the L37 ledger, suppressed when F13
+    # already handled it). The reversal bar lives on
+    # ``MemorySettings.fact_reversal_min_delta``.
+    fact_reversal_enabled: bool = True
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that

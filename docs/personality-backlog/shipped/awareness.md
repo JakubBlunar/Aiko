@@ -338,6 +338,54 @@ penalty, supersede confidence). Tests:
 
 ---
 
+## F14. "I was wrong about that" — let fact-check reversals reach the user
+
+The mirror of F13, and the third corner of the "own what you got wrong"
+family beside K38 (a slip in her own reply) and F13 (a fact the user set
+straight): F14 catches a claim **Aiko's own background research reversed**
+after she had already told the user, and brings it back unprompted — "that
+thing I mentioned? I looked it up and I had it backwards, it's actually
+Y". Previously the F1
+[`IdleFactChecker`](../../../app/core/memory/idle_fact_checker.py) would
+contradict a stored claim, drop its confidence, even rewrite its content,
+and end the loop at a silent `notify_memory_updated` — throwing away the
+single most trust-building beat a companion has, and the only visible proof
+the background machinery exists.
+
+The reversal gate lives in `_apply_verdict`'s existing detail dict (no
+schema change): it fires only on a genuine reversal — `verdict.kind ==
+"contradict"`, a confidence drop clearing
+`memory.fact_reversal_min_delta` (default 0.25, so `0.7 → 0.65` drift
+never qualifies), **and** an actual content rewrite (`|delta| > 0.2`).
+Two more bars, both mirroring the F14 backlog's open questions: **she must
+actually have said it** — a late-bound `was_surfaced` callable reads the
+L37 [`SurfacingOutcomeStore`](../../../app/core/memory/surfacing_outcome_store.py)
+so a low-confidence note quietly fixed before it ever surfaced is nothing
+to apologise for; and **F13 must not have beaten it** — a row already
+`superseded_reason="user_correction"` (or archived) is suppressed, since
+the fact-checker arriving after the user already corrected her is redundant
+and a little insulting.
+
+On a pass it calls the injected `arm_reversal` →
+`PostTurnHelpersMixin.queue_fact_reversal_cue` (subject = the *corrected*
+fact so post-turn matching credits her for stating the right thing), which
+composes a low-key line — never "I've updated my database" — and queues a
+`fact_reversal` T6 cue. Cue policy in
+[`cue_accounting.py`](../../../app/core/proactive/cue_accounting.py)
+(`inventory_target=0`, `ttl_hours=72`, `max_surfacings=2`, 24h
+surface-cooldown, `MATCH_LEXICAL`), rendered by
+`_render_fact_reversal_block` right after `user_correction_block` in the
+T6 "own what you owe" cluster. It rides along on the next natural turn
+(like K38/F13) rather than opening one via `prepared_nudge` — the stronger
+unprompted beat is a much higher nag risk and stays a future option. Because
+F1's personal-claim privacy filter rarely web-checks user-specific facts,
+F14 fires mainly on world claims Aiko asserted; that is accepted, not fixed
+here. Settings: `agent.fact_reversal_enabled` (master),
+`memory.fact_reversal_min_delta` (clamp [0, 0.3]). Tests:
+[`tests/test_fact_reversal.py`](../../../tests/test_fact_reversal.py).
+
+---
+
 ## G2. Schedule-learning worker
 
 Idle worker that buckets `messages.created_at` (user messages
