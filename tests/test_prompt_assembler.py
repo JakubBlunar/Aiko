@@ -1240,14 +1240,19 @@ class PromiseFollowthroughProviderTests(unittest.TestCase):
         self.assertIn("promise_followthrough_block", t6)
         # Pinned ordering: the "own what you owe" cluster runs
         # self_correction (own your slip) -> user_correction (own the fix
-        # the user made, F13) -> promise_followthrough (close the loop).
+        # the user made, F13) -> fact_reversal (own the fix your own
+        # research made, F14) -> promise_followthrough (close the loop).
         self.assertEqual(
             t6.index("user_correction_block"),
             t6.index("self_correction_block") + 1,
         )
         self.assertEqual(
-            t6.index("promise_followthrough_block"),
+            t6.index("fact_reversal_block"),
             t6.index("user_correction_block") + 1,
+        )
+        self.assertEqual(
+            t6.index("promise_followthrough_block"),
+            t6.index("fact_reversal_block") + 1,
         )
 
 

@@ -526,6 +526,28 @@ class MemoryFacadeMixin:
         except Exception:
             return None
 
+    def _fact_reversal_was_surfaced(self, memory_id: int) -> bool:
+        """F14 gate: did Aiko ever surface this memory to the user?
+
+        Late-bound read of the L37 surfacing ledger so the F1 fact-checker
+        never arms a reversal cue for a claim she quietly fixed before it
+        ever left her lips. Lifetime window -- a reversal is worth owning
+        however long ago the claim was said. Fails closed (no ledger, any
+        error -> no cue).
+        """
+        store = getattr(self, "_surfacing_outcome_store", None)
+        if store is None:
+            return False
+        try:
+            mid = int(memory_id or 0)
+            if mid <= 0:
+                return False
+            stats = store.stats_for("memory", [mid], window_days=None)
+            entry = stats.get(mid)
+            return bool(entry is not None and entry.surfaced > 0)
+        except Exception:
+            return False
+
     def _notify_memory_updated(self, snapshot: dict[str, Any]) -> None:
         listeners = getattr(self, "_memory_updated_listeners", None) or []
         for listener in list(listeners):

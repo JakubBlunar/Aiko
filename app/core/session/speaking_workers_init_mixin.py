@@ -625,6 +625,7 @@ class SpeakingWorkersInitMixin:
             mood_drift=self._render_mood_drift_block,
             self_correction=self._render_self_correction_block,
             user_correction=self._render_user_correction_block,
+            fact_reversal=self._render_fact_reversal_block,
             promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
             implicit_need=self._render_implicit_need_block,
@@ -1213,6 +1214,12 @@ class SpeakingWorkersInitMixin:
                                 user_names_provider=self._fact_check_user_names,
                                 assistant_name_provider=self._fact_check_assistant_name,
                                 query_reformulator=self._build_query_reformulator(),
+                                # F14: arm a next-turn reversal cue when the
+                                # worker's own research reverses a claim Aiko
+                                # surfaced. Both late-bound so the L37 ledger
+                                # need not exist yet at construction.
+                                arm_reversal=self.queue_fact_reversal_cue,
+                                was_surfaced=self._fact_reversal_was_surfaced,
                             )
                             self._idle_scheduler.register(self._idle_fact_checker)
                     except Exception:

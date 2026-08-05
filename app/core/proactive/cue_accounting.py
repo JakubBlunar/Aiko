@@ -169,6 +169,10 @@ CUE_SPECS: dict[str, CueSpec] = {
         # straight to ``cue_pool`` once a correction is confirmed, so a
         # queued row is the whole of the arming signal.
         CueSpec("user_correction"),
+        # Pool-only, same shape: the F14 fact-checker writes straight to
+        # ``cue_pool`` when its own research reverses a surfaced claim, so a
+        # queued row is the whole of the arming signal.
+        CueSpec("fact_reversal"),
         # Same shape: banked on the turn path when a pushback or a light
         # offence lands, so a waiting row is the whole opportunity. Its
         # rows also sit under a ``not_before`` for the first hour, which
@@ -594,6 +598,32 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Owning a correction (the user set me straight):",
             block="user_correction_block",
+        ),
+        CuePolicy(
+            "fact_reversal",
+            # F14: armed off-turn by the F1 fact-checker when its own web
+            # research contradicts and rewrites a claim Aiko had already
+            # surfaced to the user. Like the two correction cues the content
+            # is settled at write time, so it is queued ahead and claimed
+            # normally.
+            inventory_target=0,
+            # Unlike a same-turn slip, a reversal she discovered on her own
+            # is still worth mentioning a couple of days later -- but three
+            # weeks on it is no longer a conversational event, so it expires.
+            ttl_hours=72.0,
+            max_surfacings=2,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Lexical only: the subject is the corrected fact, so a cosine
+            # hit would mostly measure her staying on topic rather than her
+            # actually owning the reversal.
+            match_mode=MATCH_LEXICAL,
+            min_overlap=2,
+            # Rare by nature and easy to overdo -- two "actually I was wrong"
+            # beats in one evening reads as a nervous tic -- so a new one
+            # only opens a day after the last surfaced.
+            surface_cooldown_hours=24.0,
+            handling_section="Owning a fact-check reversal (I looked into it myself):",
+            block="fact_reversal_block",
         ),
         CuePolicy(
             "tease_ledger",

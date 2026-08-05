@@ -1382,6 +1382,11 @@ class MemorySettings:
     user_correction_max_per_run: int = 8
     user_correction_concept_penalty: float = 0.25
     user_correction_confidence: float = 0.9
+    # F14 fact-reversal: minimum absolute confidence drop the F1 fact-
+    # checker's ``contradict`` verdict must carry before it counts as a
+    # genuine reversal worth owning aloud, rather than routine drift (a
+    # 0.7 -> 0.65 nudge). Clamped to [0, 0.3]; default 0.25.
+    fact_reversal_min_delta: float = 0.25
     # K45 mood inertia: effective-mismatch score (whiplash bonus
     # included) at or above which the one-shot cue arms (floor 0.1),
     # and how many post-turn assessments to skip after a fire so one
@@ -3657,6 +3662,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 max(
                     0.0,
                     float(memory_raw.get("user_correction_confidence", 0.9)),
+                ),
+            ),
+            fact_reversal_min_delta=min(
+                0.3,
+                max(
+                    0.0,
+                    float(memory_raw.get("fact_reversal_min_delta", 0.25)),
                 ),
             ),
             mood_inertia_mismatch_threshold=max(

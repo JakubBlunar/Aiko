@@ -184,6 +184,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # both are one-shot "own what you got wrong" beats, K38 for a slip
         # in her own reply, F13 for a fact the user set straight.
         "user_correction_block",
+        # F14: owning a self-discovered fact reversal. Rounds out the "own
+        # what you got wrong" trio -- K38 for a slip in her own reply, F13
+        # for a fact the user set straight, F14 for one her own research
+        # reversed.
+        "fact_reversal_block",
         "promise_followthrough_block",
         "misattunement_block",
         # K69: implicit-need response-mode steer. Sits right after
@@ -650,6 +655,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # and superseded it; this provider renders the acknowledgment once
         # on a following turn and clears the slot.
         self._user_correction_provider: Callable[[], str] | None = None
+        # F14 — fact-reversal one-shot. The F1 idle fact-checker queues a
+        # cue when its own research contradicts and rewrites a claim Aiko
+        # had surfaced; this provider renders the acknowledgment once on a
+        # following turn and clears the slot.
+        self._fact_reversal_provider: Callable[[], str] | None = None
         # K43 — promise follow-through one-shot. The idle worker arms a
         # pending cue in kv_meta when an assistant-side promise has sat
         # open past the age gate; this provider renders it once ("close
@@ -1682,6 +1692,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("user-correction provider raised", exc_info=True)
                     user_correction_block = ""
 
+        # F14 — fact-reversal one-shot. Sibling of the user-correction
+        # provider; same one-shot pool-backed contract and same
+        # not-gated-on-aggressive policy (owning a reversal her own research
+        # turned up must land even when the prompt is trimmed).
+        fact_reversal_block = ""
+        if self._fact_reversal_provider is not None:
+            with _timed_phase(provider_ms, "fact_reversal"):
+                try:
+                    fact_reversal_block = self._fact_reversal_provider() or ""
+                except Exception:
+                    log.debug("fact-reversal provider raised", exc_info=True)
+                    fact_reversal_block = ""
+
         # K43 — promise follow-through one-shot. Same one-shot contract
         # as rupture/self-correction (provider consumes a pending slot)
         # and the same not-gated-on-aggressive policy: the provider
@@ -2537,6 +2560,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "rupture_block",
             "self_correction_block",
             "user_correction_block",
+            "fact_reversal_block",
             "promise_followthrough_block",
             "misattunement_block",
             "opinion_injection_block",
@@ -2558,6 +2582,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "rupture_block": rupture_block,
             "self_correction_block": self_correction_block,
             "user_correction_block": user_correction_block,
+            "fact_reversal_block": fact_reversal_block,
             "promise_followthrough_block": promise_followthrough_block,
             "misattunement_block": misattunement_block,
             "opinion_injection_block": opinion_injection_block,
@@ -2592,6 +2617,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             rupture_block = cue_blocks["rupture_block"]
             self_correction_block = cue_blocks["self_correction_block"]
             user_correction_block = cue_blocks["user_correction_block"]
+            fact_reversal_block = cue_blocks["fact_reversal_block"]
             promise_followthrough_block = cue_blocks[
                 "promise_followthrough_block"
             ]
@@ -2900,6 +2926,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # fact the user set straight. Survives aggressive mode: an
             # owed acknowledgment of a correction must land.
             system_parts.append(user_correction_block)
+        if fact_reversal_block:
+            # F14: owning a self-discovered reversal sits right after the
+            # F13 user-correction cue, rounding out the "own what you got
+            # wrong" trio -- K38 for a slip in her reply, F13 for a fact the
+            # user set straight, F14 for one her own research reversed.
+            # Survives aggressive mode: an owed acknowledgment must land.
+            system_parts.append(fact_reversal_block)
         if promise_followthrough_block:
             # K43: promise follow-through sits right after the
             # self-correction cue — both are "own what you owe" beats
