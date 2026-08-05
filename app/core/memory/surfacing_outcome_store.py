@@ -147,6 +147,31 @@ class ItemStats:
         return self.echoed / self.surfaced
 
 
+@dataclass(frozen=True, slots=True)
+class ClusterTaste:
+    """Per-topic-cluster engagement, the raw signal behind K81 taste.
+
+    ``engaged_rate`` is ``engaged / settled`` -- because it is a *rate* it
+    is frequency-independent, so a topic raised rarely but that reliably
+    lands outscores one raised constantly to no effect. That asymmetry is
+    the whole point: taste is not the same as what the user brings up most.
+    """
+
+    cluster_id: int
+    surfaced: int = 0
+    settled: int = 0
+    engaged: int = 0
+
+    @property
+    def engaged_rate(self) -> float | None:
+        """Share of settled rows that landed, or ``None`` below the
+        settle floor (the caller gates on ``min_settled`` in SQL, so a
+        returned row always has ``settled >= 1``)."""
+        if self.settled <= 0:
+            return None
+        return self.engaged / self.settled
+
+
 def items_from_selection(
     selection: object,
     *,
@@ -390,6 +415,84 @@ class SurfacingOutcomeStore:
                 echoed=int(r[4] or 0),
             )
             for r in rows
+        }
+
+    def engaged_rate_by_cluster(
+        self,
+        *,
+        window_days: int | None,
+        min_settled: int = 1,
+    ) -> dict[int, ClusterTaste]:
+        """Per-topic-cluster engagement over ``window_days`` (K81 taste).
+
+        Two sources map a ledger row to a cluster: a ``cluster`` row whose
+        ``item_id`` *is* the ``cluster_id``, and a ``memory`` row joined
+        through ``memory_topic_assignments`` to whatever cluster the memory
+        currently belongs to. Concept and cue rows carry no cluster and are
+        excluded. The two sources are unioned per row, then grouped, so a
+        turn that surfaced both a cluster label and a memory from the same
+        cluster contributes twice -- which is correct: both touched the
+        topic and both inherited the turn's engagement.
+
+        ``min_settled`` is the warmup floor (a ``HAVING`` clause): a cluster
+        below it is simply absent, so a cold ledger yields no taste rather
+        than confident noise off one observation -- the same posture as
+        :class:`ItemStats` and the engagement tracker's ``warmed`` gate.
+        ``window_days=None`` means lifetime.
+        """
+        params: list[object] = [ENGAGED_LABEL]
+        since_a = ""
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            since_a = " AND created_at >= ?"
+            params.append(cutoff.isoformat())
+        # The engaged-label param + optional cutoff repeat for the second
+        # (memory-join) arm of the UNION.
+        params.append(ENGAGED_LABEL)
+        since_b = ""
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            since_b = " AND so.created_at >= ?"
+            params.append(cutoff.isoformat())
+        params.append(max(0, int(min_settled)))
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT cluster_id, "
+                "       COUNT(*) AS surfaced, "
+                "       SUM(settled_flag) AS settled, "
+                "       SUM(engaged_flag) AS engaged "
+                "FROM ("
+                "  SELECT item_id AS cluster_id, "
+                "         CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END AS settled_flag, "
+                "         CASE WHEN engagement_label = ? THEN 1 ELSE 0 END AS engaged_flag "
+                "  FROM surfacing_outcomes "
+                f"  WHERE item_kind = 'cluster' AND item_id > 0{since_a} "
+                "  UNION ALL "
+                "  SELECT a.cluster_id AS cluster_id, "
+                "         CASE WHEN so.settled_at IS NOT NULL THEN 1 ELSE 0 END, "
+                "         CASE WHEN so.engagement_label = ? THEN 1 ELSE 0 END "
+                "  FROM surfacing_outcomes so "
+                "  JOIN memory_topic_assignments a ON a.memory_id = so.item_id "
+                f"  WHERE so.item_kind = 'memory' AND so.item_id > 0{since_b} "
+                ") "
+                "GROUP BY cluster_id "
+                "HAVING settled >= ? "
+                "ORDER BY (CAST(engaged AS REAL) / settled) DESC, settled DESC",
+                tuple(params),
+            ).fetchall()
+        except Exception:
+            log.warning("surfacing ledger cluster taste read failed", exc_info=True)
+            return {}
+        return {
+            int(r[0]): ClusterTaste(
+                cluster_id=int(r[0]),
+                surfaced=int(r[1] or 0),
+                settled=int(r[2] or 0),
+                engaged=int(r[3] or 0),
+            )
+            for r in rows
+            if int(r[0] or 0) > 0
         }
 
     def leaderboard(
@@ -673,6 +776,7 @@ __all__ = [
     "ITEM_KIND_CLUSTER",
     "ITEM_KIND_CONCEPT",
     "ITEM_KIND_MEMORY",
+    "ClusterTaste",
     "ItemStats",
     "SurfacedItem",
     "SurfacingOutcomeStore",

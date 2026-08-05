@@ -562,6 +562,20 @@ class AgentSettings:
     # for the user / aiko lenses. Off just skips that one pass. Cap lives under
     # MemorySettings (``concept_synthesis_max_generalization_concepts``).
     generalization_synthesis_enabled: bool = True
+    # K81 taste synthesis (the *preference* kind -- topics she genuinely enjoys
+    # getting into, read off the L37 surfacing ledger's per-cluster engaged
+    # rate). When enabled, the synthesis worker's taste pass (aiko-only) offers
+    # high-affinity topics as first-person enjoyments. Off just skips that one
+    # pass. Thresholds live under MemorySettings (``taste_affinity_window_days``
+    # / ``taste_min_settled`` / ``taste_min_affinity`` /
+    # ``concept_synthesis_max_taste_clusters``).
+    taste_synthesis_enabled: bool = True
+    # K81 taste steer -- the rare T6 "lean toward what you love" permission slip
+    # (``_render_taste_lean_block``). Lull-gated + warmth-earned + once per
+    # conversation: when a taste is confident enough, it nudges Aiko to steer
+    # gently toward a topic she enjoys. Framed as enthusiasm, never a filter on
+    # what he may raise. Off skips the block.
+    taste_steer_enabled: bool = True
     # L12 tension cue -- the ONLY surface for a tension concept (they are kept
     # out of the relevant-context block so a standing friction can never nag).
     # When enabled, TensionCueWorker occasionally drafts a private "a friction

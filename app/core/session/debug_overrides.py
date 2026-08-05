@@ -72,6 +72,7 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "sleep_return_force_next": "H21 - bypass the sleep-return gates once.",
     "stance_persistence_force_next": "K46 - bypass the warm-stance window once.",
     "tease_collection_force_next": "K59 - bypass the humor, cooldown and age gates once.",
+    "taste_lean_force_next": "K81 - arm a one-shot 'lean toward what you love' steer.",
     "topic_appetite_force_next": "K54 - arm a one-shot 'tapped out' negotiation slip.",
     "topic_confidence_force_next": "F10i - bypass the topic-confidence provider gates once.",
     "topic_temperature_force_next": "F10h - bypass the topic-temperature provider gates once.",

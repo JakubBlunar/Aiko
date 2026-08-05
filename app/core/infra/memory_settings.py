@@ -832,6 +832,18 @@ class MemorySettings:
     # L20: cap on active BASE concepts offered to the generalization (meta)
     # proposer per run (per subject). Same shape/rationale as the tension cap.
     concept_synthesis_max_generalization_concepts: int = 24
+    # K81 taste synthesis thresholds. The taste pass reads the L37 surfacing
+    # ledger's per-cluster engaged rate over ``taste_affinity_window_days``
+    # (a window, not lifetime, so taste tracks how the relationship works now),
+    # trusts a cluster only once it has ``taste_min_settled`` settled surfacings
+    # (warmup floor -- a cold ledger yields no taste), keeps clusters whose
+    # engaged rate clears ``taste_min_affinity`` (a *rate*, so a rare topic that
+    # always lands beats a frequent flat one), and offers at most
+    # ``concept_synthesis_max_taste_clusters`` per run.
+    taste_affinity_window_days: int = 90
+    taste_min_settled: int = 4
+    taste_min_affinity: float = 0.5
+    concept_synthesis_max_taste_clusters: int = 6
     # L20 surfacing: "prefer the abstraction". When a generalization parent is
     # among the turn's concept candidates at >= ``parent_min_confidence``, its
     # child concepts are dropped from the pool so Aiko speaks the through-line
@@ -2752,6 +2764,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get(
                         "concept_synthesis_max_generalization_concepts", 24
                     )
+                ),
+            ),
+            taste_affinity_window_days=max(
+                1,
+                int(memory_raw.get("taste_affinity_window_days", 90)),
+            ),
+            taste_min_settled=max(
+                1,
+                int(memory_raw.get("taste_min_settled", 4)),
+            ),
+            taste_min_affinity=max(
+                0.0,
+                min(1.0, float(memory_raw.get("taste_min_affinity", 0.5))),
+            ),
+            concept_synthesis_max_taste_clusters=max(
+                1,
+                int(
+                    memory_raw.get("concept_synthesis_max_taste_clusters", 6)
                 ),
             ),
             generalization_suppress_children_enabled=bool(

@@ -287,6 +287,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "thread_ownership_block",
         "wants_block",
         "topic_appetite_block",
+        # K81: taste-lean steer — a rare, lull-gated "you're allowed to steer
+        # toward what you love" permission slip. Clusters with the other
+        # lull-gated "things Aiko could lean into" slips; reads the K18
+        # standing lull reading so it must run after the stagnation provider.
+        "taste_lean_block",
         # K67: dormant-interest re-opener — "we haven't talked about X in
         # ages". A rare, lull-gated reach back to a once-loved-but-quiet
         # topic; clusters with the other "things Aiko could bring up on a
@@ -996,6 +1001,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``last_mean``) and after the K52 wants provider has matured
         # the ledger this turn.
         self._topic_appetite_provider: Callable[[], str] | None = None
+        # K81 taste lean. A rare, lull-gated permission slip to steer toward a
+        # topic Aiko genuinely enjoys (an active ``taste`` concept). Reads the
+        # K18 standing lull reading, so it must run after the stagnation
+        # provider, like topic_appetite.
+        self._taste_lean_provider: Callable[[], str] | None = None
         # K57 directed emotion episodes. Takes the live ``user_text``
         # (acknowledgment detection resolves a live episode) and
         # returns the strongest episode's register cue — or the
@@ -2417,6 +2427,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="topic_appetite",
             )
 
+        # K81: taste lean. Same posture as topic_appetite — a lull-gated
+        # permission slip (not a directive), no-arg, dropped under aggressive,
+        # and run after the stagnation provider so ``last_mean`` reflects the
+        # live conversation.
+        taste_lean_block = ""
+        if not aggressive and self._taste_lean_provider is not None:
+            taste_lean_block = _safe_provider(
+                self._taste_lean_provider,
+                timing_sink=provider_ms,
+                timing_name="taste_lean",
+            )
+
         # K67: dormant-interest re-opener. Lull-gated (reads the K18 standing
         # reading, so it must run after the stagnation provider, like
         # topic_appetite above), no-arg, dropped under aggressive — a rare
@@ -3215,6 +3237,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # slip. Lands right under the wants block — its offer IS
             # the strongest want, so the two read as one thought.
             system_parts.append(topic_appetite_block)
+        if taste_lean_block:
+            # K81: the rare "lean toward what you love" permission slip.
+            # Clusters with the other lull-gated "things Aiko could bring
+            # up" slips — a gentle nudge to steer toward a topic she enjoys.
+            system_parts.append(taste_lean_block)
         if dormant_interest_block:
             # K67: the rare "we haven't talked about X in ages" re-opener.
             # Clusters with the other lull-gated "things Aiko could bring

@@ -1057,3 +1057,90 @@ most-recent-turn preference, known-phrase skip, cue copy, both writes),
 (the session seam: master switch, watermark suppress / stale-allow /
 refresh, empty ring, reaction lookup, slot arming, and the one-shot
 render-then-clear contract).
+
+---
+
+## K81. Taste formation — topics she *likes*, not just topics she's seen
+
+Aiko's whole topic stack — the topic graph, `interest_mass`, `cluster_affect`
+— is either **frequency** (what came up, how often) or **emotion**
+(valence/arousal). None of it is **preference**. K81 adds the missing axis:
+*which topics reliably go well between the two of them*, which is not the same
+as the topics he raises most. The signal was already sitting in the shipped
+**L37 ledger** and needed no schema change — per-cluster `engaged / settled`
+is the affinity, and because it is a *rate* it is frequency-independent, so a
+rarely-raised topic that always lands outranks a constantly-raised flat one
+automatically (the asymmetry K81 wanted).
+
+**Read-model
+([`surfacing_outcome_store.py`](../../../app/core/memory/surfacing_outcome_store.py)).**
+`engaged_rate_by_cluster(*, window_days, min_settled) -> {cluster_id:
+ClusterTaste}` groups `item_kind="cluster"` rows (keyed on `item_id` = the
+cluster) UNION `item_kind="memory"` rows joined through
+`memory_topic_assignments` to their current cluster; concept/cue rows carry no
+cluster and are excluded. A `HAVING settled >= min_settled` warmup floor keeps
+a one-observation cluster from claiming a confident taste — a cold ledger
+yields no taste rather than noise. `ClusterTaste.engaged_rate` is `None` below
+the floor (never `0.0`), so "no evidence" and "never lands" stay distinct.
+
+**Kind + gate
+([`concept_kinds.py`](../../../app/core/concepts/concept_kinds.py) +
+[`concept_lifecycle.py`](../../../app/core/concepts/concept_lifecycle.py)).**
+`taste` is a new `subject="aiko"` `set` kind at the fluid plasticity band
+(0.5, like `affective`) so tastes form and drift naturally; no
+`surfacing_targets` (T3 relevance-only, like affective) and not on the
+always-on core lane. `taste_evidence_gate()` floors the shared set gate at 2
+clusters / short age / conf 0.6 — modest, but not anchor-seedable (a taste is
+an inference over how conversations went, never a single remembered note).
+
+**Proposer + synthesis pass
+([`proposers/taste_aiko.py`](../../../app/core/concepts/proposers/taste_aiko.py)
++ [`concept_synthesis_worker.py`](../../../app/core/concepts/concept_synthesis_worker.py)).**
+`taste_aiko` reuses the L11 `propose_aiko_hybrid` body (generalised with
+`rep_annotation_label` / `mem_annotation_label` so the per-cluster affinity
+renders as "lands well: 82% engaged over 17 turns" instead of the affect
+"feels:"). `_run_taste_pass` (`population=="taste"`) reads the affinity
+read-model, keeps clusters above `taste_min_affinity` that still resolve to a
+live cluster, resolves `cluster_id -> rep + label`, and hands the top
+`concept_synthesis_max_taste_clusters` to the proposer. Dirty-tracked on a
+fingerprint of the affinity snapshot (reps + rounded rate + settled) so a
+settled ledger is a fast no-op but a topic that starts landing re-fires it.
+The L37 store is built after this worker, so it is resolved lazily via a
+provider. Gated by `agent.taste_synthesis_enabled`.
+
+**T3 render
+([`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py)).** A
+`taste` family branch + `_concept_taste_header` render taste concepts as
+first-person impressions ("Topics you genuinely enjoy getting into with {name}
+… colour how much you light up, never what you're willing to talk about"). No
+new T3 block — it rides the existing concept render, so the prompt-cache
+posture is unchanged.
+
+**T6 steer
+([`inner_life_part3.py`](../../../app/core/session/inner_life_part3.py)
+`_render_taste_lean_block`).** A rare "lean toward what you love" permission
+slip shaped like the K54 appetite slip: fires at most once per conversation,
+only on a standing lull (the K18 `TopicStagnationDetector.last_mean` reading)
+with relationship warmth earned, and only when an active `taste` concept
+(read via `ConceptView`) clears a confidence bar. Framed as enthusiasm, never
+a filter on his interests — the L42 neglect counterweight isn't built, so it
+stays gentle and gated. Registered as `taste_lean_block` in **T6** right after
+`topic_appetite_block`, dropped under aggressive, persona-hoisted in
+`prompt_support.py`, re-armed on session switch / history wipe. Gated by
+`agent.taste_steer_enabled`; `taste_lean_force_next` debug override.
+
+**Settings.** `agent.taste_synthesis_enabled` / `taste_steer_enabled` (both
+true); `memory.taste_affinity_window_days` (90) / `taste_min_settled` (4) /
+`taste_min_affinity` (0.5) / `concept_synthesis_max_taste_clusters` (6).
+
+**Tests:** `ClusterTasteTests` in
+[`tests/test_surfacing_outcome_ledger.py`](../../../tests/test_surfacing_outcome_ledger.py)
+(cluster + memory-join aggregation, unclustered/other-kind exclusion, the
+`min_settled` warmup floor, the window bound, and the broken-DB swallow).
+
+**Notes / decisions.** Chose the concept path over a kv map so taste forms and
+drifts through the plasticity / contradiction / quality machinery for free —
+the L37 aggregate is the *signal*, the concept is the *store*. `engaged_rate`
+*is* the taste (no separate frequency baseline in v1; the rate already encodes
+the rare-but-lands asymmetry). Below `taste_min_settled` a cluster produces no
+taste, so a cold ledger simply yields nothing rather than noise.

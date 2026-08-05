@@ -111,6 +111,11 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "topic_appetite_block": (
         "Being tapped out:",
     ),
+    # K81: permission to steer toward a topic Aiko genuinely enjoys during a
+    # lull -- colours enthusiasm, never a filter on what he may talk about.
+    "taste_lean_block": (
+        "Leaning toward what you love:",
+    ),
     # ── how to pitch the current topic ────────────────────────────────
     # F10h/F10i/K66/K75: four reads on the topic already in play -- how it
     # feels between them, how much she knows, how much history they share,

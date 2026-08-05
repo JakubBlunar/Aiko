@@ -367,6 +367,46 @@ def affective_evidence_gate(
     )
 
 
+# Built-in bars for a *taste* concept (K81). A taste ("you genuinely enjoy
+# getting into home-server tinkering with him") is a relationship-scoped
+# enjoyment read off the L37 surfacing ledger. It sits at the fluid end like
+# affective -- tastes form and drift naturally -- but must not be trivially
+# cheap: it needs at least two topic clusters worth of evidence (a single hot
+# cluster is not yet a taste), a short stability delay, and a moderate
+# confidence bar. The caller's thresholds still win when higher (L21), via max.
+_TASTE_MIN_SOURCES = 2
+_TASTE_MIN_AGE_DAYS = 0.5
+_TASTE_MIN_CONFIDENCE = 0.6
+
+
+def taste_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``taste`` concepts (K81).
+
+    Same shape as :func:`set_evidence_gate` with fluid-end floors (mirrors
+    :func:`affective_evidence_gate`: a taste is meant to move, so its age and
+    confidence bars are gentle), but it is *not* anchor-seedable -- a taste is
+    an inference over how conversations went, never a single remembered note,
+    so its source floor stays at two clusters. The caller's thresholds still
+    apply when higher (e.g. the L21 young-graph bar), via ``max``.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _TASTE_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _TASTE_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _TASTE_MIN_CONFIDENCE),
+    )
+
+
 # Built-in bars for a *ritual* concept (L7). A relationship ritual ("Friday
 # debugging evenings") is only real once it has *recurred* -- so it needs
 # several distinct shared moments as evidence and a non-instant age (a couple
@@ -676,6 +716,7 @@ __all__ = [
     "set_evidence_gate",
     "value_evidence_gate",
     "affective_evidence_gate",
+    "taste_evidence_gate",
     "ritual_evidence_gate",
     "narrative_evidence_gate",
     "aspiration_evidence_gate",

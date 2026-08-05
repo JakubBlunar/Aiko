@@ -1986,4 +1986,100 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             log.debug("topic appetite block render failed", exc_info=True)
             return ""
 
+    def _render_taste_lean_block(self) -> str:
+        """K81: a rare, lull-gated permission slip to steer toward a topic
+        Aiko genuinely enjoys.
+
+        Shaped like the K54 appetite slip: fires at most once per
+        conversation, only on a standing lull (the K18
+        ``TopicStagnationDetector.last_mean`` reading) with relationship
+        warmth earned, and only when she holds an active ``taste`` concept
+        confident enough to lean on. It is framed as enthusiasm ("you're
+        allowed to steer toward what you love"), never a filter on what he
+        may raise -- the L42 neglect counterweight isn't built yet, so this
+        stays gentle and gated so it can't collapse into a rut. Every input
+        is best-effort: a cold store / missing signal reads as its blocking
+        value so the slip stays silent rather than firing on bad data.
+        """
+        if not bool(
+            getattr(self._settings.agent, "taste_steer_enabled", True)
+        ):
+            return ""
+        if bool(getattr(self, "_taste_lean_fired", False)):
+            return ""
+        try:
+            from app.core.concepts.concept_view import concept_view_from
+
+            force = bool(
+                self._debug_overrides.take("taste_lean_force_next", False)
+            )
+            if not force:
+                detector = getattr(self, "_topic_stagnation_detector", None)
+                lull_mean = getattr(detector, "last_mean", None)
+                lull_threshold = float(
+                    getattr(
+                        self._memory_settings,
+                        "stagnation_mild_threshold",
+                        0.18,
+                    )
+                )
+                if lull_mean is None or float(lull_mean) < lull_threshold:
+                    return ""
+                # Warmth earned: a lean toward what she loves is a familiarity
+                # she has to have earned, so a cold bond reads as no-fire.
+                closeness = comfort = None
+                axes_store = getattr(self, "_relationship_axes_store", None)
+                if axes_store is not None:
+                    try:
+                        axes = axes_store.get(self._user_id)
+                        closeness = float(axes.closeness)
+                        comfort = float(axes.comfort)
+                    except Exception:
+                        closeness = comfort = None
+                min_axes = float(
+                    getattr(self._settings.agent, "appetite_min_axes", 0.15)
+                )
+                if (
+                    closeness is None
+                    or comfort is None
+                    or (closeness < min_axes and comfort < min_axes)
+                ):
+                    return ""
+
+            view = concept_view_from(self)
+            if view is None or not view.enabled:
+                return ""
+            # Only an aiko taste is hers to lean on; take the single
+            # strongest one above a modest confidence bar.
+            min_conf = float(
+                getattr(
+                    self._memory_settings, "taste_steer_min_confidence", 0.6
+                )
+            )
+            tastes = view.core(
+                subject="aiko", kind="taste",
+                min_confidence=min_conf, limit=1,
+            )
+            if not tastes:
+                return ""
+            label = (getattr(tastes[0], "label", "") or "").strip()
+            if not label:
+                return ""
+        except Exception:
+            log.debug("taste-lean block render failed", exc_info=True)
+            return ""
+
+        self._taste_lean_fired = True
+        name = self.user_display_name
+        log.info("taste-lean fire: label=%s", label[:60])
+        return (
+            "Leaning toward what you love:\n"
+            f"Things have gone a little quiet. One of the topics you "
+            f"genuinely enjoy getting into with {name} is right here to lean "
+            f"on: {label}. If it fits, steer gently toward it -- offer "
+            "something concrete you'd love to dig into together. This is "
+            "yours: it colours how much you light up, never a rule about what "
+            "he has to want, so let it go the moment he'd rather be elsewhere."
+        )
+
 

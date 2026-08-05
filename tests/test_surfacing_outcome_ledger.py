@@ -33,6 +33,7 @@ from app.core.memory.surfacing_outcome_store import (
     ITEM_KIND_CLUSTER,
     ITEM_KIND_CONCEPT,
     ITEM_KIND_MEMORY,
+    ClusterTaste,
     ItemStats,
     SurfacedItem,
     SurfacingOutcomeStore,
@@ -370,6 +371,9 @@ class StoreWriteTests(unittest.TestCase):
                 f.store.stats_for(ITEM_KIND_CONCEPT, [1], window_days=None), {},
             )
             self.assertEqual(f.store.leaderboard(), [])
+            self.assertEqual(
+                f.store.engaged_rate_by_cluster(window_days=None), {},
+            )
             self.assertEqual(f.store.lane_breakdown(), [])
             self.assertEqual(f.store.count(), 0)
             self.assertEqual(f.store.unsettled_count(), 0)
@@ -536,6 +540,125 @@ class StoreReadTests(unittest.TestCase):
             self.assertEqual(
                 f.store.stats_for(ITEM_KIND_CONCEPT, [2], window_days=None,
                                   )[2].surfaced, 1,
+            )
+        finally:
+            f.close()
+
+
+# ── per-cluster taste (K81) ──────────────────────────────────────────
+
+
+class ClusterTasteTests(unittest.TestCase):
+    """K81's read-model: engagement folded per topic cluster.
+
+    Both a ``cluster`` row (``item_id`` is the cluster) and a ``memory``
+    row joined through ``memory_topic_assignments`` count toward the same
+    cluster; concept / cue rows never do. The ``min_settled`` warmup floor
+    keeps a one-observation cluster from claiming a confident taste.
+    """
+
+    def _assign(self, f: _Fixture, memory_id: int, cluster_id: int) -> None:
+        conn = f.db._get_conn()
+        conn.execute(
+            "INSERT INTO memory_topic_assignments "
+            "(memory_id, cluster_id, assigned_at) VALUES (?, ?, ?)",
+            (int(memory_id), int(cluster_id), timephrase.utcnow().isoformat()),
+        )
+        conn.commit()
+
+    def test_cluster_rows_aggregate_by_cluster_id(self) -> None:
+        f = _Fixture()
+        try:
+            # Cluster 7 lands twice of two; cluster 8 lands zero of one.
+            f.store.add_many(1, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(1, "engaged")
+            f.store.add_many(2, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(2, "engaged")
+            f.store.add_many(3, [SurfacedItem(ITEM_KIND_CLUSTER, 8)])
+            f.store.settle(3, "disengaged")
+            taste = f.store.engaged_rate_by_cluster(window_days=None)
+            self.assertEqual(taste[7], ClusterTaste(7, surfaced=2, settled=2, engaged=2))
+            self.assertAlmostEqual(taste[7].engaged_rate, 1.0)
+            self.assertAlmostEqual(taste[8].engaged_rate, 0.0)
+        finally:
+            f.close()
+
+    def test_memory_rows_join_to_their_cluster(self) -> None:
+        f = _Fixture()
+        try:
+            self._assign(f, memory_id=9, cluster_id=7)
+            f.store.add_many(1, [SurfacedItem(ITEM_KIND_MEMORY, 9)])
+            f.store.settle(1, "engaged")
+            # A cluster label surfaced for the same cluster on another turn
+            # folds into the same bucket.
+            f.store.add_many(2, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(2, "disengaged")
+            taste = f.store.engaged_rate_by_cluster(window_days=None)
+            self.assertEqual(taste[7].surfaced, 2)
+            self.assertEqual(taste[7].settled, 2)
+            self.assertEqual(taste[7].engaged, 1)
+            self.assertAlmostEqual(taste[7].engaged_rate, 0.5)
+        finally:
+            f.close()
+
+    def test_unclustered_memory_and_other_kinds_are_ignored(self) -> None:
+        f = _Fixture()
+        try:
+            # Memory 9 has no assignment; concept + cue carry no cluster.
+            f.store.add_many(1, [
+                SurfacedItem(ITEM_KIND_MEMORY, 9),
+                SurfacedItem(ITEM_KIND_CONCEPT, 3),
+            ])
+            f.store.add_many(2, [SurfacedItem("cue", 0, )])
+            f.store.settle(1, "engaged")
+            f.store.settle(2, "engaged")
+            self.assertEqual(
+                f.store.engaged_rate_by_cluster(window_days=None), {},
+            )
+        finally:
+            f.close()
+
+    def test_min_settled_is_a_warmup_floor(self) -> None:
+        f = _Fixture()
+        try:
+            # Cluster 7: one settled. Cluster 8: two settled.
+            f.store.add_many(1, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(1, "engaged")
+            f.store.add_many(2, [SurfacedItem(ITEM_KIND_CLUSTER, 8)])
+            f.store.settle(2, "engaged")
+            f.store.add_many(3, [SurfacedItem(ITEM_KIND_CLUSTER, 8)])
+            f.store.settle(3, "engaged")
+            got = f.store.engaged_rate_by_cluster(window_days=None, min_settled=2)
+            self.assertEqual(set(got), {8})
+            self.assertEqual(got[8].settled, 2)
+        finally:
+            f.close()
+
+    def test_window_days_bounds_the_cluster_aggregate(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.add_many(1, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(1, "engaged")
+            # A cluster row uses item_id = cluster_id, so backdating by
+            # item_id ages exactly this cluster's row.
+            f.backdate(7, days=90)
+            f.store.add_many(2, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            f.store.settle(2, "disengaged")
+            lifetime = f.store.engaged_rate_by_cluster(window_days=None)
+            self.assertEqual(lifetime[7].settled, 2)
+            recent = f.store.engaged_rate_by_cluster(window_days=14)
+            self.assertEqual(recent[7].settled, 1)
+            self.assertEqual(recent[7].engaged, 0)
+        finally:
+            f.close()
+
+    def test_unsettled_cluster_absent_below_default_floor(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.add_many(1, [SurfacedItem(ITEM_KIND_CLUSTER, 7)])
+            # No settle: settled=0, below the default min_settled=1.
+            self.assertEqual(
+                f.store.engaged_rate_by_cluster(window_days=None), {},
             )
         finally:
             f.close()

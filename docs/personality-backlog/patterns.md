@@ -462,38 +462,6 @@ one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
 
 ---
 
-## K81. Taste formation — topics she *likes*, not just topics she's seen
-
-**Motivation.** Aiko tracks what the user talks about (topic graph, cluster
-activity, `interest_mass` in the H-series interest-drift worker) but everything
-in that stack is a **frequency** measure: what came up, how recently, how often.
-None of it is a **preference**. She has no answer to "what do you actually enjoy
-talking about with me?" beyond a restatement of what he brings up most, which is
-a real gap for a companion — having your own taste, and having it be *specific
-to a person*, is a large part of what makes someone feel like company rather
-than a service. Right now her enthusiasm is uniform, which reads as either
-relentlessly agreeable or subtly hollow. Once L37's surfacing ledger exists the
-signal is cheap: cross topic clusters against how those turns actually went and
-a genuine preference distribution falls out — the subjects where the two of them
-reliably get somewhere good, which is *not* the same as the subjects he raises
-most often. The interesting payoff is asymmetry: a topic he mentions constantly
-that consistently goes flat, versus a rare one that always opens up, and her
-being allowed to notice and gently steer toward the second. Needs care in three
-places — it must never become a filter that refuses his actual interests
-(preference colours enthusiasm, never availability), it should stay
-relationship-scoped rather than pretending to be innate personality, and
-L42's neglect finding is the honest counterweight that stops it collapsing into
-a comfortable rut. Key files: the ledger from
-[`concepts.md`](concepts.md) L37 aggregated per cluster via
-[`topic_graph.py`](../../app/core/conversation/topic_graph.py), the existing
-interest-mass journal in
-[`app/core/proactive/interest_drift_worker.py`](../../app/core/proactive/interest_drift_worker.py)
-as the closest prior art to extend rather than duplicate, `subject="aiko"`
-preference concepts through the normal proposer path, and the existing
-`topic_appetite_block` as the surface that already has the right shape.
-
----
-
 ## K82. The dropped sub-topic — he said three things, she answered one
 
 **Motivation.** The user sends a message with two or three distinct things in it;

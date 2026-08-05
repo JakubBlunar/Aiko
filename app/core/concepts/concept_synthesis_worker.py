@@ -210,6 +210,7 @@ class ConceptSynthesisWorker:
         user_profile_store: Any = None,
         style_signal_store: Any = None,
         user_id_provider: Callable[[], str] | None = None,
+        surfacing_outcome_store_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._concept_store = concept_store
         self._concept_event_store = concept_event_store
@@ -233,6 +234,11 @@ class ConceptSynthesisWorker:
         self._user_profile_store = user_profile_store
         self._style_signal_store = style_signal_store
         self._user_id_provider = user_id_provider
+        # K81: resolved lazily -- the L37 ledger store is built after this
+        # worker (idle-workers init runs after speaking-workers init), so a
+        # provider avoids a construction-order coupling. ``None`` (or a
+        # provider that returns ``None``) simply skips the taste pass.
+        self._surfacing_outcome_store_provider = surfacing_outcome_store_provider
         self._llm_calls = 0
         # P36: the previous pass's stats double as this worker's demand
         # signal. See :meth:`demand`.
@@ -401,6 +407,55 @@ class ConceptSynthesisWorker:
                     self._memory_settings,
                     "concept_synthesis_affect_min_samples",
                     3,
+                )
+            ),
+        )
+
+    @property
+    def _taste_affinity_window_days(self) -> int:
+        """K81: how far back the per-cluster engaged rate is measured. A
+        window (not lifetime) keeps taste adapting to how the relationship
+        works *now* rather than anchoring on its earliest weeks -- the same
+        argument the L37 ledger makes for its own read API."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings, "taste_affinity_window_days", 90
+                )
+            ),
+        )
+
+    @property
+    def _taste_min_settled(self) -> int:
+        """K81: the warmup floor -- a topic cluster must have at least this
+        many *settled* surfacings before its engaged rate is trusted, so a
+        cold ledger yields no taste rather than confident noise off one turn."""
+        return max(
+            1,
+            int(getattr(self._memory_settings, "taste_min_settled", 4)),
+        )
+
+    @property
+    def _taste_min_affinity(self) -> float:
+        """K81: the engaged-rate bar a cluster must clear to be offered as a
+        taste candidate. It is a *rate*, so a rarely-raised topic that always
+        lands clears it while a constantly-raised flat one does not -- the
+        asymmetry that separates taste from mere frequency."""
+        raw = float(getattr(self._memory_settings, "taste_min_affinity", 0.5))
+        return max(0.0, min(1.0, raw))
+
+    @property
+    def _max_taste_clusters(self) -> int:
+        """K81: cap on high-affinity clusters offered to the taste proposer
+        per run -- bounds the prompt / LLM cost, like the other passes."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_taste_clusters",
+                    6,
                 )
             ),
         )
@@ -698,6 +753,7 @@ class ConceptSynthesisWorker:
             "user_dirty_remaining": 0,
             "aiko_dirty": False,
             "affect_dirty": False,
+            "taste_dirty": False,
             "ritual_dirty": False,
             "narrative_dirty": False,
             "aspiration_dirty": False,
@@ -717,6 +773,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_aiko_pass(ctx, spec, stats, force)
                 elif spec.population == "affect":
                     proposals = self._run_affect_pass(ctx, spec, stats, force)
+                elif spec.population == "taste":
+                    proposals = self._run_taste_pass(ctx, spec, stats, force)
                 elif spec.population == "shared_moments":
                     proposals = self._run_ritual_pass(ctx, spec, stats, force)
                 elif spec.population == "narrative":
@@ -1169,6 +1227,159 @@ class ConceptSynthesisWorker:
             sig["mem_affect_count"] = len(memory_affect)
         self._save_sigs(sig_key, sig)
         return proposals
+
+    # ── taste pass (K81) ────────────────────────────────────────────────
+
+    def _run_taste_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """K81 taste pass: read the L37 surfacing ledger's per-cluster engaged
+        rate, keep the topics that reliably *land* between the two of them, and
+        offer them to the aiko taste proposer as first-person enjoyments.
+
+        The affinity is a *rate* (engaged / settled), so a rarely-raised topic
+        that always lands outranks a constantly-raised flat one -- taste is not
+        the same as what the user brings up most. Each candidate cluster is
+        handed in already annotated with its affinity so the prompt only names
+        the enjoyment, never computes it. Dirty-tracked on a fingerprint of the
+        affinity snapshot (reps + rounded rate + settled) so a settled ledger
+        is a fast no-op, but a topic that starts landing re-fires the pass.
+        Gated by ``agent.taste_synthesis_enabled``."""
+        if not bool(
+            getattr(self._agent_settings, "taste_synthesis_enabled", True)
+        ):
+            return []
+        store = None
+        if self._surfacing_outcome_store_provider is not None:
+            try:
+                store = self._surfacing_outcome_store_provider()
+            except Exception:
+                log.debug("taste: ledger provider failed", exc_info=True)
+                store = None
+        if store is None:
+            return []
+
+        try:
+            affinity = store.engaged_rate_by_cluster(
+                window_days=self._taste_affinity_window_days,
+                min_settled=self._taste_min_settled,
+            )
+        except Exception:
+            log.debug("taste: engaged_rate_by_cluster failed", exc_info=True)
+            return []
+        if not affinity:
+            stats["taste_dirty"] = False
+            return []
+
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            log.debug("topic_clusters failed (taste pass)", exc_info=True)
+            return []
+        by_cid = {int(c.cluster_id): c for c in clusters}
+        min_affinity = self._taste_min_affinity
+
+        # Keep clusters that clear the affinity bar AND still resolve to a
+        # live cluster with a label -- a rate against a cluster that has since
+        # been dissolved names nothing the proposer can ground on.
+        kept: list[tuple[int, float, Any]] = []  # rep, rate, ClusterTaste
+        for cid, ct in affinity.items():
+            rate = ct.engaged_rate
+            if rate is None or rate < min_affinity:
+                continue
+            cluster = by_cid.get(int(cid))
+            if cluster is None:
+                continue
+            label = (getattr(cluster, "summary", "") or "").strip()
+            if not label:
+                continue
+            rep = int(getattr(cluster, "representative_id", 0) or 0)
+            if rep <= 0:
+                continue
+            kept.append((rep, float(rate), ct))
+        if not kept:
+            stats["taste_dirty"] = False
+            return []
+
+        # Highest-affinity first; ties broken by more settled evidence.
+        kept.sort(key=lambda k: (-k[1], -int(k[2].settled)))
+        focus_rows = kept[: self._max_taste_clusters]
+
+        # Dirty-track on the affinity snapshot of the offered set.
+        sig_key = spec.sig_key or "concept_synth.taste_sig.aiko"
+        prev = self._load_sigs(sig_key)
+        fingerprint = self._taste_fingerprint(focus_rows)
+        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
+        is_dirty = force or fingerprint != prev_fp
+        stats["taste_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        label_by_rep = {
+            int(c.representative_id): (getattr(c, "summary", "") or "").strip()
+            for c in clusters
+        }
+        size_by_rep = {
+            int(c.representative_id): int(getattr(c, "size", 0) or 0)
+            for c in clusters
+        }
+
+        cluster_index = [
+            (rep, label_by_rep.get(rep, ""), size_by_rep.get(rep, 0))
+            for rep, _rate, _ct in focus_rows
+        ]
+        affinity_by_rep = {
+            rep: self._affinity_phrase(ct)
+            for rep, _rate, ct in focus_rows
+        }
+        focus_clusters = [
+            FocusCluster(
+                rep=rep,
+                label=label_by_rep.get(rep, ""),
+                size=size_by_rep.get(rep, 0),
+                representative=self._memory_content(rep),
+                digest=self._digest_for_rep(rep),
+            )
+            for rep, _rate, _ct in focus_rows
+        ]
+
+        proposals = spec.propose(
+            ctx,
+            focus_clusters=focus_clusters,
+            cluster_index=cluster_index,
+            affinity_by_rep=affinity_by_rep,
+            existing=self._existing_for(spec, focus=focus_clusters),
+        )
+        self._save_sigs(
+            sig_key, {"fingerprint": fingerprint, "count": len(focus_rows)}
+        )
+        return proposals
+
+    @staticmethod
+    def _affinity_phrase(ct: Any) -> str:
+        """Render one cluster's engagement as a short, prompt-legible phrase
+        (``82% engaged over 17 turns``). The denominator rides along so the
+        model can weigh a confident rate against a thin one."""
+        rate = ct.engaged_rate
+        if rate is None:
+            return "no settled evidence yet"
+        return f"{round(float(rate) * 100)}% engaged over {int(ct.settled)} turns"
+
+    @staticmethod
+    def _taste_fingerprint(rows: list[tuple[int, float, Any]]) -> str:
+        """Stable hash of the offered affinity snapshot (rep + rounded rate +
+        settled count). A topic that starts landing -- or accrues materially
+        more settled evidence -- shifts the hash and re-fires an otherwise
+        settled pass; small rate wobble does not."""
+        key = "|".join(
+            f"{rep}:{round(float(rate), 2)}:{int(ct.settled)}"
+            for rep, rate, ct in sorted(rows, key=lambda r: int(r[0]))
+        )
+        return hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:16]
 
     # ── ritual pass (L7) ────────────────────────────────────────────────
 

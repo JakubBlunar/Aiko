@@ -70,7 +70,12 @@ ledger before building any of them:
   few weeks of data first) and **G6** per-provider decline attribution (~100
   edit sites, worth spending per cue once the rates say which need it).
 - **P43** value-aware block arbitration instead of the hand-kept denylist.
-- **K81** taste formation — topics she likes, not topics she's seen.
+- **K81** ✅ **shipped** — taste formation (topics she likes, not topics she's
+  seen). The ledger's `engaged_rate_by_cluster` read-model feeds a new
+  `subject="aiko"` `taste` concept kind through the normal proposer/lifecycle
+  path, surfaced as T3 first-person impressions and a rare T6 "lean toward what
+  you love" steer. See
+  [shipped/patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen).
 - **DT5** the rest of the debug surface (the ledger view itself has shipped).
 
 Independent of the spine, the same audit found four verified defects worth
@@ -310,7 +315,6 @@ K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
-K81 taste formation (topics she likes, not topics she's seen — wants L37) ·
 K82 the dropped sub-topic (he said three things, she answered one) ·
 K83 the right to decline · K84 calibrated jealousy.
 

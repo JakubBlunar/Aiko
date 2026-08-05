@@ -239,6 +239,7 @@ class PromptAssemblerHelpersMixin:
         initiative: Callable[[str], str] | None = None,
         thread_ownership: Callable[[str], str] | None = None,
         topic_appetite: Callable[[], str] | None = None,
+        taste_lean: Callable[[], str] | None = None,
         emotion_episode: Callable[[str], str] | None = None,
         tease_ledger: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
@@ -434,6 +435,8 @@ class PromptAssemblerHelpersMixin:
             self._thread_ownership_provider = thread_ownership
         if topic_appetite is not None:
             self._topic_appetite_provider = topic_appetite
+        if taste_lean is not None:
+            self._taste_lean_provider = taste_lean
         if emotion_episode is not None:
             self._emotion_episode_provider = emotion_episode
         if tease_ledger is not None:
