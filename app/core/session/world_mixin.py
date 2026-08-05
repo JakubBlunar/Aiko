@@ -864,7 +864,7 @@ class WorldMixin:
         phase = "new"
         if rel_state is not None:
             try:
-                phase = phase_for(rel_state)
+                phase = phase_for(rel_state, now=timephrase.utcnow())
             except Exception:
                 phase = "new"
 
@@ -904,6 +904,22 @@ class WorldMixin:
         # next post-turn ``record_turn`` to append it to ``milestones_surfaced``
         # (which stays the authority for fire-once celebration / RAG, not for
         # this display).
+        from datetime import datetime, timedelta, timezone
+
+        # Parse first_seen once -- reused for the day-based milestone crossing
+        # dates below and the days-known count further down.
+        first_seen = getattr(rel_state, "first_seen_at", None) if rel_state else None
+        first_seen_dt: datetime | None = None
+        if first_seen:
+            try:
+                first_seen_dt = datetime.fromisoformat(
+                    str(first_seen).replace("Z", "+00:00")
+                )
+                if first_seen_dt.tzinfo is None:
+                    first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                first_seen_dt = None
+
         milestones: list[dict[str, Any]] = []
         last_milestone_label = None
         last_milestone_at = None
@@ -914,8 +930,6 @@ class WorldMixin:
             last_milestone_at = getattr(rel_state, "last_milestone_at", None)
             surfaced = set(getattr(rel_state, "milestones_surfaced", None) or ())
             try:
-                from datetime import datetime, timezone
-
                 live = _crossed_milestones(
                     rel_state,
                     new_turns=int(getattr(rel_state, "total_turns", 0) or 0),
@@ -930,28 +944,33 @@ class WorldMixin:
                 or label in surfaced
                 or label == last_milestone_label
             )
+            # Crossing date: the persisted row stores only the *last*
+            # milestone's timestamp, so an earlier day-based milestone (first
+            # week / month / …) would otherwise render with a check but no
+            # date. Its crossing is deterministic (first_seen + N days), so
+            # derive it; the turn-based milestone falls back to the stored
+            # last-milestone stamp when it is the last one recorded.
+            crossed_at = None
+            if crossed:
+                if label == last_milestone_label and last_milestone_at:
+                    crossed_at = last_milestone_at
+                elif _days > 0 and first_seen_dt is not None:
+                    crossed_at = (
+                        first_seen_dt + timedelta(days=_days)
+                    ).isoformat(timespec="seconds")
             milestones.append({
                 "label": label,
                 "human": label.replace("_", " "),
                 "crossed": crossed,
-                "crossed_at": last_milestone_at if label == last_milestone_label else None,
+                "crossed_at": crossed_at,
             })
 
         # Days known / counts.
-        first_seen = getattr(rel_state, "first_seen_at", None) if rel_state else None
         days_known = 0
-        if first_seen:
-            try:
-                from datetime import datetime, timezone
-
-                dt = datetime.fromisoformat(str(first_seen).replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                days_known = int(
-                    (timephrase.utcnow() - dt).total_seconds() // 86400
-                )
-            except Exception:
-                days_known = 0
+        if first_seen_dt is not None:
+            days_known = int(
+                (timephrase.utcnow() - first_seen_dt).total_seconds() // 86400
+            )
 
         # K73 shared rituals (read-only list for the Together tab).
         shared_rituals: list[dict[str, Any]] = []
