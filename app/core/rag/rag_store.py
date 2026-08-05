@@ -179,6 +179,15 @@ class RagHit:
     # downstream predicate, since the helper only fires on an explicit
     # truthy ``pinned``).
     memory_pinned: bool | None = None
+    # F16 (v30) — testimony vs. inference, joined from the SQLite mirror
+    # for memory hits. ``'stated'`` = the user said it outright,
+    # ``'inferred'`` = Aiko concluded it. ``RagRetriever.format_block``
+    # appends an ``(inferred)`` suffix on durable user-fact kinds so Aiko
+    # phrases those as an impression, and the ranking join applies a tiny
+    # penalty so testimony floats above inference at equal cosine.
+    # ``None`` for non-memory hits or when the join did not resolve
+    # (treated as the unmarked/stated default downstream).
+    memory_provenance: str | None = None
     # F10c — topic multi-hop expansion flag. ``True`` for sibling
     # memories pulled from the same topic cluster as a strong query hit
     # (rather than matched directly on cosine). ``RagRetriever.format_block``

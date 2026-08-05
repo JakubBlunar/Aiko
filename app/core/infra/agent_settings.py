@@ -2256,6 +2256,18 @@ class AgentSettings:
     # ``(uncertain)`` still fires.
     confidence_time_decay_enabled: bool = True
 
+    # ── F16: testimony vs. inference ──────────────────────────────────
+    # Master switch for the visible ``(inferred)`` suffix the RAG
+    # retriever stamps on durable user-fact hits (fact / preference /
+    # relationship / event) whose stored ``provenance`` is ``inferred``
+    # -- a conclusion Aiko drew rather than something the user stated.
+    # The tag tells the LLM to voice it as an impression ("I get the
+    # sense…") instead of asserting he said it. Flipping ``False`` hides
+    # the tag everywhere; the tiny tie-break ranking nudge (stated
+    # outranks inferred at equal cosine) is unconditional, like
+    # ``_confidence_penalty``, and is unaffected by this switch.
+    memory_provenance_enabled: bool = True
+
     # ── K22: callback / inside-joke detector ──────────────────────────
     # Master switch for the post-turn cosine pass that detects when
     # Aiko's reply semantically reaches back to an older eligible

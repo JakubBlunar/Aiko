@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 29
+_SCHEMA_VERSION = 30
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -158,7 +158,17 @@ CREATE TABLE IF NOT EXISTS memories (
     -- suffix, exactly like today.
     event_time TEXT,
     temporal_type TEXT NOT NULL DEFAULT 'durable',
-    relevance_until TEXT
+    relevance_until TEXT,
+    -- Schema v30 (F16): testimony vs. inference. ``stated`` = the user
+    -- said it outright (an explicit ``[[remember:]]`` tag, a manual UI
+    -- add, or a fact confirmed by an F13 correction); ``inferred`` = Aiko
+    -- concluded it (the default — the MemoryExtractor distils it from a
+    -- transcript, and over-claiming testimony is the failure being fixed,
+    -- so anything unsure defaults here). RAG demotes inferred hits a hair
+    -- at equal cosine and the prompt tags them ``(inferred)`` so Aiko
+    -- phrases them as an impression rather than asserting he told her. v29
+    -- databases get the column added via ALTER in ``_init_schema``.
+    provenance TEXT NOT NULL DEFAULT 'inferred'
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
@@ -1449,6 +1459,20 @@ class ChatDatabase:
         # migrated properly by ``_migrate_curiosity_seeds_to_cue_pool``
         # below, because those rows do carry consumption state.
         self._migrate_curiosity_seeds_to_cue_pool(conn)
+        # v29 -> v30: F16 testimony-vs-inference provenance. Backfills to
+        # ``'inferred'`` so every legacy row is treated as something Aiko
+        # concluded rather than something the user stated outright -- the
+        # safe default, since over-claiming testimony is the failure this
+        # fixes and no pre-v30 row recorded how it was learned. New writes
+        # set ``'stated'`` explicitly on the deliberate paths (explicit
+        # ``[[remember:]]`` tags, manual UI adds, F13-confirmed corrections).
+        try:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN provenance TEXT NOT NULL "
+                "DEFAULT 'inferred'"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:

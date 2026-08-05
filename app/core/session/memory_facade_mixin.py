@@ -238,6 +238,10 @@ class MemoryFacadeMixin:
             salience=salience,
             tier=tier,
             confidence=1.0 if confidence is None else float(confidence),
+            # F16 (v30): a manual editor / MCP add is the user explicitly
+            # anchoring the row himself -- testimony, not something Aiko
+            # inferred, so it never renders the ``(inferred)`` hedge.
+            provenance="stated",
         )
         if memory is None:
             # Dedupe path: find which existing row absorbed this one. We

@@ -641,6 +641,13 @@ class SessionController(
                             chat_db=self._chat_db,
                             arc_state_provider=_arc_state_provider,
                             dialogue_act_provider=_dialogue_act_provider,
+                            memory_provenance_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "memory_provenance_enabled",
+                                    True,
+                                )
+                            ),
                             fade_hedge_enabled=getattr(
                                 self._memory_settings, "fade_hedge_enabled", True,
                             ),

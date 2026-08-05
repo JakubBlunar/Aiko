@@ -1689,6 +1689,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
+            memory_provenance_enabled=bool(
+                agent_raw.get("memory_provenance_enabled", True),
+            ),
             callback_detector_enabled=bool(
                 agent_raw.get("callback_detector_enabled", True),
             ),

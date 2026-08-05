@@ -86,6 +86,35 @@ def _coerce_temporal_type(value: str | None) -> str:
     return _DEFAULT_TEMPORAL_TYPE
 
 
+# Schema v30 (F16): testimony vs. inference. ``stated`` = the user said it
+# outright; ``inferred`` = Aiko concluded it. The default is ``inferred``
+# on purpose -- over-claiming testimony ("you told me X" when he didn't) is
+# the failure this fixes, so anything unsure lands here, and only the
+# deliberate write paths mark ``stated``.
+VALID_PROVENANCE = (
+    "stated",
+    "inferred",
+)
+_DEFAULT_PROVENANCE = "inferred"
+
+
+def _coerce_provenance(value: str | None) -> str:
+    """Normalize and validate a provenance string.
+
+    Falls back to ``'inferred'`` (the safe baseline) for unknown or missing
+    values so legacy callers and bad LLM output never crash an insert.
+    Raises only on completely non-string input.
+    """
+    if value is None:
+        return _DEFAULT_PROVENANCE
+    if not isinstance(value, str):
+        raise TypeError(f"provenance must be a string, got {type(value).__name__}")
+    cleaned = value.strip().lower()
+    if cleaned in VALID_PROVENANCE:
+        return cleaned
+    return _DEFAULT_PROVENANCE
+
+
 VALID_KINDS = {
     "fact",
     "preference",
@@ -296,6 +325,13 @@ class Memory:
     event_time: str | None = None
     temporal_type: str = _DEFAULT_TEMPORAL_TYPE
     relevance_until: str | None = None
+    # Schema v30 (F16) — testimony vs. inference (see :data:`VALID_PROVENANCE`).
+    # ``inferred`` (default) = Aiko concluded it, so retrieval demotes it a
+    # hair at equal cosine and the prompt tags it ``(inferred)`` to phrase
+    # it as an impression; ``stated`` = the user said it outright (an
+    # explicit ``[[remember:]]`` tag, a manual UI add, or a fact confirmed
+    # by an F13 correction). Legacy rows default to ``inferred``.
+    provenance: str = _DEFAULT_PROVENANCE
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -316,6 +352,7 @@ class Memory:
             "event_time": self.event_time,
             "temporal_type": str(self.temporal_type),
             "relevance_until": self.relevance_until,
+            "provenance": str(self.provenance),
         }
 
 
@@ -578,72 +615,22 @@ class MemoryStore:
 
     def _reload_mirror(self) -> None:
         conn = self._get_conn()
-        # Try the v10 shape first (event_time + temporal_type +
-        # relevance_until). Fall back through v9 (no temporal), v8 (no
-        # confidence), v7 (no tier/revival), v6 (no metadata). Pre-v6
-        # databases land in the bottom-most ``except`` and start with
-        # an empty mirror.
+        # Try the v30 shape first (… + provenance). Fall back through v10
+        # (no provenance), v9 (no temporal), v8 (no confidence), v7 (no
+        # tier/revival), v6 (no metadata). Pre-v6 databases land in the
+        # bottom-most ``except`` and start with an empty mirror.
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
                 "source_message_id, created_at, last_used_at, use_count, pinned, "
                 "metadata, tier, revival_score, confidence, "
-                "event_time, temporal_type, relevance_until FROM memories"
+                "event_time, temporal_type, relevance_until, provenance FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
-            try:
-                rows = conn.execute(
-                    "SELECT id, content, kind, salience, embedding, source_session, "
-                    "source_message_id, created_at, last_used_at, use_count, pinned, "
-                    "metadata, tier, revival_score, confidence FROM memories"
-                ).fetchall()
-                # Append default temporal fields for pre-v10 rows.
-                rows = [(*r, None, _DEFAULT_TEMPORAL_TYPE, None) for r in rows]
-            except sqlite3.OperationalError:
-                try:
-                    rows = conn.execute(
-                        "SELECT id, content, kind, salience, embedding, source_session, "
-                        "source_message_id, created_at, last_used_at, use_count, pinned, "
-                        "metadata, tier, revival_score FROM memories"
-                    ).fetchall()
-                    # Append default confidence + temporal fields for pre-v9 rows.
-                    rows = [(*r, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None) for r in rows]
-                except sqlite3.OperationalError:
-                    try:
-                        rows = conn.execute(
-                            "SELECT id, content, kind, salience, embedding, source_session, "
-                            "source_message_id, created_at, last_used_at, use_count, pinned, "
-                            "metadata FROM memories"
-                        ).fetchall()
-                        # Append default (tier, revival_score, confidence, event_time,
-                        # temporal_type, relevance_until) for pre-v8 rows.
-                        rows = [
-                            (*r, _DEFAULT_TIER, 0.0, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None)
-                            for r in rows
-                        ]
-                    except sqlite3.OperationalError:
-                        try:
-                            rows = conn.execute(
-                                "SELECT id, content, kind, salience, embedding, source_session, "
-                                "source_message_id, created_at, last_used_at, use_count, pinned "
-                                "FROM memories"
-                            ).fetchall()
-                            rows = [
-                                (
-                                    *r,
-                                    None,
-                                    _DEFAULT_TIER,
-                                    0.0,
-                                    0.7,
-                                    None,
-                                    _DEFAULT_TEMPORAL_TYPE,
-                                    None,
-                                )
-                                for r in rows
-                            ]
-                        except sqlite3.OperationalError:
-                            self._mirror = {}
-                            return
+            rows = self._reload_mirror_pre_v30(conn)
+            if rows is None:
+                self._mirror = {}
+                return
         with self._lock:
             self._mirror = {
                 r[0]: Memory(
@@ -665,10 +652,108 @@ class MemoryStore:
                     event_time=r[15] if r[15] else None,
                     temporal_type=_coerce_temporal_type(r[16]),
                     relevance_until=r[17] if r[17] else None,
+                    provenance=_coerce_provenance(r[18]),
                 )
                 for r in rows
             }
         log.info("memory store loaded with %d memories", len(self._mirror))
+
+    def _reload_mirror_pre_v30(
+        self, conn: sqlite3.Connection,
+    ) -> list[tuple] | None:
+        """Read a pre-v30 ``memories`` table and pad every row to the v30
+        column shape (19 tuple slots, provenance last).
+
+        Walks the same descending fallback ladder ``_reload_mirror`` used
+        before F16: v10 (no provenance), v9 (no temporal), v8 (no
+        confidence), v7 (no tier/revival), v6 (no metadata). Each older
+        shape appends the columns added since, ending with the v30
+        ``provenance`` default so the caller's ``Memory(...)`` construction
+        is shape-agnostic. Returns ``None`` for a pre-v6 database that has
+        no readable memory columns at all (the caller empties the mirror).
+        """
+        try:
+            rows = conn.execute(
+                "SELECT id, content, kind, salience, embedding, source_session, "
+                "source_message_id, created_at, last_used_at, use_count, pinned, "
+                "metadata, tier, revival_score, confidence, "
+                "event_time, temporal_type, relevance_until FROM memories"
+            ).fetchall()
+            # Append default provenance for pre-v30 rows.
+            return [(*r, _DEFAULT_PROVENANCE) for r in rows]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT id, content, kind, salience, embedding, source_session, "
+                "source_message_id, created_at, last_used_at, use_count, pinned, "
+                "metadata, tier, revival_score, confidence FROM memories"
+            ).fetchall()
+            # Append default temporal + provenance fields for pre-v10 rows.
+            return [
+                (*r, None, _DEFAULT_TEMPORAL_TYPE, None, _DEFAULT_PROVENANCE)
+                for r in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT id, content, kind, salience, embedding, source_session, "
+                "source_message_id, created_at, last_used_at, use_count, pinned, "
+                "metadata, tier, revival_score FROM memories"
+            ).fetchall()
+            # Append default confidence + temporal + provenance for pre-v9 rows.
+            return [
+                (*r, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None, _DEFAULT_PROVENANCE)
+                for r in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT id, content, kind, salience, embedding, source_session, "
+                "source_message_id, created_at, last_used_at, use_count, pinned, "
+                "metadata FROM memories"
+            ).fetchall()
+            # Append default (tier, revival_score, confidence, event_time,
+            # temporal_type, relevance_until, provenance) for pre-v8 rows.
+            return [
+                (
+                    *r,
+                    _DEFAULT_TIER,
+                    0.0,
+                    0.7,
+                    None,
+                    _DEFAULT_TEMPORAL_TYPE,
+                    None,
+                    _DEFAULT_PROVENANCE,
+                )
+                for r in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT id, content, kind, salience, embedding, source_session, "
+                "source_message_id, created_at, last_used_at, use_count, pinned "
+                "FROM memories"
+            ).fetchall()
+            return [
+                (
+                    *r,
+                    None,
+                    _DEFAULT_TIER,
+                    0.0,
+                    0.7,
+                    None,
+                    _DEFAULT_TEMPORAL_TYPE,
+                    None,
+                    _DEFAULT_PROVENANCE,
+                )
+                for r in rows
+            ]
+        except sqlite3.OperationalError:
+            return None
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -698,6 +783,7 @@ class MemoryStore:
         event_time: str | None = None,
         temporal_type: str | None = None,
         relevance_until: str | None = None,
+        provenance: str | None = None,
     ) -> Memory | None:
         """Insert a memory, deduplicating against near-identical existing rows.
 
@@ -730,6 +816,13 @@ class MemoryStore:
         on 2026-05-28T18:30 has ``event_time=2026-05-28T20:00``).
         ``relevance_until`` is when normal RAG retrieval should stop
         surfacing the row; the row stays in DB for archive use.
+
+        ``provenance`` is the v30 F16 testimony-vs-inference label (see
+        :data:`VALID_PROVENANCE`). ``None`` (and anything unknown) coerces
+        to ``'inferred'`` — the safe default, since over-claiming testimony
+        is the failure this fixes. The deliberate write paths (explicit
+        ``[[remember:]]`` tags, manual UI adds, F13-confirmed corrections)
+        pass ``'stated'`` explicitly.
         """
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
@@ -815,6 +908,7 @@ class MemoryStore:
             confidence_value = 0.9
 
         temporal_type_normalized = _coerce_temporal_type(temporal_type)
+        provenance_normalized = _coerce_provenance(provenance)
         event_time_clean = (
             event_time.strip()
             if isinstance(event_time, str) and event_time.strip()
@@ -875,8 +969,8 @@ class MemoryStore:
             "  content, kind, salience, embedding, source_session, "
             "  source_message_id, created_at, last_used_at, use_count, pinned, "
             "  metadata, tier, revival_score, confidence, "
-            "  event_time, temporal_type, relevance_until"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?, ?, ?, ?)",
+            "  event_time, temporal_type, relevance_until, provenance"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?, ?, ?, ?, ?)",
             (
                 cleaned,
                 kind,
@@ -893,6 +987,7 @@ class MemoryStore:
                 event_time_clean,
                 temporal_type_normalized,
                 relevance_until_clean,
+                provenance_normalized,
             ),
         )
         conn.commit()
@@ -916,6 +1011,7 @@ class MemoryStore:
             event_time=event_time_clean,
             temporal_type=temporal_type_normalized,
             relevance_until=relevance_until_clean,
+            provenance=provenance_normalized,
         )
         with self._lock:
             self._mirror[new_id] = memory

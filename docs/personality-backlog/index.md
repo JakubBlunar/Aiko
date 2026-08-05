@@ -101,9 +101,10 @@ terminates in a database write instead of becoming conversation:
   handled it, rather than terminating in a silent UI list refresh.
 - **F15.** Decay makes her progressively vaguer and never prompts her to
   ask, so a fading memory can only be refreshed if he happens to raise it.
-- **F16.** Testimony and inference are stored identically, so she can
-  assert things he never said — and the honest version of the claim is
-  what would invite the correction F13 exists to capture.
+- **F16.** ✅ **Shipped** — a real `provenance` column (v30, `stated` /
+  `inferred`) now labels each user-fact by how it was learned, so an
+  inference renders with an `(inferred)` hedge and ranks just below equal-
+  cosine testimony instead of being asserted as something he said.
 - **L43 / L44.** Engagement history and her own error record are both
   accumulated and never aggregated into a model of how she's received or
   where her judgement is weak.
@@ -217,10 +218,15 @@ Dev / debug tooling (DT-series):
   similarity to begin with. Schema v27 records every cosine, misses included,
   so this is a *read* (`echo_breakdown`, `semantic_floor_candidates`) rather
   than an experiment. **Waiting on weeks of real data, not on code.**
-- **F16.** Testimony vs. inference — nothing distinguishes what he *said*
-  from what she *concluded*, so she can assert things he never said. The
-  fix is honest phrasing ("I get the sense" vs. "you told me"), which also
-  invites the correction F13 would then capture.
+- **F16.** ✅ **Shipped** — testimony vs. inference: a real `provenance`
+  column (v30, `stated` / `inferred`, default `inferred`) now records *how*
+  each user-fact was learned. The extractor labels its distillations, while
+  `[[remember:]]` tags, F13 corrections and manual adds write `stated`. An
+  inferred hit renders with an `(inferred)` hedge (gated by
+  `agent.memory_provenance_enabled`) so she voices it as an impression, and
+  a tiny unconditional ranking nudge floats testimony above inference at
+  equal cosine — which also invites the correction F13 captures. See
+  [shipped](shipped/awareness.md#f16-testimony-vs-inference--did-he-tell-her-or-did-she-guess).
 
 **F7** is obsolete — domain-aware source routing was superseded by the
 pluggable LangSearch / DuckDuckGo backend. F1-F3, F5, F6, F8-F10 and the

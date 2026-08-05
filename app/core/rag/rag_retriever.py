@@ -128,6 +128,24 @@ _MEMORY_TIER_OFFSET: dict[str, float] = {
 _MEMORY_CONFIDENCE_PENALTY_THRESHOLD = 0.5
 _MEMORY_CONFIDENCE_PENALTY_MAX = 0.15
 
+# F16 (v30) — testimony-vs-inference ranking nudge. An ``inferred`` memory
+# (Aiko concluded it) is demoted by this tiny amount so that at equal
+# cosine a ``stated`` sibling (the user said it outright) floats above it.
+# Deliberately far smaller than the confidence penalty: it only breaks
+# near-ties, never buries a strong inferred match under a weak stated one.
+# Never hides, only orders -- same invariant as ``_confidence_penalty``.
+_MEMORY_PROVENANCE_PENALTY = 0.03
+
+# F16 (v30) — the memory kinds that carry the visible ``(inferred)``
+# suffix. Durable claims *about the user* only: a conclusion Aiko drew
+# about him should be voiced as an impression, not asserted as testimony.
+# ``self`` / ``self_tagged`` notes are her own stance (their own voice),
+# and ``knowledge`` / ``curiosity_finding`` already carry ``(learned)`` /
+# ``(curiosity)`` hedges -- none of them ever render ``(inferred)``.
+_PROVENANCE_TAGGED_KINDS = frozenset(
+    {"fact", "preference", "relationship", "event"}
+)
+
 # H1 + K4 — per-hit boost for source rows that share the current
 # conversation arc (H1) or the live user dialogue-act (K4). The deltas
 # are intentionally tiny: we want the alignment to nudge ordering when
@@ -368,6 +386,21 @@ def _confidence_penalty(confidence: float | None) -> float:
     return -(gap / _MEMORY_CONFIDENCE_PENALTY_THRESHOLD) * _MEMORY_CONFIDENCE_PENALTY_MAX
 
 
+def _provenance_penalty(provenance: str | None) -> float:
+    """Return a small non-positive nudge so testimony outranks inference.
+
+    ``'inferred'`` -> ``-_MEMORY_PROVENANCE_PENALTY``; ``'stated'`` and any
+    unknown / missing value -> ``0.0`` (the unmarked default). Applied
+    unconditionally in the retrieve() join, exactly like
+    :func:`_confidence_penalty`: too small to reorder anything but a
+    near-tie, so a ``stated`` sibling wins at equal cosine while a strong
+    ``inferred`` match still surfaces.
+    """
+    if isinstance(provenance, str) and provenance.strip().lower() == "inferred":
+        return -_MEMORY_PROVENANCE_PENALTY
+    return 0.0
+
+
 # Schema v10 — humanized time annotations for retrieved memories.
 # ``_humanize_past`` and ``_humanize_future`` return short, natural
 # phrases ("yesterday", "3 days ago", "tonight 20:00") that
@@ -536,6 +569,7 @@ class RagRetriever:
         arc_state_provider: "Callable[[], ArcState | None] | None" = None,
         dialogue_act_provider: "Callable[[str], str | None] | None" = None,
         goal_store: "GoalStore | None" = None,
+        memory_provenance_enabled: bool = True,
         fade_hedge_enabled: bool = True,
         faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
         faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
@@ -589,6 +623,11 @@ class RagRetriever:
         # hits is bounded by ``per_source_top_k``. ``None`` keeps the
         # legacy retriever behaviour for tests and lean deployments.
         self._goal_store = goal_store
+        # F16 (v30) — master switch for the visible ``(inferred)`` suffix.
+        # Off suppresses the tag everywhere (the ranking nudge stays on, as
+        # it's unconditional like the confidence penalty). See
+        # :meth:`format_block`.
+        self._memory_provenance_enabled = bool(memory_provenance_enabled)
         # K7 — Forgetting protocol settings. ``fade_hedge_enabled``
         # is the master kill-switch; off disables every ``(faded)``
         # suffix (including archive). The threshold + idle-days
@@ -1071,6 +1110,18 @@ class RagRetriever:
                                 h.score += _confidence_penalty(mem_confidence)
                                 if mem_confidence is not None:
                                     h.confidence = float(mem_confidence)
+                                # F16 (v30): provenance nudge + stamp. Same
+                                # join path as the confidence penalty above.
+                                # An ``inferred`` hit is demoted a hair so a
+                                # ``stated`` sibling wins at equal cosine;
+                                # the label is stamped on the hit so
+                                # ``format_block`` can append "(inferred)"
+                                # without a second SQLite roundtrip.
+                                mem_provenance = getattr(
+                                    mem, "provenance", None
+                                )
+                                h.score += _provenance_penalty(mem_provenance)
+                                h.memory_provenance = mem_provenance
                                 # K25 — stamp the pinned flag on the
                                 # hit so the ``(distant)`` time-decay
                                 # suffix can bypass user-trusted rows
@@ -2105,6 +2156,7 @@ class RagRetriever:
         hits: list[RagHit],
         *,
         user_display_name: str = "the user",
+        memory_provenance_enabled: bool = True,
         fade_hedge_enabled: bool = True,
         faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
         faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
@@ -2122,6 +2174,14 @@ class RagRetriever:
             ``kind == "self"``.
           - "Snippets you remembered from past chats:" -- message hits.
           - "From your notes:" -- document hits.
+
+        F16 — ``memory_provenance_enabled`` (default on) gates the
+        ``(inferred)`` suffix appended to durable user-fact hits
+        (fact/preference/relationship/event) whose ``memory_provenance``
+        is ``'inferred'``, so Aiko voices a conclusion she drew as an
+        impression. ``'stated'`` is the unmarked default. The tie-break
+        ranking nudge is applied earlier in ``retrieve`` and is not gated
+        here.
 
         K7 — ``fade_hedge_enabled`` / ``faded_salience_threshold`` /
         ``faded_idle_days`` control the ``(faded)`` suffix. Defaults
@@ -2174,6 +2234,22 @@ class RagRetriever:
                 confidence = getattr(hit, "confidence", None)
                 if confidence is not None and float(confidence) < 0.5:
                     suffix_tags.append("(uncertain)")
+                # F16 (v30): append "(inferred)" on durable user-fact kinds
+                # so Aiko phrases a conclusion she drew as an impression
+                # ("I get the sense…") rather than asserting the user said
+                # it. ``stated`` is the unmarked default (no tag on the
+                # majority), and self-notes / distilled knowledge / findings
+                # keep their own voice (see ``_PROVENANCE_TAGGED_KINDS``).
+                # Gated by the ``memory_provenance_enabled`` master switch.
+                if (
+                    memory_provenance_enabled
+                    and kind in _PROVENANCE_TAGGED_KINDS
+                    and (getattr(hit, "memory_provenance", None) or "")
+                    .strip()
+                    .lower()
+                    == "inferred"
+                ):
+                    suffix_tags.append("(inferred)")
                 # K25 — append "(distant)" when the row's effective
                 # confidence (after age-based decay) drops below the
                 # threshold. Distinct from "(uncertain)" — that's the
@@ -2334,6 +2410,7 @@ class RagRetriever:
         return self.format_block(
             hits,
             user_display_name=user_display_name,
+            memory_provenance_enabled=self._memory_provenance_enabled,
             fade_hedge_enabled=self._fade_hedge_enabled,
             faded_salience_threshold=self._faded_salience_threshold,
             faded_idle_days=self._faded_idle_days,
@@ -2359,6 +2436,7 @@ class RagRetriever:
         block = self.format_block(
             hits,
             user_display_name=user_display_name,
+            memory_provenance_enabled=self._memory_provenance_enabled,
             fade_hedge_enabled=self._fade_hedge_enabled,
             faded_salience_threshold=self._faded_salience_threshold,
             faded_idle_days=self._faded_idle_days,

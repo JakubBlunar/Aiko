@@ -36,8 +36,10 @@ from typing import Callable
 from app.core.infra.chat_database import ChatDatabase, MessageRow
 from app.core.memory.memory_store import (
     VALID_KINDS,
+    VALID_PROVENANCE,
     VALID_TEMPORAL_TYPES,
     MemoryStore,
+    _DEFAULT_PROVENANCE,
     _DEFAULT_TEMPORAL_TYPE,
 )
 from app.core.session.session_text_utils import resolve_user_name, speaker_labels
@@ -135,6 +137,7 @@ def _build_system_prompt(
     today_human = today.strftime("%A, %B %d, %Y, %H:%M %Z").strip()
     today_iso = today.isoformat()
     valid_types = ", ".join(VALID_TEMPORAL_TYPES)
+    valid_provenance = ", ".join(VALID_PROVENANCE)
     return (
         f"You analyse a chat transcript between a user named {name} and his AI "
         "companion Aiko. Your job is to extract DURABLE memories that would "
@@ -169,6 +172,18 @@ def _build_system_prompt(
         "    gym tonight at 8'). REQUIRED to set ``event_time`` to when "
         "    it's supposed to happen.\n"
         "\n"
+        "Each memory ALSO carries a ``provenance`` that records HOW it was "
+        "learned:\n"
+        "  - 'stated': the user said it outright, in so many words "
+        f"    ('{name} said he is vegetarian').\n"
+        "  - 'inferred': you concluded it by reading between the lines or "
+        "    adding up several things he said, but he never said it "
+        f"    directly ('{name} seems to prefer working late').\n"
+        "  Default to 'inferred' whenever you are not sure he said it "
+        "  outright. Claiming he stated something he only implied is the "
+        "  worse error, so lean 'inferred'. Aiko's own first-person "
+        "  'self' notes are always 'inferred'.\n"
+        "\n"
         "Rules:\n"
         "- Skip throwaway chitchat, single-turn moods, weather, jokes that are "
         "  not recurring.\n"
@@ -186,6 +201,8 @@ def _build_system_prompt(
         "  Use 'self' only for Aiko's first-person notes.\n"
         f"- 'temporal_type' must be one of: {valid_types}. Default to "
         "  'durable' when unsure.\n"
+        f"- 'provenance' must be one of: {valid_provenance}. Default to "
+        "  'inferred' when unsure.\n"
         "- 'salience' is 0..1 -- how much this should drive future conversation.\n"
         "- Phrase the content with proper tense based on temporal_type. "
         "  past_event: past tense ('Jacob finished the dashboard'). "
@@ -196,7 +213,7 @@ def _build_system_prompt(
         "\n"
         'Reply with JSON only, exactly: {"memories": [{"content": "...", '
         '"kind": "...", "salience": 0.5, "temporal_type": "...", '
-        '"event_time": "ISO-8601 or null"}]}'
+        '"provenance": "...", "event_time": "ISO-8601 or null"}]}'
     )
 
 
@@ -467,6 +484,10 @@ class MemoryExtractor:
                 # them away after the TTL.
                 tier="scratchpad",
                 temporal_type=cand["temporal_type"],
+                # F16: the extractor distils memories from a transcript, so
+                # each is testimony or inference per the LLM's classification
+                # (defaulting to ``inferred`` -- see ``_validate_entries``).
+                provenance=cand.get("provenance", _DEFAULT_PROVENANCE),
                 event_time=event_time_iso,
                 relevance_until=relevance_until,
             )
@@ -561,6 +582,13 @@ class MemoryExtractor:
             temporal_type = temporal_type.strip().lower()
             if temporal_type not in VALID_TEMPORAL_TYPES:
                 temporal_type = _DEFAULT_TEMPORAL_TYPE
+            # F16 (v30): provenance defaults to ``inferred`` for unknown /
+            # missing values -- over-claiming testimony is the failure this
+            # fixes, so anything the LLM leaves off lands on the safe side.
+            provenance = str(entry.get("provenance") or _DEFAULT_PROVENANCE)
+            provenance = provenance.strip().lower()
+            if provenance not in VALID_PROVENANCE:
+                provenance = _DEFAULT_PROVENANCE
             event_time_raw = entry.get("event_time")
             event_time = (
                 str(event_time_raw).strip()
@@ -573,6 +601,7 @@ class MemoryExtractor:
                     "kind": kind,
                     "salience": salience,
                     "temporal_type": temporal_type,
+                    "provenance": provenance,
                     "event_time": event_time,
                 }
             )
