@@ -1658,6 +1658,14 @@ class TurnRunner:
                     # rare, and the LLM extractor catches the same
                     # turn anyway).
                     temporal_type="durable",
+                    # F16 (v30): an explicit ``[[remember:...]]`` tag is a
+                    # deliberate anchor, not a background inference -- Aiko
+                    # committed the claim on purpose, so it counts as stated
+                    # rather than something she pieced together. ``self``
+                    # notes about her own stance ride the same deliberate
+                    # path and never render the user-facing ``(inferred)``
+                    # hedge anyway.
+                    provenance="stated",
                 )
             except Exception as exc:
                 log.debug("self-tagged memory insert failed: %s", exc)

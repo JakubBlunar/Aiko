@@ -386,6 +386,57 @@ here. Settings: `agent.fact_reversal_enabled` (master),
 
 ---
 
+## F16. Testimony vs. inference — did he tell her, or did she guess?
+
+Nothing in the memory layer used to distinguish **what the user said** from
+**what Aiko concluded**: a `fact` the extractor distilled from an inference
+across three conversations and a `fact` the user stated outright were the
+same kind at the same default confidence, rendered with the same flat
+bullet — so Aiko would assert "you told me you hate meetings" when he never
+said that. The honest version ("I get the sense you'd rather skip meetings")
+is the same belief correctly attributed, and it *invites* the correction F13
+exists to catch instead of foreclosing it.
+
+F16 adds a real `provenance` column (schema **v30**, `stated` / `inferred`,
+default `inferred`) to `memories`, mirroring the `temporal_type` precedent
+(fresh CREATE + guarded v29→v30 `ALTER` backfilling legacy rows to
+`inferred`) in
+[`chat_database.py`](../../../app/core/infra/chat_database.py) and
+[`memory_store.py`](../../../app/core/memory/memory_store.py)
+(`VALID_PROVENANCE` / `_coerce_provenance`, `Memory.provenance`, the `add()`
+kwarg, INSERT / read / `_reload_mirror` fallback ladder, `to_dict`). The
+default is `inferred` on purpose — over-claiming testimony is the failure
+being fixed, so anything unsure lands on the safe side.
+
+The write paths are labelled at their source: the
+[`MemoryExtractor`](../../../app/core/memory/memory_extractor.py) prompt asks
+the LLM for a per-memory `provenance` (validated + defaulted in
+`_validate_entries`); explicit `[[remember:]]` tags
+([`turn_runner.py`](../../../app/core/session/turn_runner.py)), F13-confirmed
+corrections
+([`user_correction_worker.py`](../../../app/core/memory/user_correction_worker.py)),
+and manual editor / MCP adds
+([`memory_facade_mixin.py`](../../../app/core/session/memory_facade_mixin.py))
+all write `stated`. Rendering + ranking live in
+[`rag_retriever.py`](../../../app/core/rag/rag_retriever.py): `RagHit`
+([`rag_store.py`](../../../app/core/rag/rag_store.py)) gains
+`memory_provenance`, stamped in the `retrieve()` join; `format_block` appends
+an `(inferred)` suffix on durable user-fact kinds only
+(`fact` / `preference` / `relationship` / `event`, never
+`self` / `self_tagged` / `knowledge` / `curiosity_finding`), gated by the new
+`agent.memory_provenance_enabled` master switch; and a pure
+`_provenance_penalty` (−0.03, unconditional like `_confidence_penalty`)
+demotes an inferred hit a hair so testimony floats above inference at equal
+cosine. Persona gloss lives beside the other trust tags in
+[`aiko_companion.txt`](../../../data/persona/aiko_companion.txt). Scope was
+deliberately **memory-layer only** — concepts already render tentatively via
+`_hedge_for_confidence`, and the concept-voice deepening stays with L41; no
+third `confirmed` value; no LanceDB change (provenance is joined from SQLite,
+exactly like `confidence` / `temporal_type`). Tests:
+[`tests/test_memory_provenance.py`](../../../tests/test_memory_provenance.py).
+
+---
+
 ## G2. Schedule-learning worker
 
 Idle worker that buckets `messages.created_at` (user messages

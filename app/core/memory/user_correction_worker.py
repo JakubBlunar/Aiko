@@ -367,6 +367,10 @@ class UserCorrectionWorker:
                     "corrects_memory_id": int(old_id),
                     "corrected_at": when_iso,
                 },
+                # F16 (v30): the user just told her the right version to her
+                # face -- the highest-quality testimony there is, so the
+                # corrected row is ``stated``, never a hedged impression.
+                provenance="stated",
             )
         except Exception:
             log.warning("F13 add correction failed", exc_info=True)
