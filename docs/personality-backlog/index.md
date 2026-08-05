@@ -81,10 +81,11 @@ block would make a third volatile T0 block and cost prompt-cache stability;
 **L40** shipped, though the audit had it wrong — pinned candidates are admitted
 by `order` and their relevance is never read, so the real defect was
 habituation being consumed as a *boolean* and the stale group staying in
-confidence order. Still open: **P42** (the retrieval budget is the residual of
-all 105 blocks — now folded into P43, since a floor needs someone to yield to
-it) and **L41** (the L35 surface reason is computed every turn and discarded —
-usable as *framing*, never narrated).
+confidence order. **L41** shipped too — the L35 surface reason now picks each
+T3 impression line's framing (settled / freshly-changed / primed / unsettled)
+without ever being narrated. Still open: **P42** (the retrieval budget is the
+residual of all 105 blocks — now folded into P43, since a floor needs someone
+to yield to it).
 
 ### The same shape, one layer out: loops that end in a write
 
@@ -483,9 +484,10 @@ next, and `get_surfacing_outcomes` is the view onto it:
   The premise was wrong (a pinned candidate's relevance is never read); the
   real defect was habituation collapsing to a boolean, leaving the stale group
   ranked by confidence so a just-shown belief outranked a rested one.
-- **L41.** Reason-conditioned phrasing — use the already-computed L35 reason
-  to pick a line's framing, while keeping the debug-only rule that she must
-  never narrate her own machinery.
+- **L41.** *Shipped* — see [`shipped/concepts.md`](shipped/concepts.md#l41-reason-conditioned-phrasing----use-the-l35-signal-without-narrating-it).
+  The already-computed L35 reason now picks each T3 impression line's framing
+  (settled / freshly-changed / primed / unsettled), while keeping the debug-only
+  rule that she never narrates her own machinery.
 - **L42.** A self-model of her own surfacing conduct ("I steer us toward his
   work") mined from the ledger; feeds L17 drift and L19 autobiography.
 - **L43.** How she thinks *he* sees her — the second-order self-model. She

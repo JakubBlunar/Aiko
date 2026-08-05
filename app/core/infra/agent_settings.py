@@ -2268,6 +2268,16 @@ class AgentSettings:
     # ``_confidence_penalty``, and is unaffected by this switch.
     memory_provenance_enabled: bool = True
 
+    # ── L41: reason-conditioned concept phrasing ──────────────────────
+    # Master switch for the visible framing the T3 concept-impression lines
+    # pick from the (debug-only) L35 surface reason: a long-settled belief,
+    # a freshly-changed one, an association-primed one and an unsettled one
+    # each get their own non-technical lead-in instead of the flat
+    # confidence hedge. The reason is used purely as framing input and is
+    # never narrated. Flipping ``False`` restores the exact pre-L41 hedge on
+    # every line; it does not touch the reason computation or the trace.
+    concept_reason_framing_enabled: bool = True
+
     # ── K22: callback / inside-joke detector ──────────────────────────
     # Master switch for the post-turn cosine pass that detects when
     # Aiko's reply semantically reaches back to an older eligible

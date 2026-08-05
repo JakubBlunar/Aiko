@@ -1332,3 +1332,56 @@ routine; the off-by-one settling dance and the read-API shape took the thought.
 
 **Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L38, L42, F12, G4,
 P43, K81, and the rest of DT5.
+
+---
+
+## L41. Reason-conditioned phrasing -- use the L35 signal without narrating it
+
+**Status: SHIPPED.** L35 computes, per surfaced concept, *why* it won its slot
+(`settled_belief`, `unresolved_contradiction`, `association`, `recent_change`,
+…) and, by explicit design, keeps that reason **debug-only** — letting Aiko
+read "I surfaced this because we clashed on it" is the fastest route to a
+companion who narrates her own machinery. That rule is **kept, not relaxed**.
+L41 uses the reason purely as *framing input*: it picks the lead-in of each T3
+concept-impression line without ever stating the reason, so a freshly-changed
+belief and one held serenely for months no longer arrive in identical clothing.
+
+**What shipped.** A module-level `_REASON_FRAMINGS` table in
+[`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py),
+deliberately kept **separate** from the debug-only `SURFACE_REASON_LABELS`,
+collapsing the eleven reasons onto four non-technical voices:
+
+- **settled** (`settled_belief`) — "You've long since made your mind up that"
+- **freshly-changed** (`recent_change` / `loosening_boundary` /
+  `newly_promoted` / `recently_revived`) — "Lately you've come around to
+  feeling that"
+- **primed** (`association`) — "Something here nudges the sense that"
+- **unsettled, restrained** (`unresolved_contradiction`) — "You haven't fully
+  settled it, but you sense that" — deliberately the *most* restrained voice,
+  never dramatic, so it doesn't invite her to re-litigate the tension each time
+  it surfaces.
+
+The four unmapped reasons (`topic_match`, `high_confidence`,
+`recently_reinforced`, `core_belief`), plus `None` / any unknown token, fall
+through to the existing `_hedge_for_confidence`, so lines stay one voice and
+about the same length and a reason added later cannot break rendering.
+
+**Static `_reason_framing(reason, confidence)` helper** returns the mapped frame
+or the confidence hedge, with a **confidence guard**: the `settled` frame
+asserts certainty, so below the `0.65` "sense that" tier it falls back to the
+hedge — stability and confidence are different axes, and a stable-but-unsure
+concept must not overclaim. In `_render_relevant_concepts` the `comp`/`reason`
+lookup was hoisted above the line build; the confidence `hedge` is still
+computed and recorded in the trace entry (telemetry unchanged). Gated by
+`agent.concept_reason_framing_enabled` (default `True`); off ⇒ exact pre-L41
+output. Scope is T3 only — the T0 profile block is untouched.
+
+**The load-bearing test** (`tests/test_concept_reason_framing.py`) asserts that
+across every framing the rendered text contains **none** of the raw reason
+tokens nor the mechanism words (`contradiction` / `surfaced` / `confidence` /
+`revived` / `topic` / …) — the anti-narration rule encoded as an assertion.
+
+**Effort.** Small, as estimated — a phrasing table plus a rendering branch.
+
+**Depends on.** L35 (shipped). Would benefit from T5's eval scoreboard to
+measure whether the framings change model behaviour or merely cost tokens.
