@@ -24,6 +24,8 @@ from app.llm.openai_compatible_client import (
     _messages_to_responses_input,
     _normalize_tool_messages_for_openai,
     _parse_responses_output,
+    _reasoning_items_from_responses_output,
+    _response_output_items,
     _responses_usage,
     _tool_choice_to_responses,
     _tools_to_responses,
@@ -2033,6 +2035,24 @@ class ApiStyleRoutingTests(unittest.TestCase):
                 msg=model,
             )
 
+    def test_dotted_gpt_uses_one_tool_batch_but_grok_keeps_two(self) -> None:
+        client = self._client(api_style="responses")
+        self.assertEqual(client.tool_pass_round_limit("gpt-5.6-luna"), 1)
+        self.assertEqual(client.tool_pass_round_limit("gpt-5.4-mini"), 1)
+        self.assertEqual(client.tool_pass_round_limit("grok-4.5"), 2)
+        self.assertEqual(client.tool_pass_round_limit("gemini-3.1-pro"), 2)
+
+    def test_dotted_gpt_relaxes_required_choice_but_grok_keeps_it(self) -> None:
+        client = self._client(api_style="responses")
+        self.assertEqual(
+            client.tool_pass_tool_choice("gpt-5.6-luna", "required"),
+            "auto",
+        )
+        self.assertEqual(
+            client.tool_pass_tool_choice("grok-4.5", "required"),
+            "required",
+        )
+
     def test_reasoning_omitted_when_unset_for_forced_responses(self) -> None:
         # Grok rejects "minimal"; an unset effort on a forced-responses
         # provider must omit the reasoning block, not default to minimal.
@@ -2125,6 +2145,385 @@ class ApiStyleRoutingTests(unittest.TestCase):
                 options={"num_predict": 32, "prompt_cache_key": "sess-42"},
             )
         self.assertNotIn("prompt_cache_key", posted.call_args.kwargs["json"])
+
+
+def _fake_transient_response(
+    *, status_code: int = 500, headers: dict | None = None,
+) -> Mock:
+    """A non-ok ``requests.post`` result shaped like an OpenAI 5xx/429 body."""
+    response = Mock()
+    response.ok = False
+    response.status_code = status_code
+    response.reason = "Internal Server Error"
+    response.headers = headers or {}
+    response.text = '{"error": {"type": "server_error"}}'
+    response.close.return_value = None
+    return response
+
+
+class TransientRetryTests(unittest.TestCase):
+    """Bounded retry on transient (5xx / 429 / transport) POST failures.
+
+    ``time.sleep`` is patched out so the backoff never actually blocks the
+    test; only the retry *decisions* (how many POSTs, terminal behaviour)
+    are asserted.
+    """
+
+    def setUp(self) -> None:
+        self.settings = load_settings().ollama
+
+    def _responses_client(self) -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            self.settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.6-luna",
+            api_key="sk-test",
+        )
+
+    def _chat_client(self) -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            self.settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+        )
+
+    def test_responses_retries_transient_500_then_succeeds(self) -> None:
+        client = self._responses_client()
+        good = _fake_responses_response(text="recovered")
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            side_effect=[_fake_transient_response(status_code=500), good],
+        ) as posted:
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+            )
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(posted.call_count, 2)
+
+    def test_chat_retries_transient_503_then_succeeds(self) -> None:
+        client = self._chat_client()
+        good = _fake_chat_response(content="recovered")
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            side_effect=[_fake_transient_response(status_code=503), good],
+        ) as posted:
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+            )
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(posted.call_count, 2)
+
+    def test_transport_error_is_retried_then_succeeds(self) -> None:
+        import requests
+
+        client = self._responses_client()
+        good = _fake_responses_response(text="recovered")
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            side_effect=[requests.ConnectionError("boom"), good],
+        ) as posted:
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+            )
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(posted.call_count, 2)
+
+    def test_persistent_500_exhausts_retries_and_raises(self) -> None:
+        import requests
+
+        client = self._responses_client()
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_fake_transient_response(status_code=500),
+        ) as posted:
+            with self.assertRaises(requests.HTTPError):
+                client.chat_with_tools([{"role": "user", "content": "hi"}])
+        # 1 initial attempt + _MAX_TRANSIENT_RETRIES retries.
+        self.assertEqual(posted.call_count, 3)
+
+    def test_hard_4xx_is_not_retried(self) -> None:
+        import requests
+
+        client = self._responses_client()
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_fake_transient_response(status_code=400),
+        ) as posted:
+            with self.assertRaises(requests.HTTPError):
+                client.chat_with_tools([{"role": "user", "content": "hi"}])
+        posted.assert_called_once()
+
+    def test_slow_500_is_not_retried(self) -> None:
+        # A 5xx that arrives only after the model reasoned for many seconds
+        # is expensive work that failed — retrying would multiply the
+        # latency, so the elapsed guard must fail through on the first try.
+        # A fake clock advancing 10s per reading pushes every attempt past
+        # _RETRY_MAX_ATTEMPT_MS.
+        import itertools
+        import requests
+
+        client = self._responses_client()
+        with patch("app.llm.openai_compatible_client.time.sleep"), patch(
+            "app.llm.openai_compatible_client.time.monotonic",
+            side_effect=itertools.count(0.0, 10.0),
+        ), patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_fake_transient_response(status_code=500),
+        ) as posted:
+            with self.assertRaises(requests.HTTPError):
+                client.chat_with_tools([{"role": "user", "content": "hi"}])
+        posted.assert_called_once()
+
+
+class ReasoningRoundTripTests(unittest.TestCase):
+    """GPT-5 / o-series reasoning items must survive a tool round-trip.
+
+    The Responses API requires the reasoning items that preceded a tool
+    call to be echoed back with the tool outputs on the follow-up round;
+    dropping them is what makes the second tool round 500 after a long
+    stall (the observed gpt-5.6-luna failure).
+    """
+
+    def _responses_client(self) -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.6-luna",
+            api_key="sk-test",
+        )
+
+    def test_extractor_pulls_reasoning_items_verbatim(self) -> None:
+        body = {
+            "output": [
+                {"id": "rs_1", "type": "reasoning", "summary": [], "content": []},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "move_to",
+                    "arguments": '{"location": "bed"}',
+                },
+            ],
+            "status": "completed",
+        }
+        items = _reasoning_items_from_responses_output(body)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "rs_1")
+        self.assertEqual(items[0]["type"], "reasoning")
+
+    def test_complete_output_extractor_preserves_call_id_and_status(self) -> None:
+        body = {
+            "output": [
+                {"id": "rs_1", "type": "reasoning", "summary": []},
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "call_1",
+                    "name": "change_posture",
+                    "arguments": '{"posture": "curled_up"}',
+                },
+            ],
+        }
+        items = _response_output_items(body)
+        self.assertEqual(items[1]["id"], "fc_1")
+        self.assertEqual(items[1]["status"], "completed")
+        self.assertEqual(items[1]["call_id"], "call_1")
+
+    def test_response_carries_reasoning_items_when_tools_called(self) -> None:
+        client = self._responses_client()
+        fake = Mock()
+        fake.ok = True
+        fake.headers = {}
+        fake.json.return_value = {
+            "output": [
+                {"id": "rs_9", "type": "reasoning", "summary": []},
+                {
+                    "id": "fc_9",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "call_9",
+                    "name": "move_to",
+                    "arguments": '{"location": "desk"}',
+                },
+            ],
+            "status": "completed",
+        }
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ):
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "go to your desk"}],
+                tools=[{"type": "function", "function": {"name": "move_to"}}],
+            )
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(len(result.reasoning_items), 1)
+        self.assertEqual(result.reasoning_items[0]["id"], "rs_9")
+        self.assertEqual(result.response_output_items[1]["id"], "fc_9")
+        self.assertEqual(
+            result.response_output_items[1]["status"], "completed",
+        )
+
+    def test_plain_text_reply_carries_no_reasoning_items(self) -> None:
+        client = self._responses_client()
+        fake = Mock()
+        fake.ok = True
+        fake.headers = {}
+        fake.json.return_value = {
+            "output": [
+                {"id": "rs_x", "type": "reasoning", "summary": []},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi"}],
+                },
+            ],
+            "status": "completed",
+        }
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ):
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+            )
+        self.assertEqual(result.reasoning_items, [])
+
+    def test_stashed_reasoning_reemitted_before_function_call(self) -> None:
+        history = [
+            {"role": "user", "content": "go to your desk"},
+            {
+                "role": "assistant",
+                "content": "",
+                "_responses_reasoning": [
+                    {"id": "rs_7", "type": "reasoning", "summary": []},
+                ],
+                "tool_calls": [
+                    {
+                        "id": "call_7",
+                        "type": "function",
+                        "function": {
+                            "name": "move_to",
+                            "arguments": {"location": "desk"},
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_7",
+                "name": "move_to",
+                "content": "moved",
+            },
+        ]
+        out = _messages_to_responses_input(history)
+        types = [item.get("type") for item in out if "type" in item]
+        # reasoning must appear immediately before its function_call.
+        self.assertIn("reasoning", types)
+        self.assertIn("function_call", types)
+        self.assertLess(
+            types.index("reasoning"), types.index("function_call"),
+        )
+        reasoning_item = next(i for i in out if i.get("type") == "reasoning")
+        self.assertEqual(reasoning_item["id"], "rs_7")
+
+    def test_complete_stash_is_reemitted_verbatim_without_reconstruction(
+        self,
+    ) -> None:
+        raw_call = {
+            "id": "fc_7",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_7",
+            "name": "change_posture",
+            "arguments": '{"posture":"curled_up"}',
+        }
+        history = [
+            {"role": "user", "content": "curl up"},
+            {
+                "role": "assistant",
+                "content": "",
+                "_responses_output": [
+                    {"id": "rs_7", "type": "reasoning", "summary": []},
+                    raw_call,
+                ],
+                # Deliberately reduced neutral call: the complete stash must
+                # win, preserving fc_7 + status from the provider.
+                "tool_calls": [
+                    {
+                        "id": "call_7",
+                        "type": "function",
+                        "function": {
+                            "name": "change_posture",
+                            "arguments": {"posture": "curled_up"},
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_7",
+                "name": "change_posture",
+                "content": "changed",
+            },
+        ]
+        out = _messages_to_responses_input(history)
+        call = next(i for i in out if i.get("type") == "function_call")
+        self.assertEqual(call, raw_call)
+        self.assertEqual(
+            out[-1],
+            {
+                "type": "function_call_output",
+                "call_id": "call_7",
+                "output": "changed",
+            },
+        )
+
+    def test_reasoning_stash_stripped_from_chat_completions_payload(self) -> None:
+        # On /v1/chat/completions the reasoning key is an illegal field and
+        # would 400 — it must never reach the wire.
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+        )
+        history = [
+            {"role": "user", "content": "go to your desk"},
+            {
+                "role": "assistant",
+                "content": "",
+                "_responses_output": [
+                    {"id": "rs_7", "type": "reasoning"},
+                ],
+                "_responses_reasoning": [{"id": "rs_7", "type": "reasoning"}],
+                "tool_calls": [
+                    {
+                        "id": "call_7",
+                        "type": "function",
+                        "function": {
+                            "name": "move_to",
+                            "arguments": {"location": "desk"},
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_7",
+                "name": "move_to",
+                "content": "moved",
+            },
+            {"role": "user", "content": "nice"},
+        ]
+        fake = _fake_chat_response(content="At the desk now.")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(history)
+        wire_messages = posted.call_args.kwargs["json"]["messages"]
+        for m in wire_messages:
+            self.assertNotIn("_responses_output", m)
+            self.assertNotIn("_responses_reasoning", m)
 
 
 if __name__ == "__main__":
