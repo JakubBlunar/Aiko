@@ -16,6 +16,39 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.session")
 
 
+# L41 — reason-conditioned framing. Maps the debug-only L35 surface reason
+# (see ``concept_surfacing.REASON_*``) onto a small set of non-technical
+# lead-ins that replace the confidence hedge for the reasons that tell a more
+# interesting story. Keyed by the raw reason token string so this module
+# stays decoupled from ``concept_surfacing`` at import time (the render path
+# already imports ``SURFACE_REASON_LABELS`` locally). Every lead-in
+# grammatically accepts the existing declarative concept label and, crucially,
+# names no mechanism -- the reason picks the voice, it is never stated. The
+# four unmapped reasons (``topic_match`` / ``high_confidence`` /
+# ``recently_reinforced`` / ``core_belief``) deliberately fall through to the
+# confidence hedge, and any reason added later cannot break rendering.
+_REASON_FRAMINGS: dict[str, str] = {
+    # settled_belief -- held firmly for a long time.
+    "settled_belief": "You've long since made your mind up that",
+    # the "freshly-changed" family: something moved recently. One voice for
+    # all four, since the distinction between them is not worth a separate
+    # line and never reaches Aiko anyway.
+    "recent_change": "Lately you've come around to feeling that",
+    "loosening_boundary": "Lately you've come around to feeling that",
+    "newly_promoted": "Lately you've come around to feeling that",
+    "recently_revived": "Lately you've come around to feeling that",
+    # primed by an associated topic (no cosine of its own).
+    "association": "Something here nudges the sense that",
+    # unresolved_contradiction -- deliberately the most restrained voice, so
+    # it never invites her to re-litigate the tension every time it surfaces.
+    "unresolved_contradiction": "You haven't fully settled it, but you sense that",
+}
+
+# The lone reason whose framing asserts certainty; guarded on confidence so a
+# stable-but-unsure concept can't overclaim (see ``_reason_framing``).
+_REASON_FRAMING_SETTLED = "settled_belief"
+
+
 class InnerLifePart1Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 1 of 4)."""
 
@@ -1290,6 +1323,28 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return "You have a sense that"
         return "You have a loose impression that"
 
+    @staticmethod
+    def _reason_framing(reason: "str | None", confidence: float) -> str:
+        """L41: pick a concept line's lead-in from its L35 surface reason.
+
+        Returns the mapped framing for the reasons that deserve their own
+        voice (settled / freshly-changed / primed / unsettled) and falls
+        back to :meth:`_hedge_for_confidence` for everything else -- the four
+        unmapped reasons, an unknown token, and ``None``. The reason is used
+        purely as framing *input*; no returned string ever names a mechanism.
+
+        Confidence guard: the ``settled`` framing asserts certainty, so a
+        stable-but-low-confidence concept (stability and confidence are
+        different axes) must not claim it -- below the ``0.65`` "sense that"
+        tier it falls back to the confidence hedge instead.
+        """
+        frame = _REASON_FRAMINGS.get(str(reason or ""))
+        if frame is None:
+            return InnerLifePart1Mixin._hedge_for_confidence(confidence)
+        if reason == _REASON_FRAMING_SETTLED and float(confidence) < 0.65:
+            return InnerLifePart1Mixin._hedge_for_confidence(confidence)
+        return frame
+
     def _concept_supporting_labels(self, concept_id: int) -> list[str]:
         """L9: up to two short evidence labels grounding a surfaced
         concept (the *themes* it keeps resting on), resolved via the shared
@@ -2152,6 +2207,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         rationale_cap = int(
             getattr(ms, "concept_surfacing_rationale_max_chars", 120)
         )
+        # L41: master switch for reason-conditioned framing. Off keeps the
+        # exact pre-L41 confidence hedge on every line. Read defensively so a
+        # lean host without ``_settings`` still renders (defaults to on).
+        _agent = getattr(getattr(self, "_settings", None), "agent", None)
+        framing_on = bool(
+            getattr(_agent, "concept_reason_framing_enabled", True)
+        )
         # Group by (subject, family) so value concepts (the normative *why*,
         # L10) render in a distinct voice from identity/trait concepts (the
         # *what*) instead of all sharing the "things you've come to
@@ -2184,7 +2246,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 family = "generalization"
             else:
                 family = "trait"
-            hedge = self._hedge_for_confidence(getattr(c, "confidence", 0.0))
+            conf_val = float(getattr(c, "confidence", 0.0))
+            hedge = self._hedge_for_confidence(conf_val)
             support = self._concept_supporting_labels(getattr(c, "concept_id", 0))
             grounding = self._concept_grounding_phrase(support)
             cid_int = int(getattr(c, "concept_id", 0))
@@ -2193,13 +2256,22 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 rationale_clause = self._concept_rationale_phrase(
                     getattr(c, "rationale", ""), rationale_cap
                 )
+            # L41: pick the line's lead-in from the L35 surface reason (the
+            # one already computed for the trace) so a freshly-changed or
+            # long-settled belief reads in its own voice instead of the flat
+            # confidence hedge. The reason is used only as framing input --
+            # never named -- and unmapped reasons keep the hedge. When the
+            # master switch is off the lead-in is exactly the pre-L41 hedge.
+            comp = components.get(cid_int)
+            reason = comp.get("reason") if comp else None
+            lead = self._reason_framing(reason, conf_val) if framing_on else hedge
             groups.setdefault((subject, family), []).append(
-                f"- {hedge} {label}{grounding}{rationale_clause}"
+                f"- {lead} {label}{grounding}{rationale_clause}"
             )
             entry = {
                 "concept_id": cid_int,
                 "label": label,
-                "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
+                "confidence": round(conf_val, 4),
                 "plasticity": round(float(getattr(c, "plasticity", 0.0)), 4),
                 "kind": kind,
                 "subject": getattr(c, "subject", None),
@@ -2212,13 +2284,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             # L23: attach the surfacing score breakdown (lane, cosine, recency,
             # stability, salience, activation, habituation) so the MCP concept
             # trace shows *why* each concept ranked where it did.
-            comp = components.get(int(getattr(c, "concept_id", 0)))
             if comp:
                 entry["score"] = comp
                 # L35: hoist the winning signal to the top of the entry --
                 # the one field you read to answer "why is this here?"
                 # without unpacking the whole breakdown.
-                reason = comp.get("reason")
                 if reason:
                     entry["surface_reason"] = reason
                     entry["surface_reason_label"] = SURFACE_REASON_LABELS.get(

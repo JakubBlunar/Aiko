@@ -1692,6 +1692,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             memory_provenance_enabled=bool(
                 agent_raw.get("memory_provenance_enabled", True),
             ),
+            concept_reason_framing_enabled=bool(
+                agent_raw.get("concept_reason_framing_enabled", True),
+            ),
             callback_detector_enabled=bool(
                 agent_raw.get("callback_detector_enabled", True),
             ),
