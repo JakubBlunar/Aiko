@@ -19,13 +19,17 @@ from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.concepts.concept_surfacing import (
     SURFACE_REASON_LABELS,
     composite_score,
+    earned_standing,
+    engagement_baseline,
     event_charge,
     event_charge_detail,
     habituation_factor,
     load_habituation,
+    load_standing,
     recency_boost,
     salience,
     save_habituation,
+    save_standing,
     stability,
     surface_reason,
     surface_score,
@@ -34,6 +38,66 @@ from app.core.concepts.concept_surfacing import (
 
 _UTC = timezone.utc
 _NOW = datetime(2026, 3, 1, 12, 0, tzinfo=_UTC)
+
+
+class EarnedStandingTests(unittest.TestCase):
+    def test_relationship_baseline_uses_pooled_settled_rows(self) -> None:
+        stats = {
+            1: SimpleNamespace(settled=10, engaged=2),
+            2: SimpleNamespace(settled=30, engaged=12),
+        }
+        self.assertAlmostEqual(engagement_baseline(stats), 0.35)
+        self.assertEqual(engagement_baseline({}), 0.5)
+
+    def test_dynamic_baseline_maps_to_neutral(self) -> None:
+        self.assertAlmostEqual(
+            earned_standing(
+                engaged=3, settled=10, baseline=0.3, prior_strength=10
+            ),
+            0.5,
+        )
+
+    def test_shrinkage_and_asymmetric_safe_floor(self) -> None:
+        above = earned_standing(
+            engaged=10, settled=10, baseline=0.3, prior_strength=10
+        )
+        below = earned_standing(
+            engaged=0, settled=10, baseline=0.3, prior_strength=10
+        )
+        self.assertAlmostEqual(above, 0.75)
+        self.assertAlmostEqual(below, 0.425)
+        self.assertGreater(above - 0.5, 0.5 - below)
+
+    def test_cold_and_malformed_data_are_neutral(self) -> None:
+        self.assertEqual(
+            earned_standing(engaged=3, settled=3, baseline=0.3), 0.5
+        )
+        self.assertEqual(
+            earned_standing(engaged="bad", settled=10, baseline=0.3), 0.5
+        )
+        self.assertEqual(
+            earned_standing(engaged=3, settled=10, baseline=float("nan")), 0.5
+        )
+
+    def test_bounds_and_protected_kinds_never_drop_below_neutral(self) -> None:
+        low = earned_standing(
+            engaged=0, settled=100, baseline=0.3, floor=0.35
+        )
+        protected = earned_standing(
+            engaged=0, settled=100, baseline=0.3, floor=0.35,
+            protect_downward=True,
+        )
+        self.assertGreaterEqual(low, 0.35)
+        self.assertEqual(protected, 0.5)
+
+    def test_bounded_kv_round_trip_prunes_and_skips_junk(self) -> None:
+        kv: dict[str, str] = {}
+        save_standing(
+            kv.__setitem__, {3: 0.7, 1: 0.4, 2: 2.0, -1: 0.9}, cap=2
+        )
+        self.assertEqual(load_standing(kv.get), {1: 0.4, 2: 1.0})
+        kv["concept.earned_standing"] = '{"1":"bad","2":0.8,"3":NaN}'
+        self.assertEqual(load_standing(kv.get), {2: 0.8})
 
 
 class RecencyBoostTests(unittest.TestCase):
@@ -180,6 +244,47 @@ class SurfaceScoreTests(unittest.TestCase):
             0.4,
         )
 
+    def test_standing_is_sum_normalized_not_additive(self) -> None:
+        w = SurfaceWeights(context=0.9, standing=0.1)
+        self.assertAlmostEqual(
+            surface_score(
+                cosine=1.0, confidence=0.0, standing=1.0, w=w
+            ),
+            1.0,
+        )
+        self.assertAlmostEqual(
+            surface_score(
+                cosine=1.0, confidence=0.0, standing=0.0, w=w
+            ),
+            0.9,
+        )
+        # Omitting standing removes its weight entirely (master-disable no-op).
+        self.assertAlmostEqual(
+            surface_score(cosine=0.7, confidence=0.0, w=w), 0.7
+        )
+
+    def test_habituation_rotates_even_high_standing_concept(self) -> None:
+        w = SurfaceWeights(context=0.9, standing=0.1)
+        rested_low = surface_score(
+            cosine=0.6, confidence=0.0, standing=0.35,
+            habituation=1.0, w=w,
+        )
+        repeated_high = surface_score(
+            cosine=0.6, confidence=0.0, standing=1.0,
+            habituation=0.35, w=w,
+        )
+        self.assertGreater(rested_low, repeated_high)
+
+    def test_strong_topic_match_recovers_low_standing_concept(self) -> None:
+        w = SurfaceWeights(context=0.9, standing=0.1)
+        topical_low = surface_score(
+            cosine=0.9, confidence=0.0, standing=0.35, w=w
+        )
+        weak_high = surface_score(
+            cosine=0.2, confidence=0.0, standing=1.0, w=w
+        )
+        self.assertGreater(topical_low, weak_high)
+
     def test_activation_is_additive_boost(self) -> None:
         # activation is applied on top of the normalized base, so a primed
         # concept can rise above its raw cosine.
@@ -268,6 +373,14 @@ class SalienceTests(unittest.TestCase):
 
 
 class SurfaceReasonTests(unittest.TestCase):
+    def test_above_neutral_standing_can_be_debug_reason(self) -> None:
+        reason = surface_reason(
+            lane="flex", cosine=0.05, standing=1.0,
+            w=SurfaceWeights(context=0.1, standing=0.9),
+        )
+        self.assertEqual(reason, "earned_standing")
+        self.assertIn(reason, SURFACE_REASON_LABELS)
+
     """L35: name the signal that won a concept its place in the prompt."""
 
     # Every signal weighted, so no single term wins by default.
@@ -396,6 +509,10 @@ class SurfaceReasonTests(unittest.TestCase):
             surface_reason(lane="flex", recency=0.9, w=self._W),
             surface_reason(lane="flex", stability=0.9, w=self._W),
             surface_reason(lane="flex", salience=0.9, w=self._W),
+            surface_reason(
+                lane="flex", standing=1.0,
+                w=SurfaceWeights(context=0.1, standing=0.9),
+            ),
         }
         for event in ("contradicted", "revived", "plasticity_shift", "promoted"):
             reasons.add(

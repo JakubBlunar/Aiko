@@ -45,8 +45,8 @@ which is deliberate — the whole point of shipping the measurement first is tha
 the items below can be designed against real data instead of guesses. Read the
 ledger before building any of them:
 
-- **L38** earned standing — outcomes move the concept surfacing score. The
-  ledger's read API was shaped for this one; it is the natural next pass.
+- **L38** ✅ **shipped** — earned standing now turns the ledger's
+  relationship-calibrated outcomes into a bounded concept surfacing prior.
 - **L42** a self-model of her own surfacing conduct (feeds L17, L19).
 - **F12** ✅ **semantic half shipped** — revival no longer credits only what she
   quotes, and the same detector now decides L37's `echoed` column, which was
@@ -470,15 +470,14 @@ a richer edge taxonomy, and a strategy layer. **L35 (surface-reason
 labels) is shipped** — every concept in the L26 trace now names the
 signal that put it in the prompt.
 
-Open — the surfacing-outcome group (L38-L42, from the surfacing audit; see
-the spine section at the top of this file). **L37, the ledger the rest of the
-group depends on, is shipped** — it records what was surfaced and what happened
-next, and `get_surfacing_outcomes` is the view onto it:
+The surfacing-outcome group (L38-L42, from the surfacing audit; see the spine
+section at the top of this file). **L37 and L38 are shipped** — the ledger
+records what was surfaced and what happened next, and earned standing now feeds
+that relationship-local signal back into concept ranking:
 
-- **L38.** Earned standing — a seventh `surface_score` term fed by L37, so
-  concepts that reliably land rise and perennial no-shows fall. This is the
-  change that turns the layer from a growing store of facts into something
-  with judgement about its own material.
+- **L38.** ✅ **Shipped.** Earned standing is a seventh `surface_score` term
+  fed by L37, with baseline calibration, shrinkage, safety floors, protected
+  kinds, and off-turn cache refresh.
 - **L39.** *Partly shipped.* The dedupe landed — T3 skips whatever the T0
   profile block claimed, across the core, flex and activation lanes. What's
   left is the repetition half: the profile copy still has no habituation, and

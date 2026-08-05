@@ -2093,6 +2093,13 @@ class SpeakingWorkersInitMixin:
                             contradiction_detector=contradiction_detector,
                             belief_reviser=belief_reviser,
                             relationship_signal_provider=_relationship_signal,
+                            surfacing_outcome_store_provider=(
+                                lambda: getattr(
+                                    self, "_surfacing_outcome_store", None
+                                )
+                            ),
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

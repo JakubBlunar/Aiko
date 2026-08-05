@@ -88,6 +88,12 @@ from app.core.concepts.concept_lifecycle import (
 )
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import ConceptEdge
+from app.core.concepts.concept_surfacing import (
+    earned_standing,
+    engagement_baseline,
+    load_standing,
+    save_standing,
+)
 from app.core.infra import timephrase
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
@@ -100,6 +106,7 @@ if TYPE_CHECKING:
     from app.core.concepts.concept_event_store import ConceptEventStore
     from app.core.concepts.concept_store import Concept, ConceptStore
     from app.core.infra.engagement_clock import EngagementClock
+    from app.core.memory.surfacing_outcome_store import SurfacingOutcomeStore
 
 log = logging.getLogger("app.concept_lifecycle_worker")
 
@@ -136,6 +143,11 @@ class ConceptLifecycleWorker:
         relationship_signal_provider: (
             Callable[[], "RelationshipSignal | None"] | None
         ) = None,
+        surfacing_outcome_store_provider: (
+            Callable[[], "SurfacingOutcomeStore | None"] | None
+        ) = None,
+        kv_get: Callable[[str], str | None] | None = None,
+        kv_set: Callable[[str, str], None] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
@@ -148,6 +160,15 @@ class ConceptLifecycleWorker:
         # plasticity. ``None`` (or a provider returning ``None``) => modulation
         # no-ops, so lean/test deployments keep the stored plasticity.
         self._relationship_signal_provider = relationship_signal_provider
+        # L38: the ledger is initialized after this worker, so resolve it
+        # lazily at refresh time. KV persistence lets the prompt path read one
+        # small cached map rather than querying the ledger per turn.
+        self._surfacing_outcome_store_provider = (
+            surfacing_outcome_store_provider
+        )
+        self._kv_get = kv_get
+        self._kv_set = kv_set
+        self._standing_last_refresh: datetime | None = None
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
         self._clock = clock or timephrase.utcnow
@@ -292,8 +313,18 @@ class ConceptLifecycleWorker:
             "memories_superseded": 0,
             # L17a: silent-decay trail markers written this tick.
             "confidence_samples": 0,
+            # L38: off-turn standing cache refresh observability.
+            "standing_refreshed": 0,
+            "standing_warmed": 0,
+            "standing_changed": 0,
+            "standing_baseline": None,
             "events": 0,
         }
+        try:
+            standing = self._maybe_refresh_standing(now)
+            stats.update(standing)
+        except Exception:
+            log.debug("concept standing refresh failed", exc_info=True)
         for concept in batch:
             try:
                 self._process(concept, now, stats)
@@ -306,6 +337,98 @@ class ConceptLifecycleWorker:
         if stats["scanned"]:
             log.info("concept_lifecycle sweep: %s", stats)
         return stats
+
+    def _maybe_refresh_standing(self, now: datetime) -> dict[str, Any]:
+        """Recompute L38 standing from L37 at a bounded off-turn cadence."""
+        unchanged: dict[str, Any] = {
+            "standing_refreshed": 0,
+            "standing_warmed": 0,
+            "standing_changed": 0,
+            "standing_baseline": None,
+        }
+        if not self._b("concept_surfacing_standing_enabled", True):
+            return unchanged
+        refresh_seconds = max(
+            60,
+            self._i("concept_surfacing_standing_refresh_seconds", 3600),
+        )
+        last = self._standing_last_refresh
+        if last is not None and (now - last).total_seconds() < refresh_seconds:
+            return unchanged
+        provider = self._surfacing_outcome_store_provider
+        if provider is None or self._kv_set is None:
+            return unchanged
+        try:
+            ledger = provider()
+        except Exception:
+            log.debug("concept standing ledger provider failed", exc_info=True)
+            return unchanged
+        if ledger is None:
+            return unchanged
+        active = self._store.list_by(status="active")
+        ids = [
+            int(getattr(concept, "concept_id", 0) or 0)
+            for concept in active
+            if int(getattr(concept, "concept_id", 0) or 0) > 0
+        ]
+        window_days = max(
+            1, self._i("concept_surfacing_standing_window_days", 90)
+        )
+        outcome_stats = ledger.stats_for(
+            "concept", ids, window_days=window_days,
+        )
+        baseline = engagement_baseline(outcome_stats)
+        min_settled = max(
+            1, self._i("concept_surfacing_standing_min_settled", 4)
+        )
+        prior_strength = max(
+            0.0,
+            self._f("concept_surfacing_standing_prior_strength", 10.0),
+        )
+        floor = self._f("concept_surfacing_standing_floor", 0.35)
+        ceiling = self._f("concept_surfacing_standing_ceiling", 1.0)
+        protected = {"value", "boundary"}
+        standing_map: dict[int, float] = {}
+        for concept in active:
+            cid = int(getattr(concept, "concept_id", 0) or 0)
+            row = outcome_stats.get(cid)
+            if row is None or int(getattr(row, "settled", 0) or 0) < min_settled:
+                continue
+            standing_map[cid] = earned_standing(
+                engaged=int(getattr(row, "engaged", 0) or 0),
+                settled=int(getattr(row, "settled", 0) or 0),
+                baseline=baseline,
+                min_settled=min_settled,
+                prior_strength=prior_strength,
+                floor=floor,
+                ceiling=ceiling,
+                protect_downward=(
+                    str(getattr(concept, "kind", "") or "") in protected
+                ),
+            )
+        previous = (
+            load_standing(self._kv_get)
+            if self._kv_get is not None else {}
+        )
+        changed = int(previous != standing_map)
+        if changed:
+            save_standing(
+                self._kv_set,
+                standing_map,
+                cap=max(
+                    100,
+                    self._i(
+                        "concept_surfacing_standing_state_cap", 1000,
+                    ),
+                ),
+            )
+        self._standing_last_refresh = now
+        return {
+            "standing_refreshed": 1,
+            "standing_warmed": len(standing_map),
+            "standing_changed": changed,
+            "standing_baseline": round(float(baseline), 4),
+        }
 
     # ── per-concept processing ─────────────────────────────────────────
 

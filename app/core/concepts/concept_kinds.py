@@ -120,6 +120,10 @@ class SurfaceWeights:
       is **not** part of the sum-normalized blend; it is an additive boost
       applied on top (a concept associated with the turn's hot topics is primed
       even at low direct cosine). ``activation_*`` half-life is unused today.
+    - ``standing`` (L38) -- the relationship-local prior earned from whether
+      this concept's previous surfacings led to engaged turns. It stays
+      separate from confidence (usefulness is not truth) and participates in
+      the normalized base rather than stacking as a bonus.
 
     ``recency_halflife_days`` controls the recency decay; ``salience_halflife_days``
     the recent-change event decay.
@@ -133,6 +137,7 @@ class SurfaceWeights:
     salience: float = 0.0
     salience_halflife_days: float = 21.0
     activation: float = 0.0
+    standing: float = 0.0
 
 
 DEFAULT_SURFACE_WEIGHTS = SurfaceWeights()
@@ -322,7 +327,8 @@ register_kind(
         # *settled* it is (stability), not recency -- who someone is barely cares
         # that they were reminded of it. Context stays dominant.
         surface_weights=SurfaceWeights(
-            context=0.6, confidence=0.1, stability=0.3, activation=0.15
+            context=0.6, confidence=0.1, stability=0.3, activation=0.15,
+            standing=0.1,
         ),
     )
 )
@@ -362,7 +368,8 @@ register_kind(
         # L23: values lean on stability even more than identity -- a hard-won
         # principle asserts on how firmly it is held.
         surface_weights=SurfaceWeights(
-            context=0.55, confidence=0.1, stability=0.35, activation=0.15
+            context=0.55, confidence=0.1, stability=0.35, activation=0.15,
+            standing=0.1,
         ),
     )
 )
@@ -397,6 +404,7 @@ register_kind(
         # L23 Phase 2 pass). Short-ish half-life like boundary.
         surface_weights=SurfaceWeights(
             context=0.5, recency=0.3, salience=0.2, activation=0.25,
+            standing=0.1,
             recency_halflife_days=21.0, salience_halflife_days=21.0,
         ),
     )
@@ -436,6 +444,7 @@ register_kind(
         # cluster is hot this turn. Mirrors the affective blend.
         surface_weights=SurfaceWeights(
             context=0.5, recency=0.3, salience=0.2, activation=0.25,
+            standing=0.1,
             recency_halflife_days=21.0, salience_halflife_days=21.0,
         ),
     )
@@ -463,7 +472,7 @@ register_kind(
         # L18e: a closed arc asserts on how *settled* it is, not recency
         # (mirrors identity) -- context stays dominant, stability breaks ties.
         surface_weights=SurfaceWeights(
-            context=0.6, confidence=0.1, stability=0.3
+            context=0.6, confidence=0.1, stability=0.3, standing=0.1,
         ),
         # L3: the sequence gate -- >= 3 chain steps (a story, not an anecdote),
         # a non-instant age, a moderate confidence bar.
@@ -503,6 +512,7 @@ register_kind(
         # freshly-advanced aspiration outranks a stale one; context still leads.
         surface_weights=SurfaceWeights(
             context=0.6, confidence=0.15, recency=0.25,
+            standing=0.1,
             recency_halflife_days=21.0,
         ),
     )
@@ -537,6 +547,7 @@ register_kind(
         # recency nudge so a recently-enacted ritual reads a touch warmer.
         surface_weights=SurfaceWeights(
             context=0.65, stability=0.2, recency=0.15,
+            standing=0.1,
             recency_halflife_days=30.0,
         ),
     )
@@ -578,7 +589,7 @@ register_kind(
         # confidence, and short half-life so old boundaries fade in ranking.
         surface_weights=SurfaceWeights(
             context=0.45, confidence=0.15, recency=0.25, salience=0.15,
-            activation=0.2,
+            activation=0.2, standing=0.1,
             recency_halflife_days=14.0, salience_halflife_days=14.0,
         ),
         # L16: boundary is the first consumer of relationship modulation -- its
@@ -627,7 +638,7 @@ register_kind(
         # context is active, not pinned every turn.
         surface_weights=SurfaceWeights(
             context=0.5, confidence=0.15, stability=0.25, recency=0.1,
-            activation=0.15,
+            activation=0.15, standing=0.1,
             recency_halflife_days=21.0,
         ),
     )
@@ -712,7 +723,7 @@ register_kind(
         core_min_confidence=0.8,
         surface_weights=SurfaceWeights(
             context=0.5, confidence=0.3, stability=0.2,
-            activation=0.1,
+            activation=0.1, standing=0.1,
             recency_halflife_days=30.0,
         ),
     )

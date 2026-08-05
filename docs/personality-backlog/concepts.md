@@ -2165,8 +2165,8 @@ One row per surfaced item per turn, keyed by `assistant_message_id` and settled
 with the *next* turn's engagement label. Two corrections found on the way in:
 there is no persisted `turn_id` to key on, and post-turn is not guaranteed to
 run — so an unsettled row is modelled as correct rather than broken. Nothing
-consumes the rates yet; that is L38, deliberately left as a separate pass so it
-can be designed against real ledger data through `get_surfacing_outcomes`.
+consumed the rates until L38 was calibrated against the live ledger; earned
+standing now reads the concept outcomes off-turn.
 
 <details>
 <summary>Original entry (kept for the design reasoning)</summary>
@@ -2271,79 +2271,8 @@ K81, DT5.
 
 ## L38. Earned standing -- let outcomes move the surfacing score
 
-**Status: UNBLOCKED — L37 has shipped and is recording.** Its read API was
-shaped for this item specifically: `SurfacingOutcomeStore.stats_for(kind, ids,
-window_days=…)` is one grouped query for a whole candidate set, returns
-`(surfaced, settled, engaged, echoed)` *counts* rather than a rate so the
-shrinkage below has a real denominator to work with, and reports `None` rather
-than `0.0` when nothing has settled so a new concept isn't punished for being
-new. Before building, read actual ledger data through `get_surfacing_outcomes` —
-the point of shipping the recorder first was to avoid designing this against
-guesses.
-
-**Motivation.** With L37 recording what happened, the scorer can finally learn.
-Today `surface_score`
-([`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)) blends
-six signals — context, confidence, recency, stability, salience, activation —
-every one of which describes the concept's *internal state*. Not one of them
-describes how the concept has *performed*. A belief that reliably opens the
-user up and a belief that reliably lands flat are scored identically forever,
-which is why the layer's taste is frozen at whatever the weights table said on
-day one.
-
-L38 adds a seventh term, **standing**: a slowly-moving per-concept prior earned
-from the L37 engaged rate. This is the specific change that turns the concept
-layer from a growing store of facts into something that develops judgement
-about its own material.
-
-**Key files.**
-- [`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py) —
-  `surface_score` gains a `standing` argument; it belongs *inside* the
-  sum-normalised base alongside confidence and stability, not as an additive
-  bonus like `activation` (a learned prior should be able to lose to a strong
-  topic match, not stack on top of it).
-- [`concept_kinds.py`](../../app/core/concepts/concept_kinds.py) —
-  `SurfaceWeights` gains a `standing` weight per kind. Start it at `0.0`
-  everywhere so shipping the plumbing changes no behaviour, then raise it per
-  kind behind a setting.
-- [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) — the
-  `_add_scored` closure reads the standing map, loaded once per turn next to
-  the habituation state and the recent-events map.
-
-**Sketched approach.** Standing is a shrunk estimate, not a raw rate: a concept
-surfaced three times with two good turns has *no* evidence, and letting it
-outrank a proven one on a 67% rate would make the whole term noise. Shrink
-toward the neutral 0.5 by observation count (a plain Bayesian
-`(engaged + k*prior) / (total + k)` with `k` around 10 is enough), so standing
-only becomes decisive after a couple of dozen surfacings. Recompute in the
-concept-lifecycle worker rather than per turn.
-
-Cap the term's authority deliberately. Standing must never be able to keep a
-topically irrelevant concept in the prompt, and it must never fully suppress a
-core belief — the floor matters as much as the ceiling, because a value the
-user finds uncomfortable is exactly the kind of thing that scores badly and
-must still be held. Clamping standing into something like `[0.35, 1.0]` and
-exempting `value` / `boundary` kinds from downward pressure is the safe
-version.
-
-**Open questions.** (1) Per-kind weights, or one global? Per-kind matches the
-existing table, but the evidence per kind will be thin for a long time. (2)
-Should standing feed `confidence` instead of sitting beside it? No — confidence
-is "how sure am I this is true", standing is "how useful is it to bring up",
-and collapsing them would let an unpopular truth decay into a falsehood. Worth
-stating explicitly in the code comment. (3) Interaction with habituation: both
-suppress, and stacking them could bury a concept entirely — needs a test that
-a high-standing concept still rotates, and a low-standing one still surfaces
-occasionally so it can earn its way back. (4) Does this want an explicit
-exploration allowance (surface a low-standing concept now and then precisely
-*because* the estimate is stale)? Probably, and it is the difference between a
-system that learns and one that ossifies.
-
-**Effort.** Medium. Small code change, but the safety properties above are
-where the work actually is.
-
-**Depends on.** L37 (the signal). Related to L32 (importance is the *stated*
-weight; standing is the *earned* one — they should stay separate axes).
+**Status: ✅ SHIPPED.** See the implementation record in
+[`shipped/concepts.md`](shipped/concepts.md).
 
 ---
 

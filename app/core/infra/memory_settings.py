@@ -980,6 +980,17 @@ class MemorySettings:
     concept_surfacing_habituation_floor: float = 0.35
     concept_surfacing_core_habituation_floor: float = 0.8
     concept_surfacing_state_cap: int = 300
+    # L38 earned standing -- relationship-local performance prior for
+    # flex/activation concept surfacing. Recomputed off-turn from L37 and
+    # cached in kv_meta; cold/missing evidence remains neutral.
+    concept_surfacing_standing_enabled: bool = True
+    concept_surfacing_standing_window_days: int = 90
+    concept_surfacing_standing_min_settled: int = 4
+    concept_surfacing_standing_prior_strength: float = 10.0
+    concept_surfacing_standing_floor: float = 0.35
+    concept_surfacing_standing_ceiling: float = 1.0
+    concept_surfacing_standing_refresh_seconds: int = 3600
+    concept_surfacing_standing_state_cap: int = 1000
     # L27 core-lane rationale clause. When on, an always-on *pinned* concept
     # may carry a compact "why" clause (its stored rationale, trimmed to
     # ``rationale_max_chars`` on a word boundary) after its grounding, so the
@@ -3004,6 +3015,74 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_surfacing_state_cap=max(
                 0,
                 int(memory_raw.get("concept_surfacing_state_cap", 300)),
+            ),
+            concept_surfacing_standing_enabled=bool(
+                memory_raw.get("concept_surfacing_standing_enabled", True)
+            ),
+            concept_surfacing_standing_window_days=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_standing_window_days", 90
+                    )
+                ),
+            ),
+            concept_surfacing_standing_min_settled=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_standing_min_settled", 4
+                    )
+                ),
+            ),
+            concept_surfacing_standing_prior_strength=min(
+                100.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_surfacing_standing_prior_strength", 10.0
+                        )
+                    ),
+                ),
+            ),
+            concept_surfacing_standing_floor=min(
+                0.5,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_surfacing_standing_floor", 0.35
+                        )
+                    ),
+                ),
+            ),
+            concept_surfacing_standing_ceiling=min(
+                1.0,
+                max(
+                    0.5,
+                    float(
+                        memory_raw.get(
+                            "concept_surfacing_standing_ceiling", 1.0
+                        )
+                    ),
+                ),
+            ),
+            concept_surfacing_standing_refresh_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_standing_refresh_seconds", 3600
+                    )
+                ),
+            ),
+            concept_surfacing_standing_state_cap=max(
+                100,
+                int(
+                    memory_raw.get(
+                        "concept_surfacing_standing_state_cap", 1000
+                    )
+                ),
             ),
             concept_surfacing_core_rationale_enabled=bool(
                 memory_raw.get(

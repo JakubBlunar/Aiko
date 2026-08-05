@@ -1590,6 +1590,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         from app.core.concepts.concept_surfacing import (
             event_charge_detail,
             habituation_factor,
+            load_standing,
             recency_boost,
             salience as concept_salience,
             stability as concept_stability,
@@ -1621,6 +1622,21 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         hab_state, hab_turn = (
             self._load_concept_habituation() if hab_enabled else ({}, 0)
         )
+        # L38 standing is refreshed by the off-turn lifecycle worker. Prompt
+        # assembly performs one bounded KV read and never touches the outcome
+        # ledger. It applies only to the flex/activation scorer; the pinned core
+        # lane above remains governed by confidence and habituation rotation.
+        standing_enabled = bool(
+            getattr(ms, "concept_surfacing_standing_enabled", True)
+        )
+        standing_map: dict[int, float] = {}
+        if standing_enabled:
+            try:
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    standing_map = load_standing(chat_db.kv_get)
+            except Exception:
+                log.debug("concept standing load failed", exc_info=True)
         # L23 salience: a per-concept "recent charge" map from the lifecycle
         # timeline (contradicted / plasticity_shift / revived / promoted), built
         # once per turn so a freshly-changed concept can intrude on the flex lane.
@@ -1722,7 +1738,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
 
         # Shared per-concept scorer for the turn-relevant + activation lanes:
         # a per-kind blend of context (cosine) + confidence + recency +
-        # stability + salience, damped by habituation, plus an additive
+        # stability + salience + earned standing, damped by habituation, plus an additive
         # activation boost. Default weights are context-only, so a kind that
         # hasn't opted in ranks exactly as before (modulo habituation, 1.0 on a
         # fresh state). See ``ConceptKind.surface_weights``.
@@ -1764,9 +1780,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 )
                 sal = concept_salience(change=charge)
             hab = _habituation(cid, hab_flex_floor)
+            standing = (
+                standing_map.get(cid, 0.5) if standing_enabled else None
+            )
             relevance = surface_score(
                 cosine=float(cos), confidence=conf, recency=rec,
-                stability=stab, salience=sal, activation=float(activation),
+                stability=stab, salience=sal, standing=standing,
+                activation=float(activation),
                 habituation=hab, w=weights,
             )
             concept_cands.append(ContextCandidate(
@@ -1781,6 +1801,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 "reason": surface_reason(
                     lane=lane, cosine=float(cos), confidence=conf,
                     recency=rec, stability=stab, salience=sal,
+                    standing=standing,
                     activation=float(activation), change_event=change_event,
                     recency_known=bool(reinforced_at), w=weights,
                 ),
@@ -1789,6 +1810,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 "recency": round(rec, 4),
                 "stability": round(stab, 4),
                 "salience": round(sal, 4),
+                "standing": round(
+                    0.5 if standing is None else standing, 4
+                ),
                 "habituation": round(hab, 4),
                 "score": round(relevance, 4),
             }
