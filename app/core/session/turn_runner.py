@@ -1429,8 +1429,25 @@ class TurnRunner:
             if _messages_have_finished_task_block(messages)
             else "required"
         )
+        choice_policy = getattr(self._ollama, "tool_pass_tool_choice", None)
+        if callable(choice_policy):
+            try:
+                tool_choice = choice_policy(self._model, tool_choice)
+            except Exception:
+                log.debug("tool-pass choice provider failed", exc_info=True)
 
-        for round_idx in range(max_rounds):
+        effective_rounds = max(1, int(max_rounds))
+        round_limit = getattr(self._ollama, "tool_pass_round_limit", None)
+        if callable(round_limit):
+            try:
+                effective_rounds = min(
+                    effective_rounds,
+                    max(1, int(round_limit(self._model))),
+                )
+            except Exception:
+                log.debug("tool-pass round-limit provider failed", exc_info=True)
+
+        for round_idx in range(effective_rounds):
             if self._is_stop_requested(stop_requested) or self._stop.is_set():
                 return total_usage
             try:
@@ -1504,6 +1521,36 @@ class TurnRunner:
                     for idx, call in enumerate(real_calls)
                 ],
             }
+            # Responses API contract: append the provider's complete
+            # ``response.output`` verbatim before the function outputs.
+            # Reconstructing only call_id/name/arguments drops the original
+            # output-item id/status and can make strict reasoning models
+            # fail the follow-up request. Exclude any synthetic escape call
+            # if a provider emitted it alongside real calls; it has no
+            # matching result. Other provider output items (notably
+            # reasoning) remain byte-for-shape intact.
+            response_output = getattr(response, "response_output_items", None)
+            if response_output:
+                real_call_ids = set(tool_call_ids)
+                assistant_msg["_responses_output"] = [
+                    dict(item)
+                    for item in response_output
+                    if (
+                        isinstance(item, dict)
+                        and (
+                            item.get("type") != "function_call"
+                            or str(
+                                item.get("call_id", "")
+                                or item.get("id", "")
+                            ) in real_call_ids
+                        )
+                    )
+                ]
+            else:
+                # Compatibility with clients that expose only reasoning.
+                reasoning_items = getattr(response, "reasoning_items", None)
+                if reasoning_items:
+                    assistant_msg["_responses_reasoning"] = reasoning_items
             messages.append(assistant_msg)
 
             for idx, call in enumerate(real_calls):

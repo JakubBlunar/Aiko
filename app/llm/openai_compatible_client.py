@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -66,6 +67,32 @@ _announced_base_urls: set[str] = set()
 # Mirrors the Ollama client's list; the rationale is identical (the
 # pre-streaming tool-selection pass caps response tokens deliberately).
 _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
+
+# Private keys used by the neutral multi-round tool history. The complete
+# Responses output is authoritative; the reasoning-only key remains as a
+# compatibility fallback for histories/tests created by the first fix.
+# Both are illegal on /v1/chat/completions and are stripped there.
+_RESPONSES_OUTPUT_KEY: str = "_responses_output"
+_RESPONSES_REASONING_KEY: str = "_responses_reasoning"
+
+# Transient HTTP statuses worth a retry on the non-streaming POST paths.
+# 429 = rate limit; 5xx = server-side hiccups. OpenAI's own 500 body says
+# "You can retry your request" — the Responses tool pass hit exactly this
+# and, unretried, silently dropped an already-executed tool result.
+_RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+# Bounded so a genuinely-down provider still fails fast (attempts = 1 + this).
+_MAX_TRANSIENT_RETRIES: int = 2
+# Exponential backoff with full jitter, capped so a retry can't blow the
+# turn's latency budget.
+_RETRY_BASE_DELAY_S: float = 0.5
+_RETRY_MAX_DELAY_S: float = 6.0
+# Only a *fast* failure is worth retrying. A 5xx that arrives in tens of ms
+# is a load-balancer / cold-node blip; a 5xx that arrives after the model
+# already reasoned for 20+ s is expensive server work that failed, and a
+# retry would just pay that cost again (and again). Above this wall-time we
+# fail through immediately rather than multiply the latency — which is what
+# keeps a slow tool-pass failure at ~one attempt instead of three.
+_RETRY_MAX_ATTEMPT_MS: float = 6000.0
 
 
 def _strip_gemini_prefix(model: str) -> str:
@@ -345,6 +372,9 @@ def _normalize_tool_messages_for_openai(
             # string is universally accepted.
             if new_msg.get("content") is None:
                 new_msg["content"] = ""
+            # Responses-API opaque stashes are illegal on chat/completions.
+            new_msg.pop(_RESPONSES_OUTPUT_KEY, None)
+            new_msg.pop(_RESPONSES_REASONING_KEY, None)
             out.append(new_msg)
         elif role == "tool":
             new_msg = dict(msg)
@@ -701,6 +731,39 @@ class OpenAICompatibleClient:
             return False
         return _use_responses_api(model)
 
+    def tool_pass_round_limit(self, model: str) -> int:
+        """Maximum pre-stream tool-selection rounds for ``model``.
+
+        Decimal-versioned GPT-5 reasoning models use one tool batch. Their
+        first call works and can emit multiple parallel functions, but a
+        second forced ``tool_choice="required"`` request after the outputs
+        intermittently stalls for 20–45 seconds and returns an OpenAI 500.
+        It is also redundant in Aiko's two-pass architecture: the normal
+        streaming reply runs immediately afterward with the successful tool
+        outputs in context.
+
+        Other providers retain the historical two-round allowance so Grok,
+        Gemini, Ollama-compatible routes, and older OpenAI models keep
+        sequential tool chaining.
+        """
+        return 1 if _use_responses_api(model) else 2
+
+    def tool_pass_tool_choice(
+        self,
+        model: str,
+        requested: "str | dict[str, Any]",
+    ) -> "str | dict[str, Any]":
+        """Relax the legacy forced-pick policy for modern GPT models.
+
+        ``required`` plus a synthetic ``respond_directly`` escape was added
+        for older chatty models that narrated tool intent instead of
+        emitting a call. Decimal-versioned GPT-5 models call tools reliably
+        on ``auto``; forcing them encourages unnecessary calls and makes
+        every gated pass choose *something*. Other providers keep the
+        caller's historical policy.
+        """
+        return "auto" if _use_responses_api(model) else requested
+
     def set_reasoning_effort(self, value: str | None) -> None:
         """Update the Responses-API reasoning-effort hint at runtime.
 
@@ -1054,6 +1117,98 @@ class OpenAICompatibleClient:
                 payload["prompt_cache_key"] = str(cache_key)
         return payload
 
+    @staticmethod
+    def _retry_delay(attempt: int, response: "requests.Response | None") -> float:
+        """Backoff before retry ``attempt`` (0-based), honouring ``Retry-After``.
+
+        Full-jitter exponential backoff (``base * 2**attempt``, randomised
+        into ``[0, window]``) capped at :data:`_RETRY_MAX_DELAY_S`. A
+        provider-supplied ``Retry-After`` header (seconds) wins when present
+        and larger, since the server knows its own cooldown.
+        """
+        window = min(_RETRY_BASE_DELAY_S * (2 ** attempt), _RETRY_MAX_DELAY_S)
+        delay = random.uniform(0.0, window)
+        if response is not None:
+            hdr = response.headers.get("Retry-After")
+            if hdr:
+                try:
+                    delay = max(delay, min(float(hdr), _RETRY_MAX_DELAY_S))
+                except (TypeError, ValueError):
+                    pass
+        return delay
+
+    def _post_json_with_retry(
+        self,
+        *,
+        path: str,
+        payload: dict[str, Any],
+        timeout: float,
+        surface: str,
+        kind: str,
+    ) -> tuple["requests.Response", float]:
+        """POST JSON with bounded retry on transient failures.
+
+        Retries transport errors (``requests.RequestException``) and the
+        transient HTTP statuses in :data:`_RETRYABLE_STATUS` (429 / 5xx) up
+        to :data:`_MAX_TRANSIENT_RETRIES` times with jittered backoff. Non-
+        retryable responses (2xx and hard 4xx alike) and the final failure
+        are returned/raised for the caller to handle exactly as before, so
+        logging and error surfacing are unchanged. Returns the response plus
+        the elapsed time of the *final* attempt (so usage timing excludes
+        backoff sleeps). Only safe for the non-streaming paths — a stream
+        can't be replayed once bytes are yielded.
+        """
+        url = f"{self._base_url}/{path}"
+        attempts = _MAX_TRANSIENT_RETRIES + 1
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            t0 = time.monotonic()
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    timeout=timeout,
+                    headers=self._request_headers(),
+                )
+            except requests.RequestException as exc:
+                elapsed_ms = (time.monotonic() - t0) * 1000.0
+                # A slow transport failure (e.g. a read timeout) already
+                # burned the budget — don't pay it again.
+                if last or elapsed_ms > _RETRY_MAX_ATTEMPT_MS:
+                    raise
+                delay = self._retry_delay(attempt, None)
+                log.warning(
+                    "openai-compat %s transient transport error in %.0fms, "
+                    "retrying in %.1fs (attempt %d/%d) surface=%s exc=%r",
+                    kind, elapsed_ms, delay, attempt + 1, attempts,
+                    surface, exc,
+                )
+                time.sleep(delay)
+                continue
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            retryable = (
+                response.status_code in _RETRYABLE_STATUS
+                and not last
+                and elapsed_ms <= _RETRY_MAX_ATTEMPT_MS
+            )
+            if retryable:
+                delay = self._retry_delay(attempt, response)
+                log.warning(
+                    "openai-compat %s transient status=%d in %.0fms, "
+                    "retrying in %.1fs (attempt %d/%d) surface=%s",
+                    kind, response.status_code, elapsed_ms, delay,
+                    attempt + 1, attempts, surface,
+                )
+                try:
+                    response.close()
+                except Exception:
+                    pass
+                time.sleep(delay)
+                continue
+            return response, elapsed_ms
+        # Unreachable: the final attempt always returns or raises above.
+        raise RuntimeError("retry loop exited without a response")
+
     def _responses_complete(
         self,
         *,
@@ -1066,8 +1221,13 @@ class OpenAICompatibleClient:
         timeout: float,
         surface: str,
         think: bool,
-    ) -> tuple[str, list[ChatToolCall], ChatUsage]:
-        """Non-streaming ``POST /v1/responses`` -> (content, calls, usage)."""
+    ) -> tuple[str, list[ChatToolCall], ChatUsage, list[dict[str, Any]]]:
+        """Non-streaming ``POST /v1/responses``.
+
+        Returns ``(content, calls, usage, response_output_items)``. When
+        calls are present, the trailing list is the complete
+        ``response.output`` array the documented follow-up flow must append
+        verbatim before its ``function_call_output`` items."""
         payload = self._build_responses_payload(
             messages=messages,
             model=model,
@@ -1079,11 +1239,12 @@ class OpenAICompatibleClient:
         )
         t0 = time.monotonic()
         try:
-            response = requests.post(
-                f"{self._base_url}/responses",
-                json=payload,
+            response, elapsed_ms = self._post_json_with_retry(
+                path="responses",
+                payload=payload,
                 timeout=timeout,
-                headers=self._request_headers(),
+                surface=surface,
+                kind="responses",
             )
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -1094,7 +1255,6 @@ class OpenAICompatibleClient:
                 elapsed_ms, exc,
             )
             raise
-        elapsed_ms = (time.monotonic() - t0) * 1000.0
         if not response.ok:
             self._log_http_error(
                 "responses", response, elapsed_ms=elapsed_ms,
@@ -1111,6 +1271,11 @@ class OpenAICompatibleClient:
             raise requests.HTTPError(msg, response=response)
         body = response.json()
         content, tool_calls, done_reason = _parse_responses_output(body)
+        # Only worth carrying when there are calls to pair them with; a
+        # plain text reply has no follow-up round that needs these items.
+        response_output_items = (
+            _response_output_items(body) if tool_calls else []
+        )
         had_thinking = False
         if not think:
             content, had_thinking = _strip_thinking_blocks_with_signal(content)
@@ -1133,7 +1298,7 @@ class OpenAICompatibleClient:
             model, surface, len(messages), len(tools or []), elapsed_ms,
             usage.prompt_tokens, usage.completion_tokens, len(tool_calls),
         )
-        return content, tool_calls, usage
+        return content, tool_calls, usage, response_output_items
 
     def _responses_stream(
         self,
@@ -1294,19 +1459,30 @@ class OpenAICompatibleClient:
         del keep_alive  # Ollama-only knob; see __init__ docstring
         use_model = (model or "").strip() or self._default_model
         if self._should_use_responses(use_model):
-            content, tool_calls, usage = self._responses_complete(
-                messages=messages,
-                model=use_model,
-                options=options,
-                tools=tools,
-                tool_choice=tool_choice,
-                format_json=False,
-                timeout=self._timeout_seconds,
-                surface=surface,
-                think=think,
+            content, tool_calls, usage, response_output_items = (
+                self._responses_complete(
+                    messages=messages,
+                    model=use_model,
+                    options=options,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    format_json=False,
+                    timeout=self._timeout_seconds,
+                    surface=surface,
+                    think=think,
+                )
             )
             self.last_usage = usage
-            return ChatResponse(content=content, tool_calls=tool_calls)
+            return ChatResponse(
+                content=content,
+                tool_calls=tool_calls,
+                reasoning_items=[
+                    dict(item)
+                    for item in response_output_items
+                    if item.get("type") == "reasoning"
+                ],
+                response_output_items=response_output_items,
+            )
         payload = self._build_payload(
             messages=messages,
             model=use_model,
@@ -1323,11 +1499,12 @@ class OpenAICompatibleClient:
             payload["tool_choice"] = tool_choice
         t0 = time.monotonic()
         try:
-            response = requests.post(
-                f"{self._base_url}/chat/completions",
-                json=payload,
+            response, elapsed_ms = self._post_json_with_retry(
+                path="chat/completions",
+                payload=payload,
                 timeout=self._timeout_seconds,
-                headers=self._request_headers(),
+                surface=surface,
+                kind="chat",
             )
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -1337,7 +1514,6 @@ class OpenAICompatibleClient:
                 use_model, len(messages), len(tools or []), elapsed_ms, exc,
             )
             raise
-        elapsed_ms = (time.monotonic() - t0) * 1000.0
         if not response.ok:
             self._log_http_error("chat", response, elapsed_ms=elapsed_ms)
             try:
@@ -1532,7 +1708,7 @@ class OpenAICompatibleClient:
             else self._timeout_seconds
         )
         if self._should_use_responses(use_model):
-            content, _tool_calls, usage = self._responses_complete(
+            content, _tool_calls, usage, _output = self._responses_complete(
                 messages=messages,
                 model=use_model,
                 options=merged_options,
@@ -1790,9 +1966,29 @@ def _messages_to_responses_input(
             continue
         role = msg.get("role")
         if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+            # The Responses contract is to append ``response.output``
+            # verbatim, not to recreate only its function calls. Keeping
+            # the original items preserves provider-generated ids/status
+            # as well as reasoning items. If present, this authoritative
+            # stash replaces both the assistant-content conversion and
+            # the reconstructed-call fallback below.
+            stashed_output = msg.get(_RESPONSES_OUTPUT_KEY)
+            if isinstance(stashed_output, list) and stashed_output:
+                out.extend(
+                    dict(item) for item in stashed_output
+                    if isinstance(item, dict)
+                )
+                continue
             content = msg.get("content")
             if isinstance(content, str) and content.strip():
                 out.append({"role": "assistant", "content": content})
+            # Compatibility fallback for histories generated by the first
+            # reasoning-only bridge.
+            stashed_reasoning = msg.get(_RESPONSES_REASONING_KEY)
+            if isinstance(stashed_reasoning, list):
+                for item in stashed_reasoning:
+                    if isinstance(item, dict):
+                        out.append(dict(item))
             for idx, call in enumerate(msg["tool_calls"]):
                 if not isinstance(call, dict):
                     continue
@@ -1893,6 +2089,42 @@ def _tool_choice_to_responses(
         if tool_choice.get("type") == "function" and tool_choice.get("name"):
             return {"type": "function", "name": str(tool_choice["name"])}
     return tool_choice
+
+
+def _response_output_items(body: object) -> list[dict[str, Any]]:
+    """Copy the complete Responses ``output`` array for a tool follow-up.
+
+    OpenAI's documented flow is ``input += response.output``. Preserving
+    every item verbatim is important: reasoning models need their reasoning
+    items, while the original function-call item also carries a
+    provider-generated ``id`` and ``status`` that a reduced reconstruction
+    loses.
+    """
+    if not isinstance(body, dict):
+        return []
+    output = body.get("output")
+    if not isinstance(output, list):
+        return []
+    return [dict(item) for item in output if isinstance(item, dict)]
+
+
+def _reasoning_items_from_responses_output(body: object) -> list[dict[str, Any]]:
+    """Pull raw ``reasoning`` items out of a Responses ``output`` array.
+
+    Returned **verbatim** (id + type + summary + any encrypted_content),
+    because for GPT-5 / o-series reasoning models the Responses API
+    requires the reasoning items that preceded a tool call to be passed
+    back with the tool outputs on the follow-up request — dropping them
+    is what makes the second tool round 500 (see the function-calling
+    guide, "Handling function calls"). We keep the whole item rather than
+    cherry-picking fields so the round-trip stays correct if OpenAI adds
+    to the shape.
+    """
+    return [
+        dict(item)
+        for item in _response_output_items(body)
+        if item.get("type") == "reasoning"
+    ]
 
 
 def _parse_responses_output(

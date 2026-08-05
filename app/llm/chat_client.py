@@ -46,10 +46,23 @@ class ChatResponse:
     ``content`` is the user-visible answer (with ``<think>`` blocks
     stripped unless the caller asked for them). ``tool_calls`` is empty
     when the model didn't request any.
+
+    ``response_output_items`` carries the complete opaque provider output
+    that came back alongside tool calls. OpenAI's Responses API requires
+    callers to append ``response.output`` verbatim before tool-call outputs
+    on the next request; that includes reasoning items and the original
+    function-call item's provider id/status. Empty for non-Responses
+    providers and replies without tool calls.
+
+    ``reasoning_items`` is the reasoning-only compatibility view of those
+    output items. New orchestration should preserve
+    ``response_output_items`` rather than reconstructing the response.
     """
 
     content: str
     tool_calls: list[ChatToolCall] = field(default_factory=list)
+    reasoning_items: list[dict[str, Any]] = field(default_factory=list)
+    response_output_items: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

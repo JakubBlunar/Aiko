@@ -425,6 +425,65 @@ class TurnRunnerTwoPassTests(unittest.TestCase):
         self.assertEqual(result_events[0][0], "get_time")
         self.assertTrue(result_events[0][2])
 
+    def test_responses_output_is_stashed_verbatim_for_followup(self) -> None:
+        from app.llm.ollama_client import OllamaChatResponse, OllamaToolCall
+
+        raw_output = [
+            {"id": "rs_1", "type": "reasoning", "summary": []},
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "c1",
+                "name": "get_time",
+                "arguments": "{}",
+            },
+        ]
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.received_tool_choice = None
+
+            @staticmethod
+            def tool_pass_round_limit(_model: str) -> int:
+                return 1
+
+            @staticmethod
+            def tool_pass_tool_choice(_model: str, _requested: str) -> str:
+                return "auto"
+
+            def chat_with_tools(self, messages, **kwargs):
+                self.calls += 1
+                self.received_tool_choice = kwargs.get("tool_choice")
+                if self.calls == 1:
+                    return OllamaChatResponse(
+                        content="",
+                        tool_calls=[
+                            OllamaToolCall(
+                                name="get_time", arguments={}, call_id="c1",
+                            ),
+                        ],
+                        response_output_items=raw_output,
+                    )
+                return OllamaChatResponse(content="", tool_calls=[])
+
+        registry = ToolRegistry()
+        registry.register(GetTimeTool())
+        messages = [{"role": "user", "content": "what time is it?"}]
+        runner = self._make_runner(FakeClient(), registry)
+
+        runner._maybe_run_tool_pass(messages, stop_requested=None)
+
+        self.assertEqual(runner._ollama.calls, 1)
+        self.assertEqual(runner._ollama.received_tool_choice, "auto")
+        self.assertEqual(messages[1]["_responses_output"], raw_output)
+        self.assertEqual(messages[1]["_responses_output"][1]["id"], "fc_1")
+        self.assertEqual(
+            messages[2]["tool_call_id"],
+            messages[1]["_responses_output"][1]["call_id"],
+        )
+
     def test_ollama_failure_swallowed(self) -> None:
         class FakeOllama:
             def chat_with_tools(self, *_args, **_kwargs):
