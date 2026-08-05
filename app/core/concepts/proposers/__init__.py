@@ -63,6 +63,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   labels + the profile ``communication_style`` field). Share the
   :func:`propose_communication_style` body, whose composition rule lets a single
   anchor seed a line. The delivery vehicle for lightening the hard-coded persona.
+- ``taste_aiko`` -- *taste* (K81), aiko-only. Unlike affective (topic ->
+  *emotion*) it names which topics Aiko genuinely *enjoys* getting into with
+  the user -- the *preference* axis. Its signal is the L37 surfacing ledger's
+  per-cluster engaged rate (a topic that reliably *lands* when surfaced),
+  folded per topic cluster by ``ConceptSynthesisWorker._run_taste_pass`` and
+  handed in as a per-cluster affinity annotation. Reuses the
+  :func:`propose_aiko_hybrid` body with a taste-aware prompt; relationship-
+  scoped, colours enthusiasm not availability.
 - ``tension_user`` / ``tension_relationship`` / ``tension_aiko`` -- *tension*
   (L12), the first *meta* proposers. Unlike every other proposer their raw
   material is not clusters/memories but the small set of active BASE (non-meta)
@@ -100,6 +108,7 @@ from app.core.concepts.proposers import (
     narrative_aiko,
     narrative_user,
     relationship_ritual,
+    taste_aiko,
     tension_aiko,
     tension_relationship,
     tension_user,
@@ -155,6 +164,7 @@ from app.core.concepts.proposers.narrative_user import propose_narrative_user
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
 )
+from app.core.concepts.proposers.taste_aiko import propose_taste_aiko
 from app.core.concepts.proposers.tension_aiko import propose_tension_aiko
 from app.core.concepts.proposers.tension_relationship import (
     propose_tension_relationship,
@@ -179,6 +189,9 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     boundary_aiko.SPEC,
     communication_style_user.SPEC,
     communication_style_aiko.SPEC,
+    # K81 taste -- aiko-only, over the L37 surfacing ledger's per-cluster
+    # engaged rate. A ``set`` kind like affective, so it runs before the metas.
+    taste_aiko.SPEC,
     # Meta proposers run LAST: their base concepts must already be ``active``
     # (the L1 meta dependency-ordering rule).
     tension_user.SPEC,
@@ -227,6 +240,7 @@ __all__ = [
     "propose_narrative_user",
     "propose_ordered_concept",
     "propose_relationship_ritual",
+    "propose_taste_aiko",
     "propose_tension",
     "propose_tension_aiko",
     "propose_tension_relationship",

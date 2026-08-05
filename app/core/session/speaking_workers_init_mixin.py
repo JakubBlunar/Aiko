@@ -664,6 +664,7 @@ class SpeakingWorkersInitMixin:
             initiative=self._render_initiative_block,
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
+            taste_lean=self._render_taste_lean_block,
             emotion_episode=self._render_emotion_episode_block,
             tease_ledger=self._render_tease_collection_block,
             grounding_line=self._render_grounding_line,
@@ -1925,6 +1926,13 @@ class SpeakingWorkersInitMixin:
                             user_id_provider=(
                                 lambda: getattr(self, "_user_id", "")
                                 or "default"
+                            ),
+                            # K81: the L37 ledger store is built later (in
+                            # idle-workers init), so resolve it lazily.
+                            surfacing_outcome_store_provider=(
+                                lambda: getattr(
+                                    self, "_surfacing_outcome_store", None
+                                )
                             ),
                         )
                         self._idle_scheduler.register(

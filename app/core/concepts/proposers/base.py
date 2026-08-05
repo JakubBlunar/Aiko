@@ -239,6 +239,8 @@ def propose_aiko_hybrid(
     existing: Sequence[ExistingConcept] = (),
     affect_by_rep: "dict[int, str] | None" = None,
     memory_affect: "dict[int, str] | None" = None,
+    rep_annotation_label: str = "feels",
+    mem_annotation_label: str = "felt",
     prompt_tail: str | None = None,
 ) -> list[CandidateProposal]:
     """Shared body for the subject=aiko proposers (L11).
@@ -253,9 +255,13 @@ def propose_aiko_hybrid(
     clusters yet this degrades cleanly to memories-only (cold start).
 
     ``affect_by_rep`` / ``memory_affect`` (L13) optionally annotate each
-    theme / memory line with its typical affect phrase, and ``prompt_tail``
+    theme / memory line with a per-source phrase, and ``prompt_tail``
     overrides the closing instruction — the affective proposer reuses this
-    body with an affect-aware prompt."""
+    body with an affect-aware prompt. ``rep_annotation_label`` /
+    ``mem_annotation_label`` name what that phrase *is* (``"feels"`` /
+    ``"felt"`` for affect; K81 taste passes ``"lands well"`` to render the
+    per-cluster engagement instead), so the annotation reads correctly for
+    whichever signal the caller is threading through."""
     aff_reps = affect_by_rep or {}
     aff_mems = memory_affect or {}
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
@@ -270,7 +276,7 @@ def propose_aiko_hybrid(
         valid_mem_ids.add(mid)
         line = mem_line(mem)
         if mid in aff_mems:
-            line += f"  (felt: {aff_mems[mid]})"
+            line += f"  ({mem_annotation_label}: {aff_mems[mid]})"
         mem_lines.append(line)
 
     if not valid_reps and not valid_mem_ids:
@@ -282,7 +288,7 @@ def propose_aiko_hybrid(
             f"[{rep}] {label} (size {size})"
         )
         if rep in aff_reps:
-            head += f"  (feels: {aff_reps[rep]})"
+            head += f"  ({rep_annotation_label}: {aff_reps[rep]})"
         return head
 
     sections: list[str] = []

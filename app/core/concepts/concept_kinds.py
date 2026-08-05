@@ -65,6 +65,7 @@ from app.core.concepts.concept_lifecycle import (
     identity_evidence_gate,
     narrative_evidence_gate,
     ritual_evidence_gate,
+    taste_evidence_gate,
     tension_evidence_gate,
     value_evidence_gate,
 )
@@ -394,6 +395,45 @@ register_kind(
         # L23: a topic's emotional weather is a *recent* thing -- weight recency
         # so a freshly-felt affect outranks a stale one (salience added in the
         # L23 Phase 2 pass). Short-ish half-life like boundary.
+        surface_weights=SurfaceWeights(
+            context=0.5, recency=0.3, salience=0.2, activation=0.25,
+            recency_halflife_days=21.0, salience_halflife_days=21.0,
+        ),
+    )
+)
+
+
+# ── K81: taste ────────────────────────────────────────────────────────
+# The *preference* axis the topic stack never had. The topic graph knows
+# frequency (what came up, how often) and cluster_affect knows emotion
+# (valence/arousal); neither knows which topics reliably go *well* between
+# the two of them. K81 reads that off the L37 surfacing ledger -- per-cluster
+# engaged/settled rate -- and stores it as a durable, first-person,
+# relationship-scoped enjoyment ("you genuinely light up getting into X with
+# him"). Only an ``aiko`` proposer ships: taste is *hers*, coloured by the
+# bond, never a claim about what he should like. Same ``set`` machinery as
+# affective, and deliberately the same fluid plasticity band so a taste forms
+# and drifts through the normal lifecycle rather than being pinned.
+register_kind(
+    ConceptKind(
+        name="taste",
+        subject="aiko",
+        evidence_model="set",
+        # L16: fluid end, like affective -- an enjoyment shifts as the
+        # relationship's rhythm shifts, so confidence should track change
+        # readily rather than harden into a fixed trait.
+        plasticity_default=0.5,
+        # K81: the taste gate -- >= 2 clusters of evidence, a short stability
+        # delay, a moderate confidence bar (floors the shared set gate).
+        promotion_gate=taste_evidence_gate,
+        # L24 / L27: a taste is enthusiasm colour, not a pinned fact -- it
+        # surfaces when the live turn's topic matches (T3 relevance), never
+        # every turn. So no ``surfacing_targets`` (relevance-only route, like
+        # affective) and it does NOT join the always-on core lane.
+        # L23: an enjoyment is a *recent-leaning* reading -- a topic that has
+        # been landing lately outranks one that used to; salience lets a
+        # freshly-enjoyed topic intrude, and activation lifts it when its
+        # cluster is hot this turn. Mirrors the affective blend.
         surface_weights=SurfaceWeights(
             context=0.5, recency=0.3, salience=0.2, activation=0.25,
             recency_halflife_days=21.0, salience_halflife_days=21.0,

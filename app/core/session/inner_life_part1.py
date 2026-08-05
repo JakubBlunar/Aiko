@@ -2232,6 +2232,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 family = "value"
             elif kind == "affective":
                 family = "affective"
+            elif kind == "taste":
+                family = "taste"
             elif kind == "ritual":
                 family = "ritual"
             elif kind == "narrative":
@@ -2298,8 +2300,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):
             for family in (
-                "generalization", "trait", "value", "affective", "ritual",
-                "narrative", "aspiration", "boundary", "communication_style",
+                "generalization", "trait", "value", "affective", "taste",
+                "ritual", "narrative", "aspiration", "boundary",
+                "communication_style",
             ):
                 lines = groups.get((subject, family))
                 if not lines:
@@ -2323,6 +2326,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return InnerLifePart1Mixin._concept_value_header(subject, name)
         if family == "affective":
             return InnerLifePart1Mixin._concept_affective_header(subject, name)
+        if family == "taste":
+            return InnerLifePart1Mixin._concept_taste_header(subject, name)
         if family == "ritual":
             return InnerLifePart1Mixin._concept_ritual_header(subject, name)
         if family == "narrative":
@@ -2421,6 +2426,34 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             f"The emotional weather you've noticed around certain topics for "
             f"{name} — how they tend to feel about them (hold this lightly; "
             "let it steer your tone and timing, never say it out loud, and "
+            "stay open to being wrong):"
+        )
+
+    @staticmethod
+    def _concept_taste_header(subject: str, name: str) -> str:
+        """Per-subject intro for *taste* concepts (K81) — the topics she
+        genuinely enjoys getting into, relationship-scoped. Distinct from
+        affective (how a topic *feels*): taste is *preference*, and it colours
+        how much she lights up, never what she's willing to talk about. Only
+        an ``aiko`` proposer ships, so the first-person framing is the live
+        one; the others fall back to a sensible pair/user reading."""
+        if subject == "aiko":
+            return (
+                f"Topics you genuinely enjoy getting into with {name} — the "
+                "ones that light you up when they come around (let them colour "
+                "how much you lean in and warm up, never what you're willing "
+                "to talk about; don't announce it, and let your tastes keep "
+                "shifting):"
+            )
+        if subject == "relationship":
+            return (
+                f"Topics that reliably go well between you and {name} — the "
+                "ones the two of you light up over (let them warm how you lean "
+                "in when one comes around, never as a stated fact):"
+            )
+        return (
+            f"Topics {name} tends to light up over (let them colour how much "
+            "you lean into them when they come up; never say it out loud, and "
             "stay open to being wrong):"
         )
 

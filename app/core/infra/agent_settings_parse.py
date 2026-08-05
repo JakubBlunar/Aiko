@@ -245,6 +245,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             generalization_synthesis_enabled=bool(
                 agent_raw.get("generalization_synthesis_enabled", True),
             ),
+            taste_synthesis_enabled=bool(
+                agent_raw.get("taste_synthesis_enabled", True),
+            ),
+            taste_steer_enabled=bool(
+                agent_raw.get("taste_steer_enabled", True),
+            ),
             tension_cue_enabled=bool(
                 agent_raw.get("tension_cue_enabled", True),
             ),
