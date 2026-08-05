@@ -413,6 +413,9 @@ def _ms() -> SimpleNamespace:
         context_budget_core_cap=2,
         context_budget_core_min_confidence=0.75,
         concept_min_clusters=6,
+        # Feature-focused tests opt in explicitly; keep legacy ranking fixtures
+        # stable when no standing cache was part of their setup.
+        concept_surfacing_standing_enabled=False,
     )
 
 
@@ -887,6 +890,30 @@ class HabituationWiringTests(unittest.TestCase):
         self.assertEqual(comps[22]["score"]["salience"], 0.0)
         self.assertGreater(
             comps[21]["score"]["score"], comps[22]["score"]["score"]
+        )
+
+    def test_earned_standing_is_loaded_once_and_recorded_in_flex_trace(self) -> None:
+        from app.core.concepts.concept_surfacing import save_standing
+
+        def _c(cid: int):
+            return SimpleNamespace(
+                concept_id=cid, label=f"likes topic {cid}", confidence=0.6,
+                plasticity=0.5, kind="affective", subject="user",
+                status="active", last_reinforced_at=None,
+            )
+
+        kv = _FakeKV()
+        save_standing(kv.kv_set, {31: 1.0, 32: 0.35})
+        host = self._host(
+            [_c(31), _c(32)], near_score=0.7,
+            tracker=_FakeTracker(3), kv=kv,
+        )
+        host._memory_settings.concept_surfacing_standing_enabled = True
+        comps = self._trace_by_id(self._run(host))
+        self.assertEqual(comps[31]["score"]["standing"], 1.0)
+        self.assertEqual(comps[32]["score"]["standing"], 0.35)
+        self.assertGreater(
+            comps[31]["score"]["score"], comps[32]["score"]["score"]
         )
 
     def test_activation_lifts_hot_cluster_sibling(self) -> None:

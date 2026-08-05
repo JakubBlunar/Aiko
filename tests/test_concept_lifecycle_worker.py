@@ -9,6 +9,7 @@ anchor correctness (no double-decay), and the set-evidence gate.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ from app.core.concepts.concept_event_store import ConceptEvent, ConceptEventStor
 from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.engagement_clock import EngagementClock
+from app.core.memory.surfacing_outcome_store import ItemStats
 
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -69,6 +71,8 @@ def _settings(**over) -> SimpleNamespace:
         # ConfidenceSampleTests turns it on.
         concept_confidence_sample_enabled=False,
         concept_confidence_sample_band=0.1,
+        # L38 standing is enabled only in its focused tests below.
+        concept_surfacing_standing_enabled=False,
         # engagement clock knobs (for the shared clock instance)
         engagement_clock_enabled=True,
         engagement_seconds_per_day=3600.0,
@@ -99,6 +103,7 @@ def _harness(
     detector=None,
     belief_reviser=None,
     relationship_signal_provider=None,
+    surfacing_outcome_store_provider=None,
 ):
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "test.db")
@@ -122,6 +127,9 @@ def _harness(
         contradiction_detector=detector,
         belief_reviser=belief_reviser,
         relationship_signal_provider=relationship_signal_provider,
+        surfacing_outcome_store_provider=surfacing_outcome_store_provider,
+        kv_get=kv.get,
+        kv_set=kv.set,
         memory_settings=settings,
         agent_settings=SimpleNamespace(concepts_enabled=concepts_enabled),
         clock=lambda: _NOW,
@@ -163,6 +171,101 @@ def _seed_engaged_days(h, days: float) -> None:
     ``first_evidence_at`` alone buys nothing.
     """
     h.kv.set("engagement.total_units", str(days * 3600.0))
+
+
+class _StandingLedger:
+    def __init__(self, rows: dict[int, ItemStats]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, list[int], int]] = []
+
+    def stats_for(
+        self, kind: str, ids: list[int], *, window_days: int
+    ) -> dict[int, ItemStats]:
+        self.calls.append((kind, list(ids), window_days))
+        return {cid: self.rows[cid] for cid in ids if cid in self.rows}
+
+
+class EarnedStandingRefreshTests(unittest.TestCase):
+    def _standing_settings(self, **over) -> SimpleNamespace:
+        return _settings(
+            concept_surfacing_standing_enabled=True,
+            concept_surfacing_standing_window_days=90,
+            concept_surfacing_standing_min_settled=4,
+            concept_surfacing_standing_prior_strength=10.0,
+            concept_surfacing_standing_floor=0.35,
+            concept_surfacing_standing_ceiling=1.0,
+            concept_surfacing_standing_refresh_seconds=3600,
+            concept_surfacing_standing_state_cap=1000,
+            **over,
+        )
+
+    def test_refresh_batches_all_active_concepts_and_persists_warm_only(self) -> None:
+        ledger = _StandingLedger({})
+        h = _harness(
+            settings=self._standing_settings(),
+            surfacing_outcome_store_provider=lambda: ledger,
+        )
+        ordinary = _add(h.store, status="active", kind="identity")
+        boundary = _add(
+            h.store, status="active", kind="boundary",
+            label="Aiko keeps an important guard",
+        )
+        cold = _add(
+            h.store, status="active", kind="taste",
+            label="Aiko likes quiet mysteries",
+        )
+        ledger.rows = {
+            ordinary.concept_id: ItemStats(settled=10, engaged=8),
+            boundary.concept_id: ItemStats(settled=10, engaged=0),
+            cold.concept_id: ItemStats(settled=3, engaged=3),
+        }
+
+        stats = h.worker.run()
+
+        self.assertEqual(len(ledger.calls), 1)
+        self.assertEqual(ledger.calls[0][0], "concept")
+        self.assertCountEqual(
+            ledger.calls[0][1],
+            [ordinary.concept_id, boundary.concept_id, cold.concept_id],
+        )
+        self.assertEqual(ledger.calls[0][2], 90)
+        cached = json.loads(h.kv.get("concept.earned_standing") or "{}")
+        self.assertEqual(set(cached), {
+            str(ordinary.concept_id), str(boundary.concept_id),
+        })
+        self.assertGreater(cached[str(ordinary.concept_id)], 0.5)
+        self.assertEqual(cached[str(boundary.concept_id)], 0.5)
+        self.assertEqual(stats["standing_warmed"], 2)
+
+    def test_hourly_cadence_and_cache_replacement_prune_stale_ids(self) -> None:
+        ledger = _StandingLedger({})
+        h = _harness(
+            settings=self._standing_settings(),
+            surfacing_outcome_store_provider=lambda: ledger,
+        )
+        concept = _add(h.store, status="active")
+        ledger.rows = {
+            concept.concept_id: ItemStats(settled=10, engaged=5)
+        }
+        h.kv.set("concept.earned_standing", '{"999":0.9}')
+
+        h.worker.run()
+        h.worker.run()
+        self.assertEqual(len(ledger.calls), 1)
+        self.assertNotIn("999", h.kv.get("concept.earned_standing") or "")
+
+        h.worker._maybe_refresh_standing(_NOW + timedelta(seconds=3601))
+        self.assertEqual(len(ledger.calls), 2)
+
+    def test_missing_ledger_is_graceful_and_does_not_write(self) -> None:
+        h = _harness(
+            settings=self._standing_settings(),
+            surfacing_outcome_store_provider=lambda: None,
+        )
+        _add(h.store, status="active")
+        stats = h.worker.run()
+        self.assertEqual(stats["standing_refreshed"], 0)
+        self.assertIsNone(h.kv.get("concept.earned_standing"))
 
 
 class PromotionTests(unittest.TestCase):
@@ -841,7 +944,7 @@ class KindPlasticityTests(unittest.TestCase):
 
     def test_unknown_kind_falls_back_to_default_setting(self) -> None:
         h = _harness(_settings(concept_default_plasticity=0.6))
-        c = _add(h.store, kind="taste", plasticity=0.9)
+        c = _add(h.store, kind="future_kind", plasticity=0.9)
         h.worker.run()
         self.assertAlmostEqual(h.store.get(c.concept_id).plasticity, 0.6)
 

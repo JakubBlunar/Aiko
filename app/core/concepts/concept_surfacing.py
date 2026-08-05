@@ -16,6 +16,8 @@ brings a thought forward:
   associated with the turn's hot topics is primed even at low direct cosine).
 - **habituation** (L23 / L27): a repetition-suppression multiplier so a concept
   surfaced last turn steps aside and recovers over a few turns.
+- **standing** (L38): a slowly learned prior from how reliably this concept's
+  past surfacings led to an engaged next turn.
 
 The per-kind weights live on :class:`app.core.concepts.concept_kinds.SurfaceWeights`
 (``ConceptKind.surface_weights``); the default is context-only, which reproduces
@@ -29,11 +31,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 
 from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
 
 log = logging.getLogger("app.concept_surfacing")
+
+STANDING_KV_KEY = "concept.earned_standing"
+STANDING_NEUTRAL = 0.5
 
 
 def _c01(value: float) -> float:
@@ -184,6 +190,104 @@ def salience(*, change: float = 0.0, affect: float = 0.0) -> float:
     return a + b - a * b
 
 
+def engagement_baseline(stats_by_id: dict[int, object]) -> float:
+    """Relationship-local engaged rate across a concept outcome snapshot.
+
+    L37's labels are not balanced classes: in the first real ledger sample
+    only about 29% of settled rows were ``engaged``. Treating a raw rate of
+    0.5 as the population norm would therefore push almost every concept
+    below neutral. The empirical baseline is the honest prior. Empty or
+    malformed snapshots fall back to ``0.5`` so standing remains a no-op.
+    """
+    settled = 0
+    engaged = 0
+    for stats in (stats_by_id or {}).values():
+        try:
+            row_settled = max(0, int(getattr(stats, "settled", 0) or 0))
+            row_engaged = max(0, int(getattr(stats, "engaged", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+        settled += row_settled
+        engaged += min(row_settled, row_engaged)
+    if settled <= 0:
+        return STANDING_NEUTRAL
+    return _c01(engaged / settled)
+
+
+def earned_standing(
+    *,
+    engaged: int,
+    settled: int,
+    baseline: float,
+    min_settled: int = 4,
+    prior_strength: float = 10.0,
+    floor: float = 0.35,
+    ceiling: float = 1.0,
+    protect_downward: bool = False,
+) -> float:
+    """Return a shrunk, baseline-calibrated L38 standing score.
+
+    ``confidence`` answers whether a concept is true; standing answers whether
+    it is useful to bring forward. They must remain separate. The observed
+    engaged rate is shrunk toward the relationship-local ``baseline`` and then
+    mapped so that baseline performance is neutral (``0.5``), a zero posterior
+    reaches only ``floor``, and a perfect posterior reaches ``ceiling``.
+
+    Thin samples return neutral. ``protect_downward`` is for values/boundaries:
+    an uncomfortable truth or behaviour guard may earn more standing, but can
+    never be suppressed because the user did not enjoy hearing it.
+    """
+    neutral = STANDING_NEUTRAL
+    try:
+        total = max(0, int(settled))
+        hits = min(total, max(0, int(engaged)))
+        warmup = max(0, int(min_settled))
+        raw_strength = float(prior_strength)
+        raw_prior = float(baseline)
+        raw_low = float(floor)
+        raw_high = float(ceiling)
+    except (TypeError, ValueError):
+        return neutral
+    if not all(
+        math.isfinite(value)
+        for value in (raw_strength, raw_prior, raw_low, raw_high)
+    ):
+        return neutral
+    strength = max(0.0, raw_strength)
+    prior = _c01(raw_prior)
+    low = _c01(raw_low)
+    high = _c01(raw_high)
+    if low > high:
+        low, high = high, low
+    neutral = min(high, max(low, neutral))
+    if total < warmup or total <= 0:
+        return neutral
+    denominator = total + strength
+    posterior = (
+        (hits + strength * prior) / denominator
+        if denominator > 0.0 else prior
+    )
+    posterior = _c01(posterior)
+    if posterior >= prior:
+        span = 1.0 - prior
+        mapped = (
+            neutral
+            if span <= 1e-9
+            else neutral + (high - neutral) * (posterior - prior) / span
+        )
+    else:
+        span = prior
+        mapped = (
+            neutral
+            if span <= 1e-9
+            else neutral - (neutral - low) * (prior - posterior) / span
+        )
+    score = min(high, max(low, mapped))
+    if protect_downward:
+        score = max(neutral, score)
+    return float(score)
+
+
 def surface_score(
     *,
     cosine: float,
@@ -191,19 +295,22 @@ def surface_score(
     recency: float = 0.0,
     stability: float = 0.0,
     salience: float = 0.0,
+    standing: float | None = None,
     activation: float = 0.0,
     habituation: float = 1.0,
     w: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS,
 ) -> float:
     """Blend every surfacing signal into a single ``[0, 1]`` score.
 
-    The five *ranking* signals (context, confidence, recency, stability,
-    salience) are sum-normalized so the base stays comparable to the cosine used
-    by the other candidate sources in ``ContextBudgetSelector``. On top of that
-    base, ``activation`` is an **additive** spreading-activation boost (scaled by
-    ``w.activation``, outside the normalization so a primed concept can rise
-    above its raw relevance), and ``habituation`` is a **multiplier** that damps
-    a just-surfaced concept. The result is clamped to ``[0, 1]``.
+    The six *ranking* signals (context, confidence, recency, stability,
+    salience, standing) are sum-normalized so the base stays comparable to the
+    cosine used by the other candidate sources in ``ContextBudgetSelector``.
+    Standing is usefulness, never truth, so it remains beside confidence rather
+    than mutating it. On top of that base, ``activation`` is an **additive**
+    spreading-activation boost (scaled by ``w.activation``, outside the
+    normalization so a primed concept can rise above its raw relevance), and
+    ``habituation`` is a **multiplier** that damps a just-surfaced concept. The
+    result is clamped to ``[0, 1]``.
 
     With the default weights (context-only) and no activation/habituation this
     returns exactly ``cosine`` (clamped), so the scorer is a no-op for any kind
@@ -215,6 +322,7 @@ def surface_score(
         + float(w.recency)
         + float(w.stability)
         + float(w.salience)
+        + (float(w.standing) if standing is not None else 0.0)
     )
     if total <= 0.0:
         base = float(cosine)
@@ -225,13 +333,17 @@ def surface_score(
             + float(w.recency) * float(recency)
             + float(w.stability) * float(stability)
             + float(w.salience) * float(salience)
+            + (
+                float(w.standing) * float(standing)
+                if standing is not None else 0.0
+            )
         ) / total
     boosted = base + float(w.activation) * float(activation)
     return _c01(boosted * float(habituation))
 
 
 # ── L35 surface reasons (why *this* concept is in the prompt) ─────────────
-# The scorer above collapses six signals into one number, which makes the
+# The scorer above collapses seven signals into one number, which makes the
 # ranking legible but the *choice* opaque: a concept in the prompt could be
 # there because it matched the topic, because it was just contradicted, or
 # because a neighbour primed it, and the trace couldn't tell you which.
@@ -253,6 +365,7 @@ REASON_REVIVED = "recently_revived"
 REASON_LOOSENED = "loosening_boundary"
 REASON_PROMOTED = "newly_promoted"
 REASON_CHANGE = "recent_change"
+REASON_STANDING = "earned_standing"
 
 #: Human phrasing for the debug view, keyed by reason token.
 SURFACE_REASON_LABELS: dict[str, str] = {
@@ -267,6 +380,7 @@ SURFACE_REASON_LABELS: dict[str, str] = {
     REASON_LOOSENED: "boundary loosening",
     REASON_PROMOTED: "newly promoted",
     REASON_CHANGE: "changed recently",
+    REASON_STANDING: "has reliably landed well",
 }
 
 #: Which salience driver maps to which reason. A salience win is only ever
@@ -288,6 +402,7 @@ def surface_reason(
     recency: float = 0.0,
     stability: float = 0.0,
     salience: float = 0.0,
+    standing: float | None = None,
     activation: float = 0.0,
     recency_known: bool = True,
     change_event: str | None = None,
@@ -306,7 +421,7 @@ def surface_reason(
     cosine of 0.9 against a zero context weight didn't win anything.
     Contributions are normalized exactly the way the score is, so
     ``activation`` (additive, outside the normalization) is compared on
-    the same footing as the five ranking terms.
+    the same footing as the six ranking terms.
 
     ``recency_known=False`` drops recency from contention. Its neutral
     value is ``1.0`` -- the *highest* it goes -- so a concept that has
@@ -329,6 +444,7 @@ def surface_reason(
         + float(w.recency)
         + float(w.stability)
         + float(w.salience)
+        + (float(w.standing) if standing is not None else 0.0)
     )
     if total <= 0.0:
         # Degenerate weights: the score is raw cosine, so nothing else can
@@ -339,6 +455,11 @@ def surface_reason(
         (float(w.salience) * _c01(salience) / total, _salience_reason(change_event)),
         (float(w.activation) * _c01(activation), REASON_ASSOCIATION),
         (float(w.stability) * _c01(stability) / total, REASON_SETTLED),
+        (
+            float(w.standing) * _c01(standing) / total
+            if standing is not None else 0.0,
+            REASON_STANDING,
+        ),
         (float(w.context) * _c01(cosine) / total, REASON_TOPIC),
         (float(w.confidence) * _c01(confidence) / total, REASON_CONFIDENT),
     ]
@@ -382,6 +503,73 @@ def composite_score(
 # analogous to ``rag.mark_surfaced``.
 
 HABITUATION_KV_KEY = "concept.surfacing_habituation"
+
+
+def load_standing(
+    kv_get, key: str = STANDING_KV_KEY,
+) -> dict[int, float]:
+    """Load the persisted ``{concept_id: standing}`` map (empty on junk).
+
+    Missing entries are interpreted as neutral by the scorer, so a failed read
+    cannot suppress a concept or break prompt assembly.
+    """
+    try:
+        raw = kv_get(key)
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        blob = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(blob, dict):
+        return {}
+    out: dict[int, float] = {}
+    for cid, value in blob.items():
+        try:
+            parsed_id = int(cid)
+            raw_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(raw_value):
+            continue
+        parsed_value = _c01(raw_value)
+        if parsed_id > 0:
+            out[parsed_id] = parsed_value
+    return out
+
+
+def save_standing(
+    kv_set,
+    state: dict[int, float],
+    *,
+    key: str = STANDING_KV_KEY,
+    cap: int = 1000,
+) -> None:
+    """Persist a bounded standing map; best-effort and never raises."""
+    if not isinstance(state, dict):
+        return
+    cleaned: list[tuple[int, float]] = []
+    for cid, value in state.items():
+        try:
+            parsed_id = int(cid)
+            raw_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(raw_value):
+            continue
+        parsed_value = _c01(raw_value)
+        if parsed_id > 0:
+            cleaned.append((parsed_id, parsed_value))
+    cleaned.sort(key=lambda item: item[0])
+    if cap > 0:
+        cleaned = cleaned[: int(cap)]
+    payload = {str(cid): round(value, 6) for cid, value in cleaned}
+    try:
+        kv_set(key, json.dumps(payload, separators=(",", ":")))
+    except Exception:
+        log.debug("save_standing failed", exc_info=True)
 
 
 def load_habituation(kv_get, key: str = HABITUATION_KV_KEY) -> dict[int, int]:
@@ -443,15 +631,21 @@ def save_habituation(
 
 __all__ = [
     "HABITUATION_KV_KEY",
+    "STANDING_KV_KEY",
+    "STANDING_NEUTRAL",
     "SURFACE_REASON_LABELS",
     "composite_score",
+    "earned_standing",
+    "engagement_baseline",
     "event_charge",
     "event_charge_detail",
     "habituation_factor",
     "load_habituation",
+    "load_standing",
     "recency_boost",
     "salience",
     "save_habituation",
+    "save_standing",
     "stability",
     "surface_reason",
     "surface_score",

@@ -1185,11 +1185,10 @@ suppressed out of contention, only re-ranked within it.
 
 ## L37. Surfacing outcome ledger -- did what I brought up actually land?
 
-**Status: SHIPPED as a recorder.** The ledger measures; nothing reads it yet.
-That split is deliberate — L38 is the pass that lets outcomes move
-`surface_score`, and designing it against guesses is exactly what L37 exists to
-stop. Ship the measurement, look at real data through the debug view, *then*
-decide how standing feeds the scorer.
+**Status: SHIPPED.** The ledger measures, and L38 now consumes its concept rows
+off-turn to maintain earned standing. The original recorder-first split was
+deliberate: ship the measurement, inspect real data, then calibrate the scorer
+against the observed relationship rather than guesses.
 
 **Motivation.** The concept layer could grow its *knowledge* but not its
 *judgement*. Everything deciding which concepts and memories reach the prompt is
@@ -1330,8 +1329,59 @@ precision the signal cannot support.
 **Effort.** Medium, as estimated — the schema bump and two write points were
 routine; the off-by-one settling dance and the read-API shape took the thought.
 
-**Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L38, L42, F12, G4,
-P43, K81, and the rest of DT5.
+**Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L42, F12, G4, P43,
+K81, and the rest of DT5; L38 is now shipped below.
+
+---
+
+## L38. Earned standing -- let outcomes move the surfacing score
+
+**Status: SHIPPED.** L37's relationship-local outcomes now give each warmed
+active concept a slowly learned surfacing prior. This is deliberately a measure
+of "how useful has this been to bring forward?", never "how true is it":
+standing remains independent from concept confidence.
+
+**Estimator and persistence.** `engagement_baseline` pools the current 90-day
+concept window so the relationship's observed engaged rate maps to neutral
+`0.5`. For concepts with at least four settled rows, `earned_standing` computes
+`(engaged + 10 * baseline) / (settled + 10)`, maps below-baseline performance
+toward the safe `0.35` floor and above-baseline performance toward `1.0`, and
+clamps `value` / `boundary` concepts to at least neutral. Cold, missing, stale,
+and malformed evidence is neutral. The bounded `concept.earned_standing`
+`kv_meta` map needs no schema migration.
+
+**Off-turn refresh.** `ConceptLifecycleWorker` resolves the
+`SurfacingOutcomeStore` lazily (preserving session initialization order), reads
+all active IDs in one grouped `stats_for("concept", ids, window_days=90)` call,
+and replaces/prunes the cache on an hourly cadence. Prompt assembly never
+queries the ledger: `build_relevant_context` loads the small cache once.
+Settings expose the master switch, window, warmup, prior strength, bounds,
+cadence, and cache cap.
+
+**Scoring contract.** `SurfaceWeights.standing` defaults to `0.0` for unknown
+or future kinds; every existing static-T3 kind opts in at a modest `0.10`.
+`tension` remains zero because it does not use static T3 surfacing. Standing is
+sum-normalized with context/confidence/recency/stability/salience in
+`surface_score`; it is never an additive activation bonus and never mutates
+confidence. It applies only to flex and activation candidates. The pinned core
+lane is unchanged.
+
+**Safety and observability.** A `0.35` floor, modest weight, rolling window,
+topical cosine and habituation preserve exploration: a strong topic match can
+recover low-standing material, while a high-standing item still rotates after
+recent use. `score_components` records the standing value, and
+`earned_standing` may appear as a debug-only surface reason. L41 intentionally
+does not map that reason to prose, so Aiko never narrates the mechanism.
+
+**Verification.** The pure estimator tests cover pooled-baseline calibration,
+shrinkage, warmup neutrality, malformed data, bounds and protected kinds.
+Lifecycle tests cover one-query refresh, cadence, replacement/pruning and a
+missing ledger. Scorer/context tests cover normalization, habituation rotation,
+topical recovery and trace values. The concept, ledger, context-budget and
+reason-framing regression selection passes.
+
+**Depends on.** L37 (shipped). Related to L32: importance is stated weight;
+standing is earned usefulness, and they remain separate axes.
 
 ---
 
@@ -1349,7 +1399,7 @@ belief and one held serenely for months no longer arrive in identical clothing.
 **What shipped.** A module-level `_REASON_FRAMINGS` table in
 [`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py),
 deliberately kept **separate** from the debug-only `SURFACE_REASON_LABELS`,
-collapsing the eleven reasons onto four non-technical voices:
+collapsing twelve reasons onto four non-technical voices:
 
 - **settled** (`settled_belief`) — "You've long since made your mind up that"
 - **freshly-changed** (`recent_change` / `loosening_boundary` /
@@ -1361,10 +1411,11 @@ collapsing the eleven reasons onto four non-technical voices:
   never dramatic, so it doesn't invite her to re-litigate the tension each time
   it surfaces.
 
-The four unmapped reasons (`topic_match`, `high_confidence`,
-`recently_reinforced`, `core_belief`), plus `None` / any unknown token, fall
-through to the existing `_hedge_for_confidence`, so lines stay one voice and
-about the same length and a reason added later cannot break rendering.
+The five unmapped reasons (`topic_match`, `high_confidence`,
+`recently_reinforced`, `core_belief`, `earned_standing`), plus `None` / any
+unknown token, fall through to the existing `_hedge_for_confidence`, so lines
+stay one voice and about the same length and a reason added later cannot break
+rendering.
 
 **Static `_reason_framing(reason, confidence)` helper** returns the mapped frame
 or the confidence hedge, with a **confidence guard**: the `settled` frame
