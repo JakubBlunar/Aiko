@@ -46,6 +46,7 @@ mirrors that would drift if SQL deleted rows behind their back.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -177,6 +178,12 @@ class ConceptStore:
 
     def __init__(self, db: "ChatDatabase") -> None:
         self._db = db
+        # L17c: optional sink for absorption records. ``merge_into``
+        # deletes the absorbed row, so unless something captures the
+        # mapping at that moment the id becomes a dead end and any
+        # history ending in a merge is unreachable. Injected rather than
+        # imported so the store keeps its single dependency on the db.
+        self._alias_sink: Callable[[dict[str, object]], None] | None = None
         # In-process mirror (see module docstring). Small by design.
         self._concepts: dict[int, Concept] = {}
         self._vectors: dict[int, np.ndarray] = {}  # unit-norm
@@ -536,6 +543,29 @@ class ConceptStore:
             return
         self._put_mirror(concept)
 
+    def set_alias_sink(
+        self, sink: "Callable[[dict[str, object]], None] | None"
+    ) -> None:
+        """Attach the L17c absorption recorder (see :meth:`merge_into`)."""
+        self._alias_sink = sink
+
+    def _record_alias(self, *, canonical_id: int, absorbed: Concept) -> None:
+        sink = self._alias_sink
+        if sink is None:
+            return
+        try:
+            sink(
+                {
+                    "absorbed_id": int(absorbed.concept_id),
+                    "canonical_id": int(canonical_id),
+                    "absorbed_label": str(absorbed.label or ""),
+                    "kind": str(absorbed.kind or ""),
+                    "subject": str(absorbed.subject or ""),
+                }
+            )
+        except Exception:
+            log.warning("concept alias record failed", exc_info=True)
+
     def delete(self, concept_id: int) -> None:
         """Delete a concept and every edge touching it (as concept node),
         then drop it from the mirror."""
@@ -650,6 +680,12 @@ class ConceptStore:
             e.dst_id = can_s
             e.edge_id = 0
             self.add_edge(e)
+
+        # L17c: record the absorption *before* the delete -- this is the
+        # last moment the absorbed row's label and identity exist. Without
+        # it the id becomes a dead end and every trajectory ending in this
+        # merge is unreachable.
+        self._record_alias(canonical_id=can_id, absorbed=absorbed)
 
         # Drop the absorbed row (also clears its now-orphaned edges + the
         # mirror entry).
