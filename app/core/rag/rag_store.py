@@ -704,6 +704,68 @@ class RagStore:
         rows.sort(key=lambda r: r[0], reverse=True)
         return [arr for _, arr in rows[:cap]]
 
+    def list_recent_user_vector_rows(
+        self,
+        *,
+        user_id_prefix: str,
+        since_iso: str,
+        limit: int = 1000,
+    ) -> list[tuple[str, np.ndarray]]:
+        """Return bounded ``(created_at, vector)`` user-message rows.
+
+        L42 uses the already-indexed message vectors to estimate what the user
+        actually talked about during the conduct window. This avoids both
+        re-embedding history and mistaking Aiko's topic concentration for the
+        user's own topic mix. Rows are newest-first and vectors remain
+        L2-normalized.
+        """
+        cap = max(1, int(limit))
+        prefix = (user_id_prefix or "").strip()
+        cutoff = str(since_iso or "")
+        predicate = "role = 'user'"
+        if prefix:
+            safe = prefix.replace("'", "''")
+            predicate = f"{predicate} AND session_id LIKE '{safe}:%'"
+        if cutoff:
+            safe_cutoff = cutoff.replace("'", "''")
+            predicate = f"{predicate} AND created_at >= '{safe_cutoff}'"
+        with self._lock.read():
+            try:
+                table = (
+                    self._messages.search()
+                    .where(predicate, prefilter=True)
+                    .select(["created_at", "vector"])
+                    .to_arrow()
+                )
+            except Exception:
+                log.debug(
+                    "list_recent_user_vector_rows filtered scan failed; "
+                    "falling back to recent-user scan",
+                    exc_info=True,
+                )
+                table = self._recent_user_vectors_fallback(prefix)
+                if table is None:
+                    return []
+        if table.num_rows == 0:
+            return []
+        created_ats = table.column("created_at").to_pylist()
+        vectors = table.column("vector").to_pylist()
+        rows: list[tuple[str, np.ndarray]] = []
+        for created_at, vec in zip(created_ats, vectors, strict=False):
+            stamp = str(created_at or "")
+            if cutoff and stamp < cutoff:
+                continue
+            if vec is None:
+                continue
+            try:
+                arr = np.asarray(vec, dtype=np.float32)
+            except Exception:
+                continue
+            if arr.size:
+                rows.append((stamp, arr))
+        rows.sort(key=lambda row: row[0], reverse=True)
+        return rows[:cap]
+
     def _recent_user_vectors_fallback(self, prefix: str):
         """Legacy full-table scan for :meth:`list_recent_user_vectors`.
 

@@ -61,6 +61,7 @@ from app.core.concepts.concept_lifecycle import (
     aspiration_evidence_gate,
     boundary_evidence_gate,
     communication_style_evidence_gate,
+    conduct_evidence_gate,
     generalization_evidence_gate,
     identity_evidence_gate,
     narrative_evidence_gate,
@@ -446,6 +447,25 @@ register_kind(
             context=0.5, recency=0.3, salience=0.2, activation=0.25,
             standing=0.1,
             recency_halflife_days=21.0, salience_halflife_days=21.0,
+        ),
+    )
+)
+
+
+# ── L42: surfacing conduct ────────────────────────────────────────────
+# A relationship-scoped self-observation about how Aiko allocates attention:
+# concentration, neglect, or fixation. It is not pinned identity and never
+# exposes ledger mechanics; it surfaces only when relevant.
+register_kind(
+    ConceptKind(
+        name="conduct",
+        subject="aiko",
+        evidence_model="set",
+        plasticity_default=0.4,
+        promotion_gate=conduct_evidence_gate,
+        surface_weights=SurfaceWeights(
+            context=0.6, recency=0.2, stability=0.2, activation=0.15,
+            standing=0.1, recency_halflife_days=30.0,
         ),
     )
 )

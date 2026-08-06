@@ -369,6 +369,7 @@ class SurfacingOutcomeStore:
         item_ids: Iterable[int],
         *,
         window_days: int | None,
+        lanes: Iterable[str] | None = None,
     ) -> dict[int, ItemStats]:
         """Outcome counts per item, restricted to ``window_days``.
 
@@ -386,6 +387,15 @@ class SurfacingOutcomeStore:
             return {}
         placeholders = ",".join("?" * len(ids))
         params: list[object] = [kind, *ids]
+        lane_values = tuple(
+            dict.fromkeys(str(lane or "").strip() for lane in (lanes or ()))
+        )
+        lane_values = tuple(lane for lane in lane_values if lane)
+        lane_clause = ""
+        if lane_values:
+            lane_placeholders = ",".join("?" * len(lane_values))
+            lane_clause = f" AND lane IN ({lane_placeholders})"
+            params.extend(lane_values)
         since_clause = ""
         if window_days is not None:
             cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
@@ -400,6 +410,7 @@ class SurfacingOutcomeStore:
                 "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END) "
                 "FROM surfacing_outcomes "
                 f"WHERE item_kind = ? AND item_id IN ({placeholders})"
+                f"{lane_clause}"
                 f"{since_clause} "
                 "GROUP BY item_id",
                 (ENGAGED_LABEL, *params),

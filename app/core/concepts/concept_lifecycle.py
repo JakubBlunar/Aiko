@@ -407,6 +407,34 @@ def taste_evidence_gate(
     )
 
 
+# L42 conduct findings are weekly, relationship-calibrated observations over
+# several ledger sources. They are more stable than a momentary affect read but
+# should remain revisable as conversational habits change.
+_CONDUCT_MIN_SOURCES = 2
+_CONDUCT_MIN_AGE_DAYS = 1.0
+_CONDUCT_MIN_CONFIDENCE = 0.65
+
+
+def conduct_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for L42 surfacing-conduct concepts."""
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _CONDUCT_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _CONDUCT_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _CONDUCT_MIN_CONFIDENCE),
+    )
+
+
 # Built-in bars for a *ritual* concept (L7). A relationship ritual ("Friday
 # debugging evenings") is only real once it has *recurred* -- so it needs
 # several distinct shared moments as evidence and a non-instant age (a couple
@@ -717,6 +745,7 @@ __all__ = [
     "value_evidence_gate",
     "affective_evidence_gate",
     "taste_evidence_gate",
+    "conduct_evidence_gate",
     "ritual_evidence_gate",
     "narrative_evidence_gate",
     "aspiration_evidence_gate",

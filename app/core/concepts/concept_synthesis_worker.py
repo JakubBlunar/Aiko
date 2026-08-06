@@ -51,7 +51,15 @@ from app.core.concepts.proposers import (
     TensionBase,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.concepts.concept_kinds import core_lane_kinds
+from app.core.concepts.concept_surfacing import engagement_baseline
 from app.core.concepts.concept_store import Concept, ConceptEdge
+from app.core.concepts.surfacing_conduct import (
+    CONDUCT_LAST_RUN_KEY,
+    detect_conduct,
+    map_user_topic_counts,
+    save_conduct_snapshot,
+)
 from app.core.infra import timephrase
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
@@ -211,6 +219,9 @@ class ConceptSynthesisWorker:
         style_signal_store: Any = None,
         user_id_provider: Callable[[], str] | None = None,
         surfacing_outcome_store_provider: Callable[[], Any] | None = None,
+        user_vector_rows_provider: (
+            Callable[[int, int], list[tuple[str, Any]]] | None
+        ) = None,
     ) -> None:
         self._concept_store = concept_store
         self._concept_event_store = concept_event_store
@@ -239,6 +250,7 @@ class ConceptSynthesisWorker:
         # provider avoids a construction-order coupling. ``None`` (or a
         # provider that returns ``None``) simply skips the taste pass.
         self._surfacing_outcome_store_provider = surfacing_outcome_store_provider
+        self._user_vector_rows_provider = user_vector_rows_provider
         self._llm_calls = 0
         # P36: the previous pass's stats double as this worker's demand
         # signal. See :meth:`demand`.
@@ -308,6 +320,12 @@ class ConceptSynthesisWorker:
         """
         stats = self._last_stats
         needs_llm = True
+        if self._conduct_due(now):
+            return WorkSignal(
+                pressure=0.2,
+                reason="weekly conduct pass due",
+                needs_llm=needs_llm,
+            )
         if not stats:
             # Never run this process: let the heartbeat decide, but claim
             # the LLM lane so a cold start does not misfile a generation.
@@ -324,6 +342,35 @@ class ConceptSynthesisWorker:
                 needs_llm=needs_llm,
             )
         return WorkSignal(pressure=0.0, reason="drained", needs_llm=needs_llm)
+
+    def _conduct_due(self, now: datetime) -> bool:
+        if not bool(
+            getattr(self._agent_settings, "surfacing_conduct_enabled", True)
+        ):
+            return False
+        cadence = max(
+            86400,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "conduct_cadence_seconds",
+                    604800,
+                )
+            ),
+        )
+        try:
+            raw = self._kv_get(CONDUCT_LAST_RUN_KEY)
+            last = (
+                datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if raw else None
+            )
+        except Exception:
+            last = None
+        if last is None:
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last).total_seconds() >= cadence
 
     def _graph_mature(self, *, now: datetime | None = None) -> bool:
         """L21 maturity predicate: enough distinct clusters AND enough
@@ -754,6 +801,8 @@ class ConceptSynthesisWorker:
             "aiko_dirty": False,
             "affect_dirty": False,
             "taste_dirty": False,
+            "conduct_dirty": False,
+            "conduct_findings": 0,
             "ritual_dirty": False,
             "narrative_dirty": False,
             "aspiration_dirty": False,
@@ -775,6 +824,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_affect_pass(ctx, spec, stats, force)
                 elif spec.population == "taste":
                     proposals = self._run_taste_pass(ctx, spec, stats, force)
+                elif spec.population == "conduct":
+                    proposals = self._run_conduct_pass(ctx, spec, stats, force)
                 elif spec.population == "shared_moments":
                     proposals = self._run_ritual_pass(ctx, spec, stats, force)
                 elif spec.population == "narrative":
@@ -1356,6 +1407,187 @@ class ConceptSynthesisWorker:
         )
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(focus_rows)}
+        )
+        return proposals
+
+    # ── L42 weekly surfacing-conduct pass ─────────────────────────────
+
+    def _run_conduct_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        if not bool(
+            getattr(self._agent_settings, "surfacing_conduct_enabled", True)
+        ):
+            return []
+        now = self._clock()
+        if not force and not self._conduct_due(now):
+            return []
+        provider = self._surfacing_outcome_store_provider
+        if provider is None:
+            return []
+        try:
+            ledger = provider()
+        except Exception:
+            log.debug("conduct: ledger provider failed", exc_info=True)
+            return []
+        if ledger is None:
+            return []
+
+        window_days = max(
+            21, int(getattr(self._memory_settings, "conduct_window_days", 90))
+        )
+        active = self._concept_store.list_by(status="active")
+        ids = [
+            int(concept.concept_id)
+            for concept in active
+            if int(getattr(concept, "concept_id", 0) or 0) > 0
+        ]
+        try:
+            cluster_stats = ledger.engaged_rate_by_cluster(
+                window_days=window_days, min_settled=1,
+            )
+            concept_stats = ledger.stats_for(
+                "concept", ids, window_days=window_days,
+            )
+            flex_stats = ledger.stats_for(
+                "concept",
+                ids,
+                window_days=window_days,
+                lanes=("flex", "activation"),
+            )
+        except Exception:
+            log.debug("conduct: ledger aggregation failed", exc_info=True)
+            return []
+
+        try:
+            clusters = self._topic_graph.topic_clusters()
+        except Exception:
+            clusters = []
+        cluster_reps = {
+            int(cluster.cluster_id): (
+                int(getattr(cluster, "representative_id", 0) or 0),
+                str(
+                    getattr(cluster, "summary", "")
+                    or getattr(cluster, "label", "")
+                    or ""
+                ).strip(),
+            )
+            for cluster in clusters
+            if int(getattr(cluster, "cluster_id", 0) or 0) > 0
+            and int(getattr(cluster, "representative_id", 0) or 0) > 0
+        }
+
+        vector_rows: list[tuple[str, Any]] = []
+        vector_provider = self._user_vector_rows_provider
+        if vector_provider is not None:
+            try:
+                vector_rows = vector_provider(
+                    window_days,
+                    max(
+                        20,
+                        int(
+                            getattr(
+                                self._memory_settings,
+                                "conduct_max_user_vectors",
+                                1000,
+                            )
+                        ),
+                    ),
+                )
+            except Exception:
+                log.debug("conduct: user-vector provider failed", exc_info=True)
+        user_topics, _mapped = map_user_topic_counts(
+            vector_rows,
+            self._topic_graph,
+            min_similarity=float(
+                getattr(
+                    self._memory_settings,
+                    "conduct_user_topic_min_similarity",
+                    0.45,
+                )
+            ),
+        )
+        baseline = engagement_baseline(concept_stats)
+        core_kinds = frozenset(kind.name for kind in core_lane_kinds())
+        findings = detect_conduct(
+            cluster_stats=cluster_stats,
+            user_topic_counts=user_topics,
+            cluster_reps=cluster_reps,
+            concepts=active,
+            concept_stats=concept_stats,
+            flex_stats=flex_stats,
+            engaged_baseline=baseline,
+            core_kinds=core_kinds,
+            now=now,
+            settings=self._memory_settings,
+        )
+        # Neglect/fixation are primarily grounded in affected concepts. When
+        # those concepts have cluster evidence, carry a couple of those
+        # representatives too so the observation rests on mixed, inspectable
+        # sources rather than concept ids alone.
+        enriched = []
+        for finding in findings:
+            support: list[tuple[str, int]] = []
+            if finding.shape in {"neglect", "fixation"}:
+                for kind, item_id in finding.evidence:
+                    if kind != "concept":
+                        continue
+                    try:
+                        edges = self._concept_store.edges_into(
+                            "concept", item_id,
+                        )
+                    except Exception:
+                        continue
+                    for edge in edges:
+                        if str(edge.src_type) != "cluster":
+                            continue
+                        try:
+                            source_id = int(edge.src_id)
+                        except (TypeError, ValueError):
+                            continue
+                        if source_id > 0:
+                            support.append(("cluster", source_id))
+                    if len(support) >= 2:
+                        break
+            enriched.append(finding.with_evidence(support))
+        findings = enriched
+        stats["conduct_findings"] = len(findings)
+        save_conduct_snapshot(
+            self._kv_set,
+            findings,
+            cap=max(
+                1,
+                int(getattr(self._memory_settings, "conduct_snapshot_cap", 6)),
+            ),
+        )
+        try:
+            self._kv_set(CONDUCT_LAST_RUN_KEY, now.isoformat())
+        except Exception:
+            pass
+
+        fingerprint = hashlib.sha256(
+            repr([finding.fingerprint() for finding in findings]).encode("utf-8")
+        ).hexdigest()[:20]
+        sig_key = spec.sig_key or "concept_synth.conduct_sig.aiko"
+        previous = self._load_sigs(sig_key)
+        dirty = force or fingerprint != str(previous.get("fingerprint", ""))
+        stats["conduct_dirty"] = bool(dirty)
+        if not dirty or not findings:
+            self._save_sigs(
+                sig_key, {"fingerprint": fingerprint, "count": len(findings)}
+            )
+            return []
+        proposals = spec.propose(
+            ctx,
+            findings=findings,
+            existing=self._existing_for(spec),
+        )
+        self._save_sigs(
+            sig_key, {"fingerprint": fingerprint, "count": len(findings)}
         )
         return proposals
 

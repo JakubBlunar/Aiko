@@ -4703,6 +4703,44 @@ class DormantInterestProviderTests(unittest.TestCase):
         )
 
 
+class ConductNoticeProviderTests(unittest.TestCase):
+    _CUE = (
+        "A relationship habit you may acknowledge:\n"
+        "I think I may have been returning to the same interpretation."
+    )
+
+    def test_block_lands_normally_but_drops_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="l42", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                conduct_notice=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "l42", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("same interpretation", messages[0]["content"])
+            messages, _ = assembler.assemble_with_budget(
+                "l42",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("same interpretation", messages[0]["content"])
+
+    def test_tier_slot_follows_taste_counterweight(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertLess(
+            t6.index("taste_lean_block"),
+            t6.index("conduct_notice_block"),
+        )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

@@ -101,6 +101,7 @@ from app.core.concepts.proposers import (
     boundary_user,
     communication_style_aiko,
     communication_style_user,
+    conduct_aiko,
     generalization_aiko,
     generalization_user,
     identity_aiko,
@@ -151,6 +152,7 @@ from app.core.concepts.proposers.communication_style_aiko import (
 from app.core.concepts.proposers.communication_style_user import (
     propose_communication_style_user,
 )
+from app.core.concepts.proposers.conduct_aiko import propose_conduct_aiko
 from app.core.concepts.proposers.generalization_aiko import (
     propose_generalization_aiko,
 )
@@ -192,6 +194,7 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     # K81 taste -- aiko-only, over the L37 surfacing ledger's per-cluster
     # engaged rate. A ``set`` kind like affective, so it runs before the metas.
     taste_aiko.SPEC,
+    conduct_aiko.SPEC,
     # Meta proposers run LAST: their base concepts must already be ``active``
     # (the L1 meta dependency-ordering rule).
     tension_user.SPEC,
@@ -230,6 +233,7 @@ __all__ = [
     "propose_communication_style",
     "propose_communication_style_aiko",
     "propose_communication_style_user",
+    "propose_conduct_aiko",
     "propose_generalization",
     "propose_generalization_aiko",
     "propose_generalization_user",

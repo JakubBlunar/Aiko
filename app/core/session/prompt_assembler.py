@@ -292,6 +292,8 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # lull-gated "things Aiko could lean into" slips; reads the K18
         # standing lull reading so it must run after the stagnation provider.
         "taste_lean_block",
+        # L42: rare trust/lull-gated acknowledgement of a conduct concept.
+        "conduct_notice_block",
         # K67: dormant-interest re-opener — "we haven't talked about X in
         # ages". A rare, lull-gated reach back to a once-loved-but-quiet
         # topic; clusters with the other "things Aiko could bring up on a
@@ -1006,6 +1008,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # K18 standing lull reading, so it must run after the stagnation
         # provider, like topic_appetite.
         self._taste_lean_provider: Callable[[], str] | None = None
+        self._conduct_notice_provider: Callable[[], str] | None = None
         # K57 directed emotion episodes. Takes the live ``user_text``
         # (acknowledgment detection resolves a live episode) and
         # returns the strongest episode's register cue — or the
@@ -2439,6 +2442,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="taste_lean",
             )
 
+        conduct_notice_block = ""
+        if not aggressive and self._conduct_notice_provider is not None:
+            conduct_notice_block = _safe_provider(
+                self._conduct_notice_provider,
+                timing_sink=provider_ms,
+                timing_name="conduct_notice",
+            )
+
         # K67: dormant-interest re-opener. Lull-gated (reads the K18 standing
         # reading, so it must run after the stagnation provider, like
         # topic_appetite above), no-arg, dropped under aggressive — a rare
@@ -3242,6 +3253,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Clusters with the other lull-gated "things Aiko could bring
             # up" slips — a gentle nudge to steer toward a topic she enjoys.
             system_parts.append(taste_lean_block)
+        if conduct_notice_block:
+            system_parts.append(conduct_notice_block)
         if dormant_interest_block:
             # K67: the rare "we haven't talked about X in ages" re-opener.
             # Clusters with the other lull-gated "things Aiko could bring

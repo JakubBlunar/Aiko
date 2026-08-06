@@ -47,7 +47,10 @@ ledger before building any of them:
 
 - **L38** ✅ **shipped** — earned standing now turns the ledger's
   relationship-calibrated outcomes into a bounded concept surfacing prior.
-- **L42** a self-model of her own surfacing conduct (feeds L17, L19).
+- **L42** ✅ **shipped** — weekly concentration, neglect, and fixation findings
+  become ordinary Aiko conduct concepts and counterbalance K81 taste steering.
+- **L42b** neglect-guided curiosity is open pending enough real L42 findings to
+  evaluate detector quality safely.
 - **F12** ✅ **semantic half shipped** — revival no longer credits only what she
   quotes, and the same detector now decides L37's `echoed` column, which was
   the weakest part of the ledger as shipped. The *user-side credit* half is
@@ -471,7 +474,7 @@ labels) is shipped** — every concept in the L26 trace now names the
 signal that put it in the prompt.
 
 The surfacing-outcome group (L38-L42, from the surfacing audit; see the spine
-section at the top of this file). **L37 and L38 are shipped** — the ledger
+section at the top of this file). **L37, L38, and L42 are shipped** — the ledger
 records what was surfaced and what happened next, and earned standing now feeds
 that relationship-local signal back into concept ranking:
 
@@ -491,8 +494,10 @@ that relationship-local signal back into concept ranking:
   The already-computed L35 reason now picks each T3 impression line's framing
   (settled / freshly-changed / primed / unsettled), while keeping the debug-only
   rule that she never narrates her own machinery.
-- **L42.** A self-model of her own surfacing conduct ("I steer us toward his
-  work") mined from the ledger; feeds L17 drift and L19 autobiography.
+- **L42.** ✅ A self-model of her own surfacing conduct mined weekly from the
+  ledger, normalized against the user's topics, and stored as Aiko concepts.
+- **L42b.** Open follow-up: use repeated neglect findings as a cautious idle
+  curiosity prior only after real-data evaluation.
 - **L43.** How she thinks *he* sees her — the second-order self-model. She
   models him and she models herself; she has no model of his model of her,
   which is the substrate for adjusting because of how she's landing and for

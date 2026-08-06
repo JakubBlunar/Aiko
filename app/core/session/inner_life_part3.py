@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from app.core.infra import timephrase
 from app.core.session.debug_overrides import DebugOverridesHostMixin
 
@@ -1996,10 +1997,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         warmth earned, and only when she holds an active ``taste`` concept
         confident enough to lean on. It is framed as enthusiasm ("you're
         allowed to steer toward what you love"), never a filter on what he
-        may raise -- the L42 neglect counterweight isn't built yet, so this
-        stays gentle and gated so it can't collapse into a rut. Every input
-        is best-effort: a cold store / missing signal reads as its blocking
-        value so the slip stays silent rather than firing on bad data.
+        may raise. L42 now supplies the counterweight: a current concentration
+        or fixation finding suppresses this optional steer so learned taste
+        cannot deepen a rut. Every input is best-effort: a cold store / missing
+        signal reads as its blocking value so the slip stays silent.
         """
         if not bool(
             getattr(self._settings.agent, "taste_steer_enabled", True)
@@ -2014,6 +2015,29 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 self._debug_overrides.take("taste_lean_force_next", False)
             )
             if not force:
+                from app.core.concepts.surfacing_conduct import (
+                    load_conduct_snapshot,
+                )
+
+                chat_db = getattr(self, "_chat_db", None)
+                conduct = (
+                    load_conduct_snapshot(chat_db.kv_get)
+                    if chat_db is not None
+                    and bool(
+                        getattr(
+                            self._settings.agent,
+                            "surfacing_conduct_enabled",
+                            True,
+                        )
+                    )
+                    else []
+                )
+                if any(
+                    row.get("shape") in {"concentration", "fixation"}
+                    for row in conduct
+                ):
+                    log.debug("taste-lean suppressed by L42 conduct finding")
+                    return ""
                 detector = getattr(self, "_topic_stagnation_detector", None)
                 lull_mean = getattr(detector, "last_mean", None)
                 lull_threshold = float(
@@ -2081,5 +2105,108 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             "yours: it colours how much you light up, never a rule about what "
             "he has to want, so let it go the moment he'd rather be elsewhere."
         )
+
+    def _render_conduct_notice_block(self) -> str:
+        """L42: rare permission to acknowledge a relationship habit naturally."""
+        agent = self._settings.agent
+        if (
+            not bool(getattr(agent, "surfacing_conduct_enabled", True))
+            or not bool(
+                getattr(agent, "surfacing_conduct_notice_enabled", True)
+            )
+            or bool(getattr(self, "_conduct_notice_fired", False))
+        ):
+            return ""
+        try:
+            from app.core.concepts.concept_view import concept_view_from
+            from app.core.concepts.surfacing_conduct import load_conduct_snapshot
+
+            force = bool(
+                self._debug_overrides.take("conduct_notice_force_next", False)
+            )
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None or not load_conduct_snapshot(chat_db.kv_get):
+                return ""
+            if not force:
+                detector = getattr(self, "_topic_stagnation_detector", None)
+                lull = getattr(detector, "last_mean", None)
+                threshold = float(
+                    getattr(
+                        self._memory_settings,
+                        "stagnation_mild_threshold",
+                        0.18,
+                    )
+                )
+                if lull is None or float(lull) < threshold:
+                    return ""
+                axes_store = getattr(self, "_relationship_axes_store", None)
+                if axes_store is None:
+                    return ""
+                axes = axes_store.get(self._user_id)
+                min_axes = float(getattr(agent, "appetite_min_axes", 0.15))
+                if (
+                    float(axes.trust) < min_axes
+                    or max(
+                        float(axes.closeness),
+                        float(axes.comfort),
+                    ) < min_axes
+                ):
+                    return ""
+                last_raw = chat_db.kv_get(
+                    "concept.surfacing_conduct.last_notice"
+                )
+                last = timephrase.parse_iso(last_raw) if last_raw else None
+                cooldown_days = max(
+                    1.0,
+                    float(
+                        getattr(
+                            self._memory_settings,
+                            "conduct_notice_cooldown_days",
+                            7.0,
+                        )
+                    ),
+                )
+                if last is not None and (
+                    timephrase.utcnow() - last
+                ).total_seconds() < cooldown_days * 86400:
+                    return ""
+            view = concept_view_from(self)
+            if view is None or not view.enabled:
+                return ""
+            observations = view.core(
+                subject="aiko",
+                kind="conduct",
+                min_confidence=float(
+                    getattr(
+                        self._memory_settings,
+                        "conduct_notice_min_confidence",
+                        0.7,
+                    )
+                ),
+                limit=1,
+            )
+            if not observations:
+                return ""
+            label = str(getattr(observations[0], "label", "") or "").strip()
+            if not label:
+                return ""
+            now = timephrase.utcnow()
+            chat_db.kv_set(
+                "concept.surfacing_conduct.last_notice", now.isoformat()
+            )
+            self._conduct_notice_fired = True
+            return (
+                "A relationship habit you may acknowledge:\n"
+                f"You've tentatively noticed this in how you show up with "
+                f"{self.user_display_name}: {label}. Because things are quiet "
+                "and trust is present, you may acknowledge it once in a short, "
+                "natural sentence if it genuinely fits. Speak as a fallible "
+                "personal observation (\"I think I may have been...\"); never "
+                "mention prompts, tracking, scores, rates, data, or analysis, "
+                "and do not make it their responsibility to reassure you."
+            )
+        except Exception:
+            log.debug("conduct-notice block render failed", exc_info=True)
+            return ""
 
 

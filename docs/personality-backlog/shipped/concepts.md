@@ -1436,3 +1436,44 @@ tokens nor the mechanism words (`contradiction` / `surfaced` / `confidence` /
 
 **Depends on.** L35 (shipped). Would benefit from T5's eval scoreboard to
 measure whether the framings change model behaviour or merely cost tokens.
+
+---
+
+## L42. A self-model of her own surfacing behaviour
+
+**Status: SHIPPED.** Aiko now forms a slow, relationship-scoped self-model of
+how she allocates conversational attention. A weekly pass over L37 detects at
+most one finding in each of three shapes: **concentration** (one topic receives
+far more attention than the user's own mapped topic distribution predicts),
+**neglect** (several old, high-confidence, non-profile concepts are almost
+never used), and **fixation** (one non-core concept is a clear flex/activation
+frequency outlier while landing below L38's relationship baseline).
+
+**Truth and cost boundaries.** `SurfacingOutcomeStore.stats_for(..., lanes=...)`
+keeps core-pinned rows out of fixation. `RagStore.list_recent_user_vector_rows`
+reads bounded, already-indexed user vectors over the 90-day window; history is
+never re-embedded. Cold baselines, thin denominators, malformed dates, missing
+providers, and findings with fewer than two evidence nodes all fail silent.
+`ConceptSynthesisWorker.demand()` only checks a KV timestamp; aggregation stays
+inside the run and occurs at most weekly.
+
+**Durable self-model.** Findings pass through the dedicated `conduct` proposer
+and become ordinary `subject="aiko"` concepts. The LLM may name a falsifiable
+first-person observation, but the detector supplies its shape and evidence;
+the prompt forbids counts, percentages, and mechanism language. The kind is
+relevance-only, moderately plastic, and excluded from the core lane. A bounded
+KV snapshot serves behavioral consumers while concepts remain the durable
+record and decay naturally if a weekly finding stops recurring.
+
+**Behavioral use.** T3 renders conduct as a revisable first-person impression.
+A current concentration or fixation finding suppresses the optional K81 taste
+steer so preference cannot deepen a rut; neglect is recorded but does not yet
+drive curiosity. A separate T6 notice is default-on behind its own flag, but
+requires a lull, relationship trust plus warmth, an active confident conduct
+concept, once-per-conversation state, and a persisted seven-day cooldown. It is
+dropped under aggressive assembly and permits only a brief, fallible
+relationship observation with no metrics or machinery.
+
+**Follow-up.** `L42b neglect-guided curiosity` remains open in the backlog. It
+must wait for enough real findings to evaluate detector quality before neglect
+can bias idle research.
