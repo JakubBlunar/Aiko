@@ -432,6 +432,63 @@ while you are here: `T1_semi_stable` renders **231 tokens in total**, and a
 ~50-token block in it is discarding roughly 7,000 tokens of T2–T6 behind it.
 The blocks that cost the most are not the ones that are large.
 
+### Aug 6: `profile_block` came back, and the onion is now visible all at once
+
+A 67-turn session (16 `grok-4.3`, then 51 `gpt-5.6-luna`) put
+`profile_block` back at the top of the histogram — **45 of 67 turns**,
+worse than the 7/16 that started this whole thread, and mean `lost_pct`
+back to 39.7%.
+
+It is a regression, not a relapse. The Aug 3 fix quantised the
+confidence sort in the SQLite profile query, and that query is still
+doing its job. L28 then put **concepts** at the head of the same block,
+reading through [`ConceptView`](../app/core/concepts/concept_view.py) —
+a lane that sorts on raw live confidence and truncates at a cap, so it
+bypassed the guard entirely and reintroduced the identical bug one layer
+up. The store now holds 254 active `subject=user` identity/value
+concepts, all above the bar, competing for 10 slots with neighbours
+~0.003 apart; L3 nudges confidence every lifecycle tick, so both the
+ordering *and the membership at the cut* moved almost every turn. Same
+medicine applied in `core()`, `for_target()` and `core_lane()`, with
+`concept_id` as the tie-breaker rather than the label — L17 can now
+rewrite a label in place, which would put the churn straight back.
+
+The bigger change is the measurement. Every pass so far has been blind
+past the first break, which is what made this an onion: `diverged` names
+one block and hides the rest, so each fix promotes an unknown successor
+and needs a whole fresh session to identify it. `diagnose_divergence`
+was already grouping the movers by tier and discarding the result, so
+the fix was mostly plumbing — `changed_blocks` and `changed_by_tier` now
+reach the JSONL, and `prefix_break_report.py` grew a **ladder
+discipline** section that ranks every tier's change rate at once and
+flags any inverted pair, naming the block filed higher than it behaves:
+
+```
+  verdict:
+      INVERTED  T0_stable (66.7%) churns more than T1_semi_stable (21.7%)
+      biggest offender: profile_block moved on 66.7% of turns while filed under T0_stable
+```
+
+That turns "no monotonic counter or unquantised float in a T0–T2 block"
+from a convention into something a session can be checked against. Only
+tiers that actually moved are ranked against each other — a silent tier
+is perfectly stable, and scoring it as an inversion victim would bury
+the real signal in noise.
+
+Two findings from the same session that are **not** ours to fix by
+re-tiering, recorded so the next pass does not chase them:
+
+- **Cross-turn caching on `gpt-5.6-luna` was zero on 45 of 51 turns**,
+  and the six hits are the second leg of a Responses tool round-trip
+  hitting the first leg's cache seconds earlier — not turn-to-turn
+  reuse. `prompt_cache_key` is set correctly and the persona prefix is
+  genuinely byte-stable, so this is not explained by the divergence
+  data. Worth a targeted experiment before assuming prompt structure is
+  the lever.
+- **The tool pass is the real latency cost on tool turns** — p50 7.1 s,
+  p90 28 s, max 41 s — and it is invisible in `first_token_ms`, which
+  only ever measures the streaming pass.
+
 ### The original open question
 
 Observed on a Grok (`xai` / `grok-4.3`) session: `cached_tokens` is
