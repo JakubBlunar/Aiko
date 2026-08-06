@@ -468,6 +468,37 @@ class StoreReadTests(unittest.TestCase):
         finally:
             f.close()
 
+    def test_stats_for_can_filter_to_flex_and_activation_lanes(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.add_many(1, _concepts(1, lane="core"))
+            f.store.settle(1, "engaged")
+            f.store.add_many(2, _concepts(1, lane="flex"))
+            f.store.settle(2, "disengaged")
+            f.store.add_many(3, _concepts(1, lane="activation"))
+            f.store.settle(3, "engaged")
+
+            flex = f.store.stats_for(
+                ITEM_KIND_CONCEPT,
+                [1],
+                window_days=None,
+                lanes=("flex", "activation"),
+            )[1]
+            self.assertEqual(
+                flex, ItemStats(surfaced=2, settled=2, engaged=1, echoed=0),
+            )
+            self.assertEqual(
+                f.store.stats_for(
+                    ITEM_KIND_CONCEPT,
+                    [1],
+                    window_days=None,
+                    lanes=("missing",),
+                ),
+                {},
+            )
+        finally:
+            f.close()
+
     def test_stats_for_is_namespaced_by_kind_and_skips_unknown_ids(self) -> None:
         f = _Fixture()
         try:

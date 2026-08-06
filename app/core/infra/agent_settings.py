@@ -576,6 +576,11 @@ class AgentSettings:
     # gently toward a topic she enjoys. Framed as enthusiasm, never a filter on
     # what he may raise. Off skips the block.
     taste_steer_enabled: bool = True
+    # L42: weekly self-model of how Aiko allocates conversational attention.
+    surfacing_conduct_enabled: bool = True
+    # Rare T6 permission to acknowledge one warmed conduct observation in
+    # relationship language. Detection/T3 remain active when this is off.
+    surfacing_conduct_notice_enabled: bool = True
     # L12 tension cue -- the ONLY surface for a tension concept (they are kept
     # out of the relevant-context block so a standing friction can never nag).
     # When enabled, TensionCueWorker occasionally drafts a private "a friction

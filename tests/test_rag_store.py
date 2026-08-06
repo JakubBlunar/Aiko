@@ -248,6 +248,16 @@ class RagStoreCRUDTests(_TmpRagBase):
             user_id_prefix="", limit=10,
         )
         self.assertEqual(len(all_users), 4)
+        rows = self.store.list_recent_user_vector_rows(
+            user_id_prefix="alice",
+            since_iso="2026-01-02T00:00:00+00:00",
+            limit=10,
+        )
+        self.assertEqual([stamp for stamp, _vector in rows], [
+            "2026-01-03T09:00:00+00:00",
+            "2026-01-02T11:00:00+00:00",
+        ])
+        np.testing.assert_allclose(rows[0][1], v3, rtol=1e-5, atol=1e-5)
 
     def test_list_recent_user_vectors_empty_when_no_user_rows(self) -> None:
         self.assertEqual(

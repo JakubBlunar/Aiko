@@ -116,6 +116,9 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "taste_lean_block": (
         "Leaning toward what you love:",
     ),
+    "conduct_notice_block": (
+        "A relationship habit you may acknowledge:",
+    ),
     # ── how to pitch the current topic ────────────────────────────────
     # F10h/F10i/K66/K75: four reads on the topic already in play -- how it
     # feels between them, how much she knows, how much history they share,

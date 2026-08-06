@@ -2258,6 +2258,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 family = "affective"
             elif kind == "taste":
                 family = "taste"
+            elif kind == "conduct":
+                family = "conduct"
             elif kind == "ritual":
                 family = "ritual"
             elif kind == "narrative":
@@ -2325,6 +2327,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         for subject in ("user", "relationship", "aiko"):
             for family in (
                 "generalization", "trait", "value", "affective", "taste",
+                "conduct",
                 "ritual", "narrative", "aspiration", "boundary",
                 "communication_style",
             ):
@@ -2352,6 +2355,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return InnerLifePart1Mixin._concept_affective_header(subject, name)
         if family == "taste":
             return InnerLifePart1Mixin._concept_taste_header(subject, name)
+        if family == "conduct":
+            return InnerLifePart1Mixin._concept_conduct_header(subject, name)
         if family == "ritual":
             return InnerLifePart1Mixin._concept_ritual_header(subject, name)
         if family == "narrative":
@@ -2479,6 +2484,21 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             f"Topics {name} tends to light up over (let them colour how much "
             "you lean into them when they come up; never say it out loud, and "
             "stay open to being wrong):"
+        )
+
+    @staticmethod
+    def _concept_conduct_header(subject: str, name: str) -> str:
+        """L42 first-person observations about how Aiko has been showing up."""
+        if subject == "aiko":
+            return (
+                f"Patterns you've begun to notice in how you show up with "
+                f"{name} — where your attention leans, what you leave quiet, "
+                "or what you return to (hold these as revisable impressions, "
+                "never as metrics or rules for the conversation):"
+            )
+        return (
+            f"Patterns in how attention has moved between you and {name} "
+            "(hold these lightly and never narrate the machinery behind them):"
         )
 
     @staticmethod

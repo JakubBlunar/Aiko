@@ -251,6 +251,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             taste_steer_enabled=bool(
                 agent_raw.get("taste_steer_enabled", True),
             ),
+            surfacing_conduct_enabled=bool(
+                agent_raw.get("surfacing_conduct_enabled", True),
+            ),
+            surfacing_conduct_notice_enabled=bool(
+                agent_raw.get("surfacing_conduct_notice_enabled", True),
+            ),
             tension_cue_enabled=bool(
                 agent_raw.get("tension_cue_enabled", True),
             ),

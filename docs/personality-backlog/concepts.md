@@ -2392,65 +2392,23 @@ outranked one rested for three. Fixed by sorting the stale group by rest.
 
 ## L42. A self-model of her own surfacing behaviour
 
-**Motivation.** L17 gives Aiko a way to notice that her *beliefs* have changed.
-She has no way to notice patterns in her own *conduct* — that she has steered
-the last dozen conversations toward the user's work, that she keeps returning
-to one unresolved tension, that there is a whole region of what she knows about
-him she never brings up. This is the difference between a system that
-accumulates a self-history and one that can actually reflect on being itself,
-and it is the most companion-shaped thing the ledger unlocks.
+**Status: ✅ SHIPPED.** See the implementation record in
+[`shipped/concepts.md`](shipped/concepts.md#l42-a-self-model-of-her-own-surfacing-behaviour).
 
-Once L37 exists, the data for this is right there and needs no new
-instrumentation: the surfacing ledger *is* a behavioural record. Aggregated by
-subject, kind and topic cluster over a few weeks it describes her habits well
-enough to say something true and slightly uncomfortable about them.
+---
 
-**Key files.**
-- Reads the L37 `surfacing_outcomes` table plus
-  [`concept_store.py`](../../app/core/concepts/concept_store.py) for the
-  subject / kind of each surfaced id.
-- Writes `subject="aiko"` concepts through the normal proposer path, so the
-  findings live in the same store as every other self-concept and inherit the
-  lifecycle — see the L17 entries above for the shape.
-- Natural home is a periodic pass in
-  [`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
-  or its own low-cadence idle worker registered per
-  [`workers.md`](workers.md).
+## L42b. Neglect-guided curiosity
 
-**Sketched approach.** Aggregate the ledger over a long window and look for
-three shapes: *concentration* (one cluster or subject taking a
-disproportionate share of surfacing slots), *neglect* (high-confidence
-concepts that essentially never surface — a fair proxy for "things she knows
-but never uses"), and *fixation* (one item surfaced far more than any other
-with a mediocre engaged rate — the algorithmic signature of nagging).
+**Status: OPEN — deliberately deferred from L42.** Once real weekly L42
+snapshots have accumulated, test whether repeated neglect findings can safely
+bias idle curiosity toward old, high-confidence concept regions Aiko rarely
+uses. This must remain a soft exploration prior, not a mandate to bring up
+personal material, and must retain all existing curiosity safety/relevance
+gates. Do not ship from synthetic findings alone: inspect the distribution and
+false-positive rate of real neglect snapshots first.
 
-Each shape proposes a `subject="aiko"` concept in plain first-person language
-("I steer us toward his work more than anything else"). From there it is an
-ordinary concept: it surfaces through the normal lanes, decays if it stops
-being true, and L17's drift machinery can notice when it changes.
-
-The neglect finding is the interesting one, because it is directly
-actionable — it names material she has and does not use, which is exactly what
-a curiosity worker should be aiming at.
-
-**Open questions.** (1) Does this stay internal, or is she allowed to *say* it?
-Saying "I've noticed I keep steering us to your work" is a genuinely intimate
-move and one of the better things on this whole list — but it is one step from
-narrating her machinery, and the L35 rule exists for a reason. Probably: allow
-it, rarely, phrased about the *relationship* rather than the *mechanism*, and
-never with numbers. (2) Statistical honesty — concentration partly reflects
-what the user actually talks about, so the finding needs normalising against
-his own topic distribution or it will just report his hobbies back at him.
-This is the main risk of the item. (3) Cadence: weekly at most; it is a
-long-window observation and there is nothing to see in a day. (4) Overlap with
-L33 introspective reflection — L33 asks structured questions about beliefs,
-L42 observes conduct; they may want to share a worker.
-
-**Effort.** Medium. The aggregation is easy; making the findings true rather
-than merely computable is the work.
-
-**Depends on.** L37 (the ledger, with enough history to be meaningful). Feeds
-L17 (drift), L19 (autobiography), and gives K81 its neglect signal.
+**Depends on.** Shipped L42 plus enough relationship history to evaluate its
+neglect detector.
 
 ---
 

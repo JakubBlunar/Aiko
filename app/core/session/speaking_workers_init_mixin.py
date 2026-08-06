@@ -15,9 +15,11 @@ for a symbol used here must patch
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 from app.core.memory.memory_extractor import MemoryExtractor
+from app.core.infra import timephrase
 from pathlib import Path
 from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.proactive.summary_worker import SummaryWorker
@@ -665,6 +667,7 @@ class SpeakingWorkersInitMixin:
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
             taste_lean=self._render_taste_lean_block,
+            conduct_notice=self._render_conduct_notice_block,
             emotion_episode=self._render_emotion_episode_block,
             tease_ledger=self._render_tease_collection_block,
             grounding_line=self._render_grounding_line,
@@ -1932,6 +1935,26 @@ class SpeakingWorkersInitMixin:
                             surfacing_outcome_store_provider=(
                                 lambda: getattr(
                                     self, "_surfacing_outcome_store", None
+                                )
+                            ),
+                            # L42: reuse indexed user-message vectors; no
+                            # historical re-embedding in the weekly pass.
+                            user_vector_rows_provider=(
+                                lambda window_days, limit: (
+                                    self._rag_store.list_recent_user_vector_rows(
+                                        user_id_prefix=(
+                                            getattr(self, "_user_id", "")
+                                            or "default"
+                                        ),
+                                        since_iso=(
+                                            timephrase.utcnow()
+                                            - timedelta(days=window_days)
+                                        ).isoformat(),
+                                        limit=limit,
+                                    )
+                                    if getattr(self, "_rag_store", None)
+                                    is not None
+                                    else []
                                 )
                             ),
                         )

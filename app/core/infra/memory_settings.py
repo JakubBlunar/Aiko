@@ -844,6 +844,28 @@ class MemorySettings:
     taste_min_settled: int = 4
     taste_min_affinity: float = 0.5
     concept_synthesis_max_taste_clusters: int = 6
+    # L42 weekly surfacing-conduct self-model.
+    conduct_window_days: int = 90
+    conduct_cadence_seconds: int = 604800
+    conduct_max_user_vectors: int = 1000
+    conduct_user_topic_min_similarity: float = 0.45
+    conduct_min_settled_rows: int = 50
+    conduct_min_user_turns: int = 20
+    conduct_concentration_min_settled: int = 8
+    conduct_concentration_min_share: float = 0.30
+    conduct_concentration_min_excess: float = 0.12
+    conduct_concentration_min_ratio: float = 2.0
+    conduct_neglect_min_confidence: float = 0.75
+    conduct_neglect_min_age_days: float = 14.0
+    conduct_neglect_max_surfaced: int = 1
+    conduct_neglect_min_candidates: int = 3
+    conduct_fixation_min_surfaced: int = 12
+    conduct_fixation_min_settled: int = 6
+    conduct_fixation_min_ratio: float = 3.0
+    conduct_fixation_min_rate_gap: float = 0.05
+    conduct_snapshot_cap: int = 6
+    conduct_notice_min_confidence: float = 0.7
+    conduct_notice_cooldown_days: float = 7.0
     # L20 surfacing: "prefer the abstraction". When a generalization parent is
     # among the turn's concept candidates at >= ``parent_min_confidence``, its
     # child concepts are dropped from the pool so Aiko speaks the through-line
@@ -2794,6 +2816,112 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get("concept_synthesis_max_taste_clusters", 6)
                 ),
+            ),
+            conduct_window_days=max(
+                21, int(memory_raw.get("conduct_window_days", 90)),
+            ),
+            conduct_cadence_seconds=max(
+                86400, int(memory_raw.get("conduct_cadence_seconds", 604800)),
+            ),
+            conduct_max_user_vectors=max(
+                20, int(memory_raw.get("conduct_max_user_vectors", 1000)),
+            ),
+            conduct_user_topic_min_similarity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conduct_user_topic_min_similarity", 0.45
+                        )
+                    ),
+                ),
+            ),
+            conduct_min_settled_rows=max(
+                1, int(memory_raw.get("conduct_min_settled_rows", 50)),
+            ),
+            conduct_min_user_turns=max(
+                1, int(memory_raw.get("conduct_min_user_turns", 20)),
+            ),
+            conduct_concentration_min_settled=max(
+                1,
+                int(memory_raw.get("conduct_concentration_min_settled", 8)),
+            ),
+            conduct_concentration_min_share=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("conduct_concentration_min_share", 0.30)
+                    ),
+                ),
+            ),
+            conduct_concentration_min_excess=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conduct_concentration_min_excess", 0.12
+                        )
+                    ),
+                ),
+            ),
+            conduct_concentration_min_ratio=max(
+                1.0,
+                float(memory_raw.get("conduct_concentration_min_ratio", 2.0)),
+            ),
+            conduct_neglect_min_confidence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("conduct_neglect_min_confidence", 0.75)
+                    ),
+                ),
+            ),
+            conduct_neglect_min_age_days=max(
+                0.0,
+                float(memory_raw.get("conduct_neglect_min_age_days", 14.0)),
+            ),
+            conduct_neglect_max_surfaced=max(
+                0, int(memory_raw.get("conduct_neglect_max_surfaced", 1)),
+            ),
+            conduct_neglect_min_candidates=max(
+                2, int(memory_raw.get("conduct_neglect_min_candidates", 3)),
+            ),
+            conduct_fixation_min_surfaced=max(
+                2, int(memory_raw.get("conduct_fixation_min_surfaced", 12)),
+            ),
+            conduct_fixation_min_settled=max(
+                1, int(memory_raw.get("conduct_fixation_min_settled", 6)),
+            ),
+            conduct_fixation_min_ratio=max(
+                1.0,
+                float(memory_raw.get("conduct_fixation_min_ratio", 3.0)),
+            ),
+            conduct_fixation_min_rate_gap=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("conduct_fixation_min_rate_gap", 0.05)),
+                ),
+            ),
+            conduct_snapshot_cap=max(
+                1, int(memory_raw.get("conduct_snapshot_cap", 6)),
+            ),
+            conduct_notice_min_confidence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("conduct_notice_min_confidence", 0.7)
+                    ),
+                ),
+            ),
+            conduct_notice_cooldown_days=max(
+                1.0,
+                float(memory_raw.get("conduct_notice_cooldown_days", 7.0)),
             ),
             generalization_suppress_children_enabled=bool(
                 memory_raw.get(
