@@ -902,8 +902,8 @@ Feeds L19 naturally — the abstraction level is what a self-narrative reaches f
 
 ## L22. Concept-quality evaluation + observability
 
-**Status: MEASUREMENT SHIPPED; intake tuning pass 1 SHIPPED; decay tuning,
-enforcement and the offline harness deferred.**
+**Status: MEASUREMENT SHIPPED; intake tuning pass 1 SHIPPED; the sweep RUN and
+decay tuning pass 2 SHIPPED; the offline harness deferred.**
 
 **Motivation.** Confidence gates (L3) and the optional human-in-loop (L6) keep
 *individual* concepts honest, but nothing measured whether the layer as a whole
@@ -1049,6 +1049,82 @@ has had almost no opportunity to be reinforced, so it reads high by
 construction. It is only meaningful against the same window measured at another
 time, which is exactly why the baseline above is dated.
 
+### Threshold tuning, pass 2: the sweep, and decay that can actually clear (shipped)
+
+Run against a graph of 789 concepts, 602 active, **428 (71.1%) never reinforced
+since promotion**. Ordered deliberately: the narrative-safety invariant first,
+because by this point the L17 learning pipeline and the L19 self-history read
+*from* concept status, so both a bulk sweep and a faster decay curve had become
+things Aiko would narrate.
+
+**The invariant: a belief she never held cannot be lost.** A concept that faded
+having never once been reinforced was a single inference nothing confirmed, not
+a change of mind. Two halves, one rule:
+
+- **Write side** — [`ConceptTrace`](../../app/core/concepts/concept_drift.py)
+  carries `promoted_at` / `last_reinforced_at` (populated in `_build_traces`,
+  and read off the concept row rather than the bounded event window, so an old
+  reinforcement that scrolled out of the trajectory still counts), and
+  `classify_trajectory` drops a `loss` finding when `not trace.ever_reinforced`.
+  Succession is deliberately exempt: a fade matched to a semantically-near
+  rising replacement is its own evidence the belief was real. Emergence and
+  revival need fresh evidence to happen at all, so they were already safe.
+- **Read side** — [`self_history._classify`](../../app/core/concepts/self_history.py)
+  now requires a recorded `loss` learning event before calling a belief
+  *faded*; a faded status with nothing behind it yields **no entry at all**.
+  Without this, 293 swept rows would each have become a dated regret with an
+  empty `because`, and the sheer volume would have cleared `thin_record` —
+  turning a maintenance artifact into licence to narrate confidently.
+
+**A dating bug the sweep exposed, and the fix.** With `loss` gated, the sweep's
+293 fresh `dormant` rows still handed the succession detector the fade endpoint
+it needs, and it minted **199 successions** — all stamped with the *detection*
+time, i.e. the afternoon the sweep ran. The pairings were honest (median cosine
+0.80; 143 of the 199 surviving beliefs were themselves reinforced) but the dates
+were not: those replacements had risen a median of **27 days earlier**. So
+`DriftFinding` now carries `occurred_at` — the decisive event's timestamp, and
+for a succession specifically **the rise**, since the belief changed when the
+replacement took over rather than when the old row's status caught up — and
+`LearningEvent.from_finding` dates the event by it. The backfill then lands
+where it belongs: 39 / 81 / 50 / 42 across the four weeks it happened, with 3
+events today instead of 200. `detected_at` survives for the debug surfaces, and
+the diary's `period_start` / `period_end` became min/max rather than
+first/last, since a backfilled page arrives in concept-id order.
+
+This is the general fix, not a sweep workaround: any future bulk status action
+is now incapable of either inventing losses or piling a graph's worth of
+revisions onto one day.
+
+**The sweep, run.** 293 of 602 actives (48.7%) parked at median confidence
+0.762 — 203 `identity`, 211 user / 81 aiko. 309 active remain. The drift
+backfill then classified the whole id space and recorded 212 learning events:
+199 succession, 10 emergence, 2 revival, **1 loss** — and **zero** learning
+events of any shape on a swept concept, which is the invariant holding on real
+data rather than in a fixture.
+
+**Decay, retuned.** `concept_confidence_halflife_days` 45.0 → **7.5**. The old
+value worked out to 80–97 *engaged* days from 0.8 to the 0.35 dormant floor,
+against roughly **3.4 engaged days accumulated per week** of real use — about
+eighteen months of conversation to clear one unearned concept, which is why
+nothing ever cleared. 7.5 gives 13–16 engaged days, four to six weeks at the
+current pace. The per-kind ordering via `plasticity_default` was already right
+and is untouched. The second wave this exposes is bounded and known: of the 309
+survivors, **135 are never-reinforced** at median confidence 0.847, so they
+reach dormant in about 14–17 engaged days — and thanks to the invariant their
+fades produce no learning events and no diary entries. The 3-day
+`concept_decay_max_catchup_days` clamp paces the transition by real
+conversation rather than landing it as a cliff.
+
+| | before | after |
+| --- | --- | --- |
+| active / never-reinforced | 602 / 428 (71.1%) | 309 / 135 (43.7%) |
+| identity active / stalled | 274 / 227 (82.8%) | 71 / 24 (33.8%) |
+| engaged days to dormant, 0.85 → 0.35 | 80–97 | 13–16 |
+
+Intake flow is unchanged by any of this and is still hot — 92 promotions in the
+last 3 days — so pass 1's gates are the next thing to re-read now that the
+stock is cleared and the rate is no longer hidden behind it.
+
 ### Still open
 
 - **The never-reinforced set is a bootstrap-era backlog, not an ongoing leak.**
@@ -1068,21 +1144,20 @@ time, which is exactly why the baseline above is dated.
   One day of post-fix data is not enough to declare it *fixed*, but it is
   enough to say the priority is the **backlog**, not the mechanism. The next
   measurement should just be more use, not more code.
-- **Threshold tuning, pass 2: per-kind decay rates.** Worth knowing before
-  starting: per-kind decay **already exists** via `plasticity_default`, and its
-  ordering is already right — `value` 0.2 (81 effective days, stickiest),
-  `identity` 0.3 (76), `boundary` 0.45 (70), `affective` 0.5 (67.5, fastest).
-  The order is correct and **the absolute scale is roughly 6x too slow**. So
-  that pass is "lower the base `concept_confidence_halflife_days` and widen the
-  per-kind plasticity spread", not a new mechanism. Note the compounding trap:
-  `drift_plasticity` pushes active concepts' plasticity *down* toward 0.15 over
-  time, so survivors get stickier and the backlog gets harder to drain the
-  longer it sits.
-- **Enforcement of signal C — the one-off sweep. SHIPPED as a script,
-  not yet run.** 374 concepts minted before reinforcement had ever fired are
-  sitting `active` at a median confidence of ~0.8, competing for surfacing slots
-  against concepts that earned their place, and decay cannot clear them: ~86
-  engaged days each against **12.9 engaged days accumulated in total**.
+- **~~Threshold tuning, pass 2: per-kind decay rates.~~ SHIPPED** (above). The
+  diagnosis held exactly: per-kind decay already existed via
+  `plasticity_default` with the right ordering, and only the absolute scale was
+  wrong — 6x too slow. The base half-life moved; the spread did not need to.
+  The compounding trap it warned about is still live and is now the argument for
+  not deferring again: `drift_plasticity` pushes active concepts' plasticity
+  *down* toward 0.15 over time, so anything left standing gets stickier and
+  harder to drain the longer it sits.
+- **Enforcement of signal C — the one-off sweep. SHIPPED and RUN** (see pass 2
+  above; by the time it ran the cohort had grown to 293). It targeted concepts
+  minted before reinforcement had ever fired, sitting `active` at a median
+  confidence of ~0.8, competing for surfacing slots against concepts that earned
+  their place, which decay could not clear: ~86 engaged days each against 12.9
+  accumulated in total.
   [`scripts/concept_sweep_unreinforced.py`](../../scripts/concept_sweep_unreinforced.py)
   demotes them to `dormant` (never `retired`, and it touches neither confidence
   nor evidence, so a genuine reinforcement brings any of them straight back),
@@ -1091,8 +1166,8 @@ time, which is exactly why the baseline above is dated.
   cohort via `--before` rather than "all never-reinforced" — the newer ones may
   simply not have been re-observed yet. **Dry-run by default**: without
   `--apply` the database is opened read-only, so the reporting path cannot
-  mutate anything. Still to do: stop the app and actually run it, then re-run
-  `concept_intake_report.py` against the dated baseline above.
+  mutate anything, and the app has to be stopped for `--apply` because L3 is the
+  single writer of status and the script reaches around it.
 - **The dormant revival path.** ~~Bypasses the kind gates.~~ Half fixed, and
   the sweep is what forced it. `_transition` used to revive `dormant -> active`
   on `concept_promote_min_confidence` **alone**, with no reinforcement check —

@@ -102,6 +102,24 @@ class WriteAndReadTests(unittest.TestCase):
         self.assertAlmostEqual(back.salience, 0.72, places=4)
         self.assertAlmostEqual(back.cosine or 0.0, 0.72, places=4)
 
+    def test_an_event_is_dated_when_the_change_happened(self) -> None:
+        # Not when the classifier noticed. The backfill reads five weeks of
+        # history in one pass, and the whole L19 arc is built off this
+        # field: dating by detection would file all of it under one day.
+        event = LearningEvent.from_finding(
+            _finding(occurred_at=_iso(30), detected_at=_iso(0))
+        )
+        self.store.add(event)
+        self.assertEqual(self.store.list()[0].created_at, _iso(30))
+
+    def test_a_finding_without_an_occurrence_falls_back_to_detection(
+        self,
+    ) -> None:
+        event = LearningEvent.from_finding(
+            _finding(occurred_at="", detected_at=_iso(2))
+        )
+        self.assertEqual(event.created_at, _iso(2))
+
     def test_duplicate_fingerprint_is_absorbed(self) -> None:
         first = LearningEvent.from_finding(_finding())
         second = LearningEvent.from_finding(_finding())

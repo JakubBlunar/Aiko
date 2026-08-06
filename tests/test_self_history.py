@@ -130,6 +130,31 @@ class EmptyRecordTests(unittest.TestCase):
         self.assertEqual(_entries(arc), [])
         self.assertEqual(arc.total_concepts, 1)
 
+    def test_a_maintenance_sweep_cannot_manufacture_a_history(self) -> None:
+        # What the L22 sweep does in bulk: park hundreds of beliefs that
+        # nothing ever confirmed. No loss was recorded for any of them, so
+        # none of them entered the story -- and their volume must not
+        # convince her she has a past worth narrating.
+        for i in range(40):
+            self.h.concept(f"a parked guess {i}", status="dormant")
+        arc = self.h.build()
+        self.assertEqual(_entries(arc), [])
+        self.assertTrue(arc.thin_record)
+        self.assertEqual(arc.counts, {})
+        # Still counted as beliefs on file -- omitted from the story, not
+        # hidden from the census.
+        self.assertEqual(arc.total_concepts, 40)
+
+    def test_swept_rows_do_not_dilute_a_real_history(self) -> None:
+        for i in range(3):
+            cid = self.h.concept(f"a changed belief {i}", status="retired")
+            self.h.event(cid, "loss", days_ago=3 + i)
+        for i in range(20):
+            self.h.concept(f"a parked guess {i}", status="dormant")
+        arc = self.h.build()
+        self.assertFalse(arc.thin_record)
+        self.assertEqual(arc.counts, {"faded": 3})
+
 
 class ClassificationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -162,7 +187,31 @@ class ClassificationTests(unittest.TestCase):
 
     def test_a_dormant_belief_also_reads_as_faded(self) -> None:
         cid = self.h.concept("gone quiet", status="dormant")
+        self.h.event(cid, "loss", because="it stopped coming up")
         self.assertEqual(_by_id(self.h.build(), cid).change, "faded")
+
+    def test_a_fade_with_no_recorded_loss_is_left_out(self) -> None:
+        # She never gave this up, because she never held it: one inference,
+        # nothing confirmed it, decay took it. Narrating it as an abandoned
+        # conviction would be an invented regret.
+        self.h.concept("gone quiet, never confirmed", status="dormant")
+        self.assertEqual(_entries(self.h.build()), [])
+
+    def test_being_born_is_not_enough_to_stay_in_the_story(self) -> None:
+        # Promoted once, so an emergence is on record, then parked without
+        # ever being reinforced. Reading as "born" would claim a belief she
+        # no longer carries; reading as "faded" would claim a change she
+        # never made.
+        cid = self.h.concept("briefly held", status="dormant")
+        self.h.event(cid, "emergence", days_ago=20)
+        self.assertEqual(_entries(self.h.build()), [])
+
+    def test_a_flip_survives_a_missing_loss(self) -> None:
+        # Succession is the exempt case on the write side too: being
+        # replaced is its own proof the belief was real.
+        cid = self.h.concept("the old reading", status="retired")
+        self.h.event(cid, "succession", old_label="the old reading")
+        self.assertEqual(_by_id(self.h.build(), cid).change, "flipped")
 
     def test_a_flip_outranks_the_fade_of_its_losing_side(self) -> None:
         # A succession's old side is retired too, but "it was replaced by

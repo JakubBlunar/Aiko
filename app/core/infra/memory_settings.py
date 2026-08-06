@@ -943,7 +943,14 @@ class MemorySettings:
     # (e.g. 2.0 ~= 2h of active convo) to re-introduce a maturation delay.
     concept_promote_min_age_days: float = 0.0
     concept_promote_min_confidence: float = 0.6
-    concept_confidence_halflife_days: float = 45.0
+    # 7.5 engaged days, damped per kind to an effective 11-14 (see
+    # ``effective_halflife``), so a belief nothing re-observes reaches the
+    # dormant floor from 0.8 in 13-16 engaged days. It was 45.0, which
+    # worked out to 80-97 engaged days -- against roughly 3.4 engaged days
+    # accumulated per week of real use, that is a year and a half of
+    # conversation to clear one unearned concept, so nothing ever cleared
+    # and 71% of the graph was never-reinforced (L22).
+    concept_confidence_halflife_days: float = 7.5
     concept_decay_max_catchup_days: float = 3.0
     concept_dormant_confidence_floor: float = 0.35
     concept_retire_confidence_floor: float = 0.15
@@ -3126,7 +3133,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             concept_confidence_halflife_days=max(
                 0.1,
-                float(memory_raw.get("concept_confidence_halflife_days", 45.0)),
+                float(memory_raw.get("concept_confidence_halflife_days", 7.5)),
             ),
             concept_decay_max_catchup_days=max(
                 0.1,

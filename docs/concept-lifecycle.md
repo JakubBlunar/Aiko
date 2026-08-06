@@ -184,6 +184,18 @@ Three things make this robust and anti-bias:
 the engagement-robust signal, the dormant/retire transitions read it
 directly.
 
+**Sizing the half-life.** `concept_confidence_halflife_days` is **7.5**
+engaged days, which the plasticity damping turns into an effective 11–15 and
+which takes an unreinforced belief from 0.8 to the 0.35 dormant floor in
+**13–16 engaged days**. Read that against the rate the clock actually
+accumulates — roughly 3.4 engaged days per week of real use — so it is four
+to six weeks of conversation, not of calendar. It was 45.0 until the L22
+decay pass, i.e. 80–97 engaged days, i.e. about eighteen months of talking to
+clear one concept: decay was nominally on and in practice inert, and 71% of
+the graph had never been reinforced. If you raise it, check what
+`GET /api/concepts/quality` reports for `median_engaged_days_to_dormant`
+rather than reasoning from the raw setting, since the damping is per kind.
+
 ### Plasticity — the movement governor (L16)
 
 `plasticity` (`[0, 1]`, per concept) is the single **learning rate** the

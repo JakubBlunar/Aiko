@@ -22,6 +22,14 @@ data/persona/self_image.txt
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# Anything derived from the database is the same personal data: chat history,
+# memories, the concept graph. ``data/*.db`` only matches names *ending* in
+# .db, so a pre-migration copy like chat_sessions.db.pre-l22-<stamp>.bak was
+# untracked but not ignored -- one ``git add .`` from being published.
+data/*.db.*
+data/*.bak
+data/*.sqlite
+data/*.sqlite3
 models/
 data/browser-profile/
 *.wav

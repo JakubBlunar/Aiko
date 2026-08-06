@@ -55,9 +55,17 @@ def _trace(
     confidence: float = 0.8,
     plasticity: float = 0.3,
     born_days_ago: float = 60.0,
+    held: bool = True,
     points: tuple[TrajectoryPoint, ...] = (),
     evidence: tuple[tuple[str, str], ...] = (),
 ) -> ConceptTrace:
+    """A trace for a belief that was genuinely held, unless ``held=False``.
+
+    ``held`` is the reinforcement pair the ``loss`` gate reads: evidence
+    landed on it after promotion, so a later fade is a real change of
+    mind. ``held=False`` models the one-shot inference nothing ever
+    confirmed, whose fade must not count as learning.
+    """
     return ConceptTrace(
         concept_id=concept_id,
         kind=kind,
@@ -67,6 +75,8 @@ def _trace(
         confidence=confidence,
         plasticity=plasticity,
         first_evidence_at=_iso(born_days_ago),
+        promoted_at=_iso(born_days_ago - 1.0),
+        last_reinforced_at=_iso(born_days_ago - 2.0) if held else "",
         points=points,
         evidence_refs=frozenset(evidence),
     )
@@ -148,6 +158,25 @@ class TrajectoryShapeTests(unittest.TestCase):
         assert finding is not None
         self.assertEqual(finding.shape, "loss")
         self.assertEqual(finding.resolution, "no longer held")
+
+    def test_a_finding_is_dated_by_its_decisive_event(self) -> None:
+        # The backfill classifies years of history in one pass; if findings
+        # were dated by detection, all of it would land on the day the
+        # sweep ran and the self-history would read as one huge afternoon.
+        trace = _trace(
+            17,
+            status="retired",
+            points=(
+                _point(170, "promoted", days_ago=40, confidence=0.8),
+                _point(171, "retired", days_ago=25, confidence=0.2),
+            ),
+        )
+        finding = classify_trajectory(
+            trace, now=NOW, thresholds=DriftThresholds()
+        )
+        assert finding is not None
+        self.assertEqual(finding.occurred_at, _iso(25.0))
+        self.assertEqual(finding.detected_at, NOW.isoformat())
 
     def test_revival_is_its_own_shape(self) -> None:
         trace = _trace(
@@ -335,6 +364,118 @@ class TrajectoryShapeTests(unittest.TestCase):
         self.assertEqual(finding.subject, "aiko")
 
 
+class HeldBeliefTests(unittest.TestCase):
+    """A fade is only learning if the belief was ever actually held.
+
+    Without this, ordinary graph maintenance -- a decay retune, the L22
+    sweep that parks never-reinforced bootstrap rows -- would mint
+    hundreds of "the support for X fell away" events dated to whichever
+    afternoon it ran, and the diary would compose about a mass forgetting
+    that never happened.
+    """
+
+    def _fade(self, cid: int, *, held: bool) -> ConceptTrace:
+        return _trace(
+            cid,
+            status="retired",
+            held=held,
+            points=(
+                _point(200, "promoted", days_ago=40, confidence=0.8),
+                _point(201, "retired", days_ago=2, confidence=0.2),
+            ),
+        )
+
+    def test_a_never_reinforced_fade_is_not_learning(self) -> None:
+        self.assertIsNone(
+            classify_trajectory(
+                self._fade(20, held=False),
+                now=NOW,
+                thresholds=DriftThresholds(),
+            )
+        )
+
+    def test_a_held_belief_that_fades_still_is(self) -> None:
+        finding = classify_trajectory(
+            self._fade(21, held=True), now=NOW, thresholds=DriftThresholds()
+        )
+        assert finding is not None
+        self.assertEqual(finding.shape, "loss")
+
+    def test_reinforcement_must_postdate_the_promotion(self) -> None:
+        # Bootstrap rows carry a reinforcement stamp copied from their
+        # promotion. That is the promotion itself, not a confirmation.
+        trace = ConceptTrace(
+            concept_id=22,
+            status="retired",
+            first_evidence_at=_iso(60),
+            promoted_at=_iso(50),
+            last_reinforced_at=_iso(50),
+            points=(
+                _point(210, "promoted", days_ago=50, confidence=0.8),
+                _point(211, "dormant", days_ago=2, confidence=0.2),
+            ),
+        )
+        self.assertFalse(trace.ever_reinforced)
+        self.assertIsNone(
+            classify_trajectory(
+                trace, now=NOW, thresholds=DriftThresholds()
+            )
+        )
+
+    def test_the_gate_only_touches_losses(self) -> None:
+        # Emergence and revival both require fresh evidence to happen at
+        # all, so they are already safe and must not be gated.
+        emergence = classify_trajectory(
+            _trace(
+                23,
+                held=False,
+                points=(
+                    _point(220, "discovered", days_ago=40, confidence=0.3),
+                    _point(221, "promoted", days_ago=5, confidence=0.85),
+                ),
+            ),
+            now=NOW,
+            thresholds=DriftThresholds(),
+        )
+        assert emergence is not None
+        self.assertEqual(emergence.shape, "emergence")
+        revival = classify_trajectory(
+            _trace(
+                24,
+                held=False,
+                points=(
+                    _point(230, "promoted", days_ago=60, confidence=0.8),
+                    _point(231, "dormant", days_ago=30, confidence=0.3),
+                    _point(232, "revived", days_ago=1, confidence=0.7),
+                ),
+            ),
+            now=NOW,
+            thresholds=DriftThresholds(),
+        )
+        assert revival is not None
+        self.assertEqual(revival.shape, "revival")
+
+    def test_a_missing_promotion_stamp_trusts_the_reinforcement(self) -> None:
+        # Older rows predate ``promoted_at``. A reinforcement stamp with
+        # nothing to compare it against is still evidence it was held.
+        trace = ConceptTrace(
+            concept_id=25,
+            status="retired",
+            first_evidence_at=_iso(60),
+            last_reinforced_at=_iso(20),
+            points=(
+                _point(240, "promoted", days_ago=50, confidence=0.8),
+                _point(241, "retired", days_ago=2, confidence=0.2),
+            ),
+        )
+        self.assertTrue(trace.ever_reinforced)
+        finding = classify_trajectory(
+            trace, now=NOW, thresholds=DriftThresholds()
+        )
+        assert finding is not None
+        self.assertEqual(finding.shape, "loss")
+
+
 class SuccessionTests(unittest.TestCase):
     def _pair(
         self,
@@ -344,6 +485,7 @@ class SuccessionTests(unittest.TestCase):
         old_status: str = "retired",
         fade_days: float = 5.0,
         rise_days: float = 8.0,
+        old_held: bool = True,
     ) -> SuccessionCandidate:
         shared_refs = (("memory", "1"), ("memory", "2"))
         old = _trace(
@@ -352,6 +494,7 @@ class SuccessionTests(unittest.TestCase):
             status=old_status,
             plasticity=0.3,
             confidence=0.25,
+            held=old_held,
             points=(
                 _point(1000, "promoted", days_ago=90, confidence=0.8),
                 _point(1001, "retired", days_ago=fade_days, confidence=0.25),
@@ -382,6 +525,31 @@ class SuccessionTests(unittest.TestCase):
         self.assertEqual(finding.prior_concept_id, 100)
         self.assertEqual(finding.old_label, "likes detailed answers")
         self.assertEqual(finding.decisive_event_id, 1003)
+
+    def test_the_pair_is_dated_by_the_rise(self) -> None:
+        # Not by the fade: the belief changed when the replacement took
+        # over. A bulk status pass supplying the fade must not be able to
+        # redate a month-old refinement to the afternoon it ran.
+        finding = classify_succession(
+            self._pair(fade_days=0.0, rise_days=30.0),
+            now=NOW,
+            thresholds=DriftThresholds(),
+        )
+        assert finding is not None
+        self.assertEqual(finding.occurred_at, _iso(30.0))
+        self.assertEqual(finding.detected_at, NOW.isoformat())
+
+    def test_a_never_reinforced_loser_still_pairs(self) -> None:
+        # The loss gate is deliberately not applied here: a fade matched
+        # to a rising, semantically-near replacement is much stronger
+        # evidence that the belief was real than reinforcement counting
+        # is, so "I used to think X, now Y" keeps its entry.
+        finding = classify_succession(
+            self._pair(old_held=False), now=NOW, thresholds=DriftThresholds()
+        )
+        assert finding is not None
+        self.assertEqual(finding.shape, "succession")
+        self.assertEqual(finding.prior_concept_id, 100)
 
     def test_pair_at_or_above_dedupe_bar_is_rejected(self) -> None:
         self.assertIsNone(

@@ -475,7 +475,7 @@ class ConceptLifecycleWorker:
         new_conf = next_confidence(
             concept.confidence,
             engaged_days=engaged_days,
-            halflife_days=self._f("concept_confidence_halflife_days", 45.0),
+            halflife_days=self._f("concept_confidence_halflife_days", 7.5),
             plasticity=eff_plast,
             target=target,
             reinforced=reinforced,

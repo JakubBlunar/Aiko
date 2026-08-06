@@ -169,7 +169,7 @@ class QualityThresholds:
     promote_min_sources: int = 2
     dedupe_cos: float = 0.86
     dormant_confidence_floor: float = 0.35
-    confidence_halflife_days: float = 45.0
+    confidence_halflife_days: float = 7.5
     duplicate_band_floor: float = _DUPLICATE_BAND_FLOOR
 
 

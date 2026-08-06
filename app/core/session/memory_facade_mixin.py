@@ -936,7 +936,7 @@ class MemoryFacadeMixin:
                     "concept_dormant_confidence_floor", 0.35
                 ),
                 confidence_halflife_days=_setting(
-                    "concept_confidence_halflife_days", 45.0
+                    "concept_confidence_halflife_days", 7.5
                 ),
             )
             return build_concept_quality(

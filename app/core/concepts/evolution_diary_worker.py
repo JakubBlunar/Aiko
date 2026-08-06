@@ -347,10 +347,14 @@ class EvolutionDiaryWorker:
             for cid in (event.concept_id, event.prior_concept_id):
                 if cid and int(cid) not in concept_ids:
                     concept_ids.append(int(cid))
+        # Min/max rather than first/last: the page arrives in insertion
+        # order, and a change is dated when it happened, so a backfill can
+        # hand over a batch whose oldest change is nowhere near its front.
+        stamps = sorted(str(e.created_at or "") for e in events if e.created_at)
         return DiaryEntry(
             entry=body,
-            period_start=str(events[0].created_at or ""),
-            period_end=str(events[-1].created_at or ""),
+            period_start=stamps[0] if stamps else "",
+            period_end=stamps[-1] if stamps else "",
             event_watermark=max(int(e.event_id) for e in events),
             learning_event_ids=tuple(int(e.event_id) for e in events),
             concept_ids=tuple(concept_ids),

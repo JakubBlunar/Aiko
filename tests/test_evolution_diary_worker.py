@@ -279,6 +279,17 @@ class CompositionTests(unittest.TestCase):
         [entry] = self.h.diary.list()
         self.assertLess(entry.period_start, entry.period_end)
 
+    def test_the_period_is_the_span_not_the_page_order(self) -> None:
+        # The backfill writes in concept-id order while each change keeps
+        # the date it happened, so the oldest change can arrive last.
+        _event(self.h, 0, created_at=_iso(4))
+        _event(self.h, 1, created_at=_iso(30))
+        _event(self.h, 2, created_at=_iso(12))
+        _worker(self.h).run()
+        [entry] = self.h.diary.list()
+        self.assertEqual(entry.period_start, _iso(30))
+        self.assertEqual(entry.period_end, _iso(4))
+
     def test_the_watermark_stops_a_change_being_told_twice(self) -> None:
         _three(self.h)
         worker = _worker(self.h)
