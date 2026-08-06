@@ -113,6 +113,12 @@ class LearningEvent:
         The labels are resolved by the caller (which owns the stores) and
         frozen here, because the whole point of the snapshot is that it
         survives the disappearance of what it describes.
+
+        ``created_at`` is when the change **happened**, not when the
+        classifier noticed. On the forward pass those are minutes apart; on
+        the cold-start backfill they are weeks, and everything L19 and the
+        diary build on top reads this field. Dating by detection would file
+        five weeks of history under the afternoon the sweep ran.
         """
         return cls(
             shape=finding.shape,
@@ -135,7 +141,9 @@ class LearningEvent:
                 str(label).strip() for label in evidence_labels if str(label).strip()
             ),
             fingerprint=finding.fingerprint(),
-            created_at=finding.detected_at,
+            created_at=(
+                getattr(finding, "occurred_at", "") or finding.detected_at
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from app.core.concepts.concept_lifecycle import effective_halflife
 from app.core.concepts.concept_quality import (
     EvidenceFacts,
     QualityThresholds,
@@ -23,6 +24,7 @@ from app.core.concepts.concept_quality import (
     unreinforced_since_promotion,
 )
 from app.core.concepts.concept_store import Concept
+from app.core.infra.memory_settings import MemorySettings
 
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
 
@@ -120,14 +122,25 @@ class EngagedDaysToFloorTests(unittest.TestCase):
             places=1,
         )
 
-    def test_live_defaults_expose_the_pruning_gap(self) -> None:
-        # 0.85 down to the 0.35 dormant floor on a 45-engaged-day
-        # half-life. An engaged day is ~1h of conversation, so this is
-        # the number that explains zero demotions in a month of use.
-        days = engaged_days_to_floor(0.85, floor=0.35, halflife_days=45.0)
+    def test_the_live_defaults_can_actually_clear_a_belief(self) -> None:
+        # Read off the shipped settings, not a literal: this is the number
+        # that decides whether decay is a real force. An engaged day is
+        # ~1h of conversation and about 3.4 of them accumulate per week of
+        # use, so the old 45-day base needed roughly a year and a half of
+        # talking to retire one unearned concept -- which is why nothing
+        # was ever retired (L22). The band below is four to six weeks.
+        settings = MemorySettings()
+        days = engaged_days_to_floor(
+            0.85,
+            floor=settings.concept_dormant_confidence_floor,
+            halflife_days=effective_halflife(
+                settings.concept_confidence_halflife_days,
+                settings.concept_default_plasticity,
+            ),
+        )
         self.assertIsNotNone(days)
-        self.assertGreater(days, 50.0)
-        self.assertLess(days, 60.0)
+        self.assertGreater(days, 13.0)
+        self.assertLess(days, 16.0)
 
     def test_already_below_floor_is_zero(self) -> None:
         self.assertEqual(

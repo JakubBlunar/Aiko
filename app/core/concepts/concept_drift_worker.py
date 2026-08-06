@@ -632,6 +632,8 @@ class ConceptDriftWorker:
                     confidence=float(concept.confidence),
                     plasticity=float(concept.plasticity),
                     first_evidence_at=str(concept.first_evidence_at or ""),
+                    promoted_at=str(concept.promoted_at or ""),
+                    last_reinforced_at=str(concept.last_reinforced_at or ""),
                     points=tuple(
                         TrajectoryPoint(
                             event_id=int(e.event_id),

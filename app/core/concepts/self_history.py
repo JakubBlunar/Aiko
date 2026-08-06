@@ -18,6 +18,15 @@ Two design commitments:
   sparse history must make her say she does not remember, because the
   failure mode of a self-history feature is a confident invented past.
 
+Both commitments rest on one invariant, shared with the L17b classifier:
+**a belief she never held cannot be lost.** A concept that is no longer
+carried and has no recorded ``loss`` behind it is left out of the arc
+entirely -- it was a one-shot inference that decayed, or a row some
+maintenance pass parked, and either way it is not something she changed
+her mind about. Without that, a decay retune or a bulk sweep would fill
+the story with hundreds of dated regrets and, worse, clear
+``thin_record`` on the strength of them.
+
 Read cost is deliberately flat in the number of concepts: the concept
 mirror is already in memory, and the learning events and aliases are each
 read **once** in bulk and grouped here. A per-concept query would be
@@ -180,6 +189,10 @@ def _classify(
     Ordered by how much each outcome says. A belief that was superseded is
     the most informative thing that can happen to it, so a flip wins over
     the fade that a succession's losing side also technically shows.
+
+    An empty ``change`` means **leave this belief out of the story**: it is
+    no longer carried and nothing in the record says she ever held it. See
+    the fade branch below.
     """
     newest_flip: "LearningEvent | None" = None
     newest_revival: "LearningEvent | None" = None
@@ -198,12 +211,17 @@ def _classify(
             str(newest_flip.because or ""),
         )
     if concept.status in _FADED_STATUSES:
-        because = ""
         for event in reversed(events):
             if event.shape == "loss":
-                because = str(event.because or "")
-                break
-        return "faded", "", because
+                return "faded", "", str(event.because or "")
+        # A fade with no recorded loss is not a belief she gave up -- the
+        # L17b classifier only mints a loss for a belief that was actually
+        # reinforced, so what is left here is a one-shot inference that
+        # decayed, or a row a maintenance pass parked. Either way it never
+        # entered the story, so it must not be narrated as an abandoned
+        # conviction, and its volume must not talk ``thin_record`` into
+        # claiming a history that isn't there.
+        return "", "", ""
     if newest_revival is not None:
         return "revived", "", str(newest_revival.because or "")
     if newest_any is not None and newest_any.shape == "emergence":
@@ -252,6 +270,8 @@ def build_self_history(
         cid = int(concept.concept_id)
         events = events_by_concept.get(cid, [])
         change, prior, because = _classify(concept, events)
+        if not change:
+            continue
         born = _parse(concept.first_evidence_at) or _parse(
             events[0].created_at if events else None
         )

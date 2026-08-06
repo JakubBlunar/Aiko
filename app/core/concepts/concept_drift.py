@@ -21,6 +21,14 @@ replaced it), ``revival`` (it came back), and ``relabel`` (the L17
 relabel pipeline rewrote its wording in place). Confidence movement with
 no structural consequence is *noise* and is dropped.
 
+A ``loss`` additionally requires that the belief was ever *held* --
+reinforced at least once after promotion. A concept that decayed away
+having never been re-observed was one inference nothing confirmed, and
+calling that a change of mind would let ordinary graph maintenance
+(a decay retune, the L22 sweep) narrate hundreds of losses she never
+lived. Succession is exempt: a fade matched to a rising replacement
+carries its own proof that the belief was real.
+
 Salience is weighted by the kind's L16 plasticity band, inverted: equal
 movement means more in a sticky belief (``value`` at 0.2) than in a
 fluid one (``taste`` at 0.5), because the sticky one had to overcome
@@ -222,8 +230,28 @@ class ConceptTrace:
     confidence: float = 0.0
     plasticity: float = 0.5
     first_evidence_at: str = ""
+    promoted_at: str = ""
+    last_reinforced_at: str = ""
     points: tuple[TrajectoryPoint, ...] = ()
     evidence_refs: frozenset[tuple[str, str]] = frozenset()
+
+    @property
+    def ever_reinforced(self) -> bool:
+        """Did evidence ever land on this belief *after* it was promoted?
+
+        The same rule ``concept_quality.unreinforced_since_promotion`` and
+        the L22 sweep script apply, read off the concept row rather than
+        the event window: a ``reinforced`` row can fall outside the bounded
+        trajectory read, and a belief that was held for months must not
+        look unearned just because its confirmation scrolled off.
+        """
+        reinforced = _utc(self.last_reinforced_at)
+        if reinforced is None:
+            return False
+        promoted = _utc(self.promoted_at)
+        if promoted is None:
+            return True
+        return reinforced > promoted
 
     def age_days(self, now: datetime) -> float:
         born = _utc(self.first_evidence_at) or _utc(
@@ -282,6 +310,12 @@ class DriftFinding:
     trigger_event_ids: tuple[int, ...] = ()
     evidence_refs: tuple[tuple[str, str], ...] = ()
     detected_at: str = ""
+    # When the change *happened*, as opposed to when it was noticed. The
+    # two coincide on the forward pass, and diverge by weeks on a backfill
+    # -- or by everything, when a bulk status pass supplies the fade for a
+    # replacement that rose a month earlier. The story is told from this;
+    # ``detected_at`` stays for the debug surfaces.
+    occurred_at: str = ""
     cosine: float | None = None
 
     def fingerprint(self) -> str:
@@ -473,6 +507,12 @@ def classify_succession(
         trigger_event_ids=(int(fade.event_id), int(rise.event_id)),
         evidence_refs=refs[:12],
         detected_at=now.isoformat(),
+        # Dated by the *rise*: the belief changed when the replacement took
+        # over, not when the old row's status finally caught up. That catch-up
+        # can be L3 decay, or a maintenance sweep stamping hundreds of fades
+        # with one timestamp -- which would pile a whole graph's worth of
+        # revisions onto whichever afternoon it ran.
+        occurred_at=rise.created_at or now.isoformat(),
         cosine=cosine,
     )
 
@@ -508,6 +548,16 @@ def classify_trajectory(
     if shape is None:
         return None
 
+    # You can only lose what you held. A belief that faded having never
+    # once been reinforced was a single inference that nothing confirmed,
+    # so its fade is bookkeeping rather than a change of mind -- and
+    # letting it through would let decay tuning or a maintenance sweep
+    # write hundreds of "I no longer believe" entries she never lived.
+    # Succession is deliberately exempt: a fade matched to a rising
+    # replacement is evidence in its own right that the belief was real.
+    if shape == "loss" and not trace.ever_reinforced:
+        return None
+
     # Noise gate: a move that neither changed the wording nor shifted
     # confidence meaningfully is drift along a plateau, not learning.
     span = trace.confidence_span()
@@ -540,6 +590,7 @@ def classify_trajectory(
         trigger_event_ids=(int(decisive.event_id),),
         evidence_refs=tuple(sorted(trace.evidence_refs))[:12],
         detected_at=now.isoformat(),
+        occurred_at=decisive.created_at or now.isoformat(),
     )
 
 
@@ -691,6 +742,10 @@ def build_traces(
                 plasticity=float(getattr(concept, "plasticity", 0.5) or 0.5),
                 first_evidence_at=str(
                     getattr(concept, "first_evidence_at", "") or ""
+                ),
+                promoted_at=str(getattr(concept, "promoted_at", "") or ""),
+                last_reinforced_at=str(
+                    getattr(concept, "last_reinforced_at", "") or ""
                 ),
                 points=points,
                 evidence_refs=frozenset(

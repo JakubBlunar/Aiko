@@ -158,6 +158,12 @@ def _concept(h: Harness, label: str, vec: list[float], **kw) -> int:
         confidence=0.8,
         plasticity=0.3,
         first_evidence_at=_iso(90),
+        # A belief that was genuinely held: evidence landed on it after
+        # promotion. The ``loss`` gate reads this pair, so a fixture
+        # without it models the one-shot inference whose fade is not
+        # learning -- pass ``last_reinforced_at=""`` to get that.
+        promoted_at=_iso(80),
+        last_reinforced_at=_iso(70),
     )
     base.update(kw)
     return h.store.add(
@@ -467,6 +473,23 @@ class ClassificationTests(unittest.TestCase):
         [event] = self.h.learning.list()
         self.assertEqual(event.shape, "loss")
         self.assertEqual(event.concept_id, cid)
+
+    def test_a_never_reinforced_fade_records_nothing(self) -> None:
+        # The shape the L22 sweep produces in bulk: promoted once on a
+        # single inference, nothing ever confirmed it, then parked. She
+        # did not change her mind, so the timeline stays quiet.
+        cid = _concept(
+            self.h,
+            "a guess that never came up again",
+            [1.0, 0.0],
+            status="dormant",
+            last_reinforced_at="",
+        )
+        _event(self.h, cid, "promoted", 90, confidence=0.85)
+        _event(self.h, cid, "dormant", 2, confidence=0.2)
+        stats = _worker(self.h).run()
+        self.assertEqual(stats["recorded"], 0)
+        self.assertEqual(self.h.learning.list(), [])
 
     def test_succession_pairs_across_rows(self) -> None:
         # Cosine ~0.82: inside the succession band, below the dedupe bar

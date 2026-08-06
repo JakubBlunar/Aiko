@@ -435,21 +435,24 @@ Open — quality and pruning:
   pruning section grew intake-*rate* metrics plus
   `scripts/concept_intake_report.py`, since the standing never-reinforced
   count is far too slow to show whether a threshold change worked.
-  **The one-off sweep of the 374 concepts minted before reinforcement had
-  ever fired now exists** as `scripts/concept_sweep_unreinforced.py`
-  (dry-run by default; demotes the pre-Jul-13 cohort to `dormant`, keeping
-  confidence so a genuine reinforcement revives them) — it just hasn't been
-  run yet. That is a bootstrap-era backlog, not a leak: `reinforced` was
-  zero for the graph's first nine days and on the most recent day of use it
-  outpaced discovery 4:1, so the mechanism is fine and decay simply cannot
-  clear the stock at ~86 engaged days a head against 12.9 accumulated.
-  Writing the sweep also forced a fix to `dormant -> active` revival, which
-  had no reinforcement check and would have undone it on the next tick.
-  Still open, in priority order: running the sweep; tuning pass 2 (per-kind decay — the
-  ordering is already right via `plasticity_default`, the absolute scale is
-  ~6x too slow); and the offline eval harness (deliberately last:
-  hand-authoring goldens before the register settles would enshrine the
-  output we are fixing).
+  **Tuning pass 2 (the sweep + decay) shipped:** 293 bootstrap-era concepts —
+  promoted before `reinforced` had ever fired, sitting `active` at ~0.8 —
+  were parked to `dormant` by `scripts/concept_sweep_unreinforced.py`, and
+  the base half-life went 45 → 7.5 engaged days, because at the old rate
+  clearing one unearned concept took ~18 months of conversation. That took
+  the graph from 602 active / 428 never-reinforced to 309 / 135.
+  Both steps had to wait on one invariant, since by then L17 and L19 read
+  *from* concept status: **a belief she never held cannot be lost.** A `loss`
+  finding now requires the concept to have been reinforced at least once
+  (succession stays exempt — a fade matched to a rising replacement proves
+  itself), the self-history arc omits a faded belief with no recorded loss
+  rather than narrating an invented regret, and learning events are dated by
+  *when the change happened* rather than when the classifier noticed — without
+  which the backfill filed five weeks of history under one afternoon.
+  Still open: the offline eval harness (deliberately last: hand-authoring
+  goldens before the register settles would enshrine the output we are
+  fixing), and re-reading pass 1's intake gates now that the stock is cleared
+  and the rate (92 promotions in 3 days) is no longer hidden behind it.
 
 Shipped — self-history (all of it, in
 [`shipped/concepts.md`](shipped/concepts.md)):
