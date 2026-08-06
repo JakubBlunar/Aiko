@@ -27,6 +27,7 @@ from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PINNED_BONUS,
     _MEMORY_PRIOR,
+    _MEMORY_PROVENANCE_PENALTY,
     _MEMORY_TIER_OFFSET,
     _RAG_CALLBACK_BONUS,
 )
@@ -138,8 +139,21 @@ def _make_environment(
 
 
 def _base_score() -> float:
-    """Score floor with prior + long_term tier offset but no bonuses."""
-    return 0.5 + _MEMORY_PRIOR + _MEMORY_TIER_OFFSET.get("long_term", 0.0)
+    """Score floor with prior + long_term tier offset but no bonuses.
+
+    The F16 provenance nudge is part of the floor rather than a bonus:
+    ``MemoryStore.add`` defaults every row to ``inferred`` (over-claiming
+    testimony is the failure that default exists to prevent), and the
+    retrieve() join applies the demotion unconditionally, exactly like the
+    confidence penalty. A row here would have to be written ``stated`` to
+    escape it, which is not what K22 is about.
+    """
+    return (
+        0.5
+        + _MEMORY_PRIOR
+        + _MEMORY_TIER_OFFSET.get("long_term", 0.0)
+        - _MEMORY_PROVENANCE_PENALTY
+    )
 
 
 class CallbackBonusTests(unittest.TestCase):

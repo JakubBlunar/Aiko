@@ -23,6 +23,7 @@ from app.core.memory.memory_store import MemoryStore
 from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PRIOR,
+    _MEMORY_PROVENANCE_PENALTY,
     _RAG_GOAL_ALIGNMENT_BOOST,
     _MEMORY_TIER_OFFSET,
 )
@@ -127,9 +128,17 @@ def _make_environment(
 
 
 def _expected_score(*, base: float) -> float:
-    # The join path also applies the ``long_term`` tier offset (=0.0)
-    # so we just need the prior + base.
-    return base + _MEMORY_PRIOR + _MEMORY_TIER_OFFSET.get("long_term", 0.0)
+    # The join path also applies the ``long_term`` tier offset (=0.0) and
+    # the F16 provenance nudge. The latter is unconditional, like the
+    # confidence penalty: ``MemoryStore.add`` defaults a row to
+    # ``inferred``, so every fixture here carries it. K1 is about the
+    # goal-alignment delta on top of that floor, not about provenance.
+    return (
+        base
+        + _MEMORY_PRIOR
+        + _MEMORY_TIER_OFFSET.get("long_term", 0.0)
+        - _MEMORY_PROVENANCE_PENALTY
+    )
 
 
 class GoalAlignmentBoostTests(unittest.TestCase):
