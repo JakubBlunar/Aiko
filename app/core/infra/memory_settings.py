@@ -1187,6 +1187,58 @@ class MemorySettings:
     concept_edge_integrity_enabled: bool = True
     concept_edge_integrity_interval_seconds: float = 3600.0
     concept_edge_integrity_batch_size: int = 200
+    # ── L17: concept evolution (drift classification + relabelling) ───
+    # Master switch for
+    # :class:`app.core.concepts.concept_drift_worker.ConceptDriftWorker`,
+    # which is the single writer of ``label`` / ``rationale`` (the direct
+    # counterpart to L3 owning confidence / plasticity / status) and the
+    # only producer of ``concept_learning_events``.
+    concept_drift_enabled: bool = True
+    concept_drift_interval_seconds: int = 3600
+    # Per-run bounds. ``max_concepts`` caps the trajectory reads;
+    # ``trace_anchor`` / ``trace_recent`` size the two-ended timeline
+    # window (origin + recent movement, so a wall of L17a
+    # ``confidence_sample`` rows can't hide a structural move).
+    concept_drift_max_concepts: int = 120
+    concept_drift_trace_anchor: int = 20
+    concept_drift_trace_recent: int = 60
+    # L17b classifier thresholds. ``min_salience`` is the bar a change
+    # must clear to be worth remembering at all; ``min_age_days`` refuses
+    # to call anything about a belief younger than this "evolution";
+    # ``min_confidence_delta`` is the noise floor for movement that did
+    # not change the wording or the status.
+    concept_drift_min_salience: float = 0.35
+    concept_drift_min_age_days: float = 3.0
+    concept_drift_min_confidence_delta: float = 0.15
+    concept_drift_max_findings: int = 12
+    # Succession band. The upper bound must stay at/below the synthesis
+    # dedupe cosine (0.86): at or above it the two beliefs would never
+    # have become separate rows, so a pair up there is a consolidation
+    # problem rather than an evolution. ``min_overlap`` is the Jaccard
+    # floor on shared evidence -- the structural half of the argument,
+    # since two labels can be near in embedding space by coincidence but
+    # two beliefs resting on the same remembered moments cannot.
+    concept_drift_succession_min_cosine: float = 0.55
+    concept_drift_succession_max_cosine: float = 0.86
+    concept_drift_succession_min_overlap: float = 0.25
+    concept_drift_succession_window_days: float = 120.0
+    # Relabelling. When a proposal folds into an existing concept but says
+    # it better, the drift worker rewrites the stored wording in place so
+    # the concept stays current, and the timeline keeps every wording it
+    # has ever held. ``min_cosine`` guards the identity vector: below it
+    # the "rewording" is a different claim and must stay a separate
+    # concept. ``cooldown_days`` plus the previously-held-label guard
+    # (read free off the timeline's label snapshots) stop phrasing churn.
+    concept_relabel_enabled: bool = True
+    concept_relabel_min_cosine: float = 0.80
+    concept_relabel_cooldown_days: float = 21.0
+    concept_relabel_max_per_run: int = 3
+    concept_relabel_scan_limit: int = 40
+    concept_drift_relabel_min_tokens: int = 1
+    # L17e: how salient a change must be to be offered to the rare T6
+    # reflection, and how many are held in the pending snapshot.
+    concept_reflection_min_salience: float = 0.6
+    concept_drift_pending_cap: int = 3
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -3517,6 +3569,125 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_edge_integrity_batch_size=max(
                 1,
                 int(memory_raw.get("concept_edge_integrity_batch_size", 200)),
+            ),
+            concept_drift_enabled=bool(
+                memory_raw.get("concept_drift_enabled", True)
+            ),
+            concept_drift_interval_seconds=max(
+                60,
+                int(memory_raw.get("concept_drift_interval_seconds", 3600)),
+            ),
+            concept_drift_max_concepts=max(
+                1, int(memory_raw.get("concept_drift_max_concepts", 120))
+            ),
+            concept_drift_trace_anchor=max(
+                0, int(memory_raw.get("concept_drift_trace_anchor", 20))
+            ),
+            concept_drift_trace_recent=max(
+                1, int(memory_raw.get("concept_drift_trace_recent", 60))
+            ),
+            concept_drift_min_salience=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_drift_min_salience", 0.35)),
+                ),
+            ),
+            concept_drift_min_age_days=max(
+                0.0,
+                float(memory_raw.get("concept_drift_min_age_days", 3.0)),
+            ),
+            concept_drift_min_confidence_delta=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_drift_min_confidence_delta", 0.15
+                        )
+                    ),
+                ),
+            ),
+            concept_drift_max_findings=max(
+                1, int(memory_raw.get("concept_drift_max_findings", 12))
+            ),
+            concept_drift_succession_min_cosine=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_drift_succession_min_cosine", 0.55
+                        )
+                    ),
+                ),
+            ),
+            # Clamped at the synthesis dedupe cosine: above it the pair
+            # would never have become two rows in the first place.
+            concept_drift_succession_max_cosine=min(
+                0.86,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_drift_succession_max_cosine", 0.86
+                        )
+                    ),
+                ),
+            ),
+            concept_drift_succession_min_overlap=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_drift_succession_min_overlap", 0.25
+                        )
+                    ),
+                ),
+            ),
+            concept_drift_succession_window_days=max(
+                1.0,
+                float(
+                    memory_raw.get(
+                        "concept_drift_succession_window_days", 120.0
+                    )
+                ),
+            ),
+            concept_relabel_enabled=bool(
+                memory_raw.get("concept_relabel_enabled", True)
+            ),
+            concept_relabel_min_cosine=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_relabel_min_cosine", 0.80)),
+                ),
+            ),
+            concept_relabel_cooldown_days=max(
+                0.0,
+                float(memory_raw.get("concept_relabel_cooldown_days", 21.0)),
+            ),
+            concept_relabel_max_per_run=max(
+                1, int(memory_raw.get("concept_relabel_max_per_run", 3))
+            ),
+            concept_relabel_scan_limit=max(
+                1, int(memory_raw.get("concept_relabel_scan_limit", 40))
+            ),
+            concept_drift_relabel_min_tokens=max(
+                1, int(memory_raw.get("concept_drift_relabel_min_tokens", 1))
+            ),
+            concept_reflection_min_salience=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_reflection_min_salience", 0.6)
+                    ),
+                ),
+            ),
+            concept_drift_pending_cap=max(
+                1, int(memory_raw.get("concept_drift_pending_cap", 3))
             ),
             coactivation_min_pair_support=max(
                 1,
