@@ -447,5 +447,113 @@ class DriftWindowTests(unittest.TestCase):
         self.assertEqual(self.events.concepts_with_events_after(second), [])
 
 
+class FacadeTests(unittest.TestCase):
+    """L17e reads, against real stores rather than mocks."""
+
+    def setUp(self) -> None:
+        from app.core.session.memory_facade_mixin import MemoryFacadeMixin
+
+        tmp = tempfile.mkdtemp()
+        self.db = ChatDatabase(Path(tmp) / "test.db")
+        self.learning = ConceptLearningEventStore(self.db)
+        self.events = ConceptEventStore(self.db)
+        self.concepts = ConceptStore(self.db)
+
+        class Facade(MemoryFacadeMixin):
+            pass
+
+        self.facade = Facade()
+        self.facade._concept_learning_store = self.learning
+        self.facade._concept_event_store = self.events
+        self.facade._concept_store = self.concepts
+        self.facade._chat_db = self.db
+        self.facade._concept_drift_worker = None
+
+    def _concept(self, label: str) -> int:
+        return self.concepts.add(
+            Concept(
+                label=label,
+                kind="identity",
+                subject="user",
+                embedding=np.array([1.0, 0.0], dtype=np.float32),
+            )
+        )
+
+    def test_learning_feed_shape(self) -> None:
+        self.learning.add(LearningEvent.from_finding(_finding()))
+        payload = self.facade.concept_learning_events()
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["counts"], {"succession": 1})
+        self.assertEqual(payload["events"][0]["shape"], "succession")
+
+    def test_learning_feed_without_a_store(self) -> None:
+        self.facade._concept_learning_store = None
+        self.assertFalse(self.facade.concept_learning_events()["enabled"])
+
+    def test_provenance_collects_wordings_and_lifecycle(self) -> None:
+        cid = self._concept("prefers depth calibrated to the topic")
+        self.events.add(
+            ConceptEvent(
+                concept_id=cid, event_type="promoted",
+                label="likes detailed answers", created_at=_iso(30),
+            )
+        )
+        self.events.add(
+            ConceptEvent(
+                concept_id=cid, event_type="relabeled",
+                label="prefers depth calibrated to the topic",
+                reason="was 'likes detailed answers'", created_at=_iso(1),
+            )
+        )
+        self.learning.add(
+            LearningEvent.from_finding(
+                _finding(shape="relabel", concept_id=cid,
+                         prior_concept_id=None)
+            )
+        )
+        payload = self.facade.concept_provenance(cid)
+        self.assertTrue(payload["enabled"])
+        self.assertTrue(payload["exists"])
+        self.assertEqual(
+            payload["prior_labels"],
+            ["likes detailed answers", "prefers depth calibrated to the topic"],
+        )
+        self.assertEqual(len(payload["lifecycle"]), 2)
+        self.assertEqual(len(payload["learning_events"]), 1)
+
+    def test_provenance_survives_a_merge(self) -> None:
+        canonical = self._concept("keeps things simple")
+        absorbed = self._concept("prefers simplicity")
+        self.concepts.set_alias_sink(
+            lambda payload: self.learning.record_alias(
+                ConceptAlias(**payload)  # type: ignore[arg-type]
+            )
+        )
+        self.concepts.merge_into(
+            canonical_id=canonical, absorbed_id=absorbed
+        )
+        payload = self.facade.concept_provenance(absorbed)
+        self.assertEqual(payload["resolved_id"], canonical)
+        self.assertTrue(payload["exists"])
+        self.assertEqual(payload["alias_chain"], [absorbed, canonical])
+        self.assertEqual(
+            [a["absorbed_id"] for a in payload["absorbed"]], [absorbed]
+        )
+
+    def test_provenance_of_a_deleted_concept_still_reads(self) -> None:
+        self.learning.add(
+            LearningEvent.from_finding(_finding(concept_id=404))
+        )
+        payload = self.facade.concept_provenance(404)
+        self.assertTrue(payload["enabled"])
+        self.assertFalse(payload["exists"])
+        self.assertEqual(len(payload["learning_events"]), 1)
+
+    def test_drift_state_without_a_worker(self) -> None:
+        self.assertFalse(self.facade.concept_drift_state()["enabled"])
+        self.assertFalse(self.facade.run_concept_drift()["enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

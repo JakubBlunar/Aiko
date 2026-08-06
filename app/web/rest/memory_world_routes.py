@@ -427,6 +427,61 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             )
         )
 
+    @app.get("/api/concepts/learning")
+    def get_concept_learning(
+        limit: int = 100,
+        subject: str | None = None,
+        shape: str | None = None,
+        concept_id: int | None = None,
+        min_salience: float | None = None,
+        before_id: int | None = None,
+    ) -> JSONResponse:
+        """L17c: what changed about Aiko's beliefs, and why.
+
+        The causal record, as distinct from ``/api/concepts/timeline``'s
+        raw lifecycle log -- only movement the L17b classifier judged to
+        be real evolution lands here. Newest first, paged via
+        ``before_id``; ``concept_id`` matches either endpoint, so asking
+        about a belief also returns the change that superseded it.
+        """
+        return JSONResponse(
+            session.concept_learning_events(
+                limit=limit,
+                subject=subject,
+                shape=shape,
+                concept_id=concept_id,
+                min_salience=min_salience,
+                before_id=before_id,
+            )
+        )
+
+    @app.get("/api/concepts/drift")
+    def get_concept_drift_state() -> JSONResponse:
+        """L17 drift-worker state: watermark, backlog, pending reflections."""
+        return JSONResponse(session.concept_drift_state())
+
+    @app.post("/api/concepts/drift/run")
+    def run_concept_drift() -> JSONResponse:
+        """Force one drift pass (apply staged relabels, record learning).
+
+        Synchronous handler, so FastAPI runs it in the threadpool and the
+        blocking adjudication call stays off the event loop -- same shape
+        as ``/api/concepts/run``.
+        """
+        return JSONResponse(session.run_concept_drift())
+
+    @app.get("/api/concepts/{concept_id}/provenance")
+    def get_concept_provenance(concept_id: int) -> JSONResponse:
+        """L17e: the full history-of-thought drill-down for one belief.
+
+        Learning events on either endpoint, the raw lifecycle trajectory,
+        every wording it has worn, and the alias chain that keeps it
+        reachable after a merge. Answers a different question from L26's
+        "why is this in the prompt right now": this is how the belief got
+        to be what it is.
+        """
+        return JSONResponse(session.concept_provenance(int(concept_id)))
+
     @app.delete("/api/concepts/{concept_id}")
     def delete_concept(concept_id: int) -> JSONResponse:
         """Delete a single concept (and its edges) -- never any memories.

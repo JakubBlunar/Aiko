@@ -1166,6 +1166,86 @@ export interface ConceptTimeline {
   events: ConceptEvent[];
 }
 
+// ── L17: concept evolution (how a belief changed, and why) ──────────
+// The causal record, as distinct from ConceptEvent's raw lifecycle log:
+// only movement the L17b classifier judged to be real learning.
+export interface ConceptLearningEvent {
+  id: number;
+  fingerprint: string;
+  // "succession" | "relabel" | "emergence" | "loss" | "revival"
+  shape: string;
+  concept_id: number | null;
+  prior_concept_id: number | null; // the belief this one succeeded
+  kind: string;
+  subject: string;
+  old_label: string;
+  new_label: string;
+  because: string;
+  resolution: string;
+  salience: number;
+  plasticity: number;
+  confidence_delta: number;
+  cosine: number | null; // succession only
+  decisive_event_id: number;
+  trigger_event_ids: number[];
+  evidence_refs: [string, string][];
+  evidence_labels: string[]; // resolved at detection time; survives pruning
+  created_at: string;
+}
+
+export interface ConceptLearningFeed {
+  enabled: boolean;
+  total: number;
+  counts: Record<string, number>;
+  events: ConceptLearningEvent[];
+}
+
+export interface ConceptLifecyclePoint {
+  id: number;
+  event_type: string;
+  label: string;
+  confidence: number;
+  reason: string;
+  created_at: string;
+}
+
+export interface ConceptProvenance {
+  enabled: boolean;
+  concept_id: number;
+  resolved_id?: number; // differs when the concept was merged away
+  exists?: boolean;
+  label?: string;
+  kind?: string;
+  subject?: string;
+  status?: string;
+  alias_chain?: number[];
+  absorbed?: {
+    absorbed_id: number;
+    absorbed_label: string;
+    merged_at: string;
+  }[];
+  prior_labels?: string[]; // every wording this belief has worn
+  learning_events?: ConceptLearningEvent[];
+  lifecycle?: ConceptLifecyclePoint[];
+}
+
+export interface ConceptDriftState {
+  enabled: boolean;
+  watermark?: number;
+  latest_event_id?: number;
+  pending?: {
+    fingerprint: string;
+    shape: string;
+    subject: string;
+    old: string;
+    new: string;
+    because: string;
+    salience: number;
+  }[];
+  recorded?: number;
+  by_shape?: Record<string, number>;
+}
+
 // ── K10 persona regression (golden-turn drift eval) ─────────────────
 
 export interface PersonaRegressionResult {
