@@ -373,6 +373,15 @@ class AgentSettings:
     # ``MemorySettings.concept_consolidation_*``.
     concept_consolidation_per_hour_cap: int = 6
     concept_consolidation_per_day_cap: int = 30
+    # L17: caps on the "is this wording genuinely better?" adjudication
+    # the ``ConceptDriftWorker`` issues before rewriting a concept's
+    # label. Deliberately much tighter than consolidation's: a relabel
+    # rewrites what Aiko believes she believes, so it should be rare.
+    # Own ``state_key='concept_relabel.rate_state'`` so it never shares a
+    # budget. The cheap gates (materiality, previously-held wording,
+    # cooldown, identity-cosine floor) run first and cost nothing.
+    concept_relabel_per_hour_cap: int = 3
+    concept_relabel_per_day_cap: int = 12
     # ── K35 personality backlog: memory consolidation worker ─────────
     # Master switch for
     # :class:`app.core.memory.memory_consolidation_worker.MemoryConsolidationWorker`.

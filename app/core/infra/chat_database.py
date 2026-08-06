@@ -473,8 +473,12 @@ CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_
 -- (``cluster`` / ``memory``); ``reason`` is a generated, factual
 -- one-liner. ``event_type`` is an open enum (``discovered`` / ``promoted``
 -- / ``dormant`` / ``retired`` / ``revived`` / ``contradicted`` /
--- ``plasticity_shift`` / ``reinforced`` / ``merged`` today) so a new event
--- kind is a value, not a migration.
+-- ``plasticity_shift`` / ``reinforced`` / ``merged`` / and the L17 pair
+-- ``relabel_proposed`` + ``relabeled`` today) so a new event kind is a
+-- value, not a migration. Because ``label`` snapshots the wording at
+-- event time, this table doubles as the record of every phrasing a
+-- belief has held -- which is what L17's relabel pipeline reads to
+-- refuse a wording the concept has already worn.
 CREATE TABLE IF NOT EXISTS concept_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     concept_id INTEGER,

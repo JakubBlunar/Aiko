@@ -46,7 +46,7 @@ mirrors that would drift if SQL deleted rows behind their back.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -373,6 +373,51 @@ class ConceptStore:
             )
         )
         return concepts[: int(limit)]
+
+    def matrix_snapshot(
+        self, concept_ids: "Sequence[int] | None" = None
+    ) -> tuple[list[int], "np.ndarray"]:
+        """One stacked unit-vector matrix for a caller-chosen id set.
+
+        The single primitive for callers that need to compare *many*
+        concepts against many others in one shot -- notably the L17
+        drift worker's succession pass, which pairs faded beliefs against
+        rising ones.
+
+        :meth:`nearest` is the wrong tool for that: it serves only the
+        plain ``status='active'`` query from the cached matrix, so any
+        cross-status scan falls through to ``_filtered_matrix`` and
+        restacks a fresh NumPy array *per call*. Doing that in a loop is
+        the pattern behind the access violation that took down the
+        consolidation worker's ``demand()`` probe. Callers stack once,
+        here, and do a single matmul.
+
+        Ids with no embedding, or whose embedding is a minority
+        dimension, are dropped -- the returned id list is authoritative
+        for the returned rows.
+        """
+        wanted = (
+            [int(c) for c in concept_ids]
+            if concept_ids is not None
+            else list(self._concepts.keys())
+        )
+        vectors = [
+            (cid, self._vectors[cid])
+            for cid in wanted
+            if cid in self._vectors and self._vectors[cid].size
+        ]
+        if not vectors:
+            return [], np.zeros((0, 0), dtype=np.float32)
+        dims: dict[int, int] = {}
+        for _cid, vec in vectors:
+            dims[vec.size] = dims.get(vec.size, 0) + 1
+        dim = max(dims, key=lambda d: dims[d])
+        kept = [(cid, vec) for cid, vec in vectors if vec.size == dim]
+        if not kept:
+            return [], np.zeros((0, 0), dtype=np.float32)
+        ids = [cid for cid, _vec in kept]
+        mat = np.vstack([vec for _cid, vec in kept])
+        return ids, mat
 
     def nearest(
         self,

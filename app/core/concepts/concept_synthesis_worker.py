@@ -50,6 +50,7 @@ from app.core.concepts.proposers import (
     ProposerSpec,
     TensionBase,
 )
+from app.core.concepts.concept_drift import is_material_relabel
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_kinds import core_lane_kinds
 from app.core.concepts.concept_surfacing import engagement_baseline
@@ -2555,7 +2556,7 @@ class ConceptSynthesisWorker:
         # below as ``novelty = 1 - top_sim`` for the discovery event.
         match, top_sim = self._find_duplicate(proposal, vec)
         if match is not None:
-            self._reinforce(match, proposal)
+            self._reinforce(match, proposal, cosine=top_sim)
             stats["reinforced"] += 1
             self._bump_subject(stats, proposal.subject, "reinforced")
             return
@@ -2698,7 +2699,11 @@ class ConceptSynthesisWorker:
         return f"{lead} {distinct} sources ({joined})."
 
     def _reinforce(
-        self, concept: Concept, proposal: CandidateProposal
+        self,
+        concept: Concept,
+        proposal: CandidateProposal,
+        *,
+        cosine: float | None = None,
     ) -> None:
         self._add_evidence_edges(
             concept.concept_id,
@@ -2711,8 +2716,68 @@ class ConceptSynthesisWorker:
             {(e.src_type, e.src_id) for e in ev}
         )
         concept.last_reinforced_at = _now_iso()
-        # confidence / plasticity / status intentionally left to L3.
+        # confidence / plasticity / status intentionally left to L3;
+        # label / rationale intentionally left to the L17 drift worker.
         self._concept_store.update(concept)
+        self._stage_relabel(concept, proposal, cosine)
+
+    def _stage_relabel(
+        self,
+        concept: Concept,
+        proposal: CandidateProposal,
+        cosine: float | None,
+    ) -> None:
+        """Record that a better wording for this belief was proposed (L17).
+
+        Deliberately *stages* rather than mutates. A proposal only reaches
+        here because it landed at or above the dedupe cosine, so it is the
+        same belief said differently -- worth capturing, but the rewrite
+        itself belongs to the drift worker, which is the single writer of
+        ``label`` / ``rationale`` and the only place the anti-churn gates
+        and the adjudication budget live.
+
+        The timeline's ``event_type`` is an open enum by design, so this
+        needs no schema change: the proposed wording rides in ``label``,
+        the dedupe cosine in ``novelty``, and the proposal's own reasoning
+        in ``reason``.
+        """
+        store = self._concept_event_store
+        if store is None or not self._relabel_enabled():
+            return
+        if not is_material_relabel(
+            concept.label,
+            proposal.label,
+            min_token_delta=int(
+                getattr(
+                    self._memory_settings,
+                    "concept_drift_relabel_min_tokens",
+                    1,
+                )
+            ),
+        ):
+            return
+        try:
+            store.add(
+                ConceptEvent(
+                    event_type="relabel_proposed",
+                    kind=concept.kind,
+                    subject=concept.subject,
+                    label=str(proposal.label),
+                    confidence=float(concept.confidence),
+                    novelty=float(cosine or 0.0),
+                    evidence_count=int(concept.evidence_count),
+                    distinct_source_count=int(concept.distinct_source_count),
+                    reason=str(proposal.rationale or ""),
+                    concept_id=int(concept.concept_id),
+                )
+            )
+        except Exception:
+            log.debug("relabel proposal record failed", exc_info=True)
+
+    def _relabel_enabled(self) -> bool:
+        return bool(
+            getattr(self._memory_settings, "concept_relabel_enabled", True)
+        )
 
     def _filter_meta_evidence(
         self, evidence: list[tuple[str, str]]

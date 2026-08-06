@@ -2271,6 +2271,98 @@ class SpeakingWorkersInitMixin:
                         self._concept_consolidation_worker = None
                         self._concept_consolidation_rate_limiter = None
 
+                # L17: ConceptDriftWorker. Applies staged relabels (it is
+                # the single writer of ``label`` / ``rationale``, the way
+                # L3 is the single writer of confidence / status) and
+                # records what actually changed as durable learning
+                # events. Compute-lane except when a relabel proposal is
+                # waiting to be adjudicated. Non-fatal on failure.
+                self._concept_drift_worker = None
+                self._concept_relabel_rate_limiter = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and getattr(self, "_concept_event_store", None) is not None
+                    and getattr(self, "_concept_learning_store", None)
+                    is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            self._memory_settings,
+                            "concept_drift_enabled",
+                            True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.concept_drift_worker import (
+                            ConceptDriftWorker,
+                        )
+                        from app.core.concepts.concept_snapshot import (
+                            resolve_evidence_labels,
+                        )
+                        from app.core.memory.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+
+                        self._concept_relabel_rate_limiter = (
+                            FactCheckRateLimiter(
+                                self._chat_db,
+                                per_hour_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "concept_relabel_per_hour_cap",
+                                        3,
+                                    )
+                                ),
+                                per_day_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "concept_relabel_per_day_cap",
+                                        12,
+                                    )
+                                ),
+                                state_key="concept_relabel.rate_state",
+                            )
+                        )
+
+                        def _drift_evidence_labels(cid: int) -> list[str]:
+                            return resolve_evidence_labels(
+                                self._concept_store,
+                                self._memory_store,
+                                getattr(self, "_topic_graph", None),
+                                int(cid),
+                                limit=6,
+                            )
+
+                        self._concept_drift_worker = ConceptDriftWorker(
+                            concept_store=self._concept_store,
+                            concept_event_store=self._concept_event_store,
+                            learning_store=self._concept_learning_store,
+                            memory_settings=self._memory_settings,
+                            agent_settings=settings.agent,
+                            embedder=getattr(self, "_embedder", None),
+                            # Idle-scheduler worker -> maintenance tier.
+                            ollama=getattr(self, "_maintenance_client", None),
+                            chat_model=self._effective_worker_model,
+                            rate_limiter=(
+                                self._concept_relabel_rate_limiter
+                            ),
+                            cancel_event=self._fact_check_cancel,
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            evidence_labels_provider=_drift_evidence_labels,
+                        )
+                        self._idle_scheduler.register(
+                            self._concept_drift_worker
+                        )
+                    except Exception:
+                        log.warning(
+                            "ConceptDriftWorker boot failed", exc_info=True
+                        )
+                        self._concept_drift_worker = None
+                        self._concept_relabel_rate_limiter = None
+
                 # L25: concept<->memory edge referential integrity. Wire the
                 # reconciler as a MemoryStore delete listener (drop a deleted
                 # memory's edges + recompute the affected concepts' evidence

@@ -52,8 +52,16 @@ class ConceptEvent:
     ``event_type`` is an open enum. Emitted today: ``discovered`` (L2
     synthesis), ``promoted`` / ``demoted`` / ``dormant`` / ``retired`` /
     ``revived`` / ``contradicted`` / ``plasticity_shift`` /
-    ``reinforced`` / ``confidence_sample`` (L3 lifecycle), and ``merged``
-    (L2 consolidation). ``confidence_sample`` is the L17a trail marker:
+    ``reinforced`` / ``confidence_sample`` (L3 lifecycle), ``merged``
+    (L2 consolidation), and the L17 relabel pair --
+    ``relabel_proposed`` (L2 synthesis staged a better wording for an
+    existing belief; ``label`` carries the proposal and ``novelty`` the
+    dedupe cosine) and ``relabeled`` (the L17 drift worker accepted it
+    and rewrote the concept, with the previous wording in ``reason``).
+    Because ``label`` snapshots the text at event time, the timeline is
+    also the record of every wording a belief has ever worn -- which is
+    what the relabel pipeline reads to refuse a phrasing it has already
+    been through. ``confidence_sample`` is the L17a trail marker:
     a concept that slowly decays without crossing a status threshold
     emits nothing else, so its downward path would be invisible to
     :meth:`ConceptEventStore.trajectory`. ``demoted`` is the
