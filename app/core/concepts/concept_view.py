@@ -47,6 +47,35 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.concept_view")
 
 
+# P44 — the ordering of these lists is prompt-cache-critical. Several
+# consumers render them straight into T0 / T1 prompt blocks, so two
+# concepts trading places invalidates the cache for the whole rest of the
+# prompt, and a swap across a ``limit`` cut adds or drops a bullet
+# outright.
+#
+# Raw ``confidence`` is far too live a key for that. L3 nudges it on
+# every lifecycle tick, and with hundreds of active concepts packed into
+# a narrow band the gaps between neighbours are thousandths — so the
+# order, and the membership at the cut, churn every single turn.
+# Quantising into 0.05 bands throws the drift away (far coarser than the
+# jitter, far finer than any real difference in belief) and leaves
+# ordering to settle on a key that does not move.
+#
+# Same fix and same reasoning as the SQLite profile query in
+# ``app/core/infra/user_profile.py``, which this lane bypassed when L28
+# put concepts at the head of the profile block. ``concept_id`` rather
+# than the label is the tie-breaker because L17 can rewrite a label in
+# place, which would put the churn straight back.
+_CONFIDENCE_BANDS_PER_UNIT = 20.0
+
+
+def _stable_rank(concept: "Concept") -> tuple[int, int]:
+    """Sort key: strongest confidence band first, then oldest concept."""
+    confidence = float(getattr(concept, "confidence", 0.0) or 0.0)
+    band = int(confidence * _CONFIDENCE_BANDS_PER_UNIT)
+    return (-band, int(getattr(concept, "concept_id", 0) or 0))
+
+
 class ConceptView:
     """Ergonomic, read-only facade over the concept layer.
 
@@ -81,11 +110,15 @@ class ConceptView:
         min_confidence: float = 0.0,
         limit: int | None = None,
     ) -> list["Concept"]:
-        """Active concepts matching ``(subject, kind)``, confidence-desc.
+        """Active concepts matching ``(subject, kind)``, strongest first.
 
         The always-on / "who they are" path (generalises the identity pin
         lane). ``min_confidence`` gates by confidence; ``limit`` caps the
         result. Turn-agnostic -- no embedding involved.
+
+        Ranked by :func:`_stable_rank`, not by raw confidence: this feeds
+        prompt blocks in the cache prefix, so the order has to survive
+        L3's per-tick confidence drift.
         """
         if self._store is None:
             return []
@@ -101,9 +134,7 @@ class ConceptView:
             c for c in rows
             if float(getattr(c, "confidence", 0.0)) >= floor
         ]
-        out.sort(
-            key=lambda c: float(getattr(c, "confidence", 0.0)), reverse=True,
-        )
+        out.sort(key=_stable_rank)
         if limit is not None:
             out = out[: max(0, int(limit))]
         return out
@@ -158,13 +189,18 @@ class ConceptView:
         if not buckets:
             return []
 
-        def _bucket_top(key: tuple[str, str]) -> float:
+        def _bucket_band(key: tuple[str, str]) -> int:
             lst = buckets[key]
-            return float(getattr(lst[0], "confidence", 0.0)) if lst else 0.0
+            if not lst:
+                return 0
+            # Banded, not raw: ordering buckets by their top concept's
+            # live confidence let two close areas trade places on L3
+            # drift, reshuffling the whole round-robin. See _stable_rank.
+            return -_stable_rank(lst[0])[0]
 
         # Strongest area first at each round; name+subject breaks ties so
         # selection is deterministic turn to turn.
-        order = sorted(buckets, key=lambda k: (-_bucket_top(k), k))
+        order = sorted(buckets, key=lambda k: (-_bucket_band(k), k))
         out: list["Concept"] = []
         cap = int(limit)
         rank = 0
@@ -230,8 +266,10 @@ class ConceptView:
 
         The plug-in seam: a new kind declares where it surfaces via
         ``surfacing_targets`` and auto-flows to the matching consumer with
-        no consumer code change. Merged across the routed kinds,
-        deduped by id, confidence-desc.
+        no consumer code change. Merged across the routed kinds, deduped
+        by id, then ranked by :func:`_stable_rank` — the merge has to be
+        re-sorted, and re-sorting on raw confidence would undo the
+        stability :meth:`core` just established.
         """
         if self._store is None or not target:
             return []
@@ -251,9 +289,7 @@ class ConceptView:
                     continue
                 seen.add(cid)
                 out.append(c)
-        out.sort(
-            key=lambda c: float(getattr(c, "confidence", 0.0)), reverse=True,
-        )
+        out.sort(key=_stable_rank)
         if limit is not None:
             out = out[: max(0, int(limit))]
         return out
