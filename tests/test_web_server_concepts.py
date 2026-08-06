@@ -194,6 +194,148 @@ class ConceptsQualityTests(unittest.TestCase):
         session.concept_quality.assert_called_once()
 
 
+_LEARNING = {
+    "enabled": True,
+    "total": 1,
+    "counts": {"succession": 1},
+    "events": [
+        {
+            "id": 1,
+            "fingerprint": "abc",
+            "shape": "succession",
+            "concept_id": 7,
+            "prior_concept_id": 3,
+            "kind": "identity",
+            "subject": "user",
+            "old_label": "likes detailed answers",
+            "new_label": "prefers depth calibrated to the topic",
+            "because": "what looked like A turned out to be B",
+            "resolution": "now held as B",
+            "salience": 0.72,
+            "plasticity": 0.3,
+            "confidence_delta": 0.4,
+            "cosine": 0.72,
+            "decisive_event_id": 9,
+            "trigger_event_ids": [4, 9],
+            "evidence_refs": [["memory", "1"]],
+            "evidence_labels": ["the evening he explained it"],
+            "created_at": "2026-07-03T21:18:00+00:00",
+        },
+    ],
+}
+
+
+class ConceptLearningTests(unittest.TestCase):
+    def test_returns_learning_feed(self) -> None:
+        client, session = _client()
+        session.concept_learning_events.return_value = _LEARNING
+        resp = client.get("/api/concepts/learning")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["events"][0]["shape"], "succession")
+        self.assertEqual(
+            body["events"][0]["old_label"], "likes detailed answers"
+        )
+
+    def test_forwards_filters(self) -> None:
+        client, session = _client()
+        session.concept_learning_events.return_value = _LEARNING
+        resp = client.get(
+            "/api/concepts/learning"
+            "?limit=10&subject=aiko&shape=relabel"
+            "&concept_id=4&min_salience=0.5&before_id=8"
+        )
+        self.assertEqual(resp.status_code, 200)
+        session.concept_learning_events.assert_called_once_with(
+            limit=10,
+            subject="aiko",
+            shape="relabel",
+            concept_id=4,
+            min_salience=0.5,
+            before_id=8,
+        )
+
+    def test_learning_route_does_not_shadow_the_delete_path(self) -> None:
+        client, session = _client()
+        session.concept_learning_events.return_value = _LEARNING
+        self.assertEqual(
+            client.get("/api/concepts/learning").status_code, 200
+        )
+        session.delete_concept.assert_not_called()
+
+    def test_disabled_shape(self) -> None:
+        client, session = _client()
+        session.concept_learning_events.return_value = {
+            "enabled": False, "total": 0, "counts": {}, "events": [],
+        }
+        resp = client.get("/api/concepts/learning")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["enabled"])
+
+
+class ConceptProvenanceTests(unittest.TestCase):
+    def test_returns_provenance(self) -> None:
+        client, session = _client()
+        session.concept_provenance.return_value = {
+            "enabled": True,
+            "concept_id": 7,
+            "resolved_id": 7,
+            "exists": True,
+            "label": "prefers depth",
+            "prior_labels": ["likes detail", "prefers depth"],
+            "learning_events": [],
+            "lifecycle": [],
+        }
+        resp = client.get("/api/concepts/7/provenance")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["prior_labels"][0], "likes detail")
+        session.concept_provenance.assert_called_once_with(7)
+
+    def test_merged_away_concept_still_resolves(self) -> None:
+        client, session = _client()
+        session.concept_provenance.return_value = {
+            "enabled": True,
+            "concept_id": 3,
+            "resolved_id": 7,
+            "exists": False,
+            "alias_chain": [3, 7],
+        }
+        body = client.get("/api/concepts/3/provenance").json()
+        self.assertEqual(body["resolved_id"], 7)
+        self.assertFalse(body["exists"])
+
+    def test_disabled_shape(self) -> None:
+        client, session = _client()
+        session.concept_provenance.return_value = {
+            "enabled": False, "concept_id": 1,
+        }
+        resp = client.get("/api/concepts/1/provenance")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["enabled"])
+
+
+class ConceptDriftRouteTests(unittest.TestCase):
+    def test_state(self) -> None:
+        client, session = _client()
+        session.concept_drift_state.return_value = {
+            "enabled": True, "watermark": 12, "latest_event_id": 30,
+        }
+        body = client.get("/api/concepts/drift").json()
+        self.assertEqual(body["watermark"], 12)
+
+    def test_forced_run_returns_stats(self) -> None:
+        client, session = _client()
+        session.run_concept_drift.return_value = {
+            "enabled": True, "stats": {"relabel_applied": 1},
+        }
+        resp = client.post("/api/concepts/drift/run")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["stats"]["relabel_applied"], 1)
+        session.run_concept_drift.assert_called_once()
+
+
 class ConceptsDeleteTests(unittest.TestCase):
     def test_delete_ok(self) -> None:
         client, session = _client()

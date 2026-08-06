@@ -44,6 +44,9 @@ import type {
   SharedMomentsResponse,
   TogetherSummary,
   TopicGraphSnapshot,
+  ConceptDriftState,
+  ConceptLearningFeed,
+  ConceptProvenance,
   ConceptQualityReport,
   ConceptsSnapshot,
   ConceptTimeline,
@@ -505,6 +508,38 @@ export const api = {
       `/api/concepts/timeline${qs ? `?${qs}` : ""}`,
     );
   },
+  // ── L17: concept evolution (history of thought) ──────────────────
+  getConceptLearning: (params?: {
+    limit?: number;
+    subject?: string;
+    shape?: string;
+    conceptId?: number;
+    minSalience?: number;
+    beforeId?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    if (params?.subject) q.set("subject", params.subject);
+    if (params?.shape) q.set("shape", params.shape);
+    if (params?.conceptId != null)
+      q.set("concept_id", String(params.conceptId));
+    if (params?.minSalience != null)
+      q.set("min_salience", String(params.minSalience));
+    if (params?.beforeId != null) q.set("before_id", String(params.beforeId));
+    const qs = q.toString();
+    return jsonFetch<ConceptLearningFeed>(
+      `/api/concepts/learning${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getConceptProvenance: (conceptId: number) =>
+    jsonFetch<ConceptProvenance>(`/api/concepts/${conceptId}/provenance`),
+  getConceptDriftState: () =>
+    jsonFetch<ConceptDriftState>("/api/concepts/drift"),
+  runConceptDrift: () =>
+    jsonFetch<{ enabled: boolean; stats?: Record<string, unknown> }>(
+      "/api/concepts/drift/run",
+      { method: "POST" },
+    ),
   // ── Persona regression (K10) ─────────────────────────────────────
   getPersonaDrift: () =>
     jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift"),

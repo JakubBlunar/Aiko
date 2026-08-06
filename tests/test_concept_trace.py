@@ -283,6 +283,42 @@ class _FakeSession:
             "events": data.get(event_type or "", [])[:limit],
         }
 
+    def concept_learning_events(self, **_kw) -> dict:
+        if not self._enabled:
+            return {"enabled": False, "total": 0, "counts": {}, "events": []}
+        return {
+            "enabled": True,
+            "total": 1,
+            "counts": {"succession": 1},
+            "events": [
+                {
+                    "id": 1,
+                    "shape": "succession",
+                    "concept_id": 7,
+                    "prior_concept_id": 3,
+                    "old_label": "likes detail",
+                    "new_label": "prefers calibrated depth",
+                    "because": "it turned out to be narrower",
+                },
+            ],
+        }
+
+    def concept_provenance(self, concept_id: int) -> dict:
+        return {
+            "enabled": self._enabled,
+            "concept_id": int(concept_id),
+            "resolved_id": int(concept_id),
+            "prior_labels": ["likes detail", "prefers calibrated depth"],
+        }
+
+    def concept_drift_state(self) -> dict:
+        return {
+            "enabled": self._enabled, "watermark": 12, "latest_event_id": 30,
+        }
+
+    def run_concept_drift(self) -> dict:
+        return {"enabled": self._enabled, "stats": {"recorded": 1}}
+
 
 def _register_tools(session: _FakeSession) -> dict[str, object]:
     from app.mcp.server_tools import proactive_task_tools
@@ -320,6 +356,32 @@ class ConceptMcpToolTests(unittest.TestCase):
         tools = _register_tools(_FakeSession(enabled=False))
         out = json.loads(tools["get_concept_transitions"]())
         self.assertFalse(out["enabled"])
+
+    def test_get_concept_learning(self) -> None:
+        tools = _register_tools(_FakeSession())
+        out = json.loads(tools["get_concept_learning"](limit=10))
+        self.assertTrue(out["enabled"])
+        self.assertEqual(out["events"][0]["shape"], "succession")
+        self.assertEqual(out["events"][0]["old_label"], "likes detail")
+
+    def test_get_concept_learning_disabled(self) -> None:
+        tools = _register_tools(_FakeSession(enabled=False))
+        self.assertFalse(
+            json.loads(tools["get_concept_learning"]())["enabled"]
+        )
+
+    def test_get_concept_provenance(self) -> None:
+        tools = _register_tools(_FakeSession())
+        out = json.loads(tools["get_concept_provenance"](7))
+        self.assertEqual(out["concept_id"], 7)
+        self.assertEqual(len(out["prior_labels"]), 2)
+
+    def test_drift_state_and_forced_run(self) -> None:
+        tools = _register_tools(_FakeSession())
+        state = json.loads(tools["get_concept_drift_state"]())
+        self.assertEqual(state["latest_event_id"] - state["watermark"], 18)
+        forced = json.loads(tools["force_concept_drift"]())
+        self.assertEqual(forced["stats"]["recorded"], 1)
 
 
 if __name__ == "__main__":

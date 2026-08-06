@@ -2410,6 +2410,111 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_concept_transitions raised: {exc}"
 
     @mcp.tool()
+    def get_concept_learning(
+        limit: int = 40,
+        subject: str | None = None,
+        shape: str | None = None,
+        concept_id: int | None = None,
+        min_salience: float | None = None,
+    ) -> str:
+        """L17c — how Aiko's understanding has *changed*, and why.
+
+        The causal record, not the raw log. ``get_concept_transitions``
+        shows lifecycle moves; this shows only the movement the L17b
+        classifier judged to be real learning, with the "because" that
+        goes with it. Shapes:
+
+        - ``succession`` — an old belief faded while a semantically-near
+          new one rose on overlapping evidence. This is the main one: a
+          proposal at or above the dedupe cosine folds into the existing
+          concept, so a belief that sharpens over time shows up as two
+          rows rather than one edited row.
+        - ``relabel`` — the same belief, rewritten in place by the L17
+          drift worker because a later proposal said it better.
+        - ``emergence`` / ``loss`` / ``revival`` — a belief was promoted,
+          lost its support, or came back.
+
+        Each entry carries ``old_label`` / ``new_label`` / ``because`` /
+        ``resolution``, the ``salience`` it scored, and the evidence
+        labels captured at detection time (which stay readable even after
+        the memories behind them are pruned). ``concept_id`` matches
+        either endpoint. Pair with ``get_concept_provenance`` for one
+        belief's whole arc.
+        """
+        try:
+            return json.dumps(
+                session.concept_learning_events(
+                    limit=max(1, int(limit)),
+                    subject=subject,
+                    shape=shape,
+                    concept_id=concept_id,
+                    min_salience=min_salience,
+                ),
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_learning raised: {exc}"
+
+    @mcp.tool()
+    def get_concept_provenance(concept_id: int) -> str:
+        """L17e — the history-of-thought drill-down for ONE belief.
+
+        Answers "how did she come to think this", which is a different
+        question from ``get_last_concept_trace``'s "why is this in the
+        prompt right now". Returns the learning events on either
+        endpoint, the raw lifecycle trajectory (both ends of it, so a
+        wall of confidence samples can't hide recent moves), every
+        wording the belief has ever worn, and the alias chain.
+
+        Works on merged-away and deleted concepts: the alias map resolves
+        the id to whatever is still live, and the label snapshots in the
+        learning events stay readable even when nothing is left in
+        ``concepts`` to point at.
+        """
+        try:
+            return json.dumps(
+                session.concept_provenance(int(concept_id)),
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_provenance raised: {exc}"
+
+    @mcp.tool()
+    def get_concept_drift_state() -> str:
+        """L17 — drift-worker state: watermark, backlog, pending reflections.
+
+        ``watermark`` is the newest ``concept_events`` id already
+        accounted for and ``latest_event_id`` the newest that exists, so
+        the gap is the worker's backlog. ``pending`` is the bounded
+        snapshot the rare T6 learning reflection reads on the turn path.
+        """
+        try:
+            return json.dumps(
+                session.concept_drift_state(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_concept_drift_state raised: {exc}"
+
+    @mcp.tool()
+    def force_concept_drift() -> str:
+        """L17 — run one drift pass now instead of waiting for the cadence.
+
+        Applies any staged relabels (subject to the materiality,
+        previously-held-wording, cooldown and identity-cosine gates, plus
+        the adjudication budget) and records salient changes as learning
+        events. Returns the per-pass stats. Idempotent: re-running over
+        already-classified history is absorbed by the fingerprint index.
+        """
+        try:
+            return json.dumps(
+                session.run_concept_drift(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"force_concept_drift raised: {exc}"
+
+    @mcp.tool()
     def get_last_concept_trace() -> str:
         """L26 — which concepts entered the LAST turn's prompt.
 

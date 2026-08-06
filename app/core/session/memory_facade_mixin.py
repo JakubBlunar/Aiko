@@ -1030,6 +1030,162 @@ class MemoryFacadeMixin:
             log.debug("concept timeline failed", exc_info=True)
             return {"enabled": False, "total": 0, "events": []}
 
+    # ── L17e: history of thought (how a belief evolved) ──────────────────
+
+    def concept_learning_events(
+        self,
+        *,
+        limit: int = 100,
+        subject: str | None = None,
+        shape: str | None = None,
+        concept_id: int | None = None,
+        min_salience: float | None = None,
+        before_id: int | None = None,
+    ) -> dict[str, Any]:
+        """The L17c learning feed -- what changed about a belief, and why.
+
+        Backs ``GET /api/concepts/learning``. Distinct from
+        :meth:`concept_timeline`, which is the raw lifecycle log: this is
+        the far rarer causal record the L17b classifier judged to be real
+        evolution. Newest first, paged backwards via ``before_id``.
+        Returns the ``enabled=False`` shape when the store is absent.
+        """
+        store = getattr(self, "_concept_learning_store", None)
+        if store is None:
+            return {"enabled": False, "total": 0, "counts": {}, "events": []}
+        try:
+            events = store.list(
+                limit=limit,
+                subject=subject,
+                shape=shape,
+                concept_id=concept_id,
+                min_salience=min_salience,
+                before_id=before_id,
+            )
+            return {
+                "enabled": True,
+                "total": store.count(),
+                "counts": store.counts_by_shape(),
+                "events": [e.as_dict() for e in events],
+            }
+        except Exception:
+            log.debug("concept learning feed failed", exc_info=True)
+            return {"enabled": False, "total": 0, "counts": {}, "events": []}
+
+    def concept_provenance(self, concept_id: int) -> dict[str, Any]:
+        """Everything known about how one belief got to where it is.
+
+        Backs ``GET /api/concepts/{id}/provenance`` -- the history-of-
+        thought drill-down. Joins four things the UI would otherwise have
+        to stitch together itself: the learning events on either endpoint,
+        the raw lifecycle trajectory, every wording the belief has worn,
+        and the alias chain that keeps it reachable after a merge.
+
+        Deliberately survives a deleted or merged-away concept: the alias
+        map resolves the id, and the snapshots in the learning events stay
+        readable even when nothing is left in ``concepts`` to point at.
+        """
+        learning = getattr(self, "_concept_learning_store", None)
+        events = getattr(self, "_concept_event_store", None)
+        store = getattr(self, "_concept_store", None)
+        if learning is None:
+            return {"enabled": False, "concept_id": int(concept_id)}
+        cid = int(concept_id)
+        try:
+            resolved = learning.resolve_alias(cid)
+            concept = store.get(resolved) if store is not None else None
+            lifecycle = (
+                events.drift_window(resolved, anchor=40, recent=80)
+                if events is not None else []
+            )
+            # Every wording this belief has worn, oldest first. The
+            # timeline snapshots ``label`` per event, so this is free.
+            prior: list[str] = []
+            for event in lifecycle:
+                text = str(event.label or "").strip()
+                if text and text not in prior:
+                    prior.append(text)
+            return {
+                "enabled": True,
+                "concept_id": cid,
+                "resolved_id": resolved,
+                "exists": concept is not None,
+                "label": (concept.label if concept is not None else ""),
+                "kind": (concept.kind if concept is not None else ""),
+                "subject": (concept.subject if concept is not None else ""),
+                "status": (concept.status if concept is not None else ""),
+                "alias_chain": learning.alias_chain(cid),
+                "absorbed": [
+                    {
+                        "absorbed_id": a.absorbed_id,
+                        "absorbed_label": a.absorbed_label,
+                        "merged_at": a.merged_at,
+                    }
+                    for a in learning.absorbed_into(resolved)
+                ],
+                "prior_labels": prior,
+                "learning_events": [
+                    e.as_dict() for e in learning.history_for(cid, limit=100)
+                ],
+                "lifecycle": [
+                    {
+                        "id": e.event_id,
+                        "event_type": e.event_type,
+                        "label": e.label,
+                        "confidence": float(e.confidence),
+                        "reason": e.reason,
+                        "created_at": e.created_at,
+                    }
+                    for e in lifecycle
+                ],
+            }
+        except Exception:
+            log.debug("concept provenance failed", exc_info=True)
+            return {"enabled": False, "concept_id": cid}
+
+    def concept_drift_state(self) -> dict[str, Any]:
+        """Debug view of the L17 drift worker: watermark and pending set."""
+        worker = getattr(self, "_concept_drift_worker", None)
+        chat_db = getattr(self, "_chat_db", None)
+        learning = getattr(self, "_concept_learning_store", None)
+        if worker is None or chat_db is None:
+            return {"enabled": False}
+        try:
+            from app.core.concepts.concept_drift_worker import (
+                DRIFT_PENDING_KEY,
+                DRIFT_WATERMARK_KEY,
+            )
+
+            raw_pending = chat_db.kv_get(DRIFT_PENDING_KEY) or "[]"
+            return {
+                "enabled": True,
+                "watermark": int(chat_db.kv_get(DRIFT_WATERMARK_KEY) or 0),
+                "latest_event_id": (
+                    self._concept_event_store.max_event_id()
+                    if getattr(self, "_concept_event_store", None) is not None
+                    else 0
+                ),
+                "pending": json.loads(raw_pending),
+                "recorded": (learning.count() if learning is not None else 0),
+                "by_shape": (
+                    learning.counts_by_shape() if learning is not None else {}
+                ),
+            }
+        except Exception:
+            log.debug("concept drift state failed", exc_info=True)
+            return {"enabled": False}
+
+    def run_concept_drift(self) -> dict[str, Any]:
+        """Force one drift-worker pass (debug). Returns its stats."""
+        worker = getattr(self, "_concept_drift_worker", None)
+        if worker is None:
+            return {"enabled": False}
+        try:
+            return {"enabled": True, "stats": worker.run() or {}}
+        except Exception:
+            log.warning("forced concept drift run failed", exc_info=True)
+            return {"enabled": True, "stats": {"error": "run_failed"}}
+
     # ── F10l: cluster management (user agency over the topic graph) ──────
 
     def _resolve_cluster(self, cluster_id: int) -> Any | None:
