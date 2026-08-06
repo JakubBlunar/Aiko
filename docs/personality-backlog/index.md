@@ -456,14 +456,21 @@ Open — self-history:
 - **L17.** Self-drift noticing — Aiko notices her own change by comparing
   self-concept snapshots over time ("I think you've corrupted me... I ask
   for cookies more than I used to"). Broken into L17a-f in
-  [`concepts.md`](concepts.md): the trajectory read layer, the
-  change-salience classifier, the learning-event record, self-correction
-  meta-concepts, the surfacing debugger, and the evolution diary. **L17a
-  is shipped** — `trajectory()` plus banded `confidence_sample` events, so
-  the rest of the chain has a history to read.
+  [`concepts.md`](concepts.md). **The engine is shipped**: L17a (trajectory
+  read + banded `confidence_sample`), L17b (change-salience classifier,
+  succession-first), L17c (the append-only `concept_learning_events` record
+  plus `concept_aliases` for identity continuity across merges), and L17e
+  (the history-of-thought debugger and the rare T6 reflection). Concept
+  labels are now genuinely updatable, with the drift worker as their single
+  writer and every change recorded immutably. **Still open: L17d**
+  (self-correction meta-concepts) and **L17f** (the evolution diary) — both
+  now read from a real substrate rather than needing to build one.
 - **L19.** Aiko's autobiography (capstone) — her self-history as a
   durable, traversable timeline: traverse the self-concept graph +
-  snapshots to genuinely answer "Have you changed?". Depends on L17.
+  snapshots to genuinely answer "Have you changed?". Depends on L17, and
+  its two hardest prerequisites arrived with it: learning history is
+  permanent and snapshot-truthful (never pruned, readable after the rows it
+  cites are gone), and concept identity survives merges.
 
 Open — later kinds and refinements (L29-L36, all detailed in
 [`concepts.md`](concepts.md)): relationship & meta narratives, concept

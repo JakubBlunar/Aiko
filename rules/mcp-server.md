@@ -71,6 +71,15 @@ Beyond this core set, the tool surface is grouped by domain under `app/mcp/serve
 | `get_concept_graph` | — | JSON: the live concept graph (`session.concepts_snapshot()`) — every concept with status/confidence/plasticity/rationale + resolved evidence edges + counts. Richer than `get_concepts_state`. |
 | `get_concept_transitions` | `limit: int = 50` | JSON: recent lifecycle transitions (`promoted`/`dormant`/`retired`/`revived`), newest-first, dropping `discovered` births. |
 
+Concept **evolution** (L17e) — how a belief changed over time, as opposed to L26's "why did this enter the current prompt". Same module:
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `get_concept_learning` | `limit: int = 20`, `shape: str = ""`, `subject: str = ""`, `concept_id: int = 0`, `min_salience: float = 0.0` | JSON: the learning feed, newest-first — old → new endpoints, shape, salience, the natural-language *because*, and the evidence labels snapshotted at detection time. |
+| `get_concept_provenance` | `concept_id: int`, `limit: int = 20` | JSON: the history-of-thought drill-down for one belief — alias chain (so a merged-away id still resolves), every wording it has held, its learning events, and its lifecycle trajectory. |
+| `get_concept_drift_state` | — | JSON: `ConceptDriftWorker` state — the event watermark, last run, and the bounded pending-reflection snapshot the T6 block reads. |
+| `force_concept_drift` | — | Runs one drift pass now (relabel adjudication + classification), bypassing the cadence. Returns the pass stats. |
+
 ### Performance measurement (P29 / P31a)
 
 Two "where is it actually going" tools. Both are read-only snapshots of the live process, and both exist because the perf backlog kept accumulating items that could only be guessed at.

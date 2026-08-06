@@ -137,6 +137,7 @@ The one rule that keeps a second writer from ever creeping in:
 | **L9 `ConceptContradictionDetector`** | nothing — **read-only** input. Reads the concept + nearby memories and returns a verdict; L3 applies the penalty / transition. | `confidence` / `status` / anything (it is not a writer) |
 | **L25 `ConceptEdgeReconciler`** | drops / repoints edges when their target memory is deleted or merged, and recomputes the affected concepts' *edge-derived* `evidence_count` / `distinct_source_count` (same recompute L2 does). It never re-gates `status` itself — it makes the counts truthful and L3's rolling sweep reads them and demotes. | `confidence` / `plasticity` / `status` / memories |
 | **L25 `ConceptEdgeIntegrityWorker`** | idle sweep — asks the reconciler to GC orphaned memory edges left by listener-bypassing `prune()` | anything directly (delegates to the reconciler) |
+| **L17 `ConceptDriftWorker`** | **single writer** of `label` / `rationale`; appends `relabeled` events, `concept_learning_events`, and the bounded pending-reflection snapshot | `confidence` / `plasticity` / `status` / edges / memories |
 | **L6 (future)** | manual confirm (hard-promote) / reject (→ terminal `suppressed`), *through* L3's rules — the only other actor allowed to drive a status change | — |
 | **L5** | nothing — read-only consumer that surfaces `active` concepts (with L9 supporting-grounding) | any mutation |
 
@@ -334,6 +335,8 @@ append-only, decoupled from concept deletion) with a generated `reason`.
 | `reinforced` | L3 | fresh distinct evidence landed on an already-`active` belief without shifting its status |
 | `plasticity_shift` | L3 (L16) | relationship modulation moved effective plasticity across a `concept_plasticity_shift_event_delta` band |
 | `confidence_sample` | L3 (L17a) | a **quiet** concept drifted a full `concept_confidence_sample_band` from the confidence at its last recorded event — see below |
+| `relabel_proposed` | L2 (L17) | a dedupe hit arrived carrying a *materially* different wording of the same belief — staged, not applied; see [Relabelling](#relabelling-l17) |
+| `relabeled` | L17 drift worker | a staged proposal survived the gates and adjudication; `label` holds the **new** wording, `reason` says what it replaced and why |
 
 The frontend
 [`ConceptTimelinePanel.tsx`](../web/src/features/settings/memory/ConceptTimelinePanel.tsx)
@@ -363,6 +366,122 @@ Reading it back:
   browser, still newest-first like the rest of the feed.
 
 Both ride `idx_concept_events_concept`, so a per-concept read is cheap.
+
+Drift detection needs a *third* read, because the two above are the
+wrong shape for it: `trajectory()`'s oldest-first `LIMIT` protects a
+concept's origin, but on a long-lived belief `confidence_sample` rows
+can fill the whole window and hide every recent move.
+`ConceptEventStore.drift_window(concept_id, anchor=…, recent=…)` returns
+**both ends** — the oldest rows plus the newest — de-duplicated and
+sorted forwards, so a classifier sees where a belief started and where
+it is now without paging through the middle.
+
+## Concept evolution (L17)
+
+L3 tells you what a belief is worth right now. L17 answers the different
+question of **how it got there and why** — durably, so it is still
+answerable months later, after the concepts involved have been reworded,
+merged, or retired.
+
+Everything lives off-turn in the
+[`ConceptDriftWorker`](../app/core/concepts/concept_drift_worker.py), an
+idle `DemandAwareWorker`. Its `demand()` compares a KV watermark against
+`MAX(id)` of `concept_events` and does nothing else — no NumPy, no store
+scan, no graph walk. That restraint is load-bearing: the repeated
+per-call matrix restacking in `_filtered_matrix` is what caused the
+access violation fixed in `ConceptConsolidationWorker.demand()`, so all
+scanning happens in `run()`, once, over one `matrix_snapshot()` matrix
+with a single matmul.
+
+### Relabelling (L17)
+
+Before L17, a concept's wording was frozen at synthesis: `_reinforce()`
+attached evidence and left `label` alone, and nothing else ever passed a
+new label to `ConceptStore.update()`. A belief whose phrasing had been
+overtaken by better observations just stayed stale. Now the row stays
+current **and** the history stays immutable, via a two-stage split:
+
+1. **L2 stages.** When a proposal dedupes onto an existing concept and
+   its wording differs *materially* (case, punctuation, filler and
+   simple plural inflections normalised away, plus a minimum token-level
+   delta), `_reinforce()` appends a `relabel_proposed` event carrying the
+   proposed wording, the cosine, and the proposal's rationale. No schema
+   change: `event_type` is an open enum, so a new event kind is a value,
+   not a migration.
+2. **The worker decides.** Cheap gates first, all before any LLM call:
+   materiality again, a cosine floor at the dedupe bar against the
+   *current* label (a genuinely different belief must stay a separate
+   concept), a per-concept cooldown, a per-run cap, and the shared rate
+   limiter. Survivors go to a narrow adjudication — *is B a better
+   wording of the same belief* — with the usual negative cache on
+   rejection. Accepted, the worker re-embeds, writes `label` +
+   `rationale`, and appends a `relabeled` event plus a learning event.
+
+The cheapest thrash guard is history itself: **any label the concept has
+previously held is refused**, read straight from the `label` snapshots
+already in `concept_events`. A ping-pong between two phrasings dies after
+one round trip, for free.
+
+### Learning events and identity continuity
+
+`concept_learning_events` (v31, append-only, never pruned) is the causal
+record: old and new endpoints, shape, salience, the trigger event ids,
+mediating concepts, evidence ids **and their labels captured at
+detection time**, a natural-language *because*, and a deterministic
+fingerprint for idempotency. The snapshotting is the point — a learning
+event stays readable after the evidence it cites is deleted.
+
+The shapes come from the pure classifier in
+[`concept_drift.py`](../app/core/concepts/concept_drift.py), which takes
+plain data and owns no scans. Its **primary** shape is *succession*:
+because relabelling only just became possible, most real evolution to
+date shows up as a new concept forming below the `_DEDUPE_COS = 0.86`
+dedupe bar while the old one fades. Pairing uses label cosine in the band
+*below* that bar, evidence overlap, and temporal anti-correlation.
+Secondary shapes are emergence, loss, contradiction into revival, and
+confirmed relabel; confidence-only movement is classified as noise and
+dropped. Salience is weighted by kind plasticity, so movement in a sticky
+belief outranks the same movement in a `taste` or L42 `conduct` row.
+
+`concept_aliases` closes the other hole. `merge_into` re-points edges and
+then *deletes* the absorbed row, so before L17 any history ending in a
+merge was unreachable — only free text in the `merged` event's reason
+connected the two. The store now records absorbed id → canonical id, with
+merge time and the absorbed label, in the last moment before the delete,
+and a chain-following resolver walks it, so a trajectory that names a
+merged-away concept still reaches the live one.
+
+### Reading it back
+
+- `GET /api/concepts/learning` — the filtered learning feed.
+- `GET /api/concepts/{id}/provenance` — the history-of-thought
+  drill-down: alias chain, prior wordings, learning events and lifecycle
+  events for one belief.
+- `GET /api/concepts/drift`, `POST /api/concepts/drift/run` — worker
+  state and a forced pass.
+- Settings → Memory → **Evolution** renders all of it; the MCP mirrors
+  are `get_concept_learning`, `get_concept_provenance`,
+  `get_concept_drift_state`, `force_concept_drift`.
+
+Keep L26's question ("why did this enter the current prompt") distinct
+from L17e's ("how did this belief evolve"). They are different tools.
+
+### The one place it reaches the conversation
+
+The worker publishes a small bounded snapshot of pending changes to KV.
+The T6 `concept_learning_block` reads **only** that snapshot on the turn
+path — no scan, no embedding, no LLM call — and is gated hard: feature
+flag, minimum salience, relationship trust and warmth, a lull *or* live
+lexical relevance, once per conversation, a per-change watermark, and a
+long persisted global cooldown. It drops under aggressive assembly and
+can be forced with the `concept_learning_force_next` debug override.
+
+The model is handed old, new, and *because* as composition input, and
+nothing else — no scores, ids, shapes, or event types — with an explicit
+instruction to state the shift as a fallible first-person change rather
+than ask whether it is right (which would spend K47's question budget on
+reassurance-seeking). Persona guidance under "Changing your mind" says
+the same thing in Aiko's voice.
 
 ## Edge referential integrity (L25)
 
@@ -397,6 +516,16 @@ writes `confidence` / `plasticity` / `status`; that stays L3's alone.
   `distinct_source_count` are **edge-derived** and recomputed by any
   edge-mutating path (L2 reinforce, the L25 reconciler) — never a second
   writer of *confidence* state.
+- **Single writer, second axis (L17).** Only the `ConceptDriftWorker`
+  mutates `label` / `rationale`, and it never touches L3's fields. The
+  two rules are deliberately symmetric: *what a belief is worth* and
+  *how a belief is worded* each have exactly one owner. L2 stages a
+  wording change as an event and stops; anything else that wants to
+  rename a concept must go through the worker.
+- **History is append-only and never pruned.** `concept_events` and
+  `concept_learning_events` have no delete path anywhere in the app.
+  Both snapshot their inputs (labels, evidence labels) at write time, so
+  the record stays readable after the rows it describes are gone.
 - **`retired` is revivable; `suppressed` (future) is terminal.**
 - **Meta-confidence bounded by `min(bases)`.** A meta concept's
   confidence is clamped to the minimum of its base concepts', and a base

@@ -647,6 +647,15 @@ override* (L23) is still deferred.
 
 ## L17. Self-drift noticing (Aiko compares her own concepts over time)
 
+**Status: the engine is SHIPPED; the consumers are not.** L17a (history read),
+L17b (classifier), L17c (durable learning events + identity continuity across
+merges), and L17e (debugger + rare reflection) are all in
+[`shipped/concepts.md`](shipped/concepts.md#l17b-change-salience-classifier--what-deserves-interpretation).
+Still open below: **L17d** (self-correction meta-concepts) and **L17f**
+(evolution diary), plus **L19** and **L31**, all of which now have a real
+substrate to read from. The parent framing below stays because it is what the
+open items are still aiming at.
+
 **Motivation.** The charming payoff of the whole layer. A normal memory system
 answers *"what happened?"*; the concept history answers the far more powerful
 question *"how did my understanding change **because of** what happened?"* Aiko
@@ -701,6 +710,10 @@ it to Aiko noticing patterns in **her own mistakes**; L17e is surfacing + the
 debug timeline. Split so the read/classify layers can land before the (harder)
 self-correction and narrative layers.
 
+*As built,* the classifier's primary shape ended up being **succession between
+rows** rather than relabel — labels were frozen at synthesis, so the relabel
+shape could not fire until the same work made relabelling real. Both fire now.
+
 **Sibling systems.** K70 growth-witness tracks the *user's* growth; K30
 self-noticing is transient/in-session — L17 is the *durable, concept-grounded*
 self-version. Overlaps L19 (autobiography) and L29(b) (meta-narrative over
@@ -741,123 +754,27 @@ L17b consumes it from here.
 
 ## L17b. Change-salience classifier -- "what deserves interpretation"
 
-**Motivation.** The crux the whole feature lives or dies on. Confidence 0.72 →
-0.74 is noise; "detailed answers" → "adaptive depth, context-dependent" is a real
-learning event. Aiko must only reflect on the second kind, or she becomes a
-narrator dressing up every wiggle as growth.
-
-**Key files.** A new pure classifier (e.g.
-`app/core/concepts/concept_drift.py`) over an L17a trajectory + the current
-[`ConceptStore`](../../app/core/concepts/concept_store.py) / edges; consumed by
-L3 or a dedicated low-frequency drift pass.
-
-**Sketched approach.** Rank change *shapes*, not raw deltas:
-
-- **Noise (ignore):** confidence drift below a plasticity-scaled band, no label
-  change, no status change.
-- **Relabel / refinement (interesting):** the concept's `label` changed
-  meaningfully (embedding distance between old and new label over a threshold) —
-  "likes detail" → "prefers adaptive depth". Highest-value signal.
-- **Supersession (interesting):** an old concept `retired`/`dormant` while a new
-  **generalization** (L20) or sibling concept now covers the *same evidence*
-  (shared evidence edges) — the "context-dependency discovered" case, literally a
-  parent concept forming over children.
-- **Fission / split (interesting):** one concept carrying strongly *bimodal*
-  evidence (support + counter, or two contextual sub-clusters) fissions into two
-  contextual children — the structural precursor that then feeds a **generalization**
-  (L20). This is a genuine learning event ("I realised these were two different
-  things"); it's driven by the **L31** split primitive.
-- **Contradiction resolved (interesting):** a `contradicted` → `revived`/`active`
-  arc (L15), i.e. a belief that broke and re-formed differently.
-- **Emergence / loss:** a concept crossed candidate → active after long latency,
-  or a once-core trait faded below the core bar.
-
-Plasticity-gate the *weight*, not just the threshold (L16): the same drift on a
-high-plasticity taste is charming small-talk; on a low-plasticity core trait it's
-rare and weighty. Output a small ranked list of `DriftEvent`s with a salience
-score; everything below a bar is silently dropped.
-
-**Open questions.** (1) Label-change detection — embedding distance, an LLM
-"is this a real refinement or a rephrase?" adjudication (cheap, batched), or
-both? (2) How to detect supersession robustly from shared-evidence overlap vs a
-coincidental new concept? (3) One global salience bar, or per-shape bars?
-
-**Effort.** Medium (this is the intellectually hard part; mostly heuristics +
-optional tiny LLM adjudication, no new storage).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17b-change-salience-classifier--what-deserves-interpretation).
+The pure classifier in `app/core/concepts/concept_drift.py` ranks change
+*shapes* with plasticity-weighted salience. Note the one design inversion:
+**succession between rows became the primary shape** rather than relabel,
+because labels were frozen at synthesis and the relabel shape could not fire —
+so the same work also made relabelling real, with the drift worker as the single
+writer of `label` / `rationale`. Fission stays reserved for L31.
 
 ---
 
 ## L17c. Change + why -- the learning-event record
 
-**Motivation.** The most powerful framing the user identified: not
-`old → new`, but `old → new **because** …`. A drift is only insight if it carries
-its cause:
-
-> Old: "enjoys detailed explanations" · New: "prefers adaptive depth"
-> Reason: repeated counter-evidence (asked for shorter summaries; preferred
-> direct fixes while debugging; enjoyed deep discussion during architecture) ·
-> Resolution: context-dependency discovered.
-
-**Key files.**
-[`concept_event_store.py`](../../app/core/concepts/concept_event_store.py) (the
-`reason` field already exists — enrich it, and consider a `caused_by` provenance
-list); the L20 generalization + L12 tension edges as the *mediating* structure;
-[`concept_snapshot.py`](../../app/core/concepts/concept_snapshot.py) /
-`resolve_evidence_labels` (already turns evidence edges into human-readable "what
-it rests on" — reuse to render the "because" clause).
-
-**Sketched approach.** For each salient `DriftEvent` (L17b), assemble a
-*learning-event* bundle: the trajectory endpoints, the triggering evidence
-(memories/clusters added between snapshots, resolved to labels via the existing
-`resolve_evidence_labels`), and the mediating meta-concept if any (the L20 parent
-that formed, or the L12 tension that resolved). Persist the causal summary in the
-event `reason` (and/or a `caused_by` id list) so it's durable and inspectable, not
-recomputed. This bundle is what both the surfacing line (L17e) and the debugger
-(L17e) read.
-
-**Worked example (the canonical target — build toward this).** The
-easiest-and-most-immersive case, because the old→new link is *structural* (shared
-evidence), not a semantic guess:
-
-```
-Old snapshot                          New snapshot
-  label:      "likes detailed answers"   "prefers adaptive depth by context"
-  reasoning:  "frequently asks for deep  "enjoys detailed exploration, but
-               technical explanations"    prefers concise troubleshooting"
-  confidence: 0.75                        0.88
-```
-
-- **Why the new concept exists:** it's an **L20 generalization** whose two children
-  ("detailed when exploring", "concise when troubleshooting") were mined from the
-  counter-evidence — so the parent's evidence edges *overlap the old concept's
-  evidence*. That overlap is the reliable, structural signal that this is a
-  **refinement of** the old belief, not an unrelated new one (L17b supersession
-  shape) — no embedding/LLM guess needed for this path.
-- **Why confidence rises (0.75 → 0.88), not falls:** the more specific model
-  explains *more* of the evidence than the flat one, so it promotes strongly while
-  the over-general belief loses ground and is superseded (retired/dormant). This
-  is expected, not a bug.
-- **The learning-event record:** `old → new, because: counter-evidence (concise
-  troubleshooting requests) · resolution: context-dependency discovered`.
-- **How Aiko voices it (L17e):** "I used to have a simpler read on you — that you
-  just liked detailed answers. But you kept wanting quick fixes when debugging,
-  and it clicked that the real pattern is *why* you're asking: exploring vs.
-  solving. So I refined how I think about it." — evidence-grounded, carries its
-  own cause, reads as genuine learning rather than a scripted "I've grown."
-
-Contrast (the harder, later case): a pure **relabel with no shared-evidence link**
-(a genuinely different belief that merely sounds like a refinement) needs the
-fuzzier embedding-distance / tiny-LLM adjudication in L17b. The example above is
-the structural path we should target first.
-
-**Open questions.** (1) Compute the "because" at drift-detection time (durable but
-may miss late evidence) or lazily on surface (fresh but recomputed)? (2) Cap the
-evidence list length for readability? (3) Store as free-text reason, structured
-`caused_by`, or both?
-
-**Effort.** Medium.
-
-**Depends on.** L17a/L17b; reuses L12/L20 edges + `resolve_evidence_labels`.
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17c-change--why--the-learning-event-record).
+The append-only `concept_learning_events` table (v31) carries `old → new
+because …` with evidence labels snapshotted at detection time, `concept_aliases`
+keeps a merged-away concept's history reachable, and
+`ConceptEventStore.drift_window` reads both ends of a trajectory. The
+canonical worked example that drove the design (the "context-dependency
+discovered" refinement) is preserved in the shipped entry.
 
 ---
 
@@ -894,46 +811,21 @@ strategy every week.
 
 **Effort.** Large.
 
-**Depends on.** L17b/L17c, L20 (generalization machinery), L23
-(communication-style steering), L11 (aiko self-concepts).
+**Depends on.** L17b/L17c — **both now shipped**, so the input exists: scan
+`concept_learning_events` (subject-filtered, already carrying shape, endpoints
+and *because*) rather than re-deriving corrections from the raw event log. Also
+L20 (generalization machinery), L23 (communication-style steering), L11 (aiko
+self-concepts).
 
 ---
 
 ## L17e. Surfacing + the "history of thought" debugger
 
-**Motivation.** Two consumers of the change-detection engine: the rare, charming
-*proactive reflection* to the user, and — the user's other favourite — a
-**developer-facing "history of thought"** so that when Aiko's behaviour gets too
-complex to read from code, you can answer "why did she do that?" by inspecting the
-causal chain (memory A raised concept B → B clashed with C → resolution formed
-hypothesis D → D shifted a communication preference).
-
-**Key files.** Surfacing via
-[`prepared_nudge.py`](../../app/core/proactive/prepared_nudge.py) /
-`narrative_block` (rare proactive line, strict cooldown); the debugger reuses the
-L26 per-turn trace + `concept_events` (L17a) + concept edges, exposed through the
-existing `GET /api/concepts` facade and an MCP tool, rendered in the Memory tab of
-[`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx).
-
-**Sketched approach.** *Surfacing:* take the top salient learning-event (L17b/c),
-render it in Aiko's voice with the "because" clause, plasticity-gated (high-
-plasticity drift = light and playful; low-plasticity core-trait drift = rare and
-weighty, phrased so it isn't alarming), behind a strict cooldown so genuine drift
-is a notable, not a habit. Respect the K47 question/assertion balance.
-*Debugger:* a timeline view over `concept_events` (already paginated) with a
-"trace this concept back" that walks evidence edges + the mediating tension/
-generalization to reconstruct the causal chain — the inspectable "history of
-thought." This is the debugging tool that stays useful as the graph grows.
-
-**Open questions.** (1) Surfacing cadence + comparison horizon (event-driven off
-salience, or a monthly review pass)? (2) How to phrase low-plasticity core drift
-without sounding alarming? (3) Does the *user's* own concept history get the same
-timeline traversal (a shared "our history of understanding" view), or aiko-only
-first?
-
-**Effort.** Medium (surfacing) + Medium (debug view); relies on L17a–c.
-
-**Depends on.** L17a–L17c (engine), L26 (trace), L6 (Concepts UI surface).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17e-surfacing--the-history-of-thought-debugger).
+Both consumers landed: the REST/MCP provenance surface with the Settings →
+Memory → Evolution drill-down, and the rare T6 `concept_learning_block` — read
+only off a bounded off-turn snapshot, and told old/new/because and no machinery.
 
 ---
 
@@ -975,7 +867,12 @@ evidence for L17d self-correction? (3) Retention / thinning of old entries.
 
 **Effort.** Medium (composition + storage on top of L17a-c).
 
-**Depends on.** L17a-c (engine + why), L17e (debugger provenance), L26.
+**Depends on.** L17a-c and L17e — **all shipped**, so the diary is now purely a
+composition-and-storage job: the salient-events-since-last-entry read is
+`ConceptLearningEventStore.list(...)` with a fingerprint or id watermark, the
+`because` clauses are already durable prose, and the provenance to link each
+line back to is the existing `/api/concepts/{id}/provenance` drill-down. Also
+L26.
 
 ---
 
@@ -1034,6 +931,17 @@ months I started saying what I actually think"). Two design constraints:
 snapshots)? Does the user's own history get the same traversal (a shared
 "how we've both changed" narration)? How much of the arc to surface at once
 without it becoming a monologue?
+
+**What L17 already provides (as of the shipped engine).** Two of L19's hardest
+prerequisites are now real rather than assumed. **Permanent history**: neither
+`concept_events` nor `concept_learning_events` has a prune path anywhere in the
+app, and both snapshot their inputs at write time, so a retired self-concept's
+story stays readable after the concept and its evidence are gone — the "self-
+history must not decay" constraint is satisfied by construction, no archive tier
+needed. **Identity continuity**: `concept_aliases` means a traversal that hits a
+merged-away concept still reaches the live one, which was the failure mode that
+would have silently truncated the oldest and most interesting arcs. L19's
+remaining work is the *pull*-side traversal and narration, not the substrate.
 
 **Effort.** Large (the capstone — depends on L11 + L16 + L17).
 
@@ -1982,7 +1890,11 @@ machinery and the existing evidence-edge model; no schema migration — reuses
 
 **Depends on.** L2 consolidation (`merge_into` as the inverse to mirror), L20
 (generalization consumes the children), L9/L15 (counter-evidence as the trigger),
-L17b/L17c (fission is a first-class change shape + learning event).
+L17b/L17c — **now shipped, with the fission shape deliberately left unbuilt**:
+the classifier may reserve it, but it must never *infer* a split from trajectory
+data, because the structural primitive that would make such an inference sound is
+exactly what L31 provides. Wire fission into the classifier and a learning event
+when the split primitive lands, not before.
 
 ---
 
