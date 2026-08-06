@@ -90,3 +90,43 @@ describe("ConceptEvolutionPanel wiring", () => {
     expect(typesSource).toMatch(/interface ConceptDriftState/);
   });
 });
+
+describe("L17f evolution diary wiring", () => {
+  it("renders the diary above the raw learning feed", () => {
+    expect(panelSource).toMatch(/function\s+EvolutionDiaryPanel\s*\(/);
+    expect(panelSource).toMatch(/<EvolutionDiaryPanel\s*\/>/);
+  });
+
+  it("fetches the diary and can force one entry", () => {
+    expect(panelSource).toMatch(/api\.getEvolutionDiary\s*\(/);
+    expect(panelSource).toMatch(/api\.runEvolutionDiary\s*\(/);
+  });
+
+  it("reuses the L17e drill-down for a cited belief", () => {
+    // The diary's whole claim is that it is grounded, so every entry has
+    // to be checkable against the evidence without a second surface.
+    expect(panelSource).toMatch(/entry\.concept_ids/);
+    expect(panelSource).toMatch(/<ProvenanceDetail conceptId=\{openId\}/);
+  });
+
+  it("shows entry prose in full rather than truncating it", () => {
+    expect(panelSource).toMatch(/\{entry\.entry\}/);
+    expect(panelSource).not.toMatch(/line-clamp/);
+  });
+
+  it("explains that a gap means changes are held, not lost", () => {
+    expect(panelSource).toMatch(/held, not lost/);
+  });
+
+  it("api and types expose the diary endpoints", () => {
+    expect(apiSource).toMatch(/getEvolutionDiary/);
+    expect(apiSource).toMatch(/runEvolutionDiary/);
+    expect(apiSource).toMatch(/\/api\/concepts\/evolution-diary/);
+    expect(typesSource).toMatch(/interface EvolutionDiaryEntry/);
+    expect(typesSource).toMatch(/interface EvolutionDiaryFeed/);
+  });
+
+  it("carries the provenance ids on the entry type", () => {
+    expect(typesSource).toMatch(/learning_event_ids: number\[\]/);
+  });
+});

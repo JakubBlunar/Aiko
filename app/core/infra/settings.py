@@ -668,6 +668,13 @@ class ToolsSettings:
     # call. Needs the concept store wired into the retriever (no-ops to
     # an empty result otherwise).
     recall_concept: bool = True
+    # L19 self-history (``recall_self_history``): walk her own beliefs as a
+    # timeline of eras -- what she formed, replaced, dropped, or has held
+    # all along -- so "have you changed?" is answered from the record
+    # instead of improvised. Needs the concept + learning-event stores
+    # wired; returns ``thin_record`` rather than nothing when the trail is
+    # too sparse to narrate.
+    recall_self_history: bool = True
     web_search: bool = True
     # Aiko's room: small set of tools that let her look around / move /
     # consume cookies. See :mod:`app.llm.tools.world`.
@@ -2004,6 +2011,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             recall=bool(tools_raw.get("recall", True)),
             recall_topic=bool(tools_raw.get("recall_topic", True)),
             recall_concept=bool(tools_raw.get("recall_concept", True)),
+            recall_self_history=bool(
+                tools_raw.get("recall_self_history", True)
+            ),
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),

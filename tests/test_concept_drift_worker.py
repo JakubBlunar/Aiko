@@ -11,7 +11,9 @@ import numpy as np
 
 from app.core.concepts.concept_drift_worker import (
     DRIFT_PENDING_KEY,
+    DRIFT_SWEEP_KEY,
     DRIFT_WATERMARK_KEY,
+    SWEEP_DONE,
     ConceptDriftWorker,
 )
 from app.core.concepts.concept_event_store import ConceptEvent, ConceptEventStore
@@ -52,6 +54,9 @@ class Settings:
     concept_drift_relabel_min_tokens: int = 1
     concept_reflection_min_salience: float = 0.6
     concept_drift_pending_cap: int = 3
+    concept_drift_sweep_enabled: bool = True
+    concept_drift_sweep_page: int = 60
+    concept_drift_sweep_max_findings: int = 24
 
 
 @dataclass
@@ -203,6 +208,24 @@ class DemandTests(unittest.TestCase):
         cid = _concept(self.h, "a", [1.0, 0.0])
         last = _event(self.h, cid, "promoted", 1)
         self.h.kv[DRIFT_WATERMARK_KEY] = str(last)
+        self.h.kv[DRIFT_SWEEP_KEY] = str(SWEEP_DONE)
+        signal = _worker(self.h).demand(now=NOW, last_run_at=None)
+        assert signal is not None
+        self.assertEqual(signal.pressure, 0.0)
+
+    def test_unfinished_sweep_keeps_the_worker_admitted(self) -> None:
+        # Nothing new on the timeline, but history still to backfill.
+        cid = _concept(self.h, "a", [1.0, 0.0])
+        last = _event(self.h, cid, "promoted", 1)
+        self.h.kv[DRIFT_WATERMARK_KEY] = str(last)
+        signal = _worker(self.h).demand(now=NOW, last_run_at=None)
+        assert signal is not None
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertIn("sweep", signal.reason)
+        self.assertFalse(signal.needs_llm)
+
+    def test_empty_store_reports_nothing_to_sweep(self) -> None:
+        # No timeline at all: the backfill must not manufacture pressure.
         signal = _worker(self.h).demand(now=NOW, last_run_at=None)
         assert signal is not None
         self.assertEqual(signal.pressure, 0.0)
@@ -505,6 +528,7 @@ class ClassificationTests(unittest.TestCase):
         cid = _concept(self.h, "a", [1.0, 0.0])
         last = _event(self.h, cid, "promoted", 1)
         self.h.kv[DRIFT_WATERMARK_KEY] = str(last)
+        self.h.kv[DRIFT_SWEEP_KEY] = str(SWEEP_DONE)
         self.assertEqual(
             _worker(self.h).run(), {"skipped": True, "reason": "no new events"}
         )
@@ -562,13 +586,7 @@ class ClassificationTests(unittest.TestCase):
         _worker(self.h).run()
         self.assertEqual(self.h.kv.get(DRIFT_PENDING_KEY), "[]")
 
-    def test_run_stacks_the_matrix_at_most_twice(self) -> None:
-        # Once for the faded side, once for the risen side -- never per
-        # concept, which is the crash pattern the plan calls out.
-        old = _concept(self.h, "old belief", [1.0, 0.2], status="retired")
-        _concept(self.h, "new belief", [1.0, 0.0], status="active")
-        _event(self.h, old, "promoted", 90, confidence=0.8)
-        _event(self.h, old, "retired", 5, confidence=0.2)
+    def _count_snapshots(self) -> list[int]:
         real = self.h.store.matrix_snapshot
         calls: list[int] = []
 
@@ -577,8 +595,161 @@ class ClassificationTests(unittest.TestCase):
             return real(ids)
 
         self.h.store.matrix_snapshot = counting  # type: ignore[method-assign]
+        return calls
+
+    def test_run_stacks_the_matrix_at_most_twice(self) -> None:
+        # Once for the faded side, once for the risen side -- never per
+        # concept, which is the crash pattern the plan calls out.
+        self.h.settings.concept_drift_sweep_enabled = False
+        old = _concept(self.h, "old belief", [1.0, 0.2], status="retired")
+        _concept(self.h, "new belief", [1.0, 0.0], status="active")
+        _event(self.h, old, "promoted", 90, confidence=0.8)
+        _event(self.h, old, "retired", 5, confidence=0.2)
+        calls = self._count_snapshots()
         _worker(self.h).run()
         self.assertLessEqual(len(calls), 2)
+
+    def test_the_sweep_pass_holds_the_same_bound(self) -> None:
+        # The backfill reads far more concepts than a live tick, so it is
+        # the pass most able to reintroduce a per-concept stack.
+        old = _concept(self.h, "old belief", [1.0, 0.2], status="retired")
+        _concept(self.h, "new belief", [1.0, 0.0], status="active")
+        _event(self.h, old, "promoted", 90, confidence=0.8)
+        last = _event(self.h, old, "retired", 5, confidence=0.2)
+        self.h.kv[DRIFT_WATERMARK_KEY] = str(last)
+        calls = self._count_snapshots()
+        _worker(self.h).run()
+        self.assertLessEqual(len(calls), 2)
+
+
+class ColdStartSweepTests(unittest.TestCase):
+    """The backfill: history that predates the worker must still land."""
+
+    def setUp(self) -> None:
+        self.h = _harness()
+
+    def _retired_arc(self, label: str) -> int:
+        cid = _concept(self.h, label, [1.0, 0.0], status="retired")
+        _event(self.h, cid, "promoted", 90, confidence=0.85)
+        _event(self.h, cid, "retired", 2, confidence=0.2)
+        return cid
+
+    def test_history_beyond_the_forward_page_still_gets_classified(
+        self,
+    ) -> None:
+        # The forward pass only ever sees ``max_concepts`` ids and then
+        # burns the watermark; without the sweep the later arcs are lost.
+        self.h.settings.concept_drift_max_concepts = 1
+        ids = [self._retired_arc(f"belief number {i}") for i in range(3)]
+        worker = _worker(self.h)
+        for _ in range(6):
+            worker.run()
+        recorded = {e.concept_id for e in self.h.learning.list()}
+        self.assertEqual(recorded, set(ids))
+
+    def test_the_cursor_pages_through_the_id_space(self) -> None:
+        self.h.settings.concept_drift_sweep_page = 1
+        ids = [self._retired_arc(f"belief number {i}") for i in range(3)]
+        worker = _worker(self.h)
+        worker.run()
+        self.assertEqual(int(self.h.kv[DRIFT_SWEEP_KEY]), ids[0])
+        worker.run()
+        self.assertEqual(int(self.h.kv[DRIFT_SWEEP_KEY]), ids[1])
+
+    def test_the_sweep_retires_itself_when_it_runs_out(self) -> None:
+        self._retired_arc("a settled belief")
+        worker = _worker(self.h)
+        worker.run()
+        stats = worker.run()
+        self.assertTrue(stats.get("sweep_done"))
+        self.assertEqual(int(self.h.kv[DRIFT_SWEEP_KEY]), SWEEP_DONE)
+        # And it stays retired rather than restarting on the next tick.
+        self.assertEqual(
+            worker.run(), {"skipped": True, "reason": "no new events"}
+        )
+
+    def test_the_sweep_is_idempotent_against_the_forward_pass(self) -> None:
+        self._retired_arc("a settled belief")
+        worker = _worker(self.h)
+        worker.run()
+        before = self.h.learning.count()
+        self.assertGreaterEqual(before, 1)
+        # Rewind both cursors: the same arcs must not be recorded twice.
+        self.h.kv.pop(DRIFT_WATERMARK_KEY, None)
+        self.h.kv.pop(DRIFT_SWEEP_KEY, None)
+        worker.run()
+        self.assertEqual(self.h.learning.count(), before)
+
+    def test_the_sweep_never_queues_a_reflection(self) -> None:
+        # Backfilled findings are months old; Aiko must not boot up and
+        # start voicing them as fresh realisations.
+        self.h.settings.concept_reflection_min_salience = 0.0
+        last = _event(
+            self.h, self._retired_arc("a settled belief"), "reinforced", 1
+        )
+        self.h.kv[DRIFT_WATERMARK_KEY] = str(last)
+        stats = _worker(self.h).run()
+        self.assertGreaterEqual(stats.get("sweep_recorded", 0), 1)
+        self.assertIsNone(self.h.kv.get(DRIFT_PENDING_KEY))
+
+    def test_disabling_the_sweep_restores_forward_only_behaviour(self) -> None:
+        self.h.settings.concept_drift_sweep_enabled = False
+        self.h.settings.concept_drift_max_concepts = 1
+        self._retired_arc("belief one")
+        self._retired_arc("belief two")
+        worker = _worker(self.h)
+        for _ in range(4):
+            worker.run()
+        self.assertNotIn(DRIFT_SWEEP_KEY, self.h.kv)
+        self.assertLessEqual(self.h.learning.count(), 1)
+
+    def test_a_page_with_nothing_salient_still_advances(self) -> None:
+        # A young, unmoved belief yields no finding; the cursor must not
+        # stall on it or the sweep never reaches the interesting arcs.
+        cid = _concept(self.h, "brand new", [1.0, 0.0], first_evidence_at=_iso(1))
+        _event(self.h, cid, "discovered", 1, confidence=0.3)
+        stats = _worker(self.h).run()
+        self.assertEqual(self.h.learning.count(), 0)
+        self.assertEqual(stats.get("sweep_cursor"), cid)
+
+
+class SweepPagingTests(unittest.TestCase):
+    """The store-level read the sweep pages with."""
+
+    def setUp(self) -> None:
+        self.h = _harness()
+
+    def test_after_concept_id_walks_forwards(self) -> None:
+        ids = []
+        for i in range(3):
+            cid = _concept(self.h, f"belief {i}", [1.0, 0.0])
+            _event(self.h, cid, "discovered", 1)
+            ids.append(cid)
+        first = self.h.events.concepts_with_events_after(
+            0, limit=1, after_concept_id=0
+        )
+        self.assertEqual(first, [ids[0]])
+        second = self.h.events.concepts_with_events_after(
+            0, limit=1, after_concept_id=ids[0]
+        )
+        self.assertEqual(second, [ids[1]])
+
+    def test_the_end_of_the_id_space_is_empty(self) -> None:
+        cid = _concept(self.h, "only belief", [1.0, 0.0])
+        _event(self.h, cid, "discovered", 1)
+        self.assertEqual(
+            self.h.events.concepts_with_events_after(
+                0, limit=10, after_concept_id=cid
+            ),
+            [],
+        )
+
+    def test_omitting_the_cursor_preserves_the_forward_read(self) -> None:
+        cid = _concept(self.h, "a belief", [1.0, 0.0])
+        _event(self.h, cid, "discovered", 1)
+        self.assertEqual(
+            self.h.events.concepts_with_events_after(0, limit=10), [cid]
+        )
 
 
 class MatrixSnapshotTests(unittest.TestCase):

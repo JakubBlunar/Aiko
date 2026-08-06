@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 31
+_SCHEMA_VERSION = 32
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -956,6 +956,39 @@ CREATE TABLE IF NOT EXISTS concept_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_aliases_canonical
     ON concept_aliases(canonical_id);
+
+-- Schema v32 (L17f): the evolution diary -- Aiko's own periodic account of
+-- how her understanding has changed, in her words.
+--
+-- Distinct from the H9 diary (``memories`` rows of ``kind='diary'``),
+-- which is subjective inner-life journalling written mid-turn. This is a
+-- *grounded change log*: every entry is composed only from the ``because``
+-- clauses of the L17c learning events it cites, and carries those ids so
+-- each line stays click-through-inspectable in the L17e drill-down.
+--
+-- Append-only and never pruned, for the same reason as
+-- ``concept_learning_events``: the diary is the human-legible face of that
+-- history, and thinning it would make old eras mute.
+--
+-- ``event_watermark`` is the highest learning-event id the entry accounts
+-- for, so the next composition resumes from exactly where this one stopped
+-- and no change is either narrated twice or skipped. A period with nothing
+-- above the salience floor writes NO row at all -- the diary must never
+-- pad itself with filler, so gaps in the timeline are meaningful.
+CREATE TABLE IF NOT EXISTS evolution_diary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry TEXT NOT NULL,
+    period_start TEXT NOT NULL DEFAULT '',
+    period_end TEXT NOT NULL DEFAULT '',
+    event_watermark INTEGER NOT NULL DEFAULT 0,
+    learning_event_ids TEXT NOT NULL DEFAULT '',
+    concept_ids TEXT NOT NULL DEFAULT '',
+    shape_counts TEXT NOT NULL DEFAULT '',
+    salience_max REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evolution_diary_created
+    ON evolution_diary(created_at);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -1567,6 +1600,12 @@ class ChatDatabase:
         # narrate her past from. Existing merges are likewise
         # unrecoverable -- the absorbed rows are already gone -- so the
         # alias map starts empty and earns its entries going forward.
+        # v31 -> v32: L17f's ``evolution_diary``. Another brand-new table
+        # fully declared in ``_CREATE_TABLES``, so the executescript has
+        # already created it. Not backfilled, and for a stronger reason
+        # than v31: an entry is Aiko's own prose about a period, and no
+        # amount of stored data licenses writing words she never wrote.
+        # The diary starts empty and fills one period at a time.
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:

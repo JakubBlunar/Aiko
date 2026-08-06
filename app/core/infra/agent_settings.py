@@ -595,6 +595,21 @@ class AgentSettings:
     # history all keep running when this is off -- this switch governs
     # only whether any of it is ever spoken.
     concept_learning_reflection_enabled: bool = True
+    # L17f: the evolution diary -- a periodic, browsable "here is how I've
+    # changed", composed from the same learning events. Off skips the
+    # worker entirely; the history it would narrate keeps accumulating, so
+    # turning it back on later simply resumes from the current watermark.
+    evolution_diary_enabled: bool = True
+    # L17d: whether the synthesis worker may propose a rule about her own
+    # conduct from a pattern in her corrections. The rules land as
+    # ``communication_style`` concepts with ``subject="aiko"``, so they steer
+    # behaviour once L3 promotes them -- which is why this has its own switch
+    # separate from ``concept_synthesis_enabled``. Off leaves the learning
+    # events accumulating for whenever it is turned on. Not to be confused
+    # with K38's ``self_correction_enabled``, which is the in-reply "I got
+    # that wrong" cue; this one is about *learning a rule* from having been
+    # wrong repeatedly.
+    concept_self_correction_enabled: bool = True
     # L12 tension cue -- the ONLY surface for a tension concept (they are kept
     # out of the relevant-context block so a standing friction can never nag).
     # When enabled, TensionCueWorker occasionally drafts a private "a friction

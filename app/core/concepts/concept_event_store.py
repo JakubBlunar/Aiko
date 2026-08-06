@@ -291,21 +291,37 @@ class ConceptEventStore:
         return int(row[0] or 0) if row else 0
 
     def concepts_with_events_after(
-        self, event_id: int, *, limit: int = 200
+        self,
+        event_id: int,
+        *,
+        limit: int = 200,
+        after_concept_id: int | None = None,
     ) -> list[int]:
         """Concept ids touched by any event newer than ``event_id``.
 
         Bounds the drift worker's per-run trajectory reads to the beliefs
         that actually moved, instead of every concept in the store.
+
+        ``after_concept_id`` pages *forwards through the id space* instead
+        of through the timeline, which is what the cold-start sweep needs:
+        ``event_id=0`` with a rising ``after_concept_id`` walks every
+        concept that has ever been on the timeline exactly once. Without
+        it the caller only ever sees the lowest ``limit`` ids, and a store
+        with more concepts than the page size strands the rest.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        sql = (
+            "SELECT DISTINCT concept_id FROM concept_events "
+            "WHERE id > ? AND concept_id IS NOT NULL"
+        )
+        params: list[int] = [int(event_id)]
+        if after_concept_id is not None:
+            sql += " AND concept_id > ?"
+            params.append(int(after_concept_id))
+        sql += " ORDER BY concept_id LIMIT ?"
+        params.append(max(1, int(limit)))
         try:
-            rows = conn.execute(
-                "SELECT DISTINCT concept_id FROM concept_events "
-                "WHERE id > ? AND concept_id IS NOT NULL "
-                "ORDER BY concept_id LIMIT ?",
-                (int(event_id), max(1, int(limit))),
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
         except Exception:
             log.warning("concept dirty-set read failed", exc_info=True)
             return []

@@ -1193,12 +1193,15 @@ class ConceptLifecycleWorker:
           confidences))`` -- a meta can be no more certain than the shakiest
           concept it is *still* built on.
         - **Rule 2 (moot):** flag ``moot`` when the meta no longer stands on
-          enough active bases. The floor is **arity-aware**: a tension (L12)
-          holds exactly two concepts in friction, so losing EITHER side makes it
-          moot; a generalization (L20) abstracts several concepts, so it stays
-          live as long as at least TWO children remain active and only goes moot
-          when fewer than two survive. With no resolvable base at all it is moot
-          by definition.
+          enough active bases. The floor is **arity-aware**, declared per kind
+          as ``meta_min_active_bases``: a tension (L12) holds exactly two
+          concepts in friction, so losing EITHER side makes it moot (the
+          ``None`` default = all of them); a generalization (L20) abstracts
+          several, so it stays live while at least TWO children remain; a
+          ``0`` floor says the bases are history rather than a live dependency
+          (L17d self-correction, whose bases are the beliefs she moved on
+          from). With no resolvable evidence edge at all it is moot by
+          definition, whatever the floor -- that is a broken row, not history.
 
         Returns ``(bounded_confidence, moot)``. Base kinds never call this."""
         base_ids: list[int] = []
@@ -1227,13 +1230,12 @@ class ConceptLifecycleWorker:
                 continue
             base_confs.append(float(base.confidence))
         bounded = min(conf, min(base_confs)) if base_confs else conf
-        # Arity-aware moot: a generalization survives losing a child as long as
-        # >= 2 remain (it abstracts many); every other meta (tension) needs ALL
-        # of its bases, so any missing base makes it moot.
-        if concept.kind == "generalization":
-            moot = len(base_confs) < 2
-        else:
+        registered = get_kind(concept.kind)
+        floor = getattr(registered, "meta_min_active_bases", None)
+        if floor is None:
             moot = missing_any or not base_confs
+        else:
+            moot = len(base_confs) < int(floor)
         return bounded, moot
 
     # ── events ──────────────────────────────────────────────────────────

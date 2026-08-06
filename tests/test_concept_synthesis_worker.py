@@ -216,6 +216,7 @@ class WorkerHarness:
         user_profile_store=None,
         style_signal_store=None,
         user_id_provider=None,
+        learning_store=None,
     ):
         tmp = tempfile.mkdtemp()
         self.path = Path(tmp) / "test.db"
@@ -256,6 +257,10 @@ class WorkerHarness:
             user_profile_store=user_profile_store,
             style_signal_store=style_signal_store,
             user_id_provider=user_id_provider,
+            # L17d: her own corrections. ``None`` (the default) skips the
+            # self-correction pass entirely, which is what every other
+            # feature's tests want.
+            learning_store=learning_store,
         )
 
 

@@ -3,10 +3,9 @@
 Part of the [shipped log index](../shipped.md). The concept layer's landed
 foundations: the store and lifecycle engine, the kinds that reached
 production, and the integrity / observability work underneath them. Open items
-from this family -- the L17 consumers (L17d self-correction, L17f diary), the
-L30 hypothesis family, and the remaining tuning in L22 -- still live in
-[`concepts.md`](../concepts.md), which also carries the design preamble for the
-whole layer.
+from this family -- L31 concept fission, the L30 hypothesis family, and the
+remaining tuning in L22 -- still live in [`concepts.md`](../concepts.md), which
+also carries the design preamble for the whole layer.
 
 ---
 
@@ -813,6 +812,39 @@ cached matrix only for `status="active"`, and anything else falls through to
 repeated-call pattern behind the access violation fixed in
 `ConceptConsolidationWorker.demand()`.
 
+### The cold-start sweep (found while building L17f)
+
+The watermark that makes `demand()` free also had a hole that only showed up
+once something tried to *read* the learning record: the first run advanced the
+watermark to the global maximum event id, but the classification pass had only
+examined the lowest ~120 concept ids on that pass. Every event on every other
+concept was skipped and then declared processed. On the live store that was
+five weeks and two thousand events — the entire substrate L17f, L19 and L17d
+were meant to be built on, silently stranded.
+
+The fix is a **second cursor that pages by concept id**, independent of the
+event watermark, so nothing about forward-going behaviour changes:
+
+- `ConceptEventStore.concepts_with_events_after` takes an `after_concept_id`,
+  making the existing `ORDER BY concept_id LIMIT ?` query pageable.
+- `_run_sweep_pass` runs *after* the relabel and classification passes (forward
+  progress keeps priority) and calls `detect_drift(..., since_event_id=0)` so
+  historical decisive events qualify rather than being filtered out as old. The
+  fingerprint UNIQUE plus `INSERT OR IGNORE` already made this idempotent
+  against the forward pass. A page that comes back empty writes a done
+  sentinel, so it never re-runs.
+- `demand()` reports pressure while the sweep is incomplete, so the idle
+  scheduler drains it on its own; `GET /api/concepts/drift` and the MCP
+  `get_concept_drift_state` report the cursor so the drain is watchable.
+- Settings: `concept_drift_sweep_enabled`, `concept_drift_sweep_page` (60),
+  `concept_drift_sweep_max_findings` (24). The last one matters — the
+  classifier's `max_findings=12` would otherwise throttle a five-week backfill
+  to twelve events per hour.
+
+Verified against a copy of the live database: learning events landed across the
+full concept id range for both subjects, where the forward pass alone had
+produced almost nothing.
+
 ---
 
 ## L17c. Change + why — the learning-event record
@@ -849,6 +881,65 @@ recomputed cause silently rewrites history. (2) *Cap the evidence list* —
 lists for traversal, resolved labels and prose for reading.
 
 **Effort.** Medium — as estimated.
+
+---
+
+## L17d. Self-correction meta-concepts — noticing a pattern in her own mistakes
+
+**Status: SHIPPED.** The feature the rest of L17 exists to enable: not "this
+belief changed" but "I keep being wrong in *this* way, so I work differently
+now."
+
+**Open question 1, resolved: not a new kind.** These land as
+`communication_style` with `subject="aiko"` and `evidence_model="meta"`. That
+kind already has a promotion gate, `SurfaceWeights`, and a live path into the T3
+relevant-context region — which *is* the feature. A rule she has learned about
+herself has to be able to change her behaviour, and a new `self_correction` kind
+would have needed all of that surfacing wiring rebuilt for no behavioural gain.
+
+**What shipped.**
+
+- [`self_correction.py`](../../../app/core/concepts/self_correction.py) — the
+  pure core (numpy only, no store/LLM), single-link cosine over the `because`
+  clauses. The **`because` is what gets embedded**, not the labels: it is the
+  causal sentence L17b wrote about *why* the belief moved, so corrections
+  cluster by reason rather than by subject.
+- [`proposers/self_correction_aiko.py`](../../../app/core/concepts/proposers/self_correction_aiko.py)
+  — names the habit, in second person addressed to her, and is required to make
+  it actionable ("you decide what he means from one short message — ask
+  instead", not "be more careful"). It sees only the stored prose: no counts,
+  no salience, no machinery.
+- `ConceptSynthesisWorker._run_self_correction_pass`, dispatched on the new
+  `self_correction` population. It runs with the other metas, last.
+
+**Open question 2, resolved: the floor counts *beliefs*, not events.** Three
+corrections to the same concept is her wobbling on one thing and would have
+produced a confident rule about her character from a single unstable row; the
+same reason arriving from three *different* beliefs is a habit. A span floor
+(`concept_self_correction_min_span_days`) keeps one afternoon's mood from
+reading as a tendency.
+
+**Open question 3, resolved: cooldown, and one L12 rail had to bend.** The
+anti-oscillation lever is a `kv_meta` cooldown
+(`concept_self_correction_cooldown_days`, 14) that outlasts fresh history, plus
+`communication_style`'s sticky 0.4 plasticity band and a cap of two rules per
+run. But meta rule 2 — "a meta whose bases are not all `active` is moot" — would
+have made every self-correction rule *permanently* moot, because its bases are
+exactly the beliefs she stopped holding. So the arity rule became declarative:
+`ConceptKind.meta_min_active_bases` (`None` = all, tension's arity; `2` for
+generalization; `0` for `communication_style`, whose meta bases are **history**,
+and a correction does not stop having happened). The L3 worker reads the
+declaration instead of branching on kind names. Prior-belief ids are resolved
+through `concept_aliases` first, so an edge always points at a row that exists.
+
+**Settings.** `agent.concept_self_correction_enabled` plus
+`memory.concept_self_correction_{evidence_floor, min_span_days, min_salience,
+similarity, cooldown_days, max_events, max_rules}`. The `concept_` prefix is
+load-bearing: bare `self_correction_*` already belongs to K38's in-reply "I got
+that wrong" cue, which is a different feature about a different timescale.
+
+**Effort.** Large — as estimated, though most of the size was in the two gates
+and the meta-rule inversion rather than the proposer.
 
 ---
 
@@ -893,6 +984,54 @@ a system update. (3) *Whose history* — **both subjects** in the debugger from
 the start, since the provenance read is subject-agnostic.
 
 **Effort.** Medium + Medium — as estimated.
+
+---
+
+## L17f. Evolution diary — a human-readable change log
+
+**Status: SHIPPED.** The end-to-end test of whether the concept system works: if
+the diary reads as real, grounded change, the pipeline is healthy.
+
+**Deliberately not an extension of the H9 diary.** `memories.kind="diary"` plus
+`DiaryWorker` is subjective journalling; this is a grounded change log with
+provenance. Sharing the table would have meant one of the two losing what makes
+it worth having.
+
+**What shipped.** Schema v32 in
+[`chat_database.py`](../../../app/core/infra/chat_database.py):
+`evolution_diary` with the entry, its period bounds, the learning-event and
+concept ids it was composed from, shape counts, max salience.
+
+- [`evolution_diary_store.py`](../../../app/core/concepts/evolution_diary_store.py)
+  — append-only, with `latest_watermark()` as the worker's resume point.
+- [`evolution_diary_worker.py`](../../../app/core/concepts/evolution_diary_worker.py)
+  — gathers salient events above the watermark, composes **one** short
+  first-person paragraph grounded strictly in the stored `because` prose, and
+  appends it with provenance.
+- A **forward cursor** on `ConceptLearningEventStore`: `after_id` on `list`,
+  plus `count_since` (one aggregate, so `demand()` can ask "is there enough to
+  say anything" without loading a page) and `page_since` (**oldest id first** —
+  taking the newest page instead would advance the watermark past older events
+  that were never read, which is history lost rather than deferred).
+- Surfaces: `GET /api/concepts/evolution-diary` (+ `/state`, `POST /run`), the
+  MCP trio, and an entries list above the feed in
+  [`ConceptEvolutionPanel.tsx`](../../../web/src/features/settings/memory/ConceptEvolutionPanel.tsx),
+  where L17e's existing `ProvenanceDetail` drill-down makes every cited concept
+  click-through for free.
+
+**Open questions, resolved.** (1) *Cadence* — a daily tick behind an event floor
+and a weekly cooldown, so cadence follows what actually happened. **A period
+with nothing above the floor writes nothing and leaves its events pending**, so
+two thin weeks can still add up to one entry worth reading, and the diary never
+pads itself. The cooldown is spent even when the model returns nothing, so an
+unproductive period costs a period rather than looping on the same material.
+(2) *Can Aiko read her own entries* — yes, and L19 does exactly that.
+(3) *Retention* — none. Nothing here is pruned, on the same principle as L17c.
+
+**No new prompt block.** The T6 `concept_learning_block` already voices change
+in chat; a second one risks the machinery tone L17e was careful to avoid.
+
+**Effort.** Medium — as estimated.
 
 ---
 
@@ -1072,6 +1211,58 @@ duplicate it.
 
 **Key files.** `app/core/concepts/proposers/tension_{user,aiko,relationship}.py`;
 tests in `tests/test_tension_concepts.py` (`BoundaryClashShapeTests`).
+
+---
+
+## L19. Aiko's autobiography — self-history as a traversable timeline
+
+**Status: SHIPPED.** Asked "have you changed?", she walks her own record instead
+of inventing an answer. The *pull* side of L17's push.
+
+**The substrate was already there**, which is why this came in far under its
+"Large" estimate: neither event table has a prune path, both snapshot their
+inputs at write time, and `concept_aliases` keeps merged-away beliefs reachable.
+What was missing was traversal and narration.
+
+**What shipped.**
+[`self_history.py`](../../../app/core/concepts/self_history.py) builds an arc for
+a subject: every concept **including retired ones** (a retired self-concept is
+part of the story, not garbage), its learning events, and its alias chain,
+classified as **flipped / faded / revived / born / settled** and grouped into
+eras. Bucketing follows the span — weeks under ten weeks, months above — because
+a five-week history read monthly is one era, which is not a story.
+
+- **Grounded in the builder, not the prompt.** Every entry carries its
+  `concept_id` and the ids of the learning events behind it, and the only prose
+  it may repeat is the stored `because`. The narration happens in the model, and
+  this data is the limit of what she can honestly claim.
+- **`thin_record` is why this returns a structure rather than a string.** A
+  young or sparse trail sets it, and the tool description makes saying "I don't
+  have a record of that" the required response. `settled` beliefs deliberately
+  do not count toward the record being substantive: having beliefs is not the
+  same as having changed.
+- **Flat read cost.** The concept mirror is already in memory; learning events
+  and aliases are each read **once** in bulk and grouped in Python
+  (`list_aliases` was added for this). A per-concept query would be hundreds of
+  round trips on a tool-call path.
+- `RecallSelfHistoryTool` in
+  [`builtins.py`](../../../app/llm/tools/builtins.py), a sibling of
+  `RecallConceptTool`; `"recall_self_history": "recall"` in `_TOOL_FAMILY` with
+  the family patterns extended to "have you changed" / "what were you like
+  before"; config gate `tools.recall_self_history`. Plus
+  `GET /api/concepts/self-history`, the MCP `get_self_history`, and a **Story**
+  sub-tab under Settings → Memory that renders the same payload the tool hands
+  the model — so what she *would* say is inspectable before she says it.
+
+**Open questions, resolved.** (1) *Snapshot retention* — keep everything; the
+append-only tables already do. (2) *Does the user's history get the same
+traversal* — yes, `subject` is a parameter and the Story tab toggles between
+"hers" and "yours". (3) *How much to surface at once* — capped eras and capped
+entries per era, most informative first, with a `truncated` count rather than a
+silent trim.
+
+**Effort.** Large as estimated on paper, small in practice, because L17c's
+durability and alias work had already paid for the hard parts.
 
 ---
 

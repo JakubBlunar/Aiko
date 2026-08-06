@@ -451,26 +451,31 @@ Open — quality and pruning:
   hand-authoring goldens before the register settles would enshrine the
   output we are fixing).
 
-Open — self-history:
+Shipped — self-history (all of it, in
+[`shipped/concepts.md`](shipped/concepts.md)):
 
 - **L17.** Self-drift noticing — Aiko notices her own change by comparing
   self-concept snapshots over time ("I think you've corrupted me... I ask
-  for cookies more than I used to"). Broken into L17a-f in
-  [`concepts.md`](concepts.md). **The engine is shipped**: L17a (trajectory
-  read + banded `confidence_sample`), L17b (change-salience classifier,
-  succession-first), L17c (the append-only `concept_learning_events` record
-  plus `concept_aliases` for identity continuity across merges), and L17e
-  (the history-of-thought debugger and the rare T6 reflection). Concept
-  labels are now genuinely updatable, with the drift worker as their single
-  writer and every change recorded immutably. **Still open: L17d**
-  (self-correction meta-concepts) and **L17f** (the evolution diary) — both
-  now read from a real substrate rather than needing to build one.
-- **L19.** Aiko's autobiography (capstone) — her self-history as a
-  durable, traversable timeline: traverse the self-concept graph +
-  snapshots to genuinely answer "Have you changed?". Depends on L17, and
-  its two hardest prerequisites arrived with it: learning history is
-  permanent and snapshot-truthful (never pruned, readable after the rows it
-  cites are gone), and concept identity survives merges.
+  for cookies more than I used to"). L17a-f all shipped: the trajectory read
+  with banded `confidence_sample`, the succession-first change-salience
+  classifier, the append-only `concept_learning_events` record plus
+  `concept_aliases` for identity continuity across merges, the
+  history-of-thought debugger with its rare T6 reflection, the **evolution
+  diary** (L17f), and the **self-correction rules** (L17d) that turn a
+  pattern in her own mistakes into a `communication_style` concept that
+  actually steers behaviour. Concept labels are genuinely updatable, with the
+  drift worker as their single writer and every change recorded immutably.
+  Building the readers exposed the one real bug in the engine: a bounded pass
+  advancing a global watermark had written off five weeks of history as
+  processed, fixed with a concept-id sweep cursor.
+- **L19.** Aiko's autobiography (the capstone) — her self-history as a
+  durable, traversable timeline, read through `recall_self_history` and
+  inspectable at Settings → Memory → Story. It came in well under its "Large"
+  estimate because L17c had already paid for the hard parts: learning history
+  is permanent and snapshot-truthful, and concept identity survives merges.
+  The remaining care went into `thin_record` — the builder, not the prompt,
+  decides when the trail is too sparse to narrate, because the failure mode of
+  a self-history feature is a confident invented past.
 
 Open — later kinds and refinements (L29-L36, all detailed in
 [`concepts.md`](concepts.md)): relationship & meta narratives, concept

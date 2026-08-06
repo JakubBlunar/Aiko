@@ -470,6 +470,52 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         return JSONResponse(session.run_concept_drift())
 
+    @app.get("/api/concepts/self-history")
+    def get_self_history(
+        subject: str = "aiko", eras: int = 8
+    ) -> JSONResponse:
+        """L19: the arc behind ``recall_self_history``, oldest era first.
+
+        Exactly what the tool would hand the model, so what she *would* say
+        about her past is inspectable before she says it. ``thin_record``
+        true means the trail is too sparse to narrate and she is expected
+        to say so rather than fill the gap.
+        """
+        return JSONResponse(
+            session.self_history(subject=subject, max_eras=eras)
+        )
+
+    @app.get("/api/concepts/evolution-diary")
+    def get_evolution_diary(
+        limit: int = 50, before_id: int | None = None
+    ) -> JSONResponse:
+        """L17f: the periodic "here is how I've changed" diary.
+
+        Newest first, paged via ``before_id``. Each entry carries the
+        learning-event and concept ids it was composed from, so the UI hands
+        those to ``/api/concepts/{id}/provenance`` rather than needing a
+        second inspection surface. Gaps are meaningful: a period with
+        nothing above the salience floor writes no entry.
+        """
+        return JSONResponse(
+            session.evolution_diary(limit=limit, before_id=before_id)
+        )
+
+    @app.get("/api/concepts/evolution-diary/state")
+    def get_evolution_diary_state() -> JSONResponse:
+        """L17f worker state: gates, watermark, and pending change count."""
+        return JSONResponse(session.evolution_diary_state())
+
+    @app.post("/api/concepts/evolution-diary/run")
+    def run_evolution_diary() -> JSONResponse:
+        """Compose one diary entry now, bypassing only the cooldown.
+
+        Synchronous so the blocking compose call runs in FastAPI's
+        threadpool rather than on the event loop. The salient-event floor
+        still applies -- forcing cannot invent an entry for an empty period.
+        """
+        return JSONResponse(session.run_evolution_diary())
+
     @app.get("/api/concepts/{concept_id}/provenance")
     def get_concept_provenance(concept_id: int) -> JSONResponse:
         """L17e: the full history-of-thought drill-down for one belief.

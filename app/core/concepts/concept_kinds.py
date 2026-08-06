@@ -215,6 +215,16 @@ class ConceptKind:
     # opts in (only ``boundary`` does now) -- the L3 worker reads this to loosen
     # a boundary as the bond deepens, never touching the stored base.
     plasticity_modulation: PlasticityModulation = DEFAULT_PLASTICITY_MODULATION
+    # L12 meta rule 2, made declarative: how many of a meta concept's base
+    # concepts must still be ``active`` for it to stay live. ``None`` => all of
+    # them, which is a tension's arity (lose either side of the friction and it
+    # is moot). A generalization abstracts several children, so it survives
+    # losing one (2). ``0`` says the bases are *history* rather than a live
+    # dependency -- the L17d self-correction rule stands on corrections that
+    # happened, and a correction does not stop having happened. Only read for
+    # ``evidence_model == "meta"`` concepts, so setting it on a kind that also
+    # has base-model rows (``communication_style``) is inert for those.
+    meta_min_active_bases: int | None = None
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -661,6 +671,12 @@ register_kind(
             activation=0.15, standing=0.1,
             recency_halflife_days=21.0,
         ),
+        # L17d: the kind also carries the ``evidence_model="meta"`` self-
+        # correction rules, whose bases are the beliefs she *stopped* holding.
+        # Under the default meta rule those retired bases would make every such
+        # rule permanently moot, so this kind's bases are history, not a live
+        # dependency. Inert for the ordinary ``set`` comm-style rows.
+        meta_min_active_bases=0,
     )
 )
 
@@ -746,6 +762,9 @@ register_kind(
             activation=0.1, standing=0.1,
             recency_halflife_days=30.0,
         ),
+        # L20: an abstraction survives losing one child -- it speaks for the
+        # group, so it only goes moot when fewer than two remain.
+        meta_min_active_bases=2,
     )
 )
 

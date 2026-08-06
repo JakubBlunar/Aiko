@@ -223,6 +223,7 @@ class ConceptSynthesisWorker:
         user_vector_rows_provider: (
             Callable[[int, int], list[tuple[str, Any]]] | None
         ) = None,
+        learning_store: Any = None,
     ) -> None:
         self._concept_store = concept_store
         self._concept_event_store = concept_event_store
@@ -252,6 +253,10 @@ class ConceptSynthesisWorker:
         # provider that returns ``None``) simply skips the taste pass.
         self._surfacing_outcome_store_provider = surfacing_outcome_store_provider
         self._user_vector_rows_provider = user_vector_rows_provider
+        # L17d: the learning-event spine. ``None`` (no concept layer, or an
+        # install predating L17c) simply skips the self-correction pass -- it
+        # is the one pass whose raw material is her own recorded history.
+        self._learning_store = learning_store
         self._llm_calls = 0
         # P36: the previous pass's stats double as this worker's demand
         # signal. See :meth:`demand`.
@@ -811,6 +816,8 @@ class ConceptSynthesisWorker:
             "comm_style_dirty": False,
             "tension_dirty": False,
             "generalization_dirty": False,
+            "self_correction_dirty": False,
+            "self_correction_clusters": 0,
         }
 
         for spec in CONCEPT_PROPOSERS:
@@ -841,6 +848,10 @@ class ConceptSynthesisWorker:
                     proposals = self._run_tension_pass(ctx, spec, stats, force)
                 elif spec.population == "generalization":
                     proposals = self._run_generalization_pass(
+                        ctx, spec, stats, force
+                    )
+                elif spec.population == "self_correction":
+                    proposals = self._run_self_correction_pass(
                         ctx, spec, stats, force
                     )
                 else:
@@ -2237,6 +2248,210 @@ class ConceptSynthesisWorker:
             sig_key, {"fingerprint": fingerprint, "count": len(pool)}
         )
         return proposals
+
+    # ── L17d self-correction pass ──────────────────────────────────────
+
+    def _run_self_correction_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L17d: propose a rule about her own conduct from her corrections.
+
+        The only pass whose raw material is Aiko's own recorded history. It
+        reads salient ``subject="aiko"`` learning events, embeds each
+        ``because`` clause, and groups them; a group that covers enough
+        *distinct* beliefs over enough time is offered to the proposer as a
+        candidate habit.
+
+        Three gates, because the failure mode here is worse than a missed
+        insight -- a wrong rule about herself changes how she behaves:
+
+        - The evidence floor counts distinct beliefs, not events (enforced in
+          :func:`cluster_corrections`), so one belief she keeps flip-flopping
+          on cannot become a claim about her character.
+        - A ``kv_meta`` cooldown means she cannot rewrite her working strategy
+          weekly, however much history accumulates.
+        - Dirty-tracking on the newest learning-event id, so a settled record
+          is a fast no-op with zero LLM calls.
+        """
+        if not bool(
+            getattr(
+                self._agent_settings, "concept_self_correction_enabled", True
+            )
+        ):
+            return []
+        store = self._learning_store
+        if store is None:
+            return []
+        now = self._clock()
+        cooldown_days = max(
+            0.0,
+            self._f_setting("concept_self_correction_cooldown_days", 14.0),
+        )
+        sig_key = spec.sig_key or "concept_synth.self_correction_sig.aiko"
+        prev = self._load_sigs(sig_key)
+        if not force and cooldown_days > 0.0:
+            last = _parse_iso(str(prev.get("last_run_at", "")) or None)
+            if last is not None and (
+                (now - last).total_seconds() < cooldown_days * 86400.0
+            ):
+                return []
+
+        min_salience = self._f_setting(
+            "concept_self_correction_min_salience", 0.5
+        )
+        max_events = max(
+            10,
+            int(self._i_setting("concept_self_correction_max_events", 200)),
+        )
+        try:
+            events = store.list(
+                limit=max_events,
+                subject="aiko",
+                min_salience=min_salience,
+            )
+        except Exception:
+            log.debug("self-correction: learning read failed", exc_info=True)
+            return []
+        # A correction is a belief being *superseded* or rewritten; an
+        # emergence has no prior belief and so says nothing about a habit.
+        rows = [
+            event
+            for event in events
+            if int(getattr(event, "prior_concept_id", 0) or 0) > 0
+            and str(getattr(event, "because", "") or "").strip()
+        ]
+        if len(rows) < 2:
+            stats["self_correction_dirty"] = False
+            return []
+
+        newest = max(int(event.event_id) for event in rows)
+        prev_newest = int(prev.get("max_event_id", 0)) if prev else 0
+        is_dirty = force or newest != prev_newest
+        stats["self_correction_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        clusters = self._correction_clusters(rows)
+        stats["self_correction_clusters"] = len(clusters)
+        # Advance the watermark either way: an unchanged record that groups
+        # into nothing must not re-embed and re-run every tick.
+        self._save_sigs(
+            sig_key,
+            {
+                "max_event_id": newest,
+                "clusters": len(clusters),
+                "last_run_at": now.isoformat(),
+            },
+        )
+        if not clusters:
+            return []
+        return spec.propose(
+            ctx,
+            clusters=clusters,
+            existing=self._existing_for(spec),
+        )
+
+    def _correction_clusters(self, rows: "Sequence[Any]") -> list[Any]:
+        """Embed each correction's ``because`` clause and group them.
+
+        The ``because`` is what carries the pattern -- it is the causal
+        sentence the L17b classifier wrote about *why* the belief moved -- so
+        it is what gets embedded, not the labels. Embedding failures drop the
+        row rather than the batch.
+
+        Prior-belief ids are resolved through the alias map, for two reasons:
+        the evidence edge has to point at a row that still exists, and two
+        corrections to beliefs that have since been merged are corrections to
+        one belief, which is what the distinct-belief floor is counting.
+        """
+        from app.core.concepts.self_correction import (
+            CorrectionInput,
+            cluster_corrections,
+        )
+
+        inputs: list[CorrectionInput] = []
+        for event in rows:
+            because = str(getattr(event, "because", "") or "").strip()
+            try:
+                vec = self._embedder.embed(because)
+            except Exception:
+                log.debug("self-correction: embed failed", exc_info=True)
+                continue
+            if vec is None:
+                continue
+            inputs.append(
+                CorrectionInput(
+                    event_id=int(getattr(event, "event_id", 0) or 0),
+                    embedding=vec,
+                    because=because,
+                    prior_concept_id=self._resolve_prior(
+                        int(getattr(event, "prior_concept_id", 0) or 0)
+                    ),
+                    kind=str(getattr(event, "kind", "") or ""),
+                    shape=str(getattr(event, "shape", "") or ""),
+                    old_label=str(getattr(event, "old_label", "") or ""),
+                    new_label=str(getattr(event, "new_label", "") or ""),
+                    at=str(getattr(event, "created_at", "") or ""),
+                    salience=float(getattr(event, "salience", 0.0) or 0.0),
+                )
+            )
+        if not inputs:
+            return []
+        try:
+            return cluster_corrections(
+                inputs,
+                min_beliefs=max(
+                    2,
+                    int(
+                        self._i_setting(
+                            "concept_self_correction_evidence_floor", 3
+                        )
+                    ),
+                ),
+                min_span_days=self._f_setting(
+                    "concept_self_correction_min_span_days", 7.0
+                ),
+                similarity=self._f_setting(
+                    "concept_self_correction_similarity", 0.55
+                ),
+                max_clusters=max(
+                    1,
+                    int(
+                        self._i_setting(
+                            "concept_self_correction_max_rules", 2
+                        )
+                    ),
+                ),
+            )
+        except Exception:
+            log.debug("self-correction: clustering failed", exc_info=True)
+            return []
+
+    def _resolve_prior(self, concept_id: int) -> int:
+        """The id a superseded belief lives under now (itself, usually)."""
+        store = self._learning_store
+        if store is None or concept_id <= 0:
+            return concept_id
+        try:
+            return int(store.resolve_alias(concept_id))
+        except Exception:
+            return concept_id
+
+    def _f_setting(self, name: str, default: float) -> float:
+        try:
+            return float(getattr(self._memory_settings, name, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _i_setting(self, name: str, default: int) -> int:
+        try:
+            return int(getattr(self._memory_settings, name, default))
+        except (TypeError, ValueError):
+            return default
 
     def _active_tension_bases(
         self, subject: str, limit: int

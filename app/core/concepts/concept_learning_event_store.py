@@ -314,11 +314,15 @@ class ConceptLearningEventStore:
         concept_id: int | None = None,
         min_salience: float | None = None,
         before_id: int | None = None,
+        after_id: int | None = None,
     ) -> list[LearningEvent]:
         """Learning events newest-first.
 
         ``before_id`` pages backwards (pass the smallest id from the
-        previous page). ``concept_id`` matches either endpoint, so asking
+        previous page). ``after_id`` is the opposite cursor and answers
+        "what have I not seen yet" -- the read every periodic consumer
+        needs, since they resume from a stored watermark rather than
+        scrolling. ``concept_id`` matches either endpoint, so asking
         about a belief also returns the change that superseded it.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
@@ -339,6 +343,9 @@ class ConceptLearningEventStore:
         if before_id is not None:
             where.append("id < ?")
             params.append(int(before_id))
+        if after_id is not None:
+            where.append("id > ?")
+            params.append(int(after_id))
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(max(1, int(limit)))
         try:
@@ -349,6 +356,41 @@ class ConceptLearningEventStore:
             ).fetchall()
         except Exception:
             log.warning("learning event list failed", exc_info=True)
+            return []
+        return [self._row_to_event(r) for r in rows]
+
+    def page_since(
+        self,
+        after_id: int,
+        *,
+        limit: int = 100,
+        min_salience: float = 0.0,
+        subject: str | None = None,
+    ) -> list[LearningEvent]:
+        """The next unread events, **oldest id first**.
+
+        The companion read to :meth:`count_since`, and the one a
+        watermarked consumer must use. Ordered by id rather than
+        ``created_at`` because such a consumer advances its watermark past
+        exactly the rows it read: taking the *newest* page instead would
+        move the watermark beyond older events that were never seen, which
+        is history silently lost rather than merely deferred.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        where = ["id > ?", "salience >= ?"]
+        params: list[object] = [int(after_id), float(min_salience)]
+        if subject:
+            where.append("subject = ?")
+            params.append(str(subject))
+        params.append(max(1, int(limit)))
+        try:
+            rows = conn.execute(
+                f"SELECT {_COLS} FROM concept_learning_events "
+                f"WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        except Exception:
+            log.warning("learning event page read failed", exc_info=True)
             return []
         return [self._row_to_event(r) for r in rows]
 
@@ -394,6 +436,25 @@ class ConceptLearningEventStore:
         try:
             row = conn.execute(
                 "SELECT COUNT(*) FROM concept_learning_events"
+            ).fetchone()
+        except Exception:
+            return 0
+        return int(row[0]) if row else 0
+
+    def count_since(
+        self, after_id: int, *, min_salience: float = 0.0
+    ) -> int:
+        """How many salient events a watermarked consumer has yet to read.
+
+        One aggregate, so a periodic worker's ``demand()`` probe can ask
+        "is there enough to say anything yet" without loading a page.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM concept_learning_events "
+                "WHERE id > ? AND salience >= ?",
+                (int(after_id), float(min_salience)),
             ).fetchone()
         except Exception:
             return 0
@@ -496,6 +557,37 @@ class ConceptLearningEventStore:
         if resolved != int(concept_id):
             chain.append(resolved)
         return chain
+
+    def list_aliases(self, *, limit: int = 500) -> list[ConceptAlias]:
+        """Every recorded absorption, oldest first.
+
+        The bulk companion to :meth:`absorbed_into`, for callers that need
+        the whole map at once (the L19 arc builder walks hundreds of
+        concepts and cannot afford a query per concept). Merges are rare,
+        so this stays a small read.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT absorbed_id, canonical_id, absorbed_label, kind, "
+                "       subject, merged_at FROM concept_aliases "
+                "ORDER BY merged_at ASC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        except Exception:
+            log.debug("alias bulk read failed", exc_info=True)
+            return []
+        return [
+            ConceptAlias(
+                absorbed_id=int(r[0]),
+                canonical_id=int(r[1]),
+                absorbed_label=str(r[2] or ""),
+                kind=str(r[3] or ""),
+                subject=str(r[4] or ""),
+                merged_at=str(r[5] or ""),
+            )
+            for r in rows
+        ]
 
     def absorbed_into(self, canonical_id: int) -> list[ConceptAlias]:
         """The absorptions this concept is the surviving side of."""

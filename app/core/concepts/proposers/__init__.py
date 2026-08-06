@@ -81,6 +81,15 @@ self-concept can be grounded by a theme, a memory, or a mix.
   distinct concept ids, emitting ``("concept", id)`` evidence with
   ``evidence_model="meta"``. They run LAST so their base concepts are already
   ``active`` (the meta dependency-ordering rule).
+- ``self_correction_aiko`` -- L17d, aiko-only, and the only proposer whose raw
+  material is Aiko's own *history*: L17c learning events grouped by
+  :func:`app.core.concepts.self_correction.cluster_corrections` when several
+  corrections across DIFFERENT beliefs happened for a similar reason. It lands
+  as ``communication_style`` (not a new kind) so the rule inherits that kind's
+  live steering path -- the point of the feature is that it changes her
+  behaviour -- but with ``evidence_model="meta"`` and one
+  ``("concept", prior_concept_id)`` edge per belief the pattern was learned
+  from. Runs with the metas, LAST.
 - ``generalization_user`` / ``generalization_aiko`` -- *generalization* (L20),
   the abstraction meta proposers. Like tension their raw material is the active
   BASE (non-meta) concepts, but they name a higher-order super-concept that 2+
@@ -109,6 +118,7 @@ from app.core.concepts.proposers import (
     narrative_aiko,
     narrative_user,
     relationship_ritual,
+    self_correction_aiko,
     taste_aiko,
     tension_aiko,
     tension_relationship,
@@ -166,6 +176,9 @@ from app.core.concepts.proposers.narrative_user import propose_narrative_user
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
 )
+from app.core.concepts.proposers.self_correction_aiko import (
+    propose_self_correction_aiko,
+)
 from app.core.concepts.proposers.taste_aiko import propose_taste_aiko
 from app.core.concepts.proposers.tension_aiko import propose_tension_aiko
 from app.core.concepts.proposers.tension_relationship import (
@@ -204,6 +217,11 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     # with the other metas at the end of the pass order.
     generalization_user.SPEC,
     generalization_aiko.SPEC,
+    # L17d self-correction -- a meta over the beliefs she moved on from, so it
+    # belongs at the end with the others. Shares (kind, subject) with
+    # ``communication_style_aiko`` deliberately; the two are told apart by
+    # ``population`` and keep separate ``sig_key`` dirty state.
+    self_correction_aiko.SPEC,
 )
 
 
@@ -244,6 +262,7 @@ __all__ = [
     "propose_narrative_user",
     "propose_ordered_concept",
     "propose_relationship_ritual",
+    "propose_self_correction_aiko",
     "propose_taste_aiko",
     "propose_tension",
     "propose_tension_aiko",

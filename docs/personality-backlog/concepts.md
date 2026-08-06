@@ -647,14 +647,17 @@ override* (L23) is still deferred.
 
 ## L17. Self-drift noticing (Aiko compares her own concepts over time)
 
-**Status: the engine is SHIPPED; the consumers are not.** L17a (history read),
-L17b (classifier), L17c (durable learning events + identity continuity across
-merges), and L17e (debugger + rare reflection) are all in
-[`shipped/concepts.md`](shipped/concepts.md#l17b-change-salience-classifier--what-deserves-interpretation).
-Still open below: **L17d** (self-correction meta-concepts) and **L17f**
-(evolution diary), plus **L19** and **L31**, all of which now have a real
-substrate to read from. The parent framing below stays because it is what the
-open items are still aiming at.
+**Status: SHIPPED, engine and consumers.** L17a-f are all in
+[`shipped/concepts.md`](shipped/concepts.md#l17b-change-salience-classifier--what-deserves-interpretation),
+as is **L19**, the autobiography they were aiming at. **L31** (fission) is the
+only child still open. The parent framing below stays because it is the clearest
+statement of what the whole layer is for.
+
+One thing worth carrying forward from building the consumers: the classifier and
+the record were correct, but the drift worker's watermark advanced past concepts
+its bounded pass had never examined, so five weeks of history was written off as
+processed. Nothing noticed until something tried to *read* the record. The
+cold-start sweep that fixed it is documented with L17b.
 
 **Motivation.** The charming payoff of the whole layer. A normal memory system
 answers *"what happened?"*; the concept history answers the far more powerful
@@ -780,42 +783,16 @@ discovered" refinement) is preserved in the shipped entry.
 
 ## L17d. Self-correction meta-concepts -- Aiko noticing patterns in her own mistakes
 
-**Motivation.** The most ambitious idea: not just "this belief changed" but "I
-keep making *this kind of* error, so I changed my strategy" — behavioural
-evolution, not a new memory.
-
-> Self-observation: "I frequently overestimated the importance of technical
-> detail." · Correction: "when the user asks for troubleshooting, prioritise
-> actionable steps; when they explore concepts, allow deeper discussion."
-
-**Key files.** A meta-proposer reading the **aiko-subject** slice of the event
-log (L17a) rather than the memory store — architecturally the same move as the
-L29(b) meta-narrative-over-concepts proposer; lands as a `generalization` (L20)
-or `communication_style` (L23) concept whose evidence is *prior drift events /
-contradicted concepts*.
-
-**Sketched approach.** Periodically scan Aiko's own `contradicted` / relabelled /
-superseded concepts (L17b output) for a recurring *shape* — e.g. multiple
-corrections that all move from "detail-first" toward "context-adaptive." When a
-pattern clears an evidence floor, propose a self-correction meta-concept (a rule
-about her own behaviour), gated and promoted through the ordinary L3 lifecycle so
-it's earned, not asserted. Because it's a real concept, it then surfaces and
-*steers behaviour* via the existing L23 communication-style path — closing the
-loop from "noticed a mistake pattern" to "behaves differently."
-
-**Open questions.** (1) Is this a distinct kind (`self_correction`) or just a
-`generalization`/`communication_style` over aiko-drift evidence? (2) How many
-correlated corrections constitute a "pattern" (evidence floor)? (3) Guard against
-over-correction / oscillation — plasticity + a cooldown so she doesn't rewrite her
-strategy every week.
-
-**Effort.** Large.
-
-**Depends on.** L17b/L17c — **both now shipped**, so the input exists: scan
-`concept_learning_events` (subject-filtered, already carrying shape, endpoints
-and *because*) rather than re-deriving corrections from the raw event log. Also
-L20 (generalization machinery), L23 (communication-style steering), L11 (aiko
-self-concepts).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17d-self-correction-meta-concepts--noticing-a-pattern-in-her-own-mistakes).
+All three open questions resolved there: **not** a new kind (`communication_style`
+with `evidence_model="meta"`, so the rule inherits a live steering path), the
+evidence floor counts distinct *beliefs* rather than events (three corrections to
+one belief is wobbling, not a habit), and anti-oscillation is a `kv_meta`
+cooldown. One L12 rail had to bend to make it possible: meta rule 2 would have
+made every self-correction permanently moot, since its bases are exactly the
+beliefs she stopped holding, so the arity rule became a declarative
+`ConceptKind.meta_min_active_bases`.
 
 ---
 
@@ -831,48 +808,15 @@ only off a bounded off-turn snapshot, and told old/new/because and no machinery.
 
 ## L17f. Evolution diary -- a human-readable change log
 
-**Motivation.** L17a-e detect and voice *individual* drifts; L17f is the durable,
-browsable **diary** that accumulates them into "here is how I've changed." A
-periodic entry in Aiko's own words:
-
-> "This week I noticed I've been explaining technical topics with more
-> architectural depth — our recent conversations showed you prefer the trade-offs
-> up front."
-
-This is also the single best **end-to-end test of whether the whole concept
-system works**: if the diary reads as real, grounded change, the pipeline
-(evidence → concept → drift → why) is healthy; if it reads as noise or
-fabrication, something upstream is wrong. It's the human-legible mirror of the
-`concept_events` timeline.
-
-**Key files.** Renders from the L17b/c learning-events + the `concept_events`
-timeline ([`concept_event_store.py`](../../app/core/concepts/concept_event_store.py));
-persisted as its own append-only log (a `kv_meta` ring or a small `evolution_log`
-table) so entries are stable, not recomputed; surfaced in the Concepts/Memory tab
-([`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)) and optionally
-as a rare proactive share
-([`prepared_nudge.py`](../../app/core/proactive/prepared_nudge.py)).
-
-**Sketched approach.** A low-frequency worker gathers the salient learning-events
-since the last entry (L17b), composes one short first-person paragraph grounded in
-the actual `because` clauses (L17c), and appends it with provenance (the
-`concept_id`s + `event_id`s it summarises) so each diary line is
-click-through-inspectable (the L17e debugger). Strictly capped — one entry per
-period, and a period with no above-noise change is *skipped*, so the diary never
-pads itself with filler.
-
-**Open questions.** (1) Cadence — weekly / monthly / every N salient events?
-(2) Is the diary user-visible only, or can Aiko *read her own past entries* as
-evidence for L17d self-correction? (3) Retention / thinning of old entries.
-
-**Effort.** Medium (composition + storage on top of L17a-c).
-
-**Depends on.** L17a-c and L17e — **all shipped**, so the diary is now purely a
-composition-and-storage job: the salient-events-since-last-entry read is
-`ConceptLearningEventStore.list(...)` with a fingerprint or id watermark, the
-`because` clauses are already durable prose, and the provenance to link each
-line back to is the existing `/api/concepts/{id}/provenance` drill-down. Also
-L26.
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l17f-evolution-diary--a-human-readable-change-log).
+Schema v32's `evolution_diary` table plus `EvolutionDiaryWorker`, deliberately
+*not* an extension of the H9 subjective diary. A period with nothing above the
+salience floor writes nothing **and leaves its events pending**, so two thin
+weeks can add up to one entry worth reading rather than two entries of filler.
+The forward cursor this needed (`after_id` / `count_since` / `page_since`, the
+last one oldest-id-first so a watermark can never skip past unread history) is
+reusable and was also what L17d reads through.
 
 ---
 
@@ -897,53 +841,14 @@ tagging/signal source, per-kind `surface_weights` in
 
 ## L19. Aiko's autobiography — self-history as a traversable timeline
 
-**Motivation.** The north star of this whole layer. Aiko ends up with **two
-histories**: the obvious one (the relationship + what she knows about the user)
-and the rare one — **the history of herself**. She remembers being "younger",
-the opinions she used to hold, learning to trust, becoming more confident. So
-when asked *"Have you changed?"* she doesn't invent an answer — she **traverses
-her own concept graph and its snapshots** and genuinely responds. This is the
-difference between a chatbot with a persona and a companion with a past.
-
-**Key files.** Built on L11 (self-concepts), L16 (plasticity), L17 (drift
-noticing + the self-concept snapshot ring), and the L1 provenance fields
-(`origin_session` / `first_evidence_at`). New: an on-demand traversal/narration
-path — a `recall_self_history` capability (sibling of L5 `recall_concept`) and a
-proactive surface via `prepared_nudge` / `narrative_block`.
-
-**Sketched approach.** Where L17 *pushes* the occasional unprompted "I think
-I've changed" beat, L19 is the *pull* side: on a "have you changed / what were
-you like before" cue, walk the self-concept set across snapshots — concepts that
-were born (`first_evidence_at`), faded, flipped polarity, or shifted confidence —
-and narrate the arc ("I used to hedge everything; somewhere over the last few
-months I started saying what I actually think"). Two design constraints:
-
-- **Self-history is durable and protected.** Unlike user memories, Aiko's
-  autobiography must **not** decay/prune on the normal schedule — retired
-  self-concepts and old snapshots are kept (or archived, never deleted) so the
-  timeline stays traversable years later. A retired self-concept is *part of the
-  story* ("I used to be…"), not garbage.
-- **Grounded, not confabulated.** Every autobiographical claim traces to a
-  concept + its provenance + snapshots; if the trail is thin she says so ("I
-  don't have much of a record from back then") rather than inventing a past.
-
-**Open questions.** Snapshot retention horizon (keep everything vs. thinning old
-snapshots)? Does the user's own history get the same traversal (a shared
-"how we've both changed" narration)? How much of the arc to surface at once
-without it becoming a monologue?
-
-**What L17 already provides (as of the shipped engine).** Two of L19's hardest
-prerequisites are now real rather than assumed. **Permanent history**: neither
-`concept_events` nor `concept_learning_events` has a prune path anywhere in the
-app, and both snapshot their inputs at write time, so a retired self-concept's
-story stays readable after the concept and its evidence are gone — the "self-
-history must not decay" constraint is satisfied by construction, no archive tier
-needed. **Identity continuity**: `concept_aliases` means a traversal that hits a
-merged-away concept still reaches the live one, which was the failure mode that
-would have silently truncated the oldest and most interesting arcs. L19's
-remaining work is the *pull*-side traversal and narration, not the substrate.
-
-**Effort.** Large (the capstone — depends on L11 + L16 + L17).
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l19-aikos-autobiography--self-history-as-a-traversable-timeline).
+`self_history.py` builds eras of classified change (flipped / faded / revived /
+born / settled) over all concepts including retired ones, and
+`recall_self_history` narrates them. The field that matters is `thin_record`:
+the builder, not the prompt, decides when the trail is too sparse, because the
+failure mode of a self-history feature is a confident invented past. A **Story**
+sub-tab renders the same payload the tool hands the model.
 
 ---
 
@@ -2051,7 +1956,12 @@ self-correction. Surfaces **only when its context matches** the current turn
 the whole rulebook. Promotes / decays via the normal lifecycle; a strategy whose
 backing belief is contradicted (L15) is re-examined.
 
-**Open questions.** (1) New kind, or an extension of `communication_style`? (2) How
+**Open questions.** (1) New kind, or an extension of `communication_style`?
+**L17d answered a narrow version of this by shipping**: a self-correction rule
+lands as `communication_style` with `evidence_model="meta"` precisely because
+that kind already owns a live steering path, and a new kind would have needed it
+rebuilt. A `strategy` kind still has to justify itself against "an actionable
+comm-style line with a context clause in it". (2) How
 is "this approach worked" measured (K14 engagement signals, user reactions)?
 **L37's surfacing outcome ledger is the answer to this** — it was the open
 question blocking the item, and it now has a design: a strategy's effectiveness
@@ -2064,8 +1974,10 @@ strategy: "this approach works, in the domains where my judgement is any good".
 effectiveness signal).
 
 **Depends on.** L23 (communication_style), L17d (self-correction as a strategy
-source), L34 (belief -> strategy edges), K14 (effectiveness signal), L37 (which
-turns that signal into a per-strategy measure), L44 (per-domain reliability).
+source — **now shipped**, so the source exists and its output is already a
+comm-style rule), L34 (belief -> strategy edges), K14 (effectiveness signal),
+L37 (which turns that signal into a per-strategy measure), L44 (per-domain
+reliability).
 
 ---
 

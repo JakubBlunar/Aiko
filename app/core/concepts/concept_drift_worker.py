@@ -1,6 +1,6 @@
 """L17 drift worker: apply relabels, then record what actually changed.
 
-Two jobs, in this order, once per tick:
+Three jobs, in this order, once per tick:
 
 1. **Relabel.** The synthesis worker stages a ``relabel_proposed`` event
    whenever a proposal folds into an existing concept but says it
@@ -11,6 +11,16 @@ Two jobs, in this order, once per tick:
 2. **Classify.** Feed the moved concepts through the pure L17b
    classifier and persist the salient results as L17c learning events,
    so the history of *why* a belief changed outlives the belief.
+3. **Sweep.** A one-time cold-start backfill. The forward pass is
+   watermark-driven and the watermark jumps to the newest event id
+   whether or not every moved concept fitted in the page, so on a store
+   that already had months of history before this worker existed the
+   first tick would classify the lowest page of concept ids and silently
+   mark all the rest as accounted for. The sweep walks the concept id
+   space once, on its own cursor, with ``since_event_id=0`` so historical
+   decisive events still qualify. It runs *last* so the backfill never
+   starves the forward pass, and it never publishes a pending reflection:
+   Aiko should not boot up and start voicing five-week-old realisations.
 
 Two hard constraints shape the implementation:
 
@@ -30,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -62,9 +73,15 @@ log = logging.getLogger("app.concept_drift_worker")
 
 # KV keys. The watermark is the newest ``concept_events`` id this worker
 # has already accounted for; the snapshot is the bounded pending-reflection
-# payload the T6 provider reads on the turn path (it must never scan).
+# payload the T6 provider reads on the turn path (it must never scan); the
+# sweep cursor is the highest concept id the cold-start backfill has walked.
 DRIFT_WATERMARK_KEY = "concept.drift.watermark"
 DRIFT_PENDING_KEY = "concept.drift.pending"
+DRIFT_SWEEP_KEY = "concept.drift.sweep_cursor"
+
+# Sentinel for a finished sweep. A cursor can only ever rise through real
+# concept ids, so a negative value is unambiguous and needs no second key.
+SWEEP_DONE = -1
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 _TEMPERATURE = 0.0
@@ -187,11 +204,25 @@ class ConceptDriftWorker:
             return WorkSignal(pressure=0.0, reason="probe_failed")
         watermark = self._watermark()
         pending = max(0, latest - watermark)
+        # An empty timeline has no history to sweep, so a fresh install
+        # must not report backfill pressure on every tick.
+        sweeping = latest > 0 and self._sweep_pending()
         if pending <= 0:
-            return WorkSignal(pressure=0.0, reason="no new events")
+            if not sweeping:
+                return WorkSignal(pressure=0.0, reason="no new events")
+            # The backfill is real work but never urgent work: hold it at
+            # the floor so a live worker always outranks it.
+            return WorkSignal(
+                pressure=pressure_from_count(1, saturation=25),
+                reason="history sweep in progress",
+                needs_llm=False,
+            )
+        reason = f"{pending} new concept events"
+        if sweeping:
+            reason += " + history sweep"
         return WorkSignal(
             pressure=pressure_from_count(pending, saturation=25),
-            reason=f"{pending} new concept events",
+            reason=reason,
             # Only the relabel adjudication spends the LLM, and only when
             # a proposal is actually waiting.
             needs_llm=self._has_relabel_candidates(watermark),
@@ -213,6 +244,40 @@ class ConceptDriftWorker:
             self._kv_set(DRIFT_WATERMARK_KEY, str(int(value)))
         except Exception:
             log.debug("drift watermark write failed", exc_info=True)
+
+    def _sweep_cursor(self) -> int:
+        """Highest concept id the cold-start sweep has already walked.
+
+        Reports :data:`SWEEP_DONE` when there is no KV to remember the
+        cursor in, because a sweep that cannot persist its position would
+        re-read page one on every tick forever.
+        """
+        if self._kv_get is None:
+            return SWEEP_DONE
+        try:
+            raw = self._kv_get(DRIFT_SWEEP_KEY)
+        except Exception:
+            return SWEEP_DONE
+        if raw is None or str(raw) == "":
+            return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _set_sweep_cursor(self, value: int) -> None:
+        if self._kv_set is None:
+            return
+        try:
+            self._kv_set(DRIFT_SWEEP_KEY, str(int(value)))
+        except Exception:
+            log.debug("drift sweep cursor write failed", exc_info=True)
+
+    def _sweep_pending(self) -> bool:
+        """One KV read -- safe to call from ``demand()``."""
+        if not self._b("concept_drift_sweep_enabled", True):
+            return False
+        return self._sweep_cursor() >= 0
 
     def _has_relabel_candidates(self, watermark: int) -> bool:
         if not self._b("concept_relabel_enabled", True):
@@ -238,7 +303,8 @@ class ConceptDriftWorker:
         except Exception:
             log.warning("drift run: timeline unreadable", exc_info=True)
             return {"skipped": True, "reason": "timeline_unreadable"}
-        if latest <= watermark:
+        sweeping = latest > 0 and self._sweep_pending()
+        if latest <= watermark and not sweeping:
             return {"skipped": True, "reason": "no new events"}
 
         stats: dict[str, Any] = {
@@ -251,21 +317,27 @@ class ConceptDriftWorker:
             "recorded": 0,
         }
 
-        # 1. Relabels first, so the ``relabeled`` events they write are
-        #    visible to the classification pass below in the same tick.
-        if self._b("concept_relabel_enabled", True):
-            self._run_relabel_pass(watermark, now, stats)
+        if latest > watermark:
+            # 1. Relabels first, so the ``relabeled`` events they write are
+            #    visible to the classification pass below in the same tick.
+            if self._b("concept_relabel_enabled", True):
+                self._run_relabel_pass(watermark, now, stats)
 
-        # 2. Classify what moved and persist the salient results.
-        self._run_classification_pass(watermark, now, stats)
+            # 2. Classify what moved and persist the salient results.
+            self._run_classification_pass(watermark, now, stats)
 
-        # 3. Advance the watermark only after both passes succeeded, so a
-        #    crash mid-run re-reads the same window rather than losing it.
-        #    Re-read the ceiling: the relabel pass appended events.
-        try:
-            self._set_watermark(self._events.max_event_id())
-        except Exception:
-            self._set_watermark(latest)
+            # 3. Advance the watermark only after both passes succeeded, so
+            #    a crash mid-run re-reads the same window rather than losing
+            #    it. Re-read the ceiling: the relabel pass appended events.
+            try:
+                self._set_watermark(self._events.max_event_id())
+            except Exception:
+                self._set_watermark(latest)
+
+        # 4. One page of the cold-start backfill, last so it can only ever
+        #    use the budget the live passes left behind.
+        if sweeping:
+            self._run_sweep_pass(now, stats)
         return stats
 
     # ── pass 1: relabel ───────────────────────────────────────────────
@@ -478,6 +550,63 @@ class ConceptDriftWorker:
             return
         stats["recorded"] = self._persist(findings)
         self._publish_pending(findings)
+
+    # ── pass 3: cold-start sweep ──────────────────────────────────────
+
+    def _run_sweep_pass(self, now: datetime, stats: dict[str, Any]) -> None:
+        """Classify one page of the concept id space, ignoring the watermark.
+
+        Idempotent by construction: findings are fingerprinted on their
+        decisive event, so a page that overlaps what the forward pass
+        already recorded writes nothing new.
+        """
+        cursor = self._sweep_cursor()
+        if cursor < 0:
+            return
+        page = max(1, self._i("concept_drift_sweep_page", 60))
+        try:
+            ids = self._events.concepts_with_events_after(
+                0, limit=page, after_concept_id=cursor
+            )
+        except Exception:
+            log.debug("drift sweep page read failed", exc_info=True)
+            return
+        if not ids:
+            self._set_sweep_cursor(SWEEP_DONE)
+            stats["sweep_done"] = True
+            log.info("concept drift sweep complete")
+            return
+
+        limits = replace(
+            DriftThresholds.from_settings(self._memory_settings),
+            # The forward cap is sized for one hour of movement; the
+            # backfill is reading years of it and would otherwise trickle.
+            max_findings=max(
+                1, self._i("concept_drift_sweep_max_findings", 24)
+            ),
+        )
+        traces = self._build_traces(ids)
+        stats["swept"] = len(ids)
+        stats["sweep_traces"] = len(traces)
+        if traces:
+            candidates = self._succession_candidates(traces, limits)
+            findings = detect_drift(
+                traces,
+                candidates,
+                now=now,
+                thresholds=limits,
+                since_event_id=0,
+            )
+            stats["sweep_findings"] = len(findings)
+            if findings:
+                stats["sweep_recorded"] = self._persist(findings)
+
+        # Advance past the page whatever it yielded: a page with nothing
+        # salient in it has still been read. ``max`` is belt-and-braces
+        # against a cursor that fails to move and loops the same page.
+        nxt = max(int(ids[-1]), cursor + 1)
+        self._set_sweep_cursor(nxt)
+        stats["sweep_cursor"] = nxt
 
     def _build_traces(self, concept_ids: list[int]) -> list[ConceptTrace]:
         anchor = max(0, self._i("concept_drift_trace_anchor", 20))
@@ -801,6 +930,8 @@ class ConceptDriftWorker:
 
 __all__ = [
     "DRIFT_PENDING_KEY",
+    "DRIFT_SWEEP_KEY",
     "DRIFT_WATERMARK_KEY",
+    "SWEEP_DONE",
     "ConceptDriftWorker",
 ]
