@@ -63,6 +63,13 @@ def _build_runner(
     response.tool_calls = tool_calls or []
     ollama.chat_with_tools = MagicMock(return_value=response)
     ollama.last_usage = OllamaUsage()
+    # The runner probes the client for a per-model choice policy with
+    # ``getattr`` + ``callable``, which a bare MagicMock satisfies by
+    # auto-creating an attribute that returns another MagicMock -- so the
+    # stub would silently claim to override every decision below. Stand in
+    # the no-policy default (``OllamaClient``, which has no such hook):
+    # pass the runner's own pick straight through.
+    ollama.tool_pass_tool_choice = lambda _model, requested: requested
 
     registry = MagicMock()
     registry.to_ollama_tools = MagicMock(
@@ -624,6 +631,62 @@ class FinishedTaskRelaxesForcedChoiceTests(unittest.TestCase):
             {"role": "user", "content": "create a file and write a note in it"},
         ]
         runner._maybe_run_tool_pass(messages, stop_requested=None)
+        self.assertEqual(
+            ollama.chat_with_tools.call_args.kwargs["tool_choice"], "required",
+        )
+
+
+class ClientChoicePolicyTests(unittest.TestCase):
+    """The runner picks, the client may overrule.
+
+    ``OllamaClient`` has no opinion, but the OpenAI-compatible client
+    relaxes a forced pick on the models that 400 or stall on it. Every
+    assertion above depends on the stub declining to overrule, so the
+    seam itself needs cover of its own.
+    """
+
+    def _messages(self) -> list[dict[str, Any]]:
+        return [
+            {"role": "system", "content": "You are Aiko."},
+            {"role": "user", "content": "what files can you see?"},
+        ]
+
+    def test_a_client_policy_overrules_the_runners_pick(self) -> None:
+        runner, ollama, _ = _build_runner()
+        seen: list[tuple[str, Any]] = []
+
+        def policy(model: str, requested: Any) -> str:
+            seen.append((model, requested))
+            return "auto"
+
+        ollama.tool_pass_tool_choice = policy
+        runner._maybe_run_tool_pass(self._messages(), stop_requested=None)
+        self.assertEqual(seen, [("gpt-5-mini", "required")])
+        self.assertEqual(
+            ollama.chat_with_tools.call_args.kwargs["tool_choice"], "auto",
+        )
+
+    def test_a_raising_policy_leaves_the_runners_pick_intact(self) -> None:
+        runner, ollama, _ = _build_runner()
+
+        def policy(_model: str, _requested: Any) -> str:
+            raise RuntimeError("provider introspection blew up")
+
+        ollama.tool_pass_tool_choice = policy
+        runner._maybe_run_tool_pass(self._messages(), stop_requested=None)
+        self.assertEqual(
+            ollama.chat_with_tools.call_args.kwargs["tool_choice"], "required",
+        )
+
+    def test_a_client_without_the_hook_keeps_the_runners_pick(self) -> None:
+        runner, ollama, _ = _build_runner()
+        del ollama.tool_pass_tool_choice
+        ollama.mock_add_spec(["chat_with_tools", "last_usage"])
+        ollama.chat_with_tools = MagicMock(
+            return_value=types.SimpleNamespace(content="", tool_calls=[]),
+        )
+        ollama.last_usage = OllamaUsage()
+        runner._maybe_run_tool_pass(self._messages(), stop_requested=None)
         self.assertEqual(
             ollama.chat_with_tools.call_args.kwargs["tool_choice"], "required",
         )
