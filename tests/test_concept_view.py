@@ -112,6 +112,83 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(ConceptView(None).core(), [])
 
 
+class StableRankTests(unittest.TestCase):
+    """P44 — the ordering has to survive L3's per-tick confidence drift.
+
+    These lists are rendered into T0 prompt blocks, so a reshuffle costs
+    the cache for everything after them. Raw ``confidence`` cannot be the
+    sort key: it moves by thousandths every lifecycle tick while the gaps
+    between neighbours are the same size.
+    """
+
+    def test_drift_within_a_band_does_not_reorder(self) -> None:
+        before = ConceptView(_FakeStore([
+            _c(1, confidence=0.9219),
+            _c(2, confidence=0.9173),
+            _c(3, confidence=0.9127),
+        ])).core()
+        # One tick of L3: every concept nudged, and 2 overtakes 1 on raw
+        # confidence. All three are still in the same 0.90 band, so the
+        # rendered order must not move.
+        after = ConceptView(_FakeStore([
+            _c(1, confidence=0.9188),
+            _c(2, confidence=0.9204),
+            _c(3, confidence=0.9143),
+        ])).core()
+        self.assertEqual([c.concept_id for c in before], [1, 2, 3])
+        self.assertEqual([c.concept_id for c in after], [1, 2, 3])
+
+    def test_membership_at_the_cap_survives_a_nudge(self) -> None:
+        # The expensive failure: the block renders a fixed number of
+        # bullets, so a swap across the cut adds one line and drops
+        # another -- a visible edit to a block filed as stable.
+        def ranked(bump: float) -> list[int]:
+            store = _FakeStore([
+                _c(1, confidence=0.93),
+                _c(2, confidence=0.9127),
+                _c(3, confidence=0.9063 + bump),
+            ])
+            return [c.concept_id for c in ConceptView(store).core(limit=2)]
+
+        self.assertEqual(ranked(0.0), [1, 2])
+        self.assertEqual(ranked(0.008), [1, 2])
+
+    def test_a_real_confidence_difference_still_wins(self) -> None:
+        # Banding must not flatten genuine belief: a concept a full band
+        # above its neighbours still sorts first regardless of id.
+        store = _FakeStore([
+            _c(9, confidence=0.62),
+            _c(1, confidence=0.97),
+            _c(5, confidence=0.71),
+        ])
+        self.assertEqual(
+            [c.concept_id for c in ConceptView(store).core()], [1, 5, 9],
+        )
+
+    def test_ties_settle_on_id_not_insertion_order(self) -> None:
+        store = _FakeStore([
+            _c(7, confidence=0.91),
+            _c(2, confidence=0.92),
+            _c(5, confidence=0.905),
+        ])
+        # Same band, so the oldest concept leads and the order is a
+        # function of the data rather than of dict iteration.
+        self.assertEqual(
+            [c.concept_id for c in ConceptView(store).core()], [2, 5, 7],
+        )
+
+    def test_for_target_merge_keeps_the_stable_order(self) -> None:
+        # for_target re-sorts after merging across kinds; re-sorting on
+        # raw confidence there would undo everything core() just did.
+        store = _FakeStore([
+            _c(4, kind="identity", confidence=0.9219),
+            _c(2, kind="value", confidence=0.9173),
+            _c(9, kind="value", confidence=0.9127),
+        ])
+        out = ConceptView(store).for_target("profile_block", subject="user")
+        self.assertEqual([c.concept_id for c in out], [2, 4, 9])
+
+
 class CoreLaneTests(unittest.TestCase):
     """L27 always-on core lane: registry-driven, per-kind bars, balanced
     round-robin across (kind, subject)."""
