@@ -574,6 +574,51 @@ The event timeline logs *transitions*, so a belief that decays for months withou
 - `memory.concept_confidence_sample_enabled` *(bool, `true`)* — master switch. Off → only transitions reach the timeline, as before.
 - `memory.concept_confidence_sample_band` *(float, `0.1`, clamped `[0.01, 1]`)* — how far confidence must move from the last recorded event before a sample fires. Smaller = finer trajectory, more rows.
 
+### L17 — concept evolution (relabelling, learning events, reflections)
+
+L17a records *that* a belief moved; L17 records **how it changed and why**, durably. The off-turn [`ConceptDriftWorker`](../app/core/concepts/concept_drift_worker.py) is the single writer of `label` / `rationale` (L3 keeps `confidence` / `plasticity` / `status`): L2 stages a better wording as a `relabel_proposed` event, the worker gates and adjudicates it, then rewrites the row and appends an immutable `relabeled` event. Salient changes land in the append-only `concept_learning_events` table (v31) with old/new endpoints, a natural-language *because*, and evidence labels snapshotted at detection time; `concept_aliases` keeps a merged-away concept's history reachable. Read it back at Settings → Memory → Evolution, `GET /api/concepts/learning`, `GET /api/concepts/{id}/provenance`, or the `get_concept_*` MCP tools. See [`concept-lifecycle.md`](concept-lifecycle.md#concept-evolution-l17).
+
+Worker cadence and scan bounds:
+
+- `memory.concept_drift_enabled` *(bool, `true`)* — master switch for the whole L17 worker (classification **and** relabelling). Off → labels stay frozen and no learning events accrue; existing history still reads.
+- `memory.concept_drift_interval_seconds` *(int, `3600`, min `300`)* — minimum gap between passes. `demand()` only compares a KV watermark against the newest event id, so an idle timeline costs nothing.
+- `memory.concept_drift_max_concepts` *(int, `120`, min `1`)* — concepts examined per pass. Bounds the one matrix snapshot and the single matmul that does all succession pairing.
+- `memory.concept_drift_trace_anchor` *(int, `20`, min `0`)* / `memory.concept_drift_trace_recent` *(int, `60`, min `1`)* — the two-ended trajectory read: how many oldest (origin) and newest (movement) events per concept. Recent must stay comfortably above the `confidence_sample` rate or a long-lived belief's recent moves get buried.
+
+What counts as a real change:
+
+- `memory.concept_drift_min_salience` *(float, `0.35`, clamped `[0, 1]`)* — floor for persisting a finding as a learning event. Salience is plasticity-weighted, so equal movement in a sticky belief outranks it in a `taste` / `conduct` row.
+- `memory.concept_drift_min_age_days` *(float, `3.0`, min `0`)* — a concept must be at least this old before its movement is treated as evolution rather than settling.
+- `memory.concept_drift_min_confidence_delta` *(float, `0.15`, clamped `[0, 1]`)* — confidence movement below this is noise, not a story.
+- `memory.concept_drift_max_findings` *(int, `12`, min `1`)* — cap on learning events written per pass.
+
+Succession pairing (the primary shape — a new concept forming below the dedupe bar while the old one fades):
+
+- `memory.concept_drift_succession_min_cosine` *(float, `0.55`, clamped `[0, 1]`)* / `memory.concept_drift_succession_max_cosine` *(float, `0.86`, clamped `[0, 1]`)* — the band. The ceiling is the `_DEDUPE_COS` dedupe bar: above it the two rows would have merged, so they cannot be a succession.
+- `memory.concept_drift_succession_min_overlap` *(float, `0.25`, clamped `[0, 1]`)* — minimum shared evidence between the fading and rising rows.
+- `memory.concept_drift_succession_window_days` *(float, `120.0`, min `1`)* — how far apart the fade and the rise may sit and still be paired.
+
+Relabelling gates (all cheap, all checked before any LLM call):
+
+- `memory.concept_relabel_enabled` *(bool, `true`)* — off → proposals are still staged as events but never applied, so labels stay frozen.
+- `memory.concept_relabel_min_cosine` *(float, `0.80`, clamped `[0, 1]`)* — the new wording must stay this close to the current label. Below it, this is a *different belief* and belongs in its own concept, not a rename.
+- `memory.concept_relabel_cooldown_days` *(float, `21.0`, min `0`)* — per-concept cooldown between rewrites.
+- `memory.concept_relabel_max_per_run` *(int, `3`, min `1`)* — applied relabels per pass; `memory.concept_relabel_scan_limit` *(int, `40`, min `1`)* — pending proposals examined per pass.
+- `memory.concept_drift_relabel_min_tokens` *(int, `1`, min `1`)* — minimum token-level difference (after normalising case, punctuation, filler and simple plurals) for a rewording to count as material. Raise it if cosmetic churn gets through.
+- `agent.concept_relabel_per_hour_cap` *(int, `3`)* / `agent.concept_relabel_per_day_cap` *(int, `12`)* — shared rate limiter on the adjudication LLM calls.
+
+Note there is no "refuse a previously-held label" knob: that guard reads the `label` snapshots already in `concept_events` and is always on, which is what kills a phrasing ping-pong after one round trip.
+
+Rare learning reflections (the one place this reaches the conversation):
+
+- `agent.concept_learning_reflection_enabled` *(bool, `true`)* — master switch for the T6 `concept_learning_block`. Off → the history stays a debugging surface only.
+- `memory.concept_drift_pending_cap` *(int, `3`, min `1`)* — how many pending changes the worker publishes to the KV snapshot the turn path reads. Deliberately tiny: prompt assembly must never scan.
+- `memory.concept_reflection_min_salience` *(float, `0.6`, clamped `[0, 1]`)* — higher than the persistence floor above, so most recorded changes are never spoken.
+- `memory.concept_reflection_min_axes` *(float, `0.3`, clamped `[0, 1]`)* — minimum relationship trust, and warmth, before she'll say her read on him changed.
+- `memory.concept_reflection_cooldown_days` *(float, `30.0`, min `0`)* — persisted global cooldown, on top of once-per-conversation and a per-change watermark.
+
+Force one for testing with the `concept_learning_force_next` debug override; it bypasses the trust, relevance and cooldown gates for a single turn.
+
 ### L13 — affective concepts (topic → durable affect)
 
 The `affective` concept kind (both subjects) captures the durable topic→emotion signature — what energizes/drains the user, and how topics move Aiko — surfaced as tone guidance via the T3 relevance path (never pinned, never said aloud). It is fed by a post-turn per-cluster affect sampler ([`cluster_affect`](../app/core/concepts/cluster_affect.py) EWMA maps, one per subject, keyed by topic `cluster_id`) plus `metadata.affect` stamping on Aiko's `self`/`reflection`/`diary` writes; a `"affect"` synthesis population + two proposers name the pattern. See [`personality-backlog/concepts.md` → L13](personality-backlog/concepts.md). The `affective` kind uses `plasticity_default=0.5` (the fluid band) and `affective_evidence_gate` (floors the `set` gate at ≥2 sources / ≥0.5 days / ≥0.6 confidence).

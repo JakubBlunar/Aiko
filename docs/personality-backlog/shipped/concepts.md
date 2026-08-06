@@ -3,9 +3,10 @@
 Part of the [shipped log index](../shipped.md). The concept layer's landed
 foundations: the store and lifecycle engine, the kinds that reached
 production, and the integrity / observability work underneath them. Open items
-from this family -- the L17 self-drift chain, the L30 hypothesis family, and
-the remaining tuning in L22 -- still live in [`concepts.md`](../concepts.md),
-which also carries the design preamble for the whole layer.
+from this family -- the L17 consumers (L17d self-correction, L17f diary), the
+L30 hypothesis family, and the remaining tuning in L22 -- still live in
+[`concepts.md`](../concepts.md), which also carries the design preamble for the
+whole layer.
 
 ---
 
@@ -732,6 +733,166 @@ was the actual growth risk; thinning can wait until the table proves it needs
 it.
 
 **Effort.** Small (read helper + one guarded event emit) — as estimated.
+
+---
+
+## L17b. Change-salience classifier — "what deserves interpretation"
+
+**Status: SHIPPED.** The crux the feature lived or died on: telling a real
+learning event from a wiggle, so Aiko never becomes a narrator dressing every
+0.72 → 0.74 up as growth.
+
+**What shipped.**
+[`concept_drift.py`](../../../app/core/concepts/concept_drift.py) is a pure
+classifier — immutable candidates, plain-data inputs, no store or worker
+dependency, so the worker owns every scan.
+
+- **Succession became the *primary* shape, not a secondary one.** This is the
+  one place the plan changed under the code. The sketch ranked *relabel* as the
+  highest-value signal, but reading `_reinforce()` showed labels never changed
+  at all: it attached evidence and left `label` / `rationale` untouched, and no
+  other caller passed a new label to `ConceptStore.update()`. So the headline
+  shape could not fire, and real evolution to date had only ever appeared as a
+  **new concept forming below the `_DEDUPE_COS = 0.86` bar while the old one
+  decayed**. Pairing uses label cosine in the band *below* the dedupe bar
+  (above it the two rows would have merged, so they cannot be a succession),
+  evidence overlap, and temporal anti-correlation — the structural signal the
+  sketch's worked example wanted, with no embedding guess. Relabel is now real
+  too (see the drift worker below), so the confirmed-relabel shape fires
+  as well.
+- **Secondary shapes:** emergence, loss, contradiction into revival, confirmed
+  relabel. Confidence-only movement is classified as noise and dropped.
+- **Plasticity weights the salience, not just the threshold**, per L16: equal
+  movement in a sticky belief outranks it in a `taste` or L42 `conduct` row.
+- **Merge cleanup is explicitly not evolution.** The fission shape is reserved
+  for unshipped L31; the classifier must not infer splits without the missing
+  structural primitive.
+
+**Open questions, resolved.** (1) *Label-change detection* — **both, tiered**:
+normalized token materiality (case, punctuation, filler and simple plural
+inflections folded away) as a free gate, then a bounded LLM adjudication only
+for what survives it. (2) *Supersession robustness* — **evidence overlap plus a
+  cosine band plus temporal anti-correlation**, all three, which is what
+  separates it from a coincidental new concept. (3) *Salience bars* — **one
+  global bar** (`concept_drift_min_salience`), with per-shape behaviour expressed
+  through the salience arithmetic rather than a bar per shape.
+
+**Effort.** Medium — as estimated.
+
+### Making relabel real (the unplanned half)
+
+Since frozen labels were what demoted the relabel shape in the first place, the
+same work fixed it. Concepts now stay current with the latest observation while
+history stays immutable, split across two actors:
+
+- **L2 stages, it does not mutate.** `_reinforce()` appends a
+  `relabel_proposed` event carrying the proposed wording, the cosine, and the
+  proposal's rationale. No schema change and no staging table: `event_type` is
+  an open enum by design, so a new event kind is a value, not a migration.
+- **[`concept_drift_worker.py`](../../../app/core/concepts/concept_drift_worker.py)
+  is the single writer of `label` / `rationale`**, exactly as L3 is the single
+  writer of `confidence` / `plasticity` / `status`, and it never touches L3's
+  fields. Cheap gates run before any LLM call: materiality, a cosine floor at
+  the dedupe bar against the *current* label (a genuinely different belief must
+  stay a separate concept), a per-concept cooldown, a per-run cap, and the
+  shared rate limiter. Survivors get a narrow "is B a better wording of the
+  same belief" adjudication with a negative cache. Accepted, it re-embeds,
+  writes through `ConceptStore.update()` (which invalidates the cosine mirror
+  via `_put_mirror`), and appends an immutable `relabeled` event.
+- **History is its own thrash guard.** Any label the concept previously held is
+  refused, read straight from the `label` snapshots already in
+  `concept_events`. A ping-pong between two phrasings dies after one round
+  trip, for free.
+
+`demand()` compares a KV watermark against the newest event id and does nothing
+else — no NumPy, no store scan, no graph walk — and `run()` does all succession
+pairing over one `ConceptStore.matrix_snapshot()` matrix with a single matmul,
+never per-concept `nearest()`. That shape is deliberate: `nearest()` uses the
+cached matrix only for `status="active"`, and anything else falls through to
+`_filtered_matrix`, which restacks a fresh NumPy matrix per call — the exact
+repeated-call pattern behind the access violation fixed in
+`ConceptConsolidationWorker.demand()`.
+
+---
+
+## L17c. Change + why — the learning-event record
+
+**Status: SHIPPED.** `old → new **because** …`, durable and never pruned.
+
+**What shipped.** Schema v31 in
+[`chat_database.py`](../../../app/core/infra/chat_database.py) plus
+[`concept_learning_event_store.py`](../../../app/core/concepts/concept_learning_event_store.py).
+
+- **`concept_learning_events`**, append-only: old and new endpoints, shape,
+  salience, plasticity, trigger event ids, mediator concept ids, evidence
+  references **and their labels captured at detection time**, the natural
+  *because* and resolution text, and a deterministic fingerprint for
+  idempotency. The snapshotting is the point — a learning event stays readable
+  after the evidence, memories, or whole concepts it cites are gone.
+- **`concept_aliases` — the hole the re-read found.** `merge_into` re-points
+  edges then calls `self.delete(abs_id)`, so before this the absorbed row was
+  simply gone and only free text in the `merged` event's `reason` connected it
+  to the canonical: **any trajectory ending in a merge was unreachable**. The
+  store now records absorbed → canonical, with merge time and the absorbed
+  label, in the last moment before the delete, and a chain-following resolver
+  walks it. This is what makes history survive consolidation.
+- **A two-ended trajectory read.** `ConceptEventStore.drift_window(anchor=,
+  recent=)` returns the oldest rows *and* the newest, de-duplicated and sorted
+  forwards. `trajectory()`'s oldest-first `LIMIT` protects a concept's origin,
+  but on a long-lived belief the L17a `confidence_sample` rows fill the whole
+  window and hide every recent move — drift detection needs both ends.
+
+**Open questions, resolved.** (1) *When to compute the because* — **at
+detection time**, durably. Late evidence is the lesser risk; a lazily
+recomputed cause silently rewrites history. (2) *Cap the evidence list* —
+**yes**, bounded at write time. (3) *Free text or structured* — **both**: id
+lists for traversal, resolved labels and prose for reading.
+
+**Effort.** Medium — as estimated.
+
+---
+
+## L17e. Surfacing + the "history of thought" debugger
+
+**Status: SHIPPED**, both consumers.
+
+**The debugger.**
+[`memory_facade_mixin.py`](../../../app/core/session/memory_facade_mixin.py) and
+[`memory_world_routes.py`](../../../app/web/rest/memory_world_routes.py) expose
+`GET /api/concepts/learning` (filtered feed), `GET
+/api/concepts/{id}/provenance` (alias chain, every wording the belief has held,
+its learning events and its lifecycle trajectory), and `GET
+/api/concepts/drift` + `POST /api/concepts/drift/run`. Four MCP tools mirror
+them (`get_concept_learning`, `get_concept_provenance`,
+`get_concept_drift_state`, `force_concept_drift`), and
+[`ConceptEvolutionPanel.tsx`](../../../web/src/features/settings/memory/ConceptEvolutionPanel.tsx)
+renders it under Settings → Memory → **Evolution** with shape and subject
+filters and a drill-down. L26's "why did this enter the current prompt" and
+L17e's "how did this belief evolve" stay deliberately separate tools.
+
+**The surfacing**, which is the part that needed the most restraint. The T6
+`concept_learning_block` in
+[`inner_life_part3.py`](../../../app/core/session/inner_life_part3.py) reads
+**only** the drift worker's bounded KV pending snapshot on the turn path — no
+scan, no embedding, no LLM call — behind: feature flag, minimum salience
+(higher than the persistence floor, so most recorded changes are never spoken),
+relationship trust *and* warmth, a lull or genuine live lexical relevance, once
+per conversation, a per-change watermark, and a long persisted global cooldown.
+It drops under aggressive assembly and has a `concept_learning_force_next`
+debug override. The model is handed old, new, and *because* and nothing else —
+no scores, ids, shapes, or event types — and told to state a fallible
+first-person shift rather than ask whether it is right, which would spend K47's
+question budget on reassurance-seeking. Persona guidance under "Changing your
+mind" says the same in Aiko's voice.
+
+**Open questions, resolved.** (1) *Cadence* — **event-driven off salience**,
+with the cooldown doing the rate limiting rather than a review pass. (2)
+*Phrasing low-plasticity core drift without alarming* — framed as an ordinary
+fallible change of mind about someone you care about, never as a correction or
+a system update. (3) *Whose history* — **both subjects** in the debugger from
+the start, since the provenance read is subject-agnostic.
+
+**Effort.** Medium + Medium — as estimated.
 
 ---
 
