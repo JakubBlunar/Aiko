@@ -13,6 +13,13 @@ Reading the output:
 * **Divergence by block** — a single block dominating means one cheap
   fix is available. A flat spread means the prompt is churning
   everywhere and re-ordering will not save it.
+* **Ladder discipline** — the break tells you what this turn cost, but
+  it also hides everything behind it: while a T0 block churns you cannot
+  see whether the lower tiers behave. This section counts every block
+  that moved, so the tier contract (T0 rarest, rising to T6) is a number
+  you can read rather than a claim in a comment. An inverted pair is
+  flagged: it means a block is filed in a tier more stable than it
+  actually is, and moving it down the ladder is the fix.
 * **cached_tokens vs our prediction** — if the break point is stable
   while the provider's cache hit rate swings wildly, the misses are the
   provider's routing or TTL and no prompt restructuring will help. If
@@ -68,6 +75,103 @@ def _histogram(title: str, counts: Counter, total: int) -> None:
         print(f"  {str(name):<{width}}  {count:>4}  {pct:5.1f}%  {bar}")
 
 
+def _ladder() -> tuple[list[str], dict[str, str], list[str]]:
+    """``(block order, block -> tier, tier order)`` from the live assembler.
+
+    Imported lazily and best-effort: the report stays runnable against a
+    JSONL file copied off a machine that has no checkout.
+    """
+    try:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+    except Exception:
+        return [], {}, []
+    order: list[str] = []
+    tier_of: dict[str, str] = {}
+    for tier, names in _PROMPT_BLOCK_TIERS.items():
+        for name in names:
+            order.append(name)
+            tier_of[name] = tier
+    return order, tier_of, list(_PROMPT_BLOCK_TIERS)
+
+
+def _ladder_discipline(turns: list[dict]) -> None:
+    """Per-block change frequency, grouped by tier, plus the ordering verdict."""
+    recorded = [r for r in turns if "changed_blocks" in r]
+    if not recorded:
+        print("\nLadder discipline")
+        print(
+            "  (not recorded in this file -- predates the per-block churn "
+            "instrumentation; only the earliest break was captured)",
+        )
+        return
+
+    order, tier_of, tier_order = _ladder()
+    per_block: Counter = Counter()
+    for record in recorded:
+        for name in record.get("changed_blocks") or ():
+            per_block[str(name)] += 1
+    # A tier counts as changed on a turn if any of its blocks moved. The
+    # assembler already grouped this for us.
+    per_tier: Counter = Counter()
+    for record in recorded:
+        for tier, count in (record.get("changed_by_tier") or {}).items():
+            if count:
+                per_tier[str(tier)] += 1
+
+    total = len(recorded)
+    print(f"\nLadder discipline -- how often each block changed ({total} turns)")
+    print("  the contract: T0 rarest, rising monotonically to T6")
+
+    tiers = tier_order or sorted(
+        {tier_of.get(n, "unknown") for n in per_block} | set(per_tier),
+    )
+    for tier in tiers:
+        rate = 100.0 * per_tier.get(tier, 0) / total
+        bar = "#" * int(round(rate / 2.5))
+        print(f"\n  {tier:<16} any block moved  {rate:5.1f}%  {bar}")
+        names = [n for n in order if tier_of.get(n) == tier] or sorted(
+            n for n in per_block if tier_of.get(n, "unknown") == tier
+        )
+        movers = [(n, per_block.get(n, 0)) for n in names if per_block.get(n)]
+        if not movers:
+            print("      (every block held still)")
+            continue
+        for name, count in sorted(movers, key=lambda kv: -kv[1]):
+            print(f"      {name:<28} {count:>4}  {100.0 * count / total:5.1f}%")
+
+    # The verdict. Only tiers that actually moved are ranked against each
+    # other: a silent tier is perfectly stable, so "T5 churns more than a
+    # T6 that never fired" is not a filing error and must not be reported
+    # as one. Each active tier is compared to the next *active* one down.
+    ranked = [
+        (t, 100.0 * per_tier.get(t, 0) / total)
+        for t in tiers
+        if per_tier.get(t, 0)
+    ]
+    inversions = [
+        (a, ra, b, rb)
+        for (a, ra), (b, rb) in zip(ranked, ranked[1:], strict=False)
+        if ra > rb + 1e-9
+    ]
+    print("\n  verdict:")
+    if not inversions:
+        print("      ladder holds -- every tier is at least as stable as the next")
+        return
+    for a, ra, b, rb in inversions:
+        print(f"      INVERTED  {a} ({ra:.1f}%) churns more than {b} ({rb:.1f}%)")
+    worst = max(inversions, key=lambda row: row[1] - row[3])
+    culprits = [
+        (n, c) for n, c in per_block.items()
+        if tier_of.get(n) == worst[0]
+    ]
+    if culprits:
+        name, count = max(culprits, key=lambda kv: kv[1])
+        print(
+            f"      biggest offender: {name} moved on {100.0 * count / total:.1f}% "
+            f"of turns while filed under {worst[0]}",
+        )
+
+
 def report(records: list[dict]) -> None:
     # First turns carry no divergence signal -- there was nothing to
     # compare against -- so they would drag every mean toward zero.
@@ -96,6 +200,8 @@ def report(records: list[dict]) -> None:
         Counter(str(r.get("tier") or "(none)") for r in turns),
         len(turns),
     )
+
+    _ladder_discipline(turns)
 
     broken = [r for r in turns if r.get("diverged")]
     if broken:

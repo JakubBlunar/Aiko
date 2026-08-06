@@ -75,6 +75,13 @@ class PrefixDivergence:
     lost_pct: float = 0.0
     changed: int = 0
     changed_by_tier: dict[str, int] = field(default_factory=dict)
+    # Every block that changed, in ladder order -- not just the earliest
+    # one. ``diverged`` alone answers "what did this turn cost", but it
+    # also masks everything behind it: while a T0 block churns there is
+    # no way to tell whether the rest of the ladder is well-behaved. This
+    # is what makes the tier contract (T0 rarely -> T6 always) measurable
+    # per block instead of only at the break.
+    changed_blocks: tuple[str, ...] = ()
     # Index of the first history message differing from last turn, or
     # None when the shared prefix ran to the end of the shorter list.
     history_diverged: int | None = None
@@ -99,6 +106,7 @@ class PrefixDivergence:
             "lost_pct": self.lost_pct,
             "changed": self.changed,
             "changed_by_tier": dict(self.changed_by_tier),
+            "changed_blocks": list(self.changed_blocks),
             "history_diverged": self.history_diverged,
             "history_slid": self.history_slid,
             "history_msgs": self.history_msgs,
@@ -211,6 +219,7 @@ def diagnose_divergence(
         lost_pct=lost_pct,
         changed=len(changed_names),
         changed_by_tier=changed_by_tier,
+        changed_blocks=tuple(changed_names),
         history_diverged=_first_difference(
             prev.history_hashes, current.history_hashes,
         ),

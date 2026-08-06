@@ -1004,11 +1004,20 @@ class PromptTelemetry:
     # (expected, and it still leaves a stable tail), while ``-1`` means
     # retained messages were rewritten in place — the fingerprint of the
     # K-time1 relative-age prefixes re-stamping every message.
+    # ``prefix_changed_blocks`` is every block that moved this turn, in
+    # ladder order, and ``prefix_changed_by_tier`` is the same thing
+    # counted per tier. The break above says what this turn cost; these
+    # two say whether the ladder is holding its shape, which the break
+    # cannot show on its own -- a churning T0 block hides the behaviour
+    # of every tier below it. Names only (a few hundred bytes), so unlike
+    # ``block_chars`` they are cheap enough to ride the per-turn metrics.
     prefix_diverged: str = ""
     prefix_tier: str = ""
     prefix_lost_chars: int = 0
     prefix_lost_pct: float = 0.0
     prefix_changed: int = 0
+    prefix_changed_blocks: tuple[str, ...] = ()
+    prefix_changed_by_tier: dict[str, int] = field(default_factory=dict)
     history_diverged_at: int = -1
     history_slid: int = 0
 
@@ -1069,6 +1078,8 @@ class PromptTelemetry:
             "prefix_lost_chars": int(self.prefix_lost_chars),
             "prefix_lost_pct": round(float(self.prefix_lost_pct), 1),
             "prefix_changed": int(self.prefix_changed),
+            "prefix_changed_blocks": list(self.prefix_changed_blocks),
+            "prefix_changed_by_tier": dict(self.prefix_changed_by_tier),
             "history_diverged_at": int(self.history_diverged_at),
             "history_slid": int(self.history_slid),
         }

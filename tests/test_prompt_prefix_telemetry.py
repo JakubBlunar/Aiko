@@ -132,6 +132,31 @@ class DiagnoseDivergenceTests(unittest.TestCase):
             result.lost_chars, _CHARS["affect"] + _CHARS["mood_hint"],
         )
 
+    def test_changed_blocks_names_every_mover_in_ladder_order(self) -> None:
+        """``diverged`` names the break; this names the whole ladder.
+
+        The break alone cannot answer "is T0 behaving", because a T0
+        block that churns hides every tier under it. Recording all the
+        movers is what makes per-tier churn measurable.
+        """
+        result = _diagnose(
+            _snapshot(),
+            _snapshot(
+                mood_hint="new mood", persona="edited", summary="recompacted",
+            ),
+        )
+        self.assertEqual(
+            result.changed_blocks, ("persona", "summary", "mood_hint"),
+        )
+        # The blocks between the movers stayed put and must not appear.
+        self.assertNotIn("relationship", result.changed_blocks)
+        self.assertNotIn("affect", result.changed_blocks)
+        self.assertEqual(result.as_dict()["changed_blocks"], list(result.changed_blocks))
+
+    def test_changed_blocks_is_empty_on_an_identical_prompt(self) -> None:
+        self.assertEqual(_diagnose(_snapshot(), _snapshot()).changed_blocks, ())
+        self.assertEqual(_diagnose(None, _snapshot()).changed_blocks, ())
+
     def test_a_stable_block_changing_is_the_expensive_case(self) -> None:
         result = _diagnose(_snapshot(), _snapshot(persona="edited persona"))
         self.assertEqual(result.diverged, "persona")
@@ -283,6 +308,26 @@ class AssemblerRoundTripTests(unittest.TestCase):
             self.assertEqual(telemetry.prefix_diverged, "vitality_block")
             self.assertEqual(telemetry.prefix_tier, "T5_affect_style")
             self.assertEqual(telemetry.prefix_changed, 2)
+            # The break names one block; the ladder view names both, and
+            # attributes them to the tier each is filed under. Without
+            # this the T6 mover is invisible behind the T5 break.
+            self.assertEqual(
+                telemetry.prefix_changed_blocks,
+                ("vitality_block", "novelty_block"),
+            )
+            self.assertEqual(
+                telemetry.prefix_changed_by_tier,
+                {"T5_affect_style": 1, "T6_detectors": 1},
+            )
+            metrics = telemetry.as_dict()
+            self.assertEqual(
+                metrics["prefix_changed_blocks"],
+                ["vitality_block", "novelty_block"],
+            )
+            self.assertEqual(
+                metrics["prefix_changed_by_tier"],
+                {"T5_affect_style": 1, "T6_detectors": 1},
+            )
 
     def test_sessions_do_not_compare_against_each_other(self) -> None:
         with _TempDb() as db:
@@ -308,6 +353,71 @@ class AssemblerRoundTripTests(unittest.TestCase):
                 )
                 self._assemble(assembler, session)
             self.assertLessEqual(len(assembler._prefix_snapshots), 8)
+
+
+class LadderDisciplineReportTests(unittest.TestCase):
+    """``prefix_break_report`` reading per-block churn back.
+
+    The section exists to answer one question the break cannot: is each
+    tier at least as stable as the next one down? Its verdict is what
+    decides whether a block is filed in the wrong tier, so the verdict
+    is what these tests pin.
+    """
+
+    def _run(self, turns: list[dict]) -> str:
+        import contextlib
+        import io
+
+        from scripts.prefix_break_report import _ladder_discipline
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _ladder_discipline(turns)
+        return buffer.getvalue()
+
+    def _turn(self, *blocks: str) -> dict:
+        tier_of = {
+            "persona": "T0_stable",
+            "profile_block": "T0_stable",
+            "arc_block": "T1_semi_stable",
+            "mood_hint": "T5_affect_style",
+        }
+        by_tier: dict[str, int] = {}
+        for name in blocks:
+            tier = tier_of[name]
+            by_tier[tier] = by_tier.get(tier, 0) + 1
+        return {"changed_blocks": list(blocks), "changed_by_tier": by_tier}
+
+    def test_old_records_say_so_instead_of_reporting_zeroes(self) -> None:
+        # Files written before the instrumentation have no per-block data.
+        # Rendering them as "nothing ever changed" would be a lie that
+        # reads like a clean bill of health.
+        out = self._run([{"diverged": "profile_block"}])
+        self.assertIn("not recorded", out)
+        self.assertNotIn("verdict", out)
+
+    def test_a_well_behaved_ladder_passes(self) -> None:
+        turns = [self._turn("mood_hint") for _ in range(9)]
+        turns.append(self._turn("arc_block", "mood_hint"))
+        out = self._run(turns)
+        self.assertIn("ladder holds", out)
+        self.assertNotIn("INVERTED", out)
+
+    def test_a_churning_t0_block_is_flagged_and_named(self) -> None:
+        # The shape of the real data: a T0 block moving nearly every turn
+        # while T1 moves occasionally.
+        turns = [self._turn("profile_block", "mood_hint") for _ in range(8)]
+        turns += [self._turn("arc_block", "mood_hint") for _ in range(2)]
+        out = self._run(turns)
+        self.assertIn("INVERTED", out)
+        self.assertIn("T0_stable", out)
+        self.assertIn("biggest offender: profile_block", out)
+        # And the per-block rate is visible, not just the verdict.
+        self.assertIn("80.0%", out)
+
+    def test_a_tier_whose_blocks_all_held_still_says_so(self) -> None:
+        out = self._run([self._turn("mood_hint") for _ in range(4)])
+        self.assertIn("every block held still", out)
 
 
 class PromptCacheSinkTests(unittest.TestCase):
