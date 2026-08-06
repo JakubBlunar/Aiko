@@ -294,6 +294,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "taste_lean_block",
         # L42: rare trust/lull-gated acknowledgement of a conduct concept.
         "conduct_notice_block",
+        # L17e: the rarest of the lot -- once per conversation, once per
+        # change, behind a month-long cooldown. Reads the drift worker's
+        # bounded pending snapshot plus the K18 lull reading, so it sits
+        # with the other lull-gated permission slips.
+        "concept_learning_block",
         # K67: dormant-interest re-opener — "we haven't talked about X in
         # ages". A rare, lull-gated reach back to a once-loved-but-quiet
         # topic; clusters with the other "things Aiko could bring up on a
@@ -1009,6 +1014,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # provider, like topic_appetite.
         self._taste_lean_provider: Callable[[], str] | None = None
         self._conduct_notice_provider: Callable[[], str] | None = None
+        # L17e. Takes the live ``user_text`` so the "is the conversation
+        # already about this belief" check can be done lexically, keeping
+        # embeddings off the turn path.
+        self._concept_learning_provider: Callable[[str], str] | None = None
         # K57 directed emotion episodes. Takes the live ``user_text``
         # (acknowledgment detection resolves a live episode) and
         # returns the strongest episode's register cue — or the
@@ -2450,6 +2459,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="conduct_notice",
             )
 
+        # L17e: "my read on this has changed". Takes ``user_text`` for the
+        # lexical live-relevance check, and is dropped under aggressive --
+        # a belief revision volunteered while the budget is under pressure
+        # is exactly the wrong moment for it.
+        concept_learning_block = ""
+        if not aggressive and self._concept_learning_provider is not None:
+            with _timed_phase(provider_ms, "concept_learning"):
+                try:
+                    concept_learning_block = (
+                        self._concept_learning_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "concept learning provider raised", exc_info=True,
+                    )
+                    concept_learning_block = ""
+
         # K67: dormant-interest re-opener. Lull-gated (reads the K18 standing
         # reading, so it must run after the stagnation provider, like
         # topic_appetite above), no-arg, dropped under aggressive — a rare
@@ -3255,6 +3281,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(taste_lean_block)
         if conduct_notice_block:
             system_parts.append(conduct_notice_block)
+        if concept_learning_block:
+            # L17e: the rare "I've come to see this differently" slip.
+            system_parts.append(concept_learning_block)
         if dormant_interest_block:
             # K67: the rare "we haven't talked about X in ages" re-opener.
             # Clusters with the other lull-gated "things Aiko could bring

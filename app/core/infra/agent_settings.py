@@ -590,6 +590,11 @@ class AgentSettings:
     # Rare T6 permission to acknowledge one warmed conduct observation in
     # relationship language. Detection/T3 remain active when this is off.
     surfacing_conduct_notice_enabled: bool = True
+    # L17e: the rare T6 permission to say out loud that her read on
+    # something has changed. Detection, relabelling and the learning
+    # history all keep running when this is off -- this switch governs
+    # only whether any of it is ever spoken.
+    concept_learning_reflection_enabled: bool = True
     # L12 tension cue -- the ONLY surface for a tension concept (they are kept
     # out of the relevant-context block so a standing friction can never nag).
     # When enabled, TensionCueWorker occasionally drafts a private "a friction

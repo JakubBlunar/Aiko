@@ -1239,6 +1239,12 @@ class MemorySettings:
     # reflection, and how many are held in the pending snapshot.
     concept_reflection_min_salience: float = 0.6
     concept_drift_pending_cap: int = 3
+    # A belief revision is an intimate thing to volunteer, so the T6 slip
+    # needs warmth to land and an opening to land in, and it should stay
+    # genuinely rare -- a month between them, on top of the per-change
+    # watermark and the once-per-conversation limit.
+    concept_reflection_min_axes: float = 0.3
+    concept_reflection_cooldown_days: float = 30.0
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -3688,6 +3694,19 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             concept_drift_pending_cap=max(
                 1, int(memory_raw.get("concept_drift_pending_cap", 3))
+            ),
+            concept_reflection_min_axes=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_reflection_min_axes", 0.3)),
+                ),
+            ),
+            concept_reflection_cooldown_days=max(
+                1.0,
+                float(
+                    memory_raw.get("concept_reflection_cooldown_days", 30.0)
+                ),
             ),
             coactivation_min_pair_support=max(
                 1,

@@ -51,6 +51,7 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "aspiration_momentum_force_next": "Bypass the aspiration-momentum cue watermark once.",
     "associative_wander_force_next": "K64a - bypass the associative-wander gates once.",
     "away_activities_force_next": "K36 - bypass the away-activities gates once.",
+    "concept_learning_force_next": "L17e - bypass the learning-reflection gates once.",
     "conduct_notice_force_next": "L42 - bypass conduct-notice trust and cooldown gates once.",
     "curiosity_gradient_force_next": "K64c - bypass the curiosity-gradient gates once.",
     "dormant_interest_force_next": "K67 - bypass the dormant-interest gates once.",

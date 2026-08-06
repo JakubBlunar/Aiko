@@ -4741,6 +4741,78 @@ class ConductNoticeProviderTests(unittest.TestCase):
         )
 
 
+class ConceptLearningProviderTests(unittest.TestCase):
+    _CUE = (
+        "Something you understand differently now:\n"
+        "You used to read it as: likes detailed answers."
+    )
+
+    def test_block_lands_normally_but_drops_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="l17", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                concept_learning=lambda _text: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "l17", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("likes detailed answers", messages[0]["content"])
+            messages, _ = assembler.assemble_with_budget(
+                "l17",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(
+                "likes detailed answers", messages[0]["content"]
+            )
+
+    def test_provider_receives_the_live_turn(self) -> None:
+        seen: list[str] = []
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="l17", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                concept_learning=lambda text: seen.append(text) or "",
+            )
+            assembler.assemble_with_budget(
+                "l17", "about depth", context_window=4096,
+                response_budget=256,
+            )
+        self.assertEqual(seen, ["about depth"])
+
+    def test_a_raising_provider_never_breaks_assembly(self) -> None:
+        def boom(_text: str) -> str:
+            raise RuntimeError("nope")
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="l17", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(concept_learning=boom)
+            messages, _ = assembler.assemble_with_budget(
+                "l17", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("P", messages[0]["content"])
+
+    def test_tier_slot_sits_with_the_other_lull_slips(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("concept_learning_block", t6)
+        self.assertLess(
+            t6.index("conduct_notice_block"),
+            t6.index("concept_learning_block"),
+        )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

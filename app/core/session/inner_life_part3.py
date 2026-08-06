@@ -2106,6 +2106,168 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             "he has to want, so let it go the moment he'd rather be elsewhere."
         )
 
+    def _render_concept_learning_block(self, user_text: str = "") -> str:
+        """L17e: rare permission to say out loud that she changed her mind.
+
+        The one place the learning history touches the conversation. It is
+        deliberately the narrowest surface in the L17 stack:
+
+        - It reads **only** the bounded snapshot the drift worker left
+          behind. No trajectory scan, no graph walk, no embedding, no LLM
+          call on the turn path.
+        - It hands the chat model **old, new and because** and nothing
+          else. No confidence, no salience, no shape, no ids, no event
+          types -- the machinery is not hers to narrate, and a belief
+          revision said in the vocabulary of scores stops being one.
+        - It fires at most once per conversation, once per change, and
+          once per long global cooldown, behind trust plus either a lull
+          or genuine live relevance.
+
+        The framing asks for a fallible statement rather than a question,
+        so it cannot become the reassurance-seeking move K47 balances
+        against.
+        """
+        agent = self._settings.agent
+        if (
+            not bool(getattr(agent, "concepts_enabled", False))
+            or not bool(
+                getattr(agent, "concept_learning_reflection_enabled", True)
+            )
+            or bool(getattr(self, "_learning_reflection_fired", False))
+        ):
+            return ""
+        try:
+            import json
+
+            from app.core.concepts.concept_drift_worker import (
+                DRIFT_PENDING_KEY,
+            )
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+            try:
+                pending = json.loads(chat_db.kv_get(DRIFT_PENDING_KEY) or "[]")
+            except (TypeError, ValueError):
+                return ""
+            if not isinstance(pending, list) or not pending:
+                return ""
+
+            force = bool(
+                self._debug_overrides.take(
+                    "concept_learning_force_next", False
+                )
+            )
+            settings = self._memory_settings
+            fired_key = "concept.drift.last_reflection_fp"
+            seen = str(chat_db.kv_get(fired_key) or "")
+            item = next(
+                (
+                    row
+                    for row in pending
+                    if isinstance(row, dict)
+                    and str(row.get("fingerprint", "")) != seen
+                    and str(row.get("new", "")).strip()
+                ),
+                None,
+            )
+            if item is None:
+                return ""
+
+            if not force:
+                if not self._learning_reflection_allowed(item, user_text):
+                    return ""
+                last_raw = chat_db.kv_get("concept.drift.last_reflection")
+                last = timephrase.parse_iso(last_raw) if last_raw else None
+                cooldown = max(
+                    1.0,
+                    float(
+                        getattr(
+                            settings, "concept_reflection_cooldown_days", 30.0
+                        )
+                    ),
+                )
+                if last is not None and (
+                    timephrase.utcnow() - last
+                ).total_seconds() < cooldown * 86400:
+                    return ""
+
+            old = str(item.get("old", "")).strip()
+            new = str(item.get("new", "")).strip()
+            because = str(item.get("because", "")).strip()
+            chat_db.kv_set(
+                "concept.drift.last_reflection",
+                timephrase.utcnow().isoformat(),
+            )
+            chat_db.kv_set(fired_key, str(item.get("fingerprint", "")))
+            self._learning_reflection_fired = True
+
+            shift = (
+                f"You used to read it as: {old}. You'd put it differently "
+                f"now: {new}."
+                if old
+                else f"Something you've settled into thinking: {new}."
+            )
+            grounds = f" What moved you: {because}." if because else ""
+            return (
+                "Something you understand differently now:\n"
+                f"{shift}{grounds} If it genuinely fits the conversation, "
+                "you may say once, briefly, that your read on this has "
+                "changed -- in your own words, as a fallible personal "
+                "shift, not a report. State it rather than asking whether "
+                "it's right, and never mention memory, tracking, "
+                "confidence, analysis, or any machinery behind it. If it "
+                "doesn't fit naturally, say nothing."
+            )
+        except Exception:
+            log.debug("concept-learning block render failed", exc_info=True)
+            return ""
+
+    def _learning_reflection_allowed(
+        self, item: dict[str, Any], user_text: str
+    ) -> bool:
+        """Trust plus either a lull or genuine live relevance.
+
+        A belief revision is an intimate thing to volunteer, so it needs
+        warmth to land; and it needs an opening, which is either that
+        nothing else is going on or that the conversation is already on
+        the subject.
+        """
+        settings = self._memory_settings
+        if float(item.get("salience", 0.0) or 0.0) < float(
+            getattr(settings, "concept_reflection_min_salience", 0.6)
+        ):
+            return False
+        axes_store = getattr(self, "_relationship_axes_store", None)
+        if axes_store is None:
+            return False
+        axes = axes_store.get(self._user_id)
+        min_axes = float(
+            getattr(settings, "concept_reflection_min_axes", 0.3)
+        )
+        if float(axes.trust) < min_axes:
+            return False
+        if max(float(axes.closeness), float(axes.comfort)) < min_axes:
+            return False
+
+        # Live relevance, checked lexically so the turn path stays free of
+        # embeddings: is the conversation already about this belief?
+        from app.core.concepts.concept_drift import label_tokens
+
+        turn = label_tokens(user_text)
+        subject = label_tokens(item.get("new", "")) | label_tokens(
+            item.get("old", "")
+        )
+        if turn and subject and len(turn & subject) >= 2:
+            return True
+
+        detector = getattr(self, "_topic_stagnation_detector", None)
+        lull = getattr(detector, "last_mean", None)
+        threshold = float(
+            getattr(settings, "stagnation_mild_threshold", 0.18)
+        )
+        return lull is not None and float(lull) >= threshold
+
     def _render_conduct_notice_block(self) -> str:
         """L42: rare permission to acknowledge a relationship habit naturally."""
         agent = self._settings.agent
