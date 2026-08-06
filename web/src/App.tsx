@@ -132,6 +132,7 @@ export default function App() {
   useEffect(() => {
     if (settingsOpen) setSettingsMounted(true);
   }, [settingsOpen]);
+  const setAvatarCovered = useAssistantStore((s) => s.setAvatarCovered);
   const route = useRoute();
   const tauri = isTauri();
   const isMobile = useIsMobile();
@@ -152,6 +153,15 @@ export default function App() {
   // Subscribe only on the main window. The persona window doesn't need
   // to know its own visibility (it can ask the OS / DOM directly) and
   // shouldn't double-subscribe to the event bus.
+  // The drawer's opaque panel sits over the avatar rail on desktop and
+  // over the whole viewport on a phone, so nothing the rig renders while
+  // it is open can be seen. Suspend rather than unmount: the model and
+  // its textures stay resident and closing the drawer resumes instantly.
+  useEffect(() => {
+    setAvatarCovered(settingsOpen);
+    return () => setAvatarCovered(false);
+  }, [settingsOpen, setAvatarCovered]);
+
   usePersonaVisibilitySync();
 
   // Forward browser tab visibility + Tauri window focus to the backend

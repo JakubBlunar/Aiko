@@ -485,7 +485,20 @@ export const api = {
       { method: "POST" },
     ),
   // ── Higher-order concepts (L1/L2 debug) ──────────────────────────
-  getConcepts: () => jsonFetch<ConceptsSnapshot>("/api/concepts"),
+  getConcepts: (params?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    subject?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    if (params?.offset != null) q.set("offset", String(params.offset));
+    if (params?.status) q.set("status", params.status);
+    if (params?.subject) q.set("subject", params.subject);
+    const qs = q.toString();
+    return jsonFetch<ConceptsSnapshot>(`/api/concepts${qs ? `?${qs}` : ""}`);
+  },
   getConceptQuality: () =>
     jsonFetch<ConceptQualityReport>("/api/concepts/quality"),
   runConceptSynthesis: () =>

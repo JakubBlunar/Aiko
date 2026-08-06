@@ -2316,7 +2316,12 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_concepts_state raised: {exc}"
 
     @mcp.tool()
-    def get_concept_graph() -> str:
+    def get_concept_graph(
+        limit: int = 40,
+        offset: int = 0,
+        status: str = "",
+        subject: str = "",
+    ) -> str:
         """L26 — dump the live concept graph ("how Aiko is thinking").
 
         Richer than ``get_concepts_state``: the same JSON that backs
@@ -2329,10 +2334,23 @@ def register(mcp, session: "SessionController") -> None:
         ``get_concept_transitions`` for what changed recently and
         ``get_last_concept_trace`` for what actually entered the last
         prompt.
+
+        Paged, strongest-belief first, because evidence is resolved to
+        full untruncated source text — the whole graph is megabytes and
+        would swamp a context window. ``matched`` tells you how many rows
+        the filter selects; walk them with ``offset``, or narrow with
+        ``status`` / ``subject`` instead of paging blindly.
         """
         try:
             return json.dumps(
-                session.concepts_snapshot(), indent=2, default=str,
+                session.concepts_snapshot(
+                    limit=max(1, min(int(limit), 200)),
+                    offset=max(0, int(offset)),
+                    status=(status or "").strip() or None,
+                    subject=(subject or "").strip() or None,
+                ),
+                indent=2,
+                default=str,
             )
         except Exception as exc:
             return f"get_concept_graph raised: {exc}"

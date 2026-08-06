@@ -263,8 +263,19 @@ class _FakeSession:
             "coactivation_surfaced": {"mode": None, "reason": "no_mode"},
         }
 
-    def concepts_snapshot(self) -> dict:
-        return {"enabled": self._enabled, "total": 1, "concepts": [{"id": 7}]}
+    def concepts_snapshot(
+        self, *, limit=None, offset=0, status=None, subject=None
+    ) -> dict:
+        rows = [{"id": 7}]
+        page = rows[offset:] if limit is None else rows[offset:offset + limit]
+        return {
+            "enabled": self._enabled,
+            "total": 1,
+            "matched": 1,
+            "offset": offset,
+            "limit": limit if limit is not None else len(page),
+            "concepts": page,
+        }
 
     def concept_timeline(self, *, limit=200, subject=None,
                          event_type=None, before_id=None) -> dict:

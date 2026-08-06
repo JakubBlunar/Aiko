@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { ConceptRow, ConceptsSnapshot } from "../../../types";
 import { formatRelative } from "../SettingsSection";
@@ -12,13 +12,32 @@ import { ConceptQualityStrip } from "./ConceptQualityStrip";
 const SUBJECT_ALL = "all";
 const STATUS_ALL = "all";
 
+/** Matches the memories list. Concept rows are much heavier than memory
+ *  rows — the snapshot resolves every evidence edge to its full source
+ *  text — so this is the difference between a ~90 KB page and a graph
+ *  dump that ran to 1.5 MB and hundreds of cards in one commit. */
+const CONCEPT_PAGE_SIZE = 50;
+
 export function ConceptsPanel() {
-  const loader = useCallback(() => api.getConcepts(), []);
+  const [statusFilter, setStatusFilter] = useState<string>(STATUS_ALL);
+  const [subjectFilter, setSubjectFilter] = useState<string>(SUBJECT_ALL);
+  const [page, setPage] = useState(0);
+
+  // Filtering is server-side so paging walks the filtered set rather than
+  // hiding rows out of a page that was already fetched whole.
+  const loader = useCallback(
+    () =>
+      api.getConcepts({
+        limit: CONCEPT_PAGE_SIZE,
+        offset: page * CONCEPT_PAGE_SIZE,
+        status: statusFilter === STATUS_ALL ? undefined : statusFilter,
+        subject: subjectFilter === SUBJECT_ALL ? undefined : subjectFilter,
+      }),
+    [page, statusFilter, subjectFilter],
+  );
   const { data, loading, error, setError, refresh } =
     useAsyncResource<ConceptsSnapshot | null>(loader, null);
 
-  const [statusFilter, setStatusFilter] = useState<string>(STATUS_ALL);
-  const [subjectFilter, setSubjectFilter] = useState<string>(SUBJECT_ALL);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
@@ -71,9 +90,13 @@ export function ConceptsPanel() {
   );
 
   const enabled = data?.enabled ?? true;
-  const concepts = data?.concepts ?? [];
+  const visible = data?.concepts ?? [];
   const byStatus = data?.counts.by_status ?? {};
   const bySubject = data?.counts.by_subject ?? {};
+  // ``counts`` describes the whole store on every page, so the pills stay
+  // put instead of shrinking to whatever this page happens to hold.
+  const matched = data?.matched ?? visible.length;
+  const pageCount = Math.max(1, Math.ceil(matched / CONCEPT_PAGE_SIZE));
 
   const statusOptions = useMemo(
     () => [STATUS_ALL, ...Object.keys(byStatus).sort()],
@@ -84,15 +107,17 @@ export function ConceptsPanel() {
     [bySubject],
   );
 
-  const visible = useMemo(
-    () =>
-      concepts.filter(
-        (c) =>
-          (statusFilter === STATUS_ALL || c.status === statusFilter) &&
-          (subjectFilter === SUBJECT_ALL || c.subject === subjectFilter),
-      ),
-    [concepts, statusFilter, subjectFilter],
-  );
+  // Deleting the last row of the final page (or landing on a stale page
+  // after a synthesis run) would otherwise strand the user on an empty
+  // list with no way back but Prev.
+  useEffect(() => {
+    if (page > 0 && page >= pageCount) setPage(pageCount - 1);
+  }, [page, pageCount]);
+
+  const changeFilter = useCallback((apply: () => void) => {
+    apply();
+    setPage(0);
+  }, []);
 
   if (data && !enabled) {
     return (
@@ -119,7 +144,7 @@ export function ConceptsPanel() {
           Concepts
           {data ? (
             <span className="ml-2 text-ink-100/40">
-              ({data.total}
+              ({matched < data.total ? `${matched} of ${data.total}` : data.total}
               {statusSummary ? ` — ${statusSummary}` : ""})
             </span>
           ) : null}
@@ -146,7 +171,7 @@ export function ConceptsPanel() {
           <FilterPill
             key={s}
             active={subjectFilter === s}
-            onClick={() => setSubjectFilter(s)}
+            onClick={() => changeFilter(() => setSubjectFilter(s))}
             label={s}
           />
         ))}
@@ -155,7 +180,7 @@ export function ConceptsPanel() {
           <FilterPill
             key={s}
             active={statusFilter === s}
-            onClick={() => setStatusFilter(s)}
+            onClick={() => changeFilter(() => setStatusFilter(s))}
             label={s}
           />
         ))}
@@ -182,6 +207,30 @@ export function ConceptsPanel() {
           ))}
         </ul>
       )}
+
+      {pageCount > 1 ? (
+        <div className="flex items-center justify-center gap-3 pt-1 text-[11px] text-ink-100/60">
+          <button
+            type="button"
+            onClick={() => setPage(page - 1)}
+            disabled={loading || page <= 0}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <span className="font-mono text-ink-100/40">
+            page {page + 1} of {pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPage(page + 1)}
+            disabled={loading || page + 1 >= pageCount}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
     </Panel>
   );
 }

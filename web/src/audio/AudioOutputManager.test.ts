@@ -491,6 +491,149 @@ describe("AudioOutputManager", () => {
   });
 });
 
+/**
+ * What the audio graph costs while nothing is being said.
+ *
+ * The keep-alive loop and the lipsync RAF both exist to make speech
+ * better, and both used to run for the entire life of the tab. On a
+ * phone that is a permanently awake audio endpoint plus a 60 Hz wakeup,
+ * paid whether or not the app is even on screen.
+ */
+describe("AudioOutputManager — idle cost", () => {
+  it("releases the keep-alive when the page goes to the background", async () => {
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    const ctx = createdContexts[0];
+    const loop = ctx.activeSources.find((s) => s.loop) as FakeBufferSource;
+    expect(loop.stopped).toBe(false);
+
+    mgr.onBackground();
+    expect(loop.stopped).toBe(true);
+  });
+
+  it("brings the keep-alive back when the page returns", async () => {
+    // The warm-endpoint behaviour has to return with the user, or the
+    // first sentence after every app switch comes out cold.
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    const ctx = createdContexts[0];
+
+    mgr.onBackground();
+    await mgr.onForeground();
+
+    const live = ctx.activeSources.filter((s) => s.loop && !s.stopped);
+    expect(live.length).toBe(1);
+  });
+
+  it("backgrounding twice is harmless", async () => {
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    expect(() => {
+      mgr.onBackground();
+      mgr.onBackground();
+    }).not.toThrow();
+  });
+});
+
+describe("AudioOutputManager — lipsync loop lifecycle", () => {
+  let frame: (() => void) | null;
+  let cancelled: boolean;
+
+  beforeEach(() => {
+    frame = null;
+    cancelled = false;
+    (globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame =
+      (cb: () => void) => {
+        frame = cb;
+        return 1;
+      };
+    (globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame =
+      () => {
+        cancelled = true;
+        frame = null;
+      };
+  });
+
+  afterEach(() => {
+    delete (globalThis as unknown as { requestAnimationFrame?: unknown })
+      .requestAnimationFrame;
+    delete (globalThis as unknown as { cancelAnimationFrame?: unknown })
+      .cancelAnimationFrame;
+  });
+
+  /** Run up to ``max`` frames, stopping early once the loop parks. */
+  function step(max: number): number {
+    let ran = 0;
+    for (let i = 0; i < max; i++) {
+      const next = frame;
+      if (!next) break;
+      frame = null;
+      next();
+      ran++;
+    }
+    return ran;
+  }
+
+  it("parks itself when nothing is playing", async () => {
+    const mgr = new AudioOutputManager();
+    const levels: number[] = [];
+    mgr.setLipsyncListener((level) => levels.push(level));
+
+    // The loop starts on registration, then gives up after the idle
+    // grace rather than running for the rest of the session.
+    const ran = step(500);
+    expect(ran).toBeLessThan(500);
+    expect(frame).toBeNull();
+    // It closes the mouth on the way out instead of leaving it wherever
+    // the last syllable landed.
+    expect(levels[levels.length - 1]).toBe(0);
+  });
+
+  it("wakes up again when a clip is scheduled", async () => {
+    const mgr = new AudioOutputManager();
+    mgr.setLipsyncListener(() => undefined);
+    step(500);
+    expect(frame).toBeNull();
+
+    mgr.handleFrame(ttsStartFrame(16000));
+    mgr.handleFrame(ttsPcmFrame(1600));
+    await flush();
+
+    expect(frame).not.toBeNull();
+  });
+
+  it("keeps running while a clip is still scheduled", async () => {
+    const mgr = new AudioOutputManager();
+    mgr.setLipsyncListener(() => undefined);
+    mgr.handleFrame(ttsStartFrame(16000));
+    mgr.handleFrame(ttsPcmFrame(1600));
+    await flush();
+
+    // Nothing has finished, so the loop must not park underneath it.
+    expect(step(500)).toBe(500);
+    expect(frame).not.toBeNull();
+  });
+
+  it("backgrounding cancels the loop outright", async () => {
+    const mgr = new AudioOutputManager();
+    mgr.setLipsyncListener(() => undefined);
+    mgr.handleFrame(ttsStartFrame(16000));
+    mgr.handleFrame(ttsPcmFrame(1600));
+    await flush();
+
+    mgr.onBackground();
+    expect(cancelled).toBe(true);
+    expect(frame).toBeNull();
+  });
+
+  it("unregistering the listener stops the loop", () => {
+    const mgr = new AudioOutputManager();
+    mgr.setLipsyncListener(() => undefined);
+    mgr.setLipsyncListener(null);
+    expect(frame).toBeNull();
+  });
+});
+
 // We additionally exercise the error reporter wiring — the manager
 // guards every Web Audio call but the listener should fire on a
 // surfaced failure.

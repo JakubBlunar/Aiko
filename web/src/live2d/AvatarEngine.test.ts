@@ -430,3 +430,106 @@ describe("AvatarEngine — RAF + pre-update", () => {
     expect(channel.calls.find((c) => c.hook === "tickGaze")).toBeUndefined();
   });
 });
+
+/**
+ * The frame ceiling phones run under. Capping the Pixi ticker alone
+ * leaves these two RAF chains writing rig parameters at the display's
+ * full rate underneath it, which on a 120 Hz handset is most of the
+ * per-frame cost the cap was meant to remove.
+ */
+describe("AvatarEngine — frame ceiling", () => {
+  let adapter: FakeAdapter;
+  let clock: FakeClock;
+  let raf: ManualRaf;
+  let channel: RecordingChannel;
+  let engine: AvatarEngine;
+
+  /** ``maxFPS`` of 0 means "every animation frame" (the desktop path). */
+  function startEngine(maxFPS: number): void {
+    adapter = new FakeAdapter();
+    clock = new FakeClock(1_000);
+    raf = new ManualRaf();
+    engine = new AvatarEngine({
+      manifest: buildManifest(),
+      engineState: createEngineState(),
+      getStoreSnapshot: () => buildStoreSnapshot(),
+      now: clock.now,
+      mouseSource: new FakeMouseSource(),
+      scheduleFrame: raf.schedule,
+      cancelFrame: raf.cancel,
+      maxFPS,
+    });
+    channel = new RecordingChannel("c");
+    engine.register(channel);
+    engine.start(adapter);
+    channel.calls.length = 0;
+  }
+
+  /** Advance ``frames`` display frames of ``stepMs`` each, flushing both
+   * loops on every one. Returns how many times each hook did real work. */
+  function run(frames: number, stepMs: number): { tier3: number; gaze: number } {
+    for (let i = 0; i < frames; i += 1) {
+      clock.advance(stepMs);
+      raf.flush(2); // tier-3 and gaze are queued as a pair
+    }
+    return {
+      tier3: channel.calls.filter((c) => c.hook === "tickTier3").length,
+      gaze: channel.calls.filter((c) => c.hook === "tickGaze").length,
+    };
+  }
+
+  afterEach(() => {
+    engine.stop();
+  });
+
+  it("uncapped, every animation frame does work", () => {
+    startEngine(0);
+    expect(run(12, 8.33)).toEqual({ tier3: 12, gaze: 12 });
+  });
+
+  it("a 30 fps cap skips three of every four 120 Hz frames", () => {
+    startEngine(30);
+    const { tier3, gaze } = run(12, 8.33);
+    expect(tier3).toBe(3);
+    expect(gaze).toBe(3);
+  });
+
+  it("a 30 fps cap still runs every other frame at 60 Hz", () => {
+    // The tolerance exists for exactly this: two 16.67 ms frames land a
+    // hair under the 33.33 ms budget, and without slack the cap would
+    // defer to the third frame and yield 20 fps instead of 30.
+    startEngine(30);
+    expect(run(12, 16.67).tier3).toBe(6);
+  });
+
+  it("a skipped frame still asks for the next one", () => {
+    startEngine(30);
+    clock.advance(8.33);
+    raf.flush(2);
+    expect(channel.calls).toHaveLength(0);
+    expect(raf.pending).toBe(2);
+  });
+
+  it("a skipped frame does not eat its elapsed time", () => {
+    // dt has to span everything since the last tick that did work,
+    // otherwise breathing and gaze run slow in proportion to the cap.
+    startEngine(30);
+    clock.advance(20);
+    raf.flush(2); // under budget: skipped
+    clock.advance(20);
+    raf.flush(2); // 40 ms since the last real tick
+    const tick = channel.calls.find((c) => c.hook === "tickTier3");
+    expect((tick!.payload as { dt: number }).dt).toBeCloseTo(0.04, 3);
+  });
+
+  it("the cap can be lifted and reapplied at runtime", () => {
+    // A phone rotating across the layout breakpoint must not need the
+    // rig torn down and rebuilt.
+    startEngine(30);
+    engine.setMaxFPS(0);
+    expect(run(4, 8.33).tier3).toBe(4);
+    engine.setMaxFPS(30);
+    channel.calls.length = 0;
+    expect(run(4, 8.33).tier3).toBe(1);
+  });
+});

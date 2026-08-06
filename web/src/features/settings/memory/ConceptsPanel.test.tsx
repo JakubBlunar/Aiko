@@ -60,4 +60,40 @@ describe("ConceptsPanel wiring", () => {
     expect(apiSource).toMatch(/\/api\/concepts/);
     expect(apiSource).toMatch(/\/api\/concepts\/run/);
   });
+
+  /**
+   * The snapshot resolves every evidence edge to its full untruncated
+   * source text, so an unpaged fetch grew to megabytes and hundreds of
+   * cards in a single commit — enough to freeze the app on a phone. The
+   * page must stay bounded, and paging has to happen on the server so it
+   * walks the filtered set rather than hiding rows from a whole graph
+   * that was already fetched.
+   */
+  it("fetches a bounded page rather than the whole graph", () => {
+    expect(panelSource).toMatch(/CONCEPT_PAGE_SIZE\s*=\s*\d+/);
+    expect(panelSource).toMatch(/limit:\s*CONCEPT_PAGE_SIZE/);
+    expect(panelSource).toMatch(/offset:\s*page\s*\*\s*CONCEPT_PAGE_SIZE/);
+  });
+
+  it("filters server-side and resets to the first page", () => {
+    expect(panelSource).toMatch(/status:\s*statusFilter\s*===\s*STATUS_ALL/);
+    expect(panelSource).toMatch(/subject:\s*subjectFilter\s*===\s*SUBJECT_ALL/);
+    expect(panelSource).toMatch(/changeFilter/);
+    // No client-side re-filter of an already-fetched list.
+    expect(panelSource).not.toMatch(/concepts\.filter\s*\(/);
+  });
+
+  it("offers Prev/Next once there is more than one page", () => {
+    expect(panelSource).toMatch(/pageCount > 1/);
+    expect(panelSource).toMatch(/setPage\(page - 1\)/);
+    expect(panelSource).toMatch(/setPage\(page \+ 1\)/);
+    expect(panelSource).toMatch(/page \{page \+ 1\} of \{pageCount\}/);
+  });
+
+  it("api module passes paging and filters through", () => {
+    expect(apiSource).toMatch(/q\.set\("limit"/);
+    expect(apiSource).toMatch(/q\.set\("offset"/);
+    expect(apiSource).toMatch(/q\.set\("status"/);
+    expect(apiSource).toMatch(/q\.set\("subject"/);
+  });
 });

@@ -988,7 +988,15 @@ export interface ConceptRow {
 
 export interface ConceptsSnapshot {
   enabled: boolean;
+  /** Concepts in the whole store, whatever the filter and page. */
   total: number;
+  /** Concepts the current status/subject filter selects — what paging
+   *  divides. Absent on responses from an older backend. */
+  matched?: number;
+  offset?: number;
+  limit?: number;
+  /** Always tallied over the whole store, so the filter pills show real
+   *  counts on any page. */
   counts: {
     by_status: Record<string, number>;
     by_subject: Record<string, number>;

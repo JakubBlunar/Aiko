@@ -14,6 +14,15 @@ Two deliberate differences from the topic-graph snapshot:
   label -- the memory's content, the topic cluster's summary, or the
   referenced concept's label -- so the panel shows *what* a concept rests
   on, not just opaque ``memory:42`` ids.
+
+Because nothing is truncated, the snapshot is **paged** rather than
+trimmed: a graph of ~800 concepts resolves ~3.3k evidence edges into
+~1.5 MB of JSON, which locks up a phone both in transit and in the
+render. ``limit`` / ``offset`` keep the no-truncation promise for what
+is returned while bounding how much that is, and filtering + slicing
+happen *before* evidence resolution so a page costs a page's worth of
+joins instead of the whole graph's. ``counts`` is always tallied over
+the full store, so the filter pills and totals stay honest on any page.
 """
 from __future__ import annotations
 
@@ -25,7 +34,11 @@ if TYPE_CHECKING:
         EvidenceFacts,
         QualityThresholds,
     )
-    from app.core.concepts.concept_store import ConceptEdge, ConceptStore
+    from app.core.concepts.concept_store import (
+        Concept,
+        ConceptEdge,
+        ConceptStore,
+    )
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import MemoryStore
 
@@ -34,6 +47,9 @@ def _disabled() -> dict[str, Any]:
     return {
         "enabled": False,
         "total": 0,
+        "matched": 0,
+        "offset": 0,
+        "limit": 0,
         "counts": {"by_status": {}, "by_subject": {}},
         "concepts": [],
     }
@@ -121,8 +137,18 @@ def build_concepts_snapshot(
     store: "ConceptStore | None",
     memory_store: "MemoryStore | None",
     topic_graph: "TopicGraph | None",
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    status: str | None = None,
+    subject: str | None = None,
 ) -> dict[str, Any]:
-    """Serialise the concept layer for ``GET /api/concepts``.
+    """Serialise one page of the concept layer for ``GET /api/concepts``.
+
+    ``status`` / ``subject`` narrow the page; ``limit`` / ``offset`` cut
+    it. ``limit=None`` returns everything from ``offset`` on, which is
+    the whole graph by default -- kept as the default so an unparameterised
+    call still means "the whole snapshot".
 
     Returns an empty-but-valid ``enabled=False`` shape when the store is
     absent (``concepts_enabled`` off or init failed) so callers never
@@ -131,15 +157,44 @@ def build_concepts_snapshot(
     if store is None:
         return _disabled()
 
-    cluster_labels = _cluster_label_map(topic_graph)
     by_status: dict[str, int] = {}
     by_subject: dict[str, int] = {}
-    concepts_out: list[dict[str, Any]] = []
+    matched: list["Concept"] = []
 
+    # One pass for the tallies -- they describe the whole store, not the
+    # page, so the filter pills show real counts however you are paging.
     for c in store.all():
         by_status[c.status] = by_status.get(c.status, 0) + 1
         by_subject[c.subject] = by_subject.get(c.subject, 0) + 1
+        if status is not None and c.status != status:
+            continue
+        if subject is not None and c.subject != subject:
+            continue
+        matched.append(c)
 
+    # Most-supported / most-confident on top. ``concept_id`` breaks ties
+    # so a row cannot swap pages between two requests that see the same
+    # confidence -- without it, paging can show or skip a duplicate.
+    matched.sort(
+        key=lambda c: (
+            float(c.confidence),
+            int(c.evidence_count),
+            int(c.concept_id),
+        ),
+        reverse=True,
+    )
+
+    start = max(0, int(offset))
+    if limit is None:
+        page = matched[start:]
+    else:
+        page = matched[start:start + max(0, int(limit))]
+
+    # Evidence resolution is the expensive half (a join per edge), so it
+    # runs only for the rows actually being returned.
+    cluster_labels = _cluster_label_map(topic_graph)
+    concepts_out: list[dict[str, Any]] = []
+    for c in page:
         evidence: list[dict[str, Any]] = []
         for e in store.evidence_of(c.concept_id):
             evidence.append({
@@ -175,14 +230,15 @@ def build_concepts_snapshot(
             "evidence": evidence,
         })
 
-    # Most-supported / most-confident on top; grouping is client-side.
-    concepts_out.sort(
-        key=lambda c: (c["confidence"], c["evidence_count"]), reverse=True
-    )
-
     return {
         "enabled": True,
-        "total": len(concepts_out),
+        # ``total`` stays the whole-store count it has always been;
+        # ``matched`` is what the current filter selects, and is what
+        # paging divides.
+        "total": sum(by_status.values()),
+        "matched": len(matched),
+        "offset": start,
+        "limit": len(concepts_out) if limit is None else int(limit),
         "counts": {"by_status": by_status, "by_subject": by_subject},
         "concepts": concepts_out,
     }

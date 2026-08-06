@@ -232,6 +232,115 @@ class GiftSignalTests(unittest.TestCase):
         _cleanup(tmp, controller)
 
 
+class TogetherSummaryTests(unittest.TestCase):
+    """``get_together_summary`` against a real tracker, not a stand-in.
+
+    The route test (``test_web_server_together``) replaces the whole method
+    with a fake, so nothing exercised the real one -- which is how it went
+    unnoticed that it reached for ``tracker.store`` (a private ``_store``
+    on :class:`RelationshipTracker`). The ``AttributeError`` was swallowed
+    by a bare ``except``, so the tab silently reported a brand-new
+    relationship: phase "new", zero turns, zero days, and every milestone
+    unmarked no matter how long the two had been talking.
+    """
+
+    @staticmethod
+    def _drop(db, tmp: tempfile.TemporaryDirectory) -> None:
+        try:
+            db.close()
+        except Exception:
+            pass
+        try:
+            tmp.cleanup()
+        except PermissionError:
+            # Windows keeps the SQLite handle a moment longer; the temp dir
+            # is the OS's problem, not the test's.
+            pass
+
+    def _make(self, *, turns: int, days_ago: float):
+        from datetime import timedelta
+
+        from app.core.infra import timephrase
+        from app.core.relationship.relationship import (
+            RelationshipStore,
+            RelationshipTracker,
+        )
+
+        tmp = tempfile.TemporaryDirectory()
+        db = ChatDatabase(Path(tmp.name) / "together.db")
+        store = RelationshipStore(db)
+        store.get_or_create("default")
+        first_seen = (
+            timephrase.utcnow() - timedelta(days=days_ago)
+        ).isoformat(timespec="seconds")
+        db._get_conn().execute(
+            "UPDATE user_relationship SET first_seen_at = ?, total_turns = ? "
+            "WHERE user_id = ?",
+            (first_seen, int(turns), "default"),
+        )
+        controller = SessionController.__new__(SessionController)
+        controller._relationship_tracker = RelationshipTracker(store)
+        controller._user_id = "default"
+        controller._chat_db = db
+        controller._world_store = None
+        controller._shared_moments_store = None
+        controller._settings = _SettingsStub(assistant=_AssistantStub())  # type: ignore[attr-defined]
+        return controller, db, tmp
+
+    def test_crossed_milestones_are_marked(self) -> None:
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        summary = controller.get_together_summary()
+        crossed = {
+            m["label"] for m in summary["milestones"] if m["crossed"]
+        }
+        self.assertEqual(
+            crossed,
+            {
+                "first_hundred_turns",
+                "first_week_together",
+                "first_month_together",
+            },
+        )
+        # Not yet reached, and not claimed.
+        uncrossed = {
+            m["label"] for m in summary["milestones"] if not m["crossed"]
+        }
+        self.assertEqual(
+            uncrossed,
+            {
+                "hundred_days_together",
+                "six_months_together",
+                "first_year_together",
+            },
+        )
+        self._drop(db, tmp)
+
+    def test_the_counters_reach_the_tab(self) -> None:
+        # The same read feeds the header, so a broken one zeroes far more
+        # than the milestone list.
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        summary = controller.get_together_summary()
+        self.assertEqual(summary["total_turns"], 1726)
+        self.assertEqual(summary["days_known"], 74)
+        self.assertNotEqual(summary["phase"], "new")
+        self.assertTrue(summary["first_seen_at"])
+        self._drop(db, tmp)
+
+    def test_a_day_based_milestone_carries_its_date(self) -> None:
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertTrue(by_label["first_week_together"]["crossed_at"])
+        self._drop(db, tmp)
+
+    def test_a_fresh_relationship_claims_nothing(self) -> None:
+        controller, db, tmp = self._make(turns=3, days_ago=0.0)
+        summary = controller.get_together_summary()
+        self.assertFalse(any(m["crossed"] for m in summary["milestones"]))
+        self._drop(db, tmp)
+
+
 class ResetTests(unittest.TestCase):
     def test_reseed_world_emits_snapshot(self) -> None:
         controller, _, tmp = _make_controller()

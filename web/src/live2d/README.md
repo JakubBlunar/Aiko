@@ -85,6 +85,21 @@ don't need to poll snapshots for events. The
 `getStoreSnapshot()` getter on `ChannelDeps` is for *per-tick*
 state the channels do want to poll (mood, voiceMode, audioAmplitude).
 
+### The frame ceiling
+
+"60 Hz" above is really "every animation frame", which on a 120 Hz
+phone is 120 Hz. `EngineDependencies.maxFPS` (and `setMaxFPS` at
+runtime) puts a floor on the gap between ticks for both RAF loops:
+frames are still requested, so the loops stay vsync-aligned, but a
+tick arriving inside the budget returns without doing channel work
+and without consuming its elapsed time — `dt` still spans everything
+since the last real tick, so nothing animates in slow motion.
+
+Phones pass 30 fps, desktop passes 0 (uncapped). The value comes from
+[`renderBudget.ts`](./renderBudget.ts), which also caps the Pixi
+ticker and the canvas pixel ratio. **A channel must never assume a
+tick rate** — always integrate against `dt`.
+
 ## Cross-channel coordination
 
 A small set of flags live on `EngineState` so channels can

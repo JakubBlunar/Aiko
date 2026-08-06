@@ -845,8 +845,12 @@ class WorldMixin:
         rel_state: Any = None
         if tracker is not None:
             try:
-                rel_state = tracker.store.get(self._user_id)  # type: ignore[attr-defined]
+                rel_state = tracker.get(self._user_id)
             except Exception:
+                # Not recoverable-and-quiet: without a state every field
+                # below reads as a brand-new relationship, so a silent
+                # failure here makes the whole tab lie rather than degrade.
+                log.warning("together relationship read failed", exc_info=True)
                 rel_state = None
         try:
             from app.core.relationship.relationship import (
