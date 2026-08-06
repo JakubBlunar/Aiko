@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 30
+_SCHEMA_VERSION = 31
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -876,6 +876,82 @@ CREATE TABLE IF NOT EXISTS task_inputs (
     answered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_task_inputs_task_status ON task_inputs(task_id, status);
+
+-- Schema v31 (L17c): the learning-event spine -- "what changed about a
+-- belief, and why". Distinct from ``concept_events`` on purpose.
+-- ``concept_events`` is a per-concept *lifecycle* log (every promotion,
+-- decay sample, merge) written by whichever worker made the move; this
+-- is the much rarer *causal* record written only when the L17b
+-- classifier judges a change to be real evolution, and it is the layer
+-- L19's autobiography traverses.
+--
+-- APPEND-ONLY and NEVER PRUNED. A retired self-concept is part of the
+-- story ("I used to think..."), not garbage, so nothing in the codebase
+-- may delete from this table.
+--
+-- ``concept_id`` / ``prior_concept_id`` are SOFT references, mirroring
+-- ``concept_events``: the concept they name may later be deleted or
+-- merged away. ``old_label`` / ``new_label`` and ``evidence_labels``
+-- snapshot the text at DETECTION time precisely so the entry stays
+-- readable when the rows behind it are gone -- history must not become
+-- retroactively mute because a memory was pruned.
+--
+-- ``fingerprint`` is the classifier's deterministic identity for the
+-- change (keyed on the decisive lifecycle event, not on detection time),
+-- UNIQUE so a re-run over the same history is absorbed rather than
+-- duplicated. ``salience`` is the L17b score, ``shape`` one of
+-- succession / emergence / loss / revival / relabel.
+CREATE TABLE IF NOT EXISTS concept_learning_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    shape TEXT NOT NULL,
+    concept_id INTEGER,
+    prior_concept_id INTEGER,
+    kind TEXT NOT NULL DEFAULT 'identity',
+    subject TEXT NOT NULL DEFAULT 'user',
+    old_label TEXT NOT NULL DEFAULT '',
+    new_label TEXT NOT NULL DEFAULT '',
+    because TEXT NOT NULL DEFAULT '',
+    resolution TEXT NOT NULL DEFAULT '',
+    salience REAL NOT NULL DEFAULT 0.0,
+    plasticity REAL NOT NULL DEFAULT 0.0,
+    confidence_delta REAL NOT NULL DEFAULT 0.0,
+    cosine REAL,
+    decisive_event_id INTEGER NOT NULL DEFAULT 0,
+    trigger_event_ids TEXT NOT NULL DEFAULT '',
+    evidence_refs TEXT NOT NULL DEFAULT '',
+    evidence_labels TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_learning_events_created
+    ON concept_learning_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_learning_events_concept
+    ON concept_learning_events(concept_id);
+CREATE INDEX IF NOT EXISTS idx_learning_events_subject
+    ON concept_learning_events(subject, created_at);
+
+-- Schema v31 (L17c): concept identity continuity across consolidation.
+-- ``ConceptStore.merge_into`` re-points every edge onto the canonical row
+-- and then DELETES the absorbed one. Without this table the absorbed id
+-- becomes a dead end: its ``concept_events`` survive (soft refs) but
+-- nothing connects them to the belief that carried on, so any trajectory
+-- ending in a merge is unreachable -- fatal for a history meant to be
+-- read years later.
+--
+-- One row per absorption, written inside the merge before the delete.
+-- Chains are expected (A absorbed into B, later B into C) and are
+-- followed transitively at read time. ``absorbed_label`` snapshots the
+-- wording that disappeared, since the row it named no longer exists.
+CREATE TABLE IF NOT EXISTS concept_aliases (
+    absorbed_id INTEGER PRIMARY KEY,
+    canonical_id INTEGER NOT NULL,
+    absorbed_label TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    merged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_concept_aliases_canonical
+    ON concept_aliases(canonical_id);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -1473,6 +1549,20 @@ class ChatDatabase:
             )
         except sqlite3.OperationalError:
             pass
+        # v30 -> v31: L17c's ``concept_learning_events`` +
+        # ``concept_aliases``. Both are brand-new tables whose every
+        # column and index lives in the ``_CREATE_TABLES`` block above,
+        # so the idempotent ``executescript`` at the top of
+        # ``_init_schema`` already created them on upgrade -- there is
+        # nothing to ALTER. Deliberately NOT backfilled: unlike the v22
+        # concept-timeline backfill (which could honestly reconstruct one
+        # ``discovered`` row per existing concept from its own stored
+        # creation time), a learning event asserts *what changed and
+        # why*, and no pre-v31 database recorded that. Inventing it would
+        # put fabricated history into the one table Aiko is meant to
+        # narrate her past from. Existing merges are likewise
+        # unrecoverable -- the absorbed rows are already gone -- so the
+        # alias map starts empty and earns its entries going forward.
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:

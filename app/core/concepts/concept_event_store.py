@@ -214,6 +214,95 @@ class ConceptEventStore:
             return []
         return [self._row_to_event(r) for r in rows]
 
+    def drift_window(
+        self, concept_id: int, *, anchor: int = 20, recent: int = 60
+    ) -> list[ConceptEvent]:
+        """Both ends of a concept's timeline, oldest-first, de-duplicated.
+
+        :meth:`trajectory` keeps the *oldest* rows so a long-lived
+        concept's origin survives, which is right for narrating where a
+        belief came from. It is wrong for L17b drift detection, which
+        needs to see what happened *lately*: the L17a
+        ``confidence_sample`` markers are emitted on every meaningful
+        decay step, so on a mature concept they fill the oldest-first
+        window and hide every recent structural move behind it.
+
+        So this returns the first ``anchor`` events (where the belief
+        started) plus the last ``recent`` ones (where it has got to), in
+        chronological order with the overlap collapsed. Two small indexed
+        reads rather than one unbounded scan.
+        """
+        cid = int(concept_id)
+        head = max(0, int(anchor))
+        tail = max(1, int(recent))
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        rows: list[tuple] = []
+        try:
+            if head:
+                rows.extend(
+                    conn.execute(
+                        f"SELECT {_EVENT_COLS} FROM concept_events "
+                        "WHERE concept_id = ? ORDER BY created_at ASC, id ASC "
+                        "LIMIT ?",
+                        (cid, head),
+                    ).fetchall()
+                )
+            rows.extend(
+                conn.execute(
+                    f"SELECT {_EVENT_COLS} FROM concept_events "
+                    "WHERE concept_id = ? ORDER BY created_at DESC, id DESC "
+                    "LIMIT ?",
+                    (cid, tail),
+                ).fetchall()
+            )
+        except Exception:
+            log.warning("concept drift window read failed", exc_info=True)
+            return []
+        seen: set[int] = set()
+        events: list[ConceptEvent] = []
+        for row in rows:
+            event_id = int(row[0])
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+            events.append(self._row_to_event(row))
+        events.sort(key=lambda e: (e.created_at, e.event_id))
+        return events
+
+    def max_event_id(self) -> int:
+        """Newest event id, or ``0`` on an empty timeline.
+
+        The cheap watermark probe the L17c drift worker's ``demand()``
+        compares against: one indexed aggregate, no scan, no NumPy.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            row = conn.execute("SELECT MAX(id) FROM concept_events").fetchone()
+        except Exception:
+            return 0
+        return int(row[0] or 0) if row else 0
+
+    def concepts_with_events_after(
+        self, event_id: int, *, limit: int = 200
+    ) -> list[int]:
+        """Concept ids touched by any event newer than ``event_id``.
+
+        Bounds the drift worker's per-run trajectory reads to the beliefs
+        that actually moved, instead of every concept in the store.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT concept_id FROM concept_events "
+                "WHERE id > ? AND concept_id IS NOT NULL "
+                "ORDER BY concept_id LIMIT ?",
+                (int(event_id), max(1, int(limit))),
+            ).fetchall()
+        except Exception:
+            log.warning("concept dirty-set read failed", exc_info=True)
+            return []
+        return [int(r[0]) for r in rows if r[0] is not None]
+
     def latest_confidence(
         self, concept_ids: Sequence[int]
     ) -> dict[int, float]:

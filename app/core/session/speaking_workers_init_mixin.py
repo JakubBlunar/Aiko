@@ -1494,6 +1494,7 @@ class SpeakingWorkersInitMixin:
                 # off); the tables exist regardless. Non-fatal on failure.
                 self._concept_store = None
                 self._concept_event_store = None
+                self._concept_learning_store = None
                 if (
                     self._chat_db is not None
                     and bool(getattr(settings.agent, "concepts_enabled", False))
@@ -1524,6 +1525,37 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_event_store = None
+
+                    # L17c: the learning-event spine + the alias map that
+                    # keeps a belief's history reachable after a merge.
+                    # The sink must be attached before any consolidation
+                    # tick can run, because ``merge_into`` deletes the
+                    # absorbed row and that is the only moment its
+                    # identity still exists.
+                    self._concept_learning_store = None
+                    try:
+                        from app.core.concepts.concept_learning_event_store import (  # noqa: E501
+                            ConceptAlias,
+                            ConceptLearningEventStore,
+                        )
+
+                        self._concept_learning_store = (
+                            ConceptLearningEventStore(self._chat_db)
+                        )
+                        if self._concept_store is not None:
+                            learning_store = self._concept_learning_store
+                            self._concept_store.set_alias_sink(
+                                lambda payload: learning_store.record_alias(
+                                    ConceptAlias(**payload)
+                                )
+                            )
+                    except Exception:
+                        log.warning(
+                            "ConceptLearningEventStore init failed; concept "
+                            "evolution history disabled",
+                            exc_info=True,
+                        )
+                        self._concept_learning_store = None
 
                     # L5: wire the concept store into the retriever so the
                     # ``recall_concept`` tool can resolve concepts + their
