@@ -3575,6 +3575,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             prefix_lost_chars=divergence.lost_chars,
             prefix_lost_pct=divergence.lost_pct,
             prefix_changed=divergence.changed,
+            prefix_changed_blocks=divergence.changed_blocks,
+            prefix_changed_by_tier=dict(divergence.changed_by_tier),
             history_diverged_at=(
                 -1 if divergence.history_diverged is None
                 else divergence.history_diverged

@@ -1231,6 +1231,12 @@ class TurnRunner:
                 "lost_chars": int(telemetry.prefix_lost_chars),
                 "lost_pct": float(telemetry.prefix_lost_pct),
                 "changed": int(telemetry.prefix_changed),
+                # Every block that moved, not just the earliest. Lets the
+                # report show per-tier churn frequency, so "T0 rarely,
+                # T6 always" is checkable rather than inferred from which
+                # block happened to break first.
+                "changed_blocks": list(telemetry.prefix_changed_blocks),
+                "changed_by_tier": dict(telemetry.prefix_changed_by_tier),
                 "history_diverged": int(telemetry.history_diverged_at),
                 "history_slid": int(telemetry.history_slid),
                 "history_msgs": int(telemetry.history_messages_kept),
