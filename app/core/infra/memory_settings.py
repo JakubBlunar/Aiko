@@ -1202,6 +1202,17 @@ class MemorySettings:
     concept_drift_max_concepts: int = 120
     concept_drift_trace_anchor: int = 20
     concept_drift_trace_recent: int = 60
+    # Cold-start sweep. The forward pass is watermark-driven, and the
+    # watermark advances to the newest event id whether or not every moved
+    # concept fitted in ``max_concepts`` -- correct in steady state, but on
+    # a store that accumulated history before this worker existed it would
+    # classify one page and mark the rest as accounted for. The sweep walks
+    # the concept id space once on its own cursor, then retires itself.
+    # Its findings cap is larger because it is reading months of movement
+    # rather than one interval's worth.
+    concept_drift_sweep_enabled: bool = True
+    concept_drift_sweep_page: int = 60
+    concept_drift_sweep_max_findings: int = 24
     # L17b classifier thresholds. ``min_salience`` is the bar a change
     # must clear to be worth remembering at all; ``min_age_days`` refuses
     # to call anything about a belief younger than this "evolution";
@@ -1245,6 +1256,36 @@ class MemorySettings:
     # watermark and the once-per-conversation limit.
     concept_reflection_min_axes: float = 0.3
     concept_reflection_cooldown_days: float = 30.0
+    # ── L17f: the evolution diary ─────────────────────────────────────
+    # One short first-person paragraph per period about how Aiko's
+    # understanding moved, composed only from the ``because`` clauses L17b
+    # already wrote. ``min_events`` is the anti-filler floor: below it the
+    # period writes nothing AND leaves its events pending, so two thin
+    # weeks can still add up to one entry worth reading. The cooldown is
+    # spent even when the model returns nothing, so an unproductive period
+    # costs a period rather than looping on the same material.
+    evolution_diary_interval_seconds: int = 86400
+    evolution_diary_min_events: int = 3
+    evolution_diary_min_salience: float = 0.45
+    evolution_diary_cooldown_days: float = 7.0
+    # ── L17d: self-correction meta-concepts ───────────────────────────
+    # A rule about how Aiko works, learned from several of her own
+    # corrections landing for the same reason. The floor counts distinct
+    # *beliefs*, not events: three corrections to one belief is her
+    # wobbling on one thing, while the same reason arriving from three
+    # different beliefs is a habit. ``min_span_days`` keeps a single
+    # afternoon's mood from reading as a tendency, and the cooldown is the
+    # anti-oscillation lever -- she should not be able to rewrite her
+    # working strategy weekly however much history accrues.
+    # (Prefixed ``concept_`` because the bare ``self_correction_*`` names
+    # already belong to K38's in-reply "I got that wrong" cue.)
+    concept_self_correction_evidence_floor: int = 3
+    concept_self_correction_min_span_days: float = 7.0
+    concept_self_correction_min_salience: float = 0.5
+    concept_self_correction_similarity: float = 0.55
+    concept_self_correction_cooldown_days: float = 14.0
+    concept_self_correction_max_events: int = 200
+    concept_self_correction_max_rules: int = 2
     # L4 cluster co-activation. Which topic clusters "light up together"
     # (share a conversation session, by default). ``min_pair_support`` is
     # how many buckets two clusters must co-occur in before the pair
@@ -3592,6 +3633,16 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_drift_trace_recent=max(
                 1, int(memory_raw.get("concept_drift_trace_recent", 60))
             ),
+            concept_drift_sweep_enabled=bool(
+                memory_raw.get("concept_drift_sweep_enabled", True)
+            ),
+            concept_drift_sweep_page=max(
+                1, int(memory_raw.get("concept_drift_sweep_page", 60))
+            ),
+            concept_drift_sweep_max_findings=max(
+                1,
+                int(memory_raw.get("concept_drift_sweep_max_findings", 24)),
+            ),
             concept_drift_min_salience=min(
                 1.0,
                 max(
@@ -3707,6 +3758,82 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 float(
                     memory_raw.get("concept_reflection_cooldown_days", 30.0)
                 ),
+            ),
+            evolution_diary_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("evolution_diary_interval_seconds", 86400)
+                ),
+            ),
+            evolution_diary_min_events=max(
+                1, int(memory_raw.get("evolution_diary_min_events", 3))
+            ),
+            evolution_diary_min_salience=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("evolution_diary_min_salience", 0.45)
+                    ),
+                ),
+            ),
+            evolution_diary_cooldown_days=max(
+                0.0,
+                float(memory_raw.get("evolution_diary_cooldown_days", 7.0)),
+            ),
+            concept_self_correction_evidence_floor=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_self_correction_evidence_floor", 3
+                    )
+                ),
+            ),
+            concept_self_correction_min_span_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_self_correction_min_span_days", 7.0
+                    )
+                ),
+            ),
+            concept_self_correction_min_salience=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_self_correction_min_salience", 0.5
+                        )
+                    ),
+                ),
+            ),
+            concept_self_correction_similarity=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_self_correction_similarity", 0.55
+                        )
+                    ),
+                ),
+            ),
+            concept_self_correction_cooldown_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_self_correction_cooldown_days", 14.0
+                    )
+                ),
+            ),
+            concept_self_correction_max_events=max(
+                10,
+                int(memory_raw.get("concept_self_correction_max_events", 200)),
+            ),
+            concept_self_correction_max_rules=max(
+                1,
+                int(memory_raw.get("concept_self_correction_max_rules", 2)),
             ),
             coactivation_min_pair_support=max(
                 1,

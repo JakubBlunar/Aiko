@@ -13,6 +13,7 @@ import { TopicGraphPanel } from "./memory/TopicGraphPanel";
 import { ConceptsPanel } from "./memory/ConceptsPanel";
 import { ConceptTimelinePanel } from "./memory/ConceptTimelinePanel";
 import { ConceptEvolutionPanel } from "./memory/ConceptEvolutionPanel";
+import { SelfHistoryPanel } from "./memory/SelfHistoryPanel";
 import { FactCheckerStatusFooter } from "./memory/FactCheckerStatusFooter";
 
 export interface MemoryDraft {
@@ -50,6 +51,7 @@ type MemorySubTab =
   | "concepts"
   | "discoveries"
   | "evolution"
+  | "story"
   | "goals"
   | "agenda";
 
@@ -63,6 +65,7 @@ const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
   { id: "concepts", label: "Concepts" },
   { id: "discoveries", label: "Discoveries" },
   { id: "evolution", label: "Evolution" },
+  { id: "story", label: "Story" },
   { id: "goals", label: "Goals" },
   { id: "agenda", label: "Agenda" },
 ];
@@ -651,6 +654,7 @@ export function MemoryTab({
       {subTab === "concepts" ? <ConceptsPanel /> : null}
       {subTab === "discoveries" ? <ConceptTimelinePanel /> : null}
       {subTab === "evolution" ? <ConceptEvolutionPanel /> : null}
+      {subTab === "story" ? <SelfHistoryPanel /> : null}
 
       {subTab === "goals" ? <GoalsPanel /> : null}
 

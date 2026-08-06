@@ -395,7 +395,7 @@ class LedgerTests(_ProviderFixture):
         self.assertEqual(rows[0].payload.get("memory_id"), 1)
 
     def test_an_ignored_callback_comes_back_on_the_same_thread(self) -> None:
-        host = self._fire()
+        self._fire()
         row = self._rows()[0]
         self.store.release(row.id, evidence="test")
         self.assertEqual(self._rows()[0].state, STATE_PENDING)

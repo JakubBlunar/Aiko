@@ -1244,6 +1244,76 @@ export interface ConceptDriftState {
   }[];
   recorded?: number;
   by_shape?: Record<string, number>;
+  // Cold-start backfill: the highest concept id the sweep has walked.
+  sweep_cursor?: number;
+  sweep_done?: boolean;
+}
+
+// ── L19 self-history (the autobiography traversal) ───────────────────
+
+export type SelfHistoryChange =
+  | "flipped"
+  | "faded"
+  | "revived"
+  | "born"
+  | "settled";
+
+export interface SelfHistoryEntry {
+  concept_id: number;
+  label: string;
+  kind: string;
+  status: string;
+  change: SelfHistoryChange;
+  at: string;
+  because?: string;
+  prior_label?: string; // what it used to be, when flipped
+  learning_event_ids?: number[];
+  absorbed_labels?: string[];
+}
+
+export interface SelfHistoryEra {
+  label: string;
+  start: string;
+  end: string;
+  entries: SelfHistoryEntry[];
+  truncated?: number;
+}
+
+export interface SelfHistoryArc {
+  enabled: boolean;
+  subject: string;
+  // True when the trail is too sparse to narrate: Aiko is expected to say
+  // she has no record rather than fill the gap.
+  thin_record: boolean;
+  span_days: number;
+  first_evidence_at: string;
+  total_concepts: number;
+  counts: Record<string, number>;
+  eras: SelfHistoryEra[];
+}
+
+// ── L17f evolution diary (the periodic "how I've changed" log) ───────
+
+export interface EvolutionDiaryEntry {
+  id: number;
+  entry: string;
+  period_start: string;
+  period_end: string;
+  event_watermark: number;
+  // The provenance behind the paragraph: hand these to
+  // getConceptProvenance to check a line against its evidence.
+  learning_event_ids: number[];
+  concept_ids: number[];
+  shape_counts: Record<string, number>;
+  salience_max: number;
+  created_at: string;
+}
+
+export interface EvolutionDiaryFeed {
+  enabled: boolean;
+  total: number;
+  watermark?: number;
+  entries: EvolutionDiaryEntry[];
 }
 
 // ── K10 persona regression (golden-turn drift eval) ─────────────────

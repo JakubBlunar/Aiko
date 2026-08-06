@@ -91,6 +91,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall": "recall",
     "recall_topic": "recall",
     "recall_concept": "recall",
+    "recall_self_history": "recall",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
@@ -149,6 +150,13 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"did i (?:tell|mention|say)", r"have i (?:told|mentioned|said)",
         r"what did i (?:say|tell)", r"we talked about",
         r"last (?:time|week|month) (?:i|we)\b",
+        # L19: questions about change over time. Narrow phrases rather
+        # than a bare "changed", which would fire on most turns.
+        r"have you (?:ever )?changed", r"you'?ve changed",
+        r"did you always", r"have you always",
+        r"used to (?:think|believe|feel|say|be|like|want)",
+        r"what (?:were|was) you like", r"how you (?:were|used to)",
+        r"how long have you", r"back (?:then|when we)",
     ]),
     # NB: no "files" family — the filesystem task tools live in the
     # background workflow / MCP lane, not the brain ``ToolRegistry``.

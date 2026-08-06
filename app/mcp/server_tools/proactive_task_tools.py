@@ -2489,6 +2489,10 @@ def register(mcp, session: "SessionController") -> None:
         accounted for and ``latest_event_id`` the newest that exists, so
         the gap is the worker's backlog. ``pending`` is the bounded
         snapshot the rare T6 learning reflection reads on the turn path.
+        ``sweep_cursor`` / ``sweep_done`` track the one-time cold-start
+        backfill that walks the concept id space so history predating the
+        worker still gets classified; until it is done, expect the
+        learning feed to keep growing without new events arriving.
         """
         try:
             return json.dumps(
@@ -2513,6 +2517,97 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"force_concept_drift raised: {exc}"
+
+    @mcp.tool()
+    def get_self_history(subject: str = "aiko", eras: int = 8) -> str:
+        """L19 — Aiko's history as eras of change, oldest first.
+
+        The exact payload the ``recall_self_history`` tool hands the model,
+        so you can check what she *would* say about her past before she says
+        it. Each era lists beliefs classified as ``flipped`` (replaced by a
+        better reading, with ``prior_label``), ``faded``, ``revived``,
+        ``born``, or ``settled`` (held all along), each carrying its
+        ``concept_id`` and ``learning_event_ids``.
+
+        ``thin_record: true`` is the important field: it means the trail is
+        too sparse to narrate and she is required to say she has no record.
+        A store full of ``settled`` beliefs still reads as thin, because
+        having beliefs is not the same as having changed.
+
+        ``subject`` is ``aiko`` for her own history or ``user`` for how her
+        read on them has evolved.
+        """
+        try:
+            return json.dumps(
+                session.self_history(subject=subject, max_eras=eras),
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_self_history raised: {exc}"
+
+    @mcp.tool()
+    def get_evolution_diary(limit: int = 20) -> str:
+        """L17f — Aiko's diary of how her own understanding has changed.
+
+        The human-legible face of ``concept_learning_events``: one short
+        first-person paragraph per period, composed only from the ``because``
+        clauses the L17b classifier wrote. Each entry carries the
+        ``learning_event_ids`` / ``concept_ids`` it summarises, so feed
+        those to ``get_concept_provenance`` to check a line against its
+        evidence.
+
+        This is the fastest read on whether the whole concept pipeline is
+        healthy. Entries that describe real, specific change mean
+        evidence -> concept -> drift -> why is working; entries that read
+        as vague or invented mean something upstream is wrong. Gaps are
+        expected and meaningful — a period with nothing salient writes
+        nothing rather than padding.
+
+        Distinct from ``get_diary_worker_state``'s H9 diary, which is
+        subjective inner-life journalling rather than a change log.
+        """
+        try:
+            return json.dumps(
+                session.evolution_diary(limit=limit), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_evolution_diary raised: {exc}"
+
+    @mcp.tool()
+    def get_evolution_diary_state() -> str:
+        """L17f — diary-worker gates: why the next entry has or hasn't fired.
+
+        ``blocker`` is the first reason a run would write nothing
+        (``disabled`` / ``no_llm`` / ``cooldown`` / ``nothing_to_report``),
+        ``pending`` how many salient changes are waiting above
+        ``watermark``, and ``min_events`` the floor they must clear.
+        ``pending`` below ``min_events`` is the normal resting state: those
+        changes are held, not dropped, until enough accumulate.
+        """
+        try:
+            return json.dumps(
+                session.evolution_diary_state(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_evolution_diary_state raised: {exc}"
+
+    @mcp.tool()
+    def force_evolution_diary() -> str:
+        """L17f — compose one diary entry now, bypassing only the cooldown.
+
+        The salient-event floor still applies, so a period with nothing in
+        it returns ``reason: nothing_to_report`` rather than inventing an
+        entry. A ``reason: empty`` means the model was given real changes
+        and judged they did not add up to anything worth saying — also a
+        legitimate outcome, and it spends the cooldown.
+        """
+        try:
+            return json.dumps(
+                session.run_evolution_diary(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"force_evolution_diary raised: {exc}"
 
     @mcp.tool()
     def get_last_concept_trace() -> str:

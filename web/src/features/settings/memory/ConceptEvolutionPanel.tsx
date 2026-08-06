@@ -4,6 +4,8 @@ import type {
   ConceptLearningEvent,
   ConceptLearningFeed,
   ConceptProvenance,
+  EvolutionDiaryEntry,
+  EvolutionDiaryFeed,
 } from "../../../types";
 import { formatRelative } from "../SettingsSection";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
@@ -77,6 +79,8 @@ export function ConceptEvolutionPanel() {
   }
 
   return (
+    <>
+    <EvolutionDiaryPanel />
     <Panel>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
@@ -146,6 +150,124 @@ export function ConceptEvolutionPanel() {
         </ul>
       )}
     </Panel>
+    </>
+  );
+}
+
+// L17f: the diary sitting above the raw feed. Where a learning event is
+// one change, an entry is Aiko's own account of a whole period -- and it
+// is the fastest read on whether the pipeline below it is healthy. Each
+// entry's cited concepts reuse the same provenance drill-down, so a line
+// that sounds invented can be checked against its evidence immediately.
+function EvolutionDiaryPanel() {
+  const loader = useCallback(() => api.getEvolutionDiary({ limit: 50 }), []);
+  const { data, loading, error, refresh } =
+    useAsyncResource<EvolutionDiaryFeed | null>(loader, null);
+  const [running, setRunning] = useState(false);
+
+  const compose = useCallback(async () => {
+    setRunning(true);
+    try {
+      await api.runEvolutionDiary();
+      await refresh();
+    } finally {
+      setRunning(false);
+    }
+  }, [refresh]);
+
+  if (data && !data.enabled) return null;
+  const entries = data?.entries ?? [];
+
+  return (
+    <Panel>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span
+          className="font-medium text-ink-100/70"
+          title="Aiko's own periodic account of how her understanding has changed, composed only from the reasons recorded below. Gaps are meaningful: a period with nothing above the salience floor writes no entry rather than padding."
+        >
+          Diary
+          {data ? (
+            <span className="ml-2 text-ink-100/40">({data.total})</span>
+          ) : null}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void compose()}
+            disabled={running}
+            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ink-100/60 hover:border-ink-400/60 disabled:opacity-40"
+            title="Compose one entry now, skipping the cooldown. The salient-change floor still applies, so an empty period stays empty."
+          >
+            {running ? "writing…" : "write entry"}
+          </button>
+          <RefreshButton onClick={() => void refresh()} loading={loading} />
+        </div>
+      </div>
+
+      {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
+
+      {entries.length === 0 ? (
+        <EmptyState>
+          No entries yet. Enough beliefs have to move within one period
+          before there is a change worth writing about -- until then the
+          changes below are held, not lost.
+        </EmptyState>
+      ) : (
+        <ul className="space-y-1">
+          {entries.map((e) => (
+            <DiaryCard key={e.id} entry={e} />
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+function DiaryCard({ entry }: { entry: EvolutionDiaryEntry }) {
+  const [openId, setOpenId] = useState<number | null>(null);
+  const shapes = Object.entries(entry.shape_counts ?? {});
+  return (
+    <li className="rounded border border-indigo-400/25 bg-indigo-500/5 p-2 text-[11px]">
+      <div className="whitespace-pre-wrap break-words text-ink-100/85">
+        {entry.entry}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-ink-100/40">
+        <span>{formatRelative(entry.created_at)}</span>
+        {shapes.length > 0 ? (
+          <>
+            <span>·</span>
+            <span>
+              {shapes.map(([shape, n]) => `${n} ${shape}`).join(", ")}
+            </span>
+          </>
+        ) : null}
+      </div>
+
+      {entry.concept_ids.length > 0 ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-ink-100/40">
+          <span title="The beliefs this entry was composed from. Open one to check the paragraph against its evidence.">
+            from:
+          </span>
+          {entry.concept_ids.map((cid) => (
+            <button
+              key={cid}
+              type="button"
+              onClick={() => setOpenId(openId === cid ? null : cid)}
+              className={
+                "rounded border px-1 py-0.5 " +
+                (openId === cid
+                  ? "border-ink-400 bg-ink-400/10 text-ink-100"
+                  : "border-white/10 text-ink-100/60 hover:border-ink-400/60")
+              }
+            >
+              #{cid}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {openId != null ? <ProvenanceDetail conceptId={openId} /> : null}
+    </li>
   );
 }
 

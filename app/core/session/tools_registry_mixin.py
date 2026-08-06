@@ -57,6 +57,7 @@ class ToolsRegistryMixin:
             from app.llm.tools.builtins import (
                 GetTimeTool,
                 RecallConceptTool,
+                RecallSelfHistoryTool,
                 RecallTool,
                 RecallTopicTool,
             )
@@ -76,6 +77,18 @@ class ToolsRegistryMixin:
             # regardless).
             if getattr(tools_cfg, "recall_concept", True) and has_retriever:
                 registry.register(RecallConceptTool(self._rag_retriever))
+            # L19 self-history. Reads the concept + learning-event stores
+            # rather than the retriever, so it is gated on those being
+            # wired: without them the arc would always be a thin record,
+            # and offering the tool would only invite a dead end.
+            if (
+                getattr(tools_cfg, "recall_self_history", True)
+                and getattr(self, "_concept_store", None) is not None
+                and getattr(self, "_concept_learning_store", None) is not None
+            ):
+                registry.register(
+                    RecallSelfHistoryTool(self.self_history)
+                )
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the
             # ToolPlugin SDK fast-tool path below, not as a core builtin.

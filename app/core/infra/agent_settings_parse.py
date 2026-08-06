@@ -266,6 +266,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             concept_learning_reflection_enabled=bool(
                 agent_raw.get("concept_learning_reflection_enabled", True),
             ),
+            evolution_diary_enabled=bool(
+                agent_raw.get("evolution_diary_enabled", True),
+            ),
+            concept_self_correction_enabled=bool(
+                agent_raw.get("concept_self_correction_enabled", True),
+            ),
             tension_cue_enabled=bool(
                 agent_raw.get("tension_cue_enabled", True),
             ),

@@ -314,6 +314,101 @@ class RecallConceptTool:
         return json.dumps(bundle, ensure_ascii=False)
 
 
+class RecallSelfHistoryTool:
+    """L19: walk Aiko's own history as an arc rather than a lookup.
+
+    :class:`RecallConceptTool` answers "what do you think about X" for one
+    belief. This answers the different question "have you changed?" -- it
+    returns eras of classified change (born / flipped / faded / revived /
+    settled) across everything she has believed, including what she no
+    longer holds, because a dropped belief is the part of the story that
+    answers "what were you like before".
+
+    The grounding is structural, not instructed: the payload carries the
+    concept and learning-event ids behind every line, and a sparse trail
+    comes back as ``thin_record`` so she says she has no record instead of
+    inventing a past. That flag is the whole reason this is a tool rather
+    than a prompt block.
+    """
+
+    def __init__(self, history_provider: Any) -> None:
+        self._provider = history_provider
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="recall_self_history",
+            description=(
+                "Look up how Aiko's understanding has ACTUALLY changed over "
+                "time, as a timeline of eras rather than a single belief. "
+                "Reach for this when the question is about change or the "
+                "past rather than the present: 'have you changed?', 'what "
+                "were you like before?', 'did you always think that?', 'do "
+                "you remember when you used to...?', 'how long have you "
+                "felt this way?', or when she wants to say something like "
+                "'I used to think X' and needs to check whether she "
+                "actually did. Prefer recall_concept instead when the "
+                "question is about what she thinks NOW and why. Returns "
+                "eras, each listing beliefs that were newly formed, "
+                "replaced by a better reading, faded away, came back, or "
+                "have simply been held all along -- with the reason "
+                "recorded at the time. Synchronous and fast. IMPORTANT: if "
+                "the result says 'thin_record': true, she genuinely has no "
+                "recorded history for this yet and must say so plainly "
+                "rather than describing a past she cannot support."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": (
+                            "Whose history to walk: 'aiko' for her own "
+                            "(the usual case -- 'have you changed?'), or "
+                            "'user' for how her read on them has evolved "
+                            "('how has your picture of me changed?'). "
+                            "Defaults to 'aiko'."
+                        ),
+                        "enum": ["aiko", "user"],
+                    },
+                    "eras": {
+                        "type": "integer",
+                        "description": (
+                            "How many time periods to return, most recent "
+                            "kept (1-12). Defaults to 6."
+                        ),
+                        "minimum": 1,
+                        "maximum": 12,
+                    },
+                },
+                "required": [],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        subject = str(arguments.get("subject") or "aiko").strip().lower()
+        if subject not in ("aiko", "user"):
+            subject = "aiko"
+        try:
+            eras = int(arguments.get("eras", 6))
+        except (TypeError, ValueError):
+            eras = 6
+        eras = max(1, min(12, eras))
+        if self._provider is None:
+            raise ToolError(
+                "recall_self_history: the concept history is not available"
+            )
+        try:
+            payload = self._provider(subject=subject, max_eras=eras)
+        except Exception as exc:
+            raise ToolError(f"recall_self_history failed: {exc}") from exc
+        if not payload:
+            return json.dumps(
+                {"thin_record": True, "note": "no recorded history"},
+                ensure_ascii=False,
+            )
+        return json.dumps(payload, ensure_ascii=False)
+
+
 # ── web_search ──────────────────────────────────────────────────────────────
 
 

@@ -619,6 +619,42 @@ Rare learning reflections (the one place this reaches the conversation):
 
 Force one for testing with the `concept_learning_force_next` debug override; it bypasses the trust, relevance and cooldown gates for a single turn.
 
+The cold-start sweep. `concept_drift_max_concepts` bounds each pass, but the event watermark used to advance to the global maximum regardless — so on a store with more concepts than one pass can examine, historical events were skipped and then marked processed. A second cursor pages by concept id, independent of the watermark, and backfills after the forward passes have run. It drains itself on the normal cadence and then writes a done sentinel; `GET /api/concepts/drift` and the MCP `get_concept_drift_state` report its progress. `POST /api/concepts/drift/run` burns through a backlog in minutes.
+
+- `memory.concept_drift_sweep_enabled` *(bool, `true`)* — off → only new events are ever classified. Leave it on until the sweep reports done; after that it costs one query per pass.
+- `memory.concept_drift_sweep_page` *(int, `60`, min `1`)* — concepts per sweep page.
+- `memory.concept_drift_sweep_max_findings` *(int, `24`, min `1`)* — learning events written per sweep pass. Separate from `concept_drift_max_findings` because that cap (12) would throttle a multi-week backfill to twelve events an hour.
+
+### L17f — the evolution diary
+
+A periodic, browsable "here is how I've changed", composed from the same learning events and kept deliberately separate from the H9 subjective diary. [`EvolutionDiaryWorker`](../app/core/concepts/evolution_diary_worker.py) reads salient events above its watermark and writes **one** short first-person paragraph per period into the `evolution_diary` table (v32), grounded strictly in the stored `because` prose and carrying the concept and event ids it drew on. Read it at Settings → Memory → Evolution (above the feed), `GET /api/concepts/evolution-diary`, or the `get_evolution_diary` / `force_evolution_diary` MCP tools.
+
+- `agent.evolution_diary_enabled` *(bool, `true`)* — off skips the worker; the history it would narrate keeps accruing, so turning it on later resumes from the current watermark.
+- `memory.evolution_diary_interval_seconds` *(int, `86400`, min `60`)* — worker cadence. The cooldown below is what actually paces entries.
+- `memory.evolution_diary_min_events` *(int, `3`, min `1`)* — the anti-filler floor. Below it the period writes nothing **and leaves its events pending**, so two thin weeks can still add up to one entry worth reading.
+- `memory.evolution_diary_min_salience` *(float, `0.45`, clamped `[0, 1]`)* — which changes are worth telling.
+- `memory.evolution_diary_cooldown_days` *(float, `7.0`, min `0`)* — minimum gap between entries. Spent even when the model returns nothing, so an unproductive period costs a period rather than looping on the same material.
+
+### L19 — self-history (the autobiography)
+
+Asked "have you changed?", Aiko walks her own record rather than improvising. [`self_history.py`](../app/core/concepts/self_history.py) builds eras of classified change (flipped / faded / revived / born / settled) across every concept including retired ones, and the `recall_self_history` tool narrates them. Inspect the exact payload the model receives at Settings → Memory → **Story**, `GET /api/concepts/self-history?subject=aiko`, or the MCP `get_self_history`.
+
+- `tools.recall_self_history` *(bool, `true`)* — the tool gate. It only registers when the concept and learning stores are both wired.
+
+There is no salience or cadence knob here: this is a pull-side read with no worker. The one field that governs behaviour is `thin_record` in the payload — set by the builder when the trail is too sparse to narrate, which obliges her to say she has no record rather than invent a past. `settled` beliefs do not count toward a record being substantive: having beliefs is not the same as having changed.
+
+### L17d — self-correction rules (learning from her own mistakes)
+
+The step past "this belief changed": when several of Aiko's corrections happen for the *same reason* across *different* beliefs, that is a fact about how she works. [`self_correction.py`](../app/core/concepts/self_correction.py) clusters the `because` clauses and the proposer names the habit as an actionable rule, stored as a `communication_style` concept with `subject="aiko"` and `evidence_model="meta"` — one `("concept", prior_id)` edge per belief it was learned from. Because it is an ordinary concept of an ordinary kind, it steers behaviour through the existing T3 relevant-context path once L3 promotes it.
+
+- `agent.concept_self_correction_enabled` *(bool, `true`)* — off → no rules are proposed; the learning events keep accruing. **Not** the same switch as `agent.self_correction_enabled`, which is K38's in-reply "I got that wrong" cue.
+- `memory.concept_self_correction_evidence_floor` *(int, `3`, min `2`)* — how many **distinct beliefs** a pattern must span. Counting beliefs rather than events is what stops one concept she keeps flip-flopping on from minting a rule about her character.
+- `memory.concept_self_correction_min_span_days` *(float, `7.0`, min `0`)* — the corrections must be spread over at least this long, so one afternoon's mood cannot read as a tendency.
+- `memory.concept_self_correction_min_salience` *(float, `0.5`, clamped `[0, 1]`)* — which corrections are considered at all.
+- `memory.concept_self_correction_similarity` *(float, `0.55`, clamped `[0, 1]`)* — single-link cosine threshold over the `because` clauses. Raise it if unrelated corrections get grouped.
+- `memory.concept_self_correction_cooldown_days` *(float, `14.0`, min `0`)* — the anti-oscillation lever, and the one to reach for first: it outlasts fresh history, so she cannot rewrite her working strategy weekly however much accrues.
+- `memory.concept_self_correction_max_events` *(int, `200`, min `10`)* — corrections read per pass; `memory.concept_self_correction_max_rules` *(int, `2`, min `1`)* — rules proposed per pass. Several at once is not learning, it is a rewrite.
+
 ### L13 — affective concepts (topic → durable affect)
 
 The `affective` concept kind (both subjects) captures the durable topic→emotion signature — what energizes/drains the user, and how topics move Aiko — surfaced as tone guidance via the T3 relevance path (never pinned, never said aloud). It is fed by a post-turn per-cluster affect sampler ([`cluster_affect`](../app/core/concepts/cluster_affect.py) EWMA maps, one per subject, keyed by topic `cluster_id`) plus `metadata.affect` stamping on Aiko's `self`/`reflection`/`diary` writes; a `"affect"` synthesis population + two proposers name the pattern. See [`personality-backlog/concepts.md` → L13](personality-backlog/concepts.md). The `affective` kind uses `plasticity_default=0.5` (the fluid band) and `affective_evidence_gate` (floors the `set` gate at ≥2 sources / ≥0.5 days / ≥0.6 confidence).

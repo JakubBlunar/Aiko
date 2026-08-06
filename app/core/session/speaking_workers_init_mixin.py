@@ -1496,6 +1496,7 @@ class SpeakingWorkersInitMixin:
                 self._concept_store = None
                 self._concept_event_store = None
                 self._concept_learning_store = None
+                self._evolution_diary_store = None
                 if (
                     self._chat_db is not None
                     and bool(getattr(settings.agent, "concepts_enabled", False))
@@ -1557,6 +1558,26 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_learning_store = None
+
+                    # L17f: the evolution diary's own append-only log. A
+                    # plain store here; the worker that fills it is
+                    # registered with the other idle workers below.
+                    self._evolution_diary_store = None
+                    try:
+                        from app.core.concepts.evolution_diary_store import (
+                            EvolutionDiaryStore,
+                        )
+
+                        self._evolution_diary_store = EvolutionDiaryStore(
+                            self._chat_db
+                        )
+                    except Exception:
+                        log.warning(
+                            "EvolutionDiaryStore init failed; the evolution "
+                            "diary is disabled",
+                            exc_info=True,
+                        )
+                        self._evolution_diary_store = None
 
                     # L5: wire the concept store into the retriever so the
                     # ``recall_concept`` tool can resolve concepts + their
@@ -1970,6 +1991,10 @@ class SpeakingWorkersInitMixin:
                                     self, "_surfacing_outcome_store", None
                                 )
                             ),
+                            # L17d: her own recorded corrections, the raw
+                            # material for a rule about how she works. Built
+                            # above, so a direct handle is safe.
+                            learning_store=self._concept_learning_store,
                             # L42: reuse indexed user-message vectors; no
                             # historical re-embedding in the weekly pass.
                             user_vector_rows_provider=(
@@ -2363,6 +2388,54 @@ class SpeakingWorkersInitMixin:
                         )
                         self._concept_drift_worker = None
                         self._concept_relabel_rate_limiter = None
+
+                # L17f: EvolutionDiaryWorker. Composes one grounded
+                # first-person paragraph per period from the learning
+                # events the drift worker recorded, or none at all. Always
+                # LLM-lane, but at a daily heartbeat behind a weekly
+                # cooldown, so it is one of the cheapest workers here.
+                self._evolution_diary_worker = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_learning_store", None)
+                    is not None
+                    and getattr(self, "_evolution_diary_store", None)
+                    is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            settings.agent, "evolution_diary_enabled", True
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.evolution_diary_worker import (
+                            EvolutionDiaryWorker,
+                        )
+
+                        self._evolution_diary_worker = EvolutionDiaryWorker(
+                            learning_store=self._concept_learning_store,
+                            diary_store=self._evolution_diary_store,
+                            memory_settings=self._memory_settings,
+                            agent_settings=settings.agent,
+                            # Idle-scheduler worker -> maintenance tier.
+                            ollama=getattr(self, "_maintenance_client", None),
+                            chat_model=self._effective_worker_model,
+                            cancel_event=self._fact_check_cancel,
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            user_name_provider=lambda: str(
+                                getattr(self, "user_display_name", "") or ""
+                            ),
+                        )
+                        self._idle_scheduler.register(
+                            self._evolution_diary_worker
+                        )
+                    except Exception:
+                        log.warning(
+                            "EvolutionDiaryWorker boot failed", exc_info=True
+                        )
+                        self._evolution_diary_worker = None
 
                 # L25: concept<->memory edge referential integrity. Wire the
                 # reconciler as a MemoryStore delete listener (drop a deleted

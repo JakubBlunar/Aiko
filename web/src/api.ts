@@ -46,6 +46,8 @@ import type {
   TopicGraphSnapshot,
   ConceptDriftState,
   ConceptLearningFeed,
+  EvolutionDiaryFeed,
+  SelfHistoryArc,
   ConceptProvenance,
   ConceptQualityReport,
   ConceptsSnapshot,
@@ -538,6 +540,31 @@ export const api = {
   runConceptDrift: () =>
     jsonFetch<{ enabled: boolean; stats?: Record<string, unknown> }>(
       "/api/concepts/drift/run",
+      { method: "POST" },
+    ),
+  // ── L19: self-history (what she would say about her past) ────────
+  getSelfHistory: (params?: { subject?: string; eras?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.subject) q.set("subject", params.subject);
+    if (params?.eras != null) q.set("eras", String(params.eras));
+    const qs = q.toString();
+    return jsonFetch<SelfHistoryArc>(
+      `/api/concepts/self-history${qs ? `?${qs}` : ""}`,
+    );
+  },
+  // ── L17f: the evolution diary ────────────────────────────────────
+  getEvolutionDiary: (params?: { limit?: number; beforeId?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    if (params?.beforeId != null) q.set("before_id", String(params.beforeId));
+    const qs = q.toString();
+    return jsonFetch<EvolutionDiaryFeed>(
+      `/api/concepts/evolution-diary${qs ? `?${qs}` : ""}`,
+    );
+  },
+  runEvolutionDiary: () =>
+    jsonFetch<{ enabled: boolean; stats?: Record<string, unknown> }>(
+      "/api/concepts/evolution-diary/run",
       { method: "POST" },
     ),
   // ── Persona regression (K10) ─────────────────────────────────────

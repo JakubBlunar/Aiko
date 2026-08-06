@@ -1153,10 +1153,14 @@ class MemoryFacadeMixin:
         try:
             from app.core.concepts.concept_drift_worker import (
                 DRIFT_PENDING_KEY,
+                DRIFT_SWEEP_KEY,
                 DRIFT_WATERMARK_KEY,
+                SWEEP_DONE,
             )
 
             raw_pending = chat_db.kv_get(DRIFT_PENDING_KEY) or "[]"
+            raw_sweep = chat_db.kv_get(DRIFT_SWEEP_KEY)
+            sweep_cursor = int(raw_sweep) if raw_sweep else 0
             return {
                 "enabled": True,
                 "watermark": int(chat_db.kv_get(DRIFT_WATERMARK_KEY) or 0),
@@ -1170,6 +1174,11 @@ class MemoryFacadeMixin:
                 "by_shape": (
                     learning.counts_by_shape() if learning is not None else {}
                 ),
+                # Cold-start backfill progress: the cursor is the highest
+                # concept id already walked, so a done sweep is the signal
+                # that every historical arc has been offered to L17b once.
+                "sweep_cursor": sweep_cursor,
+                "sweep_done": sweep_cursor == SWEEP_DONE,
             }
         except Exception:
             log.debug("concept drift state failed", exc_info=True)
@@ -1184,6 +1193,107 @@ class MemoryFacadeMixin:
             return {"enabled": True, "stats": worker.run() or {}}
         except Exception:
             log.warning("forced concept drift run failed", exc_info=True)
+            return {"enabled": True, "stats": {"error": "run_failed"}}
+
+    # ── L19: self-history (the autobiography traversal) ──────────────────
+
+    def self_history(
+        self,
+        *,
+        subject: str = "aiko",
+        max_eras: int = 6,
+        max_entries_per_era: int = 8,
+    ) -> dict[str, Any]:
+        """Aiko's own history as eras of classified change.
+
+        Backs both ``GET /api/concepts/self-history`` and the
+        ``recall_self_history`` tool. Always returns the arc shape --
+        ``thin_record: true`` when the trail is too sparse to narrate --
+        because the caller's contract is to say "I have no record" rather
+        than improvise, and a missing key cannot express that.
+        """
+        store = getattr(self, "_concept_store", None)
+        learning = getattr(self, "_concept_learning_store", None)
+        if store is None or learning is None:
+            return {
+                "enabled": False,
+                "subject": subject,
+                "thin_record": True,
+                "eras": [],
+            }
+        try:
+            from app.core.concepts.self_history import build_self_history
+
+            arc = build_self_history(
+                concept_store=store,
+                learning_store=learning,
+                subject=subject,
+                max_eras=max_eras,
+                max_entries_per_era=max_entries_per_era,
+            )
+            return {"enabled": True, **arc.as_dict()}
+        except Exception:
+            log.debug("self-history build failed", exc_info=True)
+            return {
+                "enabled": False,
+                "subject": subject,
+                "thin_record": True,
+                "eras": [],
+            }
+
+    # ── L17f: the evolution diary ────────────────────────────────────────
+
+    def evolution_diary(
+        self, *, limit: int = 50, before_id: int | None = None
+    ) -> dict[str, Any]:
+        """Aiko's periodic account of how her understanding has changed.
+
+        Backs ``GET /api/concepts/evolution-diary``. Each entry carries the
+        learning-event and concept ids it was composed from, so the UI can
+        hand them to the existing L17e provenance drill-down instead of
+        needing a second inspection surface.
+        """
+        store = getattr(self, "_evolution_diary_store", None)
+        if store is None:
+            return {"enabled": False, "total": 0, "entries": []}
+        try:
+            entries = store.list(limit=limit, before_id=before_id)
+            return {
+                "enabled": True,
+                "total": store.count(),
+                "watermark": store.latest_watermark(),
+                "entries": [entry.as_dict() for entry in entries],
+            }
+        except Exception:
+            log.debug("evolution diary read failed", exc_info=True)
+            return {"enabled": False, "total": 0, "entries": []}
+
+    def evolution_diary_state(self) -> dict[str, Any]:
+        """Debug view of the L17f worker: gates, watermark, pending count."""
+        worker = getattr(self, "_evolution_diary_worker", None)
+        if worker is None:
+            return {"enabled": False}
+        try:
+            return worker.state()
+        except Exception:
+            log.debug("evolution diary state failed", exc_info=True)
+            return {"enabled": False}
+
+    def run_evolution_diary(self, *, force: bool = True) -> dict[str, Any]:
+        """Compose one diary entry now (debug), bypassing the cooldown.
+
+        The salient-event floor still applies: forcing must not be able to
+        manufacture an entry out of a period that had nothing in it.
+        """
+        worker = getattr(self, "_evolution_diary_worker", None)
+        if worker is None:
+            return {"enabled": False}
+        try:
+            if force:
+                worker.force_next()
+            return {"enabled": True, "stats": worker.run() or {}}
+        except Exception:
+            log.warning("forced evolution diary run failed", exc_info=True)
             return {"enabled": True, "stats": {"error": "run_failed"}}
 
     # ── F10l: cluster management (user agency over the topic graph) ──────
