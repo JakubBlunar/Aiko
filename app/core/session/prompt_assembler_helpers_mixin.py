@@ -241,6 +241,7 @@ class PromptAssemblerHelpersMixin:
         topic_appetite: Callable[[], str] | None = None,
         taste_lean: Callable[[], str] | None = None,
         conduct_notice: Callable[[], str] | None = None,
+        concept_learning: Callable[[str], str] | None = None,
         emotion_episode: Callable[[str], str] | None = None,
         tease_ledger: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
@@ -440,6 +441,8 @@ class PromptAssemblerHelpersMixin:
             self._taste_lean_provider = taste_lean
         if conduct_notice is not None:
             self._conduct_notice_provider = conduct_notice
+        if concept_learning is not None:
+            self._concept_learning_provider = concept_learning
         if emotion_episode is not None:
             self._emotion_episode_provider = emotion_episode
         if tease_ledger is not None:

@@ -222,6 +222,9 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K81 — the once-per-conversation taste-lean slip re-arms.
         self._taste_lean_fired = False
         self._conduct_notice_fired = False
+        # L17e — the belief-revision slip re-arms per conversation (the
+        # long global cooldown in kv_meta is what actually keeps it rare).
+        self._learning_reflection_fired = False
         # K57 — staged (unapplied) triggers don't cross sessions;
         # live episodes intentionally DO (they're kv-backed feelings
         # with wall-clock decay, not per-session state).
@@ -340,6 +343,7 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K81 — a wiped history re-arms the taste-lean slip.
         self._taste_lean_fired = False
         self._conduct_notice_fired = False
+        self._learning_reflection_fired = False
         # K57 — staged triggers die with the history (live episodes
         # persist in kv_meta by design).
         self._pending_emotion_triggers = []

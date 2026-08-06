@@ -263,6 +263,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             surfacing_conduct_notice_enabled=bool(
                 agent_raw.get("surfacing_conduct_notice_enabled", True),
             ),
+            concept_learning_reflection_enabled=bool(
+                agent_raw.get("concept_learning_reflection_enabled", True),
+            ),
             tension_cue_enabled=bool(
                 agent_raw.get("tension_cue_enabled", True),
             ),

@@ -668,6 +668,7 @@ class SpeakingWorkersInitMixin:
             topic_appetite=self._render_topic_appetite_block,
             taste_lean=self._render_taste_lean_block,
             conduct_notice=self._render_conduct_notice_block,
+            concept_learning=self._render_concept_learning_block,
             emotion_episode=self._render_emotion_episode_block,
             tease_ledger=self._render_tease_collection_block,
             grounding_line=self._render_grounding_line,
