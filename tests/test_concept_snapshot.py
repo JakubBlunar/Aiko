@@ -26,8 +26,10 @@ def _store() -> ConceptStore:
 class MemStub:
     def __init__(self, rows):
         self._rows = rows
+        self.gets = 0
 
     def get(self, mid):
+        self.gets += 1
         return self._rows.get(int(mid))
 
 
@@ -90,6 +92,119 @@ class ConceptSnapshotTests(unittest.TestCase):
         )
         snap = build_concepts_snapshot(store, MemStub({}), GraphStub([]))
         self.assertEqual(snap["concepts"][0]["evidence"][0]["label"], "")
+
+
+class PagingTests(unittest.TestCase):
+    """The snapshot never truncates, so it has to page instead. A mature
+    graph resolves thousands of evidence edges into megabytes of JSON,
+    which is enough to lock up a phone in transit and again in render."""
+
+    def _graph_of(self, n: int) -> tuple[ConceptStore, MemStub]:
+        """``n`` concepts, one memory evidence edge each, descending
+        confidence so the sort order is known up front."""
+        store = _store()
+        for i in range(n):
+            c = _concept(f"belief {i}")
+            c.confidence = 1.0 - i / 100.0
+            cid = store.add(c)
+            store.add_edge(
+                ConceptEdge("memory", str(i), "concept", str(cid), "evidence")
+            )
+        rows = {
+            i: types.SimpleNamespace(content=f"memory {i}") for i in range(n)
+        }
+        return store, MemStub(rows)
+
+    def test_a_page_is_bounded_but_still_reports_the_whole(self) -> None:
+        store, mem = self._graph_of(10)
+        snap = build_concepts_snapshot(store, mem, None, limit=3)
+        self.assertEqual(len(snap["concepts"]), 3)
+        self.assertEqual(snap["total"], 10)
+        self.assertEqual(snap["matched"], 10)
+        self.assertEqual(snap["counts"]["by_status"], {"candidate": 10})
+
+    def test_evidence_is_resolved_only_for_the_page(self) -> None:
+        # The point of the whole exercise: cost tracks the page, not the
+        # graph. Resolving all 40 edges to serve 3 rows is the freeze.
+        store, mem = self._graph_of(40)
+        build_concepts_snapshot(store, mem, None, limit=3)
+        self.assertEqual(mem.gets, 3)
+
+    def test_paging_walks_the_graph_without_gaps_or_repeats(self) -> None:
+        store, mem = self._graph_of(10)
+        seen: list[int] = []
+        for offset in range(0, 10, 4):
+            snap = build_concepts_snapshot(
+                store, mem, None, limit=4, offset=offset
+            )
+            seen.extend(c["id"] for c in snap["concepts"])
+        self.assertEqual(len(seen), 10)
+        self.assertEqual(len(set(seen)), 10)
+
+    def test_tied_confidences_still_page_deterministically(self) -> None:
+        # Without a stable tie-break, equal-confidence rows can reorder
+        # between two requests and a row lands on both pages or neither.
+        store = _store()
+        for i in range(6):
+            c = _concept(f"tied {i}")
+            c.confidence = 0.5
+            store.add(c)
+        first = build_concepts_snapshot(store, None, None, limit=3)
+        second = build_concepts_snapshot(store, None, None, limit=3, offset=3)
+        ids = [c["id"] for c in first["concepts"] + second["concepts"]]
+        self.assertEqual(len(set(ids)), 6)
+        # And the same request twice gives the same page.
+        again = build_concepts_snapshot(store, None, None, limit=3)
+        self.assertEqual(
+            [c["id"] for c in first["concepts"]],
+            [c["id"] for c in again["concepts"]],
+        )
+
+    def test_a_filter_narrows_the_page_but_not_the_counts(self) -> None:
+        store = _store()
+        for status in ("active", "active", "dormant"):
+            c = _concept(f"a {status}")
+            c.status = status
+            store.add(c)
+        snap = build_concepts_snapshot(store, None, None, status="active")
+        self.assertEqual(len(snap["concepts"]), 2)
+        self.assertEqual(snap["matched"], 2)
+        # ``total`` and the pills still describe the whole store, so the
+        # filter UI can show what it would select before you select it.
+        self.assertEqual(snap["total"], 3)
+        self.assertEqual(
+            snap["counts"]["by_status"], {"active": 2, "dormant": 1}
+        )
+
+    def test_subject_and_status_narrow_together(self) -> None:
+        store = _store()
+        for subject, status in (
+            ("user", "active"),
+            ("user", "dormant"),
+            ("aiko", "active"),
+        ):
+            c = _concept(f"{subject}/{status}")
+            c.subject = subject
+            c.status = status
+            store.add(c)
+        snap = build_concepts_snapshot(
+            store, None, None, status="active", subject="user"
+        )
+        self.assertEqual(snap["matched"], 1)
+        self.assertEqual(snap["concepts"][0]["subject"], "user")
+
+    def test_paging_past_the_end_is_empty_not_an_error(self) -> None:
+        store, mem = self._graph_of(3)
+        snap = build_concepts_snapshot(store, mem, None, limit=5, offset=99)
+        self.assertEqual(snap["concepts"], [])
+        self.assertEqual(snap["matched"], 3)
+
+    def test_no_limit_still_means_the_whole_graph(self) -> None:
+        # Unparameterised callers (the MCP dump's widest page, tests)
+        # must keep seeing everything.
+        store, mem = self._graph_of(7)
+        snap = build_concepts_snapshot(store, mem, None)
+        self.assertEqual(len(snap["concepts"]), 7)
 
 
 class ResolveEvidenceLabelsTests(unittest.TestCase):

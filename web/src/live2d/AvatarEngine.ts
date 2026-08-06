@@ -62,6 +62,12 @@ export interface EngineDependencies {
    * ``cancelAnimationFrame``; tests pass a manual one. */
   scheduleFrame?: (cb: FrameRequestCallback) => number;
   cancelFrame?: (handle: number) => void;
+  /** Ceiling on how often the tier-3 and gaze loops do work, in frames
+   * per second. ``0`` (the default) means every animation frame, which
+   * is what desktop wants. Phones pass a cap so these two loops don't
+   * keep running at 120 Hz underneath a capped Pixi ticker — see
+   * ``renderBudget.ts``. */
+  maxFPS?: number;
   /** UI-debug-log sink. Production passes
    * ``(source, kind, payload) => debugLog.log({source, kind, payload})``;
    * tests pass a spy or omit it for a silent run. Forwarded as
@@ -112,6 +118,7 @@ export class AvatarEngine {
   private _gazeHandle: number | null = null;
   private _lastTier3Time = 0;
   private _lastGazeTime = 0;
+  private _minFrameMs = 0;
   private _paused = false;
   private _detachPreUpdate: (() => void) | null = null;
   private _detachMouse: (() => void) | null = null;
@@ -136,6 +143,25 @@ export class AvatarEngine {
         ? cancelAnimationFrame.bind(globalThis)
         : (handle) => clearTimeout(handle as unknown as ReturnType<typeof setTimeout>));
     this._mouseSource = deps.mouseSource ?? noopMouseSource;
+    this.setMaxFPS(deps.maxFPS ?? 0);
+  }
+
+  /** Change the tier-3 / gaze frame ceiling at runtime — a phone rotating
+   * across the layout breakpoint shouldn't need the rig rebuilt. ``0``
+   * restores "every animation frame". */
+  setMaxFPS(fps: number): void {
+    const capped = Number.isFinite(fps) && fps > 0 ? fps : 0;
+    // A 5% tolerance, because a frame arriving one vsync early by a
+    // fraction of a millisecond would otherwise be deferred a whole
+    // extra frame and halve the effective rate.
+    this._minFrameMs = capped > 0 ? (1000 / capped) * 0.95 : 0;
+  }
+
+  /** True when ``elapsed`` is short of the frame budget, i.e. this
+   * animation frame should be given back without doing channel work.
+   * Frames are still requested so the loop stays vsync-aligned. */
+  private _tooSoon(elapsedMs: number): boolean {
+    return this._minFrameMs > 0 && elapsedMs < this._minFrameMs;
   }
 
   /** Register one or more channels. Must be called before ``start``.
@@ -375,7 +401,12 @@ export class AvatarEngine {
       return;
     }
     const now = this._now();
-    const dt = Math.max(0, (now - this._lastTier3Time) / 1000);
+    const elapsed = now - this._lastTier3Time;
+    if (this._tooSoon(elapsed)) {
+      this._tier3Handle = this._scheduleFrame(this._runTier3);
+      return;
+    }
+    const dt = Math.max(0, elapsed / 1000);
     this._lastTier3Time = now;
     // Check for expiry of the expression-slot lock first so the
     // ``onExpressionSlotReleased`` callback fires before per-channel
@@ -407,7 +438,12 @@ export class AvatarEngine {
       return;
     }
     const now = this._now();
-    const dt = Math.max(0, (now - this._lastGazeTime) / 1000);
+    const elapsed = now - this._lastGazeTime;
+    if (this._tooSoon(elapsed)) {
+      this._gazeHandle = this._scheduleFrame(this._runGaze);
+      return;
+    }
+    const dt = Math.max(0, elapsed / 1000);
     this._lastGazeTime = now;
     const mouse = this._mouseSource.snapshot();
     for (const channel of this._channels) {

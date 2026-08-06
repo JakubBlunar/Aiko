@@ -1007,11 +1007,17 @@ export function useAssistantSocket(): {
     }
     // On returning to the foreground, drop anything that was scheduled
     // before we left (so a stale backlog doesn't burst out) and re-unlock.
+    // On leaving, release the keep-alive loop and the lipsync RAF, which
+    // otherwise hold the audio endpoint and a 60 Hz wakeup open for as
+    // long as the tab exists — the single biggest idle cost on a phone
+    // that is not even showing the app.
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
         void out.onForeground().catch(() => {
           /* still locked — a gesture will retry */
         });
+      } else {
+        out.onBackground();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);

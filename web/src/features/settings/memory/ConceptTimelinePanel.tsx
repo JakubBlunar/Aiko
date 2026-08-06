@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import type { ConceptEvent, ConceptTimeline } from "../../../types";
 import { formatRelative } from "../SettingsSection";
@@ -10,32 +10,75 @@ import { EmptyState } from "@/components/EmptyState";
 
 const SUBJECT_ALL = "all";
 
+/** The timeline is append-only and unbounded, so "one big page" gets
+ *  slower every week. This is the opening page; older events arrive on
+ *  demand through the ``before_id`` cursor the endpoint already had. */
+const TIMELINE_PAGE_SIZE = 150;
+
 // Aiko's "aha!" moments: an append-only, day-grouped feed of when she
 // first formed each higher-order concept. Read-only -- deleting a concept
 // never erases its discovery, so this stands as a permanent history.
 export function ConceptTimelinePanel() {
-  const loader = useCallback(() => api.getConceptTimeline({ limit: 500 }), []);
-  const { data, loading, error, refresh } =
-    useAsyncResource<ConceptTimeline | null>(loader, null);
-
   const [subjectFilter, setSubjectFilter] = useState<string>(SUBJECT_ALL);
 
+  // Server-side, so the filter selects from the whole timeline rather
+  // than from whichever page happens to be loaded.
+  const loader = useCallback(
+    () =>
+      api.getConceptTimeline({
+        limit: TIMELINE_PAGE_SIZE,
+        subject: subjectFilter === SUBJECT_ALL ? undefined : subjectFilter,
+      }),
+    [subjectFilter],
+  );
+  const { data, loading, error, setError, refresh } =
+    useAsyncResource<ConceptTimeline | null>(loader, null);
+
+  const [older, setOlder] = useState<ConceptEvent[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
+
   const enabled = data?.enabled ?? true;
-  const events = useMemo(() => data?.events ?? [], [data]);
+  const visible = useMemo(
+    () => [...(data?.events ?? []), ...older],
+    [data, older],
+  );
+
+  // A fresh first page (refresh, or a filter change) invalidates whatever
+  // was paged in beneath it.
+  useEffect(() => {
+    setOlder((prev) => (prev.length === 0 ? prev : []));
+    setExhausted(false);
+  }, [data]);
 
   const subjectOptions = useMemo(() => {
-    const seen = new Set<string>();
-    for (const e of events) seen.add(e.subject);
+    const seen = new Set<string>([subjectFilter]);
+    for (const e of visible) seen.add(e.subject);
+    seen.delete(SUBJECT_ALL);
     return [SUBJECT_ALL, ...Array.from(seen).sort()];
-  }, [events]);
+  }, [visible, subjectFilter]);
 
-  const visible = useMemo(
-    () =>
-      events.filter(
-        (e) => subjectFilter === SUBJECT_ALL || e.subject === subjectFilter,
-      ),
-    [events, subjectFilter],
-  );
+  const loadOlder = useCallback(async () => {
+    const oldest = visible[visible.length - 1];
+    if (!oldest) return;
+    setLoadingOlder(true);
+    try {
+      const next = await api.getConceptTimeline({
+        limit: TIMELINE_PAGE_SIZE,
+        subject: subjectFilter === SUBJECT_ALL ? undefined : subjectFilter,
+        beforeId: oldest.id,
+      });
+      const rows = next.events ?? [];
+      if (rows.length < TIMELINE_PAGE_SIZE) setExhausted(true);
+      if (rows.length > 0) setOlder((prev) => [...prev, ...rows]);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [visible, subjectFilter, setError]);
+
+  const hasOlder = !exhausted && visible.length > 0;
 
   // Group by calendar day (already newest-first from the backend).
   const groups = useMemo(() => {
@@ -69,7 +112,9 @@ export function ConceptTimelinePanel() {
         >
           Discoveries
           {data ? (
-            <span className="ml-2 text-ink-100/40">({data.total})</span>
+            <span className="ml-2 text-ink-100/40">
+              ({visible.length} of {data.total})
+            </span>
           ) : null}
         </span>
         <RefreshButton onClick={() => void refresh()} loading={loading} />
@@ -118,6 +163,19 @@ export function ConceptTimelinePanel() {
           ))}
         </div>
       )}
+
+      {hasOlder ? (
+        <div className="flex justify-center pt-1">
+          <button
+            type="button"
+            onClick={() => void loadOlder()}
+            disabled={loadingOlder || loading}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {loadingOlder ? "loading…" : "load older"}
+          </button>
+        </div>
+      ) : null}
     </Panel>
   );
 }

@@ -53,6 +53,10 @@ const LIP_NOISE_FLOOR = 0.005; // below this RMS the mouth is closed
 const LIP_PEAK_FLOOR = 0.08; // minimum reference peak (quiet speech)
 const LIP_PEAK_DECAY = 0.9995; // per-frame decay of the running peak
 const LIP_TARGET = 0.9; // loudest recent speech maps to ~0.9 open
+// Frames the lipsync loop keeps running after the last source finishes,
+// so the analyser tail decays to a real zero and the mouth closes rather
+// than freezing mid-syllable. ~half a second at 60 Hz.
+const LIP_IDLE_FRAMES = 30;
 
 interface PerStream {
   sampleRate: number;
@@ -231,6 +235,24 @@ export class AudioOutputManager {
     await this.resume();
   }
 
+  /**
+   * Call when the page goes to the background (``visibilitychange`` ->
+   * ``hidden``).
+   *
+   * Releases the inaudible keep-alive loop and parks the lipsync RAF.
+   * The keep-alive deliberately holds the OS audio endpoint open so the
+   * first clip of each turn lands warm — worth its cost while someone is
+   * looking at the app, pure battery drain once they are not, and on a
+   * phone it is a high-priority audio thread plus an awake output device
+   * for as long as the tab exists. Nothing here suspends the context or
+   * stops audio already scheduled; ``onForeground`` restarts the loop on
+   * the way back in, so the warm-turn behaviour returns with the user.
+   */
+  onBackground(): void {
+    this._stopKeepAlive();
+    this._stopLipLoop();
+  }
+
   /** Subscribe to playback errors (decode failures, sink misroutes, …). */
   setErrorHandler(handler: ((err: unknown) => void) | null): void {
     this._onError = handler;
@@ -323,14 +345,7 @@ export class AudioOutputManager {
     this._analyser = null;
     this._outputNode = null;
     this._lipBuf = null;
-    if (this._keepAlive) {
-      try {
-        this._keepAlive.stop();
-      } catch {
-        /* already stopped / never started */
-      }
-      this._keepAlive = null;
-    }
+    this._stopKeepAlive();
     const ctx = this._ctx;
     this._ctx = null;
     if (this._sinkElement) {
@@ -455,11 +470,45 @@ export class AudioOutputManager {
     }
   }
 
-  /** RAF loop sampling the analyser and feeding the lipsync listener. */
+  /** Any source scheduled and not yet finished, on either stream. */
+  private _isPlaying(): boolean {
+    for (const tag of ["tts", "earcon"] as StreamTag[]) {
+      for (const src of this._streams[tag].active) {
+        if ((src as unknown as { _stopped?: boolean })._stopped !== true) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * RAF loop sampling the analyser and feeding the lipsync listener.
+   *
+   * Parked when nothing is playing. On a phone this loop is registered
+   * for the whole session (see ``useAssistantSocket``), so left ungated
+   * it was a permanent ~60 Hz wakeup for a value that is zero except
+   * during speech. ``_scheduleSource`` restarts it, and a short idle
+   * grace lets the analyser tail decay to a real zero before the mouth
+   * is parked shut rather than mid-syllable.
+   */
   private _startLipLoop(): void {
     if (this._lipRaf !== null) return;
     if (typeof requestAnimationFrame !== "function") return;
+    let idleFrames = 0;
     const tick = () => {
+      if (this._isPlaying()) {
+        idleFrames = 0;
+      } else if (++idleFrames > LIP_IDLE_FRAMES) {
+        this._lipRaf = null;
+        this._lipPeak = LIP_PEAK_FLOOR;
+        try {
+          this._lipListener?.(0);
+        } catch {
+          /* listener errors are non-fatal */
+        }
+        return;
+      }
       const analyser = this._analyser;
       const buf = this._lipBuf;
       const listener = this._lipListener;
@@ -608,6 +657,22 @@ export class AudioOutputManager {
     }
   }
 
+  private _stopKeepAlive(): void {
+    const src = this._keepAlive;
+    if (!src) return;
+    this._keepAlive = null;
+    try {
+      src.stop();
+    } catch {
+      /* already stopped */
+    }
+    try {
+      src.disconnect();
+    } catch {
+      /* already disconnected */
+    }
+  }
+
   private async _enqueuePcm(tag: StreamTag, body: Uint8Array): Promise<void> {
     if (body.byteLength < 2) return;
     // Serialize behind the stream's ``audio_start`` so we never schedule
@@ -688,6 +753,8 @@ export class AudioOutputManager {
       (source as unknown as { _stopped: boolean })._stopped = true;
     };
     state.active.push(source);
+    // There is audio again, so the lipsync loop has something to read.
+    if (this._lipListener) this._startLipLoop();
     try {
       source.start(startAt);
     } catch (err) {

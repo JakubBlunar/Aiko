@@ -365,12 +365,31 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     # ── REST: higher-order concepts (L1/L2 debug) ────────────────────
 
     @app.get("/api/concepts")
-    def get_concepts() -> JSONResponse:
-        """Read-only snapshot of the concept layer (evidence resolved to
+    def get_concepts(
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        subject: str | None = None,
+    ) -> JSONResponse:
+        """Read-only page of the concept layer (evidence resolved to
         readable labels). Empty ``enabled=False`` shape when concepts are
         disabled. The Memory-tab Concepts panel fetches on open + refresh.
+
+        Paged on the same limit/offset contract as ``/api/memories``, and
+        for the same reason at a larger scale: the snapshot resolves every
+        evidence edge to its full untruncated source text, so a mature
+        graph is megabytes in one response. ``status`` / ``subject``
+        filter server-side so paging walks the filtered set, while
+        ``counts`` still describes the whole store.
         """
-        return JSONResponse(session.concepts_snapshot())
+        return JSONResponse(
+            session.concepts_snapshot(
+                limit=max(1, min(int(limit), 200)),
+                offset=max(0, int(offset)),
+                status=(status or "").strip() or None,
+                subject=(subject or "").strip() or None,
+            )
+        )
 
     @app.post("/api/concepts/run")
     def run_concept_synthesis() -> JSONResponse:

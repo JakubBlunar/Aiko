@@ -867,8 +867,15 @@ class MemoryFacadeMixin:
 
     # ── concepts (L1/L2 debug surface) ───────────────────────────────────
 
-    def concepts_snapshot(self) -> dict[str, Any]:
-        """Serialise the higher-order concept layer for the browser.
+    def concepts_snapshot(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        status: str | None = None,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        """Serialise one page of the higher-order concept layer.
 
         Backs ``GET /api/concepts`` (and mirrors the data the
         ``get_concepts_state`` MCP tool exposes). Delegates to the pure
@@ -877,6 +884,10 @@ class MemoryFacadeMixin:
         concept store is absent (``agent.concepts_enabled`` off or init
         failed). Best-effort: any failure collapses to that same disabled
         shape rather than raising into the request handler.
+
+        Paging matters here: the snapshot never truncates text, so a
+        mature graph is megabytes of resolved evidence. Callers that mean
+        "the whole graph" pass no ``limit``; everything user-facing pages.
         """
         store = getattr(self, "_concept_store", None)
         memory_store = getattr(self, "_memory_store", None)
@@ -886,12 +897,23 @@ class MemoryFacadeMixin:
                 build_concepts_snapshot,
             )
 
-            return build_concepts_snapshot(store, memory_store, topic_graph)
+            return build_concepts_snapshot(
+                store,
+                memory_store,
+                topic_graph,
+                limit=limit,
+                offset=offset,
+                status=status,
+                subject=subject,
+            )
         except Exception:
             log.debug("concepts snapshot failed", exc_info=True)
             return {
                 "enabled": False,
                 "total": 0,
+                "matched": 0,
+                "offset": 0,
+                "limit": 0,
                 "counts": {"by_status": {}, "by_subject": {}},
                 "concepts": [],
             }

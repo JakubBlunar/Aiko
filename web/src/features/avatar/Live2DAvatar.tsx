@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 import { backendBase, isTauri } from "@/desktop/runtime";
+import { isMobileViewport, useIsMobile } from "@/hooks/useIsMobile";
 import { useWindowVisible } from "@/hooks/useWindowVisible";
 import { useAssistantStore } from "@/store";
 import type { AvatarProfile, VoiceMode } from "@/types";
@@ -24,6 +25,10 @@ import { OverlayChannel } from "@/live2d/channels/OverlayChannel";
 import { ReachChannel } from "@/live2d/channels/ReachChannel";
 import { GlobalMouseSource } from "@/live2d/GlobalMouseSource";
 import { WindowMouseSource } from "@/live2d/WindowMouseSource";
+import {
+  readRenderEnvironment,
+  resolveRenderBudget,
+} from "@/live2d/renderBudget";
 import { debugLog } from "@/log";
 
 // Make pixi-live2d-display drive its own ticker via the standard PIXI ticker.
@@ -81,7 +86,17 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
   // loops, and the global cursor poll — because a hidden-but-alive
   // WebView2 keeps running them at full frame-rate otherwise (see
   // ``useWindowVisible`` / ``src-tauri/src/lib.rs``).
-  const active = useWindowVisible();
+  const windowVisible = useWindowVisible();
+  // A full-screen overlay (the phone's settings drawer) hides the avatar
+  // just as effectively as a hidden window, and costs just as much to
+  // keep rendering behind. Suspending rather than unmounting keeps the
+  // model and its textures resident, so closing the drawer resumes
+  // instead of reloading the rig.
+  const covered = useAssistantStore((s) => s.avatarCovered);
+  const active = windowVisible && !covered;
+  // Drives the render budget: a phone gets a frame cap and a pixel-ratio
+  // ceiling, desktop is left alone.
+  const isMobile = useIsMobile();
   // Mirrored on a ref so the async model-load ``.then`` can apply the
   // current state once the engine exists (it may finish loading while
   // the window is already hidden — e.g. the persona window boots
@@ -142,15 +157,25 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
     canvas.style.display = "block";
     container.appendChild(canvas);
 
+    // Phones get a frame cap, a pixel-ratio ceiling and a low-power GPU
+    // hint; desktop resolves to exactly the settings it always had. See
+    // ``renderBudget.ts`` for why. Read imperatively rather than from the
+    // hook so a rotation across the breakpoint doesn't tear down and
+    // rebuild the whole rig -- the frame cap follows live in 1c below.
+    const budget = resolveRenderBudget(
+      readRenderEnvironment(isMobileViewport()),
+    );
     const app = new PIXI.Application({
       view: canvas,
       autoStart: true,
       backgroundAlpha: 0,
       antialias: true,
-      resolution: Math.max(1, window.devicePixelRatio || 1),
+      resolution: budget.resolution,
+      powerPreference: budget.powerPreference,
       autoDensity: true,
       resizeTo: container,
     });
+    app.ticker.maxFPS = budget.maxFPS;
     appRef.current = app;
 
     let cancelled = false;
@@ -198,6 +223,10 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
           manifest,
           engineState,
           mouseSource,
+          // The tier-3 and gaze loops are their own RAF chains, so
+          // capping the Pixi ticker alone would leave them running at
+          // the display's full rate underneath it.
+          maxFPS: budget.maxFPS,
           debug: (source, kind, payload) =>
             debugLog.log({ source, kind, payload }),
           getStoreSnapshot: (): ChannelStoreSnapshot => {
@@ -335,6 +364,15 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
   useEffect(() => {
     applyAvatarActive(active);
   }, [active, applyAvatarActive]);
+
+  // ── 1c. Follow the frame cap across a breakpoint change (rotation, or
+  //    a desktop window dragged narrow). Unlike ``resolution``, this is
+  //    live-settable, so it doesn't need a rebuild.
+  useEffect(() => {
+    const { maxFPS } = resolveRenderBudget(readRenderEnvironment(isMobile));
+    if (appRef.current) appRef.current.ticker.maxFPS = maxFPS;
+    engineRef.current?.setMaxFPS(maxFPS);
+  }, [isMobile]);
 
   // ── 1b. React to scale_multiplier changes without rebuilding the model.
   //    The user can drag a slider in Avatar settings; refit live so the

@@ -111,6 +111,17 @@ export interface LayoutSlice {
   /** Mobile-only floating persona window visibility + geometry. */
   mobilePersonaVisible: boolean;
   mobilePersonaRect: MobilePersonaRect;
+  /** True while an overlay completely hides the avatar — currently the
+   * settings drawer, whose opaque panel is right-aligned over the avatar
+   * rail on desktop and covers the whole viewport on a phone. Not the
+   * same as the window being hidden (the page is visible, the socket is
+   * live), but for the render loop it may as well be: a rig deforming
+   * meshes behind an opaque panel is pure heat. Set only for overlays
+   * that genuinely cover it — freezing a visible avatar reads as a bug.
+   * Scoped to this webview, so the detached persona window is
+   * unaffected by the main window's drawer. */
+  avatarCovered: boolean;
+  setAvatarCovered: (covered: boolean) => void;
   toggleLeftSidebar: () => void;
   setLeftSidebarCollapsed: (collapsed: boolean) => void;
   setPersonaPanelWidth: (px: number) => void;
@@ -150,6 +161,8 @@ export const createLayoutSlice: SliceCreator<LayoutSlice> = (set) => ({
 
   mobilePersonaVisible: readBool(LS_MOBILE_PERSONA_VISIBLE, false),
   mobilePersonaRect: readMobilePersonaRect(),
+  avatarCovered: false,
+  setAvatarCovered: (covered) => set({ avatarCovered: Boolean(covered) }),
   toggleMobilePersona: () =>
     set((state) => {
       const next = !state.mobilePersonaVisible;

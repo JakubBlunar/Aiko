@@ -832,3 +832,115 @@ disappeared), a DROP-then-reopen test (the migration path an existing
 install takes), and a guard that P10's index isn't shadowed.
 
 ---
+
+## P47. `GET /api/concepts` returned the whole graph, untruncated
+
+Reported as "the concepts settings tab loads all of the data without
+pagination and blocks the app for some time". It did, and the size was
+worse than the phrasing suggests: rebuilt offline against a live
+822-concept database, the response is **1.52 MB of JSON** — every
+label, every full rationale, and the complete untruncated source text
+behind all 3,326 evidence edges. The panel then rendered all 822 as
+cards in a plain `<ul>`, roughly 12k DOM nodes in one commit, which is
+the half that actually freezes a phone.
+
+Nothing in the stack bounded it. The route took no arguments, the
+facade took no arguments, and `build_concepts_snapshot` looped
+`store.all()`. Untruncated is deliberate and stays
+([`concept_snapshot.py`](../../../app/core/concepts/concept_snapshot.py)'s
+docstring: trimming would make the UI look as if the *stored* value
+were clipped), so the fix is to page rather than to shorten.
+
+- **Filter, sort, slice, then resolve.** Evidence resolution is a join
+  per edge and it now runs only for the rows being returned, so a page
+  costs a page's worth of work instead of the whole graph's. Pinned by
+  a test that counts memory-store lookups: 3 rows out of 40 must cost
+  3 lookups.
+- **`concept_id` as the sort tie-break.** Confidence ties are common,
+  and without a deterministic tail two requests can order the same
+  band differently — which in a paged reader means a row shown twice
+  or skipped entirely.
+- **`counts` stays whole-store.** The filter pills show what they would
+  select, not what this page happens to hold; `matched` is the filtered
+  count and is what paging divides.
+- **Filters moved server-side**, so paging walks the filtered set.
+- **The MCP `get_concept_graph` tool is paged too** (default 40). It was
+  dumping the same 1.5 MB — `indent=2`, so nearer 2.5 MB — straight into
+  a model's context window.
+
+Two neighbours in the same tab were fixed with it: `ConceptQualityStrip`
+fired a *second* full-graph scan (evidence joins for every concept, then
+an n² similarity pass per kind) automatically on every visit, and now
+loads on request — the numbers move on a worker's cadence, not a
+render's. Discoveries asked for 500 events in one page and now takes 150
+with a "load older" button, using the `before_id` cursor the endpoint
+already had and the UI had never used.
+
+Related: [P39](../perf.md#p39-concept-snapshot--quality-report-n1-the-evidence-edges)
+is the batch-lookup half of the same code and is still open; paging
+bounds N rather than removing the N+1.
+
+Tests: `tests/test_concept_snapshot.py` (`PagingTests` — bounded page,
+resolution cost, no gaps or repeats across pages, stable tie-break,
+filters vs. counts, offset past the end, and that an unparameterised
+call still means the whole graph), `tests/test_web_server_concepts.py`
+(the route's default cap, clamping, and blank-filter handling),
+`ConceptsPanel.test.tsx`.
+
+---
+
+## P48. The avatar and the audio graph ran flat out on phones
+
+Reported as "my phone is getting too hot while Aiko is running". Three
+overlapping causes, none of which had an off-switch.
+
+**The render loop had no ceiling.** Pixi was created with
+`resolution: devicePixelRatio` and `antialias: true` and no
+`ticker.maxFPS`, so a 3x-DPR handset turned the 190x250 CSS
+floating-persona box into a ~570x750 backing buffer with MSAA, redrawn
+at the display rate — 90 or 120 Hz on many phones. New
+[`renderBudget.ts`](../../../web/src/live2d/renderBudget.ts) resolves a
+phone to 30 fps, `devicePixelRatio` clamped to 2, and
+`powerPreference: "low-power"`. Desktop resolves to exactly what it had
+before, and a test asserts that specifically — the failure mode to
+avoid is someone's laptop quietly dropping to 30 fps.
+
+**Capping the ticker was not enough.** `AvatarEngine` runs two further
+RAF chains of its own (tier-3 body language, gaze), which would have
+kept writing rig parameters at 120 Hz underneath a 30 fps renderer. They
+now take the same ceiling via `maxFPS` / `setMaxFPS`: frames are still
+requested so the loops stay vsync-aligned, but a tick inside the budget
+returns without doing work *and without consuming its elapsed time*, so
+`dt` still spans the real gap and nothing animates in slow motion. The
+5% tolerance is load-bearing — two 16.67 ms frames land a hair under a
+33.33 ms budget, and without slack the cap yields 20 fps instead of 30.
+
+**Three things ran forever regardless.** The avatar kept rendering
+behind the settings drawer, whose opaque panel covers the avatar rail on
+desktop and the whole viewport on a phone; it now suspends on a new
+`avatarCovered` store flag. Suspend, not unmount — unmounting destroys
+the Pixi app and reloads the model and its textures when the drawer
+closes. And in `AudioOutputManager`, the inaudible keep-alive loop (a
+deliberate fix for cold first-sentence audio) plus the mobile lipsync
+RAF were both started on first gesture and only ever stopped in
+`dispose()`, which nothing calls: a permanently awake audio endpoint and
+a 60 Hz wakeup for the life of the tab. `onBackground()` now releases
+both when the page hides and `onForeground()` restores them, so the
+warm-turn behaviour comes back with the user. The lipsync loop
+additionally parks itself whenever no source is playing, after a short
+grace so the mouth closes on a real zero rather than freezing
+mid-syllable.
+
+Not a cause, despite being the obvious suspect: the microphone. Capture
+starts only on voice mode and `track.stop()` is called properly on the
+way out. While voice *is* on it streams continuously with no client-side
+silence gate (~20 frames/s, ~96 KB/s, with browser AEC/NS/AGC running) —
+real, but only while the user is actually in voice mode.
+
+Tests: `renderBudget.test.ts` (the policy, including that desktop is
+untouched), `AvatarEngine.test.ts` (`frame ceiling` — skip ratios at 60
+and 120 Hz, that a skipped frame still requests the next one and does
+not eat its elapsed time, and runtime lift/reapply),
+`AudioOutputManager.test.ts` (`idle cost` + `lipsync loop lifecycle`).
+
+---

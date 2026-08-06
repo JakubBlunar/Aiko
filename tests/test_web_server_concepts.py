@@ -67,6 +67,36 @@ class ConceptsGetTests(unittest.TestCase):
         self.assertFalse(body["enabled"])
         self.assertEqual(body["concepts"], [])
 
+    def test_the_default_page_is_bounded(self) -> None:
+        # An unbounded default is what made this endpoint a 1.5 MB
+        # response on a real graph, so the route has to supply the cap.
+        client, session = _client()
+        client.get("/api/concepts")
+        kwargs = session.concepts_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["limit"], 50)
+        self.assertEqual(kwargs["offset"], 0)
+
+    def test_paging_and_filters_reach_the_facade(self) -> None:
+        client, session = _client()
+        client.get(
+            "/api/concepts"
+            "?limit=10&offset=20&status=active&subject=aiko"
+        )
+        kwargs = session.concepts_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["limit"], 10)
+        self.assertEqual(kwargs["offset"], 20)
+        self.assertEqual(kwargs["status"], "active")
+        self.assertEqual(kwargs["subject"], "aiko")
+
+    def test_limit_is_clamped_and_blank_filters_drop_out(self) -> None:
+        client, session = _client()
+        client.get("/api/concepts?limit=9999&offset=-5&status=&subject=%20")
+        kwargs = session.concepts_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["limit"], 200)
+        self.assertEqual(kwargs["offset"], 0)
+        self.assertIsNone(kwargs["status"])
+        self.assertIsNone(kwargs["subject"])
+
 
 class ConceptsRunTests(unittest.TestCase):
     def test_run_returns_stats(self) -> None:

@@ -11,9 +11,22 @@ import { RefreshButton } from "@/components/RefreshButton";
  *
  * Everything here is advisory. Nothing on this panel demotes, retires or
  * deletes a concept; the L3 lifecycle worker remains the single writer.
+ *
+ * Loaded on demand rather than on mount: the report is a full-graph scan
+ * (every concept's evidence joined, then an n² similarity pass per kind)
+ * and it used to run alongside the concept list on every visit to the
+ * tab. The numbers move on a worker's cadence, not a render's, so asking
+ * for them is a choice.
  */
 export function ConceptQualityStrip() {
-  const loader = useCallback(() => api.getConceptQuality(), []);
+  const [requested, setRequested] = useState(false);
+  const loader = useCallback(
+    () =>
+      requested
+        ? api.getConceptQuality()
+        : Promise.resolve<ConceptQualityReport | null>(null),
+    [requested],
+  );
   const { data, loading, error, refresh } =
     useAsyncResource<ConceptQualityReport | null>(loader, null);
   const [open, setOpen] = useState(false);
@@ -25,7 +38,25 @@ export function ConceptQualityStrip() {
       </div>
     );
   }
-  if (!data || !data.enabled) return null;
+  if (!data) {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded border border-white/10 bg-white/[0.02] p-2 text-[10px]">
+        <span className="uppercase tracking-wide text-ink-100/40">
+          layer health
+        </span>
+        <button
+          type="button"
+          onClick={() => setRequested(true)}
+          disabled={loading}
+          title="Scores the concept layer as a whole: promotion vs. pruning rates, evidence distributions, paraphrase twins and label-template concentration. A full-graph scan, so it runs when you ask for it."
+          className="rounded border border-white/10 px-1.5 py-0.5 text-ink-100/60 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loading ? "scoring…" : "check"}
+        </button>
+      </div>
+    );
+  }
+  if (!data.enabled) return null;
 
   const { flow, pruning, evidence, duplicates } = data;
   const promotionRate = flow.promotion_rate_pct ?? 0;

@@ -30,7 +30,8 @@ hot path, P22 inner-life shared recent-history memo, P25 client
 audio flush on abort, P27 lazy STT load + `stt.enabled`, P28 TTS
 gated on `tts.enabled` + `release_model`, P29
 `get_memory_breakdown`, P31a `get_prompt_block_costs`, P40 engine-swap
-release, and P41 the two missing `messages` indexes have
+release, P41 the two missing `messages` indexes, P47 paging
+`GET /api/concepts`, and P48 the mobile render + audio-idle budget have
 shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
@@ -286,7 +287,11 @@ actually hears, and main-thread jank desyncs it further.
 
 **What already exists.** `AudioOutputManager` builds
 `AnalyserNode → destination` and RAF-samples RMS at ~60 Hz,
-exposed via `setLipsyncListener`. The socket hook only routes it
+exposed via `setLipsyncListener`. (Since
+[P48](shipped/perf.md#p48-the-avatar-and-the-audio-graph-ran-flat-out-on-phones)
+that loop only runs while something is playing and stops when the page
+hides, so extending the gate to desktop no longer means adding a
+permanent 60 Hz wakeup there.) The socket hook only routes it
 into the store when `isMobileViewport() && playsAudioHere`, and
 correspondingly ignores the `audio_amplitude` WS frame in that
 case. So both paths are live and mutually exclusive — per client,
@@ -971,6 +976,16 @@ should be explicit rather than implicit in snapshot timing.
 ---
 
 ## P39. Concept snapshot + quality report N+1 the evidence edges
+
+**Status: still open, but no longer the thing that hurts.** Both callers
+are now bounded rather than batched —
+[P47](shipped/perf.md#p47-getapiconcepts-returned-the-whole-graph-untruncated)
+pages the snapshot so evidence resolves for ~50 rows instead of all 822,
+and the quality report loads on request rather than on every visit to the
+tab. The N+1 is unchanged; N is. `evidence_for_many` is still the right
+fix and is now a tidy-up rather than a UI-latency one. The pairwise
+embedding walk in the quality report is the remaining real cost, and it
+is the half this entry already called out as the larger question.
 
 **Motivation.** `build_concept_snapshot` loops `store.all()` and calls
 `store.evidence_of(concept_id)` inside the loop — one SQL query per
