@@ -1090,6 +1090,57 @@ def register(mcp, session: "SessionController") -> None:
         return "\n".join(collected)
 
     @mcp.tool()
+    def get_ui_crashes(limit: int = 5, include_stack: bool = True) -> str:
+        """Return recent **frontend** crashes, newest first.
+
+        First stop for "the UI went blank / a panel is broken". These are
+        React error-boundary catches plus uncaught window errors and
+        unhandled promise rejections, POSTed by the browser to
+        ``/api/logs/ui-crash`` and persisted in ``data/crashlog.txt``
+        (which survives ``app.log`` rotation).
+
+        Each entry carries the parts that make a crash diagnosable:
+
+        - ``stack_mapped`` — the stack de-minified through the Vite
+          sourcemaps in ``web/dist/assets``. **Read this, not ``stack``.**
+          It is absent when ``dist`` was rebuilt after the crash, or when
+          the app is running from the dev server (already unminified).
+        - ``breadcrumbs`` — what the UI did beforehand, oldest first,
+          with ``+Nms`` offsets from page load. Includes everything React
+          wrote to ``console.error``, which is very often the actual
+          explanation (a hook-order violation or a failed fetch precedes
+          the throw that white-screens the app).
+        - ``context`` — ``build`` id, viewport, shell, heap, plus socket
+          state / voice mode / open route at the moment it died.
+        - ``component_stack`` — the React tree, for ``source=render``.
+
+        Set ``include_stack=false`` for a compact scan of what has been
+        crashing without the multi-KB stacks.
+        """
+        from app.core.infra.crash_logging import read_ui_crashes
+        try:
+            entries = read_ui_crashes(limit=max(1, min(50, int(limit))))
+        except Exception as exc:
+            return f"get_ui_crashes failed: {exc}"
+        if not entries:
+            return json.dumps(
+                {
+                    "crashes": [],
+                    "note": (
+                        "no UI crashes recorded. crashlog.txt also holds "
+                        "backend 'exception' entries, which this tool skips."
+                    ),
+                },
+                indent=2,
+            )
+        if not include_stack:
+            for entry in entries:
+                entry.pop("stack", None)
+                entry.pop("stack_mapped", None)
+                entry.pop("component_stack", None)
+        return json.dumps({"crashes": entries}, indent=2, default=str)
+
+    @mcp.tool()
     def set_log_level(module: str, level: str) -> str:
         """Bump a single logger to ``level`` at runtime (until app restart).
 

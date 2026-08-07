@@ -9,6 +9,23 @@
  * ``crashlog.txt`` the next time it happens — the user doesn't have to
  * have turned on "Debug logging" beforehand.
  *
+ * What a report carries, and why
+ * ------------------------------
+ * A bare message + stack is rarely enough to act on, so each report also
+ * gathers:
+ *
+ * - **breadcrumbs** (``crashBreadcrumbs.ts``) — the last ~60 things that
+ *   happened, including everything React wrote to ``console.error``.
+ *   This is usually what actually identifies the cause.
+ * - **context** (``crashContext.ts``) — build id, viewport, shell, heap,
+ *   plus app state (voice mode, socket status, open view) via a
+ *   registered provider.
+ *
+ * The stack itself is minified in a production build. It is de-minified
+ * **server-side** against the ``.map`` files in ``web/dist/assets``
+ * (``app/core/infra/sourcemap.py``), because the crashes that matter
+ * happen on a phone with no DevTools attached.
+ *
  * Everything here is best-effort and defensive: a crash reporter that
  * throws would be worse than useless, so every path swallows its own
  * errors. The payload builder (:func:`buildCrashReport`) is a pure
@@ -16,6 +33,13 @@
  * no DOM.
  */
 
+import {
+  addBreadcrumb,
+  installConsoleBreadcrumbs,
+  snapshotBreadcrumbs,
+  type Breadcrumb,
+} from "./crashBreadcrumbs";
+import { collectCrashContext, type CrashContext } from "./crashContext";
 import { backendBase } from "./desktop/runtime";
 
 /** Where the crash came from. ``render`` = caught by the React error
@@ -30,6 +54,12 @@ export interface UiCrashReport {
   url?: string;
   userAgent?: string;
   ts: string;
+  /** What happened in the seconds before the crash. See
+   * ``crashBreadcrumbs.ts``. */
+  breadcrumbs?: Breadcrumb[];
+  /** Build id + runtime + app state at the moment of the crash. See
+   * ``crashContext.ts``. */
+  context?: CrashContext;
 }
 
 /** Client-side field cap. The server clips again (8 KB) — this is just
@@ -82,6 +112,16 @@ export function buildCrashReport(input: {
     input.stack ?? (errObj?.stack != null ? String(errObj.stack) : ""),
   );
 
+  // Snapshot the trail *before* adding this crash to it, so a report
+  // never contains itself as its own final breadcrumb.
+  const breadcrumbs = snapshotBreadcrumbs();
+  const context = collectCrashContext();
+
+  // A crash is itself a breadcrumb: when the first failure cascades into
+  // a second one, the follow-up report carries the original in its
+  // trail, which is usually the one that explains both.
+  addBreadcrumb("crash", `${input.source}: ${message}`);
+
   return {
     message,
     stack: stack || undefined,
@@ -90,6 +130,8 @@ export function buildCrashReport(input: {
     url: input.url,
     userAgent: input.userAgent,
     ts: new Date().toISOString(),
+    breadcrumbs: breadcrumbs.length > 0 ? breadcrumbs : undefined,
+    context: Object.keys(context).length > 0 ? context : undefined,
   };
 }
 
@@ -150,15 +192,36 @@ export function installGlobalCrashReporters(): void {
   if (globalHandlersInstalled || typeof window === "undefined") return;
   globalHandlersInstalled = true;
 
+  // Start the breadcrumb trail first: React's own ``console.error``
+  // diagnostics usually land *before* the throw they describe, so
+  // installing this after the listeners would miss the useful half.
+  installConsoleBreadcrumbs();
+
   window.addEventListener("error", (event: ErrorEvent) => {
     const where =
       event.filename != null && event.filename !== ""
         ? `${event.filename}:${event.lineno ?? "?"}:${event.colno ?? "?"}`
         : undefined;
+    // A failed <img>/<script>/<link> fires a plain Event on the element
+    // (no ``message``, no ``error``) rather than an ErrorEvent. Those are
+    // worth a breadcrumb — a missing Live2D texture or model file
+    // explains a later "cannot read property of undefined" — but they are
+    // not themselves crashes, so don't report them as one.
+    const target = event.target as { tagName?: string; src?: string; href?: string } | null;
+    if (target != null && target !== (window as unknown as typeof target) && target.tagName) {
+      addBreadcrumb(
+        "resource",
+        `failed to load <${String(target.tagName).toLowerCase()}>`,
+        target.src ?? target.href,
+      );
+      return;
+    }
     reportUiCrash(
       buildCrashReport({
         error: event.error,
-        message: event.message || "uncaught error",
+        // Cross-origin scripts report the opaque "Script error." with no
+        // ``error`` object; keep the location so it isn't a total dead end.
+        message: event.message || (where ? `uncaught error at ${where}` : "uncaught error"),
         source: "window.onerror",
         url: typeof location !== "undefined" ? location.href : where,
         userAgent:
@@ -173,9 +236,7 @@ export function installGlobalCrashReporters(): void {
       reportUiCrash(
         buildCrashReport({
           error: event.reason,
-          message:
-            (event.reason && (event.reason as { message?: string }).message) ||
-            "unhandled promise rejection",
+          message: describeRejection(event.reason),
           source: "unhandledrejection",
           url: typeof location !== "undefined" ? location.href : undefined,
           userAgent:
@@ -184,6 +245,31 @@ export function installGlobalCrashReporters(): void {
       );
     },
   );
+}
+
+/** Describe a rejection reason that isn't an ``Error``.
+ *
+ * ``Promise.reject({status: 500})`` and ``Promise.reject("nope")`` are
+ * both common and both used to collapse to the useless "unhandled
+ * promise rejection". Anything with a message keeps it; anything else
+ * gets summarised rather than discarded. */
+function describeRejection(reason: unknown): string {
+  try {
+    if (reason == null) return "unhandled promise rejection (no reason)";
+    if (typeof reason === "string") return reason || "unhandled promise rejection";
+    const message = (reason as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+    if (typeof reason === "object") {
+      const rendered = JSON.stringify(reason);
+      if (rendered && rendered !== "{}") {
+        return `unhandled rejection: ${rendered.slice(0, 200)}`;
+      }
+      return `unhandled rejection: ${Object.prototype.toString.call(reason)}`;
+    }
+    return `unhandled rejection: ${String(reason)}`;
+  } catch {
+    return "unhandled promise rejection";
+  }
 }
 
 /** Test hook: reset the per-session dedup + cap state. */

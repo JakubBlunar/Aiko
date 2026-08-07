@@ -10,6 +10,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  __resetBreadcrumbsForTests,
+  addBreadcrumb,
+} from "./crashBreadcrumbs";
+import {
+  __resetCrashContextForTests,
+  setCrashContextProvider,
+} from "./crashContext";
+import {
   __resetCrashReportStateForTests,
   buildCrashReport,
   reportUiCrash,
@@ -62,6 +70,82 @@ describe("buildCrashReport", () => {
       source: "render",
     });
     expect(report.componentStack).toContain("Live2DAvatar");
+  });
+});
+
+describe("buildCrashReport — diagnostics", () => {
+  beforeEach(() => {
+    __resetBreadcrumbsForTests();
+    __resetCrashContextForTests();
+  });
+
+  it("attaches the breadcrumb trail", () => {
+    addBreadcrumb("ws", "close");
+    addBreadcrumb("api", "GET /api/concepts → 500");
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.breadcrumbs?.map((c) => c.msg)).toEqual([
+      "close",
+      "GET /api/concepts → 500",
+    ]);
+  });
+
+  it("omits breadcrumbs entirely when there are none", () => {
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.breadcrumbs).toBeUndefined();
+  });
+
+  it("does not include the crash itself in its own trail", () => {
+    // Otherwise every report ends with a breadcrumb restating the
+    // message directly above it, which is noise.
+    addBreadcrumb("ws", "open");
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.breadcrumbs).toHaveLength(1);
+    expect(report.breadcrumbs?.[0].msg).toBe("open");
+  });
+
+  it("leaves the crash as a breadcrumb for a follow-up report", () => {
+    // A cascade is common: the boundary catches, the fallback render
+    // fails too. The second report should carry the first as context.
+    buildCrashReport({ message: "first failure", source: "render" });
+    const second = buildCrashReport({ message: "second", source: "render" });
+    expect(second.breadcrumbs?.some((c) => c.msg.includes("first failure"))).toBe(
+      true,
+    );
+  });
+
+  it("attaches the environment context", () => {
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.context?.build).toBeDefined();
+    expect(report.context?.shell).toBeDefined();
+  });
+
+  it("folds registered app state into the context", () => {
+    setCrashContextProvider(() => ({
+      voiceMode: "listening",
+      connection: "connected",
+      turnInProgress: true,
+    }));
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.context?.voiceMode).toBe("listening");
+    expect(report.context?.turnInProgress).toBe("true");
+  });
+
+  it("still builds a report when the state provider throws", () => {
+    // The provider reads the store — which may be exactly what broke.
+    setCrashContextProvider(() => {
+      throw new Error("store is toast");
+    });
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.message).toBe("boom");
+    expect(report.context?.appState).toBe("(provider failed)");
+  });
+
+  it("drops empty values from the context rather than shipping blanks", () => {
+    setCrashContextProvider(() => ({ empty: "", nothing: null, real: "yes" }));
+    const report = buildCrashReport({ message: "boom", source: "render" });
+    expect(report.context?.real).toBe("yes");
+    expect(report.context).not.toHaveProperty("empty");
+    expect(report.context).not.toHaveProperty("nothing");
   });
 });
 

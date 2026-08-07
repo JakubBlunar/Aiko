@@ -20,13 +20,17 @@ What we cover here:
 """
 from __future__ import annotations
 
+import json
 import logging
+import tempfile
 import unittest
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
+from app.core.infra import crash_logging
 from app.web.server import create_web_app
 from web_fake_session import FakeSession
 
@@ -343,6 +347,204 @@ class PostUiCrashTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["logged"])
         self.assertIn("(no message)", self.capture.records[0].getMessage())
+
+
+class CrashDiagnosticsTests(unittest.TestCase):
+    """The parts of a crash report that make it *actionable*.
+
+    A message and a stack rarely identify a cause on their own. These
+    cover the two additions that usually do — the breadcrumb trail and
+    the context snapshot — plus the requirement that a client which
+    doesn't send them (or sends junk) still gets its crash logged.
+    """
+
+    def setUp(self) -> None:
+        self.capture = UiLogCapture()
+        self.ui_logger = logging.getLogger("app.ui")
+        self._prev_level = self.ui_logger.level
+        self._prev_propagate = self.ui_logger.propagate
+        self.ui_logger.setLevel(logging.DEBUG)
+        self.ui_logger.propagate = False
+        self.ui_logger.addHandler(self.capture)
+
+    def tearDown(self) -> None:
+        self.ui_logger.removeHandler(self.capture)
+        self.ui_logger.setLevel(self._prev_level)
+        self.ui_logger.propagate = self._prev_propagate
+
+    def _post(self, payload: dict) -> None:
+        client, _session, _settings = _build_client(ui_log_enabled=False)
+        response = client.post("/api/logs/ui-crash", json=payload)
+        self.assertEqual(response.status_code, 200)
+
+    def test_breadcrumbs_reach_the_log_in_order(self) -> None:
+        self._post({
+            "message": "boom",
+            "source": "render",
+            "breadcrumbs": [
+                {"t": 100, "cat": "ws", "msg": "open"},
+                {"t": 8200, "cat": "console", "msg": "error: hook order changed"},
+                {"t": 8300, "cat": "api", "msg": "GET /api/concepts → 500"},
+            ],
+        })
+        message = self.capture.records[0].getMessage()
+        self.assertIn("breadcrumbs:", message)
+        # Order is the whole point of a trail — the socket opening long
+        # before the failure reads very differently from just after it.
+        first = message.index("[ws] open")
+        second = message.index("hook order changed")
+        third = message.index("/api/concepts")
+        self.assertLess(first, second)
+        self.assertLess(second, third)
+        self.assertIn("+   8200ms", message)
+
+    def test_a_repeated_breadcrumb_shows_its_count(self) -> None:
+        self._post({
+            "message": "boom",
+            "source": "render",
+            "breadcrumbs": [{"t": 5, "cat": "ws", "msg": "error", "count": 42}],
+        })
+        self.assertIn("x42", self.capture.records[0].getMessage())
+
+    def test_context_is_rendered_as_key_values(self) -> None:
+        self._post({
+            "message": "boom",
+            "source": "render",
+            "context": {"build": "abc123", "voiceMode": "listening", "heapPct": "94"},
+        })
+        message = self.capture.records[0].getMessage()
+        self.assertIn("build=abc123", message)
+        self.assertIn("voiceMode=listening", message)
+        self.assertIn("heapPct=94", message)
+
+    def test_the_breadcrumb_trail_is_capped(self) -> None:
+        # The endpoint is unauthenticated by design, so a client can post
+        # anything; the trail must not become an unbounded log write.
+        self._post({
+            "message": "boom",
+            "source": "render",
+            "breadcrumbs": [
+                {"t": i, "cat": "spam", "msg": f"crumb-{i}"} for i in range(500)
+            ],
+        })
+        message = self.capture.records[0].getMessage()
+        self.assertIn("crumb-0", message)
+        self.assertNotIn("crumb-400", message)
+
+    def test_malformed_breadcrumbs_do_not_break_the_report(self) -> None:
+        self._post({
+            "message": "boom",
+            "source": "render",
+            # A string where a list belongs, and non-dict entries inside.
+            "breadcrumbs": ["not-a-dict", 7, None, {"cat": "ok", "msg": "kept"}],
+        })
+        message = self.capture.records[0].getMessage()
+        self.assertIn("boom", message)
+        self.assertIn("kept", message)
+
+    def test_a_non_list_breadcrumbs_field_is_ignored(self) -> None:
+        self._post({"message": "boom", "source": "render", "breadcrumbs": "nope"})
+        self.assertIn("boom", self.capture.records[0].getMessage())
+
+    def test_a_non_dict_context_is_ignored(self) -> None:
+        self._post({"message": "boom", "source": "render", "context": ["a", "b"]})
+        self.assertIn("boom", self.capture.records[0].getMessage())
+
+    def test_an_oversized_breadcrumb_detail_is_clipped(self) -> None:
+        huge = "z" * 40_000
+        self._post({
+            "message": "boom",
+            "source": "render",
+            "breadcrumbs": [{"t": 1, "cat": "api", "msg": "resp", "detail": huge}],
+        })
+        message = self.capture.records[0].getMessage()
+        self.assertNotIn(huge, message)
+        self.assertIn("more)", message)
+
+    def test_a_report_without_the_new_fields_still_logs(self) -> None:
+        # An older client (or a cached bundle) sends the original shape.
+        self._post({"message": "legacy", "source": "render", "stack": "at x"})
+        message = self.capture.records[0].getMessage()
+        self.assertIn("legacy", message)
+        self.assertIn("breadcrumbs: -", message)
+        self.assertIn("context: -", message)
+
+
+class ReadUiCrashesTests(unittest.TestCase):
+    """``read_ui_crashes`` — the read-back behind the MCP tool.
+
+    ``crashlog.txt`` is append-only JSONL with several record types
+    interleaved, and ``faulthandler`` writes raw (non-JSON) tracebacks
+    into the same file, so the parser has to be tolerant of everything
+    that isn't a UI crash.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "crashlog.txt"
+        self._prev = crash_logging.CRASH_LOG_PATH
+        crash_logging.CRASH_LOG_PATH = self.path
+
+    def tearDown(self) -> None:
+        crash_logging.CRASH_LOG_PATH = self._prev
+        self._tmp.cleanup()
+
+    def _write(self, *lines: str) -> None:
+        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_returns_newest_first(self) -> None:
+        self._write(
+            json.dumps({"type": "ui_crash", "message": "old"}),
+            json.dumps({"type": "ui_crash", "message": "new"}),
+        )
+        crashes = crash_logging.read_ui_crashes(limit=5)
+        self.assertEqual([c["message"] for c in crashes], ["new", "old"])
+
+    def test_skips_other_record_types(self) -> None:
+        self._write(
+            json.dumps({"type": "exception", "message": "backend"}),
+            json.dumps({"type": "event", "stage": "error", "message": "evt"}),
+            json.dumps({"type": "ui_crash", "message": "ui"}),
+        )
+        crashes = crash_logging.read_ui_crashes(limit=5)
+        self.assertEqual([c["message"] for c in crashes], ["ui"])
+
+    def test_tolerates_faulthandler_noise_and_truncated_lines(self) -> None:
+        self._write(
+            "Current thread 0x00007f0a (most recent call first):",
+            '  File "app/web.py", line 12 in main',
+            '{"type": "ui_crash", "message": "trunc',  # torn write
+            json.dumps({"type": "ui_crash", "message": "good"}),
+        )
+        crashes = crash_logging.read_ui_crashes(limit=5)
+        self.assertEqual([c["message"] for c in crashes], ["good"])
+
+    def test_honours_the_limit(self) -> None:
+        self._write(
+            *[json.dumps({"type": "ui_crash", "message": f"m{i}"}) for i in range(10)]
+        )
+        self.assertEqual(len(crash_logging.read_ui_crashes(limit=3)), 3)
+
+    def test_a_missing_file_is_empty_not_an_error(self) -> None:
+        crash_logging.CRASH_LOG_PATH = Path(self._tmp.name) / "nope.txt"
+        self.assertEqual(crash_logging.read_ui_crashes(limit=5), [])
+
+    def test_a_zero_limit_asks_for_nothing(self) -> None:
+        self._write(json.dumps({"type": "ui_crash", "message": "x"}))
+        self.assertEqual(crash_logging.read_ui_crashes(limit=0), [])
+
+    def test_round_trips_what_log_ui_crash_wrote(self) -> None:
+        crash_logging.log_ui_crash({
+            "message": "render blew up",
+            "source": "render",
+            "context": {"build": "abc"},
+            "breadcrumbs": [{"t": 1, "cat": "ws", "msg": "open"}],
+        })
+        crashes = crash_logging.read_ui_crashes(limit=1)
+        self.assertEqual(len(crashes), 1)
+        self.assertEqual(crashes[0]["message"], "render blew up")
+        self.assertEqual(crashes[0]["context"]["build"], "abc")
+        self.assertEqual(crashes[0]["breadcrumbs"][0]["msg"], "open")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 | `clear_history` | — | Clears the active session in `chat_sessions.db`. |
 | `list_debug_overrides` | `armed_only: bool = false` | JSON: every one-shot override, whether it is armed, its payload, and what it does. |
 | `clear_debug_overrides` | — | Disarms everything pending. Same call a session switch makes. |
+| `get_ui_crashes` | `limit: int = 5`, `include_stack: bool = true` | JSON: recent **frontend** crashes, newest first — error-boundary catches, uncaught window errors and unhandled rejections. **First stop for "the UI went blank".** Each carries `breadcrumbs` (what led up to it, including every `console.error`), `context` (build / viewport / socket / voice / route / heap), `stack_mapped` (de-minified through the Vite sourcemaps) and `component_stack`. Read `breadcrumbs` before the stack — it is usually the thing that explains the crash. Set `include_stack=false` to scan what has been failing without the multi-KB stacks. See [`rules/debugging.md` §g](debugging.md#g-frontend-crashes). |
 
 #### One-shot debug overrides
 

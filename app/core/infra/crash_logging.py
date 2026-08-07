@@ -422,6 +422,54 @@ def log_ui_event(
     return True
 
 
+MAX_CRASH_BREADCRUMBS = 60
+
+
+def _normalise_breadcrumbs(raw: Any, *, clip: Any) -> list[dict[str, Any]]:
+    """Coerce the client's breadcrumb trail into a bounded, flat list.
+
+    The payload is attacker-shaped by definition (any process can POST to
+    the endpoint), so nothing here trusts a type: non-lists become empty,
+    non-dict entries are dropped, and every field is clipped. Order is
+    preserved — the trail only means anything read oldest-first.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw[:MAX_CRASH_BREADCRUMBS]:
+        if not isinstance(item, dict):
+            continue
+        crumb: dict[str, Any] = {
+            "t": item.get("t") if isinstance(item.get("t"), (int, float)) else 0,
+            "cat": clip(item.get("cat")) or "app",
+            "msg": clip(item.get("msg")),
+        }
+        detail = clip(item.get("detail"))
+        if detail:
+            crumb["detail"] = detail
+        count = item.get("count")
+        if isinstance(count, int) and count > 1:
+            crumb["count"] = count
+        out.append(crumb)
+    return out
+
+
+def _format_breadcrumbs(crumbs: list[dict[str, Any]]) -> str:
+    """Render the trail as indented lines for the human-readable log."""
+    if not crumbs:
+        return "-"
+    lines = []
+    for crumb in crumbs:
+        stamp = crumb.get("t") or 0
+        repeat = f" x{crumb['count']}" if crumb.get("count") else ""
+        detail = f" | {crumb['detail']}" if crumb.get("detail") else ""
+        lines.append(
+            f"  +{int(stamp):>7}ms [{crumb.get('cat', '?')}] "
+            f"{crumb.get('msg', '')}{repeat}{detail}"
+        )
+    return "\n" + "\n".join(lines)
+
+
 def log_ui_crash(report: dict[str, Any], *, max_field_bytes: int = 8192) -> bool:
     """Record a UI crash caught by the React error boundary.
 
@@ -436,6 +484,19 @@ def log_ui_crash(report: dict[str, Any], *, max_field_bytes: int = 8192) -> bool
     string field is clipped to ``max_field_bytes`` to keep a misbehaving
     client from dumping an unbounded blob. Returns ``True`` when a line
     was emitted, ``False`` on a malformed report.
+
+    Three things beyond the bare message make a report actionable, and
+    all are optional so an older client still logs fine:
+
+    * ``breadcrumbs`` — what the UI was doing beforehand, usually the
+      part that actually identifies the cause.
+    * ``context`` — build id, viewport, socket state, voice mode, …
+    * a **de-minified stack**. A production bundle's stack names neither
+      the file nor the function, so it is mapped through
+      :mod:`app.core.infra.sourcemap` against ``web/dist/assets``. The
+      raw stack is still recorded alongside it: if ``dist`` has been
+      rebuilt since the crash the mapping silently no-ops, and having
+      both means that failure is visible rather than confusing.
     """
     if not isinstance(report, dict):
         return False
@@ -454,32 +515,95 @@ def log_ui_crash(report: dict[str, Any], *, max_field_bytes: int = 8192) -> bool
     user_agent = _clip(report.get("userAgent"))
     ts = _clip(report.get("ts"))
 
+    breadcrumbs = _normalise_breadcrumbs(report.get("breadcrumbs"), clip=_clip)
+    raw_context = report.get("context")
+    context: dict[str, str] = {}
+    if isinstance(raw_context, dict):
+        for key, value in list(raw_context.items())[:40]:
+            context[_clip(key)[:64]] = _clip(value)[:256]
+
+    mapped_stack = ""
+    try:
+        from app.core.infra import sourcemap
+
+        candidate = sourcemap.symbolicate_stack(stack)
+        if sourcemap.stack_is_symbolicated(stack, candidate):
+            mapped_stack = candidate
+    except Exception:  # pragma: no cover - symbolication is best-effort
+        mapped_stack = ""
+
+    context_text = (
+        " ".join(f"{k}={v}" for k, v in context.items()) if context else "-"
+    )
+
     ui_logger = logging.getLogger(_UI_LOGGER_NAME)
     ui_logger.error(
-        "[ui] crash source=%s msg=%s url=%s ts=%s ua=%s\ncomponentStack: %s\nstack: %s",
+        "[ui] crash source=%s msg=%s url=%s ts=%s ua=%s\n"
+        "context: %s\ncomponentStack: %s\nbreadcrumbs: %s\nstack: %s",
         source,
         message,
         url or "-",
         ts or "-",
         user_agent or "-",
+        context_text,
         component_stack or "-",
-        stack or "-",
+        _format_breadcrumbs(breadcrumbs),
+        mapped_stack or stack or "-",
     )
     try:
-        _write_line(
-            {
-                "type": "ui_crash",
-                "source": source,
-                "message": message,
-                "url": url,
-                "user_agent": user_agent,
-                "component_stack": component_stack,
-                "stack": stack,
-            }
-        )
+        entry: dict[str, object] = {
+            "type": "ui_crash",
+            "source": source,
+            "message": message,
+            "url": url,
+            "user_agent": user_agent,
+            "component_stack": component_stack,
+            "stack": stack,
+        }
+        if mapped_stack:
+            entry["stack_mapped"] = mapped_stack
+        if context:
+            entry["context"] = context
+        if breadcrumbs:
+            entry["breadcrumbs"] = breadcrumbs
+        _write_line(entry)
     except Exception:
         pass
     return True
+
+
+def read_ui_crashes(limit: int = 10) -> list[dict[str, Any]]:
+    """Return the most recent ``ui_crash`` entries, newest first.
+
+    Reads ``crashlog.txt`` back so a crash can be inspected without
+    opening the file by hand — this backs the ``get_ui_crashes`` MCP
+    tool. The file is append-only JSONL with other record types
+    (``exception``, ``event``) interleaved, plus possible raw
+    ``faulthandler`` output, so anything that isn't a well-formed
+    ``ui_crash`` object is skipped rather than treated as an error.
+    """
+    if limit <= 0:
+        return []
+    try:
+        with CRASH_LOG_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for raw in reversed(lines):
+        text = raw.strip()
+        if not text.startswith("{") or '"ui_crash"' not in text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "ui_crash":
+            out.append(parsed)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def log_exception(
