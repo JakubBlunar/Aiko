@@ -1054,6 +1054,27 @@ class MemorySettings:
     concept_surfacing_activation_enabled: bool = True
     concept_surfacing_activation_seed_cap: int = 4
     concept_surfacing_activation_max: int = 4
+    # L32 concept importance -- the second strength axis, distinct from
+    # confidence. Each concept gets a derived [0, 1] stake (its kind's prior,
+    # lifted by the emotional charge of the topics it is grounded in) which
+    # multiplies the turn-relevant score, so an important-but-shakier belief
+    # can outrank a trivial-but-certain one. Never stored and never applied
+    # to the T0 profile lane -- see ``app/core/concepts/concept_importance.py``.
+    # ``_strength`` is the whole tilt: 0.0 reproduces the pre-L32 ranking
+    # exactly, 0.4 spans roughly x0.92 (taste) to x1.16 (boundary).
+    # ``_affect_lift`` caps how far a fully-charged topic can carry a concept
+    # above its kind prior; ``_affect_min_samples`` is the per-cluster
+    # evidence bar below which an affect reading is ignored as noise.
+    concept_importance_enabled: bool = True
+    concept_importance_strength: float = 0.4
+    concept_importance_affect_lift: float = 0.5
+    concept_importance_affect_min_samples: int = 3
+    # How many cosine neighbours the flex lane fetches per rendered slot.
+    # Importance can only re-rank what cosine brought back, so this has to
+    # be wider than the render cap or an important concept just outside the
+    # top few never gets a chance to be promoted. ``nearest`` scores every
+    # active concept in one matmul and slices, so depth is nearly free.
+    concept_surfacing_overfetch: int = 5
     # L21 cold-start / anti-premature guard. Nothing is proposed or
     # surfaced while the topic graph is too sparse to support an
     # abstraction: synthesis is skipped (a manual ``force`` run still
@@ -1114,6 +1135,101 @@ class MemorySettings:
     # disable it. (Legacy ``context_budget_identity_*`` keys still parse.)
     context_budget_core_cap: int = 2
     context_budget_core_min_confidence: float = 0.75
+    # L30a hypothesis lane: the *tentative* register. Every other concept
+    # lane reads ``status="active"`` only, which hides a candidate rather
+    # than merely hedging it -- yet that is exactly what a mind holds as
+    # "I think X might be true, but I'm not sure." This is its own budget
+    # source (rendered last) so open questions can never crowd out the
+    # beliefs Aiko has actually earned. The cap was 1 by design -- two
+    # simultaneous "I'm wondering whether..." lines read as an interview.
+    # Phase B raised it to 2 *only* because the lane now reads two
+    # origins and offers at most one candidate per origin
+    # (``hypothesis_lane.one_per_origin``): a grounded open question and
+    # an invented one are different registers, so the pair does not read
+    # as an interview the way two grounded questions would. Set it back to
+    # 1 and the two origins compete for one slot, which is a coherent
+    # (quieter) configuration rather than a broken one.
+    hypothesis_surfacing_enabled: bool = True
+    context_budget_hypothesis_floor: int = 0
+    context_budget_hypothesis_cap: int = 2
+    context_budget_hypothesis_weight: float = 0.7
+    context_budget_hypothesis_min_relevance: float = 0.35
+    # Eligibility, both calibrated against a real 261-candidate pool
+    # rather than guessed -- see ``app/core/concepts/concept_hypothesis.py``
+    # for the measurements. ``min_unsettled`` sits just above 0.20, which
+    # is precisely where a twice-grounded, fully-confident belief scores,
+    # so the ~84 candidates that are merely waiting out the promotion age
+    # floor stay out of the register. ``min_sources`` drops candidates with
+    # no evidence edge at all: they score *highest* on unsettledness
+    # exactly because nothing supports them, so without this floor the lane
+    # leads with bare LLM hunches.
+    hypothesis_min_unsettled: float = 0.22
+    hypothesis_min_sources: int = 1
+    # L30b: cadence + gating for turning one of those open questions into
+    # an actual ask. The worker keeps the shelf stocked during quiet
+    # windows; the cue policy governs how often one may surface.
+    concept_hypothesis_interval_seconds: int = 1800
+    concept_hypothesis_max_per_run: int = 1
+    # Gap-path threshold, mirroring ``forward_curiosity_min_gap_hours``.
+    concept_hypothesis_min_gap_hours: float = 4.0
+    # ...and the extra bar the gap path alone must clear. Raising a belief
+    # about someone out of a *lull* is much heavier than raising it while
+    # already on the subject, so only hunches that matter earn that. 0.55
+    # sits just above the neutral 0.5 an unaffected concept scores, so the
+    # gap path needs a positive importance signal rather than merely the
+    # absence of a negative one.
+    concept_hypothesis_gap_min_importance: float = 0.55
+    # L30c: how hard a denial hits. Deliberately the same 0.25 the L9
+    # detector uses rather than something harsher -- "not really" is very
+    # often a *correction* carrying better information ("it's more that I
+    # hate driving"), and the adjudicator's separate CORRECT verdict keeps
+    # that near-miss refinable instead of killing it.
+    concept_hypothesis_deny_penalty: float = 0.25
+    # Cosine floor for the *semantic* half of the echo gate that decides
+    # whether a reply is about the belief at all. Only consulted for long
+    # replies -- anything short goes straight to the adjudicator, since
+    # "yeah, kind of" is the archetypal answer to a hunch and shares no
+    # words with it. Low on purpose: this gate separates "answering me"
+    # from "talking about something else", and being strict here silently
+    # discards real answers.
+    concept_hypothesis_answer_threshold: float = 0.45
+    # L30 Phase B: the invented layer. These govern the ``hypotheses``
+    # table, which is *not* the concept graph and does not share its
+    # tuning -- see ``docs/hypotheses.md``.
+    #
+    # Cadence is deliberately slower than the ask worker's: inventing a
+    # guess is a real LLM call and the shelf it stocks is small.
+    hypothesis_invention_interval_seconds: int = 5400
+    hypothesis_invention_max_per_run: int = 2
+    # Target stock of live (open or supported) rows. This is the cap L32
+    # warned the concept graph could grow past unchecked; here it is a
+    # hard number because nothing prunes inventions by decay -- an
+    # untested guess is not less plausible next month, just staler.
+    hypothesis_max_open: int = 12
+    # Cosine at or above which a proposal is "she already wondered this".
+    # Higher than the concept dedupe bar (0.86) on purpose: rejecting a
+    # guess costs one wasted proposal, while over-rejecting makes the
+    # layer sterile, so the two errors are not symmetric and this one
+    # leans toward letting near-neighbours through.
+    hypothesis_min_novelty: float = 0.88
+    # ...and the separate bar against the *concept* graph. Lower, because
+    # the failure it prevents is worse: "speculating" about something she
+    # already believes is not a duplicate wondering, it is Aiko forgetting
+    # what she knows, out loud.
+    hypothesis_concept_novelty: float = 0.82
+    # TTL for a row that was never put to the user. Two weeks of quiet is
+    # long enough to call a guess stale without discarding one that simply
+    # had no fitting moment yet.
+    hypothesis_ttl_hours: float = 336.0
+    # Graduation bar. Two *independent* confirmations for something
+    # invented from nothing, so one polite "yeah, sure" cannot turn a
+    # fancy into part of what Aiko knows about the user.
+    hypothesis_graduate_min_support: int = 2
+    hypothesis_graduate_min_credence: float = 0.7
+    # How much one answer moves credence. Symmetric, unlike the concept
+    # side: there is no evidence graph underneath to make a confirmation
+    # cheaper than a denial, so both are worth the same step.
+    hypothesis_credence_step: float = 0.2
     # L9 living beliefs. Counter-evidence lowers an active identity
     # concept's confidence and can step it into a revivable
     # ``contradicted`` status (distinct from a faded ``dormant``). The L3
@@ -3365,6 +3481,39 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0,
                 int(memory_raw.get("concept_surfacing_activation_max", 4)),
             ),
+            concept_importance_enabled=bool(
+                memory_raw.get("concept_importance_enabled", True)
+            ),
+            # Clamped to [0, 1]: the multiplier is 1 + strength * (imp - 0.5),
+            # so strength > 1 could drive a score negative at imp = 0.
+            concept_importance_strength=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_importance_strength", 0.4)),
+                ),
+            ),
+            concept_importance_affect_lift=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_importance_affect_lift", 0.5)
+                    ),
+                ),
+            ),
+            concept_importance_affect_min_samples=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_importance_affect_min_samples", 3
+                    )
+                ),
+            ),
+            concept_surfacing_overfetch=max(
+                1,
+                int(memory_raw.get("concept_surfacing_overfetch", 5)),
+            ),
             concept_min_clusters=max(
                 0,
                 int(memory_raw.get("concept_min_clusters", 6)),
@@ -3488,6 +3637,132 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                             ),
                         )
                     ),
+                ),
+            ),
+            hypothesis_surfacing_enabled=bool(
+                memory_raw.get("hypothesis_surfacing_enabled", True)
+            ),
+            context_budget_hypothesis_floor=max(
+                0,
+                int(memory_raw.get("context_budget_hypothesis_floor", 0)),
+            ),
+            context_budget_hypothesis_cap=max(
+                0, int(memory_raw.get("context_budget_hypothesis_cap", 2))
+            ),
+            context_budget_hypothesis_weight=max(
+                0.0,
+                float(memory_raw.get("context_budget_hypothesis_weight", 0.7)),
+            ),
+            context_budget_hypothesis_min_relevance=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "context_budget_hypothesis_min_relevance", 0.35
+                        )
+                    ),
+                ),
+            ),
+            hypothesis_min_unsettled=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("hypothesis_min_unsettled", 0.22)),
+                ),
+            ),
+            hypothesis_min_sources=max(
+                0, int(memory_raw.get("hypothesis_min_sources", 1))
+            ),
+            concept_hypothesis_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("concept_hypothesis_interval_seconds", 1800)
+                ),
+            ),
+            concept_hypothesis_max_per_run=max(
+                1, int(memory_raw.get("concept_hypothesis_max_per_run", 1))
+            ),
+            concept_hypothesis_min_gap_hours=max(
+                0.0,
+                float(memory_raw.get("concept_hypothesis_min_gap_hours", 4.0)),
+            ),
+            concept_hypothesis_gap_min_importance=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_hypothesis_gap_min_importance", 0.55
+                        )
+                    ),
+                ),
+            ),
+            concept_hypothesis_deny_penalty=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("concept_hypothesis_deny_penalty", 0.25)
+                    ),
+                ),
+            ),
+            concept_hypothesis_answer_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_hypothesis_answer_threshold", 0.45
+                        )
+                    ),
+                ),
+            ),
+            hypothesis_invention_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "hypothesis_invention_interval_seconds", 5400
+                    )
+                ),
+            ),
+            hypothesis_invention_max_per_run=max(
+                1, int(memory_raw.get("hypothesis_invention_max_per_run", 2))
+            ),
+            hypothesis_max_open=max(
+                0, int(memory_raw.get("hypothesis_max_open", 12))
+            ),
+            hypothesis_min_novelty=min(
+                1.0,
+                max(0.0, float(memory_raw.get("hypothesis_min_novelty", 0.88))),
+            ),
+            hypothesis_concept_novelty=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("hypothesis_concept_novelty", 0.82)),
+                ),
+            ),
+            hypothesis_ttl_hours=max(
+                0.0, float(memory_raw.get("hypothesis_ttl_hours", 336.0))
+            ),
+            hypothesis_graduate_min_support=max(
+                1, int(memory_raw.get("hypothesis_graduate_min_support", 2))
+            ),
+            hypothesis_graduate_min_credence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("hypothesis_graduate_min_credence", 0.7)
+                    ),
+                ),
+            ),
+            hypothesis_credence_step=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("hypothesis_credence_step", 0.2)),
                 ),
             ),
             concept_contradiction_enabled=bool(

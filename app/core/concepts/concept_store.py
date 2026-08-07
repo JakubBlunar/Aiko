@@ -46,7 +46,7 @@ mirrors that would drift if SQL deleted rows behind their back.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -187,12 +187,14 @@ class ConceptStore:
         # In-process mirror (see module docstring). Small by design.
         self._concepts: dict[int, Concept] = {}
         self._vectors: dict[int, np.ndarray] = {}  # unit-norm
-        # Cached stacked matrix of the active set, rebuilt lazily on the
-        # next query after any write marks it dirty.
+        # Cached stacked matrices, one per status, rebuilt lazily on the
+        # next query after any write marks the mirror dirty. Was
+        # active-only until L30a gave the hypothesis lane a per-turn
+        # ``status='candidate'`` query; see :meth:`_ensure_status_cache`
+        # for why an uncached cross-status scan is dangerous rather than
+        # merely slow.
         self._active_dirty: bool = True
-        self._active_ids: list[int] = []
-        self._active_mat: np.ndarray = np.zeros((0, 0), dtype=np.float32)
-        self._active_dim: int = 0
+        self._status_mats: dict[str, tuple[list[int], np.ndarray, int]] = {}
 
     # ── mirror maintenance ────────────────────────────────────────────
 
@@ -211,37 +213,55 @@ class ConceptStore:
         self._vectors.pop(concept_id, None)
         self._active_dirty = True
 
-    def _ensure_active_cache(self) -> None:
-        if not self._active_dirty:
-            return
+    def _ensure_status_cache(
+        self, status: str
+    ) -> tuple[list[int], np.ndarray, int]:
+        """``(ids, stacked matrix, majority dim)`` for one status, cached
+        until the next write dirties the mirror.
+
+        Generalised from an active-only cache by L30a. The hypothesis
+        lane queries ``status='candidate'`` on every turn, and the
+        alternative -- letting that fall through to
+        :meth:`_filtered_matrix` -- restacks a fresh NumPy array per
+        call, which is the pattern behind the access violation described
+        on :meth:`stack_for`. One entry per status keeps each lane on a
+        matmul against a matrix it did not have to rebuild.
+        """
+        if self._active_dirty:
+            self._status_mats.clear()
+            self._active_dirty = False
+        hit = self._status_mats.get(status)
+        if hit is not None:
+            return hit
         # Pick the majority embedding dim so a mid-swap mix of dims can't
         # break the vstack; minority-dim vectors fall back to the
         # per-query filter path.
         dims: dict[int, int] = {}
         for cid, concept in self._concepts.items():
-            if concept.status == "active" and cid in self._vectors:
+            if concept.status == status and cid in self._vectors:
                 d = int(self._vectors[cid].size)
                 dims[d] = dims.get(d, 0) + 1
         if dims:
-            self._active_dim = max(dims, key=lambda d: dims[d])
+            dim = max(dims, key=lambda d: dims[d])
             ids = [
                 cid
                 for cid, concept in self._concepts.items()
-                if concept.status == "active"
+                if concept.status == status
                 and cid in self._vectors
-                and self._vectors[cid].size == self._active_dim
+                and self._vectors[cid].size == dim
             ]
-            self._active_ids = ids
-            self._active_mat = (
+            mat = (
                 np.vstack([self._vectors[i] for i in ids])
                 if ids
                 else np.zeros((0, 0), dtype=np.float32)
             )
         else:
-            self._active_dim = 0
-            self._active_ids = []
-            self._active_mat = np.zeros((0, 0), dtype=np.float32)
-        self._active_dirty = False
+            dim = 0
+            ids = []
+            mat = np.zeros((0, 0), dtype=np.float32)
+        entry = (ids, mat, dim)
+        self._status_mats[status] = entry
+        return entry
 
     def _filtered_matrix(
         self,
@@ -432,24 +452,27 @@ class ConceptStore:
         """Return up to ``k`` ``(concept, cosine)`` pairs nearest to
         ``query_vec``, filtered by the given axes.
 
-        This is the single retrieval primitive every consumer uses. The
-        common ``status='active'`` / no-other-filter path is served from
-        the cached stacked matrix; filtered queries stack on demand
-        (cheap at concept scale).
+        This is the single retrieval primitive every consumer uses. A
+        single-status / no-other-filter query is served from that
+        status's cached stacked matrix; anything further filtered stacks
+        on demand (cheap at concept scale, but never do it in a loop --
+        see :meth:`stack_for`).
         """
         q = _unit(query_vec)
         if q.size == 0 or k <= 0:
             return []
         use_cache = (
-            status == "active"
+            bool(status)
             and subject is None
             and kind is None
             and user_id is _UNSET
         )
         if use_cache:
-            self._ensure_active_cache()
-            if self._active_ids and q.size == self._active_dim:
-                ids, mat = self._active_ids, self._active_mat
+            cached_ids, cached_mat, cached_dim = self._ensure_status_cache(
+                str(status)
+            )
+            if cached_ids and q.size == cached_dim:
+                ids, mat = cached_ids, cached_mat
             else:
                 ids, mat = self._filtered_matrix(
                     q.size, subject=subject, kind=kind,
@@ -847,6 +870,44 @@ class ConceptStore:
             key=lambda e: (e.ordinal if e.ordinal is not None else 1 << 30)
         )
         return edges
+
+    def cluster_evidence_for(
+        self, concept_ids: Iterable[int]
+    ) -> dict[int, tuple[int, ...]]:
+        """``{concept_id: (representative memory id, ...)}`` for the
+        ``cluster`` evidence edges of many concepts, in one query.
+
+        The bulk form of the cluster half of :meth:`evidence_of`, for the
+        L32 importance join: the surfacing path needs the grounding
+        clusters of a dozen candidates every turn, and a point query each
+        would be a dozen round-trips on the hot path. Concepts with no
+        cluster evidence are simply absent from the result.
+
+        ``src_id`` is a *memory* id (the cluster's representative), not a
+        ``cluster_id``; resolving it is the caller's job.
+        """
+        ids = [int(c) for c in concept_ids]
+        if not ids:
+            return {}
+        out: dict[int, list[int]] = {}
+        # Chunked so a large candidate set can't blow SQLite's variable
+        # limit (999 by default) on the ``IN`` clause.
+        for start in range(0, len(ids), 400):
+            chunk = ids[start:start + 400]
+            marks = ",".join("?" for _ in chunk)
+            rows = self._edge_rows(
+                "dst_type = 'concept' AND src_type = 'cluster' "
+                f"AND relation = 'evidence' AND dst_id IN ({marks})",
+                tuple(str(i) for i in chunk),
+            )
+            for edge in rows:
+                try:
+                    out.setdefault(int(edge.dst_id), []).append(
+                        int(edge.src_id)
+                    )
+                except (TypeError, ValueError):
+                    continue
+        return {cid: tuple(v) for cid, v in out.items()}
 
     def dependents_of(self, concept_id: int) -> list[int]:
         """Concept ids that *depend on* this concept -- i.e. metas that

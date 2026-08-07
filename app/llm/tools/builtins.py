@@ -409,6 +409,126 @@ class RecallSelfHistoryTool:
         return json.dumps(payload, ensure_ascii=False)
 
 
+class RecallHypothesesTool:
+    """L30 Phase B: let Aiko look at what she is actually unsure about.
+
+    The surfacing lane can hold up one or two open questions per turn,
+    which is right for a conversation and useless for the question the
+    user eventually asks outright — "what are you still not sure about
+    with me?", "what do you *wonder* about?". Two bullets in a prompt
+    cannot answer that, and without a way to look she would either
+    confabulate a plausible-sounding list or deny having any.
+
+    Deliberately returns both origins with the distinction *stated*
+    (``origin: "invented"`` versus ``"grounded"``), because they are not
+    interchangeable: one is a belief she derived and has not confirmed,
+    the other she made up. Collapsing them would let her present an
+    invention as something she noticed, which is the one failure the
+    separate table exists to prevent.
+    """
+
+    def __init__(self, hypotheses_provider: Any) -> None:
+        self._provider = hypotheses_provider
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="recall_hypotheses",
+            description=(
+                "Look up what Aiko is genuinely UNSURE about -- her open "
+                "guesses, both the hunches she picked up from things she "
+                "noticed and the ones she simply invented and has never "
+                "checked. Reach for this when asked what she wonders "
+                "about, what she is unsure of, what she still doesn't "
+                "know, whether she has questions, or when she wants to "
+                "say 'there is something I've been wondering' and needs "
+                "to check what she actually has. Prefer recall_concept "
+                "for what she BELIEVES and recall_self_history for how a "
+                "belief CHANGED; this is only for what is still open. "
+                "Returns statements with a credence (how likely she "
+                "thinks each is), how many times each has been "
+                "confirmed, and crucially an 'origin': 'invented' means "
+                "she made it up with nothing behind it and must say so "
+                "if she raises it, 'grounded' means it came from things "
+                "she noticed. Synchronous and fast. IMPORTANT: an empty "
+                "list means she has no open guesses right now and must "
+                "say that plainly rather than inventing some."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": (
+                            "Narrow to guesses about one thing: 'user', "
+                            "'aiko' (herself), 'relationship' (the two of "
+                            "them), or 'world' (how something works). "
+                            "Omit for all of them."
+                        ),
+                        "enum": ["user", "aiko", "relationship", "world"],
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Narrow to one belief kind (identity, value, "
+                            "affective, taste, ritual, boundary, ...). "
+                            "Omit for all kinds."
+                        ),
+                    },
+                    "origin": {
+                        "type": "string",
+                        "description": (
+                            "'invented' for pure speculation only, "
+                            "'grounded' for guesses that came from "
+                            "something she noticed. Omit for both."
+                        ),
+                        "enum": ["invented", "grounded"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "How many to return, most recent first "
+                            "(1-25). Defaults to 10."
+                        ),
+                        "minimum": 1,
+                        "maximum": 25,
+                    },
+                },
+                "required": [],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        if self._provider is None:
+            raise ToolError(
+                "recall_hypotheses: the hypothesis layer is not available"
+            )
+        subject = _opt_str(arguments.get("subject"))
+        if subject not in (None, "user", "aiko", "relationship", "world"):
+            subject = None
+        origin = _opt_str(arguments.get("origin"))
+        if origin not in (None, "invented", "grounded"):
+            origin = None
+        try:
+            limit = int(arguments.get("limit", 10))
+        except (TypeError, ValueError):
+            limit = 10
+        try:
+            payload = self._provider(
+                subject=subject,
+                kind=_opt_str(arguments.get("kind")),
+                origin=origin,
+                limit=max(1, min(25, limit)),
+            )
+        except Exception as exc:
+            raise ToolError(f"recall_hypotheses failed: {exc}") from exc
+        return json.dumps(payload or {"hypotheses": []}, ensure_ascii=False)
+
+
+def _opt_str(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    return text or None
+
+
 # ── web_search ──────────────────────────────────────────────────────────────
 
 

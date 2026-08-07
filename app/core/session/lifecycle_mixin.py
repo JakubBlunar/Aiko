@@ -197,6 +197,8 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._pending_away_activities_seconds = None
         # K34 — wipe the forward-curiosity slot on session switch too.
         self._pending_forward_curiosity_seconds = None
+        # L30b — same, for the hypothesis-ask gap slot.
+        self._pending_concept_hypothesis_seconds = None
         # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None
@@ -325,6 +327,8 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._pending_away_activities_seconds = None
         # K34 — clear the forward-curiosity slot on a full history wipe.
         self._pending_forward_curiosity_seconds = None
+        # L30b — same, for the hypothesis-ask gap slot.
+        self._pending_concept_hypothesis_seconds = None
         # K75 user-expertise: reset the provider cooldown.
         self._user_expertise_cooldown = 0
         self._user_expertise_last = None

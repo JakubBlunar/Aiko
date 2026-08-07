@@ -322,6 +322,22 @@ function ConceptCard({
             <span title="Plasticity: how readily this belief moves. Low = sticky (resists decay and disproof).">
               plast {concept.plasticity.toFixed(2)}
             </span>
+            {concept.importance !== undefined && (
+              <>
+                <span>·</span>
+                <span
+                  title={
+                    `Importance: how much this belief matters, separate from how likely it is to be true. ` +
+                    `${concept.importance_prior?.toFixed(2) ?? "?"} from the ${concept.kind} kind` +
+                    (concept.importance_charge
+                      ? `, lifted by ${concept.importance_charge.toFixed(2)} of emotional charge on its topics.`
+                      : " (no affect data on its topics).")
+                  }
+                >
+                  imp {concept.importance.toFixed(2)}
+                </span>
+              </>
+            )}
             <span>·</span>
             <span>
               {concept.evidence_count} evidence

@@ -643,6 +643,7 @@ class SpeakingWorkersInitMixin:
             sleep_return=self._render_sleep_return_block,
             away_activities=self._render_away_activities_block,
             forward_curiosity=self._render_forward_curiosity_block,
+            concept_hypothesis=self._render_concept_hypothesis_block,
             follow_up=self._render_follow_up_block,
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
@@ -1497,6 +1498,7 @@ class SpeakingWorkersInitMixin:
                 self._concept_event_store = None
                 self._concept_learning_store = None
                 self._evolution_diary_store = None
+                self._hypothesis_store = None
                 if (
                     self._chat_db is not None
                     and bool(getattr(settings.agent, "concepts_enabled", False))
@@ -1578,6 +1580,29 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._evolution_diary_store = None
+
+                    # L30 Phase B: the invented layer's own table. Kept
+                    # beside the concept store rather than inside it --
+                    # a hypothesis is something Aiko guessed, and the
+                    # separation is what makes "an invention cannot reach
+                    # the belief graph" true by construction instead of
+                    # by every reader remembering to filter. Gated on
+                    # ``concepts_enabled`` because every exit a
+                    # hypothesis has leads back into the concept layer.
+                    try:
+                        from app.core.concepts.hypothesis_store import (
+                            HypothesisStore,
+                        )
+
+                        self._hypothesis_store = HypothesisStore(self._chat_db)
+                        self._hypothesis_store.load_all()
+                    except Exception:
+                        log.warning(
+                            "HypothesisStore init failed; the invented "
+                            "hypothesis layer is disabled",
+                            exc_info=True,
+                        )
+                        self._hypothesis_store = None
 
                     # L5: wire the concept store into the retriever so the
                     # ``recall_concept`` tool can resolve concepts + their

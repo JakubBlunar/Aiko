@@ -215,6 +215,16 @@ class ConceptKind:
     # opts in (only ``boundary`` does now) -- the L3 worker reads this to loosen
     # a boundary as the bond deepens, never touching the stored base.
     plasticity_modulation: PlasticityModulation = DEFAULT_PLASTICITY_MODULATION
+    # L32: the kind's *stakes* prior in [0, 1] -- how much a belief of this
+    # kind matters, which is a different question from how likely it is to
+    # be true (``confidence``) and from how much any one signal should
+    # weigh for the kind (``surface_weights.salience``). A boundary is
+    # high-stakes at any confidence; a tooling preference is low-stakes even
+    # when certain. Read at surfacing time by
+    # ``concept_importance.kind_importance`` and lifted from there by the
+    # emotional charge of the concept's topics; never stored on a row.
+    # 0.5 is the no-opinion default, which leaves surfacing untouched.
+    importance: float = 0.5
     # L12 meta rule 2, made declarative: how many of a meta concept's base
     # concepts must still be ``active`` for it to stay live. ``None`` => all of
     # them, which is a tension's arity (lose either side of the friction and it
@@ -316,6 +326,9 @@ register_kind(
         # for decay, disproof, *and* accrual). The ``concept_identity_plasticity``
         # setting still overrides this in the worker for back-compat/tuning.
         plasticity_default=0.3,
+        # L32: who someone is matters, but it is rarely *urgent* -- above the
+        # neutral middle, below the kinds that carry a duty of care.
+        importance=0.6,
         # L3: identity carries its own set-evidence gate (distinct sources +
         # age-stability + confidence), floored at three sources and a real
         # stability delay. It used to ride the bare ``set_evidence_gate`` --
@@ -361,6 +374,11 @@ register_kind(
         # than identity (0.3), so confidence moves (accrual + decay + disproof)
         # are heavily damped once one is held.
         plasticity_default=0.2,
+        # L32: what someone stands for is near the top of the stakes ladder.
+        # Getting a value wrong costs more than getting a preference wrong,
+        # which is the same instinct behind this kind's ``protect_downward``
+        # standing and its raised core-lane bar.
+        importance=0.85,
         # L3: stricter than the plain set gate (more sources, non-instant age,
         # higher confidence) -- values should be slow and hard-won.
         promotion_gate=value_evidence_gate,
@@ -402,6 +420,11 @@ register_kind(
         # topic's emotional weather shifts faster than an identity trait or a
         # value -> higher plasticity so confidence tracks change more readily.
         plasticity_default=0.5,
+        # L32: high stakes on a *separate* axis from confidence -- "he may be
+        # struggling with X" is exactly the shaky-but-weighty belief L32
+        # exists to stop burying. Note this is the kind whose concepts also
+        # attract the largest affect lift, so the two compound.
+        importance=0.75,
         # L3: the fluid-end gate (a lower age + confidence bar than value,
         # but still >= 2 distinct sources).
         promotion_gate=affective_evidence_gate,
@@ -442,6 +465,11 @@ register_kind(
         # relationship's rhythm shifts, so confidence should track change
         # readily rather than harden into a fixed trait.
         plasticity_default=0.5,
+        # L32: the canonical *low*-stakes kind, and the one the L32 sketch
+        # names outright -- an enjoyment is worth having and cheap to be
+        # wrong about, so it should not crowd out weightier beliefs however
+        # confident it gets.
+        importance=0.3,
         # K81: the taste gate -- >= 2 clusters of evidence, a short stability
         # delay, a moderate confidence bar (floors the shared set gate).
         promotion_gate=taste_evidence_gate,
@@ -472,6 +500,9 @@ register_kind(
         subject="aiko",
         evidence_model="set",
         plasticity_default=0.4,
+        # L32: how she allocates attention shapes behaviour, so it sits above
+        # the middle -- but it is a self-observation, not a duty of care.
+        importance=0.6,
         promotion_gate=conduct_evidence_gate,
         surface_weights=SurfaceWeights(
             context=0.6, recency=0.2, stability=0.2, activation=0.15,
@@ -499,6 +530,10 @@ register_kind(
         # (same band as identity), so a settled arc resists churn but can still
         # decay if never recalled.
         plasticity_default=0.3,
+        # L32: a told story is worth remembering but rarely changes what she
+        # should *do* -- the no-opinion middle, left explicit so the ladder
+        # reads end to end.
+        importance=0.5,
         # L18e: a closed arc asserts on how *settled* it is, not recency
         # (mirrors identity) -- context stays dominant, stability breaks ties.
         surface_weights=SurfaceWeights(
@@ -532,6 +567,10 @@ register_kind(
         # mid band, more fluid than a settled narrative arc (0.3) but stickier
         # than affect (0.5).
         plasticity_default=0.4,
+        # L32: what someone is reaching for is worth protecting -- above a
+        # closed arc, since a trajectory is still live and can be helped or
+        # hindered by how she responds.
+        importance=0.6,
         # L3: the aspiration gate -- >= 3 ordered steps, a *higher* age floor
         # than narrative (a trajectory must be sustained), moderate confidence.
         promotion_gate=aspiration_evidence_gate,
@@ -566,6 +605,9 @@ register_kind(
         # L16: rituals are mid-band -- warmer/softer than a value, but a
         # settled shared pattern shouldn't churn every time a moment lands.
         plasticity_default=0.4,
+        # L32: relationship colour. Warm and worth having, low cost to be
+        # wrong about -- just above taste.
+        importance=0.4,
         # L3: recurrence gate (>= 3 distinct moments / non-instant age /
         # moderate confidence) -- a one-off evening isn't a ritual.
         promotion_gate=ritual_evidence_gate,
@@ -605,6 +647,11 @@ register_kind(
         # can be renegotiated. This is the base the L16 trust modulation lifts
         # from as the bond deepens (see ``plasticity_modulation`` below).
         plasticity_default=0.45,
+        # L32: the top of the stakes ladder. A boundary is the one kind that
+        # *gates behaviour*, and crossing one costs more than any amount of
+        # being right elsewhere -- so it outranks even a value, and stays
+        # weighty at confidence levels that would bury an ordinary belief.
+        importance=0.9,
         # L3: the boundary gate -- floors the source count at 1 so a single
         # deliberate anchor can promote (cluster-only boundaries still need >= 2,
         # enforced by the proposer), with medium age + confidence bars.
@@ -657,6 +704,9 @@ register_kind(
         # user's habits shift, but shouldn't churn turn to turn. Slightly stickier
         # than affect (0.5), on par with boundary (0.45) as a behaviour guide.
         plasticity_default=0.4,
+        # L32: how to talk to someone shapes every turn, but getting it wrong
+        # is recoverable in a way a boundary is not -- the neutral middle.
+        importance=0.5,
         # L3: boundary-like gate -- a single self-authored anchor promotes
         # ("tell her once and it sticks"); cluster-only inference still needs >= 2
         # (enforced by the proposer composition rule), with medium age/confidence.
@@ -704,6 +754,10 @@ register_kind(
         # but is stickier than raw affect (0.5) since holding two patterns at
         # once is a considered observation, not a mood.
         plasticity_default=0.35,
+        # L32: an unresolved friction is weighty -- it is the kind delivered
+        # "with the most care of any kind". Read only by the T6 cue producer's
+        # ripeness signal, since a tension never renders in the T3 block.
+        importance=0.7,
         # L3: the meta gate -- floors the source count at 2 (both sides of the
         # friction), with a higher age + confidence bar than the fluid kinds
         # because a tension asserts with care.
@@ -746,6 +800,9 @@ register_kind(
         # thing in the layer (it sits above a whole cluster of beliefs), so it
         # should drift the slowest of the metas, near identity/value.
         plasticity_default=0.25,
+        # L32: an abstraction inherits weight from the beliefs beneath it, so
+        # it sits a little above the identity traits it usually generalizes.
+        importance=0.65,
         # L3: the abstraction gate -- floors sources at 2 with age + confidence
         # bars a notch above tension, because a generalization should be slow
         # and well-supported before it speaks for the concepts beneath it.

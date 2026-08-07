@@ -23,7 +23,9 @@ from app.core.concepts.concept_view import ConceptView, concept_view_from
 
 
 def _c(cid, *, subject="user", kind="identity", confidence=0.7,
-       label=None, status="active"):
+       label=None, status="active", sources=3):
+    # ``sources`` defaults to the settled bar so a fixture written before
+    # L30a reads as an established belief rather than an open question.
     return SimpleNamespace(
         concept_id=cid,
         label=label or f"concept {cid}",
@@ -31,6 +33,7 @@ def _c(cid, *, subject="user", kind="identity", confidence=0.7,
         subject=subject,
         confidence=confidence,
         status=status,
+        distinct_source_count=sources,
     )
 
 
@@ -188,6 +191,39 @@ class StableRankTests(unittest.TestCase):
         out = ConceptView(store).for_target("profile_block", subject="user")
         self.assertEqual([c.concept_id for c in out], [2, 4, 9])
 
+    def test_kind_stakes_do_not_reach_the_t0_lanes(self) -> None:
+        # L32 guard. Importance is a live, affect-sensitive number, so
+        # letting it into these lanes would put exactly the churn back that
+        # banding was introduced to remove -- a topic's emotional weather
+        # shifting mid-session would resequence the T0 profile block.
+        # ``value`` outranks ``identity`` on the L32 stakes ladder, so if
+        # importance ever leaked into the sort the value row would lead.
+        store = _FakeStore([
+            _c(1, kind="identity", confidence=0.93),
+            _c(2, kind="value", confidence=0.87),
+        ])
+        view = ConceptView(store)
+        self.assertEqual([c.concept_id for c in view.core()], [1, 2])
+        self.assertEqual(
+            [
+                c.concept_id
+                for c in view.for_target("profile_block", subject="user")
+            ],
+            [1, 2],
+        )
+
+    def test_the_t0_lane_module_does_not_import_importance(self) -> None:
+        # The structural half of the same guard: a future edit can only
+        # break the ordering invariant above by reaching for the module,
+        # and this fails at the import rather than at the symptom.
+        import inspect
+
+        from app.core.concepts import concept_view
+
+        self.assertNotIn(
+            "concept_importance", inspect.getsource(concept_view)
+        )
+
 
 class CoreLaneTests(unittest.TestCase):
     """L27 always-on core lane: registry-driven, per-kind bars, balanced
@@ -266,6 +302,265 @@ class RelevantTests(unittest.TestCase):
     def test_none_embedding_degrades(self) -> None:
         store = _FakeStore([_c(1)])
         self.assertEqual(ConceptView(store).relevant(None), [])
+
+
+class HypothesesTests(unittest.TestCase):
+    """L30a: the one read path that leaves the active-only contract."""
+
+    def test_reads_candidates_not_actives(self) -> None:
+        store = _FakeStore([
+            _c(1, status="active", confidence=0.5, sources=1),
+            _c(2, status="candidate", confidence=0.5, sources=1),
+        ])
+        out = ConceptView(store).hypotheses([1.0], k=5)
+        self.assertEqual([c.concept_id for c, _s in out], [2])
+        self.assertEqual(store.nearest_calls[0]["status"], "candidate")
+
+    def test_ungrounded_proposals_are_excluded(self) -> None:
+        # A zero-source candidate scores *highest* on unsettledness
+        # precisely because nothing supports it. Without this floor the
+        # lane would lead with bare LLM hunches -- on the measured graph
+        # the top seven rows were all ungrounded.
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.68, sources=0),
+            _c(2, status="candidate", confidence=0.68, sources=1),
+        ])
+        out = ConceptView(store).hypotheses([1.0], k=5)
+        self.assertEqual([c.concept_id for c, _s in out], [2])
+
+    def test_a_belief_waiting_only_on_the_age_floor_is_not_an_open_question(
+        self,
+    ) -> None:
+        # Twice grounded and fully confident: still a candidate, but only
+        # because the promotion clock has not run out. It is not something
+        # Aiko is unsure about, and the lane must not say she is.
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.85, sources=2),
+        ])
+        self.assertEqual(ConceptView(store).hypotheses([1.0], k=5), [])
+
+    def test_a_thinly_grounded_candidate_qualifies(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.85, sources=1),
+        ])
+        self.assertEqual(len(ConceptView(store).hypotheses([1.0], k=5)), 1)
+
+    def test_high_confidence_alone_does_not_disqualify(self) -> None:
+        # The measured candidate pool had a median confidence of 0.82, so
+        # a lane that skipped confident rows would surface almost nothing.
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.95, sources=1),
+        ])
+        self.assertEqual(len(ConceptView(store).hypotheses([1.0], k=5)), 1)
+
+    def test_thresholds_are_caller_tunable(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.85, sources=2),
+        ])
+        view = ConceptView(store)
+        self.assertEqual(view.hypotheses([1.0], min_unsettled=0.9), [])
+        self.assertEqual(len(view.hypotheses([1.0], min_unsettled=0.1)), 1)
+        self.assertEqual(view.hypotheses([1.0], min_sources=5), [])
+
+    def test_min_sim_drops_off_topic_questions(self) -> None:
+        store = _FakeStore(
+            [_c(1, status="candidate", confidence=0.6, sources=1)],
+            near_score=0.2,
+        )
+        view = ConceptView(store)
+        self.assertEqual(view.hypotheses([1.0], min_sim=0.5), [])
+        self.assertEqual(len(view.hypotheses([1.0], min_sim=0.1)), 1)
+
+    def test_degrades_on_no_store_no_embedding_and_a_raising_store(
+        self,
+    ) -> None:
+        self.assertEqual(ConceptView(None).hypotheses([1.0]), [])
+        store = _FakeStore([_c(1, status="candidate", sources=1)])
+        self.assertEqual(ConceptView(store).hypotheses(None), [])
+        self.assertEqual(ConceptView(store).hypotheses([1.0], k=0), [])
+
+        class _Boom(_FakeStore):
+            def nearest(self, *_a, **_kw):
+                raise RuntimeError("store down")
+
+        self.assertEqual(
+            ConceptView(_Boom([_c(1)])).hypotheses([1.0]), []
+        )
+
+    def test_forwards_subject_when_set(self) -> None:
+        store = _FakeStore([_c(1, subject="aiko", status="candidate")])
+        ConceptView(store).hypotheses([1.0], subject="aiko", k=2)
+        self.assertEqual(store.nearest_calls[0]["subject"], "aiko")
+
+
+class TestableTests(unittest.TestCase):
+    """L30b: the subset of open questions an *answer* could settle.
+
+    The off-turn sibling of :meth:`hypotheses`, so the two eligibility
+    bars are shared. What is specific here is the age exclusion, and it
+    is the reason the read exists: answering adds a distinct source, so
+    it can only move a belief held back on sources or conviction. On the
+    live graph better than half the candidate pool already clears both
+    and is only waiting out its kind's engaged-day floor -- asking about
+    one of those spends a question to change nothing.
+    """
+
+    def test_it_reads_candidates_with_no_query_vector(self) -> None:
+        # The worker runs during quiet windows, so there is no turn to be
+        # relevant to and no cosine term to apply.
+        store = _FakeStore([
+            _c(1, status="active", confidence=0.5, sources=1),
+            _c(2, status="candidate", confidence=0.5, sources=1),
+        ])
+        out = ConceptView(store).testable()
+        self.assertEqual([c.concept_id for c, _u in out], [2])
+        self.assertEqual(store.nearest_calls, [])
+
+    def test_a_belief_waiting_only_on_the_clock_is_skipped(self) -> None:
+        # Three sources at 0.95 clears identity's own gate on everything
+        # but age. L3 will promote it unaided; asking reads as a
+        # pointless quiz.
+        store = _FakeStore([
+            _c(1, kind="identity", status="candidate",
+               confidence=0.95, sources=3),
+        ])
+        self.assertEqual(
+            ConceptView(store).testable(min_unsettled=0.0), [],
+        )
+
+    def test_a_belief_short_on_sources_is_testable(self) -> None:
+        # Confident but singly grounded: an answer is exactly the second
+        # source it needs.
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.9, sources=1),
+        ])
+        out = ConceptView(store).testable(min_unsettled=0.0)
+        self.assertEqual([c.concept_id for c, _u in out], [1])
+
+    def test_a_belief_short_on_conviction_is_testable(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.3, sources=3),
+        ])
+        out = ConceptView(store).testable(min_unsettled=0.0)
+        self.assertEqual([c.concept_id for c, _u in out], [1])
+
+    def test_the_age_probe_uses_the_kind_s_own_gate(self) -> None:
+        # Every shipped kind floors the three legs with its own constants
+        # via ``max`` -- identity wants three sources where the global
+        # default wants two. A check written against ``concept_promote_*``
+        # alone would call this one settled and never ask about it.
+        store = _FakeStore([
+            _c(1, kind="identity", status="candidate",
+               confidence=0.9, sources=2),
+        ])
+        out = ConceptView(store).testable(min_unsettled=0.0)
+        self.assertEqual([c.concept_id for c, _u in out], [1])
+
+    def test_ungrounded_proposals_are_excluded(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.68, sources=0),
+            _c(2, status="candidate", confidence=0.68, sources=1),
+        ])
+        out = ConceptView(store).testable()
+        self.assertEqual([c.concept_id for c, _u in out], [2])
+
+    def test_settled_enough_rows_are_excluded(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.6, sources=1),
+        ])
+        self.assertEqual(ConceptView(store).testable(min_unsettled=0.99), [])
+
+    def test_it_ranks_most_unsettled_first(self) -> None:
+        store = _FakeStore([
+            _c(1, status="candidate", confidence=0.9, sources=1),
+            _c(2, status="candidate", confidence=0.3, sources=1),
+        ])
+        out = ConceptView(store).testable(min_unsettled=0.0)
+        self.assertEqual([c.concept_id for c, _u in out], [2, 1])
+
+    def test_limit_and_subject_are_honoured(self) -> None:
+        store = _FakeStore([
+            _c(1, subject="user", status="candidate",
+               confidence=0.3, sources=1),
+            _c(2, subject="aiko", status="candidate",
+               confidence=0.3, sources=1),
+        ])
+        view = ConceptView(store)
+        self.assertEqual(len(view.testable(limit=1)), 1)
+        self.assertEqual(
+            [c.concept_id for c, _u in view.testable(subject="aiko")], [2],
+        )
+        self.assertEqual(view.testable(limit=0), [])
+
+    def test_it_degrades_rather_than_raising(self) -> None:
+        # The ask lane going silent is a worse failure than one odd
+        # question, so every read error resolves to an empty list.
+        self.assertEqual(ConceptView(None).testable(), [])
+
+        class _Boom(_FakeStore):
+            def list_by(self, **_kw):
+                raise RuntimeError("store down")
+
+        self.assertEqual(ConceptView(_Boom([_c(1)])).testable(), [])
+
+    def test_a_malformed_row_is_treated_as_unsettled(self) -> None:
+        # The gate probe cannot read this row, so it errs toward asking.
+        broken = _c(1, status="candidate", confidence=0.9, sources=1)
+        broken.confidence = "not a number"
+        out = ConceptView(_FakeStore([broken])).testable(min_unsettled=0.0)
+        self.assertEqual([c.concept_id for c, _u in out], [1])
+
+
+class TentativeRegisterIsolationTests(unittest.TestCase):
+    """L30a: candidates must reach the hypothesis lane and nowhere else.
+
+    A candidate leaking into ``core`` / ``for_target`` would put an
+    unestablished belief into the T0 profile block -- Aiko asserting
+    something she has not earned, and a prompt-cache prefix break on top.
+    """
+
+    def _mixed(self) -> _FakeStore:
+        return _FakeStore([
+            _c(1, status="active", confidence=0.9),
+            _c(2, status="candidate", confidence=0.95, sources=1),
+        ])
+
+    def test_the_core_lane_never_returns_a_candidate(self) -> None:
+        view = ConceptView(self._mixed())
+        self.assertEqual([c.concept_id for c in view.core()], [1])
+        self.assertEqual(
+            [c.concept_id for c in view.core_lane(limit=5)], [1]
+        )
+
+    def test_the_profile_block_lane_never_returns_a_candidate(self) -> None:
+        view = ConceptView(self._mixed())
+        self.assertEqual(
+            [
+                c.concept_id
+                for c in view.for_target("profile_block", subject="user")
+            ],
+            [1],
+        )
+
+    def test_the_turn_relevant_lane_never_returns_a_candidate(self) -> None:
+        view = ConceptView(self._mixed())
+        self.assertEqual(
+            [c.concept_id for c, _s in view.relevant([1.0], k=5)], [1]
+        )
+
+    def test_only_the_hypothesis_lane_queries_candidates(self) -> None:
+        # Structural half of the guard: every other read must ask the
+        # store for actives, so a future edit cannot quietly widen one.
+        store = self._mixed()
+        view = ConceptView(store)
+        view.relevant([1.0], k=5)
+        view.core()
+        view.for_target("profile_block", subject="user")
+        self.assertTrue(
+            all(call["status"] == "active" for call in store.nearest_calls)
+        )
+        view.hypotheses([1.0], k=5)
+        self.assertEqual(store.nearest_calls[-1]["status"], "candidate")
 
 
 class ForTargetTests(unittest.TestCase):

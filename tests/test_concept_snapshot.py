@@ -1,12 +1,15 @@
 """Tests for :func:`app.core.concepts.concept_snapshot.build_concepts_snapshot`."""
 from __future__ import annotations
 
+import json
 import tempfile
 import types
 import unittest
 from pathlib import Path
 
 import numpy as np
+
+from app.core.infra import timephrase
 
 from app.core.concepts.concept_snapshot import (
     build_concept_quality,
@@ -404,6 +407,120 @@ class BuildConceptQualityTests(unittest.TestCase):
         report = build_concept_quality(store, None, None, BrokenEvents())
         self.assertTrue(report["enabled"])
         self.assertEqual(report["flow"]["promotion_rate_pct"], 0.0)
+
+
+class ImportanceFieldTests(unittest.TestCase):
+    """L32: the axis rides along on the reads that already happened.
+
+    The failure mode worth guarding is silence -- importance is optional
+    everywhere, so a broken join produces a snapshot that looks fine and
+    is quietly missing an axis.
+    """
+
+    def _graph(self):
+        return GraphStub([
+            types.SimpleNamespace(
+                cluster_id=7,
+                representative_id=100,
+                summary="work stress",
+                member_ids=(100, 101),
+            )
+        ])
+
+    def _affect(self, key):
+        # A charged cluster, so the lift is visible rather than inferred.
+        if key.endswith(".user"):
+            return json.dumps({
+                "7": {
+                    "valence": -0.9, "arousal": 0.8, "samples": 12,
+                    "updated_at": timephrase.utcnow().isoformat(),
+                }
+            })
+        return None
+
+    def _grounded_store(self, kind: str = "boundary"):
+        store = _store()
+        c = _concept("go gentler about work")
+        c.kind = kind
+        c.subject = "user"
+        c.status = "active"
+        cid = store.add(c)
+        store.add_edge(
+            ConceptEdge("cluster", "100", "concept", str(cid), "evidence")
+        )
+        return store
+
+    def test_the_axis_is_absent_without_a_kv_reader(self) -> None:
+        # No affect source means no importance, and dropping the fields is
+        # the honest answer -- a bare kind prior dressed up as the full
+        # number would read as "no affect on its topics".
+        snap = build_concepts_snapshot(
+            self._grounded_store(), MemStub({}), self._graph()
+        )
+        self.assertNotIn("importance", snap["concepts"][0])
+
+    def test_a_grounded_concept_is_lifted_by_its_topic(self) -> None:
+        snap = build_concepts_snapshot(
+            self._grounded_store(), MemStub({}), self._graph(),
+            kv_get=self._affect,
+        )
+        row = snap["concepts"][0]
+        self.assertGreater(row["importance_charge"], 0.0)
+        self.assertGreater(row["importance"], row["importance_prior"])
+        self.assertLessEqual(row["importance"], 1.0)
+
+    def test_the_prior_tracks_the_kind(self) -> None:
+        def prior(kind: str) -> float:
+            snap = build_concepts_snapshot(
+                self._grounded_store(kind), MemStub({}), self._graph(),
+                kv_get=self._affect,
+            )
+            return snap["concepts"][0]["importance_prior"]
+
+        self.assertGreater(prior("boundary"), prior("taste"))
+
+    def test_a_broken_kv_read_drops_the_axis_not_the_snapshot(self) -> None:
+        def explode(_key):
+            raise RuntimeError("kv is down")
+
+        snap = build_concepts_snapshot(
+            self._grounded_store(), MemStub({}), self._graph(),
+            kv_get=explode,
+        )
+        # load_map swallows the read, so the context still builds -- what
+        # matters is that the page came back whole either way.
+        self.assertTrue(snap["enabled"])
+        self.assertEqual(len(snap["concepts"]), 1)
+
+    def test_the_quality_report_measures_the_attention_gap(self) -> None:
+        # The section's reason for existing: an active belief that matters
+        # more than it is established.
+        store = _store()
+        c = _concept("be gentle about his work stress")
+        c.kind = "boundary"
+        c.subject = "user"
+        c.status = "active"
+        c.confidence = 0.4
+        cid = store.add(c)
+        store.add_edge(
+            ConceptEdge("cluster", "100", "concept", str(cid), "evidence")
+        )
+        report = build_concept_quality(
+            store, MemStub({}), self._graph(), None, kv_get=self._affect,
+        )
+        section = report["importance"]
+        self.assertEqual(section["active"], 1)
+        self.assertEqual(section["affect_lifted"], 1)
+        self.assertEqual(section["attention_gap"], 1)
+        self.assertEqual(
+            section["attention_gap_sample"][0]["id"], cid
+        )
+
+    def test_the_importance_section_is_empty_without_a_kv_reader(self) -> None:
+        store = _store()
+        store.add(_concept("no affect source"))
+        report = build_concept_quality(store, None, None, None)
+        self.assertEqual(report["importance"], {})
 
 
 def _concept(label: str) -> Concept:

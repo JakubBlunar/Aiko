@@ -26,9 +26,14 @@ the full store, so the filter pills and totals stay honest on any page.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
+from app.core.concepts.concept_importance import memory_ids_from_edges
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.core.concepts.concept_event_store import ConceptEventStore
     from app.core.concepts.concept_quality import (
         EvidenceFacts,
@@ -41,6 +46,9 @@ if TYPE_CHECKING:
     )
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import MemoryStore
+
+
+log = logging.getLogger("app.concept_snapshot")
 
 
 def _disabled() -> dict[str, Any]:
@@ -142,6 +150,7 @@ def build_concepts_snapshot(
     offset: int = 0,
     status: str | None = None,
     subject: str | None = None,
+    kv_get: "Callable[[str], str | None] | None" = None,
 ) -> dict[str, Any]:
     """Serialise one page of the concept layer for ``GET /api/concepts``.
 
@@ -149,6 +158,11 @@ def build_concepts_snapshot(
     it. ``limit=None`` returns everything from ``offset`` on, which is
     the whole graph by default -- kept as the default so an unparameterised
     call still means "the whole snapshot".
+
+    ``kv_get`` enables the L32 ``importance`` axis, which needs the
+    per-cluster affect maps out of ``kv_meta``. Omitting it drops the
+    three importance fields rather than failing -- they are a debug lens,
+    not part of the contract.
 
     Returns an empty-but-valid ``enabled=False`` shape when the store is
     absent (``concepts_enabled`` off or init failed) so callers never
@@ -193,10 +207,22 @@ def build_concepts_snapshot(
     # Evidence resolution is the expensive half (a join per edge), so it
     # runs only for the rows actually being returned.
     cluster_labels = _cluster_label_map(topic_graph)
+    # L32 importance rides along free: the edges it needs to find a
+    # concept's grounding clusters are the same ones the loop below
+    # resolves for display, so they are read once and used twice.
+    page_edges = {c.concept_id: store.evidence_of(c.concept_id) for c in page}
+    importance = importance_context_for(
+        {
+            cid: memory_ids_from_edges(edges)
+            for cid, edges in page_edges.items()
+        },
+        topic_graph,
+        kv_get,
+    )
     concepts_out: list[dict[str, Any]] = []
     for c in page:
         evidence: list[dict[str, Any]] = []
-        for e in store.evidence_of(c.concept_id):
+        for e in page_edges.get(c.concept_id, ()):
             evidence.append({
                 "src_type": e.src_type,
                 "src_id": e.src_id,
@@ -210,7 +236,7 @@ def build_concepts_snapshot(
         embedding = getattr(c, "embedding", None)
         dim = int(embedding.size) if embedding is not None else 0
 
-        concepts_out.append({
+        row: dict[str, Any] = {
             "id": int(c.concept_id),
             "label": c.label,
             "kind": c.kind,
@@ -228,7 +254,16 @@ def build_concepts_snapshot(
             "promoted_at": c.promoted_at,
             "dim": dim,
             "evidence": evidence,
-        })
+        }
+        if importance is not None:
+            detail = importance.detail(c)
+            # Kept as three fields, not one: a reader needs to see whether a
+            # high number came from the kind's stake or from the emotional
+            # charge of the topics underneath it.
+            row["importance"] = round(detail.importance, 4)
+            row["importance_prior"] = round(detail.prior, 4)
+            row["importance_charge"] = round(detail.charge, 4)
+        concepts_out.append(row)
 
     return {
         "enabled": True,
@@ -242,6 +277,44 @@ def build_concepts_snapshot(
         "counts": {"by_status": by_status, "by_subject": by_subject},
         "concepts": concepts_out,
     }
+
+
+def importance_context_for(
+    memory_ids_by_concept: dict[int, tuple[int, ...]],
+    topic_graph: "TopicGraph | None",
+    kv_get: "Callable[[str], str | None] | None",
+):
+    """An :class:`ImportanceContext` over a set of concepts, or ``None``.
+
+    Takes the already-resolved cluster-evidence ids so neither caller pays
+    for a second edge read: the snapshot reuses the edges its display loop
+    fetched, the quality report does one bulk query for the whole graph.
+    Returns ``None`` without a ``kv_get`` (nothing to read affect from) or
+    on any failure -- importance is a lens on the report, never a reason
+    for the report to fail.
+    """
+    if kv_get is None:
+        return None
+    try:
+        from app.core.concepts.cluster_affect import (
+            KV_CLUSTER_AFFECT_AIKO,
+            KV_CLUSTER_AFFECT_USER,
+            load_map,
+        )
+        from app.core.concepts.concept_importance import (
+            ImportanceContext,
+            cluster_membership,
+        )
+
+        return ImportanceContext(
+            affect_user=load_map(kv_get, KV_CLUSTER_AFFECT_USER),
+            affect_aiko=load_map(kv_get, KV_CLUSTER_AFFECT_AIKO),
+            cluster_by_memory=cluster_membership(topic_graph),
+            memory_ids_by_concept=memory_ids_by_concept,
+        )
+    except Exception:
+        log.debug("importance context build failed", exc_info=True)
+        return None
 
 
 # ── L22 quality report ────────────────────────────────────────────────
@@ -326,6 +399,7 @@ def build_concept_quality(
     event_store: "ConceptEventStore | None" = None,
     *,
     thresholds: "QualityThresholds | None" = None,
+    kv_get: "Callable[[str], str | None] | None" = None,
 ) -> dict[str, Any]:
     """Build the L22 quality report for ``GET /api/concepts/quality``.
 
@@ -333,6 +407,9 @@ def build_concept_quality(
     evidence joins -- then hands everything to the pure scorer in
     :mod:`app.core.concepts.concept_quality`. Returns the disabled shape
     when the store is absent, matching ``build_concepts_snapshot``.
+
+    ``kv_get`` enables the L32 importance section, same as in
+    :func:`build_concepts_snapshot`.
     """
     from app.core.concepts.concept_quality import (
         build_quality_report,
@@ -349,17 +426,26 @@ def build_concept_quality(
         except Exception:
             event_counts = {}
 
+    rows = list(store.all())
     return build_quality_report(
-        store.all(),
+        rows,
         event_counts=event_counts,
         evidence_facts=resolve_evidence_facts(store, memory_store, topic_graph),
         thresholds=thresholds,
+        # The report scores the whole graph rather than a page, so it
+        # takes the bulk edge read instead of the snapshot's reuse.
+        importance=importance_context_for(
+            store.cluster_evidence_for([c.concept_id for c in rows]),
+            topic_graph,
+            kv_get,
+        ),
     )
 
 
 __all__ = [
     "build_concept_quality",
     "build_concepts_snapshot",
+    "importance_context_for",
     "resolve_evidence_facts",
     "resolve_evidence_labels",
 ]

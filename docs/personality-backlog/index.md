@@ -481,12 +481,81 @@ Shipped — self-history (all of it, in
   a self-history feature is a confident invented past.
 
 Open — later kinds and refinements (L29-L36, all detailed in
-[`concepts.md`](concepts.md)): relationship & meta narratives, concept
-hypotheses and the curiosity loop that tests them, concept fission,
-importance as a second axis beside confidence, introspective reflection,
-a richer edge taxonomy, and a strategy layer. **L35 (surface-reason
-labels) is shipped** — every concept in the L26 trace now names the
-signal that put it in the prompt.
+[`concepts.md`](concepts.md)): relationship & meta narratives, uncertainty zones
+to aim curiosity at, concept fission, introspective reflection, a richer edge
+taxonomy, and a strategy layer.
+**L35 (surface-reason labels) is shipped** — every concept in the L26 trace
+now names the signal that put it in the prompt.
+
+**L30a (the hypothesis lane) is shipped** — see
+[`shipped/concepts.md`](shipped/concepts.md#l30a-hypothesis-surfacing-lane).
+The concept layer now speaks in two registers: settled beliefs, and the things
+Aiko is still working out. Every other read path filters to `status="active"`,
+which hid `candidate` rows rather than hedging them; one new
+`ConceptView.hypotheses` lane reads them, capped at a single strongly-hedged
+line in its own budget source. The sketch's selection rule did not survive
+contact with a real graph and had to be replaced: candidate confidence turned
+out to be *high* (median 0.82, so it cannot be the filter), and **most
+candidates were held back only by the promotion age floor** (144 of 261
+against each kind's own gate) — so `unsettledness` reads evidence breadth and
+conviction and deliberately ignores age, because being young is not the same as
+being doubted. Ranking multiplies that by L32 importance, which is what the
+axis was built for.
+
+**L30b/L30c (the testing loop) are shipped** — see
+[`shipped/concepts.md`](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer).
+Aiko can now close an open question instead of only holding it: a
+`concept_hypothesis` cue raises one untested hunch — riding a topic she is
+already on, or out of a long lull — and a post-turn adjudicator folds the reply
+back onto that specific belief. Three decisions carried the design. Selection
+excludes the age-blocked rows, because an answer adds a *source* and those are
+waiting on a clock. The adjudicator returns **four** verdicts, not two: *"not
+really, it's more that I hate being still"* is the most valuable reply a hunch
+can get, and both halves of a confirm/deny split throw it away. And the four
+paths are asymmetric — a false confirm promotes a wrong belief where a false
+deny only costs re-earnable confidence, so confirming needs positive evidence
+from the model and every failure path lands on "unclear". Still open: L30d
+(uncertainty zones).
+
+**L30 Phase B (inventing a hypothesis) is shipped** — see
+[`shipped/concepts.md`](shipped/concepts.md#l30-phase-b-inventing-a-hypothesis----the-forward-direction),
+with [`docs/hypotheses.md`](../hypotheses.md) as the canonical reference for the
+whole layer. Every other part of the concept stack runs *backwards* from
+evidence, so it can only ever resolve a question already implicit in Aiko's
+inputs; the proposer runs forwards — it speculates, files the guess to its **own
+`hypotheses` table**, and the L30b/L30c loop tests it. Three decisions did the
+work. The guess lives in a separate table rather than as a `speculative` concept
+status, because a status makes safety depend on every concept read filtering
+correctly forever, and one miss puts a made-up sentence into the T0 profile block
+as something Aiko asserts. `credence` is *asserted* and never recomputed where
+`confidence` is *derived* and re-derived every tick, and every asymmetry with the
+concept side follows from that one fact — most visibly that a denial closes an
+invented row outright. And the "duplicate race" turned out to be the **normal**
+ending rather than an edge case: a confirmation becomes a memory, L2 clusters it
+and proposes the same concept knowing nothing about the hypothesis, and L2 needs
+one confirmation where graduation needs two — so linking runs after *every*
+confirmation and graduation takes a distinct `merged` exit instead of forking a
+near-twin. A confirmed guess enters the graph as an ordinary `candidate` at the
+default confidence: being right twice is not evidence beyond the two answers,
+which L3 counts like any others.
+
+**L32 (importance as a second axis) is shipped** — see
+[`shipped/concepts.md`](shipped/concepts.md#l32-concept-importance----a-second-axis-distinct-from-confidence).
+A concept now carries a stake as well as a probability, so an
+uncertain-but-weighty belief can outrank a certain-but-trivial one. The
+design question the sketch left open ("stored field or derived each turn?")
+turned out to decide everything: making it **derived** — a pure function of
+the kind's prior and the emotional charge of the topics the concept is
+grounded in — removed the migration, the writer, the plasticity interaction
+and the decay policy in one move, and left the axis status-agnostic so the
+L30 hypothesis lane can rank `candidate` rows with the same context. Two
+invariants hold it in place: the affect component only ever *lifts* (46% of
+the graph has no affect at all, so a symmetric blend would read "no data" as
+"trivial"), and it never reaches `ConceptView._stable_rank`, which feeds the
+T0 profile block and must stay prompt-cache stable. The measurement it left
+for L30a — **no active concept sits below 0.6 confidence**, so "important but
+uncertain" lives in the candidate pool — is what pointed that lane at
+candidates rather than at low-confidence actives.
 
 The surfacing-outcome group (L38-L42, from the surfacing audit; see the spine
 section at the top of this file). **L37, L38, and L42 are shipped** — the ledger

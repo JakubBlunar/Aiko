@@ -300,6 +300,15 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # unanswered by the very message that preceded it. Stage A also
         # subsumes K9's seed resolver: an ``either_party`` cue is spent
         # when the turn lands on its subject, surfaced or not.
+        # L30c runs first and claims every awaiting ``concept_hypothesis``
+        # row. Stage B judges "was this answered?" by topical overlap, and
+        # for a belief probe that reads a flat "no, not really" as a
+        # successful answer -- so the hunch would be marked settled while
+        # the belief it was about learned nothing.
+        try:
+            self._resolve_concept_hypotheses(user_text=user_text)
+        except Exception:
+            log.debug("concept hypothesis resolve failed", exc_info=True)
         try:
             self._settle_awaiting_cues(user_text=user_text)
         except Exception:
@@ -1413,6 +1422,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 # family and defers to turning_over.
                 self._maybe_arm_sleep_return_slot(engagement)
                 self._maybe_arm_forward_curiosity_slot(engagement)
+                self._maybe_arm_concept_hypothesis_slot(engagement)
                 # K57: a long-enough gap (closeness-scaled, well above
                 # the K14 band) registers as a lonely episode — the
                 # one place K14's "not a complaint" framing is

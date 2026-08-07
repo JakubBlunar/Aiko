@@ -22,6 +22,8 @@ For things she can't just know:
 | `recall` | Semantic search across memories, recent messages, and uploaded documents (LanceDB). |
 | `recall_topic` | Rounds up everything she remembers about a whole topic/theme (a cluster), not just the single closest line. No-op without a persistent topic graph. |
 | `recall_concept` | Explains *why* she thinks/believes something — a higher-order concept with its rationale, supporting memories, topic areas, and related concepts. No-op without the concept store wired in. |
+| `recall_self_history` | Walks how a belief *changed* — eras of formed / replaced / faded / revived / held-all-along, each with the reason recorded at the time. Returns `thin_record` rather than improvising when the trail is too sparse. |
+| `recall_hypotheses` | Lists what she is still **unsure** about: open guesses with a credence, and an `origin` marking whether she derived each from something she noticed (`grounded`) or invented it outright (`invented`). See [`hypotheses.md`](hypotheses.md). |
 | `web_search` | Web results. The backend (LangSearch or DuckDuckGo) is configured under the `search` block; LangSearch falls back to DuckDuckGo. |
 
 ## Weather tools

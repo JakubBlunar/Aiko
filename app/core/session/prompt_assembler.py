@@ -211,6 +211,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "sleep_return_block",
         "away_activities_block",
         "forward_curiosity_block",
+        # L30b: last of the gap-cue family, matching GAP_CUE_ORDER — a
+        # belief probe is the heaviest thing to open a lull with.
+        "concept_hypothesis_block",
         "follow_up_block",
         # K70: rare longitudinal "you've grown since we met" cue. Sits
         # with the cue-producer / time-anchored family (follow_up); a
@@ -760,6 +763,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # gap-return cues so it defers to turning_over + away_activities
         # via the shared _gap_cue_surfaced flag.
         self._forward_curiosity_provider: Callable[[], str] | None = None
+        # L30b "test a hunch by asking". Dual-mode, so it takes user_text:
+        # the topic path needs the live message, the gap path only needs
+        # its slot. Runs LAST of the gap cues (it is last in
+        # GAP_CUE_ORDER) and only spends _gap_cue_surfaced on that path.
+        self._concept_hypothesis_provider: Callable[[str], str] | None = None
         # Follow-up cue: surfaces one "you could ask how their plan went"
         # hint after a user-mentioned future_plan's event time passes.
         # Independent of the gap-return cue family (does not touch
@@ -1969,6 +1977,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     forward_curiosity_block = ""
 
+        # L30b: "you've had this hunch and never checked it". Runs after
+        # every other gap cue so its fallback path reads their
+        # _gap_cue_surfaced flag and stands down; its topic path is
+        # independent of that family and can fire mid-conversation.
+        concept_hypothesis_block = ""
+        if getattr(self, "_concept_hypothesis_provider", None) is not None:
+            with _timed_phase(provider_ms, "concept_hypothesis"):
+                try:
+                    concept_hypothesis_block = (
+                        self._concept_hypothesis_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "concept_hypothesis provider raised", exc_info=True,
+                    )
+                    concept_hypothesis_block = ""
+
         # Follow-up cue: "their plan just happened, you can ask how it
         # went". Time-anchored (not gap-gated), independent of the
         # _gap_cue_surfaced family.
@@ -3088,6 +3113,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # provider's _gap_cue_surfaced guard ensures only one of the
             # three renders per return. One-shot.
             system_parts.append(forward_curiosity_block)
+        if concept_hypothesis_block:
+            # L30b: "you've had this hunch and never checked it" — last of
+            # the gap-cue family, and the only one that can also arrive on
+            # topic rather than on a return.
+            system_parts.append(concept_hypothesis_block)
         if follow_up_block:
             # FollowUpWorker cue: "their plan just happened, you can ask
             # how it went". Time-anchored, independent of the gap-cue

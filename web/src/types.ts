@@ -975,6 +975,18 @@ export interface ConceptRow {
   status: string; // "candidate" | "active" | "dormant" | "retired" | ...
   confidence: number;
   plasticity: number;
+  /**
+   * L32 importance: how much the belief *matters*, a separate axis from
+   * how likely it is to be true. Derived at read time from the kind's
+   * stake prior plus the emotional charge of the topics it stands on, so
+   * it is absent on older payloads and whenever the affect maps are
+   * unreadable. `importance_prior` is the bare kind stake and
+   * `importance_charge` the lift on top, kept apart so the panel can show
+   * which of the two produced the number.
+   */
+  importance?: number;
+  importance_prior?: number;
+  importance_charge?: number;
   evidence_count: number;
   distinct_source_count: number;
   rationale: string;

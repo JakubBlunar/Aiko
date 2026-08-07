@@ -1616,6 +1616,15 @@ Aiko asks about them, and (c) capturing the user's answer back onto the *specifi
 concept as evidence. Split into L30a/b/c so the read side can ship without the
 elicitation loop.
 
+**Where this ended up (all of L30a/b/c and Phase B are shipped).** The design
+stance above holds for the *grounded* half and was outgrown by the other: a
+surfacing register over existing `candidate` rows can only ever resolve beliefs
+L2 already derived, which is a ceiling rather than a limitation. L30e adds the
+forward direction — a separate `hypotheses` table Aiko may *invent* into, tested
+by the same loop and graduating into the concept graph on confirmation. Read
+[`docs/hypotheses.md`](../../docs/hypotheses.md) as the canonical reference for
+the combined layer; the sub-entries below record what each slice decided.
+
 **Guardrails (carry-forward from L21 / L22 / L5).** A hypothesis lane is exactly
 the "blurt a half-formed model" failure L21 warns about, so it must stay quiet on
 an immature graph, be capped hard (one or two at a time), be hedged *below* the
@@ -1639,22 +1648,49 @@ migration required -- `candidate` status already exists.
 
 ## L30a. Hypothesis surfacing lane (the read + render side)
 
+**Status: shipped** (candidates surface as open questions in T3). See
+[`shipped/concepts.md`](shipped/concepts.md#l30a-hypothesis-surfacing-lane) for
+what landed, and in particular for the two measurements that overturned the
+selection design sketched below.
+
+**Still open.** The lane is inert in the sense L30 cares about: Aiko can now
+*see* her open questions, but nothing makes her *act* on one. L30b (curiosity
+producer, carrying `source_concept_id`) and L30c (fold the answer back onto the
+concept as evidence) are the rest of the loop. Also unwired: the lane never asks
+anything itself, so the K47 question-balance gate does not see it — that
+coupling has to be made explicit when L30b lands, or a hypothesis-driven ask can
+slip past the anti-nag budget. `rationale` is still not exposed as *why* she is
+unsure; it was left out to keep the block to one line.
+
+**Two measurements the sketch below got wrong**, both taken from a live
+261-candidate graph:
+
+1. **Confidence cannot be the filter.** The sketch proposed selecting rows under
+   a `hypothesis_max_confidence` of ~0.6. Only **2 of 388** active concepts sat
+   below 0.6, and the candidate pool's *median* confidence was **0.82** — the
+   proposer's confidence answers "is this a well-formed belief?", not "have we
+   established it?". Thresholding it surfaces the worst-written candidates, not
+   the open questions.
+2. **A `candidate` is usually not a doubt — it is just young.** **238 of 261**
+   candidates had already cleared every evidence and confidence bar and were
+   held back only by `concept_promote_min_age_days`. Any measure of uncertainty
+   that counts age would fill the lane with beliefs Aiko is not unsure about.
+
+What shipped instead ranks on **importance x unsettledness**, where
+unsettledness reads evidence breadth and conviction only. Answers to the
+sketch's three open questions: (1) bare candidates, with a minimum source
+count — ungrounded proposals score *highest* on unsettledness precisely because
+nothing supports them, so the floor is load-bearing rather than cosmetic; (2)
+shares the L21 maturity gate exactly; (3) one block, grouped by subject.
+
+<details>
+<summary>Original sketch (superseded — kept for the reasoning)</summary>
+
 **Motivation.** Give Aiko a distinct prompt block for her open questions about
 the user (and herself), sourced from the concepts she is *not* yet confident
 about, so she can reason with "what I'm still figuring out" alongside "what I
 know". This is the standalone, lowest-risk slice: read + render only, no
 behaviour change to how concepts are formed.
-
-**Key files.**
-[`concept_view.py`](../../app/core/concepts/concept_view.py) (new
-`hypotheses()` read path -- the only place allowed to read `status="candidate"`
-/ low-confidence `active` for surfacing);
-[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
-(`build_relevant_context` gathers a new hypothesis lane after the core/flex/
-activation lanes; a new `_render_hypothesis_concepts` + header, sibling to
-`_render_relevant_concepts`; dedup against `pinned_ids` / `seen_concept_ids` so a
-concept is never both a firm impression and an open question);
-[`memory_settings.py`](../../app/core/infra/memory_settings.py) (new knobs).
 
 **Sketched approach.** Add `ConceptView.hypotheses(embedding=None, *, subject,
 limit, max_confidence)` returning `status="candidate"` **plus** `status="active"`
@@ -1682,9 +1718,32 @@ aiko-subject the way the confident lanes already do?
 **Effort.** Small (read + render + budget; the lifecycle already produces the
 rows).
 
+</details>
+
 ---
 
 ## L30b. Curiosity-driven hypothesis testing (ask to firm it up)
+
+**Status: shipped** (a `concept_hypothesis` cue lets Aiko raise an untested
+hunch, on-topic or out of a lull). See
+[`shipped/concepts.md`](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer)
+for what landed.
+
+**Answers to the sketch's open questions.** (1) Neither producer below — a
+first-class `concept_hypothesis` cue type in the pool, which already has the
+ask -> answer -> retire state machine `knowledge_gap` was wanted for, plus
+inventory targets and a shelf. (2) Not a confidence band: `ConceptView.testable`
+takes L30a's unsettledness and excludes rows whose *only* unmet promotion leg
+is age, since an answer adds a source and cannot move those. (3) Both — it
+shares the K47 budget *and* has its own `surface_cooldown_hours=20.0`.
+
+**One thing the sketch got wrong.** "Low-confidence concepts whose promotion is
+one or two pieces of evidence away" describes the wrong rows. On the live graph
+144 of 261 candidates are one *day* away, not one source away, and asking about
+those changes nothing.
+
+<details>
+<summary>Original sketch (superseded — kept for the reasoning)</summary>
 
 **Motivation.** A hypothesis Aiko can *see* (L30a) is inert until she does
 something about it. The payoff the user described is Aiko getting curious about
@@ -1723,9 +1782,27 @@ competes with K9/K34?
 
 **Depends on.** L30a (share the hypothesis selection), F2 knowledge-gap loop.
 
+</details>
+
 ---
 
 ## L30c. Answer capture -- fold the reply back into the concept (close the loop)
+
+**Status: shipped** (the reply is classified and written back onto that
+specific belief). See
+[`shipped/concepts.md`](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer).
+
+**Answers to the sketch's open questions.** (1) All three, layered: an echo
+gate first, then a small LLM adjudication returning four verdicts, with the F5
+conflict band used *only* as a one-way veto that downgrades a confirm.
+`CORRECT` is the fourth verdict the sketch's confirm/deny/didn't-answer split
+was missing, and it is the most valuable reply a hunch can get. (2)
+Synchronously in post-turn — the edge is written immediately and L3 promotes
+off it on the next tick. (3) One ask: `max_asks=1`, so an unanswered hunch is
+dropped rather than re-raised.
+
+<details>
+<summary>Original sketch (superseded — kept for the reasoning)</summary>
 
 **Motivation.** The genuinely tricky part the user flagged: when Aiko asks about a
 hypothesis and the user answers, that answer has to land back on the *specific*
@@ -1769,6 +1846,8 @@ open before it's dropped?
 **Depends on.** L30b (provenance on the question), L15 (belief revision for the
 denial path), L3 (promotion off the new evidence).
 
+</details>
+
 ---
 
 ## L30d. Uncertainty zones -- explicit known-unknowns to aim curiosity at
@@ -1803,6 +1882,70 @@ has become a real concept.
 
 **Depends on.** L30 (hypotheses / curiosity), L32 (importance is what makes a zone
 *worth* asking about), F2 (the knowledge-gap ask -> answer -> retire loop).
+
+---
+
+## L30e. Invented hypotheses -- a place to make guesses up (Phase B)
+
+**Status: shipped** (schema v34: a `hypotheses` table, a proposer worker, and
+graduation into the concept graph). See
+[`shipped/concepts.md`](shipped/concepts.md#l30-phase-b-inventing-a-hypothesis----the-forward-direction)
+for what landed, and [`docs/hypotheses.md`](../../docs/hypotheses.md) for the
+canonical reference — lifecycle diagram, `credence` vs `confidence`, invariants,
+settings table, debugging ladder.
+
+**Motivation.** L30a-c gave Aiko a way to *see* and *resolve* an open question,
+but every one of those questions was still derived from evidence she had already
+been handed. L2 abstracts over clusters, L3 waits, L30b tests what L2 produced —
+the whole stack runs backwards from input, and a mind that can only summarise its
+inputs never wonders anything. The user's framing was the sharper version: these
+should be things Aiko *explores*, including things unrelated to what she has
+observed, and a confirmed one should be able to become a concept. So the layer
+needed a forward direction.
+
+**What landed, in one paragraph.** A separate `hypotheses` table (deliberately
+*not* a `speculative` concept status — see the invariant below), an idle
+`HypothesisProposerWorker` that speculates during quiet windows behind two
+asymmetric cosine novelty gates, the existing L30b/L30c loop retargeted by a
+`target_type` in the cue payload so it tests inventions as readily as candidates,
+and three graduation exits: a new `candidate` concept, a merge into a belief that
+already existed, or a durable memory for a guess about how the *world* works.
+Plus `recall_hypotheses`, because two bullets in a prompt cannot answer "what are
+you still not sure about?".
+
+**The invariant that shaped everything.** An invention must not reach the concept
+graph before it graduates. A `speculative` status was the obvious cheaper design
+and is the wrong one: every concept read path filters on `status`, so one missed
+filter puts a made-up sentence into the T0 profile block as something Aiko
+asserts. A separate table makes that failure *impossible* rather than merely
+unlikely. Its second-order consequence is the `credence` / `confidence` split —
+confidence is derived from evidence and re-derived by L3 every tick, credence is
+asserted by the proposer and never recomputed by anything, which is why a denied
+hypothesis closes outright where a denied concept merely loses conviction.
+
+**The thing that was not obvious until it was designed.** The duplicate race is
+the *normal* ending of a successful hypothesis, not an edge case. A confirmation
+is stored as an ordinary memory; L2 clusters it and proposes a concept from it
+knowing nothing about the hypothesis; L2 needs one confirmation where graduation
+needs two. So `link_if_duplicate` runs after every confirmation rather than at
+graduation, a linked row goes quiet in the surfacing lane, and graduation takes
+the merged exit instead of forking a near-twin. Getting this wrong would not have
+looked like a bug — it would have looked like the concept graph slowly filling
+with paraphrase pairs.
+
+**Still open.** (1) The proposer has no *aim*: it speculates from whatever the
+context pack happens to contain, where L30d's uncertainty zones would give it a
+target worth guessing about. (2) Nothing measures whether inventions are any
+good — a confirm/deny ratio per `origin` and per `kind` would say whether the
+0.95 temperature and the two novelty bars are set anywhere near right, and
+whether `world`-subject guesses (which skip the concept gate entirely) earn
+their slot. (3) A refuted row blocks re-invention by cosine, which catches a
+rewording but not a genuinely different guess at the same wrong idea.
+(4) `origin_refs` is written but unread: the proposer files everything as
+`free`, so "this guess came from *that* concept" is a hook with nothing on it
+yet.
+
+**Effort.** Large (schema migration + two new workers + a graduation path).
 
 ---
 
@@ -1880,6 +2023,29 @@ when the split primitive lands, not before.
 
 ## L32. Concept importance -- a second axis, distinct from confidence
 
+**Status: shipped** (derived importance, live in T3 surfacing). See
+[`shipped/concepts.md`](shipped/concepts.md#l32-concept-importance) for what
+landed and why the design ended up simpler than the sketch below.
+
+**Still open.** The two consumers the axis was built for have not been wired
+yet, because they do not exist yet: the L30a hypothesis lane and L30d
+uncertainty zones. Both can call
+`SessionController.concept_importance_context(concepts)` and rank directly —
+importance is deliberately status-agnostic, so a `candidate` scores exactly
+like an `active` row. Also unwired: **curiosity value** (L30b) still ranks
+without the axis, and nothing yet feeds *behavioural* evidence into
+importance (how often a concept actually gated a reply), which was the third
+source in the sketch.
+
+**One measurement worth carrying into L30a.** On the live graph at ship time,
+every `active` concept sat at or above 0.6 confidence — the promotion gate
+plus decay leaves no low-confidence actives at all. So "important but
+uncertain" cannot be found among actives today; it lives in the `candidate`
+pool, which is where L30a should look.
+
+<details>
+<summary>Original sketch (kept for the reasoning; superseded by what shipped)</summary>
+
 **Motivation.** Today a concept has one strength axis, `confidence` ("how likely
 is this true?"). That conflates two different questions. "User likes TypeScript"
 can be *high* confidence yet *low* stakes; "user might be struggling emotionally"
@@ -1889,14 +2055,6 @@ importance**, not confidence alone, or she chatters about certain-but-trivial
 facts and stays quiet on uncertain-but-critical ones. This one axis unlocks the
 hypothesis lane (L30) and uncertainty zones (L30d): "important but uncertain" is
 exactly what should rise to attention.
-
-**Key files.** New per-concept field on `Concept`
-([`concept_store.py`](../../app/core/concepts/concept_store.py)) + DDL
-([`chat_database.py`](../../app/core/infra/chat_database.py)); the surfacing blend
-`SurfaceWeights` / `surface_score`
-([`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py),
-[`concept_kinds.py`](../../app/core/concepts/concept_kinds.py)) gains an importance
-term; the L30a hypothesis lane, L30b curiosity selection, and L30d zones read it.
 
 **Sketched approach.** Add `importance` `[0,1]`, distinct from `confidence` **and**
 from the per-*kind* `salience` surface-weight (which is a kind prior, not a
@@ -1911,10 +2069,11 @@ separate in the debug UI so tuning stays legible.
 from kind + affect + recency? (2) Interaction with plasticity — are important
 concepts stickier? (3) What *lowers* importance (does a resolved worry decay)?
 
-**Effort.** Medium-Large (a new axis threads through surfacing + curiosity + UI).
+*All three were answered by making the axis derived rather than stored: there
+is no writer to conflict with plasticity, and nothing to decay — importance
+moves when its inputs move.*
 
-**Depends on.** L5 (surfacing), L30 (hypotheses/curiosity benefit most), L13
-(affective concepts as an importance source).
+</details>
 
 ---
 

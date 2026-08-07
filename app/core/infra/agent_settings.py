@@ -2169,6 +2169,32 @@ class AgentSettings:
     # ``MemorySettings.forward_curiosity_*``.
     forward_curiosity_enabled: bool = True
 
+    # ── L30b: testing a hypothesis by asking ──────────────────────────
+    # Master switch for the concept-hypothesis ask loop. Off → the
+    # ConceptHypothesisWorker never registers, the cue never surfaces,
+    # and the post-turn answer resolver no-ops. On (default) → a
+    # candidate concept that is genuinely one source or one nudge of
+    # conviction short of promotion becomes a light question, and the
+    # answer is folded back onto that specific belief (L30c). The L30a
+    # *surfacing* lane is separate and stays on its own
+    # ``memory.hypothesis_surfacing_enabled`` switch: she can go on
+    # noticing her open questions with the asking turned off.
+    concept_hypothesis_ask_enabled: bool = True
+
+    # ── L30 Phase B: inventing hypotheses ─────────────────────────────
+    # Master switch for the *invented* layer -- the HypothesisProposerWorker
+    # and everything downstream of a row it writes. Off → no new rows are
+    # invented; existing ones still resolve and graduate, because
+    # abandoning a guess Aiko already put to the user mid-flight would be
+    # the one behaviour nobody wants from a kill switch.
+    #
+    # Separate from ``concept_hypothesis_ask_enabled`` because the two do
+    # genuinely different things. That one tests beliefs Aiko *derived*
+    # from evidence; this one lets her make things up and then find out.
+    # A user who wants the grounded loop without the speculation is
+    # asking for something coherent.
+    hypothesis_invention_enabled: bool = True
+
     # FollowUpWorker master switch. When a user-mentioned future_plan's
     # event time passes, the worker drafts a private "you can ask how it
     # went" cue into the ``aiko.follow_up_cues`` kv ring and the

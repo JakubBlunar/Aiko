@@ -215,6 +215,9 @@ class PromptAssemblerHelpersMixin:
         sleep_return: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
+        # L30b takes ``user_text`` because it is dual-mode: the topic path
+        # needs the live message, the gap path does not.
+        concept_hypothesis: Callable[[str], str] | None = None,
         follow_up: Callable[[], str] | None = None,
         growth_witness: Callable[[], str] | None = None,
         self_callback: Callable[[], str] | None = None,
@@ -389,6 +392,8 @@ class PromptAssemblerHelpersMixin:
             self._away_activities_provider = away_activities
         if forward_curiosity is not None:
             self._forward_curiosity_provider = forward_curiosity
+        if concept_hypothesis is not None:
+            self._concept_hypothesis_provider = concept_hypothesis
         if follow_up is not None:
             self._follow_up_provider = follow_up
         if growth_witness is not None:

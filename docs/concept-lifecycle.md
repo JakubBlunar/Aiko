@@ -17,7 +17,7 @@ Timeline: [`concept_event_store.py`](../app/core/concepts/concept_event_store.py
 
 | Status | Meaning | Revivable? |
 | --- | --- | --- |
-| `candidate` | Proposed by L2; not yet earned a place in Aiko's worldview. | — (it's the entry state) |
+| `candidate` | Proposed by L2 — **or graduated from a confirmed hypothesis (L30)** — and not yet earned a place in Aiko's worldview. | — (it's the entry state) |
 | `active` | Promoted: enough distinct evidence, stable long enough, confident enough. The **only** status L5 surfaces. | — |
 | `dormant` | Was active; confidence decayed below the dormant floor without fresh evidence. Quiet, not gone. | Yes — climbs back to `active` when reinforced. |
 | `contradicted` | **L9.** Was active; **counter-evidence** disproved it and drove confidence below the *contradicted* floor. "Actively disproven", distinct from a faded `dormant`. | Yes — climbs back to `active` when re-reinforced past the promote bar. |
@@ -37,6 +37,7 @@ L3 climbs it back out on the next pass. Only an explicit user rejection
 ```mermaid
 stateDiagram-v2
     [*] --> candidate: L2 proposes
+    [*] --> candidate: L30 hypothesis graduates (confirmed twice)
     candidate --> active: distinct_sources >= min AND age >= min_age AND confidence >= min_conf
     candidate --> retired: stale (age >= candidate_ttl, still < min sources)
     active --> candidate: demoted — evidence reconciled away to zero sources
@@ -59,6 +60,8 @@ worker is also gated by `agent.concepts_enabled`.
 
 | Transition | Condition | Setting(s) |
 | --- | --- | --- |
+| `[*] → candidate` (L2) | a synthesis proposal cleared the dedupe bar | `concept_dedupe.DEDUPE_COS` |
+| `[*] → candidate` (L30) | a hypothesis Aiko *invented* was confirmed twice and matched no existing concept, so [`hypothesis_graduation`](../app/core/concepts/hypothesis_graduation.py) minted it with the answer memories as `evidence` edges. It enters at the **default** confidence with no head start: having been guessed right is not evidence beyond those answers, which L3 counts like any others. A match instead folds into the existing concept and closes the guess as `merged`. See [`hypotheses.md`](hypotheses.md) | `hypothesis_graduate_min_support`, `hypothesis_graduate_min_credence` |
 | `candidate → active` | `distinct_source_count >= min_sources` **and** `age_days >= min_age_days` **and** `confidence >= min_confidence` — evaluated by the kind's own `promotion_gate`, which floors each of the three at its `_X_MIN_*` constant via `max`. `set_evidence_gate` is the fallback for a kind that declares none, but every shipped kind declares its own. | `concept_promote_min_sources`, `concept_promote_min_age_days`, `concept_promote_min_confidence` (raise the floor for *all* kinds; per-kind constants live in `concept_lifecycle.py`) |
 | `candidate → retired` | `age_days >= candidate_ttl` **and** `distinct_source_count < min_sources` | `concept_candidate_ttl_days`, `concept_promote_min_sources` |
 | `active → candidate` | `distinct_source_count == 0` — every supporting edge was deleted or repointed away (L25), so the belief rests on nothing. Checked **before** the confidence floors, because confidence decays far too slowly to notice on its own. It keeps its confidence and re-promotes normally once evidence returns. | (none — structural) |
@@ -98,6 +101,38 @@ have to wait. That held until it was measured: with no delay, **167 of 240**
 never-reinforced `identity` concepts had promoted within an hour of first
 evidence, at a median of 3.6 minutes. A stability delay turned out to be
 doing real work, and `identity` was the one kind with no delay of its own.
+
+### The per-kind floors
+
+What each kind actually waits for, from the `_X_MIN_*` constants in
+[`concept_lifecycle.py`](../app/core/concepts/concept_lifecycle.py). The
+effective bar is `max(global setting, kind constant)` per leg, so raising
+a `concept_promote_*` setting can only tighten a row, never loosen it.
+
+| Kind | Sources | Age (engaged days) | Confidence |
+| --- | --- | --- | --- |
+| `identity` | 3 | 1.0 | 0.60 |
+| `value` | 3 | 1.0 | 0.72 |
+| `ritual` | 3 | 1.0 | 0.65 |
+| `narrative` | 3 | 1.0 | 0.60 |
+| `aspiration` | 3 | 3.0 | 0.60 |
+| `affective` | 2 | 0.5 | 0.60 |
+| `taste` | 2 | 0.5 | 0.60 |
+| `conduct` | 2 | 1.0 | 0.65 |
+| `tension` | 2 (fixed) | 1.0 | 0.60 |
+| `generalization` | 2 (fixed) | 3.0 | 0.72 |
+| `boundary` | 1 (fixed) | 0.5 | 0.65 |
+| `communication_style` | 1 (fixed) | 0.5 | 0.65 |
+
+"Fixed" means the kind ignores the global sources setting rather than
+taking the `max`: a boundary stated once is a boundary, and a `tension` /
+`generalization` row's source count is its base-concept arity, not
+evidence breadth.
+
+Two consumers read these rather than the global settings, and both would
+be wrong against `concept_promote_*` for every kind at once:
+`ConceptView.testable` (L30b — is age the *only* thing blocking this
+belief?) and the `/api/concepts/quality` scoreboard.
 
 **Age is engaged time, not wall-clock** (schema v24). Both the promotion
 floor and the `concept_candidate_ttl_days` cleanup are measured in *engaged*

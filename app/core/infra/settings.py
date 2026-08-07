@@ -675,6 +675,13 @@ class ToolsSettings:
     # wired; returns ``thin_record`` rather than nothing when the trail is
     # too sparse to narrate.
     recall_self_history: bool = True
+    # L30 Phase B open guesses (``recall_hypotheses``): list what she is
+    # still unsure about -- the hunches she derived and has not confirmed,
+    # and the ones she invented outright -- with the two origins kept
+    # distinct so an invention is never presented as an observation. Needs
+    # the concept store wired; the invented half also needs the
+    # ``hypotheses`` table, and is simply absent without it.
+    recall_hypotheses: bool = True
     web_search: bool = True
     # Aiko's room: small set of tools that let her look around / move /
     # consume cookies. See :mod:`app.llm.tools.world`.
@@ -2013,6 +2020,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             recall_concept=bool(tools_raw.get("recall_concept", True)),
             recall_self_history=bool(
                 tools_raw.get("recall_self_history", True)
+            ),
+            recall_hypotheses=bool(
+                tools_raw.get("recall_hypotheses", True)
             ),
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
