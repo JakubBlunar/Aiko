@@ -897,6 +897,7 @@ class MemoryFacadeMixin:
                 build_concepts_snapshot,
             )
 
+            chat_db = getattr(self, "_chat_db", None)
             return build_concepts_snapshot(
                 store,
                 memory_store,
@@ -905,6 +906,11 @@ class MemoryFacadeMixin:
                 offset=offset,
                 status=status,
                 subject=subject,
+                # L32: enables the derived importance axis on each row. It
+                # needs the cluster-affect maps, which live in ``kv_meta``.
+                kv_get=(
+                    chat_db.kv_get if chat_db is not None else None
+                ),
             )
         except Exception:
             log.debug("concepts snapshot failed", exc_info=True)
@@ -917,6 +923,39 @@ class MemoryFacadeMixin:
                 "counts": {"by_status": {}, "by_subject": {}},
                 "concepts": [],
             }
+
+    def concept_importance_context(self, concepts: "list[Any]"):
+        """L32: an :class:`ImportanceContext` covering ``concepts``.
+
+        The public seam for anything that wants to rank by *stakes* rather
+        than confidence, outside the turn-relevant scorer that builds its
+        own. Three bounded reads, none per-concept: the two cluster-affect
+        kv maps, the member -> cluster bridge off the topic graph, and one
+        bulk query for the candidates' cluster evidence.
+
+        Returns ``None`` when the concept layer is off or any read fails --
+        importance is derived, so its absence is a missing lens rather
+        than missing data, and every caller is expected to carry on.
+        """
+        store = getattr(self, "_concept_store", None)
+        chat_db = getattr(self, "_chat_db", None)
+        if store is None or chat_db is None or not concepts:
+            return None
+        try:
+            from app.core.concepts.concept_snapshot import (
+                importance_context_for,
+            )
+
+            return importance_context_for(
+                store.cluster_evidence_for(
+                    [c.concept_id for c in concepts]
+                ),
+                getattr(self, "_topic_graph", None),
+                chat_db.kv_get,
+            )
+        except Exception:
+            log.debug("concept importance context failed", exc_info=True)
+            return None
 
     def concept_quality(self) -> dict[str, Any]:
         """L22 quality scoreboard for the concept layer.
@@ -961,12 +1000,14 @@ class MemoryFacadeMixin:
                     "concept_confidence_halflife_days", 7.5
                 ),
             )
+            chat_db = getattr(self, "_chat_db", None)
             return build_concept_quality(
                 store,
                 memory_store,
                 topic_graph,
                 event_store,
                 thresholds=thresholds,
+                kv_get=(chat_db.kv_get if chat_db is not None else None),
             )
         except Exception:
             log.debug("concept quality report failed", exc_info=True)
@@ -1262,6 +1303,182 @@ class MemoryFacadeMixin:
                 "thin_record": True,
                 "eras": [],
             }
+
+    # ── L30 Phase B: the open guesses ────────────────────────────────────
+
+    def open_hypotheses(
+        self,
+        *,
+        subject: str | None = None,
+        kind: str | None = None,
+        origin: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """What Aiko is still unsure about, invented and grounded both.
+
+        Backs ``GET /api/concepts/hypotheses`` and the
+        ``recall_hypotheses`` tool. Living here rather than in the tool is
+        what keeps the private-reach guard satisfied: the tool holds a
+        bound method, not a store.
+
+        The two origins are unified in the *shape* and kept distinct in
+        the ``origin`` field. ``invented`` rows come from the
+        ``hypotheses`` table; ``grounded`` ones are candidate concepts the
+        L30a lane would surface, which have no row of their own and are
+        derived on read. Never raises.
+        """
+        rows: list[dict[str, Any]] = []
+        want = (origin or "").strip().lower() or None
+        if want in (None, "invented"):
+            rows += self._invented_hypothesis_rows(subject, kind)
+        if want in (None, "grounded"):
+            rows += self._grounded_hypothesis_rows(subject, kind)
+        # Least settled first: the point of looking is to find what is
+        # most open, not what is nearly decided.
+        rows.sort(key=lambda r: -float(r.get("unsettled") or 0.0))
+        return {
+            "enabled": bool(rows) or self._hypothesis_layer_live(),
+            "total": len(rows),
+            "hypotheses": rows[: max(1, int(limit))],
+        }
+
+    def hypothesis_state(self) -> dict[str, Any]:
+        """Shelf stock and the caps around it, for debugging the layer.
+
+        Answers the two questions an empty lane raises: is the shelf bare
+        (``live`` at zero) or is it full of rows nothing will surface
+        (``live`` at ``max_open`` with everything ``linked``)?
+        """
+        ms = getattr(self, "_memory_settings", None)
+        out: dict[str, Any] = {
+            "invention_enabled": bool(
+                getattr(
+                    getattr(self, "_agent_settings", None),
+                    "hypothesis_invention_enabled",
+                    False,
+                )
+            ),
+            "ask_enabled": bool(
+                getattr(
+                    getattr(self, "_agent_settings", None),
+                    "concept_hypothesis_ask_enabled",
+                    False,
+                )
+            ),
+            "max_open": getattr(ms, "hypothesis_max_open", None),
+            "ttl_hours": getattr(ms, "hypothesis_ttl_hours", None),
+            "graduate_min_support": getattr(
+                ms, "hypothesis_graduate_min_support", None
+            ),
+            "graduate_min_credence": getattr(
+                ms, "hypothesis_graduate_min_credence", None
+            ),
+        }
+        store = getattr(self, "_hypothesis_store", None)
+        if store is None:
+            out.update({"store": False, "live": 0, "by_status": {}})
+            return out
+        try:
+            out.update(
+                {
+                    "store": True,
+                    "live": int(store.count_live()),
+                    "by_status": store.counts_by_status(),
+                    "linked": len(store.list_by(linked=True)),
+                }
+            )
+        except Exception:
+            log.debug("hypothesis state read failed", exc_info=True)
+            out.update({"store": True, "live": 0, "by_status": {}})
+        return out
+
+    def _hypothesis_layer_live(self) -> bool:
+        return (
+            getattr(self, "_hypothesis_store", None) is not None
+            or getattr(self, "_concept_store", None) is not None
+        )
+
+    def _invented_hypothesis_rows(
+        self, subject: str | None, kind: str | None,
+    ) -> list[dict[str, Any]]:
+        store = getattr(self, "_hypothesis_store", None)
+        if store is None:
+            return []
+        try:
+            from app.core.concepts.concept_hypothesis import unsettledness
+            from app.core.concepts.hypothesis_lane import ORIGIN_INVENTED
+
+            rows = store.list_by(live=True, subject=subject, kind=kind)
+        except Exception:
+            log.debug("invented hypothesis read failed", exc_info=True)
+            return []
+        return [
+            {
+                "origin": ORIGIN_INVENTED,
+                "hypothesis_id": int(row.hypothesis_id),
+                "statement": str(row.statement),
+                "kind": str(row.kind),
+                "subject": str(row.subject),
+                "rationale": str(row.rationale or ""),
+                "credence": round(float(row.credence), 3),
+                "support_count": int(row.support_count),
+                "asked_count": int(row.asked_count),
+                "unsettled": round(float(unsettledness(row)), 3),
+                "linked_concept_id": row.linked_concept_id,
+                "created_at": row.created_at,
+            }
+            for row in rows
+            # A linked row's belief is already spoken for by a concept, so
+            # listing it would show one thing twice with two different
+            # confidence stories attached.
+            if row.linked_concept_id is None
+        ]
+
+    def _grounded_hypothesis_rows(
+        self, subject: str | None, kind: str | None,
+    ) -> list[dict[str, Any]]:
+        store = getattr(self, "_concept_store", None)
+        if store is None:
+            return []
+        try:
+            from app.core.concepts.concept_hypothesis import unsettledness
+            from app.core.concepts.hypothesis_lane import ORIGIN_GROUNDED
+
+            rows = store.list_by(
+                status="candidate", subject=subject, kind=kind,
+            )
+        except Exception:
+            log.debug("grounded hypothesis read failed", exc_info=True)
+            return []
+        ms = getattr(self, "_memory_settings", None)
+        min_unsettled = float(
+            getattr(ms, "hypothesis_min_unsettled", 0.22) if ms else 0.22
+        )
+        min_sources = int(
+            getattr(ms, "hypothesis_min_sources", 1) if ms else 1
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if int(getattr(row, "distinct_source_count", 0) or 0) < min_sources:
+                continue
+            unsettled = float(unsettledness(row))
+            if unsettled < min_unsettled:
+                continue
+            out.append(
+                {
+                    "origin": ORIGIN_GROUNDED,
+                    "concept_id": int(row.concept_id),
+                    "statement": str(row.label),
+                    "kind": str(row.kind),
+                    "subject": str(row.subject),
+                    "rationale": str(getattr(row, "rationale", "") or ""),
+                    "confidence": round(float(row.confidence), 3),
+                    "distinct_source_count": int(row.distinct_source_count),
+                    "unsettled": round(unsettled, 3),
+                    "created_at": row.created_at,
+                }
+            )
+        return out
 
     # ── L17f: the evolution diary ────────────────────────────────────────
 

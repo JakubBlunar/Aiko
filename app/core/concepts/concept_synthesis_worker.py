@@ -50,6 +50,7 @@ from app.core.concepts.proposers import (
     ProposerSpec,
     TensionBase,
 )
+from app.core.concepts.concept_dedupe import DEDUPE_COS, find_duplicate
 from app.core.concepts.concept_drift import is_material_relabel
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_kinds import core_lane_kinds
@@ -81,15 +82,12 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 # Was 0.9, which turned out to be a dead threshold: over a month of real
 # use, *no* pair of same-(kind, subject) concepts ever reached it, so the
 # guard never once fired and every paraphrase twin landed as its own row.
-# Measured over that graph, pairs from 0.86 up are restatements of the
-# same belief ("the architectural refinement of Aiko's memory systems as
-# a ritualistic anchor" vs "the architectural integrity of Aiko's memory
-# system as a prerequisite"), while 0.82 and below is where genuinely
-# different subjects start sharing a sentence template. There is no
-# adjudicator on this path -- a hit silently reinforces instead of
-# creating -- so it sits at the conservative end of the twin range and
-# leaves the rest to the consolidation worker, which does adjudicate.
-_DEDUPE_COS = 0.86
+# See ``concept_dedupe`` for the measurement behind 0.86 and for why the
+# number now lives there: L30's graduation path is a second caller, and
+# two independently-tuned dedupe bars would drift apart quietly.
+# Re-exported under the old name because it is cited across the docs and
+# read by the L22 quality report.
+_DEDUPE_COS = DEDUPE_COS
 # Answer-token budget per proposer LLM call. Sized generously because a
 # reasoning-capable maintenance model (e.g. qwen3.x) can spend a large,
 # variable preamble on visible chain-of-thought *before* the ``{"concepts":
@@ -2817,28 +2815,18 @@ class ConceptSynthesisWorker:
     ) -> tuple[Concept | None, float]:
         """Return ``(duplicate_or_none, top_cosine)``.
 
-        The top cosine to the nearest existing concept of this
-        (subject, kind) is surfaced even when it is below the dedupe
-        threshold, so the caller can derive the discovery ``novelty``
-        from the same nearest-neighbour lookup (no extra embed / query).
+        Thin wrapper over the shared
+        :func:`~app.core.concepts.concept_dedupe.find_duplicate`. This
+        path passes the proposal's ``kind`` because it was chosen from
+        the evidence itself; the L30 graduation path deliberately does
+        not (see that module).
         """
-        try:
-            hits = self._concept_store.nearest(
-                vec,
-                subject=proposal.subject,
-                kind=proposal.kind,
-                status=None,
-                k=5,
-            )
-        except Exception:
-            log.debug("concept nearest failed", exc_info=True)
-            return None, 0.0
-        if not hits:
-            return None, 0.0
-        top_sim = float(hits[0][1])
-        if top_sim >= _DEDUPE_COS:
-            return hits[0][0], top_sim
-        return None, top_sim
+        return find_duplicate(
+            self._concept_store,
+            vec,
+            subject=proposal.subject,
+            kind=proposal.kind,
+        )
 
     def _record_discovery(
         self,

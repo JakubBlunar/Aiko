@@ -409,6 +409,45 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(500, f"worker run failed: {exc}") from exc
         return JSONResponse({"result": result})
 
+    @app.get("/api/concepts/hypotheses")
+    def get_hypotheses(
+        limit: int = 25,
+        subject: str | None = None,
+        kind: str | None = None,
+        origin: str | None = None,
+    ) -> JSONResponse:
+        """L30 -- the open guesses, invented and grounded, least settled first.
+
+        Unpaged on purpose: ``hypothesis_max_open`` caps the invented half
+        at a couple of dozen rows and the grounded half is filtered by
+        unsettledness, so this is a short list by construction rather than
+        by paging (unlike ``/api/concepts``).
+        """
+        return JSONResponse(
+            session.open_hypotheses(
+                limit=max(1, min(int(limit), 100)),
+                subject=(subject or "").strip() or None,
+                kind=(kind or "").strip() or None,
+                origin=(origin or "").strip() or None,
+            )
+        )
+
+    @app.get("/api/concepts/hypothesis-state")
+    def get_hypothesis_state() -> JSONResponse:
+        """L30 -- shelf stock against the caps, for the Memory tab badge."""
+        return JSONResponse(session.hypothesis_state())
+
+    @app.post("/api/concepts/hypotheses/run")
+    def run_hypothesis_proposer() -> JSONResponse:
+        """Invent one batch now instead of waiting for the slow cadence."""
+        try:
+            result = session.run_hypothesis_proposer_now()
+        except WorkerUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"worker run failed: {exc}") from exc
+        return JSONResponse({"result": result})
+
     @app.get("/api/concepts/quality")
     def get_concept_quality() -> JSONResponse:
         """L22 quality scoreboard -- is the concept *layer* healthy?

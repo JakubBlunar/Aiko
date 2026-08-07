@@ -194,6 +194,12 @@ class DetectorsInitMixin:
         # force_next`` is the MCP debug bypass.
         self._pending_forward_curiosity_seconds: float | None = None
         self._forward_curiosity_worker: Any = None
+        # L30b — "test a hunch by asking". Same typed-gap slot shape as
+        # K34, but it only arms the provider's *fallback* path: the topic
+        # path fires mid-conversation with no gap at all. The worker (set
+        # in idle_workers_init) keeps the shelf stocked.
+        self._pending_concept_hypothesis_seconds: float | None = None
+        self._concept_hypothesis_worker: Any = None
         # K70 growth-witness — watermark-gated cue-producer. The worker
         # (set in idle_workers_init) drafts a rare "you've grown" finding.
         self._growth_witness_worker: Any = None

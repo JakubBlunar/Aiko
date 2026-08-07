@@ -104,13 +104,20 @@ class CueSpec:
     gap_cue: bool = False
 
 
-# The four gap cues in the order the assembler runs them. Order is the
+# The gap cues in the order the assembler runs them. Order is the
 # mechanism, not documentation -- earlier entries win the mutex.
+#
+# ``concept_hypothesis`` sits last on purpose: probing a belief about the
+# user is the heaviest thing she can open a gap with, so it yields to
+# every lighter beat. It is also the only dual-mode entry -- it can reach
+# the prompt on topic *without* the gap slot -- which is why its spec
+# carries no ``slot_attr``; see the note there.
 GAP_CUE_ORDER: tuple[str, ...] = (
     "turning_over",
     "sleep_return",
     "away_activities",
     "forward_curiosity",
+    "concept_hypothesis",
 )
 
 
@@ -145,6 +152,15 @@ CUE_SPECS: dict[str, CueSpec] = {
             slot_attr="_pending_forward_curiosity_seconds",
             gap_cue=True,
         ),
+        # L30b, and the one gap cue with no ``slot_attr``. It is dual-mode:
+        # the topic path surfaces it mid-conversation with no gap involved,
+        # and only the fallback path spends the gap slot. Naming the slot
+        # here would make ``armed_cues`` demand it on every turn, so a
+        # perfectly stocked shelf would read as unarmed throughout the
+        # *primary* path. Pool stock is the honest arming signal; the gap
+        # mutex is still exact, because the provider reads and sets
+        # ``_gap_cue_surfaced`` only on the path that actually spends it.
+        CueSpec("concept_hypothesis", gap_cue=True),
         # Journal-backed cues with an explicit watermark.
         CueSpec(
             "follow_up",
@@ -439,6 +455,28 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             ttl_hours=72.0,
             handling_section="Things I've been wondering about you:",
             block="forward_curiosity_block",
+        ),
+        CuePolicy(
+            "concept_hypothesis",
+            # L30b: a belief she half-holds and wants settled. The answer
+            # rarely repeats the label back ("do you find walking
+            # meditative?" -> "it's the only time my head goes quiet"), so
+            # lexical alone would score most real answers as silence.
+            fulfilment=FULFILMENT_ANSWERED,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            inventory_target=2,
+            ttl_hours=168.0,
+            # One ask, not two. Every other question type may circle back
+            # after a day; this one may not, because re-asking someone
+            # whether a hunch about *them* is true reads as doubting the
+            # first answer rather than as curiosity.
+            max_asks=1,
+            # A hunch worth testing is worth testing about once a day. The
+            # backlog's "at most one concept-testing question per
+            # conversation" as a shelf rule rather than a worker constant.
+            surface_cooldown_hours=20.0,
+            handling_section="Testing a hunch you have about {user_name}:",
+            block="concept_hypothesis_block",
         ),
         CuePolicy(
             "wellbeing_concern",

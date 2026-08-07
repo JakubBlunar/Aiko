@@ -57,6 +57,7 @@ class ToolsRegistryMixin:
             from app.llm.tools.builtins import (
                 GetTimeTool,
                 RecallConceptTool,
+                RecallHypothesesTool,
                 RecallSelfHistoryTool,
                 RecallTool,
                 RecallTopicTool,
@@ -88,6 +89,17 @@ class ToolsRegistryMixin:
             ):
                 registry.register(
                     RecallSelfHistoryTool(self.self_history)
+                )
+            # L30 Phase B open guesses. Gated on the concept store only:
+            # the facade serves grounded candidates even with no invented
+            # rows, and "she has hunches but has never invented one" is a
+            # normal state rather than a reason to withhold the tool.
+            if (
+                getattr(tools_cfg, "recall_hypotheses", True)
+                and getattr(self, "_concept_store", None) is not None
+            ):
+                registry.register(
+                    RecallHypothesesTool(self.open_hypotheses)
                 )
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the

@@ -99,6 +99,30 @@ pair, `dormant_interest`, `curiosity_gradient`) have the opposite
 property: a high cosine there means she actually pivoted, which is
 exactly the event.
 
+### One type is both topic-gated and gap-armed
+
+Every cue type reaches the prompt one of two ways: a provider matches it
+against the live message, or a gap slot arms it out of a silence.
+`concept_hypothesis` (L30b) is the only one that does both, and it needs
+to. The natural moment to put an untested hunch to someone is while the
+subject is already up, which no gap slot can detect; but a lull is a real
+opening too, and holding out for topical luck would leave hunches queued
+indefinitely.
+
+Its provider tries the topic path first and only falls through to the gap
+path if that found nothing. Two consequences worth knowing before copying
+the shape:
+
+- **The topic path does not set `_gap_cue_surfaced`**, matching
+  `knowledge_gap_notice`. Riding a subject the user raised is not the same
+  as opening out of silence, so the other gap cues on that turn stay free.
+- **Its `CueSpec` is slot-less while still `gap_cue=True`**, so
+  `armed_cues` counts pool stock rather than the pending slot. Most
+  firings come from the topic path where no slot is involved, and
+  slot-based arming would under-count those opportunities badly enough to
+  make a working worker look broken in the ledger. The cost is that a rare
+  gap-path loss can be misattributed under `lost_priority`.
+
 The cosine is computed even for lexical-only types and recorded in
 `used_evidence` on every verdict. That is the calibration data — once
 a few hundred accumulate, comparing the distribution on turns where

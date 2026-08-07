@@ -1587,6 +1587,20 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             DEFAULT_SURFACE_WEIGHTS,
             get_kind,
         )
+        from app.core.concepts.concept_hypothesis import (
+            HypothesisDetail,
+            hypothesis_score,
+            unsettledness,
+        )
+        from app.core.concepts.hypothesis_lane import (
+            nearest_invented,
+            one_per_origin,
+        )
+        from app.core.concepts.concept_importance import (
+            IMPORTANCE_NEUTRAL,
+            ImportanceContext,
+            membership_from_clusters,
+        )
         from app.core.concepts.concept_surfacing import (
             event_charge_detail,
             habituation_factor,
@@ -1648,6 +1662,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 int(getattr(ms, "concept_surfacing_salience_event_scan", 120))
             )
             if sal_enabled else {}
+        )
+        # L32 importance: the second strength axis. Assigned below, once the
+        # candidate set is known, so its cluster-evidence join runs as one
+        # bulk read rather than a query per candidate. ``None`` means the
+        # axis is off and every concept scores at the neutral 0.5.
+        importance_ctx: "ImportanceContext | None" = None
+        imp_enabled = bool(
+            getattr(ms, "concept_importance_enabled", True)
+        )
+        imp_strength = float(
+            getattr(ms, "concept_importance_strength", 0.4)
         )
         score_components: dict[int, dict] = {}
 
@@ -1783,11 +1808,22 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             standing = (
                 standing_map.get(cid, 0.5) if standing_enabled else None
             )
+            # L32: how much this belief *matters*, separate from how likely
+            # it is to be true. A neutral detail leaves the score untouched.
+            imp = (
+                importance_ctx.detail(concept)
+                if importance_ctx is not None else None
+            )
             relevance = surface_score(
                 cosine=float(cos), confidence=conf, recency=rec,
                 stability=stab, salience=sal, standing=standing,
                 activation=float(activation),
-                habituation=hab, w=weights,
+                habituation=hab,
+                importance=(
+                    imp.importance if imp is not None else IMPORTANCE_NEUTRAL
+                ),
+                importance_strength=imp_strength if imp is not None else 0.0,
+                w=weights,
             )
             concept_cands.append(ContextCandidate(
                 source="concept", relevance=relevance,
@@ -1816,6 +1852,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 "habituation": round(hab, 4),
                 "score": round(relevance, 4),
             }
+            if imp is not None:
+                # L32: the axis and both its inputs, so the debugger can tell
+                # a kind prior apart from an affect lift. Reported rather than
+                # folded into ``reason`` -- a multiplier scales every signal
+                # equally, so it never "wins" the way a ranking term does.
+                comp["importance"] = round(imp.importance, 4)
+                comp["importance_prior"] = round(imp.prior, 4)
+                comp["importance_charge"] = round(imp.charge, 4)
             if activation > 0.0:
                 comp["activation"] = round(float(activation), 4)
             score_components[cid] = comp
@@ -1827,6 +1871,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # gets its additive boost whether it also has direct cosine (boosting
         # its flex candidate) or not (added fresh below). The boost only lifts
         # kinds that opted in via a non-zero ``activation`` weight.
+        # One read of the live cluster map serves both L23 activation (hot
+        # cluster -> representative id, the key concept evidence edges use)
+        # and the L32 importance join (member memory -> cluster id, which is
+        # how a concept finds the affect of the topics it stands on).
+        topic_clusters: list = []
+        if graph is not None:
+            try:
+                topic_clusters = list(graph.topic_clusters())
+            except Exception:
+                log.debug("concept surfacing: cluster read failed", exc_info=True)
+
         activation_map: dict[int, tuple] = {}
         act_enabled = bool(
             getattr(ms, "concept_surfacing_activation_enabled", True)
@@ -1834,18 +1889,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         act_max = max(0, int(getattr(ms, "concept_surfacing_activation_max", 4)))
         if act_enabled and mature and view is not None and act_max > 0:
             hot_reps: list[int] = []
-            if cluster_cands and graph is not None:
-                # Bridge the turn's hot cluster ids (best_clusters_for keys on a
-                # per-rebuild index) to the representative ids the concept
-                # evidence edges are keyed by -- once per turn.
-                try:
-                    rep_by_cid = {
-                        int(c.cluster_id): int(c.representative_id)
-                        for c in graph.topic_clusters()
-                    }
-                except Exception:
-                    log.debug("activation: cluster bridge failed", exc_info=True)
-                    rep_by_cid = {}
+            if cluster_cands and topic_clusters:
+                rep_by_cid = {
+                    int(c.cluster_id): int(c.representative_id)
+                    for c in topic_clusters
+                }
                 for cand in cluster_cands:
                     rep = rep_by_cid.get(int(cand.payload[0]))
                     if rep is not None:
@@ -1868,9 +1916,71 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                         activation_map[cid] = (concept, float(strength))
 
         seen_concept_ids: set[int] = set(pinned_ids)
+        # Gather the cosine neighbours *before* scoring anything, so the L32
+        # join below sees the whole candidate set and can run as one query.
+        cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
+        pairs: list = []
         if embedding is not None and mature and view is not None:
-            cap = max(0, int(getattr(ms, "context_budget_concept_cap", 3)))
-            pairs = view.relevant(embedding, k=max(cap * 2, 6))
+            # L32 widened the over-fetch. Importance re-ranks within whatever
+            # cosine brings back, so at the old ``cap * 2`` an important
+            # concept sitting just outside the top few never got the chance
+            # to be promoted -- the axis could only reorder what was already
+            # winning. ``nearest`` scores every active concept with one matmul
+            # and slices, so a deeper cut is nearly free.
+            over_fetch = max(
+                cap * int(getattr(ms, "concept_surfacing_overfetch", 5)), 12
+            )
+            pairs = list(view.relevant(embedding, k=over_fetch))
+
+        # L30a: the tentative register. Fetched here, beside the confident
+        # lanes, so its concepts join the single bulk importance read below
+        # rather than forcing a second cluster-evidence join.
+        hyp_cap = max(0, int(getattr(ms, "context_budget_hypothesis_cap", 1)))
+        hyp_pairs: list = []
+        if (
+            bool(getattr(ms, "hypothesis_surfacing_enabled", True))
+            and hyp_cap > 0
+            and embedding is not None
+            and mature
+            and view is not None
+            and hasattr(view, "hypotheses")
+        ):
+            try:
+                hyp_pairs = list(view.hypotheses(
+                    embedding,
+                    k=max(hyp_cap * 6, 12),
+                    min_sources=int(
+                        getattr(ms, "hypothesis_min_sources", 1)
+                    ),
+                    min_unsettled=float(
+                        getattr(ms, "hypothesis_min_unsettled", 0.22)
+                    ),
+                ))
+            except Exception:
+                log.debug("hypothesis lane: fetch failed", exc_info=True)
+                hyp_pairs = []
+            # L30 Phase B: the invented rows join the same pool, adapted
+            # to the lane's shape at this one point rather than by
+            # teaching every reader downstream that two shapes exist.
+            # They are appended, not merged by score -- ordering across
+            # origins is settled by ``one_per_origin`` below.
+            hyp_pairs += nearest_invented(
+                getattr(self, "_hypothesis_store", None),
+                embedding,
+                k=max(hyp_cap * 3, 6),
+            )
+
+        if imp_enabled and imp_strength > 0.0 and (
+            pairs or activation_map or hyp_pairs
+        ):
+            importance_ctx = self._build_importance_context(
+                [c for c, _ in pairs]
+                + [c for c, _ in activation_map.values()]
+                + [c for c, _ in hyp_pairs],
+                topic_clusters=topic_clusters,
+            )
+
+        if pairs:
             for i, (concept, cos) in enumerate(pairs):
                 cid = int(getattr(concept, "concept_id", 0))
                 if cid in pinned_ids:
@@ -1896,6 +2006,69 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 if _add_scored(concept, 0.0, activation=strength,
                                order=2000 + j, lane="activation"):
                     seen_concept_ids.add(cid)
+
+        # L30a: score the open questions into their own budget source, after
+        # the confident lanes so ``seen_concept_ids`` can keep a belief from
+        # appearing as both a firm impression and an open question.
+        hyp_cands: list[ContextCandidate] = []
+        hyp_components: dict[int, dict] = {}
+        if hyp_pairs:
+            scored_hyp: list[tuple[float, int, object, str, float, dict]] = []
+            for concept, cos in hyp_pairs:
+                cid = int(getattr(concept, "concept_id", 0))
+                label = (getattr(concept, "label", "") or "").strip()
+                if not label or cid in claimed_ids or cid in seen_concept_ids:
+                    continue
+                # Same L12 carve-out as the confident lane: a tension only
+                # ever speaks through its cooldowned T6 cue.
+                if (getattr(concept, "kind", "") or "") == "tension":
+                    continue
+                unsettled = unsettledness(concept)
+                hab = _habituation(cid, hab_flex_floor)
+                imp_val = (
+                    importance_ctx.for_concept(concept)
+                    if importance_ctx is not None else IMPORTANCE_NEUTRAL
+                )
+                rank_score = hypothesis_score(
+                    cosine=float(cos), unsettled=unsettled,
+                    importance=imp_val,
+                    importance_strength=(
+                        imp_strength if importance_ctx is not None else 0.0
+                    ),
+                    habituation=hab,
+                )
+                scored_hyp.append((
+                    rank_score, cid, concept, label, float(cos),
+                    HypothesisDetail(
+                        concept_id=cid, score=rank_score, cosine=float(cos),
+                        unsettled=unsettled, importance=imp_val,
+                        habituation=hab,
+                    ).as_trace(),
+                ))
+            # Best question first, ties by id so the pick is deterministic.
+            scored_hyp.sort(key=lambda t: (-t[0], t[1]))
+            for i, (_s, cid, concept, label, cos, trace) in enumerate(
+                scored_hyp
+            ):
+                # The selector sees plain **cosine**, not the blended rank.
+                # ``hypothesis_score`` is a product of four sub-1.0 terms, so
+                # it lands on a different scale from every other source's
+                # relevance -- feeding it in would make ``min_relevance`` mean
+                # something different here than for memories and clusters, and
+                # would distort the cross-source greedy fill. Eligibility and
+                # ordering are already settled by this point; what the budget
+                # still needs to know is only how on-topic the question is.
+                hyp_cands.append(ContextCandidate(
+                    source="hypothesis", relevance=cos,
+                    tokens=estimate_tokens(label) + 24, order=i,
+                    payload=concept, key=f"h{cid or i}",
+                ))
+                hyp_components[cid] = trace
+                seen_concept_ids.add(cid)
+            # One slot per origin, decided before the budget sees the
+            # candidates so a granted slot is never spent on a second row
+            # of an origin already represented.
+            hyp_cands = one_per_origin(hyp_cands)
 
         # L20: prefer the abstraction, not its parts. When a generalization
         # parent is among the candidates at sufficient confidence, drop its
@@ -1932,12 +2105,27 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     getattr(ms, "context_budget_concept_min_relevance", 0.30)
                 ),
             ),
+            # L30a: weighted *below* the confident concept lane on purpose.
+            # An equally on-topic open question should lose to a belief Aiko
+            # has actually earned, and only reach the prompt when there is
+            # room left over.
+            "hypothesis": SourceBudget(
+                floor=int(getattr(ms, "context_budget_hypothesis_floor", 0)),
+                cap=int(getattr(ms, "context_budget_hypothesis_cap", 1)),
+                weight=float(
+                    getattr(ms, "context_budget_hypothesis_weight", 0.7)
+                ),
+                min_relevance=float(
+                    getattr(ms, "context_budget_hypothesis_min_relevance", 0.35)
+                ),
+            ),
         })
         selection = selector.select(
             {
                 "memory": mem_cands,
                 "cluster": cluster_cands,
                 "concept": concept_cands,
+                "hypothesis": hyp_cands,
             },
             budget_tokens=budget_tokens,
             degrade_level=degrade_level,
@@ -1981,6 +2169,25 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if cluster_block:
             sections.append(cluster_block)
 
+        # L30a: the open questions render last, as a coda to what Aiko
+        # actually believes rather than mixed in among it.
+        hyp_chosen = [c.payload for c in sorted(
+            selection.source("hypothesis").chosen, key=lambda c: c.order,
+        )]
+        hyp_block, hyp_trace = self._render_hypothesis_concepts(
+            hyp_chosen, components=hyp_components,
+        )
+        if hyp_block:
+            sections.append(hyp_block)
+        # Folded into the existing concept trace rather than given a field of
+        # its own, so ``get_last_concept_trace`` shows both registers side by
+        # side -- "what she believes" is only half the answer to why a turn
+        # read the way it did. Recorded even when the lane rendered nothing,
+        # since "considered 6, surfaced 0" is the interesting debug case.
+        if hyp_trace.get("surfaced") or hyp_components:
+            hyp_trace["considered"] = len(hyp_components)
+            concept_trace["hypotheses"] = hyp_trace
+
         text = "\n\n".join(s for s in sections if s)
 
         # K-time2 anti-confabulation guard for an empty retrospective window
@@ -2009,10 +2216,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # it into the prompt (the sole write on this read path, mirroring
         # ``rag.mark_surfaced``) so they step aside on the next few turns.
         if hab_enabled and hab_turn > 0:
+            # L30a rides the same clock. The eligible hypothesis pool is far
+            # smaller than the active graph, so without this the same open
+            # question would lead every single turn and read as a fixation
+            # rather than a passing wonder.
+            # Non-zero rather than positive: an invented row's lane key is
+            # ``-hypothesis_id`` (see ``hypothesis_lane``), and it needs
+            # its own habituation slot so the grounded and invented slots
+            # rotate independently instead of one pool's freshness
+            # suppressing the other's.
             chosen_cids = [
                 int(getattr(c, "concept_id", 0))
-                for c in concept_pairs
-                if int(getattr(c, "concept_id", 0)) > 0
+                for c in (concept_pairs + hyp_chosen)
+                if int(getattr(c, "concept_id", 0)) != 0
             ]
             self._write_concept_habituation(hab_state, chosen_cids, hab_turn)
 
@@ -2104,6 +2320,58 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 (getattr(ev, "event_type", ""), getattr(ev, "created_at", ""))
             )
         return out
+
+    def _build_importance_context(
+        self, concepts: list, *, topic_clusters: list,
+    ):
+        """L32: one per-turn :class:`ImportanceContext` for a candidate set.
+
+        Three bounded reads, none of them per-concept: the two cluster-affect
+        kv maps, the member -> cluster bridge off the already-read cluster
+        rows, and a single bulk query for the candidates' cluster evidence
+        edges. Best-effort -- ``None`` on any failure, which falls the scorer
+        back to neutral importance rather than dropping the turn.
+        """
+        from app.core.concepts.cluster_affect import (
+            KV_CLUSTER_AFFECT_AIKO,
+            KV_CLUSTER_AFFECT_USER,
+            load_map,
+        )
+        from app.core.concepts.concept_importance import (
+            ImportanceContext,
+            membership_from_clusters,
+        )
+
+        ids = {
+            int(getattr(c, "concept_id", 0) or 0) for c in concepts
+        }
+        ids.discard(0)
+        if not ids:
+            return None
+        store = getattr(self, "_concept_store", None)
+        chat_db = getattr(self, "_chat_db", None)
+        if store is None or chat_db is None:
+            return None
+        ms = self._memory_settings
+        try:
+            return ImportanceContext(
+                affect_user=load_map(chat_db.kv_get, KV_CLUSTER_AFFECT_USER),
+                affect_aiko=load_map(chat_db.kv_get, KV_CLUSTER_AFFECT_AIKO),
+                cluster_by_memory=membership_from_clusters(topic_clusters),
+                memory_ids_by_concept=store.cluster_evidence_for(ids),
+                lift=float(
+                    getattr(ms, "concept_importance_affect_lift", 0.5)
+                ),
+                min_samples=int(
+                    getattr(ms, "concept_importance_affect_min_samples", 3)
+                ),
+                max_age_days=float(
+                    getattr(ms, "cluster_affect_max_age_days", 120.0)
+                ),
+            )
+        except Exception:
+            log.debug("importance context build failed", exc_info=True)
+            return None
 
     def _suppress_generalized_children(self, cands: list) -> list:
         """L20 "prefer the abstraction" filter over the concept candidate pool.
@@ -2343,6 +2611,221 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         return "\n\n".join(sections), {
             "surfaced": surfaced_trace, "reason": "surfaced",
         }
+
+    # L30a. Lead-ins for the tentative register, deliberately weaker than
+    # every rung of ``_hedge_for_confidence`` -- whose *lowest* tier, "You
+    # have a loose impression that", still asserts a belief. These have to
+    # read as questions instead. Selecting on the concept rather than at
+    # random keeps a given hypothesis phrased the same way turn to turn.
+    _HYPOTHESIS_LEADS: tuple[str, ...] = (
+        "You're still working out whether",
+        "You've been wondering if",
+        "You've half-noticed, without settling it, that maybe",
+        "It's crossed your mind that perhaps",
+    )
+
+    # L30 Phase B: the weakest register in the prompt, and a separate set
+    # rather than a reuse. Every lead above implies something *was*
+    # observed ("you've half-noticed"), which is true of a candidate
+    # concept mined from evidence and flatly false of an invention -- it
+    # rests on nothing but Aiko having thought of it. Borrowing the
+    # grounded phrasing would have her attribute a made-up guess to an
+    # observation about the person she is talking to, which is the one
+    # failure this whole layer's isolation exists to prevent.
+    _INVENTED_LEADS: tuple[str, ...] = (
+        "With nothing to go on, you've caught yourself wondering whether",
+        "You've idly speculated, on no evidence at all, that maybe",
+        "A thought you made up and can't verify:",
+        "You've entertained the possibility that",
+    )
+
+    def _render_hypothesis_concepts(
+        self, concepts: list, *, components: "dict[int, dict] | None" = None,
+    ) -> tuple[str, dict]:
+        """Render the budget-chosen open questions (L30a).
+
+        Sibling of :meth:`_render_relevant_concepts`, kept separate rather
+        than folded in as another "family" for one specific reason: that
+        renderer leads every bullet with
+        :meth:`_hedge_for_confidence`, and a candidate's confidence is not
+        a measure of how *established* it is. On a real graph the median
+        candidate sits at 0.82, which would render an unproven hunch as
+        "You're fairly sure" -- the exact overclaim this lane exists to
+        avoid. Grouping is by subject only; a hypothesis is held too
+        loosely for the per-kind voices to be worth the tokens.
+
+        L30b: the ids rendered here are stashed on
+        ``_last_hypothesis_lane_concept_ids`` so the T6 ask provider can
+        refuse a cue about a belief this lane already mused over. The
+        dedup has to run in that direction rather than this one -- tiers
+        assemble T0 through T6, so at T3 time the cue has not been
+        claimed yet and there is nothing here to filter against. Cleared
+        up front, so every early return leaves an empty claim rather than
+        a stale one.
+
+        Phase B: an invented row arrives here adapted to a concept's
+        shape (:mod:`app.core.concepts.hypothesis_lane`) but is grouped
+        and phrased separately, because "you've half-noticed" is a claim
+        about having observed something and an invention has observed
+        nothing. Its ids go to a second set,
+        ``_last_hypothesis_lane_hypothesis_ids``, since the ask cue for an
+        invention carries the hypothesis id rather than a concept id.
+        """
+        self._last_hypothesis_lane_concept_ids = frozenset()
+        self._last_hypothesis_lane_hypothesis_ids = frozenset()
+        if not concepts:
+            return "", {"surfaced": [], "reason": "no_eligible"}
+        from app.core.concepts.hypothesis_lane import ORIGIN_INVENTED
+
+        comps = components or {}
+        name = self.user_display_name
+        # L30b: while the question gate is armed the header keeps the
+        # musing but drops its invitation to follow up. The thought costs
+        # the user nothing; the question is what the budget governs.
+        may_ask = not self._question_balance_suppressed()
+        groups: dict[str, list[str]] = {}
+        invented: list[str] = []
+        surfaced: list[dict] = []
+        for c in concepts:
+            label = (getattr(c, "label", "") or "").strip()
+            if not label:
+                continue
+            subject = getattr(c, "subject", None) or "user"
+            if subject not in ("user", "relationship", "aiko"):
+                subject = "user"
+            cid = int(getattr(c, "concept_id", 0))
+            is_invented = getattr(c, "origin", "") == ORIGIN_INVENTED
+            leads = (
+                InnerLifePart1Mixin._INVENTED_LEADS
+                if is_invented
+                else InnerLifePart1Mixin._HYPOTHESIS_LEADS
+            )
+            lead = leads[abs(cid) % len(leads)]
+            bullet = f"- {lead} {label}"
+            if is_invented:
+                invented.append(bullet)
+            else:
+                groups.setdefault(subject, []).append(bullet)
+            entry = {
+                "concept_id": cid,
+                "label": label,
+                "kind": getattr(c, "kind", None),
+                "subject": getattr(c, "subject", None),
+                "confidence": round(float(getattr(c, "confidence", 0.0)), 4),
+                "distinct_source_count": int(
+                    getattr(c, "distinct_source_count", 0) or 0
+                ),
+                "lead": lead,
+            }
+            if is_invented:
+                entry["origin"] = ORIGIN_INVENTED
+                entry["hypothesis_id"] = int(
+                    getattr(c, "hypothesis_id", 0) or 0
+                )
+                entry["credence"] = round(
+                    float(getattr(c, "credence", 0.0) or 0.0), 4
+                )
+            comp = comps.get(cid)
+            if comp:
+                entry["score"] = comp
+            surfaced.append(entry)
+        sections = [
+            self._hypothesis_header(subject, name, may_ask=may_ask)
+            + "\n"
+            + "\n".join(lines)
+            for subject in ("user", "relationship", "aiko")
+            if (lines := groups.get(subject))
+        ]
+        if invented:
+            # Last, after the grounded questions: the weakest thing in the
+            # block should be the last thing read.
+            sections.append(
+                self._invented_header(may_ask=may_ask)
+                + "\n"
+                + "\n".join(invented)
+            )
+        if not sections:
+            return "", {"surfaced": [], "reason": "no_eligible"}
+        self._last_hypothesis_lane_concept_ids = frozenset(
+            int(entry["concept_id"])
+            for entry in surfaced
+            if int(entry["concept_id"]) > 0
+        )
+        self._last_hypothesis_lane_hypothesis_ids = frozenset(
+            int(entry["hypothesis_id"])
+            for entry in surfaced
+            if entry.get("hypothesis_id")
+        )
+        return "\n\n".join(sections), {
+            "surfaced": surfaced, "reason": "surfaced",
+        }
+
+    @staticmethod
+    def _invented_header(*, may_ask: bool) -> str:
+        """Intro for the invented group — the softest framing in the block.
+
+        Says outright that these rest on nothing, which reads oddly and is
+        the point: an invention that surfaces without that disclaimer is
+        indistinguishable in the prompt from a belief Aiko earned, and the
+        model will happily assert either. The follow-up clause is gated by
+        K47 exactly as the grounded header's is.
+        """
+        follow_up = (
+            "you may float one as an idle wondering if the moment is right, "
+            "but never as something you've observed"
+            if may_ask
+            else "keep them to yourself this turn"
+        )
+        return (
+            "Idle speculation of your own — guesses you invented rather "
+            "than noticed, with no evidence behind them at all. They are "
+            f"not impressions and not conclusions; {follow_up}:"
+        )
+
+    @staticmethod
+    def _hypothesis_header(subject: str, name: str, *, may_ask: bool) -> str:
+        """Intro for the open-questions group.
+
+        Every line here is load-bearing against a specific failure. The
+        "not conclusions" clause stops the model restating a hypothesis as
+        a belief, and "don't announce" stops it narrating its own
+        uncertainty machinery at the user.
+
+        The follow-up clause is conditional (L30b). Permitting a *natural*
+        follow-up rather than requiring one is what keeps the lane from
+        becoming the interrogation L21 warns about -- but a permission
+        K47 cannot see is a hole in the question budget, and it became a
+        real one once the ask lane could put an explicit cue about the
+        same belief in the same prompt. So when the gate is armed the
+        musing stays and only the invitation goes quiet: the ``aiko``
+        variant never carried one, and the other two swap theirs for an
+        explicit "don't ask about it this turn".
+        """
+        if subject == "aiko":
+            return (
+                "Open questions about yourself — things you've started to "
+                "notice but haven't settled. Hold them as questions, not "
+                "conclusions; don't announce that you're uncertain, just "
+                "don't speak as if they're true:"
+            )
+        follow_up = (
+            "you may follow one up if it fits the moment naturally, but "
+            "never state it as fact"
+            if may_ask
+            else "don't turn one into a question this turn, and never "
+            "state it as fact"
+        )
+        if subject == "relationship":
+            return (
+                f"Open questions about you and {name} together — patterns "
+                "you've half-seen but haven't confirmed. Hold them as "
+                f"questions, not conclusions; {follow_up}:"
+            )
+        return (
+            f"Open questions you're holding about {name} — things you've "
+            "started to suspect but genuinely don't know yet. Hold them as "
+            f"questions, not conclusions; {follow_up}:"
+        )
 
     @staticmethod
     def _concept_group_header(subject: str, family: str, name: str) -> str:

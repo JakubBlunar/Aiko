@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 32
+_SCHEMA_VERSION = 34
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -459,6 +459,85 @@ CREATE TABLE IF NOT EXISTS concept_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_edges_src ON concept_edges(src_type, src_id);
 CREATE INDEX IF NOT EXISTS idx_concept_edges_dst ON concept_edges(dst_type, dst_id);
+
+-- Schema v33 (L30, Phase B): things Aiko has *guessed*, which is not the
+-- same as things she believes. A ``concepts`` row is inferred from
+-- evidence that already exists; a ``hypotheses`` row may rest on nothing
+-- at all -- the ``free`` origin is deliberate speculation, the point of
+-- the layer. Keeping them in separate tables is the whole safety story:
+-- an invention must not reach the concept graph, the T0 profile block, or
+-- anything that reads ``status="active"`` until it has earned its way in
+-- through graduation.
+--
+-- ``credence`` is NOT ``concepts.confidence`` under another name, which
+-- is why it cannot share the column. Confidence answers "how well
+-- evidenced is this", and the L3 lifecycle engine owns it. Credence
+-- answers "how likely do I think this is", it starts as the proposer's
+-- own subjective bet on something with no evidence whatsoever, and it
+-- moves only when an answer comes back. There is no decay and no
+-- lifecycle worker: an untested row expires on TTL rather than fading,
+-- because a guess nobody asked about has not become less plausible, it
+-- has just gone stale.
+--
+-- ``subject`` takes the three concept subjects plus ``world`` -- a guess
+-- about how something *works* is a legitimate thing to wonder and has no
+-- concept kind to graduate into, so it exits as a durable memory instead.
+-- ``origin`` records where the guess came from (``extrapolation`` /
+-- ``memory`` / ``concept`` / ``free``) with ``origin_refs`` holding the
+-- ids it leaned on, empty for free speculation.
+--
+-- ``answer_memory_ids`` (v34) is the JSON list of memories the user's own
+-- answers were stored as -- the only evidence an invented belief ever
+-- accumulates. It has to be remembered rather than re-derived, because
+-- graduation happens on the *second* confirmation and the first answer's
+-- memory is what makes the new concept more than a bare assertion. The
+-- merged exit does not need it (linking attached those edges as they
+-- arrived); the graduated exit cannot work without it.
+--
+-- ``linked_concept_id`` is the answer to a race rather than a nicety.
+-- A confirmed hypothesis stores its answer as an ordinary memory; that
+-- memory gets clustered and L2 proposes a concept from it knowing nothing
+-- about the hypothesis. L2 usually wins, because it needs one
+-- confirmation where graduation needs two -- so the *normal* ending is
+-- "this turned out to be something I already believe". The link is
+-- stamped at the first confirmation so the lane can stop surfacing the
+-- guess and the concept both.
+--
+-- ``status``: ``open`` -> ``supported`` / ``refuted``, then ``graduated``
+-- (minted a new candidate concept), ``merged`` (folded into a concept
+-- that already existed), or ``expired`` (TTL). ``merged`` is deliberately
+-- distinct from ``graduated``: "my guess was already true" and "my guess
+-- became a new belief" are different stories, and L17f / L19 should be
+-- able to narrate them differently.
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    statement TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'identity',
+    subject TEXT NOT NULL DEFAULT 'user',
+    user_id TEXT,
+    rationale TEXT,
+    origin TEXT NOT NULL DEFAULT 'free',
+    origin_refs TEXT NOT NULL DEFAULT '[]',
+    credence REAL NOT NULL DEFAULT 0.5,
+    support_count INTEGER NOT NULL DEFAULT 0,
+    refute_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    embedding BLOB,
+    dim INTEGER NOT NULL DEFAULT 0,
+    asked_count INTEGER NOT NULL DEFAULT 0,
+    answer_memory_ids TEXT NOT NULL DEFAULT '[]',
+    origin_session TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_tested_at TEXT,
+    closed_at TEXT,
+    linked_concept_id INTEGER,
+    graduated_concept_id INTEGER,
+    graduated_memory_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_subject_kind ON hypotheses(subject, kind);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_linked ON hypotheses(linked_concept_id);
 
 -- Schema v22: concept discovery timeline. An APPEND-ONLY log of the
 -- moments Aiko forms, reinforces, promotes, or retires a higher-order
@@ -1606,6 +1685,18 @@ class ChatDatabase:
         # than v31: an entry is Aiko's own prose about a period, and no
         # amount of stored data licenses writing words she never wrote.
         # The diary starts empty and fills one period at a time.
+        # v32 -> v33: L30 Phase B's ``hypotheses``. A brand-new table
+        # declared in ``_CREATE_TABLES``, so the executescript has it.
+        # v33 -> v34: ``hypotheses.answer_memory_ids``. The ALTER only
+        # matters for a database created at exactly v33, before
+        # graduation needed to know which memories carried the answers.
+        try:
+            conn.execute(
+                "ALTER TABLE hypotheses ADD COLUMN answer_memory_ids TEXT "
+                "NOT NULL DEFAULT '[]'"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:

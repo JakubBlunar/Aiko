@@ -2277,9 +2277,15 @@ def register(mcp, session: "SessionController") -> None:
 
         Lists every concept in the in-process ``ConceptStore`` mirror with
         its ``label`` / ``subject`` / ``kind`` / ``status`` / ``confidence``
-        / ``evidence_count`` and its evidence edges (``src_type:src_id``),
-        grouped by status. This is the pre-UI debug read for eyeballing
-        what the proposer (L2) has generated.
+        / ``importance`` / ``evidence_count`` and its evidence edges
+        (``src_type:src_id``), grouped by status. This is the pre-UI debug
+        read for eyeballing what the proposer (L2) has generated.
+
+        ``importance`` is the L32 second axis: how much the belief matters,
+        as opposed to how likely it is to be true. Reading the two together
+        is the point -- a high importance next to a low confidence is a
+        belief carried on faith, which is what confidence-only ranking used
+        to bury.
         """
         try:
             store = getattr(session, "_concept_store", None)
@@ -2290,25 +2296,29 @@ def register(mcp, session: "SessionController") -> None:
                     indent=2,
                 )
             concepts = store.all()
+            importance = session.concept_importance_context(concepts)
             by_status: dict[str, list[dict[str, Any]]] = {}
             for c in concepts:
                 evidence = [
                     f"{e.src_type}:{e.src_id}"
                     for e in store.evidence_of(c.concept_id)
                 ]
-                by_status.setdefault(c.status, []).append(
-                    {
-                        "id": c.concept_id,
-                        "label": c.label,
-                        "subject": c.subject,
-                        "kind": c.kind,
-                        "evidence_model": c.evidence_model,
-                        "confidence": round(float(c.confidence), 3),
-                        "evidence_count": c.evidence_count,
-                        "evidence": evidence,
-                        "rationale": c.rationale,
-                    }
-                )
+                row = {
+                    "id": c.concept_id,
+                    "label": c.label,
+                    "subject": c.subject,
+                    "kind": c.kind,
+                    "evidence_model": c.evidence_model,
+                    "confidence": round(float(c.confidence), 3),
+                    "evidence_count": c.evidence_count,
+                    "evidence": evidence,
+                    "rationale": c.rationale,
+                }
+                if importance is not None:
+                    row["importance"] = round(
+                        importance.for_concept(c), 3
+                    )
+                by_status.setdefault(c.status, []).append(row)
             return json.dumps(
                 {"total": len(concepts), "by_status": by_status}, indent=2
             )
@@ -2327,9 +2337,13 @@ def register(mcp, session: "SessionController") -> None:
         Richer than ``get_concepts_state``: the same JSON that backs
         ``GET /api/concepts`` and the Memory-tab Concepts panel — every
         concept with ``status`` / ``confidence`` / ``plasticity`` /
-        ``rationale`` / timestamps and its resolved evidence edges (with
-        memory / cluster labels), plus ``counts.by_status`` and
-        ``counts.by_subject``. ``enabled=False`` when the concept layer
+        ``importance`` / ``rationale`` / timestamps and its resolved
+        evidence edges (with memory / cluster labels), plus
+        ``counts.by_status`` and ``counts.by_subject``. The L32
+        ``importance`` triple (``importance`` and the
+        ``importance_prior`` / ``importance_charge`` it is built from)
+        says how much each belief *matters*, separately from how likely
+        it is to be true. ``enabled=False`` when the concept layer
         is off (``agent.concepts_enabled``). Pair with
         ``get_concept_transitions`` for what changed recently and
         ``get_last_concept_trace`` for what actually entered the last
@@ -2372,6 +2386,12 @@ def register(mcp, session: "SessionController") -> None:
           ``active_zero_source``) and the L22 spurious signals
           ``single_cluster_active`` (evidence all from one topic) and
           ``weak_memory_active`` (supporting memories are low-confidence).
+        - ``importance`` (L32) — the second strength axis: the overall
+          and per-kind distribution, ``affect_lifted_pct`` (how much of
+          the axis is more than the bare kind prior), and
+          ``attention_gap_sample`` — active beliefs whose importance
+          outruns their confidence, i.e. what matters more than it is
+          established. That list is the one to read.
         - ``duplicates`` — paraphrase twins in the cosine band just under
           the creation-time dedupe bar, i.e. the ones that slipped past it.
         - ``register`` — per ``kind/subject`` label-template concentration
@@ -2563,6 +2583,100 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"get_self_history raised: {exc}"
+
+    @mcp.tool()
+    def get_hypotheses(
+        subject: str = "",
+        kind: str = "",
+        origin: str = "",
+        limit: int = 25,
+    ) -> str:
+        """L30 — everything Aiko is currently unsure about, least settled first.
+
+        The exact payload the ``recall_hypotheses`` tool hands the model.
+        Two origins share the shape and are told apart by ``origin``:
+        ``invented`` rows are speculation from the ``hypotheses`` table
+        with a ``credence`` and a ``hypothesis_id``; ``grounded`` rows are
+        candidate concepts with a ``confidence`` and a ``concept_id`` and
+        have no row of their own — they are derived on read.
+
+        Read this together with ``get_hypothesis_state``: an empty list
+        with a healthy proposer means the shelf is genuinely bare, while
+        an empty list plus a full ``live`` count means everything on the
+        shelf is either linked or already settled.
+
+        ``origin`` filters to one half; ``subject`` is ``user`` / ``aiko``
+        / ``relationship`` / ``world``.
+        """
+        try:
+            return json.dumps(
+                session.open_hypotheses(
+                    subject=(subject or "").strip() or None,
+                    kind=(kind or "").strip() or None,
+                    origin=(origin or "").strip() or None,
+                    limit=limit,
+                ),
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_hypotheses raised: {exc}"
+
+    @mcp.tool()
+    def get_hypothesis_state() -> str:
+        """L30 Phase B — shelf stock against the caps that govern it.
+
+        ``live`` versus ``max_open`` says whether the proposer has room to
+        invent at all, ``by_status`` tells the three exits apart
+        (``graduated`` became its own concept, ``merged`` folded into an
+        existing one, ``refuted`` was denied), and ``linked`` counts rows
+        already answered by a concept — those are live but will never
+        surface, which is the usual explanation for a quiet lane on a full
+        shelf.
+        """
+        try:
+            return json.dumps(
+                session.hypothesis_state(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_hypothesis_state raised: {exc}"
+
+    @mcp.tool()
+    def force_hypothesis_invention() -> str:
+        """L30 Phase B — invent one batch of hypotheses now.
+
+        Bypasses the idle window but not the ``hypothesis_max_open`` cap
+        or either novelty floor, so the interesting outcomes are the
+        rejections: ``rejected_dup`` means it re-proposed something
+        already on the shelf, ``rejected_known`` means it proposed
+        something she already believes as a concept — a high count there
+        means the invention prompt is paraphrasing the profile rather
+        than speculating past it.
+        """
+        try:
+            return json.dumps(
+                session.run_hypothesis_proposer_now(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"force_hypothesis_invention raised: {exc}"
+
+    @mcp.tool()
+    def force_hypothesis_ask() -> str:
+        """L30b — stock the ask shelf now and return what it queued.
+
+        Publishes ``concept_hypothesis`` cues for the most unsettled
+        testable rows from both pools (``questions`` = grounded
+        candidates, ``invented`` = made-up ones). Queuing is not asking:
+        the cue still waits for the provider's topic match or a typed
+        gap, so follow this with ``get_cue_pool_state`` to watch it move
+        and ``send_message`` on a topically-related line to trigger it.
+        """
+        try:
+            return json.dumps(
+                session.run_hypothesis_ask_worker_now(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"force_hypothesis_ask raised: {exc}"
 
     @mcp.tool()
     def get_evolution_diary(limit: int = 20) -> str:

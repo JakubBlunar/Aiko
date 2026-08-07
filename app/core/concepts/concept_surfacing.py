@@ -18,6 +18,10 @@ brings a thought forward:
   surfaced last turn steps aside and recovers over a few turns.
 - **standing** (L38): a slowly learned prior from how reliably this concept's
   past surfacings led to an engaged next turn.
+- **importance** (L32): a multiplier for how much the belief *matters* --
+  the second strength axis, orthogonal to how likely it is to be true, so an
+  uncertain-but-weighty concept can outrank a certain-but-trivial one. Derived
+  per turn in ``concept_importance``; neutral (``0.5``) leaves a score alone.
 
 The per-kind weights live on :class:`app.core.concepts.concept_kinds.SurfaceWeights`
 (``ConceptKind.surface_weights``); the default is context-only, which reproduces
@@ -34,6 +38,10 @@ import logging
 import math
 from datetime import datetime, timezone
 
+from app.core.concepts.concept_importance import (
+    IMPORTANCE_NEUTRAL,
+    importance_factor,
+)
 from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
 
 log = logging.getLogger("app.concept_surfacing")
@@ -298,6 +306,8 @@ def surface_score(
     standing: float | None = None,
     activation: float = 0.0,
     habituation: float = 1.0,
+    importance: float = IMPORTANCE_NEUTRAL,
+    importance_strength: float = 0.0,
     w: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS,
 ) -> float:
     """Blend every surfacing signal into a single ``[0, 1]`` score.
@@ -309,12 +319,20 @@ def surface_score(
     than mutating it. On top of that base, ``activation`` is an **additive**
     spreading-activation boost (scaled by ``w.activation``, outside the
     normalization so a primed concept can rise above its raw relevance), and
-    ``habituation`` is a **multiplier** that damps a just-surfaced concept. The
-    result is clamped to ``[0, 1]``.
+    two **multipliers** apply: ``habituation`` damps a just-surfaced concept,
+    and ``importance`` (L32) tilts by how much the belief *matters* as opposed
+    to how likely it is to be true. The result is clamped to ``[0, 1]``.
 
-    With the default weights (context-only) and no activation/habituation this
-    returns exactly ``cosine`` (clamped), so the scorer is a no-op for any kind
-    that hasn't opted into the blend.
+    Importance is a modulator rather than a seventh normalized term because
+    the two axes answer different questions: diluting cosine with a stake
+    would confuse "on topic" with "at stake", and would need a per-kind weight
+    tuned across every kind. As a multiplier it needs one global
+    ``importance_strength`` knob, and at the neutral importance ``0.5`` -- or
+    at ``importance_strength=0.0`` -- the factor is exactly ``1.0``.
+
+    With the default weights (context-only) and no activation/habituation/
+    importance this returns exactly ``cosine`` (clamped), so the scorer is a
+    no-op for any kind that hasn't opted into the blend.
     """
     total = (
         float(w.context)
@@ -339,7 +357,8 @@ def surface_score(
             )
         ) / total
     boosted = base + float(w.activation) * float(activation)
-    return _c01(boosted * float(habituation))
+    weight = importance_factor(importance, strength=importance_strength)
+    return _c01(boosted * float(habituation) * weight)
 
 
 # ── L35 surface reasons (why *this* concept is in the prompt) ─────────────
@@ -422,6 +441,13 @@ def surface_reason(
     Contributions are normalized exactly the way the score is, so
     ``activation`` (additive, outside the normalization) is compared on
     the same footing as the six ranking terms.
+
+    The two *multipliers* -- habituation and L32 importance -- are
+    deliberately not candidates. They scale every term equally rather than
+    competing with them, so neither can be "the signal that won"; calling
+    importance a reason would claim a contest it never entered. Both are
+    reported as their own fields on the L26 trace instead, where the lift
+    they applied is visible without being misattributed.
 
     ``recency_known=False`` drops recency from contention. Its neutral
     value is ``1.0`` -- the *highest* it goes -- so a concept that has

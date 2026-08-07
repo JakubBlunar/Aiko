@@ -298,6 +298,32 @@ class WebFacadeMixin:
         """
         return self._run_worker_now("_concept_synthesis_worker", "concept synthesis", force=True)
 
+    def run_hypothesis_proposer_now(self) -> dict[str, Any]:
+        """Invent one batch of hypotheses now, bypassing the idle window.
+
+        Skips the pacing interval but not the open-count cap or the
+        novelty rejections — a manual run on a full shelf correctly
+        reports ``max_open`` rather than inventing past the cap.
+        """
+        return self._run_worker_now(
+            "_hypothesis_proposer_worker", "hypothesis proposer",
+        )
+
+    def run_hypothesis_ask_worker_now(self) -> dict[str, Any]:
+        """Stock the ask shelf now: pick testable rows and queue cues.
+
+        Arms the worker's one-shot force flag first, so the run ignores
+        the already-asked filter and re-publishes for rows whose cue has
+        already been spoken for. Without that a second manual run on a
+        stocked pool looks like a no-op.
+        """
+        worker = getattr(self, "_concept_hypothesis_worker", None)
+        if worker is not None:
+            worker.force_next()
+        return self._run_worker_now(
+            "_concept_hypothesis_worker", "hypothesis ask",
+        )
+
     def _run_worker_now(
         self, attr: str, label: str, **kwargs: Any,
     ) -> dict[str, Any]:

@@ -57,6 +57,7 @@ from app.core.concepts.concept_lifecycle import effective_halflife
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_importance import ImportanceContext
     from app.core.concepts.concept_store import Concept
 
 
@@ -643,6 +644,67 @@ def _pruning(
     }
 
 
+#: How far importance must exceed confidence before a belief counts as
+#: "carried on faith": something that matters more than the evidence yet
+#: supports. Wide enough that ordinary noise doesn't trip it.
+_ATTENTION_GAP = 0.2
+
+
+def _importance(
+    concepts: Sequence["Concept"], importance: "ImportanceContext | None",
+) -> dict[str, Any]:
+    """L32 distribution of the second strength axis, and the attention gap.
+
+    The gap list is the point of the section. A belief whose importance
+    outruns its confidence by ``_ATTENTION_GAP`` is one that *matters more
+    than it is established* -- exactly what confidence-only ranking used
+    to bury, and exactly the pool the L30 hypothesis lane will want to
+    reason about. Empty section when the context is unavailable.
+    """
+    if importance is None:
+        return {}
+    actives = [c for c in concepts if c.status == "active"]
+    values: list[float] = []
+    per_kind: dict[str, list[float]] = defaultdict(list)
+    lifted = 0
+    gaps: list[tuple[float, "Concept", float]] = []
+    for c in actives:
+        detail = importance.detail(c)
+        values.append(detail.importance)
+        per_kind[c.kind].append(detail.importance)
+        if detail.charge > 0.0:
+            lifted += 1
+        margin = detail.importance - float(c.confidence)
+        if margin >= _ATTENTION_GAP:
+            gaps.append((margin, c, detail.importance))
+    gaps.sort(key=lambda t: -t[0])
+    return {
+        "active": len(actives),
+        "overall": _stats(values),
+        "by_kind": {
+            k: _stats(v) for k, v in sorted(per_kind.items())
+        },
+        # Affect is sparse and only ever *lifts*, so this is the honest
+        # read on how much of the axis is kind prior alone.
+        "affect_lifted": lifted,
+        "affect_lifted_pct": _pct(lifted, len(actives)),
+        "attention_gap_threshold": _ATTENTION_GAP,
+        "attention_gap": len(gaps),
+        "attention_gap_sample": [
+            {
+                "id": int(c.concept_id),
+                "kind": c.kind,
+                "subject": c.subject,
+                "confidence": round(float(c.confidence), 3),
+                "importance": round(imp, 3),
+                "gap": round(margin, 3),
+                "label": _preview(c.label),
+            }
+            for margin, c, imp in gaps[:_MAX_DUPLICATE_PAIRS]
+        ],
+    }
+
+
 # ── entry point ───────────────────────────────────────────────────────
 
 
@@ -653,14 +715,16 @@ def build_quality_report(
     evidence_facts: Mapping[int, EvidenceFacts] | None = None,
     thresholds: QualityThresholds | None = None,
     now: datetime | None = None,
+    importance: "ImportanceContext | None" = None,
 ) -> dict[str, Any]:
     """Aggregate the concept layer into the L22 quality snapshot.
 
     ``concepts`` is every stored concept; ``event_counts`` maps
     ``event_type -> count`` over the whole timeline; ``evidence_facts``
     carries the per-concept graph joins the caller resolved (optional --
-    signals A and B are simply omitted without it). Returns a plain dict
-    suitable for JSON, kv_meta, or the debug panel.
+    signals A and B are simply omitted without it); ``importance`` is the
+    L32 context (also optional -- its section is omitted without it).
+    Returns a plain dict suitable for JSON, kv_meta, or the debug panel.
     """
     rows = list(concepts)
     limits = thresholds or QualityThresholds()
@@ -680,6 +744,7 @@ def build_quality_report(
         "totals": _totals(rows),
         "flow": _flow(rows, event_counts or {}, now=when),
         "confidence": _confidence(rows),
+        "importance": _importance(rows, importance),
         "evidence": _evidence(rows, limits, facts),
         "duplicates": _duplicates(rows, limits),
         "register": _register(rows),
@@ -702,6 +767,7 @@ def disabled_quality_report() -> dict[str, Any]:
         },
         "flow": {},
         "confidence": {},
+        "importance": {},
         "evidence": {},
         "duplicates": {"band": {}, "pair_count": 0, "pairs": []},
         "register": {},

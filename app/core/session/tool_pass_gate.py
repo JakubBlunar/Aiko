@@ -92,6 +92,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall_topic": "recall",
     "recall_concept": "recall",
     "recall_self_history": "recall",
+    "recall_hypotheses": "recall",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
@@ -157,6 +158,14 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"used to (?:think|believe|feel|say|be|like|want)",
         r"what (?:were|was) you like", r"how you (?:were|used to)",
         r"how long have you", r"back (?:then|when we)",
+        # L30: questions about her open guesses. Again narrow -- a bare
+        # "wonder" fires on ordinary musing, so require the shapes that
+        # ask her to enumerate.
+        r"(?:what|anything) (?:do you|are you|you'?re) (?:wonder|unsure|not sure|curious)",
+        r"wondering about (?:me|us|yourself)",
+        r"(?:still|actually) (?:unsure|not sure) about",
+        r"(?:any|got any|have any) (?:questions|hunches|guesses|theories)",
+        r"what don'?t you know", r"what are you guessing",
     ]),
     # NB: no "files" family — the filesystem task tools live in the
     # background workflow / MCP lane, not the brain ``ToolRegistry``.

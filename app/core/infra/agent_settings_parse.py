@@ -1638,6 +1638,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             forward_curiosity_enabled=bool(
                 agent_raw.get("forward_curiosity_enabled", True),
             ),
+            concept_hypothesis_ask_enabled=bool(
+                agent_raw.get("concept_hypothesis_ask_enabled", True),
+            ),
+            hypothesis_invention_enabled=bool(
+                agent_raw.get("hypothesis_invention_enabled", True),
+            ),
             follow_up_enabled=bool(
                 agent_raw.get("follow_up_enabled", True),
             ),

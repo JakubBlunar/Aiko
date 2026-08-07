@@ -114,6 +114,21 @@ class RegistryTests(unittest.TestCase):
         flagged = sorted(n for n, s in CUE_SPECS.items() if s.gap_cue)
         self.assertEqual(flagged, sorted(GAP_CUE_ORDER))
 
+    def test_the_belief_probe_is_the_last_thing_she_opens_with(self) -> None:
+        # ``GAP_CUE_ORDER`` is the mutex priority, and asking someone
+        # about their own character out of a silence is the heaviest
+        # opening in the set -- it yields to every other gap cue.
+        self.assertEqual(GAP_CUE_ORDER[-1], "concept_hypothesis")
+
+    def test_the_belief_probe_arms_on_stock_not_a_slot(self) -> None:
+        # Deliberately slot-less while still ``gap_cue``: it is the one
+        # dual-mode type, and most of its firings come from the topic
+        # path where no slot is involved. Arming on the pending slot
+        # would under-count those opportunities.
+        spec = CUE_SPECS["concept_hypothesis"]
+        self.assertTrue(spec.gap_cue)
+        self.assertFalse(spec.slot_attr)
+
     def test_every_spec_has_an_arming_signal(self) -> None:
         # A spec with no slot, no journal and no pool can never be armed,
         # so it would sit in ``never_armed`` forever looking like a broken

@@ -16,6 +16,7 @@ from app.core.session.context_budget_selector import (
 from app.core.session.prompt_assembler_helpers_mixin import (
     PromptAssemblerHelpersMixin,
 )
+from app.core.infra import timephrase
 from app.core.rag.rag_retriever import RagRetriever
 from app.core.rag.rag_store import MemoryRecord, RagHit
 
@@ -348,8 +349,18 @@ class _FakeConceptStore:
         self._near_score = near_score
         self._edges = edges or {}
 
-    def nearest(self, _vec: object, *, status: str = "active", k: int = 8):
-        return [(c, self._near_score) for c in self._concepts[:k]]
+    def nearest(self, _vec: object, *, status: str = "active", k: int = 8,
+                subject: object = None, kind: object = None):
+        # Status is honoured so the L30a hypothesis lane (the one reader
+        # that asks for candidates) can be exercised against the same
+        # fixture as the confident lanes.
+        rows = [
+            c for c in self._concepts
+            if (status is None or getattr(c, "status", "active") == status)
+            and (subject is None or getattr(c, "subject", None) == subject)
+            and (kind is None or getattr(c, "kind", None) == kind)
+        ]
+        return [(c, self._near_score) for c in rows[:k]]
 
     def list_by(self, *, status: str | None = None, kind: str | None = None,
                 subject: object = None, user_id: object = None):
@@ -370,6 +381,25 @@ class _FakeConceptStore:
 
     def evidence_of(self, _cid):
         return []
+
+    def cluster_evidence_for(self, concept_ids):
+        # L32: {concept_id: (representative memory id, ...)}. Read off the
+        # same ``edges`` fixture the activation tests use -- it is keyed by
+        # ``edges_from``, and a cluster evidence edge runs cluster ->
+        # concept, so grounding a concept on a cluster there gets it an
+        # affect lift here for free.
+        wanted = {int(c) for c in concept_ids}
+        out: dict[int, list[int]] = {}
+        for (node_type, node_id), edges in self._edges.items():
+            if node_type != "cluster":
+                continue
+            for e in edges:
+                if e.dst_type != "concept" or e.relation != "evidence":
+                    continue
+                cid = int(e.dst_id)
+                if cid in wanted:
+                    out.setdefault(cid, []).append(int(node_id))
+        return {cid: tuple(v) for cid, v in out.items()}
 
     def dependents_of(self, _cid):
         return []
@@ -416,6 +446,23 @@ def _ms() -> SimpleNamespace:
         # Feature-focused tests opt in explicitly; keep legacy ranking fixtures
         # stable when no standing cache was part of their setup.
         concept_surfacing_standing_enabled=False,
+        # L32: on, as it is in production. Every concept therefore carries
+        # its kind's stake even with no affect data, which is the point --
+        # these fixtures should rank the way the live path ranks.
+        concept_importance_enabled=True,
+        concept_importance_strength=0.4,
+        concept_importance_affect_lift=0.5,
+        concept_importance_affect_min_samples=3,
+        concept_surfacing_overfetch=5,
+        # L30a: on, as in production. Fixtures whose concepts are all
+        # ``active`` are unaffected -- the lane reads candidates only.
+        hypothesis_surfacing_enabled=True,
+        context_budget_hypothesis_floor=0,
+        context_budget_hypothesis_cap=1,
+        context_budget_hypothesis_weight=0.7,
+        context_budget_hypothesis_min_relevance=0.35,
+        hypothesis_min_unsettled=0.22,
+        hypothesis_min_sources=1,
     )
 
 
@@ -767,10 +814,17 @@ class HabituationWiringTests(unittest.TestCase):
                 self._concept_event_store = (
                     _FakeEventStore(events) if events is not None else None
                 )
+                # K47 gate. Stubbed rather than built from real settings:
+                # the real reader needs _settings + _debug_overrides, and
+                # the L30a lane only consumes the boolean.
+                self.k47_armed = False
 
             @property
             def user_display_name(self) -> str:
                 return "Jacob"
+
+            def _question_balance_suppressed(self) -> bool:
+                return self.k47_armed
 
         return _Host()
 
@@ -1044,6 +1098,185 @@ class HabituationWiringTests(unittest.TestCase):
         self.assertEqual(entry["surface_reason"], "topic_match")
 
 
+class ImportanceWiringTests(unittest.TestCase):
+    """L32 through ``build_relevant_context``: the second strength axis
+    reaches the score and the trace, and the affect join actually joins.
+
+    The pure scorer is covered in ``test_concept_importance``; what these
+    pin is the wiring, which is where the axis is easiest to lose --
+    every failure path in the join returns ``None`` on purpose, so a
+    broken bridge produces a working prompt with the feature silently off.
+    """
+
+    _host = HabituationWiringTests._host
+    _run = HabituationWiringTests._run
+    _trace_by_id = HabituationWiringTests._trace_by_id
+
+    @staticmethod
+    def _concept(cid: int, kind: str, *, conf: float = 0.6, subject="user"):
+        return SimpleNamespace(
+            concept_id=cid, label=f"{kind} belief {cid}", confidence=conf,
+            plasticity=0.4, kind=kind, subject=subject, status="active",
+            last_reinforced_at=None,
+        )
+
+    @staticmethod
+    def _charged_kv(cluster_id: int = 5) -> _FakeKV:
+        from app.core.concepts.cluster_affect import (
+            KV_CLUSTER_AFFECT_USER,
+            ClusterAffectState,
+            save_map,
+        )
+
+        kv = _FakeKV()
+        save_map(kv.kv_set, KV_CLUSTER_AFFECT_USER, {
+            str(cluster_id): ClusterAffectState(
+                valence=-0.9, arousal=0.85, samples=12,
+                updated_at=timephrase.utcnow().isoformat(),
+            )
+        })
+        return kv
+
+    def _grounded(self, concepts, *, kv, near_score=0.5):
+        """A host where concept #2 is grounded on cluster 5 (rep memory 100)."""
+        return self._host(
+            concepts, near_score=near_score, tracker=_FakeTracker(3), kv=kv,
+            clusters=[
+                SimpleNamespace(
+                    cluster_id=5, representative_id=100, member_ids=(100, 101),
+                )
+            ],
+            edges={("cluster", "100"): [_CEdge("concept", 2)]},
+        )
+
+    def test_the_trace_carries_the_axis_and_its_inputs(self) -> None:
+        host = self._grounded(
+            [self._concept(2, "affective")], kv=self._charged_kv(),
+        )
+        score = self._trace_by_id(self._run(host))[2]["score"]
+        self.assertIn("importance", score)
+        self.assertIn("importance_prior", score)
+        self.assertIn("importance_charge", score)
+
+    def test_a_charged_topic_lifts_the_concept_above_its_kind(self) -> None:
+        # The join end to end: cluster evidence names memory 100, the graph
+        # puts 100 in cluster 5, cluster 5 carries affect. Break any link
+        # and the charge silently reads zero.
+        host = self._grounded(
+            [self._concept(2, "affective")], kv=self._charged_kv(),
+        )
+        score = self._trace_by_id(self._run(host))[2]["score"]
+        self.assertGreater(score["importance_charge"], 0.0)
+        self.assertGreater(score["importance"], score["importance_prior"])
+
+    def test_an_ungrounded_concept_rests_on_its_kind_prior(self) -> None:
+        from app.core.concepts.concept_importance import kind_importance
+
+        host = self._host(
+            [self._concept(9, "affective")], near_score=0.5,
+            tracker=_FakeTracker(3), kv=self._charged_kv(),
+        )
+        score = self._trace_by_id(self._run(host))[9]["score"]
+        self.assertEqual(score["importance_charge"], 0.0)
+        self.assertAlmostEqual(
+            score["importance"], kind_importance("affective"), places=3
+        )
+
+    def test_affect_on_an_unrelated_cluster_does_not_leak(self) -> None:
+        # Charge belongs to the topics a concept actually stands on.
+        host = self._grounded(
+            [self._concept(2, "affective")], kv=self._charged_kv(999),
+        )
+        score = self._trace_by_id(self._run(host))[2]["score"]
+        self.assertEqual(score["importance_charge"], 0.0)
+
+    def test_disabling_the_axis_removes_it_from_the_trace(self) -> None:
+        host = self._grounded(
+            [self._concept(2, "affective")], kv=self._charged_kv(),
+        )
+        host._memory_settings.concept_importance_enabled = False
+        score = self._trace_by_id(self._run(host))[2]["score"]
+        self.assertNotIn("importance", score)
+
+    def test_zero_strength_leaves_the_ranking_untouched(self) -> None:
+        # The escape hatch: one knob to 0 has to reproduce the pre-L32
+        # score exactly, not approximately.
+        def score_of(strength: float) -> float:
+            host = self._host(
+                [self._concept(4, "boundary")], near_score=0.5,
+                tracker=_FakeTracker(3), kv=_FakeKV(),
+            )
+            host._memory_settings.concept_importance_strength = strength
+            return self._trace_by_id(self._run(host))[4]["score"]["score"]
+
+        host_off = self._host(
+            [self._concept(4, "boundary")], near_score=0.5,
+            tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        host_off._memory_settings.concept_importance_enabled = False
+        baseline = self._trace_by_id(
+            self._run(host_off)
+        )[4]["score"]["score"]
+        self.assertEqual(score_of(0.0), baseline)
+        self.assertGreater(score_of(0.4), baseline)
+
+    def test_stakes_break_a_tie_between_equally_relevant_beliefs(self) -> None:
+        # The headline: same cosine, same confidence, different stakes.
+        host = self._host(
+            [self._concept(1, "boundary"), self._concept(2, "taste",
+                                                         subject="aiko")],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        comps = self._trace_by_id(self._run(host))
+        self.assertGreater(
+            comps[1]["score"]["score"], comps[2]["score"]["score"]
+        )
+
+    def test_a_missing_store_method_does_not_sink_the_turn(self) -> None:
+        # Every join failure is meant to degrade to neutral importance
+        # rather than an empty prompt region.
+        host = self._grounded(
+            [self._concept(2, "affective")], kv=self._charged_kv(),
+        )
+        del type(host._concept_store).cluster_evidence_for
+        try:
+            region = self._run(host)
+            self.assertIn(2, self._trace_by_id(region))
+            self.assertNotIn(
+                "importance", self._trace_by_id(region)[2]["score"]
+            )
+        finally:
+            type(host._concept_store).cluster_evidence_for = (
+                _cluster_evidence_for
+            )
+
+    def test_the_flex_lane_over_fetches_wider_than_it_renders(self) -> None:
+        # Importance can only re-rank what cosine brought back, so the
+        # over-fetch has to exceed the render cap or the axis can reorder
+        # the winners but never promote a newcomer.
+        seen: list[int] = []
+        host = self._host(
+            [self._concept(i, "identity") for i in range(1, 30)],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        original = host._concept_store.nearest
+
+        def spy(vec, *, status="active", k=8):
+            seen.append(int(k))
+            return original(vec, status=status, k=k)
+
+        host._concept_store.nearest = spy
+        self._run(host)
+        cap = host._memory_settings.context_budget_concept_cap
+        self.assertTrue(seen)
+        self.assertGreater(max(seen), cap * 2)
+
+
+#: Captured before any test deletes it off the class, so the teardown in
+#: ``test_a_missing_store_method_does_not_sink_the_turn`` can put it back.
+_cluster_evidence_for = _FakeConceptStore.cluster_evidence_for
+
+
 class ProfileClaimDedupeTests(unittest.TestCase):
     """L39: a ``subject=user`` identity / value concept reaches the prompt via
     two independent paths in one assembly -- the T0 profile block and the T3
@@ -1138,6 +1371,497 @@ class ProfileClaimDedupeTests(unittest.TestCase):
         region = self._run(host)
         self.assertIn("enjoys systems thinking", region.text)
         self.assertNotIn("claimed_by_profile", region.concept_trace)
+
+
+class HypothesisLaneTests(unittest.TestCase):
+    """L30a end-to-end: candidates reach the prompt as open questions, in
+    their own budget lane, without contaminating the confident register."""
+
+    _host = HabituationWiringTests._host
+    _run = HabituationWiringTests._run
+
+    @staticmethod
+    def _candidate(cid: int, label: str, *, conf: float = 0.85,
+                   sources: int = 1, kind: str = "identity",
+                   subject: str = "user"):
+        return SimpleNamespace(
+            concept_id=cid, label=label, confidence=conf, plasticity=0.5,
+            kind=kind, subject=subject, status="candidate",
+            distinct_source_count=sources, last_reinforced_at=None,
+        )
+
+    @staticmethod
+    def _active(cid: int, label: str, *, conf: float = 0.85):
+        return SimpleNamespace(
+            concept_id=cid, label=label, confidence=conf, plasticity=0.5,
+            kind="identity", subject="user", status="active",
+            distinct_source_count=4, last_reinforced_at=None,
+        )
+
+    def _build(self, concepts: list, *, near_score: float = 0.6):
+        return self._host(
+            concepts, near_score=near_score,
+            tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+
+    def test_a_thin_candidate_surfaces_as_an_open_question(self) -> None:
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        region = self._run(host)
+        self.assertIn("Jacob is quietly burnt out", region.text)
+        self.assertIn("Open questions", region.text)
+
+    def test_it_is_never_phrased_as_a_belief(self) -> None:
+        # The failure this lane exists to avoid. Candidate confidence is
+        # high (0.9 here, and a median of 0.82 on the measured graph), so
+        # reusing the confident lane's hedge would render an unproven
+        # hunch as "You're fairly sure".
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out", conf=0.9),
+        ])
+        text = self._run(host).text
+        self.assertNotIn("You're fairly sure Jacob is quietly burnt out", text)
+        self.assertNotIn(
+            "You have a sense that Jacob is quietly burnt out", text
+        )
+        line = next(
+            ln for ln in text.splitlines()
+            if "Jacob is quietly burnt out" in ln and ln.startswith("-")
+        )
+        self.assertTrue(
+            any(
+                lead in line
+                for lead in host._HYPOTHESIS_LEADS  # noqa: SLF001
+            ),
+            line,
+        )
+
+    def test_a_settled_candidate_stays_out(self) -> None:
+        # Two sources at full conviction: a candidate only because the
+        # promotion age floor has not elapsed, not because Aiko is unsure.
+        host = self._build([
+            self._candidate(
+                11, "Jacob prefers dark mode", conf=0.85, sources=2,
+            ),
+        ])
+        region = self._run(host)
+        self.assertNotIn("Jacob prefers dark mode", region.text)
+
+    def test_an_ungrounded_proposal_stays_out(self) -> None:
+        host = self._build([
+            self._candidate(12, "Jacob secretly hates cats", sources=0),
+        ])
+        self.assertNotIn("Jacob secretly hates cats", self._run(host).text)
+
+    def test_the_two_registers_are_rendered_apart(self) -> None:
+        host = self._build([
+            self._active(1, "Jacob values owning his data"),
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        text = self._run(host).text
+        belief_at = text.index("Jacob values owning his data")
+        question_at = text.index("Jacob is quietly burnt out")
+        header_at = text.index("Open questions")
+        # The confident belief leads; the open question trails its own
+        # header, so the two never read as one list.
+        self.assertLess(belief_at, header_at)
+        self.assertLess(header_at, question_at)
+
+    def test_a_concept_is_never_both_a_belief_and_a_question(self) -> None:
+        host = self._build([
+            self._active(1, "Jacob values owning his data"),
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        trace = self._run(host).concept_trace
+        confident = {int(e["concept_id"]) for e in trace["surfaced"]}
+        tentative = {
+            int(e["concept_id"])
+            for e in trace.get("hypotheses", {}).get("surfaced", [])
+        }
+        self.assertEqual(confident & tentative, set())
+        self.assertIn(11, tentative)
+
+    def test_a_demoted_belief_still_in_the_profile_block_is_skipped(
+        self,
+    ) -> None:
+        # The narrow case that makes the cross-lane dedup more than
+        # decorative. Status alone keeps the two registers apart -- a row
+        # cannot be active and candidate at once -- but
+        # ``_last_profile_concept_ids`` is a *stash from a previous
+        # render* and survives a slice-cache hit. If L3 demotes a concept
+        # to candidate in between, its id is in the T0 block on screen
+        # while the lane now sees it as an open question, and Aiko would
+        # assert it and wonder about it in the same assembly.
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        baseline = self._run(host)
+        self.assertIn("Jacob is quietly burnt out", baseline.text)
+
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        host._last_profile_concept_ids = frozenset({11})
+        region = self._run(host)
+        self.assertNotIn("Jacob is quietly burnt out", region.text)
+
+    def test_the_trace_explains_the_pick(self) -> None:
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        trace = self._run(host).concept_trace["hypotheses"]
+        entry = trace["surfaced"][0]
+        self.assertEqual(entry["concept_id"], 11)
+        self.assertEqual(entry["distinct_source_count"], 1)
+        score = entry["score"]
+        self.assertEqual(score["lane"], "hypothesis")
+        for field in ("cosine", "unsettled", "importance", "habituation"):
+            self.assertIn(field, score)
+        self.assertGreater(score["unsettled"], 0.22)
+
+    def test_stakes_decide_between_two_equally_open_questions(self) -> None:
+        # A boundary and a taste, identically unsettled and identically
+        # on-topic. L32 importance is the only thing separating them, and
+        # the cap of one means only the weightier may speak.
+        host = self._build([
+            self._candidate(11, "Jacob needs space when overloaded",
+                            kind="boundary"),
+            self._candidate(12, "Jacob likes tabs over spaces", kind="taste"),
+        ])
+        text = self._run(host).text
+        self.assertIn("Jacob needs space when overloaded", text)
+        self.assertNotIn("Jacob likes tabs over spaces", text)
+
+    def test_the_cap_holds_at_one(self) -> None:
+        host = self._build([
+            self._candidate(11, "first open question"),
+            self._candidate(12, "second open question"),
+            self._candidate(13, "third open question"),
+        ])
+        region = self._run(host)
+        self.assertEqual(region.selection.source("hypothesis").count, 1)
+
+    def test_disabling_the_lane_removes_it_entirely(self) -> None:
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        host._memory_settings.hypothesis_surfacing_enabled = False
+        region = self._run(host)
+        self.assertNotIn("Jacob is quietly burnt out", region.text)
+        self.assertNotIn("hypotheses", region.concept_trace)
+
+    def test_an_immature_graph_stays_quiet(self) -> None:
+        # L21: a hypothesis block on a cold graph is the exact "blurt a
+        # half-formed model" anti-pattern. The lane shares the confident
+        # lanes' maturity gate rather than relaxing it.
+        host = self._build([
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        host._topic_graph.mature = lambda *, min_clusters=6: False
+        self.assertNotIn(
+            "Jacob is quietly burnt out", self._run(host).text
+        )
+
+    def test_a_view_without_the_lane_does_not_sink_the_turn(self) -> None:
+        # Mirrors the L32 guard: an older or leaner view double simply
+        # produces no hypotheses rather than an exception.
+        host = self._build([
+            self._active(1, "Jacob values owning his data"),
+            self._candidate(11, "Jacob is quietly burnt out"),
+        ])
+        from app.core.concepts.concept_view import ConceptView
+
+        original = ConceptView.hypotheses
+        try:
+            del ConceptView.hypotheses
+            region = self._run(host)
+        finally:
+            ConceptView.hypotheses = original
+        self.assertIn("Jacob values owning his data", region.text)
+        self.assertNotIn("Jacob is quietly burnt out", region.text)
+
+    def test_a_surfaced_question_is_habituated(self) -> None:
+        # The eligible pool is small, so without this the same question
+        # would lead every turn and read as a fixation.
+        from app.core.concepts.concept_surfacing import load_habituation
+
+        kv = _FakeKV()
+        host = self._host(
+            [self._candidate(11, "Jacob is quietly burnt out")],
+            near_score=0.6, tracker=_FakeTracker(3), kv=kv,
+        )
+        self._run(host)
+        self.assertIn(11, load_habituation(kv.kv_get))
+
+
+class HypothesisRenderTests(unittest.TestCase):
+    def _host(self):
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        class _Host(InnerLifePart1Mixin):
+            def __init__(self) -> None:
+                self._concept_store = None
+                self.k47_armed = False
+
+            @property
+            def user_display_name(self) -> str:
+                return "Jacob"
+
+            def _question_balance_suppressed(self) -> bool:
+                return self.k47_armed
+
+        return _Host()
+
+    @staticmethod
+    def _c(cid: int, label: str, subject: str = "user"):
+        return SimpleNamespace(
+            concept_id=cid, label=label, subject=subject, kind="identity",
+            confidence=0.8, distinct_source_count=1,
+        )
+
+    def test_empty_renders_nothing(self) -> None:
+        text, trace = self._host()._render_hypothesis_concepts([])
+        self.assertEqual(text, "")
+        self.assertEqual(trace["reason"], "no_eligible")
+
+    def test_subjects_get_their_own_voice(self) -> None:
+        host = self._host()
+        text, _ = host._render_hypothesis_concepts([
+            self._c(1, "Jacob is quietly burnt out"),
+            self._c(2, "I get clingy when he goes quiet", subject="aiko"),
+        ])
+        self.assertIn("about Jacob", text)
+        self.assertIn("about yourself", text)
+        self.assertGreater(
+            text.index("I get clingy"), text.index("about yourself")
+        )
+
+    def test_every_header_forbids_asserting_the_question(self) -> None:
+        host = self._host()
+        for subject in ("user", "aiko", "relationship"):
+            header = host._hypothesis_header(subject, "Jacob", may_ask=True)
+            self.assertIn("questions, not conclusions", header)
+
+    def test_the_lead_is_stable_for_a_given_concept(self) -> None:
+        host = self._host()
+        first, _ = host._render_hypothesis_concepts(
+            [self._c(7, "Jacob is quietly burnt out")]
+        )
+        second, _ = host._render_hypothesis_concepts(
+            [self._c(7, "Jacob is quietly burnt out")]
+        )
+        self.assertEqual(first, second)
+
+    def test_every_lead_reads_as_a_question_not_a_belief(self) -> None:
+        # Guards the register against a future edit importing the
+        # confident lane's vocabulary.
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        for lead in InnerLifePart1Mixin._HYPOTHESIS_LEADS:
+            self.assertNotIn("sure", lead.lower())
+            self.assertNotIn("impression", lead.lower())
+
+    def test_a_blank_label_is_skipped(self) -> None:
+        host = self._host()
+        text, trace = host._render_hypothesis_concepts([self._c(1, "   ")])
+        self.assertEqual(text, "")
+        self.assertEqual(trace["reason"], "no_eligible")
+
+
+class InventedRenderTests(unittest.TestCase):
+    """L30 Phase B in the L30a lane.
+
+    The failure this guards is precise: an invention that renders in the
+    same register as a grounded candidate is indistinguishable in the
+    prompt from something Aiko noticed, and the model will assert either
+    one. So the two never share a header, an invented row is always last,
+    and its disclaimer says outright that nothing is behind it.
+    """
+
+    def _host(self):
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        class _Host(InnerLifePart1Mixin):
+            def __init__(self) -> None:
+                self._concept_store = None
+                self.k47_armed = False
+
+            @property
+            def user_display_name(self) -> str:
+                return "Jacob"
+
+            def _question_balance_suppressed(self) -> bool:
+                return self.k47_armed
+
+        return _Host()
+
+    @staticmethod
+    def _grounded(cid: int, label: str):
+        return SimpleNamespace(
+            concept_id=cid, label=label, subject="user", kind="identity",
+            confidence=0.8, distinct_source_count=1,
+        )
+
+    @staticmethod
+    def _invented(hid: int, statement: str, subject: str = "user"):
+        from app.core.concepts.hypothesis_lane import adapt
+        from app.core.concepts.hypothesis_store import Hypothesis
+
+        row = Hypothesis(statement=statement, subject=subject, credence=0.5)
+        row.hypothesis_id = hid
+        return adapt(row)
+
+    def test_an_invention_says_it_rests_on_nothing(self) -> None:
+        text, _ = self._host()._render_hypothesis_concepts(
+            [self._invented(3, "Jacob would love sailing")]
+        )
+
+        self.assertIn("invented rather than noticed", text)
+        self.assertIn("no evidence behind them", text)
+
+    def test_it_never_borrows_the_grounded_header(self) -> None:
+        text, _ = self._host()._render_hypothesis_concepts(
+            [self._invented(3, "Jacob would love sailing")]
+        )
+
+        self.assertNotIn("half-noticed", text)
+        self.assertNotIn("about Jacob", text)
+
+    def test_the_two_origins_get_separate_sections(self) -> None:
+        text, _ = self._host()._render_hypothesis_concepts([
+            self._grounded(1, "Jacob is quietly burnt out"),
+            self._invented(3, "Jacob would love sailing"),
+        ])
+
+        self.assertIn("about Jacob", text)
+        self.assertIn("Idle speculation", text)
+
+    def test_the_weakest_thing_is_read_last(self) -> None:
+        text, _ = self._host()._render_hypothesis_concepts([
+            self._invented(3, "Jacob would love sailing"),
+            self._grounded(1, "Jacob is quietly burnt out"),
+        ])
+
+        self.assertLess(
+            text.index("Jacob is quietly burnt out"),
+            text.index("Jacob would love sailing"),
+        )
+
+    def test_the_invented_leads_never_claim_an_observation(self) -> None:
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        for lead in InnerLifePart1Mixin._INVENTED_LEADS:
+            for claim in ("noticed", "sense", "impression", "sure"):
+                self.assertNotIn(claim, lead.lower())
+
+    def test_the_k47_gate_drops_the_invitation_not_the_thought(self) -> None:
+        host = self._host()
+        host.k47_armed = True
+
+        text, _ = host._render_hypothesis_concepts(
+            [self._invented(3, "Jacob would love sailing")]
+        )
+
+        self.assertIn("Jacob would love sailing", text)
+        self.assertIn("keep them to yourself", text)
+
+    def test_the_ids_go_to_their_own_dedupe_set(self) -> None:
+        """The ask cue for an invention carries a hypothesis id."""
+        host = self._host()
+
+        host._render_hypothesis_concepts([
+            self._grounded(1, "Jacob is quietly burnt out"),
+            self._invented(3, "Jacob would love sailing"),
+        ])
+
+        self.assertEqual(host._last_hypothesis_lane_concept_ids, {1})
+        self.assertEqual(host._last_hypothesis_lane_hypothesis_ids, {3})
+
+    def test_a_negative_id_never_leaks_into_the_concept_set(self) -> None:
+        host = self._host()
+
+        host._render_hypothesis_concepts(
+            [self._invented(3, "Jacob would love sailing")]
+        )
+
+        self.assertEqual(host._last_hypothesis_lane_concept_ids, frozenset())
+
+    def test_the_trace_marks_which_pool_a_row_came_from(self) -> None:
+        _text, trace = self._host()._render_hypothesis_concepts([
+            self._grounded(1, "Jacob is quietly burnt out"),
+            self._invented(3, "Jacob would love sailing"),
+        ])
+
+        origins = [e.get("origin") for e in trace["surfaced"]]
+        self.assertEqual(origins, [None, "invented"])
+
+    def test_two_inventions_get_their_own_habituation_slots(self) -> None:
+        """Negative ids must not collide, or the pair rotates as one."""
+        a = self._invented(3, "one")
+        b = self._invented(4, "two")
+
+        self.assertNotEqual(a.concept_id, b.concept_id)
+        self.assertLess(a.concept_id, 0)
+
+    def test_an_invention_reports_no_evidence_of_its_own(self) -> None:
+        """Answering with credence would let it rank as though grounded."""
+        row = self._invented(3, "Jacob would love sailing")
+
+        self.assertEqual(row.confidence, 0.0)
+        self.assertEqual(row.distinct_source_count, 0)
+
+
+class OnePerOriginTests(unittest.TestCase):
+    """The lane offers at most one candidate per origin.
+
+    Scoring alone would bury the inventions: L32 importance blends a kind
+    prior with the emotional charge of grounded topic clusters, and an
+    invention has no grounded memories, so it falls back to the bare
+    prior and loses nearly every time.
+    """
+
+    @staticmethod
+    def _cand(key: str, origin: str | None):
+        payload = SimpleNamespace(origin=origin) if origin else SimpleNamespace()
+        return SimpleNamespace(key=key, payload=payload)
+
+    def _keys(self, cands) -> list[str]:
+        from app.core.concepts.hypothesis_lane import one_per_origin
+
+        return [c.key for c in one_per_origin(cands)]
+
+    def test_a_second_grounded_row_is_dropped(self) -> None:
+        cands = [self._cand("a", None), self._cand("b", None)]
+
+        self.assertEqual(self._keys(cands), ["a"])
+
+    def test_one_of_each_origin_survives(self) -> None:
+        cands = [self._cand("a", None), self._cand("b", "invented")]
+
+        self.assertEqual(self._keys(cands), ["a", "b"])
+
+    def test_it_keeps_the_better_ranked_row_of_each_origin(self) -> None:
+        cands = [
+            self._cand("a", None),
+            self._cand("b", "invented"),
+            self._cand("c", "invented"),
+        ]
+
+        self.assertEqual(self._keys(cands), ["a", "b"])
+
+    def test_an_invention_is_not_crowded_out_by_grounded_rows(self) -> None:
+        cands = [
+            self._cand("g1", None),
+            self._cand("g2", None),
+            self._cand("g3", None),
+            self._cand("inv", "invented"),
+        ]
+
+        self.assertEqual(self._keys(cands), ["g1", "inv"])
+
+    def test_an_empty_list_stays_empty(self) -> None:
+        self.assertEqual(self._keys([]), [])
 
 
 if __name__ == "__main__":

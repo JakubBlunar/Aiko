@@ -27,6 +27,21 @@ _KV_CONFLICT_REPAIR_AT = "conflict_repair.last_recorded_at"
 _KV_INSIDE_JOKE_AT = "inside_joke_birth.last_recorded_at"
 
 
+def _embed_or_none(embedder: Any, text: str) -> Any:
+    """Vector for ``text``, or ``None`` if that is not possible right now.
+
+    Every caller here treats the vector as an optional refinement, so an
+    unavailable embedder degrades the check rather than failing the turn.
+    """
+    if embedder is None or not text:
+        return None
+    try:
+        return embedder.embed(text)
+    except Exception:
+        log.debug("post-turn embed failed", exc_info=True)
+        return None
+
+
 class PostTurnHelpersMixin(DebugOverridesHostMixin):
     """Slot-arming, promise/tease/emotion, curiosity + knowledge-gap
     resolution, revival detection, and the per-turn affect/balance updates
@@ -216,6 +231,375 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         )
         if latency_f >= min_gap_s:
             self._pending_forward_curiosity_seconds = latency_f
+
+    def _maybe_arm_concept_hypothesis_slot(self, engagement: Any) -> None:
+        """L30b: stash ``latency_seconds`` on
+        ``_pending_concept_hypothesis_seconds`` when the turn follows a
+        long typed gap.
+
+        Mirror of :meth:`_maybe_arm_forward_curiosity_slot` with its own
+        master switch (``agent.concept_hypothesis_ask_enabled``) and
+        threshold (``memory.concept_hypothesis_min_gap_hours``, default
+        4h). Arms only the *fallback* half of the provider: the topic path
+        needs no slot, so an unarmed turn still surfaces a hunch when the
+        conversation is already on it.
+        """
+        if engagement is None:
+            return
+        if not bool(
+            getattr(
+                self._settings.agent, "concept_hypothesis_ask_enabled", True,
+            )
+        ):
+            return
+        mode = getattr(engagement, "mode", None)
+        if mode != "typed":
+            return
+        latency = getattr(engagement, "latency_seconds", None)
+        if latency is None:
+            return
+        try:
+            latency_f = float(latency)
+        except (TypeError, ValueError):
+            return
+        if latency_f <= 0.0:
+            return
+        min_gap_s = (
+            float(
+                getattr(
+                    self._memory_settings,
+                    "concept_hypothesis_min_gap_hours",
+                    4.0,
+                )
+            )
+            * 3600.0
+        )
+        if latency_f >= min_gap_s:
+            self._pending_concept_hypothesis_seconds = latency_f
+
+    def _resolve_concept_hypotheses(self, *, user_text: str) -> None:
+        """L30c: settle every hunch Aiko asked about, before stage B runs.
+
+        Called from ``_post_turn_inner_life`` **immediately before**
+        :meth:`_settle_awaiting_cues`, and it owns every
+        ``concept_hypothesis`` row in ``awaiting`` all the way to a
+        terminal state or a release. That ordering is the contract: the
+        generic stage B decides "did they answer?" from topical overlap
+        alone, which for this cue type would mark a flat *denial* as a
+        successful answer and then let the belief carry on unchallenged.
+        A hunch is only settled once something knows *which way* the
+        answer went.
+
+        Per verdict (see
+        :mod:`app.core.concepts.hypothesis_resolution` for the writes):
+        confirm, correct and deny all retire the cue -- she asked, she
+        got an answer, the question is spent either way. Unclear goes
+        through :meth:`_release_unanswered_hypothesis`, which at this
+        type's ``max_asks=1`` means the hunch is dropped rather than
+        re-asked: pressing someone a second time on whether a guess about
+        them is true reads as doubting their first answer.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "concept_hypothesis_ask_enabled", True,
+            )
+        ):
+            return
+        store = self._cue_pool_store()
+        if store is None:
+            return
+        if (
+            getattr(self, "_concept_store", None) is None
+            and getattr(self, "_hypothesis_store", None) is None
+        ):
+            return
+        try:
+            from app.core.proactive.cue_store import STATE_AWAITING
+
+            rows = store.in_state(
+                STATE_AWAITING,
+                cue_type="concept_hypothesis",
+                with_embedding=True,
+            )
+        except Exception:
+            log.debug("awaiting hypothesis read failed", exc_info=True)
+            return
+        if not rows:
+            return
+
+        from app.core.concepts.answer_adjudicator import UNCLEAR, adjudicate
+
+        body = (user_text or "").strip()
+        # Embedded once for the whole batch, and only to power the
+        # semantic half of the echo gate: a paraphrased answer shares no
+        # content word with the belief, so lexical overlap alone throws
+        # away exactly the replies worth reading.
+        reply_vec = _embed_or_none(getattr(self, "_embedder", None), body)
+        min_cosine = float(
+            getattr(
+                self._memory_settings,
+                "concept_hypothesis_answer_threshold",
+                0.45,
+            )
+        )
+        for row in rows:
+            belief = str(row.payload.get("label") or "") or row.subject
+            verdict = adjudicate(
+                belief=belief,
+                reply=body,
+                ollama=getattr(self, "_maintenance_client", None),
+                model=getattr(self, "_effective_worker_model", "") or "",
+                belief_vec=row.embedding,
+                reply_vec=reply_vec,
+                min_cosine=min_cosine,
+                cancel_event=getattr(self, "_fact_check_cancel", None),
+            )
+            if verdict.verdict == UNCLEAR:
+                self._release_unanswered_hypothesis(store, row, verdict.reason)
+                continue
+            self._write_hypothesis_answer(row, belief, verdict, body)
+            self._mark_cue_used(
+                store, row, evidence=f"adjudicated/{verdict.verdict}",
+            )
+
+    def _release_unanswered_hypothesis(
+        self, store: Any, row: Any, reason: str,
+    ) -> None:
+        """Hand an unsettled hunch back, or retire it if that was its last ask.
+
+        Mirrors the tail of :meth:`_settle_awaiting_cues` rather than
+        calling it, because this resolver has to finish the row itself --
+        leaving it in ``awaiting`` would hand it to the generic matcher
+        one line later, which is exactly what this method exists to
+        prevent.
+
+        The release arm is the shared shape, not live behaviour: reaching
+        ``awaiting`` costs an ask, so at ``max_asks=1`` every unanswered
+        hypothesis retires here. It stays because the branch is the
+        policy's, and raising ``max_asks`` should be a one-line change
+        rather than a rewrite.
+        """
+        from datetime import timedelta
+
+        from app.core.proactive.cue_accounting import policy_for
+
+        policy = policy_for("concept_hypothesis")
+        max_asks = int(getattr(policy, "max_asks", 1) or 1)
+        cooldown = float(getattr(policy, "reask_cooldown_hours", 24.0) or 0.0)
+        if int(getattr(row, "ask_count", 0) or 0) >= max_asks:
+            store.expire(row.id, evidence=f"max_asks/{reason or 'unclear'}")
+            log.info(
+                "hypothesis unanswered, retired: subject=%r asks=%d",
+                row.subject[:60],
+                int(getattr(row, "ask_count", 0) or 0),
+            )
+            return
+        store.release(
+            row.id,
+            not_before=timephrase.utcnow() + timedelta(hours=cooldown),
+            evidence=f"unclear/{reason or 'no_verdict'}",
+        )
+
+    def _write_hypothesis_answer(
+        self, row: Any, belief: str, verdict: Any, user_text: str,
+    ) -> None:
+        """Store the answer as a memory, then apply it to the target.
+
+        ``target_type`` in the cue payload is what routes this: Phase A's
+        grounded candidates take the concept writes, Phase B's inventions
+        take the hypothesis-row writes. The adjudicator upstream never
+        learns which it was looking at, which is the point -- "did they
+        agree?" does not depend on what kind of row the belief lives in.
+        """
+        from app.core.concepts.answer_adjudicator import CONFIRM
+        from app.core.concepts.hypothesis_resolution import apply_verdict
+
+        target_type = str(row.payload.get("target_type") or "concept")
+        target_id = int(row.payload.get("target_id") or 0)
+        # Target first, memory second. A belief that has been deleted
+        # since the question was asked has nothing to attach an answer
+        # to, and storing one anyway would leave a memory asserting
+        # evidence for a row that no longer exists.
+        target = self._hypothesis_target(target_type, target_id)
+        if target is None:
+            log.debug(
+                "hypothesis target gone: row=%s type=%s id=%s",
+                row.id,
+                target_type,
+                target_id,
+            )
+            return
+        memory_id = self._store_hypothesis_answer(
+            belief, user_text, confirming=verdict.verdict == CONFIRM,
+        )
+        if target_type == "hypothesis":
+            self._apply_invented_answer(target, verdict, memory_id, user_text)
+            return
+
+        concept_store = getattr(self, "_concept_store", None)
+        concept = target
+        apply_verdict(
+            store=concept_store,
+            concept=concept,
+            verdict=verdict.verdict,
+            memory_id=memory_id,
+            penalty=float(
+                getattr(
+                    self._memory_settings,
+                    "concept_hypothesis_deny_penalty",
+                    0.25,
+                )
+            ),
+            event_store=getattr(self, "_concept_event_store", None),
+            reason=str(getattr(verdict, "reason", "") or ""),
+        )
+
+    def _hypothesis_target(self, target_type: str, target_id: int) -> Any:
+        """The concept or hypothesis row a cue points at, or ``None``."""
+        store = getattr(
+            self,
+            (
+                "_hypothesis_store"
+                if target_type == "hypothesis"
+                else "_concept_store"
+            ),
+            None,
+        )
+        if store is None or target_id <= 0:
+            return None
+        try:
+            return store.get(target_id)
+        except Exception:
+            return None
+
+    def _apply_invented_answer(
+        self, row: Any, verdict: Any, memory_id: int | None, user_text: str,
+    ) -> None:
+        """The Phase B half: credence, then a graduation check.
+
+        Graduation is attempted in the same breath as the verdict rather
+        than on an idle tick, because the row is already loaded and the
+        answer that just made it eligible is the one the new concept
+        should be built from. A guess that has proved itself twice should
+        not spend a night waiting to become a belief.
+        """
+        from app.core.concepts.hypothesis_graduation import graduate, is_ready
+        from app.core.concepts.hypothesis_resolution import (
+            apply_hypothesis_verdict,
+        )
+
+        store = getattr(self, "_hypothesis_store", None)
+        if store is None:
+            return
+        concept_store = getattr(self, "_concept_store", None)
+        embedder = getattr(self, "_embedder", None)
+        mem = self._memory_settings
+        apply_hypothesis_verdict(
+            store=store,
+            row=row,
+            verdict=verdict.verdict,
+            memory_id=memory_id,
+            credence_step=float(
+                getattr(mem, "hypothesis_credence_step", 0.2)
+            ),
+            concept_store=concept_store,
+            embed=(None if embedder is None else embedder.embed),
+            correction_text=user_text,
+        )
+        if concept_store is None:
+            return
+        if not is_ready(
+            row,
+            min_support=int(
+                getattr(mem, "hypothesis_graduate_min_support", 2)
+            ),
+            min_credence=float(
+                getattr(mem, "hypothesis_graduate_min_credence", 0.7)
+            ),
+        ):
+            return
+        graduate(
+            hypothesis_store=store,
+            concept_store=concept_store,
+            row=row,
+            event_store=getattr(self, "_concept_event_store", None),
+            memory_writer=self._anchor_world_hypothesis,
+        )
+
+    def _anchor_world_hypothesis(self, statement: str) -> int | None:
+        """The ``world`` exit: a proven guess about how something works.
+
+        Stored as an ordinary ``fact`` so the topic graph clusters it like
+        any other memory -- which is the topic anchor, without a second
+        mechanism for it.
+        """
+        memory_store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        body = (statement or "").strip()
+        if memory_store is None or embedder is None or not body:
+            return None
+        try:
+            memory = memory_store.add(
+                content=body[:1000],
+                kind="fact",
+                embedding=embedder.embed(body),
+                salience=0.6,
+                confidence=0.75,
+                tier="long_term",
+                source_session=getattr(self, "session_key", None),
+                metadata={"source": "hypothesis"},
+            )
+        except Exception:
+            log.warning("world hypothesis anchor failed", exc_info=True)
+            return None
+        if memory is None:
+            return None
+        try:
+            self._notify_memory_added(memory)
+        except Exception:
+            log.debug("world hypothesis notify failed", exc_info=True)
+        return int(memory.id)
+
+    def _store_hypothesis_answer(
+        self, belief: str, user_text: str, *, confirming: bool,
+    ) -> int | None:
+        """Persist what the user actually said, as an ordinary memory.
+
+        Written with the belief as context ("asked whether X -- they said
+        Y") rather than as the bare reply, because "yeah, pretty much" is
+        meaningless on its own and this row has to stand as evidence long
+        after the question is forgotten. An ordinary ``fact`` row on
+        purpose: L2's next synthesis pass should be able to find it and
+        reinforce -- or better-word -- the belief without knowing anything
+        about this loop.
+        """
+        memory_store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        body = (user_text or "").strip()
+        if memory_store is None or embedder is None or not body:
+            return None
+        lead = "confirmed" if confirming else "responded to"
+        content = f"Asked about \"{belief}\" -- they {lead}: {body}"[:1000]
+        try:
+            memory = memory_store.add(
+                content=content,
+                kind="fact",
+                embedding=embedder.embed(content),
+                salience=0.65,
+                confidence=0.85,
+                tier="long_term",
+                source_session=getattr(self, "session_key", None),
+            )
+        except Exception:
+            log.warning("hypothesis answer memory write failed", exc_info=True)
+            return None
+        if memory is None:
+            return None
+        try:
+            self._notify_memory_added(memory)
+        except Exception:
+            log.debug("hypothesis answer notify failed", exc_info=True)
+        return int(memory.id)
 
     def _maybe_resolve_promises(self, text: str, *, source: str = "reply") -> int:
         """K43: mark assistant promises this text plausibly delivered on.

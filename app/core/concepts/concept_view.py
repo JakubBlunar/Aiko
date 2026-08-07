@@ -37,6 +37,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import numpy as np
 
     from app.core.concepts.concept_store import Concept, ConceptStore
@@ -74,6 +76,49 @@ def _stable_rank(concept: "Concept") -> tuple[int, int]:
     confidence = float(getattr(concept, "confidence", 0.0) or 0.0)
     band = int(confidence * _CONFIDENCE_BANDS_PER_UNIT)
     return (-band, int(getattr(concept, "concept_id", 0) or 0))
+
+
+#: Stand-in age for the "would this promote if it were old enough?" probe
+#: in :meth:`ConceptView.testable`. Any value past the largest per-kind
+#: floor (3.0 engaged days today) settles the age leg; this leaves room
+#: for a kind that later wants a much longer maturation.
+_AGE_SATISFIED_DAYS = 1e6
+
+
+def _age_is_the_only_blocker(
+    concept: "Concept",
+    *,
+    gate: "Callable[..., bool]",
+    min_sources: int,
+    min_confidence: float,
+    min_age_days: float,
+) -> bool:
+    """Whether this candidate clears its promotion gate on everything
+    except time.
+
+    Asked by re-running the concept's real gate with age neutralised: if
+    it passes then, sources and conviction are already satisfied and only
+    the clock is left. A malformed row degrades to ``False`` (treated as
+    genuinely unsettled), because the cost of asking about one row too
+    many is a slightly odd question, while the cost of a raised exception
+    here is the whole ask lane going silent.
+    """
+    try:
+        return bool(
+            gate(
+                distinct_source_count=int(
+                    getattr(concept, "distinct_source_count", 0) or 0
+                ),
+                age_days=_AGE_SATISFIED_DAYS,
+                confidence=float(getattr(concept, "confidence", 0.0) or 0.0),
+                min_sources=int(min_sources),
+                min_age_days=float(min_age_days),
+                min_confidence=float(min_confidence),
+            )
+        )
+    except Exception:
+        log.debug("testable: promotion gate probe failed", exc_info=True)
+        return False
 
 
 class ConceptView:
@@ -252,6 +297,146 @@ class ConceptView:
         return [
             (c, float(sim)) for (c, sim) in pairs if float(sim) >= floor
         ]
+
+    def hypotheses(
+        self,
+        embedding: "np.ndarray | None",
+        *,
+        subject: str | None = None,
+        k: int = 8,
+        min_sim: float = 0.0,
+        min_sources: int = 1,
+        min_unsettled: float = 0.22,
+    ) -> list[tuple["Concept", float]]:
+        """L30a: up to ``k`` **open questions** nearest ``embedding``.
+
+        The one read path in this class that does not return
+        ``status="active"`` rows. Everything else here is the settled
+        register; this is the tentative one, and the two must not mix --
+        a candidate reaching :meth:`core` or :meth:`for_target` would put
+        an unestablished belief into the T0 profile block, which is both
+        a prompt-cache break and Aiko asserting something she has not
+        earned.
+
+        Two eligibility bars, both measured rather than guessed (see
+        :mod:`app.core.concepts.concept_hypothesis`):
+
+        - ``min_sources`` drops ungrounded proposals. A candidate with no
+          evidence edge at all is a bare LLM hunch, and it scores *highest*
+          on unsettledness precisely because nothing supports it -- so
+          without this floor the lane leads with its worst rows.
+        - ``min_unsettled`` drops the beliefs that are merely young. Most
+          candidates have already cleared every evidence and confidence
+          bar and are waiting only on the promotion age floor; the default
+          sits just above the point a twice-grounded, fully-held belief
+          scores, so those stay out of the register.
+
+        Returns ``(concept, cosine)`` pairs like :meth:`relevant`, leaving
+        the importance blend to the caller that owns the affect context.
+        """
+        if self._store is None or embedding is None or k <= 0:
+            return []
+        from app.core.concepts.concept_hypothesis import unsettledness
+
+        kwargs: dict[str, object] = {"status": "candidate", "k": int(k)}
+        if subject is not None:
+            kwargs["subject"] = subject
+        try:
+            pairs = self._store.nearest(embedding, **kwargs)  # type: ignore[arg-type]
+        except Exception:
+            log.debug("ConceptView.hypotheses: nearest failed", exc_info=True)
+            return []
+        floor = float(min_sim)
+        out: list[tuple["Concept", float]] = []
+        for concept, sim in pairs:
+            if float(sim) < floor:
+                continue
+            sources = int(getattr(concept, "distinct_source_count", 0) or 0)
+            if sources < int(min_sources):
+                continue
+            if unsettledness(concept) < float(min_unsettled):
+                continue
+            out.append((concept, float(sim)))
+        return out
+
+    def testable(
+        self,
+        *,
+        limit: int = 12,
+        subject: str | None = None,
+        min_sources: int = 1,
+        min_unsettled: float = 0.22,
+        promote_min_sources: int = 2,
+        promote_min_confidence: float = 0.6,
+        promote_min_age_days: float = 0.0,
+    ) -> list[tuple["Concept", float]]:
+        """L30b: open questions an **answer could actually settle**.
+
+        The off-turn sibling of :meth:`hypotheses`. The ask worker runs
+        during quiet windows with no user text, so there is no query
+        vector and no cosine term -- eligibility and unsettledness decide,
+        and the caller blends in L32 importance (it owns the affect
+        context, the same division :meth:`hypotheses` uses).
+
+        Shares the two eligibility bars with :meth:`hypotheses`, then adds
+        the one that only matters when the point is to *ask*: a candidate
+        whose sole unmet promotion leg is **age** is skipped. Answering
+        adds a distinct source, so it can only move a belief held back on
+        sources or conviction; a row already clearing both is simply
+        waiting out its clock, and asking about it spends a question to
+        change nothing while reading to the user as a pointless quiz.
+
+        That leg is detected by re-running the concept's *own*
+        ``promotion_gate`` with the age argument satisfied, rather than
+        by comparing against the global settings. Every shipped kind
+        floors all three legs with its own constants via ``max`` (identity
+        and value want three sources, aspiration wants three engaged
+        days), so a check written against ``concept_promote_*`` alone
+        would be wrong for every kind at once. Passing the gate with age
+        neutralised means sources and confidence are already met, which is
+        exactly the row to leave alone.
+
+        Returns ``(concept, unsettled)`` pairs, most unsettled first.
+        """
+        if self._store is None or int(limit) <= 0:
+            return []
+        from app.core.concepts.concept_hypothesis import unsettledness
+        from app.core.concepts.concept_kinds import get_kind
+        from app.core.concepts.concept_lifecycle import set_evidence_gate
+
+        try:
+            rows = self._store.list_by(status="candidate", subject=subject)
+        except Exception:
+            log.debug("ConceptView.testable: list_by failed", exc_info=True)
+            return []
+
+        scored: list[tuple["Concept", float]] = []
+        for concept in rows:
+            sources = int(getattr(concept, "distinct_source_count", 0) or 0)
+            if sources < int(min_sources):
+                continue
+            unsettled = unsettledness(concept)
+            if unsettled < float(min_unsettled):
+                continue
+            if _age_is_the_only_blocker(
+                concept,
+                gate=(
+                    getattr(get_kind(concept.kind), "promotion_gate", None)
+                    or set_evidence_gate
+                ),
+                min_sources=promote_min_sources,
+                min_confidence=promote_min_confidence,
+                min_age_days=promote_min_age_days,
+            ):
+                continue
+            scored.append((concept, unsettled))
+        scored.sort(
+            key=lambda pair: (
+                -pair[1],
+                int(getattr(pair[0], "concept_id", 0) or 0),
+            )
+        )
+        return scored[: max(0, int(limit))]
 
     def for_target(
         self,

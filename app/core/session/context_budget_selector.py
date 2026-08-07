@@ -50,8 +50,11 @@ from typing import Any
 
 # Sources the budget spans this pass. Order here is the stable render order
 # of the composed region (memories first, then the cluster line, then
-# concept impressions) so the block reads the same way turn to turn.
-SOURCES: tuple[str, ...] = ("memory", "cluster", "concept")
+# concept impressions, and finally the L30a open questions) so the block
+# reads the same way turn to turn. Hypotheses sit last on purpose: the
+# tentative register should read as a coda to what Aiko believes, never as
+# the lead.
+SOURCES: tuple[str, ...] = ("memory", "cluster", "concept", "hypothesis")
 
 
 @dataclass(slots=True)

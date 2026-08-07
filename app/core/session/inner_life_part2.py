@@ -1262,6 +1262,175 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         )
         return f"You've been wondering {question}."
 
+    def _render_concept_hypothesis_block(self, user_text: str) -> str:
+        """L30b: surface one untested hunch so Aiko can actually ask.
+
+        Consumer side of the
+        :class:`~app.core.proactive.concept_hypothesis_worker.ConceptHypothesisWorker`.
+        The worker queues the belief most worth resolving; this decides
+        whether *this* turn is a moment to raise it.
+
+        **Dual-mode, and the only cue that is.** Every other pooled cue is
+        either topic-gated or gap-armed, and a belief probe genuinely
+        wants both. The natural moment is while the subject is already up
+        ("you were just saying you walk to think --"), which no gap slot
+        can detect; but a lull is also a real opening, and holding out for
+        topical luck would leave hunches queued indefinitely. So:
+
+        1. **Topic path**, tried first and by far the better one. Lexical
+           overlap between the belief's label and the live message, no gap
+           involved. Does *not* touch ``_gap_cue_surfaced`` -- it is not
+           spending the gap slot, matching ``knowledge_gap_notice``.
+        2. **Gap path**, only if the topic path found nothing. Defers to
+           every other gap cue via ``_gap_cue_surfaced`` (this type is
+           last in ``GAP_CUE_ORDER``: raising a belief about someone out
+           of silence is the heaviest thing she can open with), needs the
+           armed slot and the minimum gap, and adds a bar the topic path
+           does not have -- ``concept_hypothesis_gap_min_importance``. Out
+           of a lull, only a hunch that *matters* is worth the weight.
+
+        **K47 governs this one**, unlike the L30a musing lane. A musing is
+        a thought and costs the user nothing; this block exists to produce
+        a question, so it belongs under the question budget.
+
+        Cross-lane guard: skips any belief the L30a lane already mused
+        about this assembly (``_last_hypothesis_lane_concept_ids``, plus
+        ``_last_hypothesis_lane_hypothesis_ids`` for Phase B's invented
+        rows), so a single turn never carries both "I half-wonder whether
+        X" at T3 and "ask about X" at T6.
+
+        The cue is a private hint, never spoken verbatim -- Aiko phrases
+        the question herself. MCP debug:
+        ``force_concept_hypothesis_surface`` arms
+        ``_concept_hypothesis_force_next`` to bypass the topic, slot, gap
+        and importance gates (the pool must still have a cue).
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "concept_hypothesis_ask_enabled", True,
+            )
+        ):
+            return ""
+        if self._question_balance_suppressed():
+            return ""
+
+        pool = getattr(self, "_cue_store", None)
+        if pool is None:
+            return ""
+
+        force_next = bool(
+            self._debug_overrides.take("concept_hypothesis_force_next", False)
+        )
+
+        # One-shot, and read here rather than inside the gap branch: if
+        # the topic path fires we have spent this cue type for the turn,
+        # and leaving the slot armed would let a stale lull open a second
+        # probe on the next assembly.
+        seconds = getattr(self, "_pending_concept_hypothesis_seconds", None)
+        self._pending_concept_hypothesis_seconds = None
+
+        try:
+            from app.core.proactive.knowledge_gap_notice_worker import (
+                topic_relevant,
+            )
+        except Exception:
+            log.debug("concept_hypothesis import failed", exc_info=True)
+            return ""
+
+        # Two sets because the ids live in two namespaces: a grounded cue
+        # carries a concept id, an invented one a hypothesis id, and
+        # matching them against a single set would let a concept id
+        # accidentally suppress a hypothesis that happened to share it.
+        claimed = {
+            "concept": set(
+                getattr(self, "_last_hypothesis_lane_concept_ids", ()) or ()
+            ),
+            "hypothesis": set(
+                getattr(self, "_last_hypothesis_lane_hypothesis_ids", ()) or ()
+            ),
+        }
+
+        def _unclaimed(payload: dict[str, Any]) -> bool:
+            target_type = str(payload.get("target_type") or "concept")
+            try:
+                target_id = int(payload.get("target_id") or 0)
+            except (TypeError, ValueError):
+                return True
+            return target_id not in claimed.get(target_type, set())
+
+        text = (user_text or "").strip()
+        if text or force_next:
+            row = self.take_pool_cue(
+                "concept_hypothesis",
+                relevant=lambda payload: _unclaimed(payload)
+                and topic_relevant(str(payload.get("label") or ""), text),
+                force=force_next,
+            )
+            if row is not None:
+                log.info(
+                    "concept-hypothesis fire: path=topic target=%s label=%r",
+                    row.payload.get("target_id"),
+                    str(row.payload.get("label") or "")[:80],
+                )
+                return row.text
+
+        # ── gap path ──────────────────────────────────────────────────
+        if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            return ""
+        if not force_next:
+            if seconds is None:
+                return ""
+            try:
+                seconds_f = float(seconds)
+            except (TypeError, ValueError):
+                return ""
+            min_gap_s = (
+                float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_hypothesis_min_gap_hours",
+                        4.0,
+                    )
+                )
+                * 3600.0
+            )
+            if seconds_f < min_gap_s:
+                return ""
+
+        min_importance = float(
+            getattr(
+                self._memory_settings,
+                "concept_hypothesis_gap_min_importance",
+                0.55,
+            )
+        )
+
+        def _weighty(payload: dict[str, Any]) -> bool:
+            if not _unclaimed(payload):
+                return False
+            try:
+                return float(payload.get("importance") or 0.0) >= min_importance
+            except (TypeError, ValueError):
+                return False
+
+        row = self.take_pool_cue(
+            "concept_hypothesis",
+            relevant=None if force_next else _weighty,
+            force=force_next,
+        )
+        if row is None:
+            log.debug("concept_hypothesis silent: nothing weighty enough")
+            return ""
+        self._gap_cue_surfaced = True
+        log.info(
+            "concept-hypothesis fire: path=gap target=%s importance=%s "
+            "label=%r",
+            row.payload.get("target_id"),
+            row.payload.get("importance"),
+            str(row.payload.get("label") or "")[:80],
+        )
+        return row.text
+
     def _render_hobby_block(self) -> str:
         """H19: standing "what she's been up to lately" line.
 

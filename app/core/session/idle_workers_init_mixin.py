@@ -667,6 +667,124 @@ class IdleWorkersInitMixin:
                     "KnowledgeGapNoticeWorker init failed", exc_info=True
                 )
 
+        # L30b ConceptHypothesisWorker — queues "I could just ask" cues for
+        # the beliefs Aiko half-holds. Cheap read pass (no LLM): it ranks
+        # testable candidates by importance x unsettledness and publishes a
+        # hint, and the provider decides when the moment fits. Needs the
+        # concept store rather than the memory store, so it is gated on
+        # that; a cold concept layer simply never registers it.
+        self._concept_hypothesis_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_concept_store", None) is not None
+        ):
+            try:
+                from app.core.concepts.concept_view import concept_view_from
+                from app.core.proactive.concept_hypothesis_worker import (
+                    ConceptHypothesisWorker,
+                )
+
+                mem = self._memory_settings
+                self._concept_hypothesis_worker = ConceptHypothesisWorker(
+                    concept_view_provider=lambda: concept_view_from(self),
+                    importance_context_provider=(
+                        self.concept_importance_context
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "concept_hypothesis_ask_enabled",
+                            True,
+                        )
+                    ),
+                    hypothesis_store_provider=lambda: getattr(
+                        self, "_hypothesis_store", None
+                    ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None
+                    ),
+                    interval_seconds=mem.concept_hypothesis_interval_seconds,
+                    max_per_run=mem.concept_hypothesis_max_per_run,
+                    min_sources=mem.hypothesis_min_sources,
+                    min_unsettled=mem.hypothesis_min_unsettled,
+                    promote_min_sources=mem.concept_promote_min_sources,
+                    promote_min_confidence=(
+                        mem.concept_promote_min_confidence
+                    ),
+                    promote_min_age_days=mem.concept_promote_min_age_days,
+                )
+                self._idle_scheduler.register(self._concept_hypothesis_worker)
+            except Exception:
+                log.warning(
+                    "ConceptHypothesisWorker init failed", exc_info=True
+                )
+
+        # L30 Phase B HypothesisProposerWorker — the forward direction:
+        # instead of abstracting over evidence she already has, it invents
+        # something that might be true and files it to be tested. Costs a
+        # real LLM call, so it is paced slowly and gated on shelf stock.
+        # Needs the hypotheses table *and* the concept store, because the
+        # "she already believes this" rejection is half of what keeps the
+        # output from being a paraphrase of the profile block.
+        self._hypothesis_proposer_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_hypothesis_store", None) is not None
+            and getattr(self, "_embedder", None) is not None
+        ):
+            try:
+                from app.core.proactive.hypothesis_proposer_worker import (
+                    HypothesisProposerWorker,
+                )
+
+                mem = self._memory_settings
+                self._hypothesis_proposer_worker = HypothesisProposerWorker(
+                    hypothesis_store_provider=lambda: getattr(
+                        self, "_hypothesis_store", None
+                    ),
+                    concept_store_provider=lambda: getattr(
+                        self, "_concept_store", None
+                    ),
+                    embedder=self._embedder,
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    cancel_event=self._fact_check_cancel,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "hypothesis_invention_enabled",
+                            True,
+                        )
+                    ),
+                    memory_store_provider=lambda: getattr(
+                        self, "_memory_store", None
+                    ),
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    assistant_display_name_provider=(
+                        lambda: self._fact_check_assistant_name() or "Aiko"
+                    ),
+                    interval_seconds=(
+                        mem.hypothesis_invention_interval_seconds
+                    ),
+                    max_per_run=mem.hypothesis_invention_max_per_run,
+                    max_open=mem.hypothesis_max_open,
+                    min_novelty=mem.hypothesis_min_novelty,
+                    concept_novelty=mem.hypothesis_concept_novelty,
+                    ttl_hours=mem.hypothesis_ttl_hours,
+                )
+                self._idle_scheduler.register(
+                    self._hypothesis_proposer_worker
+                )
+            except Exception:
+                log.warning(
+                    "HypothesisProposerWorker init failed", exc_info=True
+                )
+
         # K64a AssociativeWanderWorker — drifts across the topic graph during
         # quiet windows, picks two *distant* clusters, and asks the worker
         # LLM for a genuine connection ("both reward following a faint trail

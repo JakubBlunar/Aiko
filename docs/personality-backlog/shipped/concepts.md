@@ -1829,3 +1829,487 @@ relationship observation with no metrics or machinery.
 **Follow-up.** `L42b neglect-guided curiosity` remains open in the backlog. It
 must wait for enough real findings to evaluate detector quality before neglect
 can bias idle research.
+
+---
+
+## L32. Concept importance -- a second axis, distinct from confidence
+
+**Status: SHIPPED** (derived importance, live in T3 surfacing).
+
+A concept had one strength axis, `confidence`, and surfacing ranked on it.
+That conflates "how likely is this true" with "how much does this matter":
+*he prefers TypeScript* is certain and trivial, *he may be running on empty*
+is shaky and weighty. Ranking on confidence alone brings the first forward
+and buries the second. `importance` is the missing axis, in `[0, 1]`.
+
+**Derived, not stored — and that is the design.** Importance is a pure
+function of the concept's `kind` and the emotional charge of the topic
+clusters it is grounded in, computed at read time by
+[`concept_importance.py`](../../../app/core/concepts/concept_importance.py).
+No column, no migration, no writer, no decay policy. This is what dissolved
+all three of the sketch's open questions rather than answering them: there
+is nothing to conflict with plasticity's writer, and nothing to decay —
+importance moves when its inputs move. It also makes the axis
+**status-agnostic**, so a `candidate` scores exactly like an `active` row,
+which is what lets the L30 hypothesis lane use it with no extra work.
+
+**Two inputs.** The per-kind prior (`ConceptKind.importance`) is a stakes
+ladder the registry previously only expressed obliquely through
+`plasticity_default`, `core_min_confidence` and the `protect_downward` list:
+`boundary` 0.9 (the one kind that gates behaviour), `value` 0.85,
+`affective` 0.75, `tension` 0.7, down to `ritual` 0.4 and `taste` 0.3.
+On top, an **affect lift** — `prior + (1 - prior) * lift * charge` — reads
+the L13 per-cluster affect EWMAs of the topics the concept stands on. Its
+charge is `abs(valence) * (0.5 + 0.5 * arousal)`: valence magnitude is what
+makes a topic matter, arousal only scales how hot it runs, so a
+neutral-but-agitated cluster contributes nothing while a strongly-felt quiet
+one ("low and drained", the wellbeing case) keeps half its charge.
+
+**The lift only ever raises.** About 46% of the live graph grounds on no
+affect-bearing cluster at all, so a symmetric blend would read "no data" as
+"trivial" and penalise the majority. Same convention as `recency_boost`,
+where a missing timestamp returns the neutral `1.0` rather than a penalty.
+The lift is also capped so a fully-charged `taste` (0.65) still lands below
+an uncharged `boundary` (0.9) — emotional weather is a nudge, not a
+re-typing.
+
+**A modulator, not a seventh weight.** `surface_score` multiplies by
+`1 + strength * (importance - 0.5)` alongside habituation. A sum-normalised
+term would dilute cosine (confusing "on topic" with "at stake") and would
+need a weight tuned across all twelve kinds; the multiplier needs one global
+knob. At the neutral `0.5`, or at `concept_importance_strength=0.0`, the
+factor is exactly `1.0` — both are byte-exact no-ops, which is the escape
+hatch. At the shipped `0.4` the span is x0.92 (taste) to x1.16 (boundary):
+enough to overturn a small cosine lead, not enough to drag an off-topic
+boundary in over something squarely about the turn.
+
+**Never T0.** Importance reaches only the T3 `relevant_context` scorer. It
+must never touch `ConceptView._stable_rank`, which feeds the T0
+`profile_block`: that lane ranks on *quantised* confidence with a
+`concept_id` tie-break precisely so per-tick drift cannot reorder bullets and
+break the prompt-cache prefix, and a live affect-sensitive term there would
+put that churn straight back. Guarded two ways in `test_concept_view` — an
+ordering assertion, and a source check that `concept_view` never imports the
+module at all.
+
+**The gather gap.** The flex lane used to over-fetch `cap * 2` cosine
+neighbours, which meant importance could reorder the concepts already
+winning but never *promote* one from just outside. `nearest` scores every
+active concept in one matmul and slices, so the over-fetch was widened to
+`cap * concept_surfacing_overfetch` (5) with a floor of 12.
+
+**Cost.** Three bounded reads per turn, none per-concept: two `kv_meta`
+affect maps, the member -> cluster bridge off the topic-cluster rows the
+activation pass already reads, and one bulk `cluster_evidence_for` query
+over the candidate ids. The snapshot reuses the evidence edges its display
+loop already resolved; the quality report takes the bulk read.
+
+**Visibility.** `importance` / `importance_prior` / `importance_charge` on
+every snapshot row and in the L26 trace's `score_components`, an `imp` token
+in the Concepts panel, and a `importance` section in the quality report
+whose `attention_gap_sample` lists active beliefs whose importance outruns
+their confidence — what matters more than it is established. Importance is
+deliberately *not* a `surface_reason` candidate: a multiplier scales every
+term equally, so it never wins a contest, and naming it as one would claim
+a contest it never entered.
+
+**Measured on the live graph at ship time.** 360 active concepts, 54% lifted
+by affect; importance min 0.32, median 0.67, max 0.92. The gap list found
+exactly the intended shape, e.g. a `value` at confidence 0.61 scoring 0.88.
+
+**Left for L30.** `SessionController.concept_importance_context(concepts)`
+is the public seam: the hypothesis lane (L30a) and uncertainty zones (L30d)
+can rank with it directly. One finding worth carrying over — no `active`
+concept sits below 0.6 confidence, so "important but uncertain" lives in the
+`candidate` pool, not among actives.
+
+---
+
+## L30a. Hypothesis surfacing lane
+
+**Status: SHIPPED** (candidates surface as open questions in the T3 region).
+
+Every concept read path before this one filtered to `status="active"`, so a
+`candidate` was **structurally hidden** rather than merely hedged. That is
+exactly the material a mind holds as a hypothesis — "I think he might be into
+X, but I'm not sure yet" — and the layer had no way to speak it. L30a adds a
+second, strongly-hedged register: what Aiko is still working out, beside what
+she believes.
+
+**Two measurements rewrote the selection design.** Both from a live
+261-candidate graph, and both contradict the backlog sketch:
+
+1. **Confidence is not the filter.** The sketch selected rows under a
+   `hypothesis_max_confidence` of ~0.6. Only **2 of 388** actives sat below
+   0.6, and the candidate pool's *median* confidence was **0.82**. The
+   proposer's confidence answers "is this a well-formed belief?", not "have we
+   established it?" — thresholding it surfaces the worst-written candidates.
+2. **A candidate is usually young, not doubted.** Most of the 261 candidates
+   had cleared every evidence and confidence bar and were waiting only on
+   `concept_promote_min_age_days` (2 engaged days; 3 for `aspiration`). Any
+   uncertainty measure that counts age would fill the lane with beliefs Aiko
+   is not unsure about — the "blurt a half-formed model" failure L21 warns of.
+
+   > **Corrected while measuring L30b.** This originally read "238 of 261",
+   > which is the count against the *global* `concept_promote_*` settings.
+   > Every shipped kind floors those with its own constants via `max` —
+   > `identity` and `value` want three distinct sources where the global
+   > default wants two — so the figure against each row's own
+   > `promotion_gate` is **144 of 261** (55%), concentrated in `identity`
+   > (26), `generalization` (22), `aspiration` (19) and `value` (18). The
+   > qualitative conclusion is unchanged and the shipped code was never
+   > affected: L30a's unsettledness ignores age entirely rather than
+   > measuring against a gate. The distinction became load-bearing for
+   > L30b, which has to name the age-blocked rows exactly.
+
+**Unsettledness, therefore, excludes age.**
+[`concept_hypothesis.py`](../../../app/core/concepts/concept_hypothesis.py)
+scores `1 - (0.6 * evidence_ratio + 0.4 * conviction_ratio)` against the
+strictest common promotion bar (3 distinct sources, 0.72 confidence), so
+"settled" means what the L3 lifecycle engine means by it rather than inventing
+a second standard. Evidence leads the blend because breadth of grounding is
+what a *question* can actually fix — asking the user adds a source.
+
+**The floor is a measured boundary, not a round number.** A twice-grounded,
+fully-confident belief scores **exactly 0.20**, and that describes the single
+largest cluster in the pool (84 of 261). `hypothesis_min_unsettled` ships at
+**0.22** so those stay out, leaving 42 eligible rows. A second floor,
+`hypothesis_min_sources = 1`, drops ungrounded proposals: with no evidence at
+all they score *highest* on unsettledness precisely because nothing supports
+them, and without the floor the lane led with seven bare LLM hunches.
+
+**Ranking is a product, not a sum.** `cosine * unsettled * importance_factor *
+habituation`. Each term is a veto: an off-topic question stays quiet however
+weighty, a settled belief stays quiet however on-topic, and a trivial one does
+not displace the confident lane just for being uncertain. A sum would let any
+single strong term carry a candidate into the prompt, which is how a
+hypothesis lane becomes noise. L32 importance is what separates two equally
+open questions — a boundary Aiko is unsure about outranks an equally-unsure
+tooling taste — and it needed no new work, having shipped status-agnostic.
+
+**The selector sees cosine, not the blended rank.** A product of four sub-1.0
+terms lands on a different scale from every other source's relevance, so
+feeding it to `ContextBudgetSelector` would make `min_relevance` mean something
+different here than for memories and clusters, and would distort the
+cross-source greedy fill. Eligibility and ordering are settled before the
+budget runs; what it still needs is only how on-topic the question is.
+
+**Its own budget source, rendered last.** `"hypothesis"` joins `SOURCES` in
+[`context_budget_selector.py`](../../../app/core/session/context_budget_selector.py)
+with its own floor / cap / weight / min-relevance, so open questions can never
+crowd out earned beliefs. Cap **1** by design — two simultaneous "I'm wondering
+whether..." lines read as an interview. Weight 0.7 against the concept lane's
+1.1, so an equally on-topic question loses to a belief she has actually earned.
+
+**A separate renderer, and that is the point.**
+`_render_hypothesis_concepts` exists rather than adding a "family" to
+`_render_relevant_concepts` because that renderer leads every bullet with
+`_hedge_for_confidence`, whose *lowest* rung ("You have a loose impression
+that") still asserts a belief — and whose top rung fires at 0.8, below the
+median candidate. Reusing it would render an unproven hunch as "You're fairly
+sure", the exact overclaim the lane exists to avoid. The lead-ins are strictly
+weaker ("You're still working out whether", "You've been wondering if"),
+selected by `concept_id` so a given question is phrased the same way turn to
+turn. Every header carries "questions, not conclusions".
+
+**Habituation matters more here than for the confident lane.** The eligible
+pool is a fraction of the active graph, so without the L23 clock the same open
+question would lead every turn and read as a fixation rather than a passing
+wonder. Surfaced hypotheses stamp the same state as surfaced concepts.
+
+**Candidates reach this lane and nowhere else.** `core`, `core_lane`,
+`for_target` and `relevant` all still read actives only — a candidate in the T0
+`profile_block` would be Aiko asserting something unearned *and* a prompt-cache
+prefix break. Guarded in `test_concept_view` by per-lane assertions plus a
+structural check that every non-hypothesis read asks the store for `"active"`.
+The cross-lane dedup (`claimed_ids` / `seen_concept_ids`) looks redundant given
+statuses are disjoint, but is reachable: `_last_profile_concept_ids` is a stash
+from a previous render that survives a slice-cache hit, so a concept demoted by
+L3 in between would otherwise be asserted in T0 and wondered about in T3 in one
+assembly.
+
+**A prerequisite fix.** `nearest(status="candidate")` bypassed the cached
+active matrix and fell through to `_filtered_matrix`, restacking a fresh NumPy
+array per call — the pattern the store's own docstring names as the cause of
+the access violation that took down the consolidation worker's `demand()`
+probe. The active-only cache was generalised to one cached matrix per status,
+leaving the active fast path unchanged.
+
+**No tier change.** The lane renders inside `relevant_context`, already the
+sole T3 block, so nothing new enters `_PROMPT_BLOCK_TIERS` and the T0 prefix is
+untouched.
+
+**Visibility.** The concept trace carries a `hypotheses` section with the
+per-pick breakdown (`cosine`, `unsettled`, `importance`, `habituation`) and a
+`considered` count, so "considered 6, surfaced 0" is legible — the interesting
+debug case for a lane that is quiet by design.
+
+**Left for L30b/c.** The lane is read-only: Aiko sees her open questions but
+nothing makes her pursue one. When the curiosity producer lands it must be
+wired into the K47 question-balance gate, which does not currently see this
+block. *(Both shipped — see below. The K47 coupling landed as a split: the
+musing stays unbudgeted, its invitation to follow up does not.)*
+
+---
+
+## L30b/L30c. The hypothesis testing loop -- ask, then learn from the answer
+
+**Status: SHIPPED** (Aiko raises an untested hunch and the answer lands back
+on that specific belief).
+
+L30a gave Aiko a *register* for her open questions but no way to close one. A
+candidate surfaced as "I half-think this about you" was exactly as unsettled
+after being mused about as before, because nothing in the loop ever went and
+found out. L30b is the producer and surfacing half; L30c is the adjudicator
+and the write-back. They shipped together because either alone is inert.
+
+**Only beliefs an answer can move.**
+[`ConceptView.testable`](../../../app/core/concepts/concept_view.py) is the
+selection read, and its age exclusion is the whole reason it exists beside
+`hypotheses`. Answering adds a *distinct source*, so it can only move a
+candidate held back on sources or conviction — **144 of 261** live candidates
+(55%) already clear both and are simply waiting out their kind's engaged-day
+floor. Asking about one of those spends a question to change nothing, and
+reads to the user as being quizzed on something Aiko was going to conclude
+anyway. On the live graph the exclusion takes the L30a-eligible pool of 42
+down to **38** testable rows.
+
+The leg is detected by re-running each concept's *own* `promotion_gate` with
+the age argument satisfied, not by comparing against `concept_promote_*`.
+Every shipped kind floors all three legs with its own constants via `max`, so
+a check written against the global settings alone is wrong for every kind at
+once — the same distinction that corrected L30a's measurement above.
+
+**Ranking drops the relevance term.** `importance * unsettledness`, with no
+cosine, because the
+[`ConceptHypothesisWorker`](../../../app/core/proactive/concept_hypothesis_worker.py)
+runs off-turn: there is no user text and therefore no query vector. The
+*provider* applies the topical gate later, when there is a turn to be relevant
+to. Importance degrades to the neutral prior when the L32 affect join is
+unavailable, so the lane keeps working rather than going quiet.
+
+**No LLM in the producer.** The cue is a hint — the belief, plus the fact that
+it is unverified — and Aiko phrases the question herself, the same
+`render_notice_cue` division `knowledge_gap_notice` uses. That matters more
+here than elsewhere: a pre-written question about someone's own character
+lands as a survey item however warmly worded.
+
+**The only dual-mode cue in the pool.** Every other pooled cue is either
+topic-gated or gap-armed, and a belief probe genuinely wants both. The natural
+moment is while the subject is already up ("you were just saying you walk to
+think —"), which no gap slot can detect; but a lull is a real opening too, and
+holding out for topical luck would leave hunches queued indefinitely. So
+`_render_concept_hypothesis_block` tries the topic path first (lexical overlap,
+does not spend `_gap_cue_surfaced`, matching `knowledge_gap_notice`) and the
+gap path second. The gap path defers to every other gap cue — `concept_hypothesis`
+is **last** in `GAP_CUE_ORDER`, because raising a belief about someone out of
+silence is the heaviest thing she can open with — and adds a bar the topic path
+does not have, `concept_hypothesis_gap_min_importance`. Out of a lull, only a
+hunch that matters is worth the weight.
+
+**Arming reads stock, not the slot.** The `CueSpec` is deliberately slot-less
+while still `gap_cue=True`. Most firings come from the topic path where no slot
+is involved, so arming on `_pending_concept_hypothesis_seconds` would
+under-count the opportunities and make the ledger read as a broken worker. The
+cost is that a rare gap-path loss can be misattributed in `lost_priority`.
+
+**K47 governs this block, unlike the L30a lane.** A musing is a thought and
+costs the user nothing; this block exists to produce a question, so it belongs
+under the question budget. The two L30a changes that stop a double-ask:
+`_last_hypothesis_lane_concept_ids` records what the musing lane surfaced so
+the T6 ask provider filters those out, and the lane's header drops its "you may
+follow one up" invitation while the gate is armed — gating the *invitation*
+rather than the musing.
+
+**Four verdicts, because three are not enough.**
+[`answer_adjudicator.py`](../../../app/core/concepts/answer_adjudicator.py)
+returns `CONFIRM` / `CORRECT` / `DENY` / `UNCLEAR` and writes nothing, so Phase
+B can point it at invented hypotheses unchanged. The obvious confirm/deny split
+is wrong and expensively so: the single most valuable reply to a hunch is
+neither — *"not really, it's more that I hate being still."* Collapsed into
+`deny` that answer's content is thrown away and a nearly-correct belief is
+punished as false; collapsed into `confirm` it cements the wrong wording.
+
+**The classifier is asymmetric on purpose.** A false confirm adds a source,
+which pushes the belief through L3's promotion gate and turns a wrong guess
+into something Aiko asserts as settled. A false deny merely knocks off
+confidence that can be re-earned. So confirming requires positive evidence from
+the model, and every failure path — unparseable output, an exception, a missing
+client, an off-subject reply — lands on `UNCLEAR`. `classify_pair` (F5) is a
+one-way veto for the same reason: `definite` opposition *downgrades* a confirm,
+but its `no` result never promotes anything, because "found no opposition" is
+not the claim "agreed".
+
+**Each write path mirrors an existing writer** rather than inventing one, in
+[`hypothesis_resolution.py`](../../../app/core/concepts/hypothesis_resolution.py):
+confirm is L2's `_reinforce` (an evidence edge, both counters recomputed from
+`evidence_of`, `last_reinforced_at` stamped, confidence and status untouched so
+L3 promotes through the ordinary gate); deny is L9's disproof step
+(`apply_contradiction_penalty` plus the `contradicts` edge that makes the
+disconfirmation legible afterwards); correct takes the same penalty with **no**
+edge, since a near miss stays refinable; unclear writes nothing. The counters
+are *recounted* rather than incremented so a user restating something they told
+Aiko months ago cannot manufacture a second distinct source.
+
+**The confidence write is a sanctioned exception to the one-writer rule** —
+see [`rules/code-conventions.md`](../../../rules/code-conventions.md). Status
+stays strictly L3's in every path.
+
+**The resolver owns its rows.** `_resolve_concept_hypotheses` runs
+*immediately before* `_settle_awaiting_cues` and drives every awaiting
+`concept_hypothesis` row to a terminal state itself. Generic stage B decides
+"did they answer?" from topical overlap alone, which for this type would score
+a flat denial as a satisfied question and let the belief carry on unchallenged.
+A hunch is only settled once something knows *which way* the answer went.
+
+**One ask, never two.** `max_asks=1`, and reaching `awaiting` already spends
+it, so an unanswered hunch is dropped rather than re-asked: pressing someone a
+second time on whether a guess about them is true reads as doubting their first
+answer. The producer enforces the same thing from the other side via
+`spoken_for()`, so no second row is ever written for a belief she has raised.
+`surface_cooldown_hours=20.0` is the backlog's "at most one concept-testing
+question per conversation" as a shelf rule.
+
+**Diary and autobiography.** The three new `ConceptEvent` types
+(`hypothesis_confirmed` / `_corrected` / `_denied`) are deliberately **not** in
+`STRUCTURAL_EVENTS`: that set picks the decisive point of a trajectory and
+`_shape_for` maps only shapes it knows, so a new member it cannot map would
+return no finding *and* mask the genuine structural event behind it. They reach
+L17f and L19 the correct way instead — the drift worker re-reads any concept
+with a new event, and the status move a denial eventually causes is what the
+classifier turns into a learning event.
+
+**Left for Phase B.** The cue payload already carries `target_type`, which is
+Phase A only ever writing `"concept"`. Routing on it lets invented hypothesis
+rows use this loop with no change to the adjudicator or the surfacing paths.
+
+---
+
+## L30 Phase B. Inventing a hypothesis -- the forward direction
+
+**Status: SHIPPED** (schema v34: Aiko makes guesses up, tests them, and a
+confirmed one becomes a concept).
+
+Canonical reference: [`docs/hypotheses.md`](../../../docs/hypotheses.md) —
+lifecycle diagram, the `credence` / `confidence` vocabulary, invariants,
+settings table and the debugging ladder. This entry records the decisions.
+
+**The ceiling Phase A hit.** Everything in the concept stack runs *backwards*
+from evidence: L2 abstracts over clusters it was handed, L3 waits for enough of
+it, L30b tests what L2 derived. None of that can produce a thought Aiko was
+never given the material for. Phase A made her able to resolve an open question;
+it could not make her able to *have* one that was not already implicit in her
+inputs.
+
+**One table, not one status.** An invented statement lives in a new `hypotheses`
+table, and the alternative — a `speculative` concept status — was rejected on a
+failure-mode argument rather than a modelling one. Every concept read path
+filters on `status`, so the safety of a speculative status rests on *every* one
+of those filters being right forever; one missed filter puts a sentence Aiko made
+up into the T0 profile block as something she asserts. A separate table makes
+that impossible instead of unlikely, and the cost is one adapter
+([`hypothesis_lane.py`](../../../app/core/concepts/hypothesis_lane.py)) at the
+single point where an invention enters a surfacing path.
+
+**`credence` is not `confidence`, and the asymmetries all follow from it.**
+Confidence is *derived* — a logistic of distinct evidence sources, re-derived by
+L3 on every tick. Credence is *asserted* by the proposer and **nothing ever
+recomputes it**. So an answer has to be conclusive on a hypothesis or nowhere,
+which is why a single denial closes an invented row outright where a denied
+concept merely loses conviction and keeps living. `InventedRow` reports
+`confidence = 0.0` rather than mapping credence onto it: a caller asking an
+invention for its confidence is asking a question with no honest answer, and
+answering with credence would let it rank as though it had evidence.
+
+**Two novelty gates, deliberately unequal.** `hypothesis_min_novelty` (0.88)
+rejects a proposal too close to an existing guess, refuted ones included — not
+re-inventing something the user already turned down is the repetition most worth
+catching. It sits *above* the concept dedupe bar because over-rejecting here
+makes the layer sterile while a near-neighbour costs one wasted row.
+`hypothesis_concept_novelty` (0.82) rejects a proposal too close to an existing
+*concept* of any status, and is stricter because that failure is worse:
+"I wonder whether he likes building things" about a belief she has held for a
+month is not a duplicate wondering, it is Aiko forgetting what she knows out
+loud. The proposer also runs at temperature **0.95**, hotter than every other
+maintenance pass, because a cautious guess is a paraphrase of something she
+already believes — which the second gate then rejects.
+
+**The duplicate race is the normal case.** This was the least obvious thing in
+the design. A confirmation is stored as an ordinary memory; L2 clusters it and
+proposes a concept from it *knowing nothing about the hypothesis*; L2 needs one
+confirmation where graduation needs two. So "my guess turned out to be something
+I already believe" is the **usual** ending of a successful hypothesis. Three
+consequences, all load-bearing: `link_if_duplicate` runs after every
+confirmation rather than at graduation (earliest possible stamp of
+`linked_concept_id`), a linked row stops being offered to the surfacing lane
+(otherwise one belief renders as two open questions in one turn), and graduation
+on a linked row takes the merged exit. Got wrong, none of this would have looked
+like a bug — it would have looked like the graph slowly filling with paraphrase
+pairs.
+
+The lookup passes `kind=None`, widening across kinds within the subject, because
+the proposer's guessed kind carries no authority: L2 may have filed the same
+belief under a different taxonomy, and filtering on kind would fork the graph on
+a disagreement about labels. It also matches `retired` and `dormant` rows — a
+belief she used to hold is still the same belief, and arriving at it again should
+revive its history rather than start over.
+
+**One dedupe bar for both entry paths.** L2's `_find_duplicate` was extracted to
+[`concept_dedupe.py`](../../../app/core/concepts/concept_dedupe.py) when this
+became its second caller. Two independently-tuned thresholds would be a
+slow-motion bug: they would agree for months, then one would be adjusted for a
+good local reason and the graph would quietly start accepting near-twins from one
+entry path but not the other.
+
+**Three exits, and `merged` is not `graduated`.** A new `candidate` concept
+carrying the answer memories as evidence; a merge into the concept that already
+held the belief (closing the row as `merged`); or, for a `world`-subject guess
+with no concept kind to become, a durable `fact` memory whose ordinary topic
+clustering *is* the topic anchor. Merged and graduated are separate statuses and
+separate `ConceptEvent` types because L17f and L19 should narrate "I turned out
+to be right about something I already knew" differently from "I was right about
+something new".
+
+**Graduation grants entry, not standing.** It sets neither `confidence` nor
+`status` on the concept it mints or merges into: the row enters as an ordinary
+`candidate` at the default confidence and waits for L3 like everything else.
+Having been guessed correctly twice is not evidence of anything beyond the two
+answers, which are already attached as edges for L3 to count. It is also held to
+the same bar when linked — the link is a *cosine* judgement, and closing early on
+one confirmation would let a near-miss match retire a guess that was actually
+about something adjacent.
+
+**Growth control is a hard ceiling, not a target.** `hypothesis_max_open` (12) is
+checked before the LLM call. Nothing prunes this table by decay the way L3 prunes
+concepts, because an untested guess is exactly as plausible next month as today —
+just staler. TTL expiry only touches rows that were never actually asked about: a
+row that reached the user either has an answer or has one pending, and a clock
+should not settle either.
+
+**The lane holds two origins, one slot each.** `context_budget_hypothesis_cap`
+went 1 → 2, and only because `one_per_origin` runs *before* the context budget.
+Competing on score alone would bury the inventions: L32 importance blends a kind
+prior with the emotional charge of grounded topic clusters, and an invention has
+no grounded memories, so it falls back to the bare prior and loses to evidenced
+candidates nearly every time. One slot each sidesteps that without inventing an
+exploration bonus from nowhere. The invented group gets its own weakest header,
+which says outright that these rest on nothing — an invention rendered in the
+grounded register is indistinguishable in the prompt from something she noticed,
+and the model will assert either. Habituation keys on `-hypothesis_id`, so the
+two origins rotate independently rather than one pool's freshness suppressing the
+other's.
+
+**`recall_hypotheses`, because the lane cannot answer the question.** Two bullets
+per turn is right for a conversation and useless when the user asks outright
+("what are you still not sure about with me?"). Without a way to look she would
+confabulate a plausible list or deny having any. The tool returns both origins
+least-settled-first with `origin` **stated**, since collapsing them would let her
+present an invention as an observation.
+
+**Still open.** The proposer has no *aim* — L30d's uncertainty zones would give
+it a target worth guessing about instead of speculating from whatever the context
+pack happens to hold. Nothing measures whether inventions are any good: a
+confirm/deny ratio per origin and kind is what would say whether the temperature
+and the two novelty bars are set anywhere near right. And `origin_refs` is
+written but unread — everything files as `free`, so "this guess came from *that*
+concept" is a hook with nothing on it yet.
