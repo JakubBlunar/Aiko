@@ -5,6 +5,7 @@ import {
   getStoredOutputDeviceId,
   onDeviceListChange,
 } from "../audio/DeviceManager";
+import { addBreadcrumb } from "../crashBreadcrumbs";
 import { desktop } from "../desktop/commands";
 import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
@@ -767,6 +768,7 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("open", () => {
       if (!isCurrent()) return;
+      addBreadcrumb("ws", "open");
       hasEverConnected.current = true;
       setConnection({ status: "connected", lastError: null });
       if (pingIntervalRef.current) {
@@ -811,8 +813,9 @@ export function useAssistantSocket(): {
       }, RECONNECT_DELAY_MS);
     };
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event: CloseEvent) => {
       if (!isCurrent()) return;
+      addBreadcrumb("ws", "close", { code: event.code, reason: event.reason });
       // Suppress the "offline" flash during the initial boot window:
       // until we've successfully opened a WS at least once, every
       // failed attempt stays in "connecting" state so the user sees
@@ -833,6 +836,7 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("error", () => {
       if (!isCurrent()) return;
+      addBreadcrumb("ws", "error");
       // Same flash-suppression rationale as the ``close`` handler:
       // a pre-first-connection error stays "connecting" because we
       // ARE about to retry; only show "disconnected" once the

@@ -13,6 +13,8 @@ Aiko writes a single, level-disciplined log stream that lands in three places at
 
 `get_log_config` returns the current effective configuration (level, file path, module overrides, ring usage).
 
+**Frontend crashes are not in this stream.** They arrive over HTTP from the browser and are recorded separately — start at `get_ui_crashes()`, see §g.
+
 **One stream, one exception.** The P44 prompt-cache telemetry writes JSONL to `data/prompt-cache.jsonl` instead, through an `app.promptcache` logger with `propagate = False` — a per-turn record would bloat `app.log`, and its only consumer is a script. It is **off by default** (`logging.prompt_cache_log_enabled`); turn it on for a measuring session and read it back with `python scripts/prefix_break_report.py`. See [`docs/prompt-caching.md`](../docs/prompt-caching.md#measuring-where-the-prefix-breaks-p44).
 
 ### b. Standard line shape
@@ -66,7 +68,8 @@ Every record is formatted as:
 | **Tuning the K16 grounding line / testing companion-feel** | The unified ambient grounding line is gated by `agent.grounding_line_mode`. **`off`** (default): no fused line, every granular block (circadian / world / activity / affect / mood_hint / relationship / user_state / ambient_noise) renders as before. **`replace`**: fused line replaces all eight granular ambient blocks. **`split`**: fused line replaces situational blocks (circadian, world, activity, ambient_noise) but keeps the trend/phase blocks (affect, mood_hint, relationship, user_state) standalone. Flip in `config/default.json` and restart, or call `session._prompt_assembler.set_grounding_line_mode("replace")` over MCP for a live switch. Verify by calling `get_last_response_detail` after a turn — `provider_ms.grounding_line` should be a small positive number in `replace`/`split`, missing or zero in `off`. The DEBUG `prompt built:` line's `providers=` count drops by the number of suppressed blocks. Full reference + suppression matrix: [`docs/personality-backlog/shipped.md`](../docs/personality-backlog/shipped/patterns-k16-k30.md#k16-unified-ambient-grounding-line). |
 | **A time-gated feature "never fires" and you'd have to wait days to find out why** | Don't wait — time-travel instead. Restart with `AIKO_DEBUG_CLOCK=1` (against a **copy** of `data/chat_sessions.db`) and drive the DT1 virtual clock over MCP. See §f below for which of the two clocks you need. |
 | **Time-gated behaviour is misbehaving for no apparent reason** | Check for a forgotten clock offset first: `get_status` carries a `debug_clock` block whenever the clock is shifted, and every advance logs at WARNING. `reset_clock` returns to real time. A stale offset makes anniversaries, cooldowns and decay all look independently broken. |
-| **Crash / unhandled exception** | Read `data/crashlog.txt` (separate from `app.log`, only fatal traces + faulthandler dumps). |
+| **Crash / unhandled exception (backend)** | Read `data/crashlog.txt` (separate from `app.log`, only fatal traces + faulthandler dumps). |
+| **The UI went blank / a panel is broken / "it crashed on my phone"** | Call MCP `get_ui_crashes()` — never read the raw stack first. Frontend crashes (error-boundary catches, uncaught window errors, unhandled rejections) are POSTed to `/api/logs/ui-crash` **always**, with no toggle to have forgotten, and land in `crashlog.txt`. Read the entry in this order: **1)** `breadcrumbs` — oldest-first with `+Nms` offsets, and it includes everything React wrote to `console.error`, which is usually the actual explanation (a failed fetch, a hook-order warning) sitting right before the throw. **2)** `context` — `build`, viewport, `shell`, `heapPct`, plus socket state / voice mode / open route at the moment it died. **3)** `stack_mapped`, the de-minified stack. If `stack_mapped` is **missing** while `stack` is full of `index-*.js`, the sourcemaps didn't resolve: `web/dist` was rebuilt after the crash (hashes no longer match — nothing to do but reproduce), or the build predates `build.sourcemap` in `web/vite.config.ts`. See §g. |
 | **Wrong expression / cry-cascade / lip-sync glitch** | Enable **Settings drawer → Chat → Diagnostics → Debug logging**, reproduce, then grep `data/app.log` for `[ui]` lines. The browser pushes WS events + avatar-channel decisions (`channel.expression applyReaction reaction=… expression=…`) into the same file as the backend timestamps so cause + effect sit side-by-side. See [B6 in personality-backlog/shipped.md](../docs/personality-backlog/shipped/avatar.md#b6-ui-debug-logging-bridge). |
 | **Touch gesture didn't fire / persona banner didn't appear / reaction didn't bump axes** | K31 + K32 failure mode — three independent half-paths to walk. **K31 dispatch path**: 1) Call MCP `get_touch_state()` — confirm `enabled=true` and read the per-kind `last_dispatched_monotonic` + `daily_counts` + `daily_date`. If `daily_counts[<kind>] >= cap` for the kind Aiko was trying to use, the dispatch was correctly gated. 2) Force the path bypassing every gate: `send_touch(kind="hug")` returns the dispatched payload — verify the WS `avatar_touch` frame fires (browser devtools → Network → WS → look for `"type":"avatar_touch","kind":"hug"`), the `ReachChannel` lean-in animates in both windows, the chat bubble badge `🫂 Aiko gave you a hug` renders, and the `PersonaActionBanner` appears in the open persona window. If the WS frame lands but no badge / banner — frontend wiring is the suspect; look at `web/src/store.ts` `pushAvatarTouch` + `appendGestureToCurrentTurn` reducers in the React DevTools. 3) Real-gesture trace: `tail_logs(module_contains="touch")` for the per-fire `touch dispatched: kind=hug rejected=false reason=ok` line. If `rejected=true reason=cooldown` / `daily_cap` / `axes_floor` the gate is doing its job — adjust `agent.touch_per_kind_overrides` or wait for axes to climb. **K32 reaction path**: 1) `add_user_reaction(message_id=N, kind="heart")` fakes a click against a real assistant message id (look one up via `get_status` → recent messages). The MCP tool returns the post-apply axes state — if `closeness` moves the apply path works end-to-end. 2) Grep `user_reaction axes:` (INFO level, fires whenever apply moves an axis); if the line shows `applied={...}` but the live axes don't change after a few clicks, the daily cap is exhausted (default `agent.user_reactions_daily_cap_per_axis=0.15`, ~5 hearts per axis per day) — call `add_user_reaction` for `surprise` (signal-only, no axis movement) to verify the inner-life cue still queues. 3) Confirm the multi-window sync: open the chat tab in two browser windows, click 🫂 in one — the other should update within a single WS roundtrip via `message_reaction_updated`. **Persona banner specifically**: gated on `agent.persona_touch_banner_enabled` AND `enabled` prop AND a live `avatarTouchAt` bump AND a backend assistant message id; if everything's set but the banner doesn't show, the source-level test ([`PersonaActionBanner.test.tsx`](../web/src/components/PersonaActionBanner.test.tsx)) documents the exact subscription contract. Full reference + data-flow mermaid: [K31 + K32 in shipped.md](../docs/personality-backlog/shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions). |
 
@@ -124,3 +127,39 @@ Decay is also catch-up-clamped per sweep (`concept_decay_max_catchup_days`, defa
 **What does not move.** Everything on `time.monotonic()` / `time.time()`: turn latency, TTS/STT audio timing, the brain loop, HTTP and orchestrator deadlines, the scheduler's tick budget, worker perf metrics. Log and crash timestamps, task stall detection (`app/core/tasks/`), and outbound weather API dates also stay real. The dividing line is "`datetime` narrative time moves, monotonic runtime timing does not" — see [`app/core/infra/debug_clock.py`](../app/core/infra/debug_clock.py).
 
 Tool reference: [`rules/mcp-server.md` → Virtual clock](mcp-server.md#virtual-clock-dt1).
+
+### g. Frontend crashes
+
+The UI reports its own crashes on a path that is **separate from the log
+stream above** and, unlike the `[ui]` debug bridge, is not behind a
+toggle: a crash you didn't expect is exactly the one nobody had debug
+logging on for. The React error boundary plus the global `error` /
+`unhandledrejection` listeners POST to `/api/logs/ui-crash`, which logs
+one `ERROR [ui] crash` line and appends a structured entry to
+`crashlog.txt`. Read them with **`get_ui_crashes()`**.
+
+What each report carries, in the order worth reading it:
+
+| Field | What it answers |
+|---|---|
+| `breadcrumbs` | *What led to this.* Last ~60 events, oldest first, stamped `+Nms` from page load. Sources: `console` (every `console.error`/`warn`, so React's own diagnostics are in here), `ws`, `api` (any non-2xx or network failure), `resource` (a failed image/script — a missing Live2D texture explains a lot of later "undefined" errors), plus every existing `debugLog` call site. Repeats inside a second collapse to a `count` so a reconnect loop can't flush the trail. |
+| `context` | *What state it was in.* `build` id, `viewport`, `dpr`, `shell` (tauri/browser), `heapUsedMb` / `heapPct`, `visibility`, plus `connection`, `voiceMode`, `route`, `turnInProgress`, `sessionKey`. |
+| `stack_mapped` | The stack **de-minified** against `web/dist/assets/*.map`. |
+| `component_stack` | The React tree, for `source=render`. |
+
+**On the stack.** A production bundle is minified, so the raw `stack` is
+useless on its own; `build.sourcemap` in `web/vite.config.ts` exists to
+make it recoverable, and [`app/core/infra/sourcemap.py`](../app/core/infra/sourcemap.py)
+does the mapping **server-side** — deliberately, because the crashes
+worth catching happen on a phone with no DevTools to attach. Correctness
+comes free from Vite's content hashing: `index-D4x9k2.js` only ever
+matches `index-D4x9k2.js.map`, so a stale `dist/` produces *no* mapping
+rather than a wrong one. That is why both `stack` and `stack_mapped` are
+recorded, and why a missing `stack_mapped` means "rebuild happened", not
+"symbolication is broken".
+
+**When adding anything that runs in the browser**, prefer
+`addBreadcrumb(cat, msg, detail)` from
+[`web/src/crashBreadcrumbs.ts`](../web/src/crashBreadcrumbs.ts) over a
+bare `console.log` for anything you'd want to see in a post-mortem. It
+is in-memory only and costs nothing until a crash reads it.

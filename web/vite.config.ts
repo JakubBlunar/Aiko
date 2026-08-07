@@ -1,8 +1,27 @@
 import { createLogger, defineConfig, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const BACKEND = "http://127.0.0.1:6275";
+
+// Stamped into the bundle and reported with every UI crash, so a crash
+// report from a phone can be tied to the build that produced it.
+function buildId(): string {
+  const stamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return sha ? `${sha}-${stamp}` : stamp;
+  } catch {
+    // Not a git checkout (tarball install, Docker build context) — the
+    // timestamp alone still distinguishes one build from the next.
+    return stamp;
+  }
+}
 
 // Quietly swallow the ECONNREFUSED storm Vite logs when the FastAPI backend
 // isn't running yet. The React client auto-reconnects on its own, so we don't
@@ -68,6 +87,9 @@ const wsProxy: ProxyOptions = {
 export default defineConfig({
   plugins: [react()],
   customLogger: filteredLogger,
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(buildId()),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -89,5 +111,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // Without this a production crash stack reads ``at Ln
+    // (index-a1b2c3.js:48:1203)``, which is unactionable — and the app
+    // is most often wrong on a phone, where there are no DevTools to
+    // attach. The maps are only fetched by the browser when DevTools is
+    // open, and the backend reads them off disk to symbolicate the
+    // stacks it records in ``crashlog.txt`` (see
+    // ``app/core/infra/sourcemap.py``). Emitting them is what makes UI
+    // crash reports worth reading; keep it on.
+    sourcemap: true,
   },
 });

@@ -1,5 +1,6 @@
 // Thin REST wrapper over the FastAPI endpoints.
 
+import { addBreadcrumb } from "./crashBreadcrumbs";
 import { backendBase } from "./desktop/runtime";
 import type {
   AccessoryCatalogue,
@@ -119,12 +120,34 @@ export function mapRawMessages(rows: RawMessage[]): ChatMessage[] {
   }));
 }
 
+/** Path portion of whatever ``jsonFetch`` was handed, for breadcrumbs.
+ * Query strings are dropped: they can carry message text and we don't
+ * want that sitting in a crash payload. */
+function breadcrumbPath(input: RequestInfo): string {
+  try {
+    const raw = typeof input === "string" ? input : (input as Request).url;
+    return String(raw).split("?")[0] ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const url =
     typeof input === "string" && input.startsWith("/")
       ? backendUrl(input)
       : input;
-  const response = await fetch(url, init);
+  const method = init?.method ?? "GET";
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (err) {
+    // Backend down, offline, CORS. The UI mostly renders these as an
+    // empty panel, so without a breadcrumb the eventual crash looks
+    // like a data bug rather than a connectivity one.
+    addBreadcrumb("api", `${method} ${breadcrumbPath(input)} failed`, err);
+    throw err;
+  }
   if (!response.ok) {
     let body = "";
     try {
@@ -132,6 +155,11 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
     } catch {
       // ignore
     }
+    addBreadcrumb(
+      "api",
+      `${method} ${breadcrumbPath(input)} → ${response.status}`,
+      body,
+    );
     throw new Error(
       `${response.status} ${response.statusText}${body ? ` - ${body}` : ""}`,
     );

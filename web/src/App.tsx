@@ -14,6 +14,7 @@ import { desktop } from "./desktop/commands";
 import { listenPersonaVisibility } from "./desktop/events";
 import { isTauri } from "./desktop/runtime";
 import { api } from "./api";
+import { setCrashContextProvider } from "./crashContext";
 import { useActivityReporter } from "./hooks/useActivityReporter";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { usePresenceReporter } from "./hooks/usePresenceReporter";
@@ -161,6 +162,34 @@ export default function App() {
     setAvatarCovered(settingsOpen);
     return () => setAvatarCovered(false);
   }, [settingsOpen, setAvatarCovered]);
+
+  // Tell the crash reporter what the app was doing when it died. The
+  // provider runs *during* a crash, so it reads the store imperatively
+  // rather than closing over subscribed values — re-registering on every
+  // state change would be pointless churn, and a stale closure would
+  // report the wrong state at the only moment it matters. Local state
+  // (route, drawer) rides along in a ref for the same reason.
+  const crashStateRef = useRef({ route, settingsOpen });
+  crashStateRef.current = { route, settingsOpen };
+  useEffect(() => {
+    setCrashContextProvider(() => {
+      const s = useAssistantStore.getState();
+      return {
+        route: crashStateRef.current.route,
+        settingsOpen: crashStateRef.current.settingsOpen,
+        connection: s.connection?.status,
+        connectionError: s.connection?.lastError,
+        voiceMode: s.voiceMode,
+        turnInProgress: s.turnInProgress,
+        model: s.model,
+        sessionKey: s.sessionKey,
+        messages: s.messages?.length,
+        audioUnlocked: s.audioUnlocked,
+        avatarCovered: s.avatarCovered,
+      };
+    });
+    return () => setCrashContextProvider(null);
+  }, []);
 
   usePersonaVisibilitySync();
 

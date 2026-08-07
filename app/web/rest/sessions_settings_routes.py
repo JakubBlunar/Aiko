@@ -1248,8 +1248,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         ERROR so the cause is captured the next time the white-screen
         happens — the user shouldn't have to have turned on debug logging
         beforehand. Body shape: ``{"message", "stack", "componentStack",
-        "source", "url", "userAgent", "ts"}``. Field sizes are capped
-        server-side by :func:`crash_logging.log_ui_crash`.
+        "source", "url", "userAgent", "ts", "breadcrumbs", "context"}``,
+        where the last two are optional and carry what the UI was doing
+        beforehand plus the build/runtime/app state it was doing it in.
+        Field sizes, breadcrumb count and context keys are all capped
+        server-side by :func:`crash_logging.log_ui_crash`, which also
+        de-minifies the stack against ``web/dist/assets``.
         """
         if not isinstance(payload, dict):
             raise HTTPException(400, "expected JSON object body")

@@ -33,6 +33,7 @@
  * the console stays quiet during normal use.
  */
 
+import { addBreadcrumb } from "./crashBreadcrumbs";
 import { backendBase } from "./desktop/runtime";
 
 export interface UiLogEntry {
@@ -158,8 +159,14 @@ async function flushNow(): Promise<void> {
 }
 
 export const debugLog = {
-  /** Append a structured event. No-op while disabled (very cheap). */
+  /** Append a structured event. No-op while disabled (very cheap).
+   *
+   * The crash-breadcrumb mirror below is the one thing that happens
+   * *regardless* of the toggle: breadcrumbs are in-memory only and exist
+   * to explain a crash that, by definition, nobody saw coming with debug
+   * logging already switched on. */
   log(entry: Omit<UiLogEntry, "ts"> & { ts?: string }): void {
+    addBreadcrumb(entry.source, entry.kind, entry.payload);
     if (!enabled) return;
     const full: UiLogEntry = {
       ts: entry.ts ?? isoNow(),
