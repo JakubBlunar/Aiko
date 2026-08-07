@@ -366,6 +366,129 @@ class ConceptDriftRouteTests(unittest.TestCase):
         session.run_concept_drift.assert_called_once()
 
 
+class HypothesisShelfRouteTests(unittest.TestCase):
+    """L30 debug routes. Shape lives in ``test_hypothesis_debug_facade``."""
+
+    def test_the_shelf_passes_its_filters_through(self) -> None:
+        client, session = _client()
+        session.hypothesis_shelf.return_value = {
+            "state": {"live": 1}, "invented": [], "grounded": [],
+        }
+        resp = client.get(
+            "/api/concepts/hypothesis-shelf?subject=user&status=refuted"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["state"]["live"], 1)
+        session.hypothesis_shelf.assert_called_once_with(
+            subject="user", status="refuted"
+        )
+
+    def test_blank_filters_read_as_absent(self) -> None:
+        client, session = _client()
+        session.hypothesis_shelf.return_value = {
+            "state": {}, "invented": [], "grounded": [],
+        }
+        client.get("/api/concepts/hypothesis-shelf?subject=&status=")
+        session.hypothesis_shelf.assert_called_once_with(
+            subject=None, status=None
+        )
+
+    def test_a_forced_verdict_returns_the_diff(self) -> None:
+        client, session = _client()
+        session.force_hypothesis_verdict.return_value = {
+            "verdict": "confirm",
+            "answer_memory_id": 901,
+            "before": {"credence": 0.5},
+            "after": {"credence": 0.7},
+        }
+        resp = client.post(
+            "/api/concepts/hypotheses/4/verdict",
+            json={"verdict": "confirm", "text": "yeah, pretty much"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["after"]["credence"], 0.7)
+        session.force_hypothesis_verdict.assert_called_once_with(
+            4, "confirm", "yeah, pretty much"
+        )
+
+    def test_a_bad_verdict_is_a_400(self) -> None:
+        client, session = _client()
+        session.force_hypothesis_verdict.side_effect = ValueError("nope")
+        resp = client.post(
+            "/api/concepts/hypotheses/4/verdict", json={"verdict": "maybe"},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_a_missing_row_is_a_404(self) -> None:
+        client, session = _client()
+        session.force_hypothesis_verdict.side_effect = LookupError("gone")
+        resp = client.post(
+            "/api/concepts/hypotheses/99/verdict", json={"verdict": "deny"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_delete_ok_and_404(self) -> None:
+        client, session = _client()
+        session.delete_hypothesis.return_value = True
+        self.assertEqual(
+            client.delete("/api/concepts/hypotheses/4").status_code, 200
+        )
+        session.delete_hypothesis.return_value = False
+        self.assertEqual(
+            client.delete("/api/concepts/hypotheses/9").status_code, 404
+        )
+
+    def test_the_ask_route_drives_the_worker(self) -> None:
+        client, session = _client()
+        # ``FakeSession`` inherits the real ``WebFacadeMixin``, so these
+        # two are genuine methods rather than mock attributes.
+        session.run_hypothesis_ask_worker_now = MagicMock(
+            return_value={"drafted": 1}
+        )
+        resp = client.post("/api/concepts/hypotheses/ask")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["result"]["drafted"], 1)
+        session.run_hypothesis_ask_worker_now.assert_called_once()
+
+    def test_no_worker_reads_as_unavailable_not_broken(self) -> None:
+        """The real facade raises ``WorkerUnavailable`` with no worker.
+
+        503 rather than 500, so "the layer is off" is distinguishable
+        from "the run crashed" -- which is most of what the panel's error
+        line has to convey.
+        """
+        client, session = _client()
+        session._concept_hypothesis_worker = None
+
+        self.assertEqual(
+            client.post("/api/concepts/hypotheses/ask").status_code, 503
+        )
+
+    def test_the_literal_run_and_ask_paths_beat_the_id_route(self) -> None:
+        """``/hypotheses/ask`` must not be read as a hypothesis id.
+
+        Both live under the same prefix as ``/hypotheses/{id}``, so a
+        route-order slip would turn "queue an ask" into "delete row
+        'ask'" -- which would 422 rather than doing anything, but the
+        failure would be baffling.
+        """
+        client, session = _client()
+        session.run_hypothesis_proposer_now = MagicMock(
+            return_value={"wrote": 0}
+        )
+        session.run_hypothesis_ask_worker_now = MagicMock(
+            return_value={"drafted": 0}
+        )
+
+        self.assertEqual(
+            client.post("/api/concepts/hypotheses/run").status_code, 200
+        )
+        self.assertEqual(
+            client.post("/api/concepts/hypotheses/ask").status_code, 200
+        )
+        session.delete_hypothesis.assert_not_called()
+
+
 class ConceptsDeleteTests(unittest.TestCase):
     def test_delete_ok(self) -> None:
         client, session = _client()

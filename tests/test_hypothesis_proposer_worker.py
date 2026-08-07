@@ -250,10 +250,38 @@ class HypothesisNoveltyTests(_Fixture):
         self.assertEqual(result["rejected_duplicate"], 1)
         self.assertEqual(result["wrote"], 0)
 
-    def test_an_expired_guess_blocks_too(self) -> None:
+    def test_an_expired_guess_does_not_block_re_invention(self) -> None:
+        """An expiry is her own inattention, not evidence about the guess.
+
+        The row aged out *unasked*, so nothing was learned, and it is
+        closed so it can never be asked now. Letting it block would
+        retire that ground permanently -- the exact sterility
+        ``hypothesis_min_novelty`` sits high to avoid. Re-inventing gives
+        the guess a fresh TTL and another chance to be raised.
+        """
         self._existing(embedding=_NEAR_A, status=STATUS_EXPIRED)
 
-        self.assertEqual(self._build().run()["rejected_duplicate"], 1)
+        result = self._build().run()
+
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(result["rejected_duplicate"], 0)
+
+    def test_a_refuted_row_still_blocks_past_an_expired_neighbour(
+        self,
+    ) -> None:
+        """The skip is per-row, not "ignore the nearest hit if it expired".
+
+        With both on the same ground, the refuted one must still be found:
+        she was told no, and an unrelated expiry sitting closer in the
+        index does not undo that.
+        """
+        self._existing(embedding=_NEAR_A, status=STATUS_EXPIRED)
+        self._existing(embedding=_NEAR_A, status=STATUS_REFUTED)
+
+        result = self._build().run()
+
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(result["rejected_duplicate"], 1)
 
     def test_the_bar_sits_high_so_the_layer_does_not_go_sterile(self) -> None:
         """0.85 is adjacent, not the same guess: it must get through."""

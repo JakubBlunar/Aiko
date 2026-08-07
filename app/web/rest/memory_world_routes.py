@@ -437,6 +437,26 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """L30 -- shelf stock against the caps, for the Memory tab badge."""
         return JSONResponse(session.hypothesis_state())
 
+    @app.get("/api/concepts/hypothesis-shelf")
+    def get_hypothesis_shelf(
+        subject: str | None = None, status: str | None = None,
+    ) -> JSONResponse:
+        """L30 -- the debug view: every row, including what Aiko never sees.
+
+        The inverse of ``/api/concepts/hypotheses``, which hides closed
+        and linked rows because Aiko should not muse about a guess that
+        is finished or already spoken for by a concept. Those are exactly
+        the rows that explain a quiet lane, so this returns them with the
+        full lifecycle attached (counters, link and graduation ids, the
+        three timestamps).
+        """
+        return JSONResponse(
+            session.hypothesis_shelf(
+                subject=(subject or "").strip() or None,
+                status=(status or "").strip() or None,
+            )
+        )
+
     @app.post("/api/concepts/hypotheses/run")
     def run_hypothesis_proposer() -> JSONResponse:
         """Invent one batch now instead of waiting for the slow cadence."""
@@ -447,6 +467,69 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         except Exception as exc:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
         return JSONResponse({"result": result})
+
+    @app.post("/api/concepts/hypotheses/ask")
+    def run_hypothesis_ask() -> JSONResponse:
+        """Stock the ask shelf now: pick testable rows and queue cues.
+
+        Queuing is not asking -- the cue still waits for the provider's
+        topic match or a typed gap, so watch ``/api/cues`` afterwards
+        rather than expecting a question immediately.
+        """
+        try:
+            result = session.run_hypothesis_ask_worker_now()
+        except WorkerUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"worker run failed: {exc}") from exc
+        return JSONResponse({"result": result})
+
+    @app.post("/api/concepts/hypotheses/{hypothesis_id}/verdict")
+    def force_hypothesis_verdict(
+        hypothesis_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        """Answer one of Aiko's guesses by hand, as if the user had.
+
+        Runs the *live* post-turn writer, so a forced confirm links and
+        graduates exactly as a real answer would. ``text`` stands in for
+        what the user said and is stored as the ordinary memory a
+        graduated concept inherits as evidence -- which is why a confirm
+        without it is rejected rather than quietly minting a concept that
+        rests on nothing.
+        """
+        body = payload or {}
+        try:
+            result = session.force_hypothesis_verdict(
+                int(hypothesis_id),
+                str(body.get("verdict") or ""),
+                str(body.get("text") or ""),
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"verdict failed: {exc}") from exc
+        return JSONResponse(result)
+
+    @app.delete("/api/concepts/hypotheses/{hypothesis_id}")
+    def delete_hypothesis(hypothesis_id: int) -> JSONResponse:
+        """Drop one guess outright -- never any memory or concept.
+
+        Different from a ``deny``: deleting leaves nothing for the
+        novelty gate to see, so the same guess can be invented again.
+        That makes it the right button for clearing out test rows and the
+        wrong one for "the user said no".
+        """
+        try:
+            deleted = session.delete_hypothesis(int(hypothesis_id))
+        except Exception as exc:
+            raise HTTPException(500, f"delete failed: {exc}") from exc
+        if not deleted:
+            raise HTTPException(404, "hypothesis not found")
+        return JSONResponse({"deleted": int(hypothesis_id)})
 
     @app.get("/api/concepts/quality")
     def get_concept_quality() -> JSONResponse:

@@ -11,6 +11,7 @@ import { GoalsPanel } from "./memory/GoalsPanel";
 import { AgendaPanel } from "./memory/AgendaPanel";
 import { TopicGraphPanel } from "./memory/TopicGraphPanel";
 import { ConceptsPanel } from "./memory/ConceptsPanel";
+import { HypothesesPanel } from "./memory/HypothesesPanel";
 import { ConceptTimelinePanel } from "./memory/ConceptTimelinePanel";
 import { ConceptEvolutionPanel } from "./memory/ConceptEvolutionPanel";
 import { SelfHistoryPanel } from "./memory/SelfHistoryPanel";
@@ -49,6 +50,7 @@ type MemorySubTab =
   | "cues"
   | "topics"
   | "concepts"
+  | "hypotheses"
   | "discoveries"
   | "evolution"
   | "story"
@@ -63,6 +65,7 @@ const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
   { id: "cues", label: "Cues" },
   { id: "topics", label: "Topics" },
   { id: "concepts", label: "Concepts" },
+  { id: "hypotheses", label: "Hypotheses" },
   { id: "discoveries", label: "Discoveries" },
   { id: "evolution", label: "Evolution" },
   { id: "story", label: "Story" },
@@ -652,6 +655,7 @@ export function MemoryTab({
 
       {subTab === "topics" ? <TopicGraphPanel /> : null}
       {subTab === "concepts" ? <ConceptsPanel /> : null}
+      {subTab === "hypotheses" ? <HypothesesPanel /> : null}
       {subTab === "discoveries" ? <ConceptTimelinePanel /> : null}
       {subTab === "evolution" ? <ConceptEvolutionPanel /> : null}
       {subTab === "story" ? <SelfHistoryPanel /> : null}

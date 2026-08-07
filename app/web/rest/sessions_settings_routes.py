@@ -309,6 +309,20 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "intimacy_pacing_enabled": bool(
                     getattr(s.agent, "intimacy_pacing_enabled", True),
                 ),
+                # L30 hypothesis layer. Only the two master switches are
+                # writable: both worker ``enabled_provider``s re-read
+                # ``settings.agent`` on every call, so a toggle takes
+                # effect live. The numeric knobs (``hypothesis_max_open``,
+                # the novelty bars, the intervals, the TTL) are captured
+                # at worker construction and are deliberately absent --
+                # a control for them would appear to work and change
+                # nothing until a restart.
+                "hypothesis_invention_enabled": bool(
+                    getattr(s.agent, "hypothesis_invention_enabled", True),
+                ),
+                "concept_hypothesis_ask_enabled": bool(
+                    getattr(s.agent, "concept_hypothesis_ask_enabled", True),
+                ),
             },
             "endpointing": {
                 "enabled": bool(getattr(s.endpointing, "enabled", True)),
@@ -640,6 +654,11 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "touch_enabled",
                 "user_reactions_enabled",
                 "persona_touch_banner_enabled",
+                # L30: both hypothesis workers read these off
+                # ``settings.agent`` on every tick, so setting them here
+                # takes effect without a restart.
+                "hypothesis_invention_enabled",
+                "concept_hypothesis_ask_enabled",
             ):
                 if flag in companion:
                     v = bool(companion[flag])

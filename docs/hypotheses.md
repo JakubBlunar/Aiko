@@ -285,8 +285,28 @@ unanswered hunch retires instead of being released.
   at `DEDUPE_COS`. Two independently-tuned thresholds would agree for
   months and then silently diverge.
 - **One ask per hunch, one lane slot per origin.**
-- **A terminal row is kept, not deleted.** Refuted and expired rows are
-  what stop re-invention.
+- **A terminal row is kept, not deleted.** A `refuted` row is what stops
+  re-invention — but an `expired` one is not. Expiry means she never got
+  round to asking, so nothing was learned about the guess and the row can
+  never be asked now (it is closed). Letting it block would retire that
+  ground permanently on the strength of her own inattention, which over
+  months is the exact sterility `hypothesis_min_novelty` sits high to
+  avoid. `_nearest_hypothesis` therefore matches every status *except*
+  `expired`.
+- **A live link always points at a concept that exists.** Linking is what
+  makes a row go quiet: the ask worker filters `linked=False`, the lane
+  skips it, `open_hypotheses` drops it. There is self-healing in
+  `link_if_duplicate`, but it only runs on the next confirmation — which a
+  row nobody can ask about will never get. So `delete_concept` calls
+  `HypothesisStore.unlink_concept`, or the row would sit `live`,
+  invisible and unfixable, holding one of twelve slots for good.
+  `graduated_concept_id` on a *closed* row is deliberately left alone: it
+  is the record of where a guess went, and losing the trail is worse than
+  a dangling id nothing reads.
+- **Graduation attaches only answers that still exist.** The
+  `answer_memory_ids` were collected over earlier turns, so one can have
+  been deleted since; attaching it anyway would hand the new concept a
+  distinct source that is not there for L3 to promote on.
 - **The proposer never writes a concept, and the resolver never promotes
   one.** L3 remains the single writer of concept `status`; the two
   sanctioned `confidence` exceptions are documented in
@@ -329,7 +349,57 @@ two master switches; full prose for each is in
 
 ## Debugging
 
-Start with the two MCP reads, in this order:
+### The panel
+
+**Settings → Memory → Hypotheses** is the fastest way in, and it is the
+only surface that shows the *whole* shelf. Everything else reads
+`open_hypotheses`, which drops closed and linked rows because Aiko should
+not muse about a guess that is finished or one a concept already speaks
+for — and those are exactly the rows that explain a silent lane. The
+panel reads `hypothesis_shelf` instead.
+
+The header separates the four "nothing is happening" states, which look
+identical from the chat window:
+
+| What the header shows | What is actually wrong |
+| --- | --- |
+| `0 of 12 live`, empty status counts | bare shelf — nothing has been invented |
+| `12 of 12 live`, `12 linked` | full, but every row is spoken for by a concept, so the lane has nothing to raise |
+| rows present, `asked 0` across the board | the invention side is fine; the ask worker is not picking them |
+| rows with `asked 1` and no answer | the cue was queued but never fired — go to the Cues sub-tab, the cue is the thing to look at |
+
+Its two run buttons are `invent now` and `queue ask`. Queuing is not
+asking: the cue still waits for a topic match or a typed gap.
+
+Each invented row offers `confirm` / `correct` / `deny`, each opening a
+small textarea for what the user would have said, and `delete`. **The
+text on a confirm is not cosmetic** — it is stored as the ordinary
+memory the live path stores, and a graduated concept's evidence edges are
+built from exactly those memories. A confirm with no text would mint a
+concept resting on nothing, which L3 demotes on its next tick, so it is
+refused. Two confirms with text walk a guess from invented to graduated
+in about a minute, which is the whole reason the panel exists: the real
+path needs two adjudicated answers across two conversations.
+
+`delete` and `deny` are not interchangeable. A denied row survives as a
+`refuted` row precisely so the novelty gate will not re-invent the guess;
+deleting leaves nothing behind, so the same guess can come back. Delete
+is for clearing out test rows.
+
+Grounded rows are read-only. A candidate concept has no hypothesis row,
+so a verdict there belongs to the concept write path and deleting belongs
+in the Concepts panel.
+
+Only two settings are editable in the panel — `invention` and `asking`.
+Both workers re-read `settings.agent` on every tick, so those take effect
+live. The cadences, `hypothesis_max_open`, both novelty bars and the TTL
+are captured when the workers are built, so a control for them would
+appear to work and change nothing until a restart; the panel says so
+rather than lying.
+
+### Over MCP
+
+Start with the two reads, in this order:
 
 - `get_hypothesis_state` — stock against the caps. `live` at zero means
   the shelf is bare; `live` at `max_open` with a high `linked` count
@@ -355,6 +425,18 @@ Then, depending on the symptom:
   move. An `UNCLEAR` on a real answer usually means the echo gate, not
   the classifier.
 
-REST mirrors: `GET /api/concepts/hypotheses`,
-`GET /api/concepts/hypothesis-state`,
-`POST /api/concepts/hypotheses/run`.
+### REST
+
+| Route | What it is for |
+| --- | --- |
+| `GET /api/concepts/hypotheses` | the Aiko-facing read: live, unlinked rows only, both origins unified. Backs `recall_hypotheses`. |
+| `GET /api/concepts/hypothesis-state` | stock against the caps, on its own |
+| `GET /api/concepts/hypothesis-shelf` | the debug read: every status, linked rows included, full lifecycle per row. What the panel uses. |
+| `POST /api/concepts/hypotheses/run` | one proposer pass |
+| `POST /api/concepts/hypotheses/ask` | one ask-worker pass (queues cues) |
+| `POST /api/concepts/hypotheses/{id}/verdict` | force a `confirm` / `correct` / `deny`; body `{verdict, text}`. Returns a before/after diff. |
+| `DELETE /api/concepts/hypotheses/{id}` | drop one row; touches no memory or concept |
+
+The two master switches are in the `companion` block of
+`GET` / `PATCH /api/settings`, not under `memory`, because they are the
+only two hypothesis knobs a live PATCH can actually change.

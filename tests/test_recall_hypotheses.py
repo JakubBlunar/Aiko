@@ -33,7 +33,7 @@ from app.core.concepts.hypothesis_store import (
     HypothesisStore,
 )
 from app.core.infra.chat_database import ChatDatabase
-from app.core.session.memory_facade_mixin import MemoryFacadeMixin
+from app.core.session.hypothesis_debug_mixin import HypothesisDebugMixin
 from app.llm.tools.builtins import RecallHypothesesTool, ToolError
 
 
@@ -50,7 +50,7 @@ def _ms(**over) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-class _Host(MemoryFacadeMixin):
+class _Host(HypothesisDebugMixin):
     def __init__(self, *, concepts=None, hypotheses=None, settings=None):
         self._concept_store = concepts
         self._hypothesis_store = hypotheses

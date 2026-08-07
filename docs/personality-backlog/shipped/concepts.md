@@ -2306,10 +2306,45 @@ confabulate a plausible list or deny having any. The tool returns both origins
 least-settled-first with `origin` **stated**, since collapsing them would let her
 present an invention as an observation.
 
+**The debug panel, and the two bugs it made visible.** Settings → Memory →
+Hypotheses landed as a follow-on, and the interesting part is that building it
+forced a distinction the backend had blurred. `open_hypotheses` hides closed and
+linked rows for good reasons — Aiko should not muse about a finished guess, or one
+a concept already speaks for — but those are exactly the rows that explain a
+silent lane, so a debugger needs the opposite read. Hence
+`hypothesis_shelf` beside it in a
+[new mixin](../../../app/core/session/hypothesis_debug_mixin.py), and the two
+reads are now inverses on purpose rather than one being a subset of the other by
+accident.
+
+Its write button, `force_hypothesis_verdict`, routes through the *live*
+post-turn writer (`_apply_invented_answer`) instead of reimplementing the
+credence math, so a forced confirm links and graduates exactly as a real one
+does; a debug path with its own arithmetic would drift and start lying about the
+real one. The one fidelity trap is that graduation builds the new concept's
+evidence edges from `answer_memory_ids`, so a confirm with **no** answer text
+would mint a concept resting on nothing that L3 demotes on its next tick — the
+facade refuses it rather than producing a result that looks like success.
+
+Two real bugs surfaced while auditing what the panel would need to show, both
+fixed in the same pass. A hypothesis linked to a **since-deleted** concept was
+orphaned permanently: linked rows are hidden from the ask worker, the lane and
+`open_hypotheses`, so the `link_if_duplicate` self-heal — which only runs on the
+next confirmation — could never fire, and the row sat `live` and unreachable
+holding one of twelve slots. `delete_concept` now calls
+`HypothesisStore.unlink_concept`. And an **expired** row was blocking
+re-invention of its ground forever, which is wrong in a way the refuted case is
+not: expiry means she never got round to asking, so nothing was learned, and the
+row is closed so it can never be asked now. That is the layer sterilising itself
+over Aiko's own inattention — the exact failure `hypothesis_min_novelty` sits
+high to avoid. `_nearest_hypothesis` now matches every status except `expired`.
+
 **Still open.** The proposer has no *aim* — L30d's uncertainty zones would give
 it a target worth guessing about instead of speculating from whatever the context
 pack happens to hold. Nothing measures whether inventions are any good: a
 confirm/deny ratio per origin and kind is what would say whether the temperature
 and the two novelty bars are set anywhere near right. And `origin_refs` is
 written but unread — everything files as `free`, so "this guess came from *that*
-concept" is a hook with nothing on it yet.
+concept" is a hook with nothing on it yet. Three smaller audit findings were
+recorded rather than fixed; they are listed under L30e in
+[`concepts.md`](../concepts.md).
