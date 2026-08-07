@@ -480,10 +480,10 @@ Shipped — self-history (all of it, in
   decides when the trail is too sparse to narrate, because the failure mode of
   a self-history feature is a confident invented past.
 
-Open — later kinds and refinements (L29-L36, all detailed in
-[`concepts.md`](concepts.md)): relationship & meta narratives, uncertainty zones
-to aim curiosity at, concept fission, introspective reflection, a richer edge
-taxonomy, and a strategy layer.
+Open — later kinds and refinements (L29b-L36, all detailed in
+[`concepts.md`](concepts.md)): the meta-narrative over concepts, uncertainty
+zones to aim curiosity at, concept fission, introspective reflection, a richer
+edge taxonomy, and a strategy layer.
 **L35 (surface-reason labels) is shipped** — every concept in the L26 trace
 now names the signal that put it in the prompt.
 
@@ -538,6 +538,28 @@ confirmation and graduation takes a distinct `merged` exit instead of forking a
 near-twin. A confirmed guess enters the graph as an ordinary `candidate` at the
 default confidence: being right twice is not evidence beyond the two answers,
 which L3 counts like any others.
+
+**L29a (episodic shared arcs) is shipped** — see
+[`shipped/concepts.md`](shipped/concepts.md#l29a-episodic-shared-arcs--the-both-of-us-narrative-shipped).
+L8 gave each subject arcs over their own memories; this is the third subject, a
+closed *joint* project ("the month they rebuilt the memory system") cut out of
+the `shared_moment` stream. The interesting part was that the backlog's sketch —
+"the same `sequence` machinery, just a third subject" — rested on an assumption
+that did not survive contact with the data. Shared moments were being embedded
+with their `"Shared moment (<vibe>): "` prefix, identical on every row, so the
+topic graph clustered them by **vibe word**: of five clusters holding three or
+more of the 145 moments, one was 77 moments and 76 of them were `tender`.
+Cluster-sourced arcs would have been vibe-arcs, and the same collapse is the
+likeliest reason L7 had produced a single ritual concept from that whole corpus.
+Vibe never needed to be in the vector — it is a structured field every consumer
+already reads by exact match — so the store now embeds the bare summary, with a
+backfill script for existing rows. Even with clean vectors, clusters stayed the
+wrong source because they carry no time axis, so arcs are cut by a seed-and-sweep
+that requires topical coherence *and* temporal contiguity, and holds an episode
+back until it has been quiet long enough to actually be finished. The other half
+of the old L29, the meta-narrative over concepts, is now tracked as **L29b**; it
+is no longer population-blocked (388 active concepts) but is a different build in
+every part except the ordinal plumbing.
 
 **L32 (importance as a second axis) is shipped** — see
 [`shipped/concepts.md`](shipped/concepts.md#l32-concept-importance----a-second-axis-distinct-from-confidence).

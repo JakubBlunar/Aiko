@@ -73,7 +73,8 @@ me** — neither branches on kind names. In
   cosine ([`ritual_grouping`](../app/core/concepts/ritual_grouping.py)); the
   recurrence lives in the grouping, not on the edges, and rendering routes
   `family="ritual"` through `_concept_ritual_header`.
-- `narrative` concepts (L8, `subject=user` **and** `aiko`) are the same story:
+- `narrative` concepts (L8, `subject=user` **and** `aiko`; L29a adds
+  `relationship`) are the same story:
   **no** `surfacing_targets`, so they surface only via the T3 `relevant_context`
   relevance path (an arc should be called back to when the turn touches it, not
   pinned every turn). They are the first **`sequence`**-evidence kind — evidence
@@ -81,9 +82,13 @@ me** — neither branches on kind names. In
   order), so `evidence_of` / `ConceptView` grounding returns the beats in order;
   the chain is derived from the candidate's `event_time` ordering at synthesis
   time. Rendering routes `family="narrative"` through `_concept_narrative_header`
-  (first-person for aiko). A narrative is a *closed* arc, not a rolling recency
-  digest (that stays the conversation summary's job); relationship + meta
-  narratives are deferred to backlog L29.
+  (first-person for aiko, third-person plural for `relationship`). A narrative is
+  a *closed* arc, not a rolling recency digest (that stays the conversation
+  summary's job). **L29a** adds the `relationship` subject — a closed joint
+  project whose beats are `shared_moment` rows, cut into episodes by topical
+  coherence *and* temporal contiguity rather than sourced from topic clusters
+  (`"shared_arc"` population). The meta-narrative over other concepts stays
+  deferred as backlog L29b.
 - `aspiration` concepts (L14, `subject=user` **and** `aiko`) are the open-ended
   sibling of narrative — the second **`sequence`** kind (same `ordinal` chain,
   same relevance-only surfacing, **no** `surfacing_targets`), naming a

@@ -78,6 +78,50 @@ class RitualGroupingTests(unittest.TestCase):
         self.assertEqual(g.dominant_vibe, "playful")
         self.assertEqual(g.weekday_hint, friday)
 
+    def test_shared_common_direction_does_not_collapse_the_corpus(
+        self,
+    ) -> None:
+        # The bug that made L7 mint exactly ONE ritual concept from 145 real
+        # shared moments. Every moment is "the two of them being
+        # affectionate", so raw cosines averaged 0.608 and 95% of all pairs
+        # cleared the old 0.6 floor -- and single-link needs only one chain of
+        # edges to merge two groups, so the whole corpus came back as a single
+        # component. Here two genuinely different rituals sit behind a common
+        # component 4x their own magnitude (raw cosine between them ~0.94):
+        # uncentered, this is one group of six.
+        common = 4.0
+        moments = [
+            rg.MomentInput(
+                id=10 + i,
+                embedding=(
+                    _vec(common, 1.0, 0.0) if i < 3 else _vec(common, 0.0, 1.0)
+                ),
+                text=f"moment {i}",
+                vibe="tender",
+                when="",
+            )
+            for i in range(6)
+        ]
+        groups = rg.group_moments(moments, min_size=3, similarity=0.45)
+        self.assertEqual(
+            sorted(sorted(g.member_ids) for g in groups),
+            [[10, 11, 12], [13, 14, 15]],
+        )
+
+    def test_centering_skipped_for_a_single_topic_corpus(self) -> None:
+        # No topical variance to recover: subtracting the mean would leave
+        # noise, when the honest reading is that these really are one ritual.
+        moments = [
+            rg.MomentInput(
+                id=10 + i, embedding=_vec(1.0, 0.0, 0.0), text="t",
+                vibe="warm", when="",
+            )
+            for i in range(4)
+        ]
+        groups = rg.group_moments(moments, min_size=3, similarity=0.45)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].size, 4)
+
     def test_min_size_floor(self) -> None:
         moments = [
             rg.MomentInput(id=i, embedding=_vec(1.0, 0.0), text="x",

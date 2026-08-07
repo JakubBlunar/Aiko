@@ -21,6 +21,17 @@ Persistence shape on the ``memories`` row:
     }
     pinned   = 1 when source == "manual" (user click on a chat message)
 
+**The embedded text is the bare summary, not ``content``.** The
+``"Shared moment (<vibe>): "`` prefix is identical on every row, so
+embedding it dominates the vector: the topic graph then clusters moments
+by *vibe word* rather than by what happened (measured: 76 of 77 members
+of one cluster were ``tender``), which starves every topical consumer --
+L7 rituals, L29 shared arcs, and moment RAG alike. Vibe is a structured
+field (``metadata.vibe`` -> :class:`MomentInput.vibe`,
+``RitualGroup.dominant_vibe``, the Together tab), so grouping by it is an
+exact-match operation that never needed a vector direction. Topics come
+from the embedding; vibes come from the field.
+
 The class is intentionally stateless aside from the underlying
 :class:`MemoryStore`; callers hold the only reference.
 """
@@ -172,7 +183,7 @@ class SharedMomentsStore:
             log.debug("no embedder available; cannot persist shared moment")
             return None
         try:
-            emb = embedder.embed(content)
+            emb = embedder.embed(cleaned_summary)
         except Exception:
             log.debug("shared moment embed failed", exc_info=True)
             return None
@@ -284,7 +295,7 @@ class SharedMomentsStore:
         embedding = None
         if summary is not None and self._embedder is not None:
             try:
-                embedding = self._embedder.embed(new_content)
+                embedding = self._embedder.embed(new_summary)
             except Exception:
                 log.debug("shared moment re-embed failed", exc_info=True)
         updated = self._memory_store.update(

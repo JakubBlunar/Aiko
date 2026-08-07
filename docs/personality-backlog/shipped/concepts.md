@@ -314,6 +314,176 @@ live, which unlocks L14 (aspiration/trajectory — its open-ended sibling).
 
 ---
 
+## L29a. Episodic shared arcs — the "both of us" narrative (SHIPPED)
+
+**Kind.** `narrative`, subject **`relationship`**, evidence model `sequence`.
+Deliberately *not* a new kind: an arc the two of them lived through is a
+narrative in every respect that matters downstream, so it inherits
+`narrative_evidence_gate`, the `0.3` plasticity, relevance-only surfacing, and
+the `relationship` branch of `_concept_narrative_header` that L8 had already
+written and left unused. The only thing that is genuinely different is where
+the evidence comes from.
+
+**Status: SHIPPED.** L8 gave each subject arcs over their *own* memories. This
+is the third subject the backlog spun out: a closed **joint project**
+compressed into one named story — "the month they rebuilt the memory system",
+"the long push to get voice mode working". Its evidence is the `shared_moment`
+stream, which is the only corpus that is about the pair by construction.
+
+### The blocker that had to be fixed first
+
+The backlog's sketch was "the same `sequence` machinery, just a third subject
+with the shared-moment stream as its source" — a `_run_narrative_pass(
+"relationship")` variant. That turned out to rest on an assumption that did not
+hold, and finding out why was most of the work.
+
+[`SharedMomentsStore`](../../../app/core/relationship/shared_moments.py) used to
+embed the *rendered* content, `"Shared moment (<vibe>): <summary>"`. That prefix
+is identical on every row, so it dominated the vector and the topic graph
+clustered moments by **vibe word** rather than by what happened. Measured on the
+live 145-moment corpus: five clusters held three or more moments, and they were
+77 moments (76 of them `tender`), 38 (27 `playful`), 9 (6 `tender`), 6, and 4
+(all four `repair`). Cluster-sourced arcs would have been vibe-arcs — "the arc
+of 76 tender moments" is not a story. **L7 had also minted exactly one `ritual`
+concept from those 145 moments**, and the prefix looked like the culprit.
+
+It was only half of it. Re-embedding was necessary but **not sufficient**, and
+that is the lesson worth carrying: the backfill dropped the share of moment
+pairs clearing the ritual threshold from 95% to 56%, which sounds like a fix
+and is not one — single-link needs only a single chain of edges to merge two
+groups, so L7 still returned a 142-member component out of 145. The remaining
+culprit was a second shared direction, described under *Grouping* below, and
+the cure was centering, eventually applied to **both** shared-moment passes.
+
+The fix is that vibe never needed to be in the vector. It is a structured field
+(`metadata.vibe` → `MomentInput.vibe` → `RitualGroup.dominant_vibe`, the
+anniversary provider, the Together tab), so grouping by it is an exact-match
+operation. The store now embeds the bare summary on both the `add` and `update`
+paths: **topics come from the embedding, vibes come from the field.** Existing
+rows are brought onto the new basis by
+[`scripts/reembed_shared_moments.py`](../../../scripts/reembed_shared_moments.py)
+(dry-run by default), after which the topic graph must be rebuilt — that shifts
+cluster ids, so the L8 user/aiko passes see their signatures go dirty and
+re-propose once, which the existing watermarks handle.
+
+### Grouping: seed-and-sweep, not clustering
+
+Even with clean embeddings, cluster membership is the wrong instrument, because
+it has no time axis: two separate pushes at the same topic months apart land in
+one cluster and read as a single incoherent arc. `ritual_grouping` is also the
+wrong instrument for the opposite reason — it is time-agnostic single-link
+looking for **recurrence** (the same activity done again and again), whereas an
+arc is **distinct steps in one bounded stretch**.
+
+So [`shared_arc_grouping`](../../../app/core/concepts/shared_arc_grouping.py) is
+a new pure module over the same `MomentInput` rows. It first **mean-centers the
+vectors**, then sweeps:
+
+0. Project the corpus mean out of every unit vector and re-normalise, via
+   [`ritual_grouping.center_vectors`](../../../app/core/concepts/ritual_grouping.py).
+   This is the vibe-prefix bug's twin, and it only became visible once the
+   prefix was gone: every shared moment is about the same two people being
+   affectionate, so even clean embeddings share an enormous common direction.
+   Measured on the 145-moment corpus, raw pairs run **mean 0.608 / p90 0.729**,
+   with 74% of all pairs clearing 0.55 — an absolute floor there asks "is this
+   text about the relationship", not "is this the same thread", and every
+   setting tried produced one snowballing 83-to-132 member episode. Centered,
+   the same corpus runs **mean -0.006 / p90 0.165 / p99 0.371**, and the
+   threshold starts measuring what it claims to. The difference is not subtle:
+   uncentered at any threshold, one blob; centered at `0.45`, five readable
+   threads (cozy anime nights; reassurance that he never has to earn her
+   affection; teasing about her tail; …). Skipped when the corpus is within
+   float error of a single direction — no topical variance to recover, and the
+   residual would be noise. **The helper lives in `ritual_grouping` because L7
+   needed it too:** the same change took that pass from one 142-member group to
+   seven rituals of 6/6/6/6/4/4/3, with its threshold moved from `0.6` on the
+   raw scale to `0.45` on the centered one. Raising the raw threshold instead
+   is not a substitute — at `0.85` L7 yields three thin groups only by
+   discarding 79% of the corpus.
+1. Take the earliest unassigned moment as a seed.
+2. Sweep forward in time, absorbing a moment when it is *both* within
+   `shared_arc_similarity` of the running centroid and within
+   `shared_arc_gap_days` of the episode's last member. A moment that fails the
+   coherence test is **skipped, not fatal** — at several moments a day across
+   unrelated topics, interleaving is the norm, and closing on the first
+   mismatch would never build a chain longer than two.
+3. The episode closes when its topic goes quiet past the gap.
+4. Re-seed from the next unassigned moment, so concurrent threads each get
+   their own episode.
+
+Survivors need `shared_arc_min_chain` members and must then have been quiet for
+`shared_arc_quiet_days`: a project still in motion is not a closed arc, and the
+proposer's `closed` gate should never be asked to adjudicate a story that is
+still happening.
+
+**The similarity floor (`0.45`) is on the centered scale and is not comparable
+to the ritual one (`0.6`) on raw vectors** — reading them side by side is the
+easiest way to mis-tune this. Sensitivity on the real corpus: `0.50` → 2
+episodes, `0.45` → 5, `0.40` → 8, `0.35` → 14 with chaining starting to return.
+
+The running centroid is kept as a raw sum of unit vectors and normalised only
+for the comparison; normalising in place each step would drift the centroid
+toward the most recent member instead of the mean of the chain. Centering
+mostly defuses that drift anyway — anchoring on the seed vector instead scored
+about the same (4 vs 5 episodes at `0.45`), so the centroid was kept as the
+smaller change.
+
+`shared_arc_gap_days` turned out to be **inert on this corpus**: at ~2.4
+moments a day, a 10-day silence never occurs, and 10d and 5d give identical
+groupings. It is a correctness guard for sparse corpora (two pushes at one
+topic months apart), not a tuning knob for dense ones — on a dense stream the
+coherence floor is doing all of the cutting.
+
+**Ordering** comes from `metadata.when` via the existing `moment_from_memory`.
+Shared moments carry `event_time = NULL` — see the non-goal below.
+
+### Synthesis
+
+A new `"shared_arc"` population and `_run_shared_arc_pass` in
+[`concept_synthesis_worker`](../../../app/core/concepts/concept_synthesis_worker.py).
+It does **not** route through `_ordered_candidates`, whose `_dominant_clusters`
+is a user/aiko binary with no third branch — `subject="relationship"` would fall
+through to the user filter and get the wrong population entirely. Instead it
+reads `iter_by_kind("shared_moment")` directly and carries the ritual pass's
+count + max-id watermark dirty-tracking, since it reads the same population. The
+watermark advances even when nothing groups, so an unchanged, unsegmentable
+corpus is a fast no-op rather than a grouping run every idle tick.
+
+Each surviving episode becomes a `NarrativeCandidate` whose `rep` is the first
+member's id (an episode has no cluster representative).
+
+### Proposer
+
+[`narrative_relationship`](../../../app/core/concepts/proposers/narrative_relationship.py)
+reuses `propose_narrative` wholesale. The one thing that could not be shared is
+the voice: `propose_ordered_concept` derived it from `first_person`, which spans
+only "about him" and "about me", so it gained an optional `voice` override and
+this proposer passes a third-person **plural** phrase. The prompt also carries
+two guards the L8 arcs don't need — the arc must be genuinely joint rather than
+his own story, and a run of moments that merely share a *feeling* is explicitly
+not a story.
+
+**Effort.** Shipped on top of L8. New settings:
+`agent.shared_arc_synthesis_enabled`,
+`concept_synthesis_shared_arc_min_chain` / `_similarity` / `_gap_days` /
+`_quiet_days`, `concept_synthesis_max_shared_arc_episodes`.
+
+**Deliberate non-goal: `event_time` on shared moments.** All 145 rows have
+`event_time = NULL`; the real time lives only in `metadata.when`. Starting to
+write that column would be more correct in the abstract but it drives
+`MemoryDecayWorker` (which flips `future_plan` → `past_event`) and
+`FollowUpWorker` (which schedules nudges near it), so it is a temporal-plumbing
+change with a blast radius well outside this phase. The arc pass reads
+`metadata.when` through the established `moment_from_memory` path, so chronology
+works without it. Left for whoever wants to take on the temporal side properly.
+
+**Follow-on worth watching.** The re-embedding should improve L7 rituals and
+moment RAG as much as it enables arcs — the single ritual concept from 145
+moments is the number to re-check after a rebuild. The meta-narrative half of
+the old L29 is now tracked separately as **L45**.
+
+---
+
 ## L11. Subject=aiko enablement — Aiko's self-model (SHIPPED)
 
 **Not a kind — a subject.** This entry does **not** add a "self" kind. It's the

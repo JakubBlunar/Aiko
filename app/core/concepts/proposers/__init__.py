@@ -40,6 +40,12 @@ self-concept can be grounded by a theme, a memory, or a mix.
   loaded in temporal order -- and name any that form a beginning->development
   ->resolution story. Evidence is the ordered chain (``memory`` edges carrying
   ordinals). Only the voice differs (user third-person / aiko first-person).
+- ``narrative_relationship`` -- *shared arc* (a closed JOINT project; L29a).
+  Same kind, evidence model and promotion gate as the two above, so it is a
+  ``narrative`` row in every respect except its source: the ``"shared_arc"``
+  population, where episodes are cut out of the ``shared_moment`` stream by
+  topical coherence AND temporal contiguity rather than by cluster
+  membership. Third-person *plural* voice, via the ``voice`` override.
 - ``aspiration_user`` / ``aspiration_aiko`` -- *aspiration* (an open-ended
   direction; L14). The open-ended sibling of narrative and the second
   ``sequence``-evidence kind: they mine the ``"aspiration"`` population (the
@@ -116,6 +122,7 @@ from app.core.concepts.proposers import (
     identity_aiko,
     identity_user,
     narrative_aiko,
+    narrative_relationship,
     narrative_user,
     relationship_ritual,
     self_correction_aiko,
@@ -172,6 +179,9 @@ from app.core.concepts.proposers.generalization_user import (
 from app.core.concepts.proposers.identity_aiko import propose_identity_aiko
 from app.core.concepts.proposers.identity_user import propose_identity_user
 from app.core.concepts.proposers.narrative_aiko import propose_narrative_aiko
+from app.core.concepts.proposers.narrative_relationship import (
+    propose_narrative_relationship,
+)
 from app.core.concepts.proposers.narrative_user import propose_narrative_user
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
@@ -198,6 +208,10 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     relationship_ritual.SPEC,
     narrative_user.SPEC,
     narrative_aiko.SPEC,
+    # L29(a) shared arcs -- same kind + evidence model as the two above, but
+    # sourced from episodes of ``shared_moment`` rows rather than from
+    # subject-dominant topic clusters, hence its own ``population``.
+    narrative_relationship.SPEC,
     aspiration_user.SPEC,
     aspiration_aiko.SPEC,
     boundary_user.SPEC,
@@ -259,6 +273,7 @@ __all__ = [
     "propose_identity_user",
     "propose_narrative",
     "propose_narrative_aiko",
+    "propose_narrative_relationship",
     "propose_narrative_user",
     "propose_ordered_concept",
     "propose_relationship_ritual",

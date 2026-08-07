@@ -230,6 +230,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             narrative_synthesis_enabled=bool(
                 agent_raw.get("narrative_synthesis_enabled", True),
             ),
+            shared_arc_synthesis_enabled=bool(
+                agent_raw.get("shared_arc_synthesis_enabled", True),
+            ),
             aspiration_synthesis_enabled=bool(
                 agent_raw.get("aspiration_synthesis_enabled", True),
             ),

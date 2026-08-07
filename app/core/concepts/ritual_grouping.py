@@ -15,6 +15,12 @@ dominant ``vibe`` and an optional weekday hint parsed from ``when``. The
 worker's ``_run_ritual_pass`` turns each :class:`RitualGroup` into a proposer
 input; the proposer names the ritual.
 
+**Vectors are mean-centered before anything is compared** -- see
+:func:`center_vectors` for the measurements. Without it this pass returned one
+group containing the entire corpus, which is why L7 had minted exactly one
+ritual concept from 145 shared moments. Thresholds here are on the centered
+scale and are not comparable to any raw-cosine threshold elsewhere.
+
 Pure + dependency-light (numpy only, for the cosine): no store / settings /
 LLM imports, so it unit-tests in isolation. The worker does the memory I/O
 and hands in :class:`MomentInput` rows (built via :func:`moment_from_memory`).
@@ -30,9 +36,14 @@ from typing import Any, Sequence
 import numpy as np
 
 
-# Default single-link cosine threshold; the worker overrides from settings.
-_DEFAULT_SIMILARITY = 0.6
+# Default single-link cosine threshold, on the **mean-centered** scale (see
+# :func:`center_vectors`) -- not comparable to the pre-centering 0.6, which on
+# real data linked 95% of all pairs and returned the corpus as one group.
+_DEFAULT_SIMILARITY = 0.45
 _DEFAULT_MIN_SIZE = 3
+# Skip centering only when the corpus is within float error of one direction:
+# there is no topical variance to recover and the residual would be noise.
+_DEGENERATE_MEAN = 0.9999
 
 _WEEKDAYS = (
     "Monday",
@@ -168,6 +179,39 @@ def _trim(text: str) -> str:
     return text
 
 
+def center_vectors(vectors: Sequence[np.ndarray]) -> list[np.ndarray]:
+    """Project the corpus mean out of each unit vector and re-normalise.
+
+    Every shared moment is about the same two people being affectionate, so
+    the raw embeddings share an enormous common direction and an absolute
+    cosine floor over them asks "is this about the relationship" rather than
+    "is this the same thing happening again". Measured on a real 145-moment
+    corpus: raw pairs run mean 0.608 / p90 0.729, **95% of all pairs cleared
+    0.6**, and single-link therefore returned the entire corpus as one group.
+    Centered, the same corpus runs mean -0.006 / p90 0.165 and separates into
+    distinct recurring patterns. Thresholds are on this centered scale.
+
+    Returned unchanged when the mean is degenerate (a corpus already pointing
+    one way, or one that cancels to nothing). A vector that collapses to zero
+    was exactly the corpus average -- maximally uninformative about topic --
+    so it stays at zero and quietly fails every positive comparison instead of
+    being handed a spurious direction.
+    """
+    if len(vectors) < 3:
+        return list(vectors)
+    mean = np.mean(np.vstack(vectors), axis=0)
+    strength = float(np.linalg.norm(mean))
+    if strength >= _DEGENERATE_MEAN or strength <= 1e-6:
+        return list(vectors)
+    mean = mean / strength
+    out: list[np.ndarray] = []
+    for vec in vectors:
+        residual = vec - float(np.dot(vec, mean)) * mean
+        norm = float(np.linalg.norm(residual))
+        out.append(residual / norm if norm > 1e-9 else residual)
+    return out
+
+
 def group_moments(
     moments: Sequence[MomentInput],
     *,
@@ -176,11 +220,18 @@ def group_moments(
 ) -> list[RitualGroup]:
     """Single-link cosine grouping of shared moments into ritual candidates.
 
-    Two moments are linked when their embedding cosine is ``>= similarity``;
-    a group is a connected component of that link graph. Only components with
-    ``>= min_size`` members survive, each annotated with a dominant vibe +
-    optional weekday hint and its member :class:`MomentLite`s (salience desc).
-    Groups are returned largest-first for deterministic downstream capping.
+    Vectors are :func:`center_vectors`-ed first, so ``similarity`` is on the
+    centered scale. Two moments are linked when their centered cosine is
+    ``>= similarity``; a group is a connected component of that link graph.
+    Only components with ``>= min_size`` members survive, each annotated with
+    a dominant vibe + optional weekday hint and its member
+    :class:`MomentLite`s (salience desc). Groups are returned largest-first
+    for deterministic downstream capping.
+
+    Centering matters more here than anywhere else in the codebase, because
+    single-link only needs *one* chain of edges to merge two groups: at the
+    pre-centering threshold the link graph was dense enough to collapse a
+    whole corpus into a single component.
     """
     rows = [m for m in moments if m is not None]
     n = len(rows)
@@ -189,7 +240,9 @@ def group_moments(
         return []
     thr = max(-1.0, min(1.0, float(similarity)))
 
-    mat = np.vstack([_normalise(m.embedding) for m in rows]).astype(np.float32)
+    mat = np.vstack(
+        center_vectors([_normalise(m.embedding) for m in rows])
+    ).astype(np.float32)
     # Cosine matrix (rows are unit vectors); single-link => connect any pair
     # whose similarity clears the threshold, then take connected components.
     sims = mat @ mat.T
@@ -254,6 +307,7 @@ __all__ = [
     "MomentInput",
     "MomentLite",
     "RitualGroup",
+    "center_vectors",
     "group_moments",
     "moment_from_memory",
 ]
