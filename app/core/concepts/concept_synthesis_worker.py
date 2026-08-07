@@ -543,12 +543,15 @@ class ConceptSynthesisWorker:
     @property
     def _ritual_group_similarity(self) -> float:
         """L7: single-link cosine threshold for joining two shared moments
-        into the same ritual group."""
+        into the same ritual group, on the *mean-centered* scale the grouper
+        compares on. Raw shared-moment cosines average 0.608, so a raw-scale
+        threshold here links nearly every pair and single-link collapses the
+        corpus into one group."""
         raw = float(
             getattr(
                 self._memory_settings,
                 "concept_synthesis_ritual_group_similarity",
-                0.6,
+                0.45,
             )
         )
         return max(0.0, min(1.0, raw))
@@ -608,6 +611,80 @@ class ConceptSynthesisWorker:
                     self._memory_settings,
                     "concept_synthesis_max_narrative_memories",
                     40,
+                )
+            ),
+        )
+
+    @property
+    def _shared_arc_min_chain(self) -> int:
+        """L29a: minimum moments an episode needs to be offered as a shared
+        arc. Mirrors ``_narrative_min_chain`` -- three beats is a story."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_shared_arc_min_chain",
+                    3,
+                )
+            ),
+        )
+
+    @property
+    def _shared_arc_similarity(self) -> float:
+        """L29a: cosine floor for a moment joining an episode's running
+        centroid, on the *mean-centered* scale the grouper compares on. Not
+        comparable to the ritual threshold -- raw shared moments nearly all
+        clear that, which is why the grouper projects the corpus mean out
+        first."""
+        raw = float(
+            getattr(
+                self._memory_settings,
+                "concept_synthesis_shared_arc_similarity",
+                0.45,
+            )
+        )
+        return max(0.0, min(1.0, raw))
+
+    @property
+    def _shared_arc_gap_days(self) -> float:
+        """L29a: how long a thread may go quiet and still be the same episode.
+        Past this the arc has ended, and a resumption starts a fresh one."""
+        raw = float(
+            getattr(
+                self._memory_settings,
+                "concept_synthesis_shared_arc_gap_days",
+                10.0,
+            )
+        )
+        return max(0.5, raw)
+
+    @property
+    def _shared_arc_quiet_days(self) -> float:
+        """L29a: how long an episode must have been finished before it can be
+        proposed. A project still in motion is not a closed arc, and the
+        proposer's ``closed`` gate should never have to adjudicate a story
+        that is still happening."""
+        raw = float(
+            getattr(
+                self._memory_settings,
+                "concept_synthesis_shared_arc_quiet_days",
+                3.0,
+            )
+        )
+        return max(0.0, raw)
+
+    @property
+    def _max_shared_arc_episodes(self) -> int:
+        """L29a: cap on episodes offered to the proposer per run (bounds the
+        prompt / LLM cost)."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_shared_arc_episodes",
+                    3,
                 )
             ),
         )
@@ -809,6 +886,7 @@ class ConceptSynthesisWorker:
             "conduct_findings": 0,
             "ritual_dirty": False,
             "narrative_dirty": False,
+            "shared_arc_dirty": False,
             "aspiration_dirty": False,
             "boundary_dirty": False,
             "comm_style_dirty": False,
@@ -836,6 +914,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_ritual_pass(ctx, spec, stats, force)
                 elif spec.population == "narrative":
                     proposals = self._run_narrative_pass(ctx, spec, stats, force)
+                elif spec.population == "shared_arc":
+                    proposals = self._run_shared_arc_pass(ctx, spec, stats, force)
                 elif spec.population == "aspiration":
                     proposals = self._run_aspiration_pass(ctx, spec, stats, force)
                 elif spec.population == "boundary":
@@ -1690,6 +1770,125 @@ class ConceptSynthesisWorker:
             groups=groups,
             existing=self._existing_for(spec),
         )
+
+    # ── shared-arc pass (L29a) ──────────────────────────────────────────
+
+    def _run_shared_arc_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L29a shared-arc pass: cut episodes out of the ``shared_moment``
+        stream and offer each as a candidate *closed joint arc*.
+
+        Deliberately does NOT go through ``_ordered_candidates``. That builder
+        sources from subject-dominant topic clusters, and ``_dominant_clusters``
+        is a user/aiko binary with no third branch -- ``subject="relationship"``
+        would fall through to the user filter and get the wrong population.
+        Cluster membership also has no time axis, so two separate pushes at the
+        same topic months apart would arrive as one incoherent arc. Episodes
+        need both axes, which is what
+        :func:`shared_arc_grouping.group_episodes` provides.
+
+        Count + max-id watermark dirty-tracking (same shape as the ritual pass,
+        since it reads the same population) so a settled corpus is a fast
+        no-op."""
+        if not bool(
+            getattr(self._agent_settings, "shared_arc_synthesis_enabled", True)
+        ):
+            stats["shared_arc_dirty"] = False
+            return []
+
+        from app.core.concepts import ritual_grouping as _rg
+        from app.core.concepts import shared_arc_grouping as _sag
+
+        rows = self._memory_store.iter_by_kind("shared_moment")
+        count = len(rows)
+        min_chain = self._shared_arc_min_chain
+        if count < min_chain:
+            stats["shared_arc_dirty"] = False
+            return []
+        max_id = max((int(m.id) for m in rows), default=0)
+
+        sig_key = spec.sig_key or "concept_synth.narrative_sig.relationship"
+        prev = self._load_sigs(sig_key)
+        delta = self._dirty_size_delta
+        prev_count = int(prev.get("count", 0)) if prev else 0
+        prev_max = int(prev.get("max_id", 0)) if prev else 0
+        is_dirty = (
+            force
+            or (not prev)
+            or abs(count - prev_count) >= delta
+            or max_id != prev_max
+        )
+        stats["shared_arc_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        moments = [
+            mi
+            for mi in (_rg.moment_from_memory(m) for m in rows)
+            if mi is not None
+        ]
+        episodes = _sag.group_episodes(
+            moments,
+            min_chain=min_chain,
+            similarity=self._shared_arc_similarity,
+            gap_days=self._shared_arc_gap_days,
+            quiet_days=self._shared_arc_quiet_days,
+            # The worker clock, so the debug-clock tools can fast-forward an
+            # episode past its quiet period instead of waiting out real days.
+            now=self._clock(),
+        )[: self._max_shared_arc_episodes]
+
+        # Advance the watermark even when nothing grouped, so an unchanged,
+        # unsegmentable corpus doesn't re-run every idle tick.
+        self._save_sigs(sig_key, {"count": count, "max_id": max_id})
+        if not episodes:
+            return []
+
+        by_id = {int(m.id): m for m in rows}
+        candidates: list[NarrativeCandidate] = []
+        for episode in episodes:
+            members = [
+                by_id[mid] for mid in episode.member_ids if mid in by_id
+            ]
+            if len(members) < min_chain:
+                continue
+            candidates.append(
+                NarrativeCandidate(
+                    # An episode has no cluster representative, so the first
+                    # member's id stands in -- stable for as long as the
+                    # episode starts where it starts.
+                    rep=int(episode.member_ids[0]),
+                    label=self._shared_arc_label(episode),
+                    subject=spec.subject,
+                    memories=members,
+                )
+            )
+        if not candidates:
+            return []
+
+        return spec.propose(
+            ctx,
+            candidates=candidates,
+            min_chain=min_chain,
+            existing=self._existing_for(spec),
+        )
+
+    @staticmethod
+    def _shared_arc_label(episode: Any) -> str:
+        """Prompt-side theme label for an episode. The proposer names the arc
+        itself; this is only orientation, so it leads with where the story
+        starts and how long it ran."""
+        opener = episode.members[0].text if episode.members else ""
+        opener = opener if len(opener) <= 80 else opener[:77].rstrip() + "\u2026"
+        span = episode.span_days
+        if span >= 1.0:
+            return f"{opener} (over {span:.0f} day(s), {episode.size} moments)"
+        return f"{opener} ({episode.size} moments)"
 
     # ── ordered-sequence passes (L8 narrative + L14 aspiration) ─────────
 

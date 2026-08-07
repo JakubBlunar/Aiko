@@ -526,6 +526,12 @@ class AgentSettings:
     # MemorySettings (``concept_synthesis_narrative_*`` /
     # ``concept_synthesis_max_narrative_*``).
     narrative_synthesis_enabled: bool = True
+    # L29a shared-arc synthesis -- the "both of us" narrative. Same kind and
+    # promotion gate as L8, but sourced from episodes cut out of the
+    # ``shared_moment`` stream instead of from topic clusters, so it gets its
+    # own switch: turning it off leaves the user/aiko arcs running. Thresholds
+    # live under MemorySettings (``concept_synthesis_shared_arc_*``).
+    shared_arc_synthesis_enabled: bool = True
     # L14 aspiration/trajectory synthesis (the open-ended sibling of narrative;
     # the second ``sequence`` kind). When enabled, the synthesis worker's
     # aspiration pass mines each subject's topic clusters for sustained

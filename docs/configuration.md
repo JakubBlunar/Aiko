@@ -674,8 +674,10 @@ The `ritual` concept kind (`subject=relationship`) names the recurring "thing yo
 - `agent.ritual_synthesis_enabled` *(bool, `true`)* — master switch for the ritual synthesis pass. Off → no relationship rituals are mined (the rest of concept synthesis is unaffected; existing rituals still surface).
 - `memory.concept_synthesis_ritual_min_moments` *(int, `6`, min `2`)* — minimum `shared_moment` rows before the ritual pass runs at all (below this there aren't enough moments for a recurring pattern).
 - `memory.concept_synthesis_ritual_group_min_size` *(int, `3`, min `2`)* — minimum members a moment cluster needs to be a ritual candidate (a couple of moments isn't a recurring pattern).
-- `memory.concept_synthesis_ritual_group_similarity` *(float, `0.6`, clamped `[0, 1]`)* — single-link cosine threshold for joining two shared moments into the same ritual group.
+- `memory.concept_synthesis_ritual_group_similarity` *(float, `0.45`, clamped `[0, 1]`)* — single-link cosine threshold for joining two shared moments into the same ritual group, **on the mean-centered scale** (see the note below). Was `0.6` on raw vectors, which linked 95% of all pairs and returned the whole corpus as one group. Measured after centering: `0.45` → 7 rituals, `0.40` → 6 but with a 30-member group re-forming, `0.50` → 3.
 - `memory.concept_synthesis_max_ritual_groups` *(int, `3`, min `1`)* — cap on ritual groups offered to the proposer per run (bounds the prompt / LLM cost).
+
+**Both shared-moment passes mean-center their vectors before comparing, so their thresholds are not on the same scale as any raw cosine elsewhere in the system.** Every shared moment is about the same two people being affectionate, and that common direction dominates: raw pairwise cosine averaged 0.608 on a real 145-moment corpus, with **95% of all pairs clearing 0.6**. Single-link only needs one chain of edges to merge two groups, so L7 returned the entire corpus as one component and minted exactly one ritual concept. [`ritual_grouping.center_vectors`](../app/core/concepts/ritual_grouping.py) projects the corpus mean out (same corpus: mean −0.006, p90 0.165); L29a's arc grouper calls the same helper. Fixing the `shared_moment` embedding basis was a prerequisite but **not sufficient on its own** — re-embedding alone still left 56% of pairs above 0.6 and one 142-member group. Centering is skipped only when the corpus is within float error of a single direction.
 
 ### L8 — narrative arcs (closed causal chains)
 
@@ -685,6 +687,21 @@ The `narrative` concept kind (`subject=user` **and** `aiko`) names a *closed cau
 - `memory.concept_synthesis_narrative_min_chain` *(int, `3`, min `2`)* — minimum ordered steps a cluster must resolve to before it's offered as a candidate arc (and the proposer's new-arc floor) — a story needs a beginning, middle, and end.
 - `memory.concept_synthesis_max_narrative_clusters_per_run` *(int, `3`, min `1`)* — cap on candidate arcs offered to the narrative proposer per run, per subject (bounds the prompt / LLM cost).
 - `memory.concept_synthesis_max_narrative_memories` *(int, `40`, min `2`)* — cap on member memories loaded per candidate arc (long-running themes stay bounded; the proposer further elides the middle).
+
+### L29a — episodic shared arcs (the "both of us" narrative)
+
+The third narrative subject: a `narrative` concept with `subject=relationship` naming a *closed joint project* ("the month they rebuilt the memory system"). Same kind, gate, plasticity and relevance-only surfacing as L8, so the only real difference is the source — episodes cut out of the `shared_moment` stream by [`shared_arc_grouping`](../app/core/concepts/shared_arc_grouping.py) rather than sourced from topic clusters. An episode grows while the next moment is within `shared_arc_similarity` of its running centroid **and** within `shared_arc_gap_days` of its last member; it must reach `shared_arc_min_chain` moments and then have been quiet for `shared_arc_quiet_days` before it can be proposed. A `"shared_arc"` synthesis population + `_run_shared_arc_pass` feeds the [`narrative_relationship`](../app/core/concepts/proposers/narrative_relationship.py) proposer (third-person plural voice). See [`personality-backlog/shipped/concepts.md` → L29a](personality-backlog/shipped/concepts.md).
+
+**Shared moments are embedded from their bare summary, not the rendered `"Shared moment (<vibe>): <summary>"` content.** The prefix is identical on every row, so embedding it made the topic graph cluster moments by *vibe word* instead of by topic, which starved arcs, L7 rituals and moment RAG alike. Vibe travels as a structured field. Rows written before this fix need [`scripts/reembed_shared_moments.py`](../scripts/reembed_shared_moments.py) (dry-run by default, `--apply` to write, app stopped), followed by a topic-graph rebuild.
+
+**The arc grouper mean-centers via the same [`center_vectors`](../app/core/concepts/ritual_grouping.py) helper as L7** — see the note under L7 for the measurements. Uncentered, 74% of pairs cleared 0.55 and every threshold from 0.55 to 0.80 produced one snowballing 83-to-132 member episode.
+
+- `agent.shared_arc_synthesis_enabled` *(bool, `true`)* — master switch for the shared-arc pass. Off → no joint arcs are mined; the L8 user/aiko arcs keep running.
+- `memory.concept_synthesis_shared_arc_min_chain` *(int, `3`, min `2`)* — minimum moments an episode needs to be offered as an arc (and the proposer's new-arc floor).
+- `memory.concept_synthesis_shared_arc_similarity` *(float, `0.45`, clamped `[0, 1]`)* — cosine floor for a moment joining an episode's running centroid, **on the mean-centered scale** (see the shared note under L7). Measured on a 145-moment corpus: `0.45` → 5 readable threads, `0.40` → 8, `0.35` → 14 and chaining starts to return. It matches the ritual default only because both were calibrated on the same corpus — the passes are independent and tuning one does not imply the other.
+- `memory.concept_synthesis_shared_arc_gap_days` *(float, `10.0`, min `0.5`)* — how long a thread may go quiet and still count as the same episode. Past this the arc has ended and a resumption starts a fresh one.
+- `memory.concept_synthesis_shared_arc_quiet_days` *(float, `3.0`, min `0`)* — how long an episode must have been finished before it is proposed. A project still in motion is not a closed arc.
+- `memory.concept_synthesis_max_shared_arc_episodes` *(int, `3`, min `1`)* — cap on episodes offered to the proposer per run (bounds the prompt / LLM cost).
 
 ### L14 — aspiration / trajectory concepts (+ momentum callbacks)
 

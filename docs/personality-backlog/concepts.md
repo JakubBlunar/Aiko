@@ -1549,31 +1549,28 @@ the T3 path.
 
 ---
 
-## L29. Relationship & meta narratives (deferred)
+## L29. Relationship & meta narratives (split)
 
-**Status: deferred — spun out of L8.** L8 shipped narrative arcs for `user` and
-`aiko` (arcs over each subject's *own* memories). This entry tracks the two
-"both of us" / higher-order variants that L8 deliberately left out, plus the
-recency non-goal so it isn't re-litigated.
+**Status: (a) ✅ SHIPPED as L29a; (b) respun as its own entry, L29b.** L8 shipped narrative
+arcs for `user` and `aiko` (arcs over each subject's *own* memories). This
+entry tracked the two "both of us" / higher-order variants it left out; they
+turned out to have almost nothing in common beyond the word "narrative", so
+they are now tracked apart.
 
-**(a) Episodic shared arc** (`subject="relationship"`). A *closed* joint project
-compressed into one named arc — "the month we rebuilt the memory system", "our
-push to get voice mode working". Evidence is `shared_moment` (+ joint event)
-memories ordered in time. This is the **same `sequence` machinery L8 already
-ships**, just a third subject with the shared-moment stream as its source, gated
-to closed + `narrative_min_chain` + aged so it stays small. Cheap follow-up now
-that L8 has landed: a `_run_narrative_pass("relationship")` variant over
-`iter_by_kind("shared_moment")` + a `narrative_relationship` proposer, rendered
-under the (already-present) `relationship` branch of `_concept_narrative_header`.
+**(a) Episodic shared arc** (`subject="relationship"`) — shipped. See the
+implementation record in [`shipped/concepts.md`](shipped/concepts.md). Worth
+knowing even if you never touch arcs again: the sketch here ("the same
+`sequence` machinery, just a third subject") assumed shared moments cluster
+topically, and they did not. They were being embedded with their
+`"Shared moment (<vibe>): "` prefix, so the topic graph grouped them by *vibe
+word* — one cluster of 77 moments, 76 of them `tender`. That is fixed at the
+write path, with a backfill script for existing rows, and arcs are now cut out
+of the moment stream by a time-aware grouper rather than by cluster membership.
 
-**(b) Meta-narrative over concepts.** The genuinely hard one: an arc whose nodes
-are other **concepts** rather than memories (`evidence_model="meta"` or a
-`sequence` over `concept` nodes via `relation="references"`) — "how we went from
-strangers to a comfortable rhythm" (over relationship + `ritual` concepts), "his
-value X emerged, then reshaped into Y". Needs concept-node evidence + a
-meta-proposer that reads [`ConceptView`](../../app/core/concepts/concept_view.py)
-instead of the memory store, and a healthy population of active concepts
-(L7/L10/L13) to draw on. Shares the `sequence` plumbing but not the source.
+**(b) Meta-narrative over concepts** — see **L29b** below. It needs a
+concept-node source and a proposer over
+[`ConceptView`](../../app/core/concepts/concept_view.py), which is a different
+build from (a) in every part except the ordinal plumbing.
 
 **Explicit non-goal (design decision).** A rolling "what have we been up to
 lately / in the last two weeks" digest is **not** a concept — it never closes,
@@ -1582,10 +1579,61 @@ is already served by the rolling conversation summary (`ThreadResummaryWorker` /
 `get_latest_summary`), recent-message context, and the `shared_moment` "Together"
 rows. Recorded here so the idea isn't re-proposed as a concept.
 
-**Depends on.** L8 (shipped) for (a); L8 + a healthy L7/L10/L13 population for
-(b). Cross-referenced from L8 and L20 (abstraction hierarchy).
+---
 
-**Effort.** Small for (a); large for (b).
+## L29b. Meta-narrative -- an arc whose steps are concepts
+
+**Status: open.** Spun out of L29 when (a) shipped. This is the genuinely hard
+half: an arc whose nodes are other **concepts** rather than memories -- "how
+they went from strangers to a comfortable rhythm" (over relationship and
+`ritual` concepts), "his value X emerged, then reshaped into Y". Where L29a
+compresses a run of moments into a story, this compresses a run of *beliefs*
+into the story of how those beliefs changed.
+
+**No longer population-blocked.** The original entry deferred this partly on
+the grounds that it needs "a healthy population of active concepts to draw
+on". That is no longer the constraint: the graph now carries 388 active
+concepts, including 31 narrative arcs, 24 generalizations and 27 tensions --
+plenty of material for a meta-proposer to find a trajectory in. What remains
+is genuinely the build.
+
+**The structural question is smaller than it looks.** `EVIDENCE_MODELS` are
+documented as describing *shape only* -- node type is carried per-edge on
+`concept_edges.src_type`, and evidence may mix node types. So a `sequence` over
+`("concept", id)` edges with ordinals is already supported by the store; it
+does not need a new evidence model, and `evidence_model="meta"` (which `tension`
+and `generalization` use for unordered concept evidence) is the wrong fit
+because it carries no order.
+
+**What actually has to be built.**
+- A **source**: some way to enumerate ordered runs of related concepts. The
+  memory-side passes lean on the topic graph for "these belong together"; there
+  is no equivalent over concepts, so this needs either the L34 relation
+  taxonomy, spreading activation over existing edges, or clustering concept
+  embeddings.
+- A **proposer** reading [`ConceptView`](../../app/core/concepts/concept_view.py)
+  rather than the memory store -- the first one that would.
+- A **moot rule**. This is the subtle part and worth deciding early. The
+  default meta rule retires a concept when its bases stop being active, which
+  is right for a tension (a friction between two beliefs she no longer holds is
+  not a live friction) and exactly wrong here: a meta-narrative is *about* the
+  beliefs she moved on from, so its bases going dormant is the story landing,
+  not the story dying. L17d already hit this and set
+  `meta_min_active_bases=0` with a comment explaining that its bases are
+  history, not a live dependency. A meta-narrative wants the same treatment.
+
+**Ordering is the other open question.** A narrative over memories orders by
+`event_time`. Concepts have no single equivalent -- `created_at`, first
+promotion, and the timestamps of their underlying evidence all mean different
+things, and the honest answer is probably the promotion timeline from
+`concept_events` rather than the row's own stamps.
+
+**Depends on.** L8 (shipped) for the ordinal plumbing; benefits from L34
+(relation taxonomy) for the source. Cross-referenced from L20 (abstraction
+hierarchy), which is the other kind that reasons over concepts rather than
+memories.
+
+**Effort.** Large.
 
 ---
 

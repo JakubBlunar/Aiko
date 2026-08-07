@@ -517,10 +517,13 @@ register_kind(
 # into one named story ("The Great 13900KS Investigation"; for aiko, "the
 # stretch where I learned to hold a gentle stance"). The first *ordered*
 # (``sequence``) evidence kind -- the chain order lives on ``concept_edges.ordinal``
-# (already in the schema). Subject-parameterized (user + aiko) exactly like
-# affective; the per-row ``subject`` varies. Distinct from a rolling recency
-# digest (that's the conversation summary's job, not a concept) and from the
-# deferred L29 meta-narrative (an arc over other *concepts*).
+# (already in the schema). Subject-parameterized across ALL THREE subjects --
+# user + aiko (L8, arcs over each one's own memories) and relationship (L29a,
+# a closed joint project cut out of the ``shared_moment`` stream) -- so the
+# per-row ``subject`` varies and the ``subject`` below is only the typical
+# default, never an allow-list. Distinct from a rolling recency digest (that's
+# the conversation summary's job, not a concept) and from the deferred L29b
+# meta-narrative (an arc over other *concepts*).
 register_kind(
     ConceptKind(
         name="narrative",

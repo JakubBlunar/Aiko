@@ -792,9 +792,13 @@ class MemorySettings:
     # recurring clusters of ``>= ritual_group_min_size`` members, offering up
     # to ``max_ritual_groups`` of them to the proposer. The whole pass is
     # skipped until at least ``ritual_min_moments`` shared moments exist.
+    # The similarity floor is on the **mean-centered** scale (see
+    # ``ritual_grouping.center_vectors``): raw shared-moment cosines average
+    # 0.608, so the old 0.6 linked 95% of all pairs and single-link handed
+    # back the whole corpus as one group.
     concept_synthesis_ritual_min_moments: int = 6
     concept_synthesis_ritual_group_min_size: int = 3
-    concept_synthesis_ritual_group_similarity: float = 0.6
+    concept_synthesis_ritual_group_similarity: float = 0.45
     concept_synthesis_max_ritual_groups: int = 3
     # L8 narrative arcs. The narrative pass loads each subject-dominant topic
     # cluster's member memories in temporal order and offers up to
@@ -805,6 +809,23 @@ class MemorySettings:
     concept_synthesis_narrative_min_chain: int = 3
     concept_synthesis_max_narrative_clusters_per_run: int = 3
     concept_synthesis_max_narrative_memories: int = 40
+    # L29a shared arcs -- the "both of us" narrative, cut out of the
+    # ``shared_moment`` stream rather than sourced from topic clusters. An
+    # episode grows while the next moment is within ``shared_arc_similarity``
+    # of its running centroid AND within ``shared_arc_gap_days`` of its last
+    # member; it must reach ``shared_arc_min_chain`` moments and then have
+    # been quiet for ``shared_arc_quiet_days`` (a project still in motion is
+    # not a closed arc). Up to ``max_shared_arc_episodes`` are offered per run.
+    # The similarity floor lives on the *mean-centered* scale the grouper
+    # compares on, so it is not comparable to the ritual threshold: raw shared
+    # moments all point the same way (measured mean pairwise cosine 0.608), and
+    # only the residual after the corpus mean is projected out says anything
+    # about topic.
+    concept_synthesis_shared_arc_min_chain: int = 3
+    concept_synthesis_shared_arc_similarity: float = 0.45
+    concept_synthesis_shared_arc_gap_days: float = 10.0
+    concept_synthesis_shared_arc_quiet_days: float = 3.0
+    concept_synthesis_max_shared_arc_episodes: int = 3
     # L14 aspiration synthesis (the open-ended sibling of narrative). Same
     # shape as the narrative knobs, plus ``aspiration_min_span_days``: the
     # ordered evidence of a candidate must cover at least this many days before
@@ -2928,7 +2949,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     1.0,
                     float(
                         memory_raw.get(
-                            "concept_synthesis_ritual_group_similarity", 0.6
+                            "concept_synthesis_ritual_group_similarity", 0.45
                         )
                     ),
                 ),
@@ -2956,6 +2977,49 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "concept_synthesis_max_narrative_memories", 40
+                    )
+                ),
+            ),
+            concept_synthesis_shared_arc_min_chain=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_shared_arc_min_chain", 3
+                    )
+                ),
+            ),
+            concept_synthesis_shared_arc_similarity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "concept_synthesis_shared_arc_similarity", 0.45
+                        )
+                    ),
+                ),
+            ),
+            concept_synthesis_shared_arc_gap_days=max(
+                0.5,
+                float(
+                    memory_raw.get(
+                        "concept_synthesis_shared_arc_gap_days", 10.0
+                    )
+                ),
+            ),
+            concept_synthesis_shared_arc_quiet_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_synthesis_shared_arc_quiet_days", 3.0
+                    )
+                ),
+            ),
+            concept_synthesis_max_shared_arc_episodes=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_shared_arc_episodes", 3
                     )
                 ),
             ),

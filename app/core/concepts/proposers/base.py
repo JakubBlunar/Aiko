@@ -87,7 +87,10 @@ class NarrativeCandidate:
     ``rep`` is the stable cluster representative id (used by the worker for
     dirty-tracking); ``memories`` is the ordered chain the proposer renders
     and, if it names a *closed* arc, cites as ordered ``sequence`` evidence.
-    ``subject`` (``user`` / ``aiko``) selects third- vs first-person framing."""
+    ``subject`` selects the framing: ``user`` third-person, ``aiko``
+    first-person, ``relationship`` the L29(a) pair voice. L29(a) arcs are not
+    cluster-derived -- their ``rep`` is the first member's id, since an
+    episode has no cluster representative."""
 
     rep: int
     label: str
@@ -429,6 +432,7 @@ def propose_ordered_concept(
     new_requirement: str,
     min_chain: int = 3,
     existing: Sequence[ExistingConcept] = (),
+    voice: str | None = None,
 ) -> list[CandidateProposal]:
     """Shared body for the ``sequence``-evidence proposers (L8 narrative +
     L14 aspiration).
@@ -442,6 +446,10 @@ def propose_ordered_concept(
     candidate's own ordering (not the LLM's id order) and emit ``sequence``
     evidence so the worker stamps ordinals 0..n.
 
+    ``first_person`` covers the two single-subject voices; L29(a) shared arcs
+    are about *both* people at once, which is neither, so ``voice`` can
+    override the derived phrase outright.
+
     The kind-specific bits are parameterized: ``gate_flag`` is the JSON boolean
     a NEW concept must set true (``"closed"`` for narrative, ``"directional"``
     for aspiration); ``block_word`` / ``noun_plural`` / ``new_requirement``
@@ -453,7 +461,7 @@ def propose_ordered_concept(
     by_index = {i: c for i, c in enumerate(candidates)}
     existing_ids = {int(e.id) for e in existing}
 
-    voice = (
+    voice = voice or (
         f"about {ctx.assistant_name} herself (first person -- 'I ...')"
         if first_person
         else f"about {ctx.user_name} (third person)"
@@ -543,6 +551,7 @@ def propose_narrative(
     first_person: bool,
     min_chain: int = 3,
     existing: Sequence[ExistingConcept] = (),
+    voice: str | None = None,
 ) -> list[CandidateProposal]:
     """L8 narrative body -- a thin wrapper over :func:`propose_ordered_concept`
     fixing the narrative vocabulary (a *closed* arc)."""
@@ -559,6 +568,7 @@ def propose_narrative(
         new_requirement="genuinely closed arc",
         min_chain=min_chain,
         existing=existing,
+        voice=voice,
     )
 
 
