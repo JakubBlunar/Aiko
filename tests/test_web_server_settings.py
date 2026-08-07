@@ -44,6 +44,9 @@ class _AgentBlock:
     user_reactions_enabled: bool = True
     persona_touch_banner_enabled: bool = True
     persona_touch_banner_duration_seconds: int = 20
+    # L30: the only two hypothesis knobs a live PATCH can change.
+    hypothesis_invention_enabled: bool = True
+    concept_hypothesis_ask_enabled: bool = True
 
 
 @dataclass
@@ -268,6 +271,45 @@ class CompanionSettingsTests(unittest.TestCase):
             )
         self.assertEqual(
             settings.agent.persona_touch_banner_duration_seconds, 120,
+        )
+
+    def test_get_surfaces_the_two_hypothesis_switches(self) -> None:
+        client, _session, _settings = _build_client()
+        comp = client.get("/api/settings").json()["companion"]
+        self.assertTrue(comp["hypothesis_invention_enabled"])
+        self.assertTrue(comp["concept_hypothesis_ask_enabled"])
+
+    def test_patch_hypothesis_switches_takes_effect_and_persists(self) -> None:
+        """No restart hook, because both workers re-read on every tick.
+
+        Their ``enabled_provider``s read ``settings.agent`` per call, so
+        setting the live object is the whole mechanism -- and the
+        persisted patch is what makes it survive a restart. The numeric
+        knobs are deliberately absent: those are captured at worker
+        construction, so a PATCH would look like it worked.
+        """
+        client, _session, settings = _build_client()
+        with patch(
+            "app.web.rest.sessions_settings_routes.persist_user_overrides",
+        ) as persist:
+            response = client.patch(
+                "/api/settings",
+                json={
+                    "companion": {
+                        "hypothesis_invention_enabled": False,
+                        "concept_hypothesis_ask_enabled": False,
+                    },
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(settings.agent.hypothesis_invention_enabled)
+        self.assertFalse(settings.agent.concept_hypothesis_ask_enabled)
+        patch_arg = persist.call_args[0][0]
+        self.assertIs(
+            patch_arg["agent"]["hypothesis_invention_enabled"], False
+        )
+        self.assertIs(
+            patch_arg["agent"]["concept_hypothesis_ask_enabled"], False
         )
 
     def test_get_surfaces_expression_mask(self) -> None:

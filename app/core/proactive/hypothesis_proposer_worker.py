@@ -23,7 +23,9 @@ an existing hypothesis — including a **refuted** one, since re-inventing
 a guess the user already turned down is the repetition most worth
 catching. It sits high because over-rejecting here makes the layer
 sterile, and the cost of letting a near-neighbour through is one wasted
-row.
+row. An **expired** row is the exception and does not block: it aged out
+unasked, so nothing was learned, and blocking would kill that ground
+permanently over her own inattention.
 
 ``hypothesis_concept_novelty`` (0.82, lower) rejects a proposal too close
 to an existing *concept*, of any status. That bar is stricter because the
@@ -362,18 +364,35 @@ class HypothesisProposerWorker:
     ) -> tuple[Hypothesis | None, float]:
         """The nearest existing guess, if it is near enough to reject.
 
-        Deliberately over *every* status, refuted included: the point of
+        Deliberately over closed rows too, refuted included: the point of
         keeping a refuted row instead of deleting it is that she does not
         re-invent the guess the user already turned down.
+
+        ``expired`` is the one status that does **not** block, and the
+        distinction is the whole reason this is not a plain
+        ``live_only=False`` scan. An expired row means she never got round
+        to asking -- nothing was learned about the guess, and the row is
+        closed so it can never be asked now. Letting it block would
+        retire that ground permanently on the strength of her own
+        inattention, which over months is exactly the sterility
+        ``hypothesis_min_novelty`` sits high to avoid. Re-inventing it
+        gives the guess a fresh TTL and another chance to be raised.
         """
+        from app.core.concepts.hypothesis_store import STATUS_EXPIRED
+
         try:
-            hits = store.nearest(vec, k=3, live_only=False)
+            hits = store.nearest(vec, k=5, live_only=False)
         except Exception:
             log.debug("hypothesis nearest failed", exc_info=True)
             return None, 0.0
-        if not hits:
+        blocking = [
+            (row, sim)
+            for row, sim in hits
+            if str(getattr(row, "status", "")) != STATUS_EXPIRED
+        ]
+        if not blocking:
             return None, 0.0
-        row, sim = hits[0]
+        row, sim = blocking[0]
         return (row if sim >= self._min_novelty else None), float(sim)
 
     def _nearest_concept(

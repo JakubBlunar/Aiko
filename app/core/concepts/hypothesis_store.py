@@ -486,6 +486,42 @@ class HypothesisStore:
         row.linked_concept_id = int(concept_id)
         self.update(row)
 
+    def unlink_concept(self, concept_id: int) -> int:
+        """Release live rows pointing at a concept that no longer exists.
+
+        Called when a concept is deleted, and it repairs what would
+        otherwise be a permanent orphan. A linked row is invisible by
+        design -- the ask worker filters ``linked=False``, the surfacing
+        lane skips it, ``open_hypotheses`` drops it -- because the concept
+        speaks for the belief now. There *is* self-healing in
+        ``link_if_duplicate``, but it only runs on the next confirmation,
+        and a row nobody can ask about never gets one. So the row would
+        sit there ``live``, unreachable, holding a slot against
+        ``hypothesis_max_open`` forever.
+
+        Only the live link is cleared. ``graduated_concept_id`` on a
+        closed row is a record of where a guess *went* and stays put even
+        when its concept is gone: losing the trail would be worse than a
+        dangling id nothing reads. Returns how many rows were released.
+        """
+        cid = int(concept_id)
+        freed = 0
+        for row in list(self._rows.values()):
+            if row.linked_concept_id is None or int(row.linked_concept_id) != cid:
+                continue
+            if not row.is_live:
+                continue
+            row.linked_concept_id = None
+            self.update(row)
+            freed += 1
+        if freed:
+            log.info(
+                "hypotheses unlinked from deleted concept: cid=%d n=%d",
+                cid,
+                freed,
+            )
+        return freed
+
     def delete(self, hypothesis_id: int) -> None:
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:

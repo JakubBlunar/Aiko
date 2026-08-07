@@ -1945,6 +1945,27 @@ rewording but not a genuinely different guess at the same wrong idea.
 `free`, so "this guess came from *that* concept" is a hook with nothing on it
 yet.
 
+**Found by audit, deliberately not fixed** (during the debug-panel phase; the
+three real bugs found in the same sweep — an orphaned linked row, an expired row
+blocking re-invention, and the two master switches being unreachable from the UI
+— were fixed there instead):
+
+- **TTL does not run while invention is off.** `_expire` sits after the enabled
+  check in `run()`, and `is_ready` vetoes scheduling anyway, so untested rows
+  keep ageing on the clock without being closed. Benign: nothing is competing
+  for `hypothesis_max_open` while invention is off, and the first run after
+  re-enabling clears the whole backlog in one pass. Worth moving only if a
+  reason appears to read the shelf while invention is off.
+- **`user_id` is never written on a hypothesis.** True, and it would matter in a
+  multi-user install — but `ConceptStore` omits it in exactly the same way (L2
+  never sets it either), and this is a single-user app. Fixing it for
+  hypotheses alone would make the two layers disagree about a field the reads
+  do not use, which is worse than both being consistently empty.
+- **`hypotheses` is not in the export / wipe / session-clear paths.** Matches
+  how concepts behave, and for the same reason: a guess is not conversation
+  state, so clearing a session should not clear it. Worth revisiting when
+  concepts are, not before.
+
 **Effort.** Large (schema migration + two new workers + a graduation path).
 
 ---

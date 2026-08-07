@@ -258,13 +258,14 @@ with two escape valves so the tightened rule does not become a trap:
 
 ## Where pressure comes from
 
-Every registered worker implements `demand()` — fifty-five of them.
-Grouped by the shape of the signal:
+Every registered worker implements `demand()`. Grouped by the shape of
+the signal:
 
-- **Cue producers** (ten: `curiosity_seed`, `forward_curiosity`,
+- **Cue producers** (eleven: `curiosity_seed`, `forward_curiosity`,
   `associative_wander`, `curiosity_gradient`, `interest_drift`,
   `knowledge_gap_notice`, `dormant_interest`, `self_callback`,
-  `wellbeing_concern`, `shared_ritual`) all report the same shape — the
+  `wellbeing_concern`, `shared_ritual`, `concept_hypothesis`) all report
+  the same shape — the
   deficit between the pending rows on their shelf and
   `CuePolicy.inventory_target` — and get it from
   [`CueProducer`](../app/core/proactive/cue_producer.py) rather than
@@ -295,17 +296,22 @@ new-message `COUNT(*)`). Measured on a 3.3k-message / 1k-memory install,
 the slowest of them is `memory_promotion` at ~0.5 ms — two orders of
 magnitude under the 50 ms probe budget.
 
-The eighteen LLM workers came last, and they needed a different kind of
+The nineteen LLM workers came last, and they needed a different kind of
 probe from the compute batch. A compute worker's backlog is a number you
 can `COUNT`; an LLM worker's is usually "is there anything new worth
 spending a generation on", which is not the same question. Four shapes
 cover them:
 
 - **Real queues** (`idle_fact_checker`, `idle_curiosity`, `follow_up`,
-  `topic_label`, `topic_digest`, `idle_knowledge`) genuinely have
-  something to count — pending claims, open questions, plans inside
-  their window, unnamed clusters, undigested clusters, queued research.
-  These are the compute pattern with `needs_llm=True`.
+  `topic_label`, `topic_digest`, `idle_knowledge`,
+  `hypothesis_proposer`) genuinely have something to count — pending
+  claims, open questions, plans inside their window, unnamed clusters,
+  undigested clusters, queued research, and for the last one the
+  shortfall of live hypotheses against `hypothesis_max_open`. These are
+  the compute pattern with `needs_llm=True`. `hypothesis_proposer` is the
+  clearest case for reporting the shortfall rather than being caught by a
+  cap afterwards: a full shelf means the LLM call it would have made
+  produces nothing but rejections.
 - **New-material watermarks** (`belief`, `promise_extraction`,
   `memory_consolidation`, `memory_conflict`, `thread_resummary`) re-mine
   the same window every interval, so their honest signal is how much has
@@ -511,6 +517,14 @@ Four MCP debug tools, over the server at `http://localhost:6274/sse`:
 - **`force_idle_worker`** — run any registered worker once, bypassing
   every gate. Ignores quiet, readiness, pressure, floors, and lanes.
 - **`inspect_idle_workers`** — the older, terser run-state dump.
+
+A few workers also have their own force tool, which is worth preferring
+when one exists because it returns that worker's own stats rather than a
+generic run record: `force_hypothesis_invention` and
+`force_hypothesis_ask` for the two L30 workers (`hypothesis_proposer` and
+`concept_hypothesis`), whose output is mostly *rejection* counts and so
+says more than "it ran". Both are also driven from Settings → Memory →
+Hypotheses; see [`hypotheses.md`](hypotheses.md).
 
 Two useful tricks when testing depth and contention by hand: idle depth
 reads a `kv_meta` key (`idle.last_user_activity_at`), so backdating that

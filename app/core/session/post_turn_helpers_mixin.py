@@ -524,7 +524,23 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             row=row,
             event_store=getattr(self, "_concept_event_store", None),
             memory_writer=self._anchor_world_hypothesis,
+            memory_exists=self._answer_memory_exists,
         )
+
+    def _answer_memory_exists(self, memory_id: int) -> bool:
+        """Is a remembered answer still there to be cited as evidence?
+
+        The ids on a hypothesis were collected over earlier turns, so one
+        can have been deleted since. Graduating on it would hand the new
+        concept a distinct source that does not exist.
+        """
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return True
+        try:
+            return store.get(int(memory_id)) is not None
+        except Exception:
+            return True
 
     def _anchor_world_hypothesis(self, statement: str) -> int | None:
         """The ``world`` exit: a proven guess about how something works.

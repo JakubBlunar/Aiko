@@ -48,6 +48,8 @@ import type {
   ConceptDriftState,
   ConceptLearningFeed,
   EvolutionDiaryFeed,
+  HypothesisShelf,
+  HypothesisVerdictResult,
   SelfHistoryArc,
   ConceptProvenance,
   ConceptQualityReport,
@@ -607,6 +609,50 @@ export const api = {
     jsonFetch<{ enabled: boolean; stats?: Record<string, unknown> }>(
       "/api/concepts/evolution-diary/run",
       { method: "POST" },
+    ),
+  // ── L30: hypotheses (what she is unsure about) ───────────────────
+  // The debug shelf, not ``/api/concepts/hypotheses``: that read is
+  // Aiko-facing and hides the closed and linked rows, which are exactly
+  // the ones that explain why nothing is happening.
+  getHypothesisShelf: (params?: { subject?: string; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.subject) q.set("subject", params.subject);
+    if (params?.status) q.set("status", params.status);
+    const qs = q.toString();
+    return jsonFetch<HypothesisShelf>(
+      `/api/concepts/hypothesis-shelf${qs ? `?${qs}` : ""}`,
+    );
+  },
+  runHypothesisProposer: () =>
+    jsonFetch<{ result: Record<string, unknown> }>(
+      "/api/concepts/hypotheses/run",
+      { method: "POST" },
+    ),
+  runHypothesisAsk: () =>
+    jsonFetch<{ result: Record<string, unknown> }>(
+      "/api/concepts/hypotheses/ask",
+      { method: "POST" },
+    ),
+  /** Answer a guess by hand. ``text`` stands in for what the user would
+   *  have said and is stored as the memory a graduated concept rests on,
+   *  so a confirm without it is rejected by the backend. */
+  forceHypothesisVerdict: (
+    hypothesisId: number,
+    verdict: string,
+    text: string,
+  ) =>
+    jsonFetch<HypothesisVerdictResult>(
+      `/api/concepts/hypotheses/${hypothesisId}/verdict`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verdict, text }),
+      },
+    ),
+  deleteHypothesis: (hypothesisId: number) =>
+    jsonFetch<{ deleted: number }>(
+      `/api/concepts/hypotheses/${hypothesisId}`,
+      { method: "DELETE" },
     ),
   // ── Persona regression (K10) ─────────────────────────────────────
   getPersonaDrift: () =>

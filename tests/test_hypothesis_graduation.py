@@ -616,6 +616,114 @@ class LaneRaceTests(_Fixture):
         self.assertEqual(nearest_invented(None, _NEAR_A), [])
 
 
+class OrphanRepairTests(_Fixture):
+    """A linked row whose concept was deleted must not be a dead slot.
+
+    Linking is what makes a row go quiet: the ask worker filters
+    ``linked=False``, the lane skips it, ``open_hypotheses`` drops it.
+    There is self-healing in ``link_if_duplicate``, but it only runs on
+    the *next confirmation* -- which a row nobody can ask about will never
+    get. So without the repair the row sits ``live`` forever, invisible
+    and holding one of twelve slots.
+    """
+
+    def _lane(self):
+        from app.core.concepts.hypothesis_lane import nearest_invented
+
+        return nearest_invented(self.hypotheses, _NEAR_A)
+
+    def test_deleting_the_concept_releases_the_row(self) -> None:
+        row = self._hypothesis(support=1)
+        self.hypotheses.link(row, 4242)
+
+        freed = self.hypotheses.unlink_concept(4242)
+
+        self.assertEqual(freed, 1)
+        self.assertIsNone(self.hypotheses.get(row.hypothesis_id).linked_concept_id)
+
+    def test_the_released_row_is_askable_again(self) -> None:
+        row = self._hypothesis(support=1)
+        self.hypotheses.link(row, 4242)
+        self.assertEqual(self._lane(), [])
+
+        self.hypotheses.unlink_concept(4242)
+
+        self.assertEqual(
+            [r.hypothesis_id for r, _s in self._lane()], [row.hypothesis_id]
+        )
+        self.assertEqual(
+            [r.hypothesis_id for r in self.hypotheses.list_by(live=True, linked=False)],
+            [row.hypothesis_id],
+        )
+
+    def test_rows_linked_elsewhere_are_left_alone(self) -> None:
+        keeper = self._hypothesis(support=1)
+        self.hypotheses.link(keeper, 99)
+
+        self.hypotheses.unlink_concept(4242)
+
+        self.assertEqual(
+            self.hypotheses.get(keeper.hypothesis_id).linked_concept_id, 99
+        )
+
+    def test_a_closed_row_keeps_the_trail_to_where_it_went(self) -> None:
+        """``graduated_concept_id`` is history, not a live pointer.
+
+        Blanking it when its concept is deleted would lose the only
+        record that this guess became that belief, which is worse than a
+        dangling id nothing reads.
+        """
+        row = self._hypothesis()
+        result = self._graduate(row)
+
+        self.hypotheses.unlink_concept(result.concept_id)
+
+        self.assertEqual(
+            self.hypotheses.get(row.hypothesis_id).graduated_concept_id,
+            result.concept_id,
+        )
+
+    def test_the_facade_unlinks_when_a_concept_is_deleted(self) -> None:
+        from app.core.session.memory_facade_mixin import MemoryFacadeMixin
+
+        class _Host(MemoryFacadeMixin):
+            pass
+
+        host = _Host()
+        host._concept_store = self.concepts
+        host._hypothesis_store = self.hypotheses
+        concept = self._concept(embedding=_FAR)
+        row = self._hypothesis(support=1)
+        self.hypotheses.link(row, concept.concept_id)
+
+        self.assertEqual(host.delete_concept(concept.concept_id), 1)
+
+        self.assertIsNone(
+            self.hypotheses.get(row.hypothesis_id).linked_concept_id
+        )
+
+    def test_a_deleted_answer_is_not_counted_as_a_source(self) -> None:
+        """Evidence must be edges to memories that exist.
+
+        The answer ids were collected over earlier turns, so one can have
+        been deleted since. Attaching it anyway would hand the new
+        concept a distinct source that is not there for L3 to promote on.
+        """
+        row = self._hypothesis(answers=(77, 78))
+
+        result = self._graduate(row, memory_exists=lambda mid: mid != 78)
+
+        self.assertEqual(self._evidence_ids(result.concept_id), {"77"})
+        self.assertEqual(
+            self.concepts.get(result.concept_id).distinct_source_count, 1
+        )
+
+    def test_without_a_probe_every_remembered_answer_is_trusted(self) -> None:
+        result = self._graduate(self._hypothesis(answers=(77, 78)))
+
+        self.assertEqual(self._evidence_ids(result.concept_id), {"77", "78"})
+
+
 class DurabilityTests(_Fixture):
     def test_a_failing_concept_store_does_not_raise(self) -> None:
         class _Broken:

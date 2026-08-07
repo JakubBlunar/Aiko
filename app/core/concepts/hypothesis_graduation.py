@@ -161,8 +161,17 @@ def graduate(
     row: "Hypothesis",
     event_store: "ConceptEventStore | None" = None,
     memory_writer: Callable[[str], int | None] | None = None,
+    memory_exists: Callable[[int], bool] | None = None,
 ) -> GraduationResult | None:
-    """Close a proven guess by the exit that fits it. Never raises."""
+    """Close a proven guess by the exit that fits it. Never raises.
+
+    ``memory_exists`` filters ``answer_memory_ids`` before they become
+    evidence edges. The ids were collected over earlier turns, so one of
+    them may since have been deleted; attaching it anyway would give the
+    new concept a distinct source that does not exist and let L3 promote
+    on it. Absent, every remembered id is trusted — which is the right
+    default for a caller with no memory store to ask.
+    """
     try:
         if row.subject == SUBJECT_WORLD:
             return _anchor(hypothesis_store, row, memory_writer)
@@ -171,11 +180,19 @@ def graduate(
             concept_store=concept_store,
             row=row,
         )
+        answers = _live_answer_ids(row, memory_exists)
         if existing is not None:
             return _merge(
-                hypothesis_store, concept_store, row, existing, event_store
+                hypothesis_store,
+                concept_store,
+                row,
+                existing,
+                event_store,
+                answers,
             )
-        return _mint(hypothesis_store, concept_store, row, event_store)
+        return _mint(
+            hypothesis_store, concept_store, row, event_store, answers
+        )
     except Exception:
         log.warning(
             "hypothesis graduation failed (hid=%s)",
@@ -218,9 +235,10 @@ def _merge(
     row: "Hypothesis",
     concept: "Concept",
     event_store: "ConceptEventStore | None",
+    answer_memory_ids: list[int],
 ) -> GraduationResult:
     """Fold into a belief that already existed."""
-    for memory_id in row.answer_memory_ids:
+    for memory_id in answer_memory_ids:
         _attach(concept_store, concept, memory_id)
     _recount(concept_store, concept)
     concept.last_reinforced_at = _now_iso()
@@ -246,6 +264,7 @@ def _mint(
     concept_store: "ConceptStore",
     row: "Hypothesis",
     event_store: "ConceptEventStore | None",
+    answer_memory_ids: list[int],
 ) -> GraduationResult:
     """Become a new candidate concept."""
     concept = Concept(
@@ -260,7 +279,7 @@ def _mint(
         origin_session=row.origin_session,
     )
     concept_id = concept_store.add(concept)
-    for memory_id in row.answer_memory_ids:
+    for memory_id in answer_memory_ids:
         _attach(concept_store, concept, memory_id)
     _recount(concept_store, concept)
     concept.last_reinforced_at = _now_iso()
@@ -321,6 +340,31 @@ def _anchor(
 
 
 # ── shared write helpers ──────────────────────────────────────────────
+
+
+def _live_answer_ids(
+    row: "Hypothesis", memory_exists: Callable[[int], bool] | None,
+) -> list[int]:
+    """The remembered answer ids that still resolve to a memory."""
+    ids = [int(mid) for mid in (row.answer_memory_ids or [])]
+    if memory_exists is None:
+        return ids
+    kept: list[int] = []
+    for mid in ids:
+        try:
+            if memory_exists(mid):
+                kept.append(mid)
+                continue
+        except Exception:
+            log.debug("answer memory probe failed (mid=%s)", mid, exc_info=True)
+            kept.append(mid)
+            continue
+        log.info(
+            "hypothesis answer memory gone, not attached: hid=%s mid=%d",
+            row.hypothesis_id,
+            mid,
+        )
+    return kept
 
 
 def _attach(

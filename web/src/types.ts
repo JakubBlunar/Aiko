@@ -1016,6 +1016,99 @@ export interface ConceptsSnapshot {
   concepts: ConceptRow[];
 }
 
+/** L30 — one guess Aiko invented and has not established, as the debug
+ *  shelf reports it. Distinct from a concept in the two fields that
+ *  matter: `credence` is *asserted* by the proposer and never recomputed
+ *  (a concept's confidence is derived from evidence and re-derived every
+ *  L3 tick), and `status` runs its own lifecycle. See
+ *  `docs/hypotheses.md`. */
+export interface HypothesisRow {
+  hypothesis_id: number;
+  statement: string;
+  kind: string;
+  subject: string;
+  rationale: string;
+  origin: string;
+  origin_refs: number[];
+  /** `open` | `supported` | `refuted` | `expired` | `merged` | `graduated`. */
+  status: string;
+  credence: number;
+  support_count: number;
+  refute_count: number;
+  asked_count: number;
+  unsettled: number;
+  /** `open` or `supported` — the two statuses that count against the cap. */
+  live: boolean;
+  /** Set once a confirmation matched a concept that already held the
+   *  belief. A linked row goes quiet everywhere by design. */
+  linked_concept_id: number | null;
+  graduated_concept_id: number | null;
+  graduated_memory_id: number | null;
+  answer_memory_ids: number[];
+  created_at: string;
+  last_tested_at: string | null;
+  closed_at: string | null;
+}
+
+/** The grounded half: a candidate concept the L30a lane can draw from.
+ *  It has no row of its own — this shape is derived on read, which is why
+ *  it carries `confidence` rather than `credence` and cannot be given a
+ *  verdict here. */
+export interface GroundedHypothesisRow {
+  origin: string;
+  concept_id: number;
+  statement: string;
+  kind: string;
+  subject: string;
+  rationale: string;
+  confidence: number;
+  distinct_source_count: number;
+  unsettled: number;
+  created_at: string;
+}
+
+/** Shelf stock against the caps. Answers the question an empty lane
+ *  raises: is the shelf bare, or full of rows nothing will surface? */
+export interface HypothesisStateInfo {
+  invention_enabled: boolean;
+  ask_enabled: boolean;
+  store: boolean;
+  live: number;
+  linked?: number;
+  by_status: Record<string, number>;
+  max_open: number | null;
+  ttl_hours: number | null;
+  graduate_min_support: number | null;
+  graduate_min_credence: number | null;
+}
+
+export interface HypothesisShelf {
+  state: HypothesisStateInfo;
+  invented: HypothesisRow[];
+  grounded: GroundedHypothesisRow[];
+  forceable_verdicts: string[];
+}
+
+/** What a forced verdict did. Reported as a diff because the write goes
+ *  through the live post-turn path, which returns nothing. */
+export interface HypothesisVerdictResult {
+  verdict: string;
+  answer_memory_id: number | null;
+  before: HypothesisVerdictSnapshot;
+  after: HypothesisVerdictSnapshot | null;
+}
+
+export interface HypothesisVerdictSnapshot {
+  status: string;
+  credence: number;
+  support_count: number;
+  refute_count: number;
+  statement: string;
+  linked_concept_id: number | null;
+  graduated_concept_id: number | null;
+  graduated_memory_id: number | null;
+}
+
 /** Where a cue is in its life. ``used`` means Aiko actually said the
  *  thing (post-turn matching found its subject in the transcript), not
  *  merely that the block reached her prompt — that's `surfaced`. */

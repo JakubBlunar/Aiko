@@ -50,6 +50,7 @@ from app.core.session import (
     ChatTurnMixin,
     CuePoolMixin,
     DetectorsInitMixin,
+    HypothesisDebugMixin,
     IdleWorkersInitMixin,
     InnerLifeProvidersMixin,
     LifecycleMixin,
@@ -222,6 +223,7 @@ def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
 class SessionController(
     AvatarMixin,
     MemoryFacadeMixin,
+    HypothesisDebugMixin,
     WorldMixin,
     InnerLifeProvidersMixin,
     CuePoolMixin,
