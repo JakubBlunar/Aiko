@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from app.core.affect.affect_state import AffectStore
 from app.core.goals.agenda import AgendaStore, extract_inline_tags
 from app.core.voice.cadence import (
@@ -58,12 +60,15 @@ def _close(tmp: TemporaryDirectory, db: ChatDatabase) -> None:
 # ── Latency regression ────────────────────────────────────────────────
 
 
+@pytest.mark.timing
 class HotPathLatencyTests(unittest.TestCase):
     """Each test asserts that a 50-iteration burst stays under a budget.
 
     The budgets are deliberately loose (>= 5x the typical observed mean)
     so they don't flake on a slow runner; the goal is to catch a real
-    regression of 10x+.
+    regression of 10x+. The ``timing`` marker keeps them out of parallel
+    runs, where the number they measure is core contention -- see
+    ``tests/conftest.py``.
     """
 
     def test_user_state_estimator_under_budget(self):
@@ -160,6 +165,7 @@ class HotPathLatencyTests(unittest.TestCase):
         )
 
 
+@pytest.mark.timing
 class InnerLifeBlockBurstTests(unittest.TestCase):
     """Render every inner-life block a 1000 times — total stays small."""
 
@@ -365,6 +371,7 @@ class PreparedNudgeFastPathTests(unittest.TestCase):
 # ── Smoke: ProsodyDispatcher under burst input ────────────────────────
 
 
+@pytest.mark.timing
 class ProsodyDispatcherBurstTests(unittest.TestCase):
     def test_burst_dispatch_stays_fast(self):
         sent: list[tuple[str, str | None]] = []

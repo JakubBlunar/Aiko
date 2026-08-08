@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/time";
 import { api } from "../../api";
 import type {
   PersonaRegressionResult,
@@ -7,9 +8,7 @@ import type {
 
 function formatRanAt(iso: string | undefined): string {
   if (!iso) return "never";
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  return new Date(ts).toLocaleString();
+  return formatDateTime(iso, iso);
 }
 
 export function PersonaRegressionPanel() {

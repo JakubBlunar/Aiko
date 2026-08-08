@@ -838,6 +838,24 @@ class WorldMixin:
         )
         return payload
 
+    def _turn_milestone_crossed_at(
+        self, turns: int, first_seen: str | None
+    ) -> str | None:
+        """When the ``turns``-th turn happened, for a milestone badge.
+
+        Best-effort: a tracker that can't answer (older build, query
+        failure) leaves the caller to fall back on the stored stamp.
+        """
+        tracker = getattr(self, "_relationship_tracker", None)
+        reader = getattr(tracker, "turn_reached_at", None)
+        if reader is None:
+            return None
+        try:
+            return reader(turns, since=first_seen)
+        except Exception:
+            log.debug("together turn milestone date failed", exc_info=True)
+            return None
+
     def get_together_summary(self) -> dict[str, Any]:
         """Combined snapshot for the Together UI tab."""
         # Relationship phase + counts.
@@ -948,20 +966,25 @@ class WorldMixin:
                 or label in surfaced
                 or label == last_milestone_label
             )
-            # Crossing date: the persisted row stores only the *last*
-            # milestone's timestamp, so an earlier day-based milestone (first
-            # week / month / …) would otherwise render with a check but no
-            # date. Its crossing is deterministic (first_seen + N days), so
-            # derive it; the turn-based milestone falls back to the stored
-            # last-milestone stamp when it is the last one recorded.
+            # Crossing date. The persisted row stores only the *last*
+            # milestone's timestamp, and that stamp records when a milestone
+            # was written rather than when its threshold was crossed -- so it
+            # is the least trustworthy source here and is used last. Both
+            # kinds of milestone can be derived: a day-based one from
+            # first_seen + N days, a turn-based one from the message log.
+            # Trusting the write stamp first is what dated "first hundred
+            # turns" to the v25 backfill, six weeks late and out of order
+            # against the day-based rows beside it.
             crossed_at = None
             if crossed:
-                if label == last_milestone_label and last_milestone_at:
-                    crossed_at = last_milestone_at
-                elif _days > 0 and first_seen_dt is not None:
+                if _days > 0 and first_seen_dt is not None:
                     crossed_at = (
                         first_seen_dt + timedelta(days=_days)
                     ).isoformat(timespec="seconds")
+                elif _turns > 0:
+                    crossed_at = self._turn_milestone_crossed_at(_turns, first_seen)
+                if crossed_at is None and label == last_milestone_label:
+                    crossed_at = last_milestone_at
             milestones.append({
                 "label": label,
                 "human": label.replace("_", " "),

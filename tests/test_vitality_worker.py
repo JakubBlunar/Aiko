@@ -8,11 +8,14 @@ that probing never rolls today's rhythm or writes energy back.
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from app.core.affect import vitality as _vit
 from app.core.affect import vitality_rhythm as _vr
+from app.core.affect import vitality_worker as _vitw
 from app.core.affect.vitality_worker import VitalityWorker
 from app.core.proactive.idle_worker import compute_staleness, compute_urgency
 
@@ -58,8 +61,37 @@ def _worker(
     )
 
 
-def _store_energy(db: _FakeChatDB, energy: float, *, hours_ago: float) -> None:
-    stamp = datetime.now().astimezone() - timedelta(hours=hours_ago)
+@contextmanager
+def _at_local_hour(hour: int):
+    """Pin the worker's clock to a fixed local hour.
+
+    Recovery relaxes toward the circadian baseline in **both**
+    directions, and that baseline is ``0.0`` in the small hours. So a
+    test that starts energy low and asserts it rose is really asserting
+    "the baseline is above that number" -- true in the afternoon, false
+    at 01:39, where relaxation correctly pulls energy *down* instead.
+    Two tests here were wall-clock dependent that way and failed only on
+    a late-night run. No starting value fixes it when the target is zero;
+    the hour has to be the thing that is fixed.
+    """
+    anchor = (
+        datetime.now()
+        .astimezone()
+        .replace(hour=hour, minute=0, second=0, microsecond=0)
+    )
+    with patch.object(_vitw.timephrase, "now", return_value=anchor):
+        yield anchor
+
+
+def _store_energy(
+    db: _FakeChatDB,
+    energy: float,
+    *,
+    hours_ago: float,
+    anchor: datetime | None = None,
+) -> None:
+    base = anchor if anchor is not None else datetime.now().astimezone()
+    stamp = base - timedelta(hours=hours_ago)
     db._store[_vit.KV_VITALITY] = _vit.serialize(
         _vit.VitalityState(energy=energy, last_update_at=stamp.isoformat())
     )
@@ -89,9 +121,11 @@ class DemandTests(unittest.TestCase):
 
     def test_energy_far_below_baseline_wants_a_run(self) -> None:
         # Flat on the floor for six hours -- recovery has real work.
+        # Daytime hour: at night the baseline is 0.0 and there is no gap.
         db = _FakeChatDB()
-        _store_energy(db, 0.02, hours_ago=6.0)
-        signal = self._probe(_worker(db))
+        with _at_local_hour(14) as anchor:
+            _store_energy(db, 0.02, hours_ago=6.0, anchor=anchor)
+            signal = self._probe(_worker(db))
         self.assertGreaterEqual(signal.pressure, 0.5)
         self.assertFalse(signal.needs_llm)
         self.assertEqual(signal.lane, "compute")
@@ -197,8 +231,9 @@ class RunTests(unittest.TestCase):
     def test_run_recovers_and_notifies(self) -> None:
         seen: list[float] = []
         db = _FakeChatDB()
-        _store_energy(db, 0.02, hours_ago=6.0)
-        out = _worker(db, notify=seen.append).run()
+        with _at_local_hour(14) as anchor:
+            _store_energy(db, 0.02, hours_ago=6.0, anchor=anchor)
+            out = _worker(db, notify=seen.append).run()
         self.assertTrue(out["recovered"])
         self.assertEqual(len(seen), 1)
         self.assertGreater(out["energy"], 0.02)

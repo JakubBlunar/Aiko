@@ -15,6 +15,8 @@ from __future__ import annotations
 import time
 import unittest
 
+import pytest
+
 from app.core.voice.tts_queue import TtsQueue
 
 
@@ -136,6 +138,7 @@ class CapConstantTests(unittest.TestCase):
         self.assertEqual(TtsQueue._SILENCE_MAX_MS, 1500)
 
 
+@pytest.mark.timing
 class PocketSilenceWorkerTimingTests(unittest.TestCase):
     """Regression test for the silence-worker double-delay bug.
 

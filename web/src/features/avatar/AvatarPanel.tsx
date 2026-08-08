@@ -79,19 +79,36 @@ export function AvatarPanel() {
         )}
       </div>
 
-      <div className="w-full max-w-xs text-center">
-        <div className="text-sm font-medium text-ink-100">
+      {/* The status footer's height is reserved, not measured.
+
+          The avatar above is a ``flex-1`` box, so anything that changes
+          this block's height re-lays-out the canvas, and
+          ``Live2DAvatar``'s ResizeObserver turns that into an
+          ``app.resize()`` + ``fitModelToContainer()`` -- the avatar
+          visibly jumps. The caption swaps between a one-line "speaking"
+          and a world string that wraps at this width ("the mirror
+          corner · curled up · watching screens"), so it has to occupy
+          the same space either way. Two activity lines are reserved and
+          clamped to two, because the panel is user-resizable and
+          location names are user-supplied: neither a narrow drag nor a
+          long custom name may find a third line. The mood line is
+          truncated for the same reason -- "Enthusiastic" fits at the
+          default width but not at every width the drag handle allows. */}
+      <div className="w-full max-w-xs shrink-0 text-center">
+        <div className="truncate text-sm font-medium leading-5 text-ink-100">
           {
             /* {avatar?.display_name || */ LABEL_FOR_REACTION[reaction] ||
               "Aiko"
           }
         </div>
-        <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-ink-100/40">
-          {ttsState === "speaking"
-            ? "speaking"
-            : voiceMode !== "off"
-              ? voiceMode
-              : worldCaption(world) || "idle"}
+        <div className="mt-1 flex h-7 items-center justify-center">
+          <span className="line-clamp-2 text-[10px] uppercase leading-[14px] tracking-[0.2em] text-ink-100/40">
+            {ttsState === "speaking"
+              ? "speaking"
+              : voiceMode !== "off"
+                ? voiceMode
+                : worldCaption(world) || "idle"}
+          </span>
         </div>
       </div>
     </aside>

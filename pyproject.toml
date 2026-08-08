@@ -89,6 +89,14 @@ wake-word = [
 ]
 dev = [
   "pytest>=8.0.0,<10",
+  # Parallel test execution. The suite is ~9,000 tests and takes ~11 minutes
+  # serially, which is too slow to sit in an edit loop; ``-n auto`` brings it
+  # under 2.5 minutes. ``--dist loadfile`` keeps a file's tests on one worker,
+  # since several share module-level state. Tests that assert a wall-clock
+  # budget are marked ``timing`` and skip themselves in workers -- see
+  # ``tests/conftest.py``. For a narrower loop, ``scripts/affected_tests.py``
+  # selects only the tests that import what you changed.
+  "pytest-xdist>=3.5.0,<4",
   # Lint. Ruff is pre-1.0 and adds rules in minors, which for a linter means a
   # patch bump can fail a previously green tree; the ceiling keeps that from
   # happening on someone else's machine. Configured in ``[tool.ruff]`` below.
