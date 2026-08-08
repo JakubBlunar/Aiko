@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from typing import Callable
+
+
+log = logging.getLogger("app.session")
 
 
 # ── Identity helpers ────────────────────────────────────────────────────
@@ -110,6 +114,31 @@ def sanitize_user_text(text: str) -> str:
     return cleaned.strip()
 
 
+# Pictographs + dingbats. Used by the *spoken* path only: an engine with no
+# phoneme control has nothing to say for these. The transcript keeps whatever
+# she wrote (see ``sanitize_assistant_text``), though the ASCII-only filter
+# there means a pictograph never survives to be persisted anyway.
+_EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
+# ASCII emoticons, which a grapheme-driven engine happily reads as letters --
+# ":P" becomes a spoken "P". Stripped from audio only; the transcript keeps
+# them, so ":3" is something she can write. Both edges are pinned to non-word
+# characters so a clock ("3:30"), a ratio ("1:2") and the "://" in a URL are
+# left intact; that boundary is why the glued form is handled separately,
+# after URLs have been removed.
+_EMOTICON_RE = re.compile(
+    r"(?<![\w])"
+    r"(?:"
+    r"[:;=8][-o*']?[)(DPpOo03{}\[\]|/\\]"    # :) :-( ;D 8)
+    r"|[xX][-o*']?[DdPp]"                    # xD -- narrow, so "f(x)" survives
+    r"|[)(DPp][-o*']?[:;=]"                  # (: D: -- reversed
+    r"|\^[_.-]?\^|>_<|<3+|:\*|;\*"           # ^_^ >_< <3 :*
+    r"|[oO][_.][oO]|[tT][_.][tT]|-_-"        # o_O T_T -_-
+    r")"
+    r"(?![\w])"
+)
+
+
 def sanitize_assistant_text(
     text: str,
     *,
@@ -125,16 +154,22 @@ def sanitize_assistant_text(
         .replace("\u2019", "'")
         .replace("\u201c", '"')
         .replace("\u201d", '"')
-        .replace("\u2013", "-")
-        .replace("\u2014", "-")
+        # U+2010/U+2011 are *hyphens* -- word joiners. They stay glued.
+        .replace("\u2010", "-")
+        .replace("\u2011", "-")
     )
+    # U+2012..U+2015 and the minus sign are *dash punctuation* -- a clause
+    # break, not a joiner. They need their spaces: mapping an em dash straight
+    # onto "-" rendered "Yes-that" in the transcript, which reads as a typo.
+    # (The ASCII-only filter below would delete the character outright, so
+    # some substitution has to happen here.)
+    cleaned = re.sub(r"[\u2012-\u2015\u2212]", " - ", cleaned)
 
-    cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", cleaned)
-    cleaned = re.sub(
-        r"(?<![\w])([:;=8Xx][-o*']?[)DPpOo03{}\[\]|/\\]|[)DPp][:;=]|\^[_-]?\^|>_<|<3|:\*|;\*)(?![\w])",
-        "",
-        cleaned,
-    )
+    # Emoticons are deliberately *not* stripped here. They are punctuation for
+    # a face she doesn't have, and banning them in the persona only made her
+    # emit broken halves ("job, 3" for a swallowed ":3"). The transcript keeps
+    # them; ``prepare_tts_text`` removes them from the spoken copy, which is
+    # the only place they actually hurt.
 
     out_chars: list[str] = []
     for ch in cleaned:
@@ -160,6 +195,56 @@ def sanitize_assistant_text(
 
     if trim:
         return cleaned.strip()
+    return cleaned
+
+
+# Tag names Aiko emits inline. Only used to recognise a *mis-rendered* tag on
+# the audio path -- the authoritative list for parsing lives in
+# ``response_text_service._META_OPENERS``.
+_TTS_TAG_NAMES = (
+    "reaction|remember|moment|diary|arc|gap|conflict|predict|prosody|goal"
+    "|touch|overlay|outfit|motion|activity|spoken|detail|correct|hypothesis"
+)
+
+# Ways a meta tag reaches the spoken stream, in the order they must be tried.
+# The old code stripped ``\[\[[^\]]*\]\]`` and then deleted bare brackets --
+# so the moment a tag did not match that one shape, the brackets vanished and
+# **the content became speech** ("moment:tender:we finished the arcs", read
+# aloud). Each pattern below removes the tag *together with its content*:
+#
+#   1. well-formed, tolerating a single ``]`` inside ("array[0]"), which the
+#      old ``[^\]]*`` could not;
+#   2. the same with a space between the brackets;
+#   3. curly mis-render;
+#   4. single brackets -- the most common LLM slip -- but only when the body
+#      starts with a known tag name, so ordinary prose in brackets survives;
+#   5. an opener with no closer: everything after it is tag body, not speech.
+_TTS_TAG_PATTERNS = (
+    re.compile(r"\[\[.*?\]\]", re.DOTALL),
+    re.compile(r"\[\s*\[.*?\]\s*\]", re.DOTALL),
+    re.compile(r"\{\{.*?\}\}", re.DOTALL),
+    re.compile(rf"\[\s*(?:{_TTS_TAG_NAMES})\s*:[^\]]*\]", re.IGNORECASE),
+    re.compile(r"\[\[.*$", re.DOTALL),
+)
+
+# Only the well-formed shape is routine; the rest mean the model mis-rendered
+# a tag, which is worth a log line because it is otherwise invisible -- it
+# never reaches the transcript, it only ever gets *heard*.
+_TTS_TAG_MALFORMED = _TTS_TAG_PATTERNS[1:]
+
+
+def _strip_tag_like(text: str) -> str:
+    """Drop meta tags and their content from text bound for the speaker."""
+    cleaned = text
+    for pattern in _TTS_TAG_PATTERNS:
+        if pattern in _TTS_TAG_MALFORMED:
+            found = pattern.search(cleaned)
+            if found is not None:
+                log.info(
+                    "tts: dropped mis-rendered meta tag %r",
+                    found.group(0)[:80],
+                )
+        cleaned = pattern.sub(" ", cleaned)
     return cleaned
 
 
@@ -194,14 +279,38 @@ def prepare_tts_text(text: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    # Remove any remaining [[...]] tags (reaction, spoken, detail, etc.)
-    cleaned = re.sub(r"\[\[[^\]]*\]\]", "", cleaned)
-    # Remove brackets
+    # Remove any remaining meta tag (reaction, spoken, detail, ...) *with its
+    # content*. This is the last gate before audio, so it has to assume the
+    # model mis-rendered the syntax: see ``_TTS_TAG_PATTERNS``.
+    cleaned = _strip_tag_like(cleaned)
+    # Remove stray brackets left in ordinary prose ("array[0]").
     cleaned = cleaned.replace("[", "").replace("]", "")
     # Replace very long numbers with a speakable placeholder
     cleaned = re.sub(r"\d{7,}", "a large number", cleaned)
     # Strip tildes -- Kokoro reads them literally
     cleaned = cleaned.replace("~", "")
+    # Emoji + emoticons. The streaming voice path hands us raw model text, so
+    # this cannot be left to ``sanitize_assistant_text`` -- that only cleans
+    # the copy destined for the transcript, and by then the audio has played.
+    cleaned = _EMOJI_RE.sub(" ", cleaned)
+    cleaned = _EMOTICON_RE.sub(" ", cleaned)
+    # The glued form ("hey:P"), which the shared pattern deliberately skips to
+    # protect "3:30" and "https://". Safe here: URLs are already gone, and a
+    # letter followed by ":P" / ":D" is never prose.
+    cleaned = re.sub(r"(?<=[A-Za-z])[:;=][-o*']?[DPpOo3](?![\w])", " ", cleaned)
+    # Ranges first, so "3-4 hours" keeps its sense instead of turning into two
+    # unrelated numbers.
+    cleaned = re.sub(r"(?<=\d)\s*[\u2010-\u2015\u2212-]\s*(?=\d)", " to ", cleaned)
+    # Every other dash becomes a space. An em dash makes the model lurch into
+    # a pause it never recovers the rhythm from, and a hyphenated compound
+    # ("well-known") can come out as two clipped words; a plain space reads as
+    # neither. This is also why a dash-bracketed filler ("I mean -- uhm --
+    # yeah") is no longer stripped downstream: it becomes an unbracketed one,
+    # which ``strip_speech_fillers`` deliberately leaves alone.
+    cleaned = re.sub(r"[\u2010-\u2015\u2212-]+", " ", cleaned)
+    # Symbols with no spoken form of their own. Deliberately excludes the ones
+    # that carry meaning aloud (``% & $ / + =``), which the model does voice.
+    cleaned = re.sub(r"[_|\\<>{}^]+", " ", cleaned)
     # Strip double quotes -- the TTS model occasionally vocalises a stray
     # or empty pair ('""') as a glitchy artifact. Apostrophes (single
     # quotes) are kept so contractions ("don't") survive.

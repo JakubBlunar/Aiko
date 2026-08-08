@@ -323,6 +323,18 @@ class TtsSettings:
     pocket_tts_voice: str = "alba"
     pocket_tts_temp: float = 0.7
     pocket_tts_custom_voices_dir: str = ""
+    # How many 80 ms Mimi frames to keep decoding after the model signals
+    # end-of-sequence. Pocket-TTS's own default is a per-utterance guess
+    # (1 frame over four words, 3 at or under) plus an unconditional +2,
+    # so every clip carried 240 ms -- 400 ms for short ones -- of audio
+    # generated with nothing left to say. Measured with the RNG pinned so
+    # the only difference is the tail: that audio runs 14-42% of the body's
+    # RMS, which is not decay, it is audible, and it is the stray syllable
+    # heard at the end of spoken chunks. Per-frame it is the *second* frame
+    # onward that is spurious (frame 1 is the real phoneme release, and
+    # frame 2 often matches it in level), hence a default of 1. Set to
+    # ``None`` to restore the library's behaviour.
+    pocket_tts_frames_after_eos: int | None = 1
 
 
 @dataclass(slots=True)
@@ -961,6 +973,25 @@ def _normalize_tts_length_scale(value: Any) -> float:
         return max(0.65, min(f, 1.35))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _parse_frames_after_eos(value: Any) -> int | None:
+    """Clamp ``tts.pocket_tts_frames_after_eos`` to a sane frame count.
+
+    ``None`` (or the string ``"default"``) hands control back to
+    Pocket-TTS's own guess. Anything else is clamped to ``[0, 8]``: 0
+    cuts the phoneme release, and past 8 the tail is longer than the
+    150 ms of silence appended after it, so the knob has stopped
+    meaning anything.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"default", "auto", ""}:
+        return None
+    try:
+        return max(0, min(int(value), 8))
+    except (TypeError, ValueError):
+        return 1
 
 
 _GROUNDING_LINE_MODES: frozenset[str] = frozenset({"off", "replace", "split"})
@@ -1957,6 +1988,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             pocket_tts_voice=str(tts.get("pocket_tts_voice", "alba")),
             pocket_tts_temp=float(tts.get("pocket_tts_temp", 0.7)),
             pocket_tts_custom_voices_dir=str(tts.get("pocket_tts_custom_voices_dir", "")),
+            pocket_tts_frames_after_eos=_parse_frames_after_eos(
+                tts.get("pocket_tts_frames_after_eos", 1),
+            ),
         ),
         agent=parse_agent_settings(agent_raw),
         logging=LoggingSettings(

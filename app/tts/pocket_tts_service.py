@@ -195,6 +195,9 @@ class PocketTtsService:
         self._loaded = threading.Event()
         self._audio_cache: dict[str, tuple] = {}
         self._cache_lock = threading.Lock()
+        # Latched once if the installed Pocket-TTS predates ``frames_after_eos``,
+        # so the TypeError probe costs one utterance rather than every one.
+        self._frames_after_eos_unsupported = False
         self._pcm_listener: PcmListener | None = pcm_listener
         self._clip_end_listener: PcmEndListener | None = clip_end_listener
         # Layer 1a: global pacing knob fed by ``assistant.tts_length_scale``.
@@ -722,6 +725,38 @@ class PocketTtsService:
             return f"{text}||{speed:.3f}"
         return f"{text}||{speed:.3f}||t{temp:.3f}"
 
+    def _generate(self, model, voice_state, text: str):
+        """Synthesise ``text``, bounding the audio decoded after EOS.
+
+        Pocket-TTS keeps decoding for a guessed number of frames once the
+        model has signalled it is done, and pads that guess by two. At the
+        Mimi frame rate (12.5 Hz) that is 240 ms per clip, or 400 ms for
+        utterances of four words or fewer. Measured with the RNG pinned --
+        so the two takes are sample-identical up to the tail -- that audio
+        sits at 14-42% of the body's RMS. It is not decay, it is a syllable
+        the text never asked for, and it lands at the end of every spoken
+        chunk. Frame 1 is the genuine phoneme release; from frame 2 on it
+        is invention, which is what :attr:`pocket_tts_frames_after_eos`
+        trims.
+
+        Older Pocket-TTS builds don't accept the argument; those fall back
+        to the library default rather than failing the utterance.
+        """
+        frames = getattr(self._settings, "pocket_tts_frames_after_eos", 1)
+        if frames is None or self._frames_after_eos_unsupported:
+            return model.generate_audio(voice_state, text, copy_state=True)
+        try:
+            return model.generate_audio(
+                voice_state, text, copy_state=True, frames_after_eos=int(frames),
+            )
+        except TypeError:
+            self._frames_after_eos_unsupported = True
+            log.info(
+                "pocket-tts: frames_after_eos unsupported by this build, "
+                "falling back to the library default tail",
+            )
+            return model.generate_audio(voice_state, text, copy_state=True)
+
     def generate_audio(
         self,
         text: str,
@@ -761,9 +796,7 @@ class PocketTtsService:
                 except Exception:
                     temp_changed = False
             try:
-                audio_tensor = model.generate_audio(
-                    voice_state, text, copy_state=True,
-                )
+                audio_tensor = self._generate(model, voice_state, text)
             finally:
                 if temp_changed:
                     try:

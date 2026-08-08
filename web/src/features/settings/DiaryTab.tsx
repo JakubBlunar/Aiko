@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import type { Memory } from "../../types";
 import { stripJournalPrefix, type JournalBadge } from "../../lib/journalText";
+import { formatClock, formatDayHeading } from "../../lib/time";
 import { Section } from "./SettingsSection";
 
 const DIARY_PAGE_SIZE = 30;
@@ -52,20 +53,11 @@ function kindBadge(kind: string): { label: string; cls: string } | null {
 function dayKey(iso: string): string {
   // Group by the local calendar day. Falls back to the raw string when
   // the timestamp is unparseable so a bad row never collapses the list.
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 10) || "unknown";
-  return d.toLocaleDateString(undefined, {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  return formatDayHeading(iso, iso.slice(0, 10) || "unknown");
 }
 
 function entryTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return formatClock(iso);
 }
 
 interface DayGroup {

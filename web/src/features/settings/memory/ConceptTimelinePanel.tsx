@@ -7,6 +7,7 @@ import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
+import { formatClock, formatDate } from "@/lib/time";
 
 const SUBJECT_ALL = "all";
 
@@ -254,20 +255,9 @@ function TimelineCard({ event }: { event: ConceptEvent }) {
 }
 
 function dayLabel(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "unknown date";
-  return new Date(t).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return formatDate(iso, "unknown date");
 }
 
 function absoluteTime(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "";
-  return new Date(t).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatClock(iso);
 }

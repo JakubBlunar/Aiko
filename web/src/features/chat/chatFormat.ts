@@ -1,4 +1,5 @@
 import { backendBase } from "@/desktop/runtime";
+import { formatClock } from "@/lib/time";
 
 /**
  * Build the static URL for an uploaded attachment's stored file from its
@@ -12,14 +13,7 @@ export function attachmentUrl(relPath: string): string {
   return `${backendBase().http}/attachment-files/${encodeURIComponent(storedName)}`;
 }
 
-/** Short ``HH:MM`` timestamp for a message bubble footer. */
+/** Short 24-hour ``HH:MM`` timestamp for a message bubble footer. */
 export function formatTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
+  return formatClock(iso);
 }

@@ -14,12 +14,15 @@ The math itself is covered in ``tests/test_vitality.py``.
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from app.core.affect import vitality as v
+from app.core.session import inner_life_part1 as _ilp1
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 
@@ -106,6 +109,26 @@ def _seed(chat_db: _FakeChatDb, energy: float, *, at: datetime | None = None) ->
     )
 
 
+@contextmanager
+def _at_local_hour(hour: int):
+    """Pin the provider's clock to a fixed local hour.
+
+    Lazy recovery relaxes energy toward the circadian baseline in **both**
+    directions, so "a stale high value decays" is really the claim "the
+    baseline is below that value" -- true at 03:00, false at midday, where
+    relaxation correctly pulls energy *up* instead. The night-baseline test
+    below read the real wall clock and so passed or failed depending on
+    when the suite ran. The hour has to be the fixed thing.
+    """
+    anchor = (
+        datetime.now()
+        .astimezone()
+        .replace(hour=hour, minute=0, second=0, microsecond=0)
+    )
+    with patch.object(_ilp1.timephrase, "now", return_value=anchor):
+        yield anchor
+
+
 # ── provider: master switch ─────────────────────────────────────────
 
 
@@ -137,19 +160,18 @@ class ProviderRenderTests(unittest.TestCase):
         self.assertEqual(host._render_vitality_block(), "")
 
     def test_recovery_pulls_stale_high_toward_night_baseline(self) -> None:
-        # Energy was high 12h ago at 3am; by now it should have relaxed
-        # toward the (low) night baseline -> low cue.
+        # Energy was left high 12h ago; read back at 03:00, where the
+        # baseline is low, it should have relaxed downward.
         chat_db = _FakeChatDb()
-        past = datetime(2026, 6, 30, 3, 0, 0).astimezone() - timedelta(hours=0)
-        _seed(chat_db, 0.95, at=past - timedelta(hours=12))
-        host = _ProviderHost(chat_db=chat_db)
-        # Provider uses real "now"; just assert it doesn't crash and
-        # persists a recovered (lower) value than the stored 0.95.
-        host._render_vitality_block()
-        stored = v.deserialize(
-            chat_db._store[v.KV_VITALITY], baseline=0.5,
-            now=datetime.now(timezone.utc),
-        )
+        with _at_local_hour(3) as anchor:
+            _seed(chat_db, 0.95, at=anchor - timedelta(hours=12))
+            host = _ProviderHost(chat_db=chat_db)
+            host._render_vitality_block()
+            stored = v.deserialize(
+                chat_db._store[v.KV_VITALITY],
+                baseline=0.5,
+                now=anchor.astimezone(timezone.utc),
+            )
         self.assertLess(stored.energy, 0.95)
 
     def test_missing_kv_seeds_baseline(self) -> None:

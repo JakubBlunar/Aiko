@@ -257,7 +257,13 @@ class TogetherSummaryTests(unittest.TestCase):
             # is the OS's problem, not the test's.
             pass
 
-    def _make(self, *, turns: int, days_ago: float):
+    def _make(
+        self,
+        *,
+        turns: int,
+        days_ago: float,
+        last_milestone: tuple[str, str] | None = None,
+    ):
         from datetime import timedelta
 
         from app.core.infra import timephrase
@@ -278,6 +284,13 @@ class TogetherSummaryTests(unittest.TestCase):
             "WHERE user_id = ?",
             (first_seen, int(turns), "default"),
         )
+        if last_milestone is not None:
+            label, at = last_milestone
+            db._get_conn().execute(
+                "UPDATE user_relationship SET milestone_label = ?, "
+                "last_milestone_at = ? WHERE user_id = ?",
+                (label, at, "default"),
+            )
         controller = SessionController.__new__(SessionController)
         controller._relationship_tracker = RelationshipTracker(store)
         controller._user_id = "default"
@@ -332,6 +345,152 @@ class TogetherSummaryTests(unittest.TestCase):
             m["label"]: m for m in controller.get_together_summary()["milestones"]
         }
         self.assertTrue(by_label["first_week_together"]["crossed_at"])
+        self._drop(db, tmp)
+
+    def _seed_user_turns(
+        self, db, *, count: int, start_iso: str, spacing_minutes: int = 1
+    ) -> list[str]:
+        """Insert ``count`` user messages, one every ``spacing_minutes``."""
+        from datetime import datetime, timedelta
+
+        start = datetime.fromisoformat(start_iso)
+        conn = db._get_conn()
+        stamps: list[str] = []
+        for i in range(count):
+            ts = (
+                start + timedelta(minutes=i * spacing_minutes)
+            ).isoformat(timespec="seconds")
+            stamps.append(ts)
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, "
+                "token_count, created_at) VALUES (?, 'user', 'x', 0, ?)",
+                ("seed", ts),
+            )
+        conn.commit()
+        return stamps
+
+    def _first_seen(self, db) -> str:
+        row = db.execute_fetchone(
+            "SELECT first_seen_at FROM user_relationship WHERE user_id = ?",
+            ("default",),
+        )
+        return str(row[0])
+
+
+    # The turn-based milestone's date comes from the message log.
+    # ``last_milestone_at`` records when a milestone was last *written*, not
+    # when its threshold was crossed. Reading it as a crossing date dated
+    # "first hundred turns" to the v25 backfill -- six weeks after the real
+    # hundredth turn, and rendered *after* "first month together" in a list
+    # where it belonged three days in.
+
+    def test_the_date_is_the_hundredth_turn(self) -> None:
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        stamps = self._seed_user_turns(
+            db, count=150, start_iso=self._first_seen(db)
+        )
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertEqual(
+            by_label["first_hundred_turns"]["crossed_at"], stamps[99]
+        )
+        self._drop(db, tmp)
+
+    def test_the_write_stamp_does_not_shadow_the_real_crossing(self) -> None:
+        # The exact shape of the bug: the stored stamp is weeks later than
+        # the hundredth turn, and it used to win.
+        from datetime import timedelta
+
+        from app.core.infra import timephrase
+
+        late = (timephrase.utcnow() - timedelta(days=29)).isoformat(
+            timespec="seconds"
+        )
+        controller, db, tmp = self._make(
+            turns=1726,
+            days_ago=74.0,
+            last_milestone=("first_hundred_turns", late),
+        )
+        stamps = self._seed_user_turns(
+            db, count=150, start_iso=self._first_seen(db)
+        )
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        crossed_at = by_label["first_hundred_turns"]["crossed_at"]
+        self.assertEqual(crossed_at, stamps[99])
+        self.assertNotEqual(crossed_at, late)
+        self._drop(db, tmp)
+
+    def test_a_hundred_turns_may_predate_a_week_together(self) -> None:
+        # Chatting 100 times in the first days is normal, so the badge is
+        # allowed to sort before "first week" -- the old stamp made that
+        # ordering impossible and the list read as inconsistent.
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        self._seed_user_turns(
+            db, count=150, start_iso=self._first_seen(db), spacing_minutes=30
+        )
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertLess(
+            by_label["first_hundred_turns"]["crossed_at"],
+            by_label["first_week_together"]["crossed_at"],
+        )
+        self._drop(db, tmp)
+
+    def test_it_falls_back_to_the_write_stamp_without_a_log(self) -> None:
+        # Pruned history: no derivable date, so the stored stamp is still
+        # better than a badge with no date at all.
+        from datetime import timedelta
+
+        from app.core.infra import timephrase
+
+        stamp = (timephrase.utcnow() - timedelta(days=40)).isoformat(
+            timespec="seconds"
+        )
+        controller, db, tmp = self._make(
+            turns=1726,
+            days_ago=74.0,
+            last_milestone=("first_hundred_turns", stamp),
+        )
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertEqual(by_label["first_hundred_turns"]["crossed_at"], stamp)
+        self._drop(db, tmp)
+
+    def test_a_short_log_leaves_the_date_empty_rather_than_wrong(self) -> None:
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        self._seed_user_turns(db, count=12, start_iso=self._first_seen(db))
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertIsNone(by_label["first_hundred_turns"]["crossed_at"])
+        # The day-based neighbours are unaffected.
+        self.assertTrue(by_label["first_month_together"]["crossed_at"])
+        self._drop(db, tmp)
+
+    def test_turns_before_the_relationship_row_do_not_shift_the_count(self) -> None:
+        # Messages predating first_seen_at (the row was added later than the
+        # log) must not make the hundredth turn look earlier than the
+        # counter that fired the milestone.
+        from datetime import datetime, timedelta
+
+        controller, db, tmp = self._make(turns=1726, days_ago=74.0)
+        first_seen = self._first_seen(db)
+        early = (
+            datetime.fromisoformat(first_seen) - timedelta(days=3)
+        ).isoformat(timespec="seconds")
+        self._seed_user_turns(db, count=40, start_iso=early)
+        stamps = self._seed_user_turns(db, count=150, start_iso=first_seen)
+        by_label = {
+            m["label"]: m for m in controller.get_together_summary()["milestones"]
+        }
+        self.assertEqual(
+            by_label["first_hundred_turns"]["crossed_at"], stamps[99]
+        )
         self._drop(db, tmp)
 
     def test_a_fresh_relationship_claims_nothing(self) -> None:

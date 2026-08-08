@@ -144,6 +144,42 @@ class RelationshipStore:
             milestones_surfaced=self._parse_surfaced(row[6]),
         )
 
+    def turn_reached_at(self, n: int, *, since: str | None = None) -> str | None:
+        """Timestamp of the ``n``-th user turn, counted from ``since``.
+
+        Turn-count milestones ("first hundred turns") have no stored
+        crossing date. ``last_milestone_at`` is *when a milestone was last
+        written*, which is a different question and can be wildly off: a
+        pre-v25 row backfilled its surfaced set long after the fact, so the
+        hundredth-turn badge rendered with the backfill date -- six weeks
+        after the real crossing, and out of order against the day-based
+        milestones next to it. The message log still holds the answer, so
+        derive it instead of trusting the write stamp.
+
+        Counting starts at ``since`` (the relationship's ``first_seen_at``)
+        so the origin matches the counter the milestone fired on; messages
+        that predate the relationship row don't shift the answer. Returns
+        ``None`` when the log is too short or the query fails, which is the
+        caller's cue to fall back.
+        """
+        if n <= 0:
+            return None
+        sql = "SELECT created_at FROM messages WHERE role = 'user'"
+        params: list[object] = []
+        if since:
+            sql += " AND created_at >= ?"
+            params.append(str(since))
+        sql += " ORDER BY created_at LIMIT 1 OFFSET ?"
+        params.append(int(n) - 1)
+        try:
+            row = self._db.execute_fetchone(sql, tuple(params))
+        except Exception:
+            log.debug("turn_reached_at query failed", exc_info=True)
+            return None
+        if row is None or not row[0]:
+            return None
+        return str(row[0])
+
     def get_or_create(self, user_id: str) -> RelationshipState:
         existing = self.get(user_id)
         if existing is not None:
@@ -214,6 +250,10 @@ class RelationshipTracker:
 
     def get(self, user_id: str) -> RelationshipState:
         return self._store.get_or_create(user_id)
+
+    def turn_reached_at(self, n: int, *, since: str | None = None) -> str | None:
+        """See :meth:`RelationshipStore.turn_reached_at`."""
+        return self._store.turn_reached_at(n, since=since)
 
     def current_phase(self, user_id: str, *, now: datetime | None = None) -> str:
         state = self.get(user_id)

@@ -1,3 +1,4 @@
+import { formatDate } from "@/lib/time";
 import type { SharedMoment, TogetherSummary } from "../../types";
 import { SHARED_MOMENT_VIBES } from "../../types";
 import { Section } from "./SettingsSection";
@@ -167,7 +168,7 @@ export function TogetherTab({
                 <span>{m.human}</span>
                 {m.crossed_at ? (
                   <span className="ml-auto font-mono text-[10px] text-ink-100/40">
-                    {new Date(m.crossed_at).toLocaleDateString()}
+                    {formatDate(m.crossed_at)}
                   </span>
                 ) : null}
               </li>
@@ -343,13 +344,7 @@ function MomentCard({
   onDelete,
   onTogglePin,
 }: MomentCardProps) {
-  const date = (() => {
-    try {
-      return new Date(moment.when).toLocaleDateString();
-    } catch {
-      return moment.when;
-    }
-  })();
+  const date = formatDate(moment.when, moment.when);
   return (
     <li className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/55">
