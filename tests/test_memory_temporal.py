@@ -959,6 +959,137 @@ class TestMemoryDecayWorkerReclassify(unittest.TestCase):
         assert updated is not None
         self.assertEqual(updated.tier, "archive")
 
+    def test_clockless_plan_retires_on_expired_relevance(self) -> None:
+        """A plan nobody pinned to a clock still has to expire.
+
+        "next week" / "soon" / "in the near future" produce a
+        ``future_plan`` with no ``event_time``, which the event-time
+        sweep cannot see. Before this, such rows were immortal: the
+        live database had nine of them, the oldest 61 days past its
+        ``relevance_until``, still being offered as things to ask
+        about as though they were ahead.
+        """
+        _, store = _store_factory()
+        mem = store.add(
+            content="Jacob will schedule another date some free evening",
+            kind="event",
+            embedding=_emb("another date"),
+            temporal_type="future_plan",
+            relevance_until=(
+                datetime.now(timezone.utc) - timedelta(days=38)
+            ).isoformat(),
+        )
+        assert mem is not None
+        self.assertIsNone(mem.event_time)
+
+        result = MemoryDecayWorker(store, _StubMemorySettings()).run()
+
+        self.assertGreaterEqual(result.get("future_plans_to_past", 0), 1)
+        updated = store.get(mem.id)
+        assert updated is not None
+        self.assertEqual(updated.temporal_type, "past_event")
+
+    def test_a_long_dead_plan_does_not_come_back_as_fresh(self) -> None:
+        """The retrospective window anchors on when it went stale.
+
+        Anchoring on ``now`` would hand a plan that expired weeks ago
+        seven days of renewed relevance — the opposite of the point.
+        """
+        _, store = _store_factory()
+        stale_at = datetime.now(timezone.utc) - timedelta(days=38)
+        mem = store.add(
+            content="Jacob plans to introduce Aiko to his friends",
+            kind="event",
+            embedding=_emb("friends"),
+            temporal_type="future_plan",
+            relevance_until=stale_at.isoformat(),
+        )
+        assert mem is not None
+
+        MemoryDecayWorker(store, _StubMemorySettings()).run()
+
+        updated = store.get(mem.id)
+        assert updated is not None
+        assert updated.relevance_until is not None
+        self.assertEqual(
+            (
+                datetime.fromisoformat(updated.relevance_until) - stale_at
+            ).days,
+            7,
+        )
+        # Already past, so it belongs in the archive, not back in RAG.
+        self.assertLess(
+            datetime.fromisoformat(updated.relevance_until),
+            datetime.now(timezone.utc),
+        )
+
+    def test_a_still_live_clockless_plan_stays_future(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            content="Jacob plans a quiet date with cookies",
+            kind="event",
+            embedding=_emb("cookies"),
+            temporal_type="future_plan",
+            relevance_until=(
+                datetime.now(timezone.utc) + timedelta(days=1)
+            ).isoformat(),
+        )
+        assert mem is not None
+        MemoryDecayWorker(store, _StubMemorySettings()).run()
+        kept = store.get(mem.id)
+        assert kept is not None
+        self.assertEqual(kept.temporal_type, "future_plan")
+
+    def test_a_recently_expired_clockless_plan_gets_its_grace(self) -> None:
+        """"Next week" is not dead a day later.
+
+        For a clockless plan ``relevance_until`` is ``created_at + 1
+        day`` — a retrieval window, not a deadline. Retiring on it
+        directly would make a vague plan unaskable almost immediately,
+        which is the opposite failure to the one being fixed.
+        """
+        _, store = _store_factory()
+        mem = store.add(
+            content="Jacob will bring cookies next week",
+            kind="event",
+            embedding=_emb("cookies next week"),
+            temporal_type="future_plan",
+            relevance_until=(
+                datetime.now(timezone.utc) - timedelta(days=3)
+            ).isoformat(),
+        )
+        assert mem is not None
+        MemoryDecayWorker(store, _StubMemorySettings()).run()
+        kept = store.get(mem.id)
+        assert kept is not None
+        self.assertEqual(kept.temporal_type, "future_plan")
+
+    def test_event_time_still_wins_the_anchor(self) -> None:
+        """A row matching both sweeps is retired once, on its event_time."""
+        _, store = _store_factory()
+        event_at = datetime.now(timezone.utc) - timedelta(days=21)
+        mem = store.add(
+            content="the gym session",
+            kind="event",
+            embedding=_emb("gym"),
+            temporal_type="future_plan",
+            event_time=event_at.isoformat(),
+            relevance_until=(event_at + timedelta(days=1)).isoformat(),
+        )
+        assert mem is not None
+        result = MemoryDecayWorker(store, _StubMemorySettings()).run()
+        # Counted once, not twice, despite matching both sweeps.
+        self.assertEqual(result.get("future_plans_to_past", 0), 1)
+        updated = store.get(mem.id)
+        assert updated is not None
+        assert updated.relevance_until is not None
+        self.assertEqual(
+            (
+                datetime.fromisoformat(updated.relevance_until) - event_at
+            ).days,
+            7,
+        )
+
     def test_future_plan_within_buffer_stays_future(self) -> None:
         """A plan whose event_time was 30 minutes ago is still
         considered "happening" — the 1-hour buffer keeps it as

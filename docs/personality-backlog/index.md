@@ -319,7 +319,20 @@ K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
 K82 the dropped sub-topic (he said three things, she answered one) ·
-K83 the right to decline · K84 calibrated jealousy.
+K83 the right to decline · K84 calibrated jealousy ·
+K85 the third subject (interests that aren't him) ·
+K87 curiosity that isn't about him ·
+K88 anaphoric-opener detector · K89 sustained thread ·
+K90 lead/follow metrics.
+
+**K85–K90 are the second pass at leading** — the will family (K52–K56) shipped
+the *permission* to lead and it fires on schedule, but measurement of the live
+log showed the constraint was never permission: she has two rows of `taste`
+concepts and ten `open_question` memories that all begin "Maybe ask Jacob",
+so taking the floor leaves her nothing to say but another question about him.
+K85 builds the missing inventory and is the root of the group; the rest are
+cheap and several are near-worthless without it. See
+[`patterns.md`](patterns.md#the-second-pass-at-leading-k85k90).
 
 **K83 and K84 are the deliberately risky pair** — both about giving her a
 stake rather than uniform availability, and both easy to get badly wrong.

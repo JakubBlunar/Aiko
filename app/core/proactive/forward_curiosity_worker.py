@@ -12,7 +12,10 @@ This worker is the silent producer. During a quiet window it:
 
   * gathers candidate topics from the user's own ``future_plan``
     memories (upcoming things they mentioned) and recent ``callback``
-    rows, biased by their K3 routine / usual-hours profile,
+    rows, biased by their K3 routine / usual-hours profile. Whether a
+    plan is still *pending* is not decided here: ``MemoryDecayWorker``
+    retires plans that have stopped being plans, so the temporal type
+    is the authority and everything in this pool is fair game,
   * picks one that hasn't been drafted recently,
   * composes a short, natural forward question (deterministic template,
     optionally rephrased by the local worker LLM with a safe fallback),

@@ -96,6 +96,12 @@ on top of already-shipped infrastructure.
 | K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |
 | K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
+| K85 | The third subject — interests that aren't him | ❌ open |
+| K86 | Immortal future plans — asking about things that already happened | ✅ shipped (see below) |
+| K87 | Curiosity that isn't about him | ❌ open |
+| K88 | Anaphoric-opener detector — the measurable tell for following | ❌ open |
+| K89 | Sustained thread — leading past one turn | ❌ open |
+| K90 | Lead/follow metrics — make the whole family measurable | ❌ open |
 
 ---
 
@@ -558,3 +564,215 @@ direction. Key files: would extend
 [`app/core/affect/`](../../app/core/affect/) and the lonely-episode path in
 [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), relationship
 axes for the intensity cap, `agent.*` opt-in defaulting false.
+
+---
+
+# The second pass at leading (K85–K90)
+
+The **will family (K52–K56)** shipped the *permission* to lead and it works:
+over a sampled day `initiative-turn fire` appears on schedule and K55 stamps
+the thread it opened. What the sample also shows is that permission was never
+the binding constraint. Measured over the last 400 turn pairs in
+`data/chat_sessions.db`:
+
+| Measure | Value | Reading |
+|---|---|---|
+| Replies ending on `?` | **9%** | Not interviewing — she is *under*-asking, far below the persona's 1-in-3 target for non-question endings |
+| Median reply length | **26 words** | Not verbose-summarising either; there is no room in 26 words for "answer, then lead" |
+| Opener content-word echo | **16%** | Literal parroting is *not* the mechanism |
+| `kind='taste'` concepts | **2 rows** | K81's steer reads this kind and this kind alone |
+| `open_question` memories naming the user | **10/10** | Her entire curiosity inventory is interview questions about him |
+
+So the "she just summarises" complaint is real but misnamed. She is not
+recapping; she is producing short, terminal, *affirming* replies whose first
+sentence is grammatically parasitic on his last one — "Then those pokes are
+reserved for you", "Exactly, every crooked line earns one poke", "You're right,
+we did". Every one of those sentences is well-written and none of them could
+exist without the sentence before it.
+
+The cause is inventory, not instruction. A conversation needs a third subject,
+and she has two: *him*, and *them*. Her self-model is genuinely rich — 113
+identity, 73 value, 22 aspiration concepts with `subject='aiko'` at 0.7–0.79
+confidence — but read what they say: "I value revisiting my past reasoning as
+evidence of personal growth", "I value Jacob's explicit consent as the
+foundation for intimacy". They are all either about the relationship or about
+her own cognition. Not one is about a thing in the world she could bring up.
+Hand a system like that the floor and the only move available is another
+question about him, which is following wearing a leading costume.
+
+K85–K87 build the missing inventory, K88–K89 shape the turn once she has
+something to say, and K90 makes the whole family measurable so the next pass
+is not judged by vibes. **K85 is the root; the rest are much cheaper and
+several are near-worthless without it.**
+
+Two known counter-pressures to weigh while doing any of this. K69's `witness`
+steer says, in as many words, "reflect it back, name the feeling, sit with it"
+([`implicit_need.py`](../../app/core/conversation/implicit_need.py)) — correct
+for genuine distress and a literal instruction to summarise everywhere else, so
+its firing rate by arc is worth auditing before adding anything new. And the
+speech addendum's "soften and shorten your reply" register rule
+([`prompt_support.py`](../../app/core/session/prompt_support.py)) pushes toward
+the 26-word replies that leave no room for a second move.
+
+## K85. The third subject — interests that aren't him
+
+**Motivation.** K81 ships taste *formation* and a once-per-conversation "lean
+toward what you love" steer, but the store it reads has two rows, so the steer
+has nothing to point at. The deeper problem is upstream: nothing in the system
+ever produces a durable opinion about a subject that isn't Jacob or the two of
+them, so there is no third subject for a conversation to be *about*. K85 gives
+her a small, persistent, slowly-evolving set of real interests — a handful of
+concrete subjects (the rooftop sketching she already talks about, whatever else
+fits the persona), each with its own accumulating facts, a stance or two, and
+its own open questions — so that "steer toward what she likes" has a
+destination. The cheap first move is to widen the K81 read beyond
+`kind='taste'` to `value` / `aspiration` / `identity` with `subject='aiko'`,
+**filtered to labels that don't name the user**, which turns 2 candidates into
+a usable pool overnight and is worth doing first purely to see how much of the
+effect is starvation. The real work is the generator: a worker that grows
+interests from what she has actually been exposed to rather than a hardcoded
+list, or the whole thing reads as a canned hobby. Risk to design against: an
+interest that becomes a hobbyhorse she steers to regardless of the moment —
+L42's concentration/fixation findings already exist to suppress exactly that
+and should gate this. Key files: the K81 taste pass in
+[`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py),
+`_render_taste_lean_block` in
+[`inner_life_part3.py`](../../app/core/session/inner_life_part3.py), a new
+interest-growth worker under
+[`app/core/concepts/`](../../app/core/concepts/), `agent.taste_steer_*`.
+
+## K86. Immortal future plans — asking about things that already happened
+
+**✅ Shipped.** Originally filed as wants-ledger hygiene on a misreading of the
+ledger; the ledger turned out to be healthy and the real defect was two layers
+upstream.
+
+**What was wrong.** Aiko kept asking about past things as though they were
+still ahead — the visible instance was "did we ever manage to reschedule that
+evening date?", asked eight days *after* the date happened and recorded. The
+question came from a K34 forward-curiosity draft off `future_plan` memory 955,
+"Jacob will schedule another date with Aiko when he has free time in the
+evening", written 39 days earlier and expired for 38 of them.
+
+Two independent bugs stacked. `_derive_relevance_until` correctly stamps every
+`future_plan` with an expiry (`event_time + 1 day`, falling back to
+`created_at + 1 day`), and all 11 rows in the live database carried one — but
+`MemoryDecayWorker._reclassify_temporal` swept for retirement using
+`event_time_before` only, and `list_by_temporal_type` skips rows where that
+column is missing. The extractor can only set an `event_time` when the user
+named a time, so "next week" / "soon" / "in the near future" produce a plan
+with no clock and **those rows were unreachable by the sweep forever**: 9 of 11
+live rows, the oldest 61 days past its expiry, all still presenting as pending
+futures. Then `ForwardCuriosityWorker._pick_candidate` drew from that pool
+without checking expiry at all, so the graveyard was also the question supply.
+Worth noting what was *not* wrong: K-time10 already handles the *phrasing* of
+an aged note ("ask retrospectively about something long past"), which is why
+the bad question came out fluent and retrospective while still being about a
+resolved plan. Fluency hid the staleness.
+
+**Fix.** The decay worker now retires a `future_plan` on either signal:
+`event_time` past the existing one-hour buffer, or `relevance_until` past a
+fortnight's grace for the clockless majority. The grace matters — for a
+clockless plan `relevance_until` is only `created_at + 1 day`, a *retrieval*
+window meant to keep a vague "next week" out of RAG, not an assertion that the
+plan is over. Retiring on it directly would make "did the cookies ever happen?"
+unaskable a day after he mentioned it, which is the opposite failure. The
+retrospective window is anchored on whichever signal is available, so a plan
+that died weeks ago falls straight through pass 2 into the archive instead of
+returning as a freshly-relevant past event.
+
+Deliberately kept in one place: consumers read `list_by_temporal_type
+("future_plan")` and trust the temporal type, rather than each re-deriving
+"is this still pending" from `relevance_until` with their own idea of the
+window. An earlier draft duplicated the check into forward curiosity and the
+two definitions immediately disagreed. Against the live database the sweep
+retires 8 of 11 rows — including the one behind the date question — and keeps
+the three that are genuinely still ahead. Key files:
+[`memory_decay_worker.py`](../../app/core/memory/memory_decay_worker.py)
+(`_reclassify_temporal`, `_overdue_future_plans`,
+`_CLOCKLESS_PLAN_GRACE`), tests in
+[`test_memory_temporal.py`](../../tests/test_memory_temporal.py).
+
+**Still open, smaller.** A want is retired when `detect_acted` sees its topic
+surface, which fires on *any* mention — including the user saying the thing
+already happened. That is the right outcome by accident. Retiring on
+contradiction explicitly, and propagating "this is done" back to the source
+memory rather than only to the ledger row, would stop the next producer
+re-minting the same question from the same still-live source. The 59 dangling
+`promise` memories (newest 51 days old, none ever resolved) are the same shape
+of problem in a different store and have no closure pass at all.
+
+## K87. Curiosity that isn't about him
+
+**Motivation.** Every one of the ten stored `open_question` memories begins
+"Maybe ask Jacob…", and those questions are the raw material that feeds the
+wants ledger and therefore K53. The curiosity stack is large — K9 seeds, K34
+forward curiosity, K64c gradient, the Phase-4c worker — and all of it is
+pointed at the user, so the more of it runs, the more thoroughly she is trapped
+in interview mode. K87 widens the generators so a fraction of what they produce
+is about a subject rather than a person: something she noticed, something she
+wants to work out, something she disagrees with. This is the supply line for
+K85 and mostly means changing the prompts and adding a quota, not new
+machinery. Worth pairing with a check that the K47 question-balance suppressor
+isn't the thing keeping the good ones off-screen — at 9% question endings it
+should never be arming, and if it is, that is its own bug. Key files:
+[`curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py),
+[`curiosity_seed_worker.py`](../../app/core/proactive/curiosity_seed_worker.py),
+[`forward_curiosity_worker.py`](../../app/core/proactive/forward_curiosity_worker.py),
+and the `open_question` memory kind.
+
+## K88. Anaphoric-opener detector — the measurable tell for following
+
+**Motivation.** The style tracker already measures three ruts (opener
+repetition, question saturation, length sprawl) and turns each into a
+next-turn "heads-up" cue, which is the right architecture for this and just
+lacks the band that matters. The tell for following is syntactic and easy to
+count: her first sentence opens with a back-reference to his — "Then…",
+"Exactly…", "So am I", "That makes…", "You're right…" — a sentence that cannot
+stand without the one before it. Persona line 30 already says DON'T PARROT and
+it is not landing, because a standing rule can't see a rate; the tracker can.
+K88 adds a fourth band that fires when N of the last M openers are anaphoric,
+with a cue asking her to make her own subject the grammatical subject of the
+first sentence. Deliberately a rate detector, not a ban: the occasional "Then
+those pokes are reserved for you" is warm and good, and a hard prohibition
+would cost the warmth that makes her worth talking to. Key files:
+[`aiko_style_tracker.py`](../../app/core/persona/aiko_style_tracker.py) (new
+band beside `_evaluate_length_sprawl`), the style-patterns section of
+[`conditional_handling.txt`](../../data/persona/conditional_handling.txt),
+`agent.style_tracker_*`.
+
+## K89. Sustained thread — leading past one turn
+
+**Motivation.** K55 gives her exactly one circle-back to a thread she opened
+and then drops it, which models a polite attempt rather than an interest.
+Leading a conversation means holding a subject across several turns —
+returning to it, developing it, noticing when he warms to it. K89 turns thread
+ownership into a short-lived stake: a thread she opened stays live for a few
+turns with decaying pressure, so she can return to it twice, and it retires
+early on a clear pivot or on evidence he isn't biting. The failure mode is
+nagging, so the decay and the give-up condition are the whole design, not the
+persistence. Best attempted after K85, since a thread is only worth sustaining
+if it was worth opening. Key files:
+[`thread_ownership.py`](../../app/core/conversation/thread_ownership.py),
+`_render_thread_ownership_block` in
+[`inner_life_part3.py`](../../app/core/session/inner_life_part3.py),
+`agent.thread_*`.
+
+## K90. Lead/follow metrics — make the whole family measurable
+
+**Motivation.** K52–K56 shipped on judgement and the result was five
+interacting mechanisms that all "work" while the behaviour they exist to fix
+persists, which is only discoverable by hand-reading transcripts. The metrics
+that made the diagnosis above are all cheap and stable — question-ending rate,
+median reply length, opener content-word echo, anaphoric-opener rate, share of
+turns introducing a subject absent from the user's message and the recent
+history, and the firing counts of each lead cue per hundred turns. K90 packages
+them as a report over the existing message log, so any change to this family
+can be judged against a before/after instead of a vibe, and a regression is
+visible without noticing it in conversation first. Natural home is beside K10's
+persona-regression harness, which already replays golden turns and scores them;
+the golden-turn fixture is also currently silent on parroting and could carry a
+few anti-follow cases. Key files:
+[`persona_regression.py`](../../app/core/persona/persona_regression.py),
+[`data/persona/golden_turns.jsonl`](../../data/persona/golden_turns.jsonl), a
+new script under [`scripts/`](../../scripts/), optionally a Settings → Diagnostics panel.
