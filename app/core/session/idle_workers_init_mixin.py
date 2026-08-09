@@ -627,6 +627,13 @@ class IdleWorkersInitMixin:
                     interval_seconds=mem.forward_curiosity_interval_seconds,
                     cooldown_seconds=mem.forward_curiosity_cooldown_seconds,
                     journal_max=mem.forward_curiosity_journal_max,
+                    subject_quota_provider=lambda: float(
+                        getattr(
+                            self._settings.agent,
+                            "curiosity_subject_quota",
+                            0.4,
+                        )
+                    ),
                 )
                 self._idle_scheduler.register(self._forward_curiosity_worker)
             except Exception:

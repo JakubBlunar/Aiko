@@ -7,6 +7,7 @@ from app.core.session.inner_life_shared import (
     _format_running_task_line,
 )
 from app.core.infra import timephrase
+from app.core.proactive.curiosity_subject import is_person_directed
 from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 if TYPE_CHECKING:
@@ -128,7 +129,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
     # The ``open_question`` slot carries a ``{name}`` placeholder filled
     # in :func:`_render_narrative_block` so the cue reads with whatever
     # name the user typed into the onboarding modal; the rest are
-    # name-agnostic.
+    # name-agnostic. K87's subject notes share the ``open_question``
+    # kind but never reach this table -- see ``_render_narrative_block``.
     _NARRATIVE_LABELS: dict[str, str] = {
         "open_question": "Something you've been wanting to ask {name}",
         "callback": "A loose thread to circle back to",
@@ -172,11 +174,27 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if not text:
             return ""
         source_kind = (nudge.source_kind or "").strip().lower()
+        # K87: an ``open_question`` row is no longer necessarily a
+        # question about him -- the curiosity worker's subject mode
+        # writes "Maybe bring up ..." notes into the same kind. Which one
+        # this is decides both how it is framed and whether K47 should
+        # veto it, so classify once and use it for both.
+        subject_note = source_kind == "open_question" and not is_person_directed(
+            text, self.user_display_name,
+        )
         # K47: while the question/share gate is armed, drop the
         # open_question nudge specifically — it's the one narrative source
-        # that hands the LLM a ready-made question to ask.
-        if source_kind == "open_question" and self._question_balance_suppressed():
+        # that hands the LLM a ready-made question to ask. A subject note
+        # is the opposite of that: the gate is asking her to share first,
+        # and this is the material to share.
+        if (
+            source_kind == "open_question"
+            and not subject_note
+            and self._question_balance_suppressed()
+        ):
             return ""
+        if subject_note:
+            return f"Something of your own you've been meaning to bring up: {text}"
         label = self._NARRATIVE_LABELS.get(
             source_kind,
             "On your mind",

@@ -247,5 +247,96 @@ class ParseTests(_Fixture):
         self.assertEqual(result.get("checked", 0), 0)
 
 
+# ── K87: seeds that aren't about him ────────────────────────────────
+
+
+_MIXED_PAYLOAD = (
+    '{"seeds": ['
+    '{"topic": "your favourite tea ritual", '
+    ' "prompt_text": "I have been wondering what your perfect tea moment '
+    'looks like.", "why": "small and sensory", "about": "user"}, '
+    '{"topic": "second-day cold brew", '
+    ' "prompt_text": "Cold brew seems to taste rounder the next morning.", '
+    ' "why": "worth testing", "about": "subject"}'
+    ']}'
+)
+
+
+class SubjectQuotaTests(_Fixture):
+    def _abouts(self) -> list[str]:
+        return [r.payload.get("about") for r in self._pending()]
+
+    def test_the_label_is_recorded_on_the_cue(self) -> None:
+        worker = self._build(payload=_MIXED_PAYLOAD)
+        worker.run()
+        self.assertEqual(sorted(self._abouts()), ["person", "subject"])
+
+    def test_a_starved_pool_writes_the_subject_seed_first(self) -> None:
+        # One write per run, and the model listed the bond-scoped seed
+        # first. Without the reorder the subject seed never lands.
+        worker = self._build(
+            payload=_MIXED_PAYLOAD, curiosity_seed_max_per_run=1,
+        )
+        result = worker.run()
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(result["wrote_subject"], 1)
+        self.assertEqual(self._abouts(), ["subject"])
+
+    def test_a_pool_already_at_quota_keeps_the_model_order(self) -> None:
+        for i in range(4):
+            self.store.add(
+                "curiosity_seed", f"own {i}", f"own {i}",
+                payload={"about": "subject"},
+            )
+        worker = self._build(
+            payload=_MIXED_PAYLOAD,
+            curiosity_seed_max_per_run=1,
+            curiosity_seed_max_active=10,
+        )
+        result = worker.run()
+        self.assertEqual(result["wrote_subject"], 0)
+
+    def test_a_zero_quota_keeps_the_model_order(self) -> None:
+        worker = self._build(
+            payload=_MIXED_PAYLOAD,
+            curiosity_seed_max_per_run=1,
+            curiosity_subject_quota=0.0,
+        )
+        result = worker.run()
+        self.assertEqual(result["wrote_subject"], 0)
+
+    def test_a_subject_label_on_a_question_about_him_is_overruled(self) -> None:
+        payload = (
+            '{"seeds": [{"topic": "his commute", "prompt_text": "I wonder '
+            'how his commute has been treating him.", "why": "care", '
+            '"about": "subject"}]}'
+        )
+        worker = self._build(payload=payload)
+        result = worker.run()
+        self.assertEqual(result["wrote_subject"], 0)
+        self.assertEqual(self._abouts(), ["person"])
+
+    def test_an_unlabelled_seed_is_read_from_its_text(self) -> None:
+        payload = (
+            '{"seeds": [{"topic": "second-day cold brew", "prompt_text": '
+            '"Cold brew seems rounder the next morning.", "why": "hmm"}]}'
+        )
+        worker = self._build(payload=payload)
+        result = worker.run()
+        self.assertEqual(result["wrote_subject"], 1)
+
+    def test_the_prompt_asks_for_a_floor_of_subject_seeds(self) -> None:
+        worker = self._build(payload=_MIXED_PAYLOAD)
+        captured: dict[str, Any] = {}
+
+        def _capture(messages, *args: Any, **kwargs: Any):
+            captured["system"] = messages[0]["content"]
+            yield _MIXED_PAYLOAD
+
+        worker._ollama.chat_stream = _capture  # type: ignore[assignment]
+        worker.run()
+        self.assertIn("must be \"subject\" seeds", captured["system"])
+
+
 if __name__ == "__main__":
     unittest.main()

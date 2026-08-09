@@ -442,6 +442,7 @@ One-line follow-up question prep when the recent conversation has gone shallow.
 - `agent.curiosity_worker_max_user_word_count` *(int, `8`, min `1`)* — only fires when the recent user turns are this short on average (signal that the conversation has gone shallow).
 - `agent.curiosity_worker_cluster_anchor_enabled` *(bool, `true`)* — **K65c.** Anchor the follow-up on a known-but-quiet K9 interest (the most-dormant established cluster) instead of echoing the user's literal last words. Falls back to the legacy literal-words prompt when no quiet interest is available (cold / non-persistent graph). Off → pure legacy anchoring.
 - `agent.curiosity_worker_quiet_days` *(float, `7.0`, min `0`)* — **K65c.** How many days a cluster's newest member must be old for it to count as "quiet" and eligible as a re-anchor target. Higher → only reach back to long-dormant interests.
+- `agent.curiosity_subject_quota` *(float, `0.40`, clamped `[0, 1]`)* — **K87.** Share of what the three curiosity generators draft (`CuriosityWorker`, `CuriositySeedWorker`, `ForwardCuriosityWorker`) that must be about a *subject* rather than about the user. Enforced as a running deficit rather than a coin flip, so the ratio holds across the handful of drafts a day these workers make. `0` restores the pre-K87 behaviour where every note was a question about him waiting to happen; `1` means she never drafts one again, which is its own failure.
 
 ### F1 — background fact-checker
 

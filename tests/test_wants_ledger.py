@@ -452,6 +452,30 @@ class WorkerTests(unittest.TestCase):
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertEqual(state.wants[0].source_ref, "fc:mem:4")
         self.assertIn("Jacob", state.wants[0].text)
+        self.assertEqual(state.wants[0].kind, "ask")
+
+    def test_a_wondering_becomes_a_share_want(self) -> None:
+        # K87: the only producer of a ``share`` want. Filing it as an
+        # ``ask`` would hand K53 an interview line under a new label.
+        kv = _KvStore()
+        from app.core.proactive.forward_curiosity_worker import (
+            FORWARD_CURIOSITY_JOURNAL_KEY,
+        )
+
+        kv.set(FORWARD_CURIOSITY_JOURNAL_KEY, json.dumps([
+            {
+                "at": "2026-06-10T10:00:00",
+                "question": "Cold brew tastes better on the second day.",
+                "source": "wondering",
+                "source_id": "oq:11",
+            },
+        ]))
+        worker = self._worker(kv)
+        self.assertEqual(worker.run()["added"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(state.wants[0].kind, "share")
+        self.assertNotIn("Jacob", state.wants[0].text)
+        self.assertIn("Cold brew", state.wants[0].text)
 
     def test_disabled_skips(self) -> None:
         kv = _KvStore()

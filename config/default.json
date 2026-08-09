@@ -162,6 +162,7 @@
     "curiosity_seed_max_per_run": 2,
     "curiosity_seed_min_novelty": 0.85,
     "curiosity_seed_resolve_threshold": 0.50,
+    "curiosity_subject_quota": 0.40,
     "topic_graph_filter_threshold": 0.65,
     "wants_ledger_enabled": true,
     "wants_growth_per_day": 0.25,

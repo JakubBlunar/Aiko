@@ -121,21 +121,19 @@ class NarrativeBlockTests(unittest.TestCase):
         self.assertIn("fish-shaped cookie idea", block)
 
     def test_per_source_kind_labels(self) -> None:
-        cases: list[tuple[str, str]] = [
-            ("open_question", "wanting to ask"),
-            ("callback", "loose thread"),
-            ("promise", "said you'd do"),
-            ("reflection", "on your mind"),
-            ("agenda", "goal you're tracking"),
-            ("resume", "where you left off"),
+        cases: list[tuple[str, str, str]] = [
+            ("open_question", "Maybe ask Jacob about his week.", "wanting to ask"),
+            ("callback", "placeholder text", "loose thread"),
+            ("promise", "placeholder text", "said you'd do"),
+            ("reflection", "placeholder text", "on your mind"),
+            ("agenda", "placeholder text", "goal you're tracking"),
+            ("resume", "placeholder text", "where you left off"),
         ]
-        for kind, fragment in cases:
+        for kind, text, fragment in cases:
             with self.subTest(kind=kind):
                 store = _StubStore(
                     nudge=_StubNudge(
-                        user_id="jacob",
-                        text="placeholder text",
-                        source_kind=kind,
+                        user_id="jacob", text=text, source_kind=kind,
                     ),
                 )
                 controller = _make_controller(store=store)
@@ -174,6 +172,51 @@ class NarrativeBlockTests(unittest.TestCase):
         self.assertNotEqual(first, "")
         self.assertEqual(store.consume_calls, [])
         self.assertEqual(store.get_fresh_calls, ["jacob", "jacob"])
+
+    def test_a_subject_note_is_framed_as_hers_to_offer(self) -> None:
+        # K87: the curiosity worker's subject mode writes into the same
+        # ``open_question`` kind, so the label has to come from the text
+        # rather than the kind.
+        store = _StubStore(
+            nudge=_StubNudge(
+                user_id="jacob",
+                text="Maybe bring up that cold brew improves overnight.",
+                source_kind="open_question",
+            ),
+        )
+        controller = _make_controller(store=store)
+        block = controller._render_narrative_block()
+        self.assertIn("Something of your own", block)
+        self.assertNotIn("wanting to ask", block)
+
+    def test_the_share_first_gate_keeps_a_subject_note(self) -> None:
+        # K47 mutes the open_question nudge because it hands her a
+        # ready-made question. A subject note is the material the gate
+        # is asking for, so muting it would be self-defeating.
+        controller = _make_controller(
+            store=_StubStore(
+                nudge=_StubNudge(
+                    user_id="jacob",
+                    text="Maybe bring up that cold brew improves overnight.",
+                    source_kind="open_question",
+                ),
+            ),
+        )
+        controller._question_balance_suppressed = lambda: True  # type: ignore[method-assign]
+        self.assertIn("cold brew", controller._render_narrative_block())
+
+    def test_the_share_first_gate_still_mutes_a_question(self) -> None:
+        controller = _make_controller(
+            store=_StubStore(
+                nudge=_StubNudge(
+                    user_id="jacob",
+                    text="Maybe ask Jacob about his week.",
+                    source_kind="open_question",
+                ),
+            ),
+        )
+        controller._question_balance_suppressed = lambda: True  # type: ignore[method-assign]
+        self.assertEqual(controller._render_narrative_block(), "")
 
     def test_get_fresh_exception_returns_empty(self) -> None:
         """A broken store must not kill the prompt build (the assembler

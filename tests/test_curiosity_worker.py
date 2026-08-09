@@ -5,6 +5,7 @@ import unittest
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.proactive.curiosity_subject import MODE_PERSON, MODE_SUBJECT
 from app.core.proactive.curiosity_worker import (
     CuriosityWorker,
     _clean_curiosity_output,
@@ -98,6 +99,9 @@ def _make(
     interest_rows: list | None = None,
     cluster_anchor_enabled: bool = True,
     quiet_min_days: float = 7.0,
+    # K87 off by default so the pre-existing cases stay about the
+    # person path they were written for; SubjectQuotaTests turns it on.
+    subject_quota: float = 0.0,
 ) -> tuple[CuriosityWorker, _FakeOllama, _FakeMemoryStore]:
     ollama = _FakeOllama(ollama_output)
     memory = _FakeMemoryStore()
@@ -116,6 +120,7 @@ def _make(
         ),
         cluster_anchor_enabled=cluster_anchor_enabled,
         quiet_min_days=quiet_min_days,
+        subject_quota=subject_quota,
     )
     return worker, ollama, memory
 
@@ -358,6 +363,103 @@ class ClusterAnchorTests(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         self.assertEqual(worker.stats()["anchored_on_interest"], 0)
+
+
+# ── K87: curiosity that isn't about him ─────────────────────────────
+
+_SUBJECT_LINE = (
+    "Maybe bring up that cold brew tastes better on the second day."
+)
+
+
+class SubjectModeOutputTests(unittest.TestCase):
+    def test_the_subject_prefix_is_accepted(self) -> None:
+        self.assertEqual(
+            _clean_curiosity_output(_SUBJECT_LINE, mode=MODE_SUBJECT),
+            _SUBJECT_LINE,
+        )
+
+    def test_a_bare_bring_up_is_salvaged(self) -> None:
+        out = _clean_curiosity_output(
+            "bring up that the garden smells different after rain.",
+            mode=MODE_SUBJECT,
+        )
+        self.assertTrue(out.lower().startswith("maybe bring up"))
+
+    def test_the_ask_prefix_is_rejected_in_subject_mode(self) -> None:
+        self.assertEqual(
+            _clean_curiosity_output(
+                "Maybe ask Jacob how his week went.", mode=MODE_SUBJECT,
+            ),
+            "",
+        )
+
+    def test_the_bring_up_prefix_is_rejected_in_person_mode(self) -> None:
+        self.assertEqual(_clean_curiosity_output(_SUBJECT_LINE), "")
+
+
+class SubjectQuotaTests(unittest.TestCase):
+    @staticmethod
+    def _sys_prompt(ollama: _FakeOllama) -> str:
+        return next(
+            m["content"] for m in ollama.last_messages if m["role"] == "system"
+        )
+
+    def _run(self, worker: CuriosityWorker):
+        return worker.maybe_run(
+            session_key="s1",
+            user_text="yeah",
+            assistant_text="...",
+            arc_label="casual_check_in",
+        )
+
+    def test_a_cold_start_drafts_her_own_subject_first(self) -> None:
+        worker, ollama, memory = _make(
+            ollama_output=_SUBJECT_LINE, subject_quota=0.4,
+        )
+        result = self._run(worker)
+        self.assertIsNotNone(result)
+        self.assertIn("Maybe bring up", self._sys_prompt(ollama))
+        self.assertEqual(memory.adds[0].content, _SUBJECT_LINE)
+        self.assertEqual(worker.stats()["subject_mode"], 1)
+
+    def test_the_quota_alternates_rather_than_sticking(self) -> None:
+        worker, ollama, _ = _make(subject_quota=0.4)
+        modes: list[str] = []
+        for _ in range(10):
+            self._run(worker)
+            prompt = self._sys_prompt(ollama)
+            modes.append(
+                MODE_SUBJECT if "Maybe bring up" in prompt else MODE_PERSON
+            )
+        self.assertEqual(modes.count(MODE_SUBJECT), 4)
+
+    def test_a_zero_quota_never_leaves_the_person_path(self) -> None:
+        worker, ollama, _ = _make(subject_quota=0.0)
+        for _ in range(5):
+            self._run(worker)
+            self.assertNotIn("Maybe bring up", self._sys_prompt(ollama))
+        self.assertEqual(worker.stats()["subject_mode"], 0)
+
+    def test_a_subject_draft_that_asks_about_him_is_discarded(self) -> None:
+        # The prefix is right but the content drifted back to
+        # interviewing. Storing it would let the quota be satisfied by
+        # wording rather than by substance.
+        worker, _ollama, memory = _make(
+            ollama_output="Maybe bring up how his week has been going.",
+            subject_quota=1.0,
+        )
+        self.assertIsNone(self._run(worker))
+        self.assertEqual(memory.adds, [])
+        self.assertEqual(worker.stats()["subject_mode_rejected"], 1)
+
+    def test_the_subject_prompt_forbids_asking_about_him(self) -> None:
+        worker, ollama, _ = _make(
+            ollama_output=_SUBJECT_LINE, subject_quota=1.0,
+        )
+        self._run(worker)
+        prompt = self._sys_prompt(ollama)
+        self.assertIn("NOT be a question about Jacob", prompt)
 
 
 if __name__ == "__main__":

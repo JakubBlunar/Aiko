@@ -2490,6 +2490,14 @@ class AgentSettings:
     # A cluster counts as "quiet" once its newest member is at least this
     # many days old. Higher → only reach back to long-dormant interests.
     curiosity_worker_quiet_days: float = 7.0
+    # ── K87: curiosity that isn't about him ───────────────────────────
+    # Share of what the curiosity generators draft that must be about a
+    # *subject* rather than about the user. Enforced as a running
+    # deficit, not a coin flip, so the ratio holds over a handful of
+    # drafts a day. 0 → the pre-K87 behaviour, where every note was an
+    # interview question waiting to happen; 1 → she never drafts a
+    # question about his life again, which is its own failure.
+    curiosity_subject_quota: float = 0.4
     # ── F2.1 personality backlog: knowledge-gap memory-match resolver ─
     # Companion to F1's web-search resolver. F1 closes a gap by going
     # to look the answer up; this worker closes it by noticing the

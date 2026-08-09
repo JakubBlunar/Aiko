@@ -58,9 +58,11 @@ class _FakeMemoryStore:
         *,
         future_plans: list[_FakeMemory] | None = None,
         callbacks: list[_FakeMemory] | None = None,
+        open_questions: list[_FakeMemory] | None = None,
     ) -> None:
         self._future = future_plans or []
         self._callbacks = callbacks or []
+        self._open_questions = open_questions or []
 
     def list_by_temporal_type(self, temporal_type: str) -> list[_FakeMemory]:
         if temporal_type == "future_plan":
@@ -70,6 +72,8 @@ class _FakeMemoryStore:
     def iter_by_kind(self, kind: str) -> list[_FakeMemory]:
         if kind == "callback":
             return list(self._callbacks)
+        if kind == "open_question":
+            return list(self._open_questions)
         return []
 
 
@@ -97,6 +101,9 @@ def _make_worker(
     cooldown: float = 3600.0,
     cues=None,
     seed: int = 0,
+    # K87 off by default so the existing cases stay about the two
+    # user-centred pools they were written for.
+    subject_quota: float = 0.0,
 ) -> ForwardCuriosityWorker:
     return ForwardCuriosityWorker(
         memory_store=store,
@@ -112,6 +119,7 @@ def _make_worker(
         interval_seconds=1800.0,
         cooldown_seconds=cooldown,
         journal_max=8,
+        subject_quota_provider=lambda: subject_quota,
         rng=random.Random(seed),
     )
 
@@ -240,6 +248,120 @@ class QuestionCueRenderTests(unittest.TestCase):
 
     def test_an_empty_question_renders_nothing(self) -> None:
         self.assertEqual(render_question_cue({"question": "  "}), "")
+
+
+# ── K87: curiosity that isn't about him ─────────────────────────────
+
+
+_SUBJECT_NOTE = (
+    "Maybe bring up that cold brew tastes better on the second day."
+)
+
+
+class SubjectSourceTests(unittest.TestCase):
+    def _store(self, *, depth: int = 8) -> _FakeMemoryStore:
+        # Deep on both sides: the worker de-dups against the journal
+        # ring, so a one-candidate pool would empty after a single draft
+        # and every later run would look like a quota decision.
+        return _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(
+                    i, f"his package number {i} arriving Thursday",
+                    temporal_type="future_plan",
+                )
+                for i in range(1, depth + 1)
+            ],
+            open_questions=[
+                _FakeMemory(
+                    100 + i,
+                    f"Maybe bring up that cold brew number {i} tastes "
+                    "better on the second day.",
+                    kind="open_question",
+                )
+                for i in range(1, depth + 1)
+            ],
+        )
+
+    def test_a_subject_note_becomes_a_statement(self) -> None:
+        kv = _FakeKV()
+        store = _FakeMemoryStore(
+            open_questions=[_FakeMemory(11, _SUBJECT_NOTE, kind="open_question")],
+        )
+        worker = _make_worker(
+            store=store, kv=kv, cooldown=0.0, subject_quota=1.0,
+        )
+        result = worker.run()
+        self.assertEqual(result["source"], "wondering")
+        self.assertEqual(
+            result["question"],
+            "Cold brew tastes better on the second day.",
+        )
+
+    def test_a_note_that_asks_about_him_is_not_a_subject_source(self) -> None:
+        kv = _FakeKV()
+        store = _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(7, "his move", temporal_type="future_plan"),
+            ],
+            open_questions=[
+                _FakeMemory(
+                    12,
+                    "Maybe ask Jacob how his week went.",
+                    kind="open_question",
+                ),
+            ],
+        )
+        worker = _make_worker(
+            store=store, kv=kv, cooldown=0.0, subject_quota=1.0,
+        )
+        # A full quota with no subject candidate falls back to the
+        # user-centred pool rather than treating the "ask" note as hers.
+        self.assertEqual(worker.run()["source"], "future_plan")
+
+    def test_a_zero_quota_never_draws_from_her_own_notes(self) -> None:
+        kv = _FakeKV()
+        for _ in range(5):
+            worker = _make_worker(
+                store=self._store(), kv=kv, cooldown=0.0, subject_quota=0.0,
+            )
+            self.assertEqual(worker.run()["source"], "future_plan")
+
+    def test_the_quota_splits_the_two_pools(self) -> None:
+        kv = _FakeKV()
+        sources: list[str] = []
+        for _ in range(8):
+            worker = _make_worker(
+                store=self._store(), kv=kv, cooldown=0.0, subject_quota=0.5,
+            )
+            sources.append(worker.run()["source"])
+        self.assertEqual(sources.count("wondering"), 4)
+
+    def test_only_one_pool_available_ignores_the_quota(self) -> None:
+        # No user-centred candidates at all: a zero quota must not mean
+        # "draft nothing".
+        kv = _FakeKV()
+        store = _FakeMemoryStore(
+            open_questions=[_FakeMemory(11, _SUBJECT_NOTE, kind="open_question")],
+        )
+        worker = _make_worker(
+            store=store, kv=kv, cooldown=0.0, subject_quota=0.0,
+        )
+        self.assertEqual(worker.run()["source"], "wondering")
+
+    def test_the_cue_frames_it_as_hers_to_offer(self) -> None:
+        line = render_question_cue({
+            "question": "Cold brew tastes better on the second day.",
+            "source": "wondering",
+        })
+        self.assertIn("yours to say", line)
+        self.assertNotIn("You've been wondering", line)
+
+    def test_a_user_centred_entry_keeps_the_question_frame(self) -> None:
+        line = render_question_cue({
+            "question": "how the move went",
+            "source": "future_plan",
+        })
+        self.assertTrue(line.startswith("You've been wondering"))
 
 
 class GateTests(unittest.TestCase):

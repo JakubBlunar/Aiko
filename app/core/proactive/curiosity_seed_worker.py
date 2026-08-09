@@ -32,6 +32,15 @@ A seed is not something Aiko remembers -- it is something she has not
 said yet -- so it belongs in the cue pool with the other six, and all
 three of those stop.
 
+K87 split the output in two. The prompt used to ask for topics she is
+curious about *with* the user, so every seed was bond-scoped and the
+whole shelf could only be discharged by asking him something. Seeds now
+carry an ``about`` label -- ``subject`` for a curiosity about a thing
+she would still have alone, ``user`` for the bond-scoped kind -- and
+``agent.curiosity_subject_quota`` is enforced against the standing pool
+rather than merely requested in the prompt, because a prompt-only quota
+is satisfied by relabelling.
+
 The worker is opt-out via ``agent.curiosity_seed_enabled`` and paced by
 inventory: ``curiosity_seed_max_active`` is the pool's target stock, and
 a full shelf reports no demand rather than being caught by a cap after
@@ -50,6 +59,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.curiosity_subject import (
+    MODE_PERSON,
+    MODE_SUBJECT,
+    deficit,
+    is_person_directed,
+)
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
@@ -66,16 +81,26 @@ log = logging.getLogger("app.curiosity_seed_worker")
 
 _SYSTEM_PROMPT = (
     "You are an inner-life worker for an AI companion named {assistant_name}. "
-    "Propose new topics {assistant_name} is quietly curious about with "
-    "{user_name} -- topics that have NOT come up yet but feel natural for "
-    "their relationship. You must avoid topics close to anything in the "
-    "ALREADY-DISCUSSED list. Lean toward small, specific, sensory or "
+    "Propose new topics {assistant_name} is quietly curious about -- topics "
+    "that have NOT come up yet. You must avoid topics close to anything in "
+    "the ALREADY-DISCUSSED list. Lean toward small, specific, sensory or "
     "emotional curiosities (rituals, habits, daydreams, taste in something "
-    "concrete) over big philosophical questions. "
+    "concrete) over big philosophical questions.\n"
+    "\n"
+    "Each seed is one of two kinds, and you must label which:\n"
+    "  - \"user\": something about {user_name} -- their life, their habits, "
+    "what they think. Discharged by asking them.\n"
+    "  - \"subject\": something about a THING, that {assistant_name} is "
+    "curious about for its own sake and would still be curious about alone. "
+    "Discharged by saying what she noticed or wants to try. It must NOT be "
+    "a question about {user_name}.\n"
+    "At least {min_subject} of your seeds must be \"subject\" seeds.\n"
+    "\n"
     "Reply with ONE JSON object on a single line and nothing else. "
     "Schema: {{\"seeds\": [{{\"topic\": \"<= 80 chars\", "
     "\"prompt_text\": \"<= 160 chars, written in {assistant_name}'s warm voice "
-    "as if she might say it aloud later\", \"why\": \"<= 120 chars\"}}, ...] }}. "
+    "as if she might say it aloud later\", \"why\": \"<= 120 chars\", "
+    "\"about\": \"user\" | \"subject\"}}, ...] }}. "
     "Return between {min_seeds} and {max_seeds} entries."
 )
 
@@ -332,7 +357,21 @@ class CuriositySeedWorker:
             if seed.embedding is not None and len(seed.embedding) > 0
         ]
 
+        # K87: order the batch so the subject shortfall against the
+        # standing pool is served first. The prompt asks for subject
+        # seeds; this is what makes them actually get written, since a
+        # ``max_per_run`` of 2 otherwise just takes whatever the model
+        # happened to list first.
+        user_name = self._resolve_user_name()
+        modes = {
+            id(c): self._classify(c, user_name) for c in candidates
+        }
+        candidates = self._order_by_quota(
+            candidates, modes, stock=active_seeds, batch=max_per_run,
+        )
+
         wrote: list[int] = []
+        wrote_subject = 0
         rejected_graph = 0
         rejected_novelty = 0
         rejected_dup = 0
@@ -385,6 +424,7 @@ class CuriositySeedWorker:
                 rejected_novelty += 1
                 continue
 
+            about = modes.get(id(candidate), MODE_PERSON)
             cue_id = self._write_seed(
                 topic=topic,
                 prompt_text=prompt_text,
@@ -392,18 +432,22 @@ class CuriositySeedWorker:
                 candidate_score=max(0.0, 1.0 - best_sim),
                 embedding=embedding,
                 now=now,
+                about=about,
             )
             if not cue_id:
                 rejected_dup += 1
                 continue
             wrote.append(cue_id)
+            if about == MODE_SUBJECT:
+                wrote_subject += 1
             existing_seed_vecs.append(embedding)
             self._notify(cue_id, topic=topic, prompt_text=prompt_text)
 
         log.info(
-            "curiosity_seed run done: wrote=%d candidates=%d "
+            "curiosity_seed run done: wrote=%d (subject=%d) candidates=%d "
             "rejected(graph=%d novelty=%d dedupe=%d) llm_ms=%.0f",
             len(wrote),
+            wrote_subject,
             len(candidates),
             rejected_graph,
             rejected_novelty,
@@ -413,12 +457,73 @@ class CuriositySeedWorker:
         return {
             "checked": len(candidates),
             "wrote": len(wrote),
+            "wrote_subject": wrote_subject,
             "cue_ids": wrote,
             "rejected_graph": rejected_graph,
             "rejected_novelty": rejected_novelty,
             "rejected_dedupe": rejected_dup,
             "llm_ms": int(llm_ms),
         }
+
+    # ── K87 quota ─────────────────────────────────────────────────────
+
+    def _subject_quota(self) -> float:
+        return min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        self._agent_settings, "curiosity_subject_quota", 0.4,
+                    )
+                ),
+            ),
+        )
+
+    def _stock_modes(self, stock: list["CueRow"]) -> list[str]:
+        """The subject/person split of the seeds already in the pool.
+
+        Seeds written before K87 carry no ``about`` in their payload;
+        they were all bond-scoped by construction, so reading them as
+        person-mode is the accurate answer rather than a default.
+        """
+        out: list[str] = []
+        for row in stock:
+            payload = getattr(row, "payload", None) or {}
+            value = str(payload.get("about") or "") if isinstance(
+                payload, dict,
+            ) else ""
+            out.append(MODE_SUBJECT if value == MODE_SUBJECT else MODE_PERSON)
+        return out
+
+    def _order_by_quota(
+        self,
+        candidates: list[dict[str, Any]],
+        modes: dict[int, str],
+        *,
+        stock: list["CueRow"],
+        batch: int,
+    ) -> list[dict[str, Any]]:
+        """Front-load as many subject seeds as the shortfall calls for.
+
+        A reorder rather than a filter: everything the model proposed
+        stays available, because the write loop drops candidates for
+        novelty and graph overlap and a filtered batch could leave the
+        run writing nothing at all.
+        """
+        need = deficit(
+            self._stock_modes(stock), quota=self._subject_quota(), total=batch,
+        )
+        if need <= 0:
+            return candidates
+        head: list[dict[str, Any]] = []
+        tail: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if len(head) < need and modes.get(id(candidate)) == MODE_SUBJECT:
+                head.append(candidate)
+            else:
+                tail.append(candidate)
+        return head + tail
 
     # ── context pack ──────────────────────────────────────────────────
 
@@ -496,6 +601,7 @@ class CuriositySeedWorker:
             user_name=user_name,
             min_seeds=_MIN_SEEDS,
             max_seeds=_MAX_SEEDS,
+            min_subject=max(1, round(self._subject_quota() * _MAX_SEEDS)),
         )
         user_payload = _USER_TEMPLATE.format(
             persona=persona_text or "(persona unavailable)",
@@ -562,8 +668,28 @@ class CuriositySeedWorker:
                 "topic": topic,
                 "prompt_text": prompt_text,
                 "why": why,
+                "about": str(entry.get("about") or "").strip().lower(),
             })
         return out
+
+    def _classify(self, candidate: dict[str, Any], user_name: str) -> str:
+        """Which side of the K87 quota does this seed fall on?
+
+        The model's own ``about`` label is taken as the claim and the
+        text as the evidence: a seed labelled ``subject`` that reads as
+        a question about him is filed as ``user`` anyway. Without that
+        check the quota would be satisfied by relabelling rather than by
+        producing different seeds, which is the failure mode of every
+        prompt-only quota.
+        """
+        text = f"{candidate.get('topic', '')} {candidate.get('prompt_text', '')}"
+        if is_person_directed(text, user_name):
+            return MODE_PERSON
+        claimed = str(candidate.get("about") or "")
+        # A missing label falls through to the text, which is the honest
+        # reading: an older model that ignores the new field still gets
+        # classified by what its seed actually says.
+        return MODE_PERSON if claimed in ("user", MODE_PERSON) else MODE_SUBJECT
 
     # ── pool write ───────────────────────────────────────────────────
 
@@ -576,6 +702,7 @@ class CuriositySeedWorker:
         candidate_score: float,
         embedding: Any,
         now: datetime,
+        about: str = MODE_PERSON,
     ) -> int:
         """Queue one seed in the pool. Returns the row id, or 0.
 
@@ -592,6 +719,7 @@ class CuriositySeedWorker:
                     "prompt_text": prompt_text,
                     "why": why,
                     "source": "llm",
+                    "about": about,
                     "generated_at": now.isoformat(),
                     "candidate_score": float(candidate_score),
                 },
