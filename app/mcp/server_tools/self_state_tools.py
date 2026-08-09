@@ -1555,14 +1555,17 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def get_thread_ownership_state() -> str:
-        """K55 — dump the opened-thread slot + settings.
+        """K55 / K89 — dump the opened-thread stake + settings.
 
         ``owned_thread`` is the topic Aiko opened on her last
-        directive turn, awaiting exactly one reply evaluation
-        (``null`` when no thread is open — the normal state).
-        ``pending_open`` shows a stamp armed at assembly time that
-        the post-turn hook hasn't consumed yet (only ever non-null
-        mid-turn).
+        directive turn (``null`` when no thread is open — the normal
+        state). ``stake`` is what's left of her K89 pressure,
+        ``returns_used`` how many times she has already circled back,
+        and ``last_cosine`` how close the previous unanswered reply
+        came — a drop past ``cooling_margin`` retires the remaining
+        return. ``pending_open`` shows a stamp armed at assembly time
+        that the post-turn hook hasn't consumed yet (only ever
+        non-null mid-turn).
         """
         try:
             agent = session._settings.agent
@@ -1578,6 +1581,12 @@ def register(mcp, session: "SessionController") -> None:
                         "source": thread.source,
                         "embedded": thread.embedding is not None,
                         "opened_at": thread.opened_at.isoformat(),
+                        "stake": round(float(thread.stake), 3),
+                        "returns_used": int(thread.returns_used),
+                        "last_cosine": (
+                            round(float(thread.last_cosine), 3)
+                            if thread.last_cosine is not None else None
+                        ),
                     }
                     if thread is not None else None
                 ),
@@ -1591,6 +1600,21 @@ def register(mcp, session: "SessionController") -> None:
                             agent, "thread_min_topical_similarity", 0.30,
                         )
                     ),
+                    "max_returns": int(
+                        getattr(agent, "thread_max_returns", 2)
+                    ),
+                    "stake_decay": float(
+                        getattr(agent, "thread_stake_decay", 0.35)
+                    ),
+                    "min_stake": float(
+                        getattr(agent, "thread_min_stake", 0.25)
+                    ),
+                    "max_age_minutes": float(
+                        getattr(agent, "thread_max_age_minutes", 45.0)
+                    ),
+                    "cooling_margin": float(
+                        getattr(agent, "thread_cooling_margin", 0.05)
+                    ),
                 },
             }
             return json.dumps(payload)
@@ -1601,12 +1625,14 @@ def register(mcp, session: "SessionController") -> None:
     def force_thread_open(topic: str) -> str:
         """K55 — stamp an owned thread directly (bypasses K53/K52).
 
-        The next user message gets the one-shot engaged-or-pivot
-        evaluation against ``topic``: send a short off-topic reply
-        and the "circle back" cue should land in
-        ``get_last_response_detail.system_prompt``; send an engaged
-        reply and the thread clears silently (watch
-        ``tail_logs(module_contains="thread")`` for the verdict).
+        The next user message is evaluated against ``topic``: a short
+        off-topic reply lands the "circle back" cue in
+        ``get_last_response_detail.system_prompt`` and leaves the
+        thread live for one more (quieter) return; a *long* off-topic
+        reply retires it silently as a real change of subject; an
+        engaged reply clears it. Watch
+        ``tail_logs(module_contains="thread")`` for the verdict and
+        the K89 outcome.
         """
         try:
             from app.core.conversation import thread_ownership as _town

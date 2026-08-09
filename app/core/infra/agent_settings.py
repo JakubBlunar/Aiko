@@ -916,6 +916,25 @@ class AgentSettings:
     # embedding at or above which the reply counts as engaged
     # regardless of length ("yeah I loved it" is an answer).
     thread_min_topical_similarity: float = 0.30
+    # ── K89: the thread is a short-lived stake, not a single shot ────
+    # Hard guard rail on how many times she may circle back to one
+    # thread. The stake arithmetic below normally decides first; this
+    # exists so no combination of the other knobs can produce a third
+    # nudge, which is where a return becomes nagging.
+    thread_max_returns: int = 2
+    # What one return costs, out of a stake that starts at 1.0. A
+    # return is granted only while what's left after paying stays at
+    # or above ``thread_min_stake``, so these two together buy two.
+    thread_stake_decay: float = 0.35
+    thread_min_stake: float = 0.25
+    # A thread is a live thing. Past this age a return is a
+    # resurrection rather than a circle-back, however much stake is
+    # left, so the thread retires silently.
+    thread_max_age_minutes: float = 45.0
+    # How much further from the thread a second unanswered reply may
+    # drift before she reads it as "not biting" and retires the
+    # remaining return instead of spending it.
+    thread_cooling_margin: float = 0.05
     # ── K54 topic appetite — she's allowed to be bored ────────────────
     # Master switch for the once-per-conversation "tapped out on this
     # topic, here's my offer instead" permission slip.
