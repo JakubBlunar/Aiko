@@ -22,6 +22,14 @@ This worker is the silent producer. During a quiet window it:
   * appends ``{at, question, source, source_id}`` to a small kv_meta
     journal ring (``aiko.forward_curiosity``).
 
+K87 gave it a third pool. ``future_plan`` and ``callback`` are both his
+life by construction, so a worker fed only by them could only ever break
+a long silence with a question about him -- and this is the cue that
+fires on exactly the turn where she has the most room to lead. The
+``wondering`` source draws her own subject notes (the curiosity worker's
+subject mode) and drafts a *statement* rather than a question, with
+``agent.curiosity_subject_quota`` deciding how the two split.
+
 The consumer is :meth:`InnerLifeProvidersMixin._render_forward_curiosity_block`,
 which on the first turn after a >= ``forward_curiosity_min_gap_hours``
 gap folds the newest unseen question into the prompt as one optional,
@@ -52,6 +60,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
+from app.core.proactive.curiosity_subject import (
+    MODE_PERSON,
+    MODE_SUBJECT,
+    is_person_directed,
+    wants_subject,
+)
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
@@ -98,9 +112,15 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 @dataclass(frozen=True)
 class QuestionCandidate:
-    """One topic Aiko could ask the user about, + its provenance."""
+    """One topic Aiko could raise on her return, + its provenance.
 
-    source: str  # "future_plan" | "callback"
+    ``source`` also decides the *shape* of what gets drafted:
+    ``future_plan`` and ``callback`` are things in his life and produce
+    a question, while K87's ``wondering`` is a subject of her own and
+    produces a statement she can open with.
+    """
+
+    source: str  # "future_plan" | "callback" | "wondering"
     source_id: str
     topic: str
     # When the source memory was written. ``topic`` is that memory's raw
@@ -155,6 +175,11 @@ def render_question_cue(entry: dict[str, Any]) -> str:
     Written into ``cue_pool`` at production time. The "ask it if it fits"
     handling that used to trail this now arrives with the hoisted persona
     section, so it is only in the prompt on the turns the cue fires.
+
+    K87's ``wondering`` entries get a different line. "You've been
+    wondering how the interview went" reads as a prompt to ask; the same
+    frame around a subject of hers would too, and the whole point of the
+    subject side is that it is hers to offer rather than his to answer.
     """
     question = str(entry.get("question") or "").strip()
     if not question:
@@ -164,6 +189,12 @@ def render_question_cue(entry: dict[str, Any]) -> str:
     # possibly months back. Resolved here, at render, so the journal
     # entry keeps the original phrasing.
     question = timephrase.resolve_deictics(question, entry.get("source_at"))
+    if str(entry.get("source") or "") == "wondering":
+        return (
+            f"Something of your own you've been chewing on: {question} "
+            "Offer it if there's room -- it's yours to say, not his to "
+            "answer."
+        )
     return f"You've been wondering {question}."
 
 
@@ -188,6 +219,7 @@ class ForwardCuriosityWorker:
         interval_seconds: float = 1800.0,
         cooldown_seconds: float = 3600.0,
         journal_max: int = 8,
+        subject_quota_provider: Callable[[], float] | None = None,
         rng: random.Random | None = None,
     ) -> None:
         self._memory_store = memory_store
@@ -203,6 +235,7 @@ class ForwardCuriosityWorker:
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
         self._journal_max = max(1, int(journal_max))
+        self._subject_quota_provider = subject_quota_provider or (lambda: 0.4)
         self._rng = rng or random.Random()
         # MCP debug: arm a specific source_id for the next run().
         self._forced_source_id: str | None = None
@@ -338,6 +371,29 @@ class ForwardCuriosityWorker:
                 )
             )
 
+        # K87: her own subject wonderings, written by the curiosity
+        # worker's subject mode. The two pools above are both his life
+        # by construction, so without this the worker could only ever
+        # come back from a long absence with a question about him.
+        user_name = self._resolve(self._user_display_name_provider)
+        for mem in self._safe_iter_kind("open_question"):
+            sid = str(getattr(mem, "id", "") or "")
+            topic = (getattr(mem, "content", "") or "").strip()
+            if not sid or not topic or sid in already:
+                continue
+            if is_person_directed(topic, user_name):
+                continue
+            if normalise_subject(topic) in pooled:
+                continue
+            candidates.append(
+                QuestionCandidate(
+                    source="wondering",
+                    source_id=f"oq:{sid}",
+                    topic=topic,
+                    source_at=str(getattr(mem, "created_at", "") or ""),
+                )
+            )
+
         if not candidates:
             return None
 
@@ -349,13 +405,42 @@ class ForwardCuriosityWorker:
                 if cand.source_id == forced:
                     return cand
 
-        return self._rng.choice(candidates)
+        return self._rng.choice(self._quota_pool(candidates))
+
+    def _quota_pool(
+        self, candidates: list[QuestionCandidate],
+    ) -> list[QuestionCandidate]:
+        """Narrow the draw to one side of the K87 quota when it is owed.
+
+        The recent journal is the history, so the ratio is measured over
+        what actually got drafted rather than over what happened to be
+        available. When the quota is satisfied the full pool is returned
+        and the choice stays uniform, which keeps the person side from
+        starving in the other direction.
+        """
+        quota = min(
+            1.0,
+            max(0.0, float(self._subject_quota_provider() or 0.0)),
+        )
+        subject = [c for c in candidates if c.source == "wondering"]
+        person = [c for c in candidates if c.source != "wondering"]
+        if not subject or not person:
+            return candidates
+        history = [
+            MODE_SUBJECT
+            if str(e.get("source") or "") == "wondering"
+            else MODE_PERSON
+            for e in load_questions(self._kv_get)[-_DEDUP_LOOKBACK:]
+        ]
+        return subject if wants_subject(history, quota=quota) else person
 
     # ── question composition ─────────────────────────────────────────
 
     def _compose_question(
         self, user_name: str, candidate: QuestionCandidate,
     ) -> str:
+        if candidate.source == "wondering":
+            return self._compose_wondering(candidate)
         fallback = self._fallback_question(candidate.topic)
         if self._ollama is None or not self._model:
             return fallback
@@ -412,6 +497,29 @@ class ForwardCuriosityWorker:
         except Exception:
             line = ""
         return line or fallback
+
+    def _compose_wondering(self, candidate: QuestionCandidate) -> str:
+        """K87: turn a subject note into something she can open with.
+
+        The note is already a one-line instruction to her future self
+        ("Maybe bring up that cold brew tastes better on the second
+        day"), so the deterministic fallback here is simply stripping
+        that prefix -- a model call would be spending tokens to
+        paraphrase a sentence that already says the thing.
+        """
+        topic = (candidate.topic or "").strip()
+        for prefix in ("maybe bring up that ", "maybe bring up "):
+            if topic.lower().startswith(prefix):
+                topic = topic[len(prefix):]
+                break
+        topic = topic.strip()
+        if not topic:
+            return ""
+        if len(topic) > 140:
+            topic = topic[:137].rsplit(" ", 1)[0] + "…"
+        if topic[-1] not in ".!?":
+            topic += "."
+        return topic[0].upper() + topic[1:]
 
     def _fallback_question(self, topic: str) -> str:
         snippet = (topic or "").strip()

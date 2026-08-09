@@ -1824,6 +1824,10 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             curiosity_worker_quiet_days=max(
                 0.0, float(agent_raw.get("curiosity_worker_quiet_days", 7.0)),
             ),
+            curiosity_subject_quota=min(
+                1.0,
+                max(0.0, float(agent_raw.get("curiosity_subject_quota", 0.4))),
+            ),
             gap_resolver_enabled=bool(
                 agent_raw.get("gap_resolver_enabled", True),
             ),

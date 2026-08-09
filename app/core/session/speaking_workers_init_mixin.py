@@ -174,6 +174,11 @@ class SpeakingWorkersInitMixin:
                     quiet_min_days=float(
                         getattr(settings.agent, "curiosity_worker_quiet_days", 7.0),
                     ),
+                    subject_quota=float(
+                        getattr(
+                            settings.agent, "curiosity_subject_quota", 0.4,
+                        ),
+                    ),
                 )
             except Exception:
                 log.warning("CuriosityWorker init failed", exc_info=True)

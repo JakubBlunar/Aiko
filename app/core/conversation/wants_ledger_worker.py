@@ -9,7 +9,8 @@ deterministic:
   about: ...").
 - **Forward-curiosity questions** (K34 journal ring on kv_meta) —
   the newest drafted wonderings become ``ask`` wants ("ask {user}
-  ...").
+  ..."), except for K87's ``wondering`` entries, which are subjects of
+  hers and become the ledger's only ``share`` wants.
 - **Active goals** (K1 ``GoalStore``) — the newest active goals
   become low-pressure ``steer`` wants ("steer toward something of
   yours: ...").
@@ -320,6 +321,20 @@ class WantsLedgerWorker:
                 continue
             ref = str(entry.get("source_id") or entry.get("at") or "").strip()
             if not ref:
+                continue
+            # K87: a ``wondering`` entry is a subject of hers, not a
+            # question about him, and it becomes the ledger's first
+            # ``share`` want. Filing it as an ``ask`` would hand K53 an
+            # interview line under a different label, which is exactly
+            # the failure the quota exists to prevent.
+            if str(entry.get("source") or "") == "wondering":
+                out.append((
+                    f"say what you've been chewing on: {_clip(question)}",
+                    "share",
+                    "forward_curiosity",
+                    f"fc:{ref}",
+                    0.15,
+                ))
                 continue
             out.append((
                 f"ask {name} {_clip(question)}",

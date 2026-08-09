@@ -22,14 +22,31 @@ Design constraints (calibrated against the plan):
     silently skip.
   * All state is in-memory; no DB writes beyond the open_question
     memory itself.
+
+K87 added a second mode. Every note this worker had ever written began
+"Maybe ask <name>", which meant the only way to discharge one was to
+ask him a question -- so the worker running more often made her a
+better interviewer and nothing else. A quota
+(``agent.curiosity_subject_quota``) now sends a share of the drafts
+down a **subject** path that produces "Maybe bring up ..." notes about
+a thing rather than about him, and a draft that drifts back into
+second person under that prefix is discarded rather than stored. See
+:mod:`app.core.proactive.curiosity_subject`.
 """
 from __future__ import annotations
 
+import collections
 import logging
 import re
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.proactive.curiosity_subject import (
+    MODE_PERSON,
+    MODE_SUBJECT,
+    is_person_directed,
+    wants_subject,
+)
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -45,6 +62,7 @@ def _build_curiosity_prompt(
     user_display_name: str = "the user",
     *,
     quiet_interest: str | None = None,
+    mode: str = MODE_PERSON,
 ) -> str:
     """Curiosity-worker prompt, templated on the user's display name.
 
@@ -58,8 +76,43 @@ def _build_curiosity_prompt(
     steers the follow-up to *circle back* to that interest instead of
     echoing the user's literal last words. With no quiet interest it falls
     back to the legacy "reference a word they just used" prompt.
+
+    K87: in ``MODE_SUBJECT`` the note is about a *thing* rather than
+    about him, and asks for "Maybe bring up" instead of "Maybe ask".
+    That is not cosmetic -- a note that opens "Maybe ask Jacob" can only
+    be discharged as a question, so as long as every note had that
+    prefix, every discharge was another interview turn.
     """
     name = user_display_name or "the user"
+    if mode == MODE_SUBJECT:
+        anchor = (
+            f"a subject that came up between you and {name}"
+            if not quiet_interest
+            else f"the subject of {quiet_interest}"
+        )
+        return (
+            f"You are Aiko in a quiet beat between turns. Something about "
+            f"{anchor} snagged your own attention -- not what {name} thinks "
+            "of it, the thing itself. You'd like to bring up your own angle "
+            "on it next time you speak.\n"
+            "\n"
+            "Compose ONE short instruction to your future self (<= 22 words, "
+            "third person, plain sentence). It must:\n"
+            "  - start with \"Maybe bring up\"\n"
+            "  - name the subject concretely\n"
+            "  - carry YOUR angle on it -- a hunch, a preference, something "
+            "you noticed or want to try\n"
+            f"  - NOT be a question about {name}, their day, their feelings, "
+            "or their opinion. This is yours to offer, not theirs to answer.\n"
+            "\n"
+            "Examples (do NOT copy verbatim):\n"
+            "  - \"Maybe bring up that cold brew tastes better on the "
+            "second day -- worth testing properly.\"\n"
+            "  - \"Maybe bring up how much of chess opening theory looks "
+            "like memorised superstition.\"\n"
+            "\n"
+            "Output ONLY the sentence. No quotes, no JSON, no preamble."
+        )
     if quiet_interest:
         return (
             f"You are Aiko in a quiet beat between turns. {name} has been "
@@ -152,6 +205,8 @@ class CuriosityWorker:
         interest_provider: "Callable[[], Any] | None" = None,
         cluster_anchor_enabled: bool = True,
         quiet_min_days: float = 7.0,
+        subject_quota: float = 0.4,
+        mode_history: int = 10,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -169,6 +224,16 @@ class CuriosityWorker:
         self._interest_provider = interest_provider
         self._cluster_anchor_enabled = bool(cluster_anchor_enabled)
         self._quiet_min_days = max(0.0, float(quiet_min_days))
+        # K87: the share of drafts that should be about a subject rather
+        # than about him. Held in memory rather than read back off the
+        # ``open_question`` rows because the quota is about the flow of
+        # new drafts -- the stored rows are dominated by years of
+        # person-mode notes and would keep the deficit pinned open.
+        self._subject_quota = max(0.0, min(1.0, float(subject_quota)))
+        self._mode_history_len = max(2, int(mode_history))
+        self._mode_history: collections.deque[str] = collections.deque(
+            maxlen=self._mode_history_len,
+        )
         self._last_run_turn = -10**9
         self._last_run_at = 0.0
         self._turn_counter = 0
@@ -181,6 +246,9 @@ class CuriosityWorker:
             "skipped_user_already_asked": 0,
             "skipped_no_topic": 0,
             "anchored_on_interest": 0,
+            "subject_mode": 0,
+            "person_mode": 0,
+            "subject_mode_rejected": 0,
             "completed": 0,
             "failed": 0,
             "memories_written": 0,
@@ -267,6 +335,17 @@ class CuriosityWorker:
         if quiet_interest:
             self._stats["anchored_on_interest"] += 1
 
+        # K87: does the quota still owe us a note about a subject?
+        mode = (
+            MODE_SUBJECT
+            if wants_subject(self._mode_history, quota=self._subject_quota)
+            else MODE_PERSON
+        )
+        self._mode_history.append(mode)
+        self._stats[
+            "subject_mode" if mode == MODE_SUBJECT else "person_mode"
+        ] += 1
+
         prompt_user = self._compose_user_payload(
             user_text=user_text,
             assistant_text=assistant_text,
@@ -281,7 +360,9 @@ class CuriosityWorker:
                     {
                         "role": "system",
                         "content": _build_curiosity_prompt(
-                            user_name, quiet_interest=quiet_interest,
+                            user_name,
+                            quiet_interest=quiet_interest,
+                            mode=mode,
                         ),
                     },
                     {"role": "user", "content": prompt_user},
@@ -299,8 +380,18 @@ class CuriosityWorker:
             self._stats["failed"] += 1
             return None
 
-        cleaned = _clean_curiosity_output(raw, user_display_name=user_name)
+        cleaned = _clean_curiosity_output(
+            raw, user_display_name=user_name, mode=mode,
+        )
         if not cleaned:
+            self._stats["skipped_no_topic"] += 1
+            return None
+        if mode == MODE_SUBJECT and is_person_directed(cleaned, user_name):
+            # The model drifted back to interviewing under a "bring up"
+            # prefix. Dropping the draft rather than storing it keeps the
+            # quota honest: a note that reads as a question about him
+            # would be discharged as one no matter what mode produced it.
+            self._stats["subject_mode_rejected"] += 1
             self._stats["skipped_no_topic"] += 1
             return None
         try:
@@ -397,14 +488,21 @@ def _clean_curiosity_output(
     raw: str,
     *,
     user_display_name: str = "Jacob",
+    mode: str = MODE_PERSON,
 ) -> str:
     """Tidy up the LLM's one-liner: strip quotes, collapse whitespace,
     enforce the required prefix. Returns ``""`` when the output doesn't
     look like a usable instruction.
 
-    The required prefix is ``"Maybe ask <user_display_name>"`` (case
-    insensitive). When the LLM emits a slightly different prefix
-    (``"Ask <name>..."``) we salvage it by prepending ``"Maybe "``.
+    In person mode the required prefix is ``"Maybe ask
+    <user_display_name>"`` (case insensitive); when the LLM emits a
+    slightly different prefix (``"Ask <name>..."``) we salvage it by
+    prepending ``"Maybe "``.
+
+    In K87's subject mode it is ``"Maybe bring up"``, with the same
+    salvage on a bare ``"Bring up..."``. The prefix is what the narrative
+    provider reads to decide whether the note is an ask or an offer, so
+    it has to be exact.
     """
     text = (raw or "").strip()
     if not text:
@@ -421,11 +519,14 @@ def _clean_curiosity_output(
     if not text:
         return ""
     name = (user_display_name or "the user").strip().lower() or "the user"
-    expected_prefix = f"maybe ask {name}"
-    ask_phrase = f"ask {name}"
+    if mode == MODE_SUBJECT:
+        expected_prefix, salvage_phrase = "maybe bring up", "bring up"
+    else:
+        expected_prefix = f"maybe ask {name}"
+        salvage_phrase = f"ask {name}"
     if not text.lower().startswith(expected_prefix):
-        if ask_phrase in text.lower():
-            idx = text.lower().find(ask_phrase)
+        if salvage_phrase in text.lower():
+            idx = text.lower().find(salvage_phrase)
             text = "Maybe " + text[idx:]
         else:
             return ""

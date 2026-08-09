@@ -1144,6 +1144,7 @@ class CuriosityClusterAnchorSettingsTests(unittest.TestCase):
         for k in (
             "curiosity_worker_cluster_anchor_enabled",
             "curiosity_worker_quiet_days",
+            "curiosity_subject_quota",
         ):
             cfg.get("agent", {}).pop(k, None)
         if agent_extra is not None:
@@ -1174,6 +1175,23 @@ class CuriosityClusterAnchorSettingsTests(unittest.TestCase):
         )
         result = load_settings(config_path=path)
         self.assertAlmostEqual(result.agent.curiosity_worker_quiet_days, 0.0)
+
+    def test_subject_quota_defaults_and_clamps(self) -> None:
+        # K87. Shared by all three curiosity generators.
+        self.assertAlmostEqual(
+            load_settings(
+                config_path=self._write_config()
+            ).agent.curiosity_subject_quota,
+            0.4,
+        )
+        for raw, expected in ((-1.0, 0.0), (2.5, 1.0), (0.75, 0.75)):
+            path = self._write_config(
+                agent_extra={"curiosity_subject_quota": raw},
+            )
+            self.assertAlmostEqual(
+                load_settings(config_path=path).agent.curiosity_subject_quota,
+                expected,
+            )
 
 
 class BeliefInterestBiasSettingsTests(unittest.TestCase):
