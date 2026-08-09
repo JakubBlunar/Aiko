@@ -14,12 +14,16 @@ quiet-window gate as the promotion worker.
 
 Schema v10 — also runs two cheap reclassification passes per tick:
 
-  - ``future_plan`` rows whose ``event_time`` slipped at least an
-    hour into the past are flipped to ``past_event`` with a fresh
-    ``relevance_until = event_time + 7d``. The 1-hour buffer keeps
-    a plan flagged as "future" through the moment it's actually
-    happening (no premature flip if Aiko has the chat open while
-    the user is at the gym).
+  - ``future_plan`` rows that have stopped being future are flipped
+    to ``past_event`` with a fresh ``relevance_until``. Two signals
+    retire a plan: an ``event_time`` at least an hour into the past
+    (the 1-hour buffer keeps a plan flagged "future" through the
+    moment it's actually happening, so no premature flip if Aiko has
+    the chat open while the user is at the gym), or an expired
+    ``relevance_until`` (plus ``_CLOCKLESS_PLAN_GRACE``) for the plans
+    the extractor could not pin to a clock at all -- "next week",
+    "soon", "in the near future". Those clockless plans are the common
+    case and without the second signal they never expire at all.
   - ``past_event`` rows whose ``relevance_until`` already passed
     are demoted to the ``archive`` tier so they stop crowding RAG
     while staying available for archive / reflection work.
@@ -34,7 +38,7 @@ from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
-    from app.core.memory.memory_store import MemoryStore
+    from app.core.memory.memory_store import Memory, MemoryStore
     from app.core.infra.settings import MemorySettings
     from app.core.infra.engagement_clock import EngagementClock
 
@@ -52,6 +56,16 @@ _FUTURE_TO_PAST_BUFFER = timedelta(hours=1)
 # extractor's default for past_event so freshly-extracted history
 # rolls off after a week.
 _PAST_EVENT_RELEVANCE_WINDOW = timedelta(days=7)
+# Slack past ``relevance_until`` before a plan the user never pinned to
+# a clock is treated as history. Deliberately much longer than that
+# column implies: for a clockless plan ``relevance_until`` is only
+# ``created_at + 1 day``, a *retrieval* expiry chosen to keep a vague
+# "next week" out of RAG rather than a claim that the plan is dead.
+# Retiring on it directly would make "did the cookies ever happen?"
+# unaskable after a single day. A fortnight is about how long a vague
+# plan stays worth asking about, and it still retires the 30-to-60-day
+# rows that were previously immortal.
+_CLOCKLESS_PLAN_GRACE = timedelta(days=14)
 
 
 class MemoryDecayWorker:
@@ -302,32 +316,42 @@ class MemoryDecayWorker:
         now = timephrase.utcnow()
         future_cutoff = (now - _FUTURE_TO_PAST_BUFFER).isoformat()
         relevance_cutoff = now.isoformat()
+        plan_cutoff = (now - _CLOCKLESS_PLAN_GRACE).isoformat()
 
         out = {
             "future_plans_to_past": 0,
             "past_events_archived": 0,
         }
 
-        # Pass 1: future_plan -> past_event. We only flip rows whose
-        # event_time strictly precedes ``now - buffer`` so a plan
+        # Pass 1: future_plan -> past_event. There are two ways a plan
+        # stops being a plan. An ``event_time`` that precedes ``now -
+        # buffer`` is the precise one, and the buffer means a plan
         # currently happening keeps its "(planned for tonight 20:00)"
-        # framing in retrieval until the moment is over.
-        try:
-            overdue = self._store.list_by_temporal_type(
-                "future_plan",
-                event_time_before=future_cutoff,
-            )
-        except Exception:
-            log.debug("list future_plans failed", exc_info=True)
-            overdue = []
+        # framing in retrieval until the moment is over. But the
+        # extractor can only pin an event_time when the user named a
+        # time: "next week" / "soon" / "in the near future" all produce
+        # a plan with no clock on it, and those rows used to be
+        # immortal -- forever a pending future, long after the thing
+        # happened, still feeding forward-curiosity questions like
+        # "did we ever manage to reschedule that evening date?" about
+        # an evening that had already happened. ``relevance_until`` is
+        # derived for *every* future_plan, so it retires the clockless
+        # ones -- after a grace window, since for them that column is
+        # only ``created_at + 1 day`` and means "stop surfacing this in
+        # RAG", not "this plan is over".
+        overdue = self._overdue_future_plans(future_cutoff, plan_cutoff)
         for mem in overdue:
             try:
                 event_dt = self._parse_iso(mem.event_time)
                 # Anchor the new relevance window on event_time so a
                 # plan that slipped recognised hours ago still gets
                 # the full retrospective window from when it actually
-                # happened, not when the worker noticed.
-                anchor = event_dt if event_dt is not None else now
+                # happened, not when the worker noticed. With no
+                # event_time, anchor on the moment the plan went stale
+                # rather than on ``now``: a plan that expired weeks ago
+                # should fall straight through pass 2 into the archive,
+                # not come back as a freshly-relevant past event.
+                anchor = event_dt or self._parse_iso(mem.relevance_until) or now
                 new_relevance = (anchor + _PAST_EVENT_RELEVANCE_WINDOW).isoformat()
                 self._store.reclassify(
                     mem.id,
@@ -369,6 +393,28 @@ class MemoryDecayWorker:
                 out["past_events_archived"],
             )
         return out
+
+    def _overdue_future_plans(
+        self, event_cutoff: str, plan_cutoff: str,
+    ) -> list["Memory"]:
+        """Future plans that have stopped being future, by either signal.
+
+        Deduped by id, event-time hits first, so a row carrying both
+        signals is reclassified once and anchored on its event_time.
+        """
+        found: dict[object, "Memory"] = {}
+        for kwargs in (
+            {"event_time_before": event_cutoff},
+            {"relevance_until_before": plan_cutoff},
+        ):
+            try:
+                rows = self._store.list_by_temporal_type("future_plan", **kwargs)
+            except Exception:
+                log.debug("list future_plans failed (%s)", kwargs, exc_info=True)
+                continue
+            for mem in rows:
+                found.setdefault(mem.id, mem)
+        return list(found.values())
 
     @staticmethod
     def _parse_iso(value: str | None) -> datetime | None:
