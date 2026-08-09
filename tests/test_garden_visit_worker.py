@@ -41,6 +41,7 @@ def _make_worker(
     need_dry_days: float = 2.0,
     need_visit_floor_seconds: float = 0.75 * 3600,
     seed: int = 0,
+    pursuit_notes=None,
 ):
     return GardenVisitWorker(
         store,
@@ -52,6 +53,7 @@ def _make_worker(
         relax_ratio=relax_ratio,
         need_dry_days=need_dry_days,
         need_visit_floor_seconds=need_visit_floor_seconds,
+        pursuit_notes=pursuit_notes,
     )
 
 
@@ -230,6 +232,44 @@ class GardenVisitWorkerH15Tests(unittest.TestCase):
             self.assertTrue(journal)
             self.assertEqual(journal[-1]["key"], "garden")
             self.assertTrue(journal[-1]["summary"])
+
+    def test_a_tended_garden_is_kept_as_a_pursuit_note(self) -> None:
+        """K85b — the ring holds eight entries; this one outlives it."""
+        written: list[dict] = []
+
+        class _Notes:
+            def write(self, content, *, source, topic="", at=None, extra=None):
+                written.append(
+                    {"content": content, "source": source, "topic": topic,
+                     "extra": extra or {}}
+                )
+                return len(written)
+
+        with _TempWorld() as store:
+            worker = _make_worker(
+                store, relax_ratio=0.0, pursuit_notes=_Notes(),
+            )
+            result = worker.run()
+            self.assertEqual(result["flavour"], "tend")
+            self.assertEqual(len(written), 1)
+            self.assertEqual(written[0]["source"], "away_beat")
+            self.assertEqual(written[0]["topic"], "garden")
+            self.assertEqual(written[0]["content"], result["summary"])
+
+    def test_a_relax_visit_leaves_no_note(self) -> None:
+        written: list[dict] = []
+
+        class _Notes:
+            def write(self, content, *, source, topic="", at=None, extra=None):
+                written.append({"content": content})
+                return 1
+
+        with _TempWorld() as store:
+            worker = _make_worker(
+                store, relax_ratio=1.0, pursuit_notes=_Notes(),
+            )
+            self.assertEqual(worker.run()["flavour"], "relax")
+            self.assertEqual(written, [])
 
     def test_relax_flavour_skips_watering(self) -> None:
         from app.core.world.idle_activity_worker import load_journal

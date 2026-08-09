@@ -254,6 +254,21 @@ VALID_KINDS = {
     # otherwise a normal pool member (decays slowly, pinnable, retrievable
     # through ordinary cosine RAG).
     "diary",
+    # K85b personality backlog — a durable trace of something Aiko did in
+    # her own time that she has an angle on: a hobby milestone or wrap-up
+    # (:class:`app.core.proactive.hobby_worker.HobbyWorker`) or a
+    # substantive away beat -- one that changed her room, ran as a
+    # multi-beat episode, or closed the day's intention
+    # (:class:`app.core.world.idle_activity_worker.IdleAwayActivityWorker`).
+    # Everything her inner life produced before this was written to a
+    # ring or a blob that overwrites itself: the away journal keeps 8
+    # entries, ``_rotate_hobby`` drops the finished thread and starts the
+    # counter at zero. Nothing survived long enough to become a concept,
+    # which is why ``taste`` has two rows. This kind is the supply line
+    # the ``pursuit`` concept kind mines. Carries ``{source, topic,
+    # noted_at}`` in the ``metadata`` JSON column; long_term tier, since
+    # the whole point is that it outlives the ring it came from.
+    "pursuit_note",
 }
 
 # L13 — the first-person kinds whose writes get a ``metadata.affect`` stamp

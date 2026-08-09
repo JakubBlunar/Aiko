@@ -2982,6 +2982,9 @@ class SpeakingWorkersInitMixin:
                             journal_max=getattr(
                                 _gmem, "garden_journal_max", 8,
                             ),
+                            # K85b — a tended garden is the clearest
+                            # away beat she has; keep it past the ring.
+                            pursuit_notes=self._pursuit_note_writer(),
                         )
                         self._idle_scheduler.register(
                             self._garden_visit_worker

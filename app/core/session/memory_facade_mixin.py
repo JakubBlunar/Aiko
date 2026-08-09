@@ -86,8 +86,13 @@ class MemoryFacadeMixin:
     # both ReflectionWorker and DreamWorker output (the latter carries a
     # ``[dream] `` content prefix), plus knowledge-map ``[mindmap] ``
     # noticings — the render side strips those prefixes into badges.
+    # ``pursuit_note`` (K85b) is here because it is the same thing a
+    # diary entry is -- first person, about her own time -- and reading
+    # the diary without them would hide the half of her inner life that
+    # happened while he was away.
     DIARY_KINDS: tuple[str, ...] = (
         "diary", "reflection", "shared_moment", "open_question",
+        "pursuit_note",
     )
 
     def _diary_kinds(self, kind: str | None) -> list[str]:
