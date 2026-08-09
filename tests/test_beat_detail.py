@@ -33,7 +33,8 @@ class _Item:
         self.kind = kind
         self.quantity = quantity
         self.state = state if state is not None else {}
-        self.slug = slug
+        self.slug = slug or name.lower().replace(" ", "_")
+        self.consumable = kind == "food"
 
 
 def _plant(name: str, *, days_dry: float, stage: str = "growing") -> _Item:
@@ -125,6 +126,78 @@ class SnackTests(unittest.TestCase):
         )
         self.assertIn("chocolate chip cookies", line)
         self.assertEqual(line.count("cookies"), 1)
+
+
+class MealRhythmTests(unittest.TestCase):
+    """K91 — eating follows the hour instead of one shape all day."""
+
+    def _stock(self) -> list[_Item]:
+        return [
+            _Item("cookies", kind="food", quantity=8, slug="cookie_jar"),
+            _Item("ripe tomatoes", kind="food", quantity=4, slug="tomatoes"),
+        ]
+
+    def test_lunch_reaches_for_the_garden_produce(self) -> None:
+        pick = beat_detail.pick_food(self._stock(), period="midday")
+        assert pick is not None
+        self.assertEqual(pick.name, "ripe tomatoes")
+
+    def test_a_midnight_raid_reaches_for_the_treats(self) -> None:
+        pick = beat_detail.pick_food(self._stock(), period="late_night")
+        assert pick is not None
+        self.assertEqual(pick.name, "cookies")
+
+    def test_meals_are_named_by_the_hour(self) -> None:
+        tomatoes = _Item("ripe tomatoes", kind="food", quantity=4, slug="tomatoes")
+        self.assertIn(
+            "breakfast", beat_detail.snack_summary(tomatoes, period="morning")
+        )
+        self.assertIn(
+            "lunch", beat_detail.snack_summary(tomatoes, period="midday")
+        )
+        self.assertIn(
+            "dinner", beat_detail.snack_summary(tomatoes, period="evening")
+        )
+
+    def test_late_night_reads_as_a_raid(self) -> None:
+        cookies = _Item("cookies", kind="food", quantity=8)
+        line = beat_detail.snack_summary(cookies, period="late_night")
+        self.assertIn("midnight snack", line)
+
+    def test_an_unknown_period_keeps_the_plain_clause(self) -> None:
+        cookies = _Item("cookies", kind="food", quantity=8)
+        self.assertIn(
+            "had some of the", beat_detail.snack_summary(cookies, period="zzz")
+        )
+
+    def test_the_last_one_still_wins_over_the_meal_shape(self) -> None:
+        tomatoes = _Item("ripe tomatoes", kind="food", quantity=1, slug="tomatoes")
+        self.assertIn(
+            "last of the", beat_detail.snack_summary(tomatoes, period="midday")
+        )
+
+    def test_species_state_marks_an_item_as_produce(self) -> None:
+        harvest = _Item(
+            "mystery greens", kind="food", quantity=3, state={"species": "kale"}
+        )
+        treat = _Item("chocolate bar", kind="food", quantity=3)
+        pick = beat_detail.pick_food([treat, harvest], period="midday")
+        assert pick is not None
+        self.assertEqual(pick.name, "mystery greens")
+
+    def test_a_kitchen_with_only_treats_still_feeds_her(self) -> None:
+        treat = _Item("chocolate bar", kind="food", quantity=3)
+        pick = beat_detail.pick_food([treat], period="midday")
+        assert pick is not None
+        self.assertEqual(pick.name, "chocolate bar")
+
+    def test_an_empty_kitchen_yields_nothing(self) -> None:
+        self.assertIsNone(beat_detail.pick_food([], period="midday"))
+        self.assertIsNone(
+            beat_detail.pick_food(
+                [_Item("lamp", kind="decor")], period="midday",
+            )
+        )
 
 
 class PlantTests(unittest.TestCase):

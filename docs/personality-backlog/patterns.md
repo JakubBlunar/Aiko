@@ -102,6 +102,7 @@ on top of already-shipped infrastructure.
 | K88 | Anaphoric-opener detector — the measurable tell for following | ❌ open |
 | K89 | Sustained thread — leading past one turn | ❌ open |
 | K90 | Lead/follow metrics — make the whole family measurable | ❌ open |
+| K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped (see below) |
 
 ---
 
@@ -776,3 +777,87 @@ few anti-follow cases. Key files:
 [`persona_regression.py`](../../app/core/persona/persona_regression.py),
 [`data/persona/golden_turns.jsonl`](../../data/persona/golden_turns.jsonl), a
 new script under [`scripts/`](../../scripts/), optionally a Settings → Diagnostics panel.
+
+## K91. Lived-in away life — a day she had, not a day she narrated
+
+**✅ Shipped**, in four phases.
+
+**What was wrong.** The world model was already rich — `Item.state` tracked the
+paperback's chapter, the tea pot's fullness and flavour, every plant's stage and
+`last_watered_at` — and the away-beat narrator read none of it. `_pick_activity`
+templated from item *names*, so she could "curl up with The Glasshouse Letters"
+twice in a day while it sat at chapter 3 of 16, water a garden where both plants
+had just come into flower without mentioning either, and "steep a soothing cup
+of tea" that left the pot as full as it started. Nothing a beat said had any
+consequence, and nothing the room recorded reached what she said. Worse, beats
+were atomic: an afternoon read back as unrelated postcards (11:44 tea in the
+garden, 11:51 indoors dusting a keyboard, tea abandoned), and no day added up to
+anything because each beat was drawn independently of every other.
+
+**Phase 1 — beats read and write state.** Pure
+[`beat_detail.py`](../../app/core/world/beat_detail.py) composes each clause from
+the row the beat touched, and the H14 whole-beat prompt now sees state hints
+(`The Glasshouse Letters (reading, chapter 3 of 16; two botanists and a war)`)
+instead of a bare name list. An optional `ItemEffect` on `ActivityPlan` writes
+the change back through transitions the room *already owned* — H20's
+`advance_book` / `next_tea`, the store's `water_plant` — rather than inventing
+new state math, so reading actually moves the book and finishing one seeds an H17
+cue. Effects are a closed set and the model's `changed_item` is resolved against
+live inventory with the action **derived from the item's kind**, so it cannot
+request a transition an item doesn't support. The garden round measures dryness
+*before* the can goes round, which is the only reason it can name the pot that
+needed it — watering is what destroys that evidence.
+
+**Phase 2 — episodes.** Pure
+[`beat_episode.py`](../../app/core/world/beat_episode.py) holds a successor table
+encoding *continuation*, not variety: tea leads to settling down with it, a nap
+closes an episode because waking up is a new one. After a long quiet stretch a
+firing plays out 2–3 chained beats. An episode journals **one** entry carrying
+its `keys`, which means the surfacing provider renders the arc as one sentence
+with no changes on its side, the 8-entry ring keeps its history, and H18
+anti-repetition still sees every beat via the expanded key list. It is rephrased
+once rather than per beat, so an episode costs one generation and one unit
+against the daily cap — the same as a single beat. Candidate building moved to
+[`idle_activity_candidates_mixin.py`](../../app/core/world/idle_activity_candidates_mixin.py)
+because a chain must see the whole candidate set, with the plan types in
+[`idle_activity_plan.py`](../../app/core/world/idle_activity_plan.py) to break the
+import cycle and keep the worker under the size limit.
+
+**Phase 3 — the day's intention.** Pure
+[`day_intention.py`](../../app/core/world/day_intention.py) picks one intention
+per local day from what the world is asking for, in priority order — ripe produce
+spoils, a thirsty pot suffers, a nearly-finished book nags — then her H19 hobby,
+then a small self-directed pool so the spine exists in a becalmed room. It tilts
+the H18 draw (`intent_key` / `intent_boost`, a nudge with a floor, never a gate)
+and feeds the H14 prompt. The payoff is the close-out: the beat that satisfies it
+says so, which is what makes a day read as authored rather than sampled.
+Garden-keyed intentions are closed by `GardenVisitWorker`, since watering is its
+job — that's the other half of the loop. Yesterday's is discarded rather than
+carried over; an intention that survives the night stops being "today" and starts
+being a grudge. Switch `agent.day_intention_enabled`.
+
+**Phase 4 — the small things that made it repetitive.** Eating had one shape at
+every hour, so breakfast, lunch and a 2 a.m. raid on the biscuits were the same
+beat; `pick_food` now reaches for garden produce at mealtimes and the biscuit tin
+late at night, and phrases each accordingly. The species catalogue went from four
+plants to twelve (lettuce, mint, strawberry, chili, rosemary, spring onion,
+radish, peas), so a harvest is no longer one of four lines. And months of gifts
+had accreted four `cookies` rows in four rooms — correct at gift time, since a bag
+on the desk isn't the jar in the kitchenette, but it meant beats ate from an
+arbitrary one; `WorldStore.consolidate_consumables` folds same-slug food stacks
+into the largest, run as one more H20 slow-drift transition ("tidied the
+kitchen").
+
+Debug: `force_away_beat` reports the chain, the state each beat wrote back, and
+the day's intention — none of which was observable from outside before. Tests:
+[`test_beat_detail.py`](../../tests/test_beat_detail.py),
+[`test_beat_episode.py`](../../tests/test_beat_episode.py),
+[`test_day_intention.py`](../../tests/test_day_intention.py), plus the
+`ItemEffectTests` / `EpisodeTests` / `DayIntentionTests` / `MealRhythmTests`
+classes in the worker, garden and store suites.
+
+**Still open.** Beats are still not memories: nothing she does while away is
+written to `MemoryStore`, so she can't refer back to a specific afternoon weeks
+later, and none of it can promote an interest concept. That is the K85 dependency
+— the `interest_note` write it needs doesn't exist yet — and is the natural next
+step once K85 lands.

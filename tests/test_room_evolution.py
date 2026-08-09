@@ -98,7 +98,8 @@ class _FakeItem:
     def __init__(
         self, id_: int, slug: str, name: str, *,
         quantity: int = 1, state: dict | None = None,
-        consumable: bool = False,
+        consumable: bool = False, kind: str = "other",
+        location_id: int = 1,
     ) -> None:
         self.id = id_
         self.slug = slug
@@ -107,7 +108,8 @@ class _FakeItem:
         self.quantity = quantity
         self.state = state or {}
         self.consumable = consumable
-        self.location_id = 1
+        self.kind = kind
+        self.location_id = location_id
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "slug": self.slug, "name": self.name,
@@ -126,11 +128,44 @@ class _FakeWorld:
         self.locations = [_FakeLoc(9, "kitchenette")]
         self.added: list[dict[str, Any]] = []
 
-    def list_items(self) -> list[_FakeItem]:
-        return list(self._items.values())
+    def list_items(self, *, kind: str | None = None) -> list[_FakeItem]:
+        items = list(self._items.values())
+        if kind is not None:
+            items = [i for i in items if i.kind == kind]
+        return items
 
     def list_locations(self) -> list[_FakeLoc]:
         return list(self.locations)
+
+    def get_item(self, item_id: int) -> _FakeItem | None:
+        return self._items.get(int(item_id))
+
+    def remove_item(self, item_id: int) -> bool:
+        return self._items.pop(int(item_id), None) is not None
+
+    def consolidate_consumables(self) -> list[dict[str, Any]]:
+        groups: dict[str, list[_FakeItem]] = {}
+        for item in self._items.values():
+            if item.consumable and item.kind == "food":
+                groups.setdefault(item.slug, []).append(item)
+        merged: list[dict[str, Any]] = []
+        for slug, rows in groups.items():
+            if len(rows) < 2:
+                continue
+            rows.sort(key=lambda i: (i.quantity, i.id), reverse=True)
+            keeper, *rest = rows
+            keeper.quantity = sum(r.quantity for r in rows)
+            for row in rest:
+                self._items.pop(row.id, None)
+            merged.append(
+                {
+                    "slug": slug,
+                    "kept_id": keeper.id,
+                    "merged_ids": [r.id for r in rest],
+                    "quantity": keeper.quantity,
+                }
+            )
+        return merged
 
     def update_item(self, item_id: int, **kwargs: Any) -> _FakeItem | None:
         item = self._items.get(item_id)
@@ -246,6 +281,47 @@ class WorkerTests(unittest.TestCase):
         r = worker.run()
         self.assertEqual(r.get("kind"), "cookies")
         self.assertEqual(jar.quantity, 3)
+
+    def test_duplicate_food_stacks_get_folded_together(self) -> None:
+        """K91 — months of gifts leave four cookie rows in four rooms."""
+        kv = _FakeKV()
+        patches: list[dict[str, Any]] = []
+        jar = _FakeItem(
+            1, "cookie_jar", "cookies", quantity=3, consumable=True,
+            kind="food",
+        )
+        strays = [
+            _FakeItem(
+                idx, "cookies", "cookies", quantity=qty, consumable=True,
+                kind="food", location_id=idx,
+            )
+            for idx, qty in ((5, 9), (6, 19), (7, 39))
+        ]
+        world = _FakeWorld([jar, *strays])
+        worker = _worker(world=world, kv=kv, notify=patches.append)
+        # Only the kitchen transition is applicable: no pot, no book, and
+        # the jar is above the refill threshold.
+        worker._force = True
+        result = worker.run()
+        self.assertEqual(result.get("kind"), "kitchen")
+        remaining = [i for i in world.list_items() if i.slug == "cookies"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].quantity, 67)
+        self.assertTrue(any("deleted_item_id" in p for p in patches))
+
+    def test_a_tidy_kitchen_is_not_a_candidate(self) -> None:
+        kv = _FakeKV()
+        jar = _FakeItem(
+            1, "cookie_jar", "cookies", quantity=3, consumable=True,
+            kind="food",
+        )
+        world = _FakeWorld([jar])
+        worker = _worker(world=world, kv=kv)
+        signal = worker.demand(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        )
+        assert signal is not None
+        self.assertEqual(signal.reason, "no_candidates")
 
     def test_cookie_recreated_when_missing(self) -> None:
         kv = _FakeKV()

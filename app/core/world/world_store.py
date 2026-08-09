@@ -127,6 +127,65 @@ _SPECIES_CATALOG: dict[str, dict[str, Any]] = {
         "produce_name": "sunflower seeds",
         "produce_quantity_range": (3, 6),
     },
+    # K91 — a four-species garden made every harvest one of four lines.
+    # These are the plants a small balcony plot plausibly carries, chosen
+    # so the produce feeds the meal rhythm rather than the snack drawer.
+    "lettuce": {
+        "display_name": "lettuce",
+        "lifecycle": "annual",
+        "produce_species": "lettuce_leaves",
+        "produce_name": "crisp lettuce",
+        "produce_quantity_range": (2, 4),
+    },
+    "mint": {
+        "display_name": "mint",
+        "lifecycle": "perennial",
+        "produce_species": "mint_leaves",
+        "produce_name": "fresh mint",
+        "produce_quantity_range": (2, 5),
+    },
+    "strawberry": {
+        "display_name": "strawberry",
+        "lifecycle": "perennial",
+        "produce_species": "strawberries",
+        "produce_name": "ripe strawberries",
+        "produce_quantity_range": (2, 6),
+    },
+    "chili": {
+        "display_name": "chili",
+        "lifecycle": "perennial",
+        "produce_species": "chilies",
+        "produce_name": "small hot chilies",
+        "produce_quantity_range": (2, 5),
+    },
+    "rosemary": {
+        "display_name": "rosemary",
+        "lifecycle": "perennial",
+        "produce_species": "rosemary_sprigs",
+        "produce_name": "rosemary sprigs",
+        "produce_quantity_range": (1, 3),
+    },
+    "spring_onion": {
+        "display_name": "spring onion",
+        "lifecycle": "annual",
+        "produce_species": "spring_onions",
+        "produce_name": "spring onions",
+        "produce_quantity_range": (2, 4),
+    },
+    "radish": {
+        "display_name": "radish",
+        "lifecycle": "annual",
+        "produce_species": "radishes",
+        "produce_name": "peppery radishes",
+        "produce_quantity_range": (3, 6),
+    },
+    "peas": {
+        "display_name": "peas",
+        "lifecycle": "annual",
+        "produce_species": "pea_pods",
+        "produce_name": "sweet pea pods",
+        "produce_quantity_range": (3, 7),
+    },
 }
 
 # Fallback for unknown user-gifted species so the loop still closes.
@@ -1154,6 +1213,51 @@ class WorldStore:
         with self._lock:
             self._items.pop(iid, None)
         return True
+
+    def consolidate_consumables(self) -> list[dict[str, Any]]:
+        """Merge same-slug food stacks scattered across locations into one.
+
+        ``add_item`` stacks on ``(slug, location_id, given_by)``, which is
+        right at gift time -- a bag of cookies left on the desk is not the
+        jar in the kitchenette. Over months of gifts it still accretes
+        four "cookies" rows in four rooms, and the away beats then narrate
+        eating from an arbitrary one. This folds each food slug into the
+        largest stack and deletes the rest.
+
+        Returns one summary dict per merged slug (``slug``, ``kept_id``,
+        ``merged_ids``, ``quantity``) so the caller can broadcast and log.
+        """
+        with self._lock:
+            items = list(self._items.values())
+        groups: dict[str, list[Item]] = {}
+        for item in items:
+            if not item.consumable or item.kind != "food":
+                continue
+            groups.setdefault(item.slug, []).append(item)
+
+        merged: list[dict[str, Any]] = []
+        for slug, rows in groups.items():
+            if len(rows) < 2:
+                continue
+            rows.sort(key=lambda i: (i.quantity, i.id), reverse=True)
+            keeper, *rest = rows
+            total = sum(r.quantity for r in rows)
+            state = dict(keeper.state or {})
+            for row in rest:
+                for key, value in (row.state or {}).items():
+                    state.setdefault(key, value)
+            if self.update_item(keeper.id, quantity=total, state=state) is None:
+                continue
+            removed = [r.id for r in rest if self.remove_item(r.id)]
+            merged.append(
+                {
+                    "slug": slug,
+                    "kept_id": keeper.id,
+                    "merged_ids": removed,
+                    "quantity": total,
+                }
+            )
+        return merged
 
     # ── state (singleton) ────────────────────────────────────────────
 
