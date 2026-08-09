@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
+from app.core.world import beat_detail
 from app.core.world.idle_activity_worker import (
     append_journal,
 )
@@ -400,6 +401,7 @@ class GardenVisitWorker:
                 if seed is not None and seed.get("item") is not None:
                     self._broadcast({"item": seed["item"]})
                 continue
+            dry_days_before = beat_detail.dryness_days(plant, now=now)
             try:
                 refreshed = self._store.water_plant(plant.id, now=now)
             except Exception:
@@ -412,7 +414,15 @@ class GardenVisitWorker:
             if refreshed is None:
                 continue
             watered.append(
-                {"id": int(plant.id), "name": plant.name, "stage": stage}
+                {
+                    "id": int(plant.id),
+                    "name": plant.name,
+                    "stage": stage,
+                    # K91 — measured before the can went round, because
+                    # watering is exactly what destroys the evidence that
+                    # this pot was the one in trouble.
+                    "dry_days": dry_days_before,
+                }
             )
             self._broadcast({"item": refreshed.to_dict()})
         # Stamp return_at (jittered linger) + a fresh next_eligible jitter
@@ -482,7 +492,12 @@ class GardenVisitWorker:
         watered: list[dict[str, Any]],
         harvested: list[dict[str, Any]],
     ) -> str:
-        """Past-tense, casual gist of a tending visit for the journal."""
+        """Past-tense, casual gist of a tending visit for the journal.
+
+        K91: singles out the pot that actually needed the water, or a
+        stage worth reporting, so a round of watering stops reading as
+        the same anonymous chore every time.
+        """
         picked = [
             str(h.get("produce", {}).get("name") or h.get("produce_name") or "")
             for h in harvested
@@ -490,19 +505,43 @@ class GardenVisitWorker:
         picked = [p for p in picked if p]
         watered_names = [str(w.get("name") or "") for w in watered]
         watered_names = [w for w in watered_names if w]
+        note = self._standout_note(watered)
+
         if picked:
             crop = picked[0]
             if watered_names:
-                return (
+                base = (
                     f"was out in the garden — watered the plants and "
                     f"picked some ripe {crop}"
                 )
-            return f"was out in the garden and picked some ripe {crop}"
+            else:
+                base = f"was out in the garden and picked some ripe {crop}"
+            return base
+        if note:
+            return "was out watering the garden — " + note
         if len(watered_names) == 1:
             return f"was out watering the {watered_names[0]} in the garden"
         if watered_names:
             return "was out in the garden, watering the plants"
         return "wandered out to the garden to check on the plants"
+
+    @staticmethod
+    def _standout_note(watered: list[dict[str, Any]]) -> str | None:
+        """The one plant worth mentioning from this round, if any."""
+        if not watered:
+            return None
+        def dryness(entry: dict[str, Any]) -> float:
+            try:
+                return float(entry.get("dry_days") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        standout = max(watered, key=dryness)
+        return beat_detail.plant_note(
+            str(standout.get("name") or ""),
+            dryness(standout),
+            str(standout.get("stage") or ""),
+        )
 
     def _journal_visit(self, now: datetime, activity: str, summary: str) -> None:
         """Append the visit to the shared K36 away-activities journal ring.

@@ -13,6 +13,12 @@ quiet window it:
   * **mutates** the world to match — ``set_state(posture, activity)`` plus,
     where apt, ``consume_item`` (the tea) or ``update_item`` (move the
     cat) — and broadcasts the patch so the World tab updates live,
+  * **narrates from and writes back item state** (K91): the beat's clause
+    is composed from the row it touched via :mod:`beat_detail` (which
+    chapter the book is on, which pot is driest) and an optional
+    :class:`ItemEffect` advances that row through the room's existing
+    transitions, so what she says she did and what her room shows can no
+    longer drift apart,
   * composes a first-person one-liner (deterministic template, optionally
     rephrased by the local worker LLM with a safe fallback), and
   * appends ``{at, activity, summary}`` to a small kv_meta journal ring.
@@ -41,6 +47,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
+from app.core.world import beat_detail
 from app.core.world.activity_selection import weighted_pick
 from app.core.infra import timephrase
 
@@ -145,6 +152,32 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt
 
 
+# K91 — the effects a beat may have on the item it acted on. Deliberately
+# a closed set: the transition math is H20's (``room_evolution``) or the
+# store's (``water_plant``), so a beat can only ever move an item along a
+# path the room already understands.
+EFFECT_ADVANCE_BOOK = "advance_book"
+EFFECT_POUR_TEA = "pour_tea"
+EFFECT_WATER_PLANT = "water_plant"
+_VALID_EFFECTS: frozenset[str] = frozenset(
+    {EFFECT_ADVANCE_BOOK, EFFECT_POUR_TEA, EFFECT_WATER_PLANT}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemEffect:
+    """A state change a beat leaves behind on one item.
+
+    Declarative on purpose: the plan names the item and the transition,
+    and ``_apply_item_effect`` resolves it against the live row at apply
+    time. That keeps ``_pick_activity`` free of writes and means a stale
+    candidate can never write stale state.
+    """
+
+    item_id: int
+    action: str
+
+
 @dataclass(frozen=True)
 class ActivityPlan:
     """One chosen idle beat + the world mutation it implies."""
@@ -161,6 +194,9 @@ class ActivityPlan:
     # H14 — set when the worker LLM already composed a final summary, so
     # run() skips the rephrase pass.
     precomposed: bool = False
+    # K91 — the state this beat writes back, so what she says she did and
+    # what her room shows stop drifting apart.
+    item_effect: ItemEffect | None = None
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -404,7 +440,7 @@ class IdleAwayActivityWorker:
         if plan.key == "outing":
             self._mark_outing_fired(now)
 
-        self._apply_world_mutation(plan)
+        effect = self._apply_world_mutation(plan)
         summary = (
             plan.summary if plan.precomposed
             else self._compose_summary(user_name, plan)
@@ -434,6 +470,8 @@ class IdleAwayActivityWorker:
             "activity": plan.activity,
             "summary": summary,
         }
+        if effect:
+            result["item_effect"] = effect
         if seed:
             result["seed"] = seed
         return result
@@ -600,18 +638,37 @@ class IdleAwayActivityWorker:
             None,
         )
         if food is not None:
-            name = food.name
             candidates["snack"] = ActivityPlan(
                 key="snack",
                 posture="sitting",
                 activity="snacking",
-                summary=(
-                    f"had some of the {name} and just enjoyed the quiet for "
-                    "a bit"
-                ),
+                summary=beat_detail.snack_summary(food),
                 consume_item_id=food.id,
                 aiko_location_id=loc_kitchen.id if loc_kitchen else None,
             )
+
+        # Tea — pour from the pot, but only while there's tea in it. The
+        # pot is a gadget, so the food-based snack beat never sees it.
+        pot = next(
+            (
+                i
+                for i in items
+                if getattr(i, "slug", "") == "tea_pot"
+                or "tea pot" in (getattr(i, "name", "") or "").lower()
+            ),
+            None,
+        )
+        if pot is not None:
+            tea_line = beat_detail.tea_summary(pot)
+            if tea_line:
+                candidates["tea"] = ActivityPlan(
+                    key="tea",
+                    posture="standing",
+                    activity="making_tea",
+                    summary=tea_line,
+                    aiko_location_id=loc_kitchen.id if loc_kitchen else None,
+                    item_effect=ItemEffect(item_id=pot.id, action="pour_tea"),
+                )
 
         # Book — curl up with something on the shelf.
         book = next(
@@ -628,10 +685,13 @@ class IdleAwayActivityWorker:
                 key="read_book",
                 posture="curled_up",
                 activity="reading",
-                summary=f"curled up with {book.name} and read for a while",
+                summary=beat_detail.read_book_summary(book),
                 aiko_location_id=(
                     loc_beanbag.id if loc_beanbag
                     else (loc_bookshelf.id if loc_bookshelf else None)
+                ),
+                item_effect=ItemEffect(
+                    item_id=book.id, action=EFFECT_ADVANCE_BOOK,
                 ),
             )
 
@@ -815,7 +875,7 @@ class IdleAwayActivityWorker:
 
     # ── world mutation ───────────────────────────────────────────────
 
-    def _apply_world_mutation(self, plan: ActivityPlan) -> None:
+    def _apply_world_mutation(self, plan: ActivityPlan) -> dict[str, Any] | None:
         try:
             # H13 — relocate Aiko herself when the beat has a target spot,
             # otherwise leave her where she is (omit location_id entirely).
@@ -854,6 +914,100 @@ class IdleAwayActivityWorker:
                     self._broadcast({"item": moved.to_dict()})
             except Exception:
                 log.debug("away_activity update_item failed", exc_info=True)
+
+        if plan.item_effect is not None:
+            return self._apply_item_effect(plan.item_effect)
+        return None
+
+    # ── K91: beats write their state back ────────────────────────────
+
+    def _apply_item_effect(self, effect: ItemEffect) -> dict[str, Any] | None:
+        """Advance the item a beat acted on, reusing the room's own math.
+
+        Reading a chapter, pouring a cup and watering a pot are already
+        modelled -- by H20's ``room_evolution`` transitions and the
+        store's ``water_plant`` -- so this only has to route to them.
+        Returns a small result dict for the run log, or ``None`` when the
+        row is gone or the store can't service the action.
+        """
+        if effect.action not in _VALID_EFFECTS:
+            return None
+        try:
+            item = self._world_store.get_item(int(effect.item_id))
+        except Exception:
+            log.debug("away_activity effect lookup failed", exc_info=True)
+            return None
+        if item is None:
+            return None
+        try:
+            if effect.action == EFFECT_WATER_PLANT:
+                return self._effect_water_plant(item)
+            if effect.action == EFFECT_POUR_TEA:
+                return self._effect_pour_tea(item)
+            return self._effect_advance_book(item)
+        except Exception:
+            log.debug(
+                "away_activity effect failed action=%s", effect.action,
+                exc_info=True,
+            )
+            return None
+
+    def _effect_water_plant(self, item: Any) -> dict[str, Any] | None:
+        watered = self._world_store.water_plant(int(item.id))
+        if watered is None:
+            return None
+        self._broadcast({"item": watered.to_dict()})
+        return {"effect": EFFECT_WATER_PLANT, "item": watered.name}
+
+    def _effect_pour_tea(self, item: Any) -> dict[str, Any] | None:
+        from app.core.world import room_evolution as evo
+
+        new_state, new_desc, _event = evo.next_tea(item.state, self._rng)
+        updated = self._world_store.update_item(
+            int(item.id), description=new_desc, state=new_state,
+        )
+        if updated is None:
+            return None
+        self._broadcast({"item": updated.to_dict()})
+        return {
+            "effect": EFFECT_POUR_TEA,
+            "fullness": new_state.get("fullness"),
+        }
+
+    def _effect_advance_book(self, item: Any) -> dict[str, Any] | None:
+        """Read one chapter. Finishing is a real event, so it seeds a cue."""
+        from app.core.world import room_evolution as evo
+
+        new_state, new_name, new_desc, finished = evo.advance_book(
+            item.state, self._rng,
+        )
+        updated = self._world_store.update_item(
+            int(item.id), name=new_name, description=new_desc, state=new_state,
+        )
+        if updated is None:
+            return None
+        self._broadcast({"item": updated.to_dict()})
+        result: dict[str, Any] = {"effect": EFFECT_ADVANCE_BOOK}
+        if finished:
+            result["finished"] = finished
+            append_idle_seed(
+                self._kv_get,
+                self._kv_set,
+                {
+                    "at": _utcnow().isoformat(timespec="seconds"),
+                    "activity": "reading " + str(finished),
+                    "key": "read_book",
+                    "seed": (
+                        'I finished "' + str(finished) + '" while you were out '
+                        "— I want to talk about that ending."
+                    ),
+                },
+                max_entries=self._idle_seed_max_ring,
+            )
+            log.info("away_activity finished book: %s", finished)
+        else:
+            result["progress"] = new_state.get("progress")
+        return result
 
     # ── summary composition ──────────────────────────────────────────
 
@@ -920,9 +1074,10 @@ class IdleAwayActivityWorker:
             f"{getattr(loc, 'slug', '')} ({getattr(loc, 'name', '')})"
             for loc in locations
         )
-        item_names = ", ".join(
-            getattr(i, "name", "") for i in items[:12] if getattr(i, "name", "")
-        ) or "(nothing notable)"
+        # K91 — the model sees each thing's live state, not just its name,
+        # so it can write a beat *about* the dry pot or the half-read book
+        # instead of inventing generic business around a noun.
+        item_names = beat_detail.describe_items_for_prompt(items, now=_utcnow())
         recent = [
             str(e.get("activity") or "")
             for e in load_journal(self._kv_get)[-5:]
@@ -936,11 +1091,14 @@ class IdleAwayActivityWorker:
             f"Things around: {item_names}. "
             f"Recently you did: {recent_line} — pick something different. "
             "Choose one small, believable thing to do right now, grounded in "
-            "what's actually in the room. Reply with JSON only:\n"
+            "what's actually in the room — the states in brackets are real, "
+            "so prefer something they suggest. Reply with JSON only:\n"
             '{"location_slug": "<one of the slugs above>", '
             '"posture": "<sitting|lying|standing|curled_up|leaning>", '
             '"activity": "<short verb phrase, e.g. repotting_the_basil>", '
-            '"summary": "<one first-person past-tense clause>"}'
+            '"summary": "<one first-person past-tense clause>", '
+            '"changed_item": "<exact name of the one thing you used up, '
+            'watered or read, or \\"\\" if none>"}'
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -982,7 +1140,49 @@ class IdleAwayActivityWorker:
             summary=summary,
             aiko_location_id=(loc.id if loc is not None else None),
             precomposed=True,
+            item_effect=self._resolve_named_effect(
+                blob.get("changed_item"), items,
+            ),
         )
+
+    def _resolve_named_effect(
+        self, raw_name: Any, items: list[Any],
+    ) -> ItemEffect | None:
+        """Turn the model's ``changed_item`` into a legal effect, or ``None``.
+
+        The action is *derived* from the matched row's kind rather than
+        taken from the model, so there is no way to ask for a transition
+        the item doesn't support. An unmatched or unsupported name is
+        simply dropped -- the beat still happens, it just leaves no trace.
+        """
+        name = str(raw_name or "").strip().lower()
+        if not name:
+            return None
+        match = next(
+            (
+                i
+                for i in items
+                if (getattr(i, "name", "") or "").strip().lower() == name
+            ),
+            None,
+        )
+        if match is None:
+            return None
+        return self._effect_for_item(match)
+
+    @staticmethod
+    def _effect_for_item(item: Any) -> ItemEffect | None:
+        """The one transition an item supports, if any."""
+        kind = str(getattr(item, "kind", "") or "")
+        slug = str(getattr(item, "slug", "") or "")
+        lowered = (getattr(item, "name", "") or "").lower()
+        if kind == "plant":
+            return ItemEffect(item_id=int(item.id), action=EFFECT_WATER_PLANT)
+        if slug == "tea_pot" or "tea pot" in lowered:
+            return ItemEffect(item_id=int(item.id), action=EFFECT_POUR_TEA)
+        if kind == "book":
+            return ItemEffect(item_id=int(item.id), action=EFFECT_ADVANCE_BOOK)
+        return None
 
     # ── gates ────────────────────────────────────────────────────────
 
@@ -1138,6 +1338,10 @@ class IdleAwayActivityWorker:
 __all__ = [
     "IdleAwayActivityWorker",
     "ActivityPlan",
+    "ItemEffect",
+    "EFFECT_ADVANCE_BOOK",
+    "EFFECT_POUR_TEA",
+    "EFFECT_WATER_PLANT",
     "AWAY_ACTIVITIES_JOURNAL_KEY",
     "IDLE_SEEDS_KEY",
     "load_journal",

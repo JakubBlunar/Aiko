@@ -16,7 +16,10 @@ from typing import Any
 
 from app.core.world.idle_activity_worker import (
     AWAY_ACTIVITIES_JOURNAL_KEY,
+    EFFECT_POUR_TEA,
+    EFFECT_WATER_PLANT,
     IdleAwayActivityWorker,
+    load_idle_seeds,
     load_journal,
 )
 
@@ -42,6 +45,8 @@ class _FakeItem:
         consumable: bool = False,
         quantity: int = 1,
         location_id: int | None = None,
+        slug: str = "",
+        state: dict[str, Any] | None = None,
     ) -> None:
         self.id = id_
         self.name = name
@@ -49,6 +54,9 @@ class _FakeItem:
         self.consumable = consumable
         self.quantity = quantity
         self.location_id = location_id
+        self.slug = slug or name.lower().replace(" ", "_")
+        self.state: dict[str, Any] = state if state is not None else {}
+        self.description = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "quantity": self.quantity}
@@ -93,6 +101,7 @@ class _FakeWorldStore:
         self.set_state_calls: list[dict[str, Any]] = []
         self.consumed: list[int] = []
         self.moved: list[tuple[int, int]] = []
+        self.watered: list[int] = []
 
     def list_items(self) -> list[_FakeItem]:
         return list(self._items)
@@ -127,11 +136,42 @@ class _FakeWorldStore:
             return None, amount
         return item, amount
 
-    def update_item(self, item_id: int, *, location_id: int):
-        self.moved.append((item_id, location_id))
-        item = next((i for i in self._items if i.id == item_id), None)
-        if item is not None:
-            item.location_id = location_id
+    def get_item(self, item_id: int) -> _FakeItem | None:
+        return next((i for i in self._items if i.id == item_id), None)
+
+    def update_item(
+        self,
+        item_id: int,
+        *,
+        location_id: int | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        state: dict[str, Any] | None = None,
+        quantity: int | None = None,
+    ):
+        item = self.get_item(item_id)
+        if location_id is not None:
+            self.moved.append((item_id, location_id))
+            if item is not None:
+                item.location_id = location_id
+        if item is None:
+            return None
+        if name is not None:
+            item.name = name
+        if description is not None:
+            item.description = description
+        if state is not None:
+            item.state = dict(state)
+        if quantity is not None:
+            item.quantity = quantity
+        return item
+
+    def water_plant(self, item_id: int, *, now: Any = None) -> _FakeItem | None:
+        item = self.get_item(item_id)
+        if item is None or item.kind != "plant":
+            return None
+        self.watered.append(item_id)
+        item.state = {**item.state, "days_dry": 0.0}
         return item
 
 
@@ -338,6 +378,164 @@ class GateTests(unittest.TestCase):
         )
         result = worker.run()
         self.assertEqual(result["fired"], 1)
+
+
+class ItemEffectTests(unittest.TestCase):
+    """K91 pass 2 — a beat leaves a trace on the thing it used."""
+
+    def _book(self) -> _FakeItem:
+        return _FakeItem(
+            4,
+            "The Glasshouse Letters",
+            kind="book",
+            slug="scifi_paperback",
+            state={
+                "title": "The Glasshouse Letters",
+                "blurb": "two botanists",
+                "progress": 3,
+                "total": 16,
+                "status": "reading",
+            },
+        )
+
+    def _pot(self, fullness: str = "full") -> _FakeItem:
+        return _FakeItem(
+            9,
+            "tea pot",
+            kind="gadget",
+            slug="tea_pot",
+            state={"fullness": fullness, "flavor": "genmaicha"},
+        )
+
+    def test_reading_advances_the_book(self) -> None:
+        kv = _FakeKV()
+        book = self._book()
+        world = _FakeWorldStore(items=[book])
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertEqual(result["key"], "read_book")
+        self.assertEqual(book.state["progress"], 4)
+        self.assertEqual(result["item_effect"]["progress"], 4)
+
+    def test_two_reading_beats_report_different_places(self) -> None:
+        kv = _FakeKV()
+        book = self._book()
+        world = _FakeWorldStore(items=[book])
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0, daily_cap=99)
+        worker.force_activity("read_book")
+        worker.run()
+        worker.force_activity("read_book")
+        worker.run()
+        journal = load_journal(kv.get)
+        self.assertEqual(len(journal), 2)
+        self.assertNotEqual(journal[0]["summary"], journal[1]["summary"])
+        self.assertIn("three chapters in", journal[0]["summary"])
+        self.assertIn("four chapters in", journal[1]["summary"])
+
+    def test_finishing_a_book_seeds_a_cue_and_starts_a_new_one(self) -> None:
+        kv = _FakeKV()
+        book = self._book()
+        book.state["progress"] = 15  # one chapter from the end of 16
+        world = _FakeWorldStore(items=[book])
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertEqual(
+            result["item_effect"]["finished"], "The Glasshouse Letters"
+        )
+        self.assertNotEqual(book.state["title"], "The Glasshouse Letters")
+        self.assertEqual(book.state["progress"], 0)
+        seeds = load_idle_seeds(kv.get)
+        self.assertTrue(seeds)
+        self.assertIn("Glasshouse", seeds[-1]["seed"])
+
+    def test_pouring_tea_empties_the_pot_one_step(self) -> None:
+        kv = _FakeKV()
+        pot = self._pot("full")
+        world = _FakeWorldStore(items=[pot])
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertEqual(result["key"], "tea")
+        self.assertEqual(pot.state["fullness"], "half")
+        self.assertIn("genmaicha", result["summary"])
+
+    def test_empty_pot_offers_no_tea_beat(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(items=[self._pot("empty")])
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("tea")
+        result = worker.run()
+        # The forced key produced no candidate, so some other beat ran.
+        self.assertEqual(result["fired"], 1)
+        self.assertNotEqual(result["key"], "tea")
+
+    def test_snack_names_the_last_cookie(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    7, "cookies", kind="food", consumable=True, quantity=1,
+                    state={"flavor": "chocolate chip"},
+                )
+            ]
+        )
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("snack")
+        result = worker.run()
+        self.assertIn("last of the", result["summary"])
+
+    def test_effect_failure_does_not_lose_the_beat(self) -> None:
+        kv = _FakeKV()
+        book = self._book()
+        world = _FakeWorldStore(items=[book])
+
+        def boom(*_args: Any, **_kwargs: Any):
+            raise RuntimeError("store down")
+
+        world.update_item = boom  # type: ignore[method-assign]
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertNotIn("item_effect", result)
+        self.assertEqual(len(load_journal(kv.get)), 1)
+
+
+class NamedEffectResolutionTests(unittest.TestCase):
+    """The H14 ``changed_item`` name is validated, never trusted."""
+
+    def _worker(self) -> IdleAwayActivityWorker:
+        return _make_worker(world=_FakeWorldStore(), kv=_FakeKV(), cooldown=0.0)
+
+    def test_plant_resolves_to_watering(self) -> None:
+        plant = _FakeItem(13, "lavender pot", kind="plant")
+        effect = self._worker()._resolve_named_effect("lavender pot", [plant])
+        assert effect is not None
+        self.assertEqual(effect.action, EFFECT_WATER_PLANT)
+        self.assertEqual(effect.item_id, 13)
+
+    def test_tea_pot_resolves_by_slug(self) -> None:
+        pot = _FakeItem(9, "tea pot", kind="gadget", slug="tea_pot")
+        effect = self._worker()._resolve_named_effect("Tea Pot", [pot])
+        assert effect is not None
+        self.assertEqual(effect.action, EFFECT_POUR_TEA)
+
+    def test_unknown_name_is_dropped(self) -> None:
+        self.assertIsNone(
+            self._worker()._resolve_named_effect("a unicorn", [_FakeItem(1, "lamp")])
+        )
+
+    def test_item_without_a_transition_is_dropped(self) -> None:
+        keyboard = _FakeItem(2, "retro keyboard", kind="gadget")
+        self.assertIsNone(
+            self._worker()._resolve_named_effect("retro keyboard", [keyboard])
+        )
+
+    def test_blank_name_is_dropped(self) -> None:
+        self.assertIsNone(self._worker()._resolve_named_effect("", []))
+        self.assertIsNone(self._worker()._resolve_named_effect(None, []))
 
 
 class OutingTests(unittest.TestCase):
