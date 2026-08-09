@@ -198,6 +198,7 @@ def _make_worker(
     episode_min_gap_seconds: float = 0.0,
     day_intention: bool = False,
     hobby: str | None = None,
+    pursuit_notes: Any = None,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -223,6 +224,7 @@ def _make_worker(
         episode_min_gap_seconds=episode_min_gap_seconds,
         day_intention_enabled=day_intention,
         hobby_provider=(lambda: hobby) if hobby is not None else None,
+        pursuit_notes=pursuit_notes,
         rng=random.Random(seed),
     )
 
@@ -670,6 +672,114 @@ class EpisodeTests(unittest.TestCase):
         worker.force_activity("tea")
         result = worker.run()
         self.assertEqual(worker._recent_keys(), result["episode"])
+
+
+class _Notes:
+    """Captures pursuit-note writes without a memory layer."""
+
+    def __init__(self) -> None:
+        self.written: list[dict[str, Any]] = []
+
+    def write(
+        self,
+        content: str,
+        *,
+        source: str,
+        topic: str = "",
+        at: Any = None,
+        extra: dict[str, Any] | None = None,
+    ) -> int | None:
+        self.written.append(
+            {
+                "content": content,
+                "source": source,
+                "topic": topic,
+                "extra": extra or {},
+            }
+        )
+        return len(self.written)
+
+
+class PursuitNoteTests(unittest.TestCase):
+    """K85b — the beats worth keeping past the eight-entry ring."""
+
+    def test_a_beat_that_changed_the_room_is_kept(self) -> None:
+        kv = _FakeKV()
+        notes = _Notes()
+        book = _FakeItem(
+            4, "The Glasshouse Letters", kind="book", slug="scifi_paperback",
+            state={"title": "The Glasshouse Letters", "progress": 3,
+                   "total": 16},
+        )
+        worker = _make_worker(
+            world=_FakeWorldStore(items=[book]), kv=kv, cooldown=0.0,
+            pursuit_notes=notes,
+        )
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertEqual(len(notes.written), 1)
+        entry = notes.written[0]
+        self.assertEqual(entry["source"], "away_beat")
+        self.assertEqual(entry["topic"], "read_book")
+        self.assertEqual(entry["content"], result["summary"])
+        self.assertEqual(entry["extra"]["changed"], ["advance_book"])
+        self.assertEqual(result["pursuit_note_id"], 1)
+
+    def test_a_beat_that_left_no_trace_is_not(self) -> None:
+        kv = _FakeKV()
+        notes = _Notes()
+        worker = _make_worker(
+            world=_FakeWorldStore(items=[], locations=[]), kv=kv,
+            cooldown=0.0, pursuit_notes=notes,
+        )
+        worker.force_activity("doodle")
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertEqual(notes.written, [])
+        self.assertNotIn("pursuit_note_id", result)
+        # It still belongs in the ring -- it happened.
+        self.assertEqual(len(load_journal(kv.get)), 1)
+
+    def test_an_episode_is_kept_whole(self) -> None:
+        kv = _FakeKV()
+        notes = _Notes()
+        world = _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    9, "tea pot", kind="gadget", slug="tea_pot",
+                    state={"fullness": "full", "flavor": "genmaicha"},
+                ),
+                _FakeItem(
+                    4, "The Glasshouse Letters", kind="book",
+                    slug="scifi_paperback",
+                    state={"title": "The Glasshouse Letters", "progress": 3,
+                           "total": 16},
+                ),
+            ],
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the kitchenette", "kitchenette"),
+                _FakeLoc(3, "the beanbag", "beanbag"),
+            ],
+        )
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0,
+            pursuit_notes=notes,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertEqual(len(notes.written), 1)
+        self.assertEqual(
+            notes.written[0]["extra"]["keys"], result["episode"],
+        )
+
+    def test_no_writer_is_not_an_error(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0,
+        )
+        worker.force_activity("doodle")
+        self.assertEqual(worker.run()["fired"], 1)
 
 
 class DayIntentionTests(unittest.TestCase):

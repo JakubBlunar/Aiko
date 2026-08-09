@@ -40,6 +40,7 @@ from app.core.infra import timephrase
 
 
 if TYPE_CHECKING:
+    from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.core.world.world_store import WorldStore
 
 
@@ -155,6 +156,7 @@ class GardenVisitWorker:
         visit_min_minutes: float = _VISIT_MIN_MINUTES,
         visit_max_minutes: float = _VISIT_MAX_MINUTES,
         journal_max: int = 8,
+        pursuit_notes: "PursuitNoteWriter | None" = None,
     ) -> None:
         self._store = store
         self._notify = notify
@@ -178,6 +180,7 @@ class GardenVisitWorker:
         self._visit_min_minutes = lo
         self._visit_max_minutes = hi
         self._journal_max = max(1, int(journal_max))
+        self._pursuit_notes = pursuit_notes
         # MCP debug: bypass the daylight + cooldown gates on the next tick.
         self._force_next = False
 
@@ -438,6 +441,19 @@ class GardenVisitWorker:
         # visit that closes it, and the journal line should admit as much.
         summary = self._close_garden_intention(summary, now)
         self._journal_visit(now, "gardening", summary)
+        # K85b — a visit that actually tended something is the clearest
+        # away beat there is; keep it past the eight-entry ring.
+        if self._pursuit_notes is not None and (watered or harvested):
+            self._pursuit_notes.write(
+                summary,
+                source="away_beat",
+                topic="garden",
+                at=now,
+                extra={
+                    "watered": [str(w.get("name") or "") for w in watered],
+                    "harvested": [str(h["plant"]) for h in harvested],
+                },
+            )
         result = {
             "phase": "outbound",
             "flavour": "tend",

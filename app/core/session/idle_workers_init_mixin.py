@@ -25,6 +25,31 @@ log = logging.getLogger("app.session")
 class IdleWorkersInitMixin:
     """__init__ bootstrap: idle/background workers + their stores."""
 
+    def _pursuit_note_writer(self) -> Any:
+        """K85b — the shared ``pursuit_note`` write path, or ``None``.
+
+        Built once and handed to the three producers of her own-time
+        material (hobby milestones, away beats, garden visits) so they
+        all file notes in the same shape. Needs both the memory store
+        and an embedder; without either the producers simply keep
+        journalling to their rings as before.
+        """
+        cached = getattr(self, "_pursuit_notes", None)
+        if cached is not None:
+            return cached
+        store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if store is None or embedder is None:
+            return None
+        try:
+            from app.core.memory.pursuit_notes import PursuitNoteWriter
+
+            self._pursuit_notes = PursuitNoteWriter(store, embedder)
+        except Exception:
+            log.warning("PursuitNoteWriter init failed", exc_info=True)
+            self._pursuit_notes = None
+        return self._pursuit_notes
+
     def _init_idle_workers(self, settings: AppSettings) -> None:
         if (
             self._idle_scheduler is not None
@@ -427,6 +452,8 @@ class IdleWorkersInitMixin:
                         )
                     ),
                     hobby_provider=self._current_hobby_label,
+                    # K85b — keep the beats that left a trace in the room.
+                    pursuit_notes=self._pursuit_note_writer(),
                     # H17 — fraction of beats that also spawn a conversational
                     # seed (LLM-composed), plus the daily/ring bounds.
                     idle_seed_ratio=(
@@ -491,6 +518,9 @@ class IdleWorkersInitMixin:
                     idle_seed_max_ring=getattr(
                         mem, "idle_seed_max_ring", 6,
                     ),
+                    # K85b — keep the milestone the rotation is about to
+                    # overwrite.
+                    pursuit_notes=self._pursuit_note_writer(),
                 )
                 self._idle_scheduler.register(self._hobby_worker)
             except Exception:

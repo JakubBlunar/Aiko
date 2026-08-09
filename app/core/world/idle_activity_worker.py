@@ -27,8 +27,15 @@ quiet window it:
     table. An episode journals one entry (carrying its ``keys``) and is
     rephrased once, so its LLM cost matches a single beat's,
   * composes a first-person one-liner (deterministic template, optionally
-    rephrased by the local worker LLM with a safe fallback), and
-  * appends ``{at, activity, summary}`` to a small kv_meta journal ring.
+    rephrased by the local worker LLM with a safe fallback),
+  * appends ``{at, activity, summary}`` to a small kv_meta journal ring,
+    and
+  * **keeps the substantive ones** (K85b): a beat that changed her room,
+    ran as an episode, or closed the day's intention also writes a
+    ``pursuit_note`` memory. The ring holds eight entries, so before
+    this everything she did on her own was gone within a day or two --
+    which is why nothing could grow into a durable sense of what she is
+    into. A beat that left no trace still doesn't leave one here.
 
 The journal is what the K36 *surfacing* path reads: on the first turn
 after a long typed absence the
@@ -71,6 +78,7 @@ from app.core.world.idle_activity_plan import (
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.core.world.world_store import WorldStore
     from app.llm.chat_client import ChatClient
 
@@ -244,6 +252,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         episode_min_gap_seconds: float = 10800.0,
         day_intention_enabled: bool = False,
         hobby_provider: Callable[[], str | None] | None = None,
+        pursuit_notes: "PursuitNoteWriter | None" = None,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -274,6 +283,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._episode_min_gap_seconds = max(0.0, float(episode_min_gap_seconds))
         self._day_intention_enabled = bool(day_intention_enabled)
         self._hobby_provider = hobby_provider
+        self._pursuit_notes = pursuit_notes
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -408,6 +418,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         append_journal(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
+        noted = self._note_pursuit(
+            now, chain, summary, effects, closed_intention,
+        )
         self._mark_fired(now)
         log.info(
             "away_activity fired: keys=%s activity=%s posture=%s",
@@ -426,6 +439,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             result["episode"] = [b.key for b in chain]
         if closed_intention:
             result["closed_intention"] = True
+        if noted is not None:
+            result["pursuit_note_id"] = noted
         if effects:
             result["item_effect"] = effects[0] if len(effects) == 1 else effects
         if seed:
@@ -459,6 +474,41 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 summary=joined,
             ),
             sequence=True,
+        )
+
+    # ── K85b: keep the beats that left a trace ────────────────────────
+
+    def _note_pursuit(
+        self,
+        now: datetime,
+        chain: list[ActivityPlan],
+        summary: str,
+        effects: list[dict[str, Any]],
+        closed_intention: bool,
+    ) -> int | None:
+        """Write a ``pursuit_note`` for a beat with something behind it.
+
+        The bar is a trace, not a mood: she changed a row in her room,
+        the afternoon ran long enough to chain, or the thing she meant
+        to do today got done. "Looked out the window" is a real beat and
+        belongs in the ring, but there is nothing in it to grow an
+        interest out of, and filing it here would bury the ones there
+        are under ambient weather.
+        """
+        if self._pursuit_notes is None:
+            return None
+        if not (effects or closed_intention or len(chain) > 1):
+            return None
+        return self._pursuit_notes.write(
+            summary,
+            source="away_beat",
+            topic=chain[0].key,
+            at=now,
+            extra={
+                "keys": [b.key for b in chain],
+                "changed": [str(e.get("effect") or "") for e in effects],
+                "closed_intention": bool(closed_intention),
+            },
         )
 
     # ── H17: idle beats feed the idea machine ─────────────────────────

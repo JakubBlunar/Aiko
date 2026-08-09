@@ -11,6 +11,12 @@ State lives in one ``kv_meta`` JSON blob (``aiko.current_hobby``); the
 deterministic catalogue + progress / milestone / rotation math lives in the
 pure :mod:`app.core.world.hobby` module. The standing "what she's been up
 to" line is rendered by ``_render_hobby_block`` in the inner-life mixin.
+
+K85b: the two moments this worker already stops to think about -- a
+milestone and a wrap-up -- now also leave a ``pursuit_note`` behind. The
+seed they emit is spent within the day and the state blob is overwritten
+on rotation, so before this the record of a thread she kept up for two
+weeks was gone the hour it ended.
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ from app.core.infra import timephrase
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
     from app.core.infra.settings import AgentSettings, MemorySettings
+    from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.llm.chat_client import ChatClient
 
 
@@ -75,6 +82,7 @@ class HobbyWorker:
         ollama: "ChatClient | None" = None,
         model: str | None = None,
         idle_seed_max_ring: int = 6,
+        pursuit_notes: "PursuitNoteWriter | None" = None,
         rng: random.Random | None = None,
     ) -> None:
         self._chat_db = chat_db
@@ -84,6 +92,7 @@ class HobbyWorker:
         self._ollama = ollama
         self._model = model
         self._idle_seed_max_ring = max(1, int(idle_seed_max_ring))
+        self._pursuit_notes = pursuit_notes
         self._rng = rng or random.Random()
         # MCP debug one-shots.
         self._force_advance = False
@@ -226,6 +235,7 @@ class HobbyWorker:
         seed = self._compose_rotation_seed(old_label, tpl.label)
         if seed:
             self._emit_seed(now, old_label, seed)
+        self._note_wrapup(now, state, old_label, seed)
         log.info(
             "hobby rotated: from=%s to=%s", old_key, tpl.key,
         )
@@ -248,6 +258,7 @@ class HobbyWorker:
             if seed:
                 self._emit_seed(now, str(state.get("label") or ""), seed)
                 emitted_seed = seed
+            self._note_milestone(now, state, seed)
 
         log.info(
             "hobby advanced: key=%s progress=%d advances=%d milestone=%s",
@@ -292,6 +303,58 @@ class HobbyWorker:
             },
             max_entries=self._idle_seed_max_ring,
         )
+
+    # ── K85b: leave something behind ─────────────────────────────────
+
+    def _note_milestone(
+        self, now: datetime, state: dict[str, Any], seed: str | None,
+    ) -> None:
+        """Keep the milestone past the day its seed is spent."""
+        label = str(state.get("label") or "").strip()
+        if self._pursuit_notes is None or not label:
+            return
+        line = f"{self._progress_phrase(state)} into {label}."
+        if seed:
+            line = f"{line} {seed}"
+        self._pursuit_notes.write(
+            line,
+            source="hobby_milestone",
+            topic=str(state.get("key") or ""),
+            at=now,
+            extra={"advances": int(state.get("advances", 0))},
+        )
+
+    def _note_wrapup(
+        self,
+        now: datetime,
+        state: dict[str, Any],
+        old_label: str,
+        seed: str | None,
+    ) -> None:
+        """Keep the finished thread, which rotation is about to delete."""
+        label = (old_label or "").strip()
+        if self._pursuit_notes is None or not label:
+            return
+        line = (
+            f"Wrapped up {label} after {self._progress_phrase(state)}."
+        )
+        if seed:
+            line = f"{line} {seed}"
+        self._pursuit_notes.write(
+            line,
+            source="hobby_wrapup",
+            topic=str(state.get("key") or ""),
+            at=now,
+            extra={"advances": int(state.get("advances", 0))},
+        )
+
+    @staticmethod
+    def _progress_phrase(state: dict[str, Any]) -> str:
+        """``"9 chapters"`` — the unit pluralised against the count."""
+        progress = max(0, int(state.get("progress", 0) or 0))
+        unit = str(state.get("unit") or "step").strip() or "step"
+        plural = unit if progress == 1 else unit + "s"
+        return f"{progress} {plural}"
 
     def _compose_milestone_seed(self, state: dict[str, Any]) -> str | None:
         tpl = hobby_mod.template_for(str(state.get("key") or ""))
