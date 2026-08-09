@@ -133,11 +133,19 @@ def compute_weights(
     valence: float | None = None,
     day_color: str | None = None,
     recency_window: int = _DEFAULT_RECENCY_WINDOW,
+    intent_key: str = "",
+    intent_boost: float = 1.0,
 ) -> dict[str, float]:
-    """Return a positive weight per candidate key (pure, deterministic)."""
+    """Return a positive weight per candidate key (pure, deterministic).
+
+    ``intent_key`` is K91's day intention: the beat she meant to get to
+    today is favoured but never forced, so a day can still go sideways
+    the way real ones do.
+    """
     recent_keys = recent_keys or []
     circ = _CIRCADIAN_BIAS.get((period or "").strip(), {})
     color = _DAY_COLOR_BIAS.get((day_color or "").strip().lower(), {})
+    intent = (intent_key or "").strip()
     weights: dict[str, float] = {}
     for key in keys:
         w = 1.0
@@ -145,6 +153,8 @@ def compute_weights(
         w *= circ.get(key, 1.0)
         w *= color.get(key, 1.0)
         w *= _affect_multiplier(key, valence)
+        if intent and key == intent:
+            w *= max(1.0, float(intent_boost))
         weights[key] = max(_WEIGHT_FLOOR, w)
     return weights
 
@@ -158,6 +168,8 @@ def weighted_pick(
     valence: float | None = None,
     day_color: str | None = None,
     recency_window: int = _DEFAULT_RECENCY_WINDOW,
+    intent_key: str = "",
+    intent_boost: float = 1.0,
 ) -> str | None:
     """Draw one key proportional to its computed weight."""
     if not keys:
@@ -169,6 +181,8 @@ def weighted_pick(
         valence=valence,
         day_color=day_color,
         recency_window=recency_window,
+        intent_key=intent_key,
+        intent_boost=intent_boost,
     )
     ordered = list(keys)
     population = [weights[k] for k in ordered]

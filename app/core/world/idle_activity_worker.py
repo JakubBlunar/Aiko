@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail, beat_episode
+from app.core.world import beat_detail, beat_episode, day_intention
 from app.core.world.activity_selection import weighted_pick
 from app.core.world.idle_activity_candidates_mixin import (
     ActivityCandidatesMixin,
@@ -242,6 +242,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         episode_ratio: float = 0.0,
         episode_max_beats: int = 3,
         episode_min_gap_seconds: float = 10800.0,
+        day_intention_enabled: bool = False,
+        hobby_provider: Callable[[], str | None] | None = None,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -270,6 +272,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._episode_ratio = min(1.0, max(0.0, float(episode_ratio)))
         self._episode_max_beats = max(1, int(episode_max_beats))
         self._episode_min_gap_seconds = max(0.0, float(episode_min_gap_seconds))
+        self._day_intention_enabled = bool(day_intention_enabled)
+        self._hobby_provider = hobby_provider
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -370,7 +374,10 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
 
         user_name = self._resolve(self._user_display_name_provider) or "you"
         snapshot = self._build_candidates(user_name, now)
-        plan = self._choose_plan(user_name, now, snapshot)
+        # K91 — establish today's intention before anything is chosen, so a
+        # forced or LLM-composed beat is measured against it too.
+        intention = self._today_intention(snapshot.items, now)
+        plan = self._choose_plan(user_name, now, snapshot, intention)
         if plan is None:
             return {"fired": 0, "no_plan": True}
 
@@ -387,6 +394,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 effects.append(beat_effect)
 
         summary = self._episode_summary(user_name, chain)
+        summary, closed_intention = self._maybe_close_intention(
+            intention, chain, summary, now,
+        )
         entry: dict[str, Any] = {
             "at": now.isoformat(timespec="seconds"),
             "activity": chain[-1].activity,
@@ -414,6 +424,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         }
         if len(chain) > 1:
             result["episode"] = [b.key for b in chain]
+        if closed_intention:
+            result["closed_intention"] = True
         if effects:
             result["item_effect"] = effects[0] if len(effects) == 1 else effects
         if seed:
@@ -581,10 +593,19 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         """The single beat she'd plausibly be having right now."""
         now = now or _utcnow()
         snapshot = self._build_candidates(user_name, now)
-        return self._choose_plan(user_name, now, snapshot)
+        return self._choose_plan(
+            user_name,
+            now,
+            snapshot,
+            self._today_intention(snapshot.items, now),
+        )
 
     def _choose_plan(
-        self, user_name: str, now: datetime, snapshot: RoomSnapshot,
+        self,
+        user_name: str,
+        now: datetime,
+        snapshot: RoomSnapshot,
+        intention: "day_intention.DayIntention | None" = None,
     ) -> ActivityPlan | None:
         candidates = snapshot.candidates
         if not candidates:
@@ -595,6 +616,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._forced_activity_key = None
         if forced and forced in candidates:
             return candidates[forced]
+
+        open_intent = (
+            intention.text
+            if intention is not None and not intention.satisfied
+            else ""
+        )
 
         # H14 — sometimes let the worker LLM compose the whole beat
         # (open-vocab activity grounded in the live room) instead of the
@@ -607,13 +634,17 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             and self._rng.random() < self._llm_activity_ratio
         ):
             llm_plan = self._compose_plan_llm(
-                user_name, snapshot.locations, snapshot.items,
+                user_name,
+                snapshot.locations,
+                snapshot.items,
+                intention=open_intent,
             )
             if llm_plan is not None:
                 return llm_plan
 
         # H18 — weighted, anti-repetition draw over the available keys,
-        # tilted by recency (journal), circadian period, mood + day-color.
+        # tilted by recency (journal), circadian period, mood + day-color,
+        # plus K91's intention for the day.
         chosen = weighted_pick(
             list(candidates.keys()),
             rng=self._rng,
@@ -621,6 +652,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             period=self._read_period(),
             valence=self._read_valence(),
             day_color=self._read_day_color(),
+            intent_key=(
+                intention.beat_key
+                if intention is not None and not intention.satisfied
+                else ""
+            ),
+            intent_boost=day_intention.INTENT_BOOST,
         )
         if chosen is None or chosen not in candidates:
             return self._rng.choice(list(candidates.values()))
@@ -685,6 +722,89 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         if last is None:
             return None
         return max(0.0, (now - last).total_seconds())
+
+    # ── K91: the day's intention ─────────────────────────────────────
+
+    def _today_intention(
+        self, items: list[Any], now: datetime,
+    ) -> day_intention.DayIntention | None:
+        """Today's intention, proposing one on the day's first beat.
+
+        Yesterday's is discarded rather than carried over: an intention
+        that survives the night stops being "today" and starts being a
+        grudge.
+        """
+        if not self._day_intention_enabled:
+            return None
+        today = day_intention.local_day(now)
+        current = day_intention.load(
+            self._kv_get_safe(day_intention.DAY_INTENTION_KEY)
+        )
+        if current is not None and current.day == today:
+            return current
+        try:
+            fresh = day_intention.propose(
+                items, now=now, hobby=self._read_hobby(), rng=self._rng,
+            )
+        except Exception:
+            log.debug("day_intention propose failed", exc_info=True)
+            return None
+        self._kv_set_safe(
+            day_intention.DAY_INTENTION_KEY, day_intention.dump(fresh)
+        )
+        log.info(
+            "day_intention set: text=%s beat=%s", fresh.text, fresh.beat_key,
+        )
+        return fresh
+
+    def _read_hobby(self) -> str | None:
+        if self._hobby_provider is None:
+            return None
+        try:
+            hobby = self._hobby_provider()
+            return str(hobby).strip() or None if hobby else None
+        except Exception:
+            return None
+
+    def _maybe_close_intention(
+        self,
+        current: "day_intention.DayIntention | None",
+        chain: list[ActivityPlan],
+        summary: str,
+        now: datetime,
+    ) -> tuple[str, bool]:
+        """Mark the intention done when a beat satisfied it, and say so.
+
+        Returns the (possibly annotated) summary plus whether it closed.
+        The admission is what makes the day read as authored rather than
+        sampled -- without it, satisfying the intention is invisible.
+        """
+        if current is None or current.satisfied:
+            return summary, False
+        if current.day != day_intention.local_day(now):
+            return summary, False
+        if current.beat_key not in {b.key for b in chain}:
+            return summary, False
+        self._kv_set_safe(
+            day_intention.DAY_INTENTION_KEY,
+            day_intention.dump(current.satisfy()),
+        )
+        log.info("day_intention satisfied: text=%s", current.text)
+        return day_intention.close_out(summary, self._rng), True
+
+    def day_intention_debug_state(
+        self, now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Snapshot of the K91 day intention for the MCP state tool."""
+        now = now or _utcnow()
+        current = day_intention.load(
+            self._kv_get_safe(day_intention.DAY_INTENTION_KEY)
+        )
+        return {
+            "enabled": self._day_intention_enabled,
+            "today": day_intention.local_day(now),
+            "intention": current.to_dict() if current is not None else None,
+        }
 
     def _read_period(self) -> str:
         if self._circadian_period_provider is None:
@@ -896,7 +1016,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         return line or fallback
 
     def _compose_plan_llm(
-        self, user_name: str, locations: list[Any], items: list[Any],
+        self,
+        user_name: str,
+        locations: list[Any],
+        items: list[Any],
+        *,
+        intention: str = "",
     ) -> ActivityPlan | None:
         """H14 — ask the worker LLM to compose a whole grounded beat.
 
@@ -931,10 +1056,17 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         ]
         recent_line = ", ".join(recent) or "(none yet)"
         period = self._read_period() or "unspecified"
+        intent_line = ""
+        if intention:
+            intent_line = (
+                "Today you meant to " + intention + " — lean that way if it "
+                "fits the hour. "
+            )
         prompt = (
             f"You are Aiko, alone in your cozy room while {user_name} is away. "
             f"It's currently {period}. Your room's spots: {loc_lines}. "
             f"Things around: {item_names}. "
+            f"{intent_line}"
             f"Recently you did: {recent_line} — pick something different. "
             "Choose one small, believable thing to do right now, grounded in "
             "what's actually in the room — the states in brackets are real, "

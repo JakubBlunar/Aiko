@@ -468,6 +468,43 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_outing raised: {exc}"
 
     @mcp.tool()
+    def force_away_beat(activity_key: str = "") -> str:
+        """K91 — run one away beat now and show what it changed.
+
+        Bypasses the cooldown/cap gates by calling ``run()`` directly.
+        Pass an ``activity_key`` (``tea``, ``read_book``, ``snack``,
+        ``tidy_desk``, ``doodle``, ``look_outside``, ``nap``, ``move_cat``,
+        ``wander``) to force a specific beat, or leave it blank to let the
+        weighted draw choose. The result carries ``episode`` when beats
+        chained, ``item_effect`` for state written back (chapter advanced,
+        pot emptied, plant watered) and ``closed_intention`` when the beat
+        satisfied the day's intention. Pair with
+        ``force_away_activities_surface`` for the end-to-end repro.
+        """
+        try:
+            worker = getattr(session, "_away_activity_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            if activity_key.strip():
+                worker.force_activity(activity_key.strip())
+            result = worker.run()
+            intention = (
+                worker.day_intention_debug_state()
+                if hasattr(worker, "day_intention_debug_state")
+                else {}
+            )
+            return json.dumps(
+                {"ran": True, "result": result, "day_intention": intention},
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"force_away_beat raised: {exc}"
+
+    @mcp.tool()
     def get_idle_seed_state() -> str:
         """H17 — dump the idle-seed ring + surfacing watermarks.
 
