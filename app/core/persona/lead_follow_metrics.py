@@ -9,11 +9,14 @@ number you can diff across a change.
 
 **Nothing here reads the database or the settings.** It takes strings
 and returns numbers, so the same functions serve the offline report
-(:mod:`scripts.lead_follow_report`), the REST diagnostics panel, and the
-K88 style-tracker band. That sharing is the point: a second definition
-of "does this reply open anaphorically" would drift away from the band
-that fires on it, and then the report would be measuring something the
-cue isn't reacting to.
+(:mod:`scripts.lead_follow_report`) and the REST diagnostics panel.
+
+The anaphoric-opener detector itself lives one level down in
+:mod:`app.core.persona.anaphora`, because the K88 style-tracker band
+needs it too and this module already depends on the tracker. Sharing it
+is the point either way: a second definition of "does this reply open
+anaphorically" would drift from the band that fires on it, and the
+report would end up measuring something the cue isn't reacting to.
 
 The measurements, and what a bad number looks like:
 
@@ -39,7 +42,6 @@ numbers that killed them.
 """
 from __future__ import annotations
 
-import re
 import statistics
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -53,8 +55,12 @@ from app.core.conversation.wants_ledger import content_words
 # would be a second definition that silently drifts from it.
 from app.core.persona.aiko_style_tracker import (
     _MIN_TURN_WORDS,
-    _SENT_SPLIT_RE,
     _extract_features,
+)
+from app.core.persona.anaphora import (
+    PARTICLES,
+    first_sentence,
+    is_anaphoric_opener,
 )
 
 
@@ -79,48 +85,6 @@ OWN_MATERIAL_MIN_RATIO = 0.30
 # elaboration from a pivot needs sentence embeddings; until something
 # here needs them for another reason, the honest report is the four
 # metrics below plus the continuous own-material ratio.
-
-# Tokens that can open a sentence without committing to anything --
-# interjections, acknowledgements, and the connectives that hitch her
-# sentence to his. Stripped before we look at what the clause is
-# actually *about*: "Oh, I finally finished the book" leads despite the
-# "oh", while "Oh, that's rough" does not. A sentence made of nothing
-# but these is pure response.
-_PARTICLES: frozenset[str] = frozenset({
-    "oh", "ah", "aw", "aww", "ha", "haha", "hah", "heh", "hm", "hmm",
-    "mm", "mmm", "huh", "wow", "oof", "ouch", "god", "okay", "ok",
-    "alright", "well", "yeah", "yea", "yep", "yup", "yes", "no", "nope",
-    "nah", "sure", "right", "true", "exactly", "absolutely",
-    "definitely", "totally", "agreed", "fair", "same", "honestly",
-    "actually", "so", "then", "but", "and", "plus", "also", "still",
-    "though", "anyway", "besides", "because", "hence", "therefore",
-})
-
-# Pro-forms that, as the subject of her first clause, point back at his
-# sentence rather than at anything she has said.
-#
-# ``it`` and ``they`` are deliberately absent. Expletive "it" ("it's
-# been raining all afternoon") is a dummy subject introducing her own
-# observation, and counting it would inflate the rate with exactly the
-# turns we want to reward. Demonstratives carry no such ambiguity.
-_ANAPHORIC_SUBJECTS: frozenset[str] = frozenset({
-    "that", "this", "those", "these", "there", "which",
-})
-
-# Whole-phrase openers that are pure echo: her clause mirrors the shape
-# of his and has no content of its own. Matched as a prefix so "So am I,
-# honestly" still counts.
-_ECHO_OPENERS: tuple[str, ...] = (
-    "so am i", "so do i", "so did i", "so have i", "so would i",
-    "so is it", "so was i", "as do i", "as am i",
-    "neither do i", "neither did i", "neither am i", "nor do i",
-    "me too", "me neither", "same here", "same to you",
-    "you're right", "youre right", "you are right", "you were right",
-    "you're not wrong", "youre not wrong", "you have a point",
-    "fair point", "good point", "fair enough",
-)
-
-_WORD_RE = re.compile(r"[a-z0-9']+")
 
 # Generic vocabulary: words that can turn up in a reply about anything,
 # and therefore never constitute a *subject*. Without this the
@@ -232,65 +196,8 @@ def _content(text: str) -> set[str]:
     words = {_normalise(w) for w in content_words(text)}
     return {
         w for w in words
-        if len(w) >= 4 and w not in _PARTICLES and w not in _GENERIC
+        if len(w) >= 4 and w not in PARTICLES and w not in _GENERIC
     }
-
-
-def first_sentence(text: str) -> str:
-    """The opening sentence of ``text``, or ``""`` when there is none."""
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return ""
-    parts = [s.strip() for s in _SENT_SPLIT_RE.split(cleaned) if s.strip()]
-    return parts[0] if parts else cleaned
-
-
-def _tokens(text: str) -> list[str]:
-    return _WORD_RE.findall((text or "").lower())
-
-
-def is_anaphoric_opener(text: str) -> bool:
-    """Does the first sentence depend on the one before it to make sense?
-
-    Three shapes count, and one deliberately does not:
-
-    1. A whole-phrase echo -- "So am I", "You're right", "Fair enough".
-    2. A sentence that is *nothing but* acknowledgement once the
-       particles are stripped -- "Exactly.", "Oh, right.", "Yeah."
-    3. A clause whose subject is a demonstrative pointing at his
-       sentence -- "That makes sense", "Then those are yours."
-
-    What does not count: a particle followed by her own subject. "But I
-    finished the book" opens on a conjunction and still leads, because
-    the content after the hinge is hers. This is a rate detector for a
-    grammatical habit, not a ban on connectives -- the occasional "Then
-    those pokes are reserved for you" is warm, and a hard prohibition
-    would cost the warmth that makes her worth talking to.
-    """
-    opener = first_sentence(text)
-    if not opener:
-        return False
-    tokens = _tokens(opener)
-    if not tokens:
-        return False
-
-    joined = " ".join(tokens)
-    for phrase in _ECHO_OPENERS:
-        if joined == phrase or joined.startswith(phrase + " "):
-            return True
-
-    index = 0
-    while index < len(tokens) and tokens[index] in _PARTICLES:
-        index += 1
-    rest = tokens[index:]
-    if not rest:
-        # Consumed the whole sentence: it was acknowledgement and
-        # nothing else.
-        return index > 0
-    # Split off a contraction clitic so "that's settled" is recognised
-    # as the same subject as "that was settled".
-    head = rest[0].split("'", 1)[0]
-    return head in _ANAPHORIC_SUBJECTS
 
 
 def opener_echo(reply: str, user_text: str) -> float | None:

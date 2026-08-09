@@ -12,7 +12,6 @@ from app.core.persona.lead_follow_metrics import (
     as_dict,
     brings_own_material,
     first_sentence,
-    is_anaphoric_opener,
     is_measurable,
     measure_turn,
     opener_echo,
@@ -30,65 +29,13 @@ class FirstSentenceTests(unittest.TestCase):
         )
 
     def test_a_single_sentence_is_returned_whole(self):
-        self.assertEqual(first_sentence("no full stop here"), "no full stop here")
+        self.assertEqual(
+            first_sentence("no full stop here"), "no full stop here",
+        )
 
     def test_empty_input_is_empty(self):
         self.assertEqual(first_sentence(""), "")
         self.assertEqual(first_sentence("   "), "")
-
-
-class AnaphoricOpenerTests(unittest.TestCase):
-    def test_demonstrative_subject_is_anaphoric(self):
-        self.assertTrue(is_anaphoric_opener("That makes a lot of sense."))
-        self.assertTrue(is_anaphoric_opener("This is exactly what I meant."))
-        self.assertTrue(is_anaphoric_opener("Those are the good ones."))
-
-    def test_connective_plus_demonstrative_is_anaphoric(self):
-        self.assertTrue(
-            is_anaphoric_opener("Then those pokes are reserved for you.")
-        )
-        self.assertTrue(is_anaphoric_opener("So that's settled, I guess."))
-
-    def test_pure_acknowledgement_is_anaphoric(self):
-        self.assertTrue(is_anaphoric_opener("Exactly."))
-        self.assertTrue(is_anaphoric_opener("Oh, right."))
-        self.assertTrue(is_anaphoric_opener("Yeah."))
-        self.assertTrue(is_anaphoric_opener("Fair enough."))
-
-    def test_echo_inversions_are_anaphoric(self):
-        self.assertTrue(is_anaphoric_opener("So am I, honestly."))
-        self.assertTrue(is_anaphoric_opener("Me too."))
-        self.assertTrue(is_anaphoric_opener("You're right about that."))
-        self.assertTrue(is_anaphoric_opener("Neither do I."))
-
-    def test_a_connective_before_her_own_subject_still_leads(self):
-        # The hinge is his, the content is hers. Counting this would
-        # make the metric a ban on connectives.
-        self.assertFalse(is_anaphoric_opener("But I finally finished the book."))
-        self.assertFalse(is_anaphoric_opener("Oh, I watered the lettuce today."))
-        self.assertFalse(is_anaphoric_opener("So I've been thinking about rooftops."))
-
-    def test_expletive_it_is_not_counted(self):
-        # A dummy subject introducing her own observation. Counting
-        # "it" would inflate the rate with the turns we want to reward.
-        self.assertFalse(is_anaphoric_opener("It's been raining here all afternoon."))
-        self.assertFalse(is_anaphoric_opener("They keep changing the schedule."))
-
-    def test_her_own_subject_leads(self):
-        self.assertFalse(is_anaphoric_opener("The garden needed water badly."))
-        self.assertFalse(is_anaphoric_opener("I finished chapter nine."))
-
-    def test_only_the_first_sentence_is_examined(self):
-        self.assertFalse(
-            is_anaphoric_opener("I finished the book. That was satisfying.")
-        )
-        self.assertTrue(
-            is_anaphoric_opener("That was satisfying. I finished the book.")
-        )
-
-    def test_empty_is_not_anaphoric(self):
-        self.assertFalse(is_anaphoric_opener(""))
-        self.assertFalse(is_anaphoric_opener("..."))
 
 
 class OpenerEchoTests(unittest.TestCase):
