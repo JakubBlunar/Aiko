@@ -1029,6 +1029,11 @@ What Aiko keeps returning to **on her own**, with the user out of the picture en
 
 The promotion gate is the strictest of the aiko kinds — three distinct notes and a **week** of age, against taste's two and half a day. A pursuit gives her something to open with, so a wrong one is a woman announcing an interest she doesn't have, and the thing that separates a pursuit from an afternoon is that she came back to it.
 
+Once a pursuit is `active` it reaches the conversation two ways:
+
+- `agent.pursuit_lean_enabled` *(bool, `true`)* — the T6 `pursuit_lean_block`, a lull permission slip asking for one small concrete thing about it. It shares the K81 taste lean's pacing gate (a standing K18 lull, warmth earned on a relationship axis, no L42 concentration/fixation finding) **and** its once-per-conversation latch: there is one slip here with two possible sources, and the pursuit runs first because taste is bond-scoped and a pursuit isn't.
+- `agent.pursuit_share_wants_enabled` *(bool, `true`)* — feeds her strongest pursuit into the K52 wants ledger as a `share` want, one per tick at a lower starting pressure than the time-sensitive wants, so it surfaces through K53 on an open turn rather than a stalled one. The want retires with its concept: when L3 demotes or decays the pursuit, `_prune_dead_pursuit_wants` drops the want instead of letting its pressure climb toward volunteering an interest she no longer has. Turning the switch off stops new offers but leaves banked wants alone.
+
 ### K63 — long-arc callbacks ("weeks ago you said...")
 
 A rare "she actually knows me" beat: occasionally Aiko reaches **weeks or months** back to connect the live turn to something the user told her long ago ("wait — didn't you once mention your dad's workshop, back in spring?"). An *aged retrieval lane* on the RAG retriever (the inverse of the recency boost) finds an old, topically-linked memory; a provider surfaces it as a tentative callback cue, leaning on K25's hedging posture. Rarity is the whole point — paced by a per-session cap, a wall-clock cooldown, a high topical bar, a hard age floor, and a don't-repeat ring.

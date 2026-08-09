@@ -294,6 +294,13 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # toward what you love" permission slip. Clusters with the other
         # lull-gated "things Aiko could lean into" slips; reads the K18
         # standing lull reading so it must run after the stagnation provider.
+        # K85e: the same permission slip for a subject of her own rather
+        # than a shared one. Sits *before* taste because a pursuit is the
+        # thing this family exists to give her -- taste is bond-scoped, so
+        # leaning on it still points the lull at him. Shares taste's
+        # once-per-conversation latch: it is one slip with two sources,
+        # not two.
+        "pursuit_lean_block",
         "taste_lean_block",
         # L42: rare trust/lull-gated acknowledgement of a conduct concept.
         "conduct_notice_block",
@@ -1021,6 +1028,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # K18 standing lull reading, so it must run after the stagnation
         # provider, like topic_appetite.
         self._taste_lean_provider: Callable[[], str] | None = None
+        self._pursuit_lean_provider: Callable[[], str] | None = None
         self._conduct_notice_provider: Callable[[], str] | None = None
         # L17e. Takes the live ``user_text`` so the "is the conversation
         # already about this belief" check can be done lexically, keeping
@@ -2464,6 +2472,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_name="topic_appetite",
             )
 
+        # K85e: pursuit lean. Runs before taste and shares its
+        # once-per-conversation latch, so on a quiet turn where both could
+        # fire only this one does — a subject of her own beats a shared
+        # one, which is the whole point of the K85 family.
+        pursuit_lean_block = ""
+        if not aggressive and self._pursuit_lean_provider is not None:
+            pursuit_lean_block = _safe_provider(
+                self._pursuit_lean_provider,
+                timing_sink=provider_ms,
+                timing_name="pursuit_lean",
+            )
+
         # K81: taste lean. Same posture as topic_appetite — a lull-gated
         # permission slip (not a directive), no-arg, dropped under aggressive,
         # and run after the stagnation provider so ``last_mean`` reflects the
@@ -3304,6 +3324,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # slip. Lands right under the wants block — its offer IS
             # the strongest want, so the two read as one thought.
             system_parts.append(topic_appetite_block)
+        if pursuit_lean_block:
+            # K85e: the same slip for something she does on her own,
+            # ahead of taste because taste is bond-scoped and this isn't.
+            system_parts.append(pursuit_lean_block)
         if taste_lean_block:
             # K81: the rare "lean toward what you love" permission slip.
             # Clusters with the other lull-gated "things Aiko could bring

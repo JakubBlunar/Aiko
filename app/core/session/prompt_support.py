@@ -115,6 +115,17 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     # lull -- colours enthusiasm, never a filter on what he may talk about.
     "taste_lean_block": (
         "Leaning toward what you love:",
+        # K85a's widened read renders different copy for a value /
+        # aspiration / identity, since a value is a position to state
+        # rather than a topic to steer onto.
+        "Something of yours to put on the table:",
+    ),
+    # K85e: the same slip for a pursuit -- something she does on her own.
+    # Unlike taste this one names a subject, so it *would* leave a lexical
+    # trace; it stays out of the cue pool anyway because it is a lull
+    # permission slip like its neighbours, offered rather than owed.
+    "pursuit_lean_block": (
+        "Something you've been up to:",
     ),
     "conduct_notice_block": (
         "A relationship habit you may acknowledge:",
