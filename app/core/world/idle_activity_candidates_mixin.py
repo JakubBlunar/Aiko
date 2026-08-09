@@ -57,7 +57,7 @@ class ActivityCandidatesMixin:
         loc_desk = match_location(locations, "desk")
         loc_bed = match_location(locations, "bed")
 
-        self._add_snack(candidates, items, loc_kitchen)
+        self._add_snack(candidates, items, loc_kitchen, self._read_period())
         self._add_tea(candidates, items, loc_kitchen)
         self._add_book(candidates, items, loc_beanbag, loc_bookshelf)
         self._add_pet(candidates, items, locations)
@@ -145,25 +145,23 @@ class ActivityCandidatesMixin:
         candidates: dict[str, ActivityPlan],
         items: list[Any],
         loc_kitchen: Any,
+        period: str,
     ) -> None:
-        """Eat something the user (or a harvest) left in the kitchenette."""
-        food = next(
-            (
-                i
-                for i in items
-                if getattr(i, "consumable", False)
-                and getattr(i, "quantity", 0) > 0
-                and getattr(i, "kind", "") == "food"
-            ),
-            None,
-        )
+        """Eat something the user (or a harvest) left in the kitchenette.
+
+        K91 — what she reaches for and how she describes it both follow
+        the hour: breakfast and dinner lean on what the garden gave her,
+        a 2 a.m. raid leans on the biscuit tin.
+        """
+        food = beat_detail.pick_food(items, period=period)
         if food is None:
             return
         candidates["snack"] = ActivityPlan(
             key="snack",
             posture="sitting",
-            activity="snacking",
-            summary=beat_detail.snack_summary(food),
+            activity="eating" if period in ("morning", "midday", "evening")
+            else "snacking",
+            summary=beat_detail.snack_summary(food, period=period),
             consume_item_id=food.id,
             aiko_location_id=loc_kitchen.id if loc_kitchen else None,
         )

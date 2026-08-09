@@ -10,6 +10,9 @@ the ``world_updated`` patch so the World tab shows the drift:
 * **sci-fi paperback** — gains reading progress and, on finishing, flips to
   a brand-new book and emits a takeaway **seed** through the shared H17
   idle-seed cue ("finally finished X — that ending!").
+* **the kitchen** (K91) — folds duplicate food stacks that months of gifts
+  scattered across rooms back into one row per slug, so an away beat isn't
+  eating from an arbitrary one of four "cookies".
 
 Deterministic transition math lives in the pure
 :mod:`app.core.world.room_evolution` module; this worker just picks an
@@ -123,13 +126,14 @@ class RoomEvolutionWorker:
                 evo.TEA_POT_SLUG in items,
                 evo.BOOK_SLUG in items,
                 jar is None or jar.quantity <= _COOKIE_LOW_AT,
+                self._duplicate_food_slugs(),
             )
         )
         if candidates <= 0:
             return WorkSignal(pressure=0.0, reason="no_candidates")
         book_in_play = evo.BOOK_SLUG in items
         return WorkSignal(
-            pressure=pressure_from_count(candidates, saturation=3),
+            pressure=pressure_from_count(candidates, saturation=4),
             reason=f"{candidates} transitions",
             needs_llm=bool(
                 book_in_play and self._ollama is not None and self._model
@@ -158,6 +162,10 @@ class RoomEvolutionWorker:
         jar = items.get(evo.COOKIE_JAR_SLUG)
         if jar is None or jar.quantity <= _COOKIE_LOW_AT:
             candidates.append(lambda n: self._refill_cookies(jar))
+        # K91 — gifts accrete duplicate food stacks across rooms; tidying
+        # the kitchen is exactly the kind of slow drift H20 exists for.
+        if self._duplicate_food_slugs():
+            candidates.append(lambda n: self._consolidate_food())
 
         if not candidates:
             return {"skipped": True, "reason": "no_candidates"}
@@ -221,6 +229,40 @@ class RoomEvolutionWorker:
             self._broadcast({"item": item.to_dict()})
         log.info("room-evolution cookies: refilled flavor=%s", state.get("flavor"))
         return {"kind": "cookies", "flavor": state.get("flavor")}
+
+    def _duplicate_food_slugs(self) -> bool:
+        """Whether any food slug has more than one stack to fold together."""
+        try:
+            items = self._world.list_items(kind="food")
+        except Exception:
+            return False
+        seen: set[str] = set()
+        for item in items:
+            if not getattr(item, "consumable", False):
+                continue
+            slug = str(getattr(item, "slug", "") or "")
+            if slug in seen:
+                return True
+            seen.add(slug)
+        return False
+
+    def _consolidate_food(self) -> dict[str, Any] | None:
+        """Fold scattered duplicate food stacks into one row per slug."""
+        try:
+            merged = self._world.consolidate_consumables()
+        except Exception:
+            log.debug("room_evolution consolidate failed", exc_info=True)
+            return None
+        if not merged:
+            return None
+        for entry in merged:
+            for dead in entry.get("merged_ids", ()):
+                self._broadcast({"deleted_item_id": int(dead)})
+            kept = self._world.get_item(int(entry["kept_id"]))
+            if kept is not None:
+                self._broadcast({"item": kept.to_dict()})
+        log.info("room-evolution kitchen: merged %d food stacks", len(merged))
+        return {"kind": "kitchen", "merged": merged}
 
     def _evolve_book(self, item: Any, now: datetime) -> dict[str, Any] | None:
         new_state, new_name, new_desc, finished = evo.advance_book(

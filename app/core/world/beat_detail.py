@@ -139,8 +139,65 @@ def tea_summary(item: Any) -> str | None:
 # ── snacking ────────────────────────────────────────────────────────────
 
 
-def snack_summary(item: Any) -> str:
-    """Clause for the ``snack`` beat, noting when she's down to the last."""
+# K91 — eating had one shape at every hour ("had some of the X"), so
+# breakfast, lunch and a 2 a.m. raid on the biscuits were the same beat.
+# Meals want garden produce; a late-night pick wants a treat.
+_MEALS: dict[str, tuple[str, str]] = {
+    "early_morning": ("breakfast", "produce"),
+    "morning": ("breakfast", "produce"),
+    "midday": ("lunch", "produce"),
+    "afternoon": ("", "treat"),
+    "evening": ("dinner", "produce"),
+    "night": ("", "treat"),
+    "late_night": ("midnight snack", "treat"),
+}
+
+# Slug fragments that mark a food as garden produce rather than a treat.
+_PRODUCE_HINTS: tuple[str, ...] = (
+    "tomato", "basil", "lettuce", "mint", "strawberr", "chili", "rosemary",
+    "onion", "radish", "pea_pod", "lavender", "sunflower", "harvest",
+)
+
+
+def _is_produce(item: Any) -> bool:
+    haystack = (
+        str(getattr(item, "slug", "") or "")
+        + " "
+        + str(getattr(item, "name", "") or "")
+    ).lower()
+    if _state_of(item).get("species"):
+        return True
+    return any(hint in haystack for hint in _PRODUCE_HINTS)
+
+
+def pick_food(items: list[Any], *, period: str = "") -> Any | None:
+    """The food she'd plausibly reach for at this hour.
+
+    Meals prefer what the garden gave her, late-night raids prefer the
+    biscuit tin. Falls back to anything edible so an odd stock never
+    costs her the beat.
+    """
+    edible = [
+        i
+        for i in items
+        if getattr(i, "consumable", False)
+        and getattr(i, "quantity", 0) > 0
+        and getattr(i, "kind", "") == "food"
+    ]
+    if not edible:
+        return None
+    _label, want = _MEALS.get((period or "").strip(), ("", ""))
+    if want == "produce":
+        preferred = [i for i in edible if _is_produce(i)]
+    elif want == "treat":
+        preferred = [i for i in edible if not _is_produce(i)]
+    else:
+        preferred = []
+    return (preferred or edible)[0]
+
+
+def snack_summary(item: Any, *, period: str = "") -> str:
+    """Clause for the ``snack`` beat, shaped by the hour and the stock."""
     name = _text_of(item, "name") or "a snack"
     state = _state_of(item)
     flavor = str(state.get("flavor") or "").strip()
@@ -153,6 +210,12 @@ def snack_summary(item: Any) -> str:
         return "ate the last of the " + what + ", which feels a bit tragic"
     if str(state.get("freshness") or "").strip().lower() == "stale":
         return "had some of the " + what + " — going a little stale, honestly"
+
+    meal, _want = _MEALS.get((period or "").strip(), ("", ""))
+    if meal == "midnight snack":
+        return "crept out for a midnight snack — the " + what + ", obviously"
+    if meal:
+        return "made myself " + meal + " with the " + what
     return "had some of the " + what + " and enjoyed the quiet for a bit"
 
 
@@ -319,6 +382,7 @@ __all__ = [
     "NOTICEABLE_DRY_DAYS",
     "read_book_summary",
     "tea_summary",
+    "pick_food",
     "snack_summary",
     "dryness_days",
     "thirstiest_plant",

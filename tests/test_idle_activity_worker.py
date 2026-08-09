@@ -499,6 +499,51 @@ class ItemEffectTests(unittest.TestCase):
         result = worker.run()
         self.assertIn("last of the", result["summary"])
 
+    def test_lunch_prefers_produce_over_the_biscuit_tin(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    7, "cookies", kind="food", consumable=True, quantity=8,
+                    slug="cookie_jar",
+                ),
+                _FakeItem(
+                    8, "ripe tomatoes", kind="food", consumable=True,
+                    quantity=4, slug="tomatoes",
+                ),
+            ]
+        )
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, period="midday",
+        )
+        worker.force_activity("snack")
+        result = worker.run()
+        self.assertIn("lunch", result["summary"])
+        self.assertIn("tomatoes", result["summary"])
+        self.assertIn(8, world.consumed)
+
+    def test_a_late_night_beat_raids_the_treats(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    7, "cookies", kind="food", consumable=True, quantity=8,
+                    slug="cookie_jar",
+                ),
+                _FakeItem(
+                    8, "ripe tomatoes", kind="food", consumable=True,
+                    quantity=4, slug="tomatoes",
+                ),
+            ]
+        )
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, period="late_night",
+        )
+        worker.force_activity("snack")
+        result = worker.run()
+        self.assertIn("midnight snack", result["summary"])
+        self.assertIn(7, world.consumed)
+
     def test_effect_failure_does_not_lose_the_beat(self) -> None:
         kv = _FakeKV()
         book = self._book()

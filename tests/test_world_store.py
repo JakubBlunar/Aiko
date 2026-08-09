@@ -544,6 +544,112 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(fact["produce_species"], "harvest")
         self.assertEqual(fact["lifecycle"], "perennial")
 
+    def test_widened_catalog_covers_the_kitchen_garden(self) -> None:
+        """K91 — four species made every harvest one of four lines."""
+        for species in (
+            "lettuce", "mint", "strawberry", "chili", "rosemary",
+            "spring_onion", "radish", "peas",
+        ):
+            fact = species_fact(species)
+            self.assertNotEqual(
+                fact["produce_species"], "harvest", species,
+            )
+            self.assertIn(fact["lifecycle"], ("annual", "perennial"), species)
+            low, high = fact["produce_quantity_range"]
+            self.assertLessEqual(low, high, species)
+
+    def test_a_widened_species_harvests_its_own_produce(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            garden = store.get_location("garden")
+            created = store.add_item(
+                name="lettuce",
+                kind="plant",
+                location_id=garden.id,
+                state={"species": "lettuce", "stage": "mature"},
+            )
+            assert created is not None
+            plant, _new = created
+            result = store.harvest_plant(plant.id)
+            assert result is not None
+            self.assertEqual(result["produce"]["name"], "crisp lettuce")
+
+
+class ConsolidateConsumablesTests(unittest.TestCase):
+    """K91 — gifts accrete duplicate food stacks across rooms."""
+
+    def _stock(self, store: WorldStore) -> None:
+        for loc_slug, qty in (("desk", 9), ("bed", 19), ("kitchenette", 39)):
+            loc = store.get_location(loc_slug)
+            store.add_item(
+                name="cookies",
+                slug="cookies",
+                kind="food",
+                location_id=loc.id if loc else None,
+                consumable=True,
+                quantity=qty,
+            )
+
+    def test_same_slug_stacks_fold_into_the_biggest(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            self._stock(store)
+            merged = store.consolidate_consumables()
+            self.assertTrue(merged)
+            rows = [i for i in store.list_items() if i.slug == "cookies"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].quantity, 67)
+
+    def test_distinct_slugs_are_left_alone(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            before = len(store.list_items())
+            self.assertEqual(store.consolidate_consumables(), [])
+            self.assertEqual(len(store.list_items()), before)
+
+    def test_non_food_consumables_are_untouched(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            for slug in ("desk", "bed"):
+                loc = store.get_location(slug)
+                store.add_item(
+                    name="incense stick",
+                    slug="incense",
+                    kind="decor",
+                    location_id=loc.id if loc else None,
+                    consumable=True,
+                    quantity=2,
+                )
+            store.consolidate_consumables()
+            self.assertEqual(
+                len([i for i in store.list_items() if i.slug == "incense"]), 2
+            )
+
+    def test_state_keys_survive_the_merge(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            desk = store.get_location("desk")
+            kitchen = store.get_location("kitchenette")
+            store.add_item(
+                name="cookies", slug="cookies", kind="food", consumable=True,
+                quantity=2, location_id=desk.id if desk else None,
+                state={"freshness": "stale"},
+            )
+            store.add_item(
+                name="cookies", slug="cookies", kind="food", consumable=True,
+                quantity=9, location_id=kitchen.id if kitchen else None,
+                state={"flavor": "ginger snap"},
+            )
+            store.consolidate_consumables()
+            row = next(i for i in store.list_items() if i.slug == "cookies")
+            self.assertEqual(row.state.get("flavor"), "ginger snap")
+            self.assertEqual(row.state.get("freshness"), "stale")
+
 
 class OutdoorRenderTests(unittest.TestCase):
     def test_render_block_uses_outdoor_phrasing_in_garden(self) -> None:

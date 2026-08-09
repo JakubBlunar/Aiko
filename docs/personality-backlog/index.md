@@ -325,6 +325,18 @@ K87 curiosity that isn't about him ·
 K88 anaphoric-opener detector · K89 sustained thread ·
 K90 lead/follow metrics.
 
+**K91 shipped in four phases** — her away life is now *lived* rather than
+narrated. Beats compose their clause from the item state they touched and write
+the change back through the room's existing transitions, a long absence plays
+out as a 2–3 beat episode instead of unrelated postcards, and each local day
+carries one intention drawn from what her world needs, which the beat that
+satisfies it admits to. Plus the repetition fixes: a meal rhythm instead of one
+"had some of the X" at every hour, twelve garden species instead of four, and a
+kitchen pass that folds the duplicate food stacks months of gifts left in four
+rooms. Still open, and blocked on K85: away beats are not memories yet, so she
+can't refer back to a specific afternoon. See
+[`patterns.md`](patterns.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated).
+
 **K85–K90 are the second pass at leading** — the will family (K52–K56) shipped
 the *permission* to lead and it fires on schedule, but measurement of the live
 log showed the constraint was never permission: she has two rows of `taste`
