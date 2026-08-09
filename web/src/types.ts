@@ -1450,6 +1450,49 @@ export interface PersonaRegressionSnapshot {
   error?: string;
 }
 
+// ── K90 lead/follow metrics ─────────────────────────────────────────
+
+export interface LeadFollowBlock {
+  block: string;
+  fired: number;
+  rate: number;
+  per_hundred_turns: number;
+  avg_chars: number;
+}
+
+export interface LeadFollowBlocks {
+  available: boolean;
+  /** Why there is nothing to show — block firing is not retroactive. */
+  reason: string;
+  turns: number;
+  blocks: LeadFollowBlock[];
+}
+
+export interface LeadFollowCohort {
+  /** Days back; null is the whole log. */
+  window_days: number | null;
+  turns: number;
+  question_end_rate: number;
+  avg_questions: number;
+  mean_words: number;
+  median_words: number;
+  anaphoric_opener_rate: number;
+  mean_opener_echo: number;
+  opener_echo_turns: number;
+  mean_own_material: number;
+  own_material_turns: number;
+  top_openers: { opener: string; count: number }[];
+  blocks: LeadFollowBlocks;
+}
+
+export interface LeadFollowSnapshot {
+  generated_at?: string;
+  total_assistant_turns?: number;
+  history_messages?: number;
+  cohorts?: LeadFollowCohort[];
+  error?: string;
+}
+
 // ── K2 theory-of-mind beliefs ───────────────────────────────────────
 
 export type BeliefKind = "mood" | "opinion";

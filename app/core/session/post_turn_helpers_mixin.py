@@ -2132,6 +2132,48 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
                     for cue, reason in sorted(decisions.declined.items())
                 ) or "-",
             )
+
+    def _record_prompt_blocks(
+        self,
+        *,
+        assistant_message_id: int | None,
+        telemetry: Any = None,
+    ) -> None:
+        """K90: record which prompt blocks actually rendered this turn.
+
+        Deliberately the same inputs as :meth:`_record_cue_decisions`
+        and for the same reason -- ``telemetry`` is passed in rather
+        than read back off ``get_last_system_prompt()``, which is not
+        stamped until after post-turn runs and would hand us the
+        previous assembly's block table. Attributing one turn's blocks
+        to the next turn's reply is the exact error that would make
+        every rate this feeds look plausible and be wrong.
+
+        Empty blocks are dropped by the store, not here: the assembler
+        reports all ~120 registered names with zeros for the ones that
+        did not render, and the denominator comes from the distinct
+        message count rather than from the row count.
+        """
+        store = getattr(self, "_turn_prompt_block_store", None)
+        if store is None:
+            return
+        message_id = int(assistant_message_id or 0)
+        if message_id <= 0:
+            return
+        block_chars = dict(getattr(telemetry, "block_chars", None) or {})
+        if not block_chars:
+            # No assembly happened (banter and aborted turns build no
+            # prompt). Recording the turn with zero blocks would put a
+            # turn in the denominator that never had a prompt, dragging
+            # every firing rate down.
+            return
+        written = store.add_turn(message_id, block_chars)
+        if written:
+            log.debug(
+                "prompt block accounting: msg=%d blocks=%d",
+                message_id, written,
+            )
+
     def _queue_surfaced_cues_for_ledger(self, decisions: Any) -> None:
         """Add surfaced cues to the L37 carry so they settle like any item.
 

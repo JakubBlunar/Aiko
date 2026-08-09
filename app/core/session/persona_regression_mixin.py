@@ -132,6 +132,41 @@ class PersonaRegressionMixin:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def lead_follow_snapshot(
+        self, *, windows: tuple[float | None, ...] | None = None,
+    ) -> dict[str, Any]:
+        """K90: how much she is leading vs following, computed live.
+
+        Sits beside the persona-regression snapshot because it answers
+        the neighbouring question and shares its surface -- but nothing
+        is persisted here. The text metrics are derived from the
+        ``messages`` log every time, so there is no snapshot that can go
+        stale and no run to trigger; the panel just asks.
+
+        Same code path as ``scripts/lead_follow_report.py`` on purpose.
+        A second implementation behind the endpoint would eventually
+        disagree with the baseline the CLI captured, and the whole point
+        of the family is that the numbers are comparable across a
+        change.
+        """
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return {"error": "unavailable"}
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.persona.lead_follow_corpus import WINDOWS, collect
+
+            conn = chat_db._get_conn()
+            return collect(
+                conn,
+                now=datetime.now(timezone.utc),
+                windows=windows or WINDOWS,
+            )
+        except Exception as exc:
+            log.warning("lead-follow snapshot failed", exc_info=True)
+            return {"error": str(exc)}
+
     def _persist_persona_regression(
         self, snapshot: dict[str, Any],
     ) -> dict[str, Any]:

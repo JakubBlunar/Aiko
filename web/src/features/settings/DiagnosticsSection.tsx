@@ -9,6 +9,7 @@ import type {
 } from "../../types";
 import { fmtMs } from "@/lib/time";
 import { MeterBar } from "@/components/MeterBar";
+import { LeadFollowPanel } from "./LeadFollowPanel";
 import { PersonaRegressionPanel } from "./PersonaRegressionPanel";
 import { Section } from "./SettingsSection";
 
@@ -191,6 +192,8 @@ export function DiagnosticsSection({
       <LastPromptBlock />
 
       <PersonaRegressionPanel />
+
+      <LeadFollowPanel />
 
       <DebugLoggingBlock onApplyPatch={onApplyPatch} busy={busy} />
     </Section>

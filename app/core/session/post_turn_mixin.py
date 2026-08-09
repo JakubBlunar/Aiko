@@ -1471,6 +1471,18 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("cue accounting raised", exc_info=True)
 
+        # K90: the wider version of the same record -- every block that
+        # rendered, not just the armed cues. Independent of the call
+        # above (different table, different store), so it is its own
+        # try: a failure in one must not cost the other's row.
+        try:
+            self._record_prompt_blocks(
+                assistant_message_id=assistant_message_id,
+                telemetry=telemetry,
+            )
+        except Exception:
+            log.debug("prompt block accounting raised", exc_info=True)
+
         # L37: settle the previous reply's surfaced items with the
         # engagement just observed, then record this reply's. Placed
         # directly after the K14 block for the same reason J11's

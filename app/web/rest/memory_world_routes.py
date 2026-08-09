@@ -693,6 +693,18 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         return JSONResponse(session.persona_regression_snapshot())
 
+    @app.get("/api/lead-follow")
+    def get_lead_follow() -> JSONResponse:
+        """K90: leading-vs-following metrics over the message log.
+
+        Pull-only and computed on request -- there is no stored
+        snapshot, because the text half is derived from ``messages``
+        every time and cannot go stale. Synchronous handler so FastAPI
+        runs it in the threadpool; a full-history pass is a single scan
+        plus string maths, but it is not free on a long log.
+        """
+        return JSONResponse(session.lead_follow_snapshot())
+
     @app.post("/api/persona-drift/run")
     def run_persona_drift() -> JSONResponse:
         """K10: replay the golden-turn fixture and return a fresh snapshot.
