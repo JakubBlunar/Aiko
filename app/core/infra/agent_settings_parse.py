@@ -1828,6 +1828,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1.0,
                 max(0.0, float(agent_raw.get("curiosity_subject_quota", 0.4))),
             ),
+            taste_steer_widen_enabled=bool(
+                agent_raw.get("taste_steer_widen_enabled", True),
+            ),
             gap_resolver_enabled=bool(
                 agent_raw.get("gap_resolver_enabled", True),
             ),

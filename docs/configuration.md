@@ -1008,6 +1008,16 @@ Rides on top of K29 + K20 to draw the **taste vs facts** line. After Aiko states
 
 Verification: enable INFO logging on `app.session` and watch for `stance-persistence fire: band=… window=… forced=…` (cue) and `stance-persistence: shielded calibration from taste pushback (band=… window=…)` (write shield). MCP `get_stance_persistence_state()` dumps the switch, the window setting, the live countdown + stance snippet, and the last-fire diagnostic; `force_stance_persistence()` arms a one-shot bypass on the window (a mild-pushback band is still required). Tests: `tests/test_stance_persistence.py`, `StancePersistenceProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
 
+### K81 / K85a — leaning toward something of hers
+
+A rare, lull-gated permission slip to put something of Aiko's own on the table. K81 read only `subject="aiko"` `taste` concepts, of which exactly two have ever been mined, so on the live store the block was silent almost always — not because its gates were tight but because there was nothing behind them. K85a widens the fallback to her `aspiration` / `value` / `identity` concepts, filtered to labels that don't name the user or the bond (about a quarter of the ~104 active rows survive that filter).
+
+- `agent.taste_steer_enabled` *(bool, `true`)* — master switch for the whole block.
+- `agent.taste_steer_widen_enabled` *(bool, `true`)* — **K85a.** Off restores the taste-only read. On, the block falls back to aspiration → value → identity when no taste clears the bar, and switches to different copy: a taste is a topic to steer toward, but a value is a position to state, and asking her to steer a conversation onto one produces a lecture.
+- `memory.taste_steer_min_confidence` *(float, `0.6`)* — the confidence bar a concept must clear to be leaned on.
+
+L42's concentration / fixation findings suppress the whole block, so a learned lean can't deepen a rut.
+
 ### K63 — long-arc callbacks ("weeks ago you said...")
 
 A rare "she actually knows me" beat: occasionally Aiko reaches **weeks or months** back to connect the live turn to something the user told her long ago ("wait — didn't you once mention your dad's workshop, back in spring?"). An *aged retrieval lane* on the RAG retriever (the inverse of the recency boost) finds an old, topically-linked memory; a provider surfaces it as a tentative callback cue, leaning on K25's hedging posture. Rarity is the whole point — paced by a per-session cap, a wall-clock cooldown, a high topical bar, a hard age floor, and a don't-repeat ring.

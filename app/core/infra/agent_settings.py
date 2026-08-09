@@ -2498,6 +2498,11 @@ class AgentSettings:
     # interview question waiting to happen; 1 → she never drafts a
     # question about his life again, which is its own failure.
     curiosity_subject_quota: float = 0.4
+    # K85a: let the taste-lean block fall back to her aspiration / value
+    # / identity concepts when no taste clears the bar, filtered to
+    # labels that don't name the user. Off restores the taste-only read,
+    # which on the live store means the block is silent almost always.
+    taste_steer_widen_enabled: bool = True
     # ── F2.1 personality backlog: knowledge-gap memory-match resolver ─
     # Companion to F1's web-search resolver. F1 closes a gap by going
     # to look the answer up; this worker closes it by noticing the
