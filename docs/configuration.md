@@ -1018,6 +1018,16 @@ A rare, lull-gated permission slip to put something of Aiko's own on the table. 
 
 L42's concentration / fixation findings suppress the whole block, so a learned lean can't deepen a rut.
 
+### K85 — pursuits (the third subject)
+
+What Aiko keeps returning to **on her own**, with the user out of the picture entirely. Taste is bond-scoped by definition ("topics she enjoys getting into with him"), value and identity are how she reasons, and three quarters of her stored self-concepts name him outright — so when the room went quiet she had nothing of her own to open with. Mined from the `pursuit_note` memories her hobby milestones and substantive away beats now leave behind.
+
+- `agent.pursuit_synthesis_enabled` *(bool, `true`)* — the synthesis pass that turns notes into `pursuit` concepts. Off just skips the pass; existing pursuits keep working.
+- `memory.pursuit_min_notes` *(int, `6`, min `1`)* — how many notes must exist before the pass runs at all. Below the promotion gate's three-source floor nothing could promote, so a cold pool is a pure no-op.
+- `memory.concept_synthesis_max_pursuit_memories` *(int, `40`, min `1`)* — notes offered per run, taken **chronologically** rather than by salience: recurrence is the signal, and a salience sort would hide exactly the dull repetition that proves it.
+
+The promotion gate is the strictest of the aiko kinds — three distinct notes and a **week** of age, against taste's two and half a day. A pursuit gives her something to open with, so a wrong one is a woman announcing an interest she doesn't have, and the thing that separates a pursuit from an afternoon is that she came back to it.
+
 ### K63 — long-arc callbacks ("weeks ago you said...")
 
 A rare "she actually knows me" beat: occasionally Aiko reaches **weeks or months** back to connect the live turn to something the user told her long ago ("wait — didn't you once mention your dad's workshop, back in spring?"). An *aged retrieval lane* on the RAG retriever (the inverse of the recency boost) finds an old, topically-linked memory; a provider surfaces it as a tentative callback cue, leaning on K25's hedging posture. Rarity is the whole point — paced by a per-session cap, a wall-clock cooldown, a high topical bar, a hard age floor, and a don't-repeat ring.

@@ -407,6 +407,49 @@ def taste_evidence_gate(
     )
 
 
+# K85c: a pursuit is a subject of her own -- something she keeps returning to
+# in her own time, independent of him. Its floors are the *strictest* of the
+# aiko kinds, and deliberately so. Taste is cheap to be wrong about because it
+# only colours enthusiasm inside a conversation he is already having; a pursuit
+# gives her something to *open* with, so a wrong one is a woman announcing an
+# interest she does not have. Three distinct notes rather than two, and a week
+# rather than half a day: the thing that separates a pursuit from an afternoon
+# is that she came back to it, and coming back takes time to observe. The
+# confidence bar stays moderate -- the recurrence is the evidence, and asking
+# the proposer for high certainty on top of it just filters out the honest ones.
+_PURSUIT_MIN_SOURCES = 3
+_PURSUIT_MIN_AGE_DAYS = 7.0
+_PURSUIT_MIN_CONFIDENCE = 0.6
+
+
+def pursuit_evidence_gate(
+    *,
+    distinct_source_count: int,
+    age_days: float,
+    confidence: float,
+    min_sources: int,
+    min_age_days: float,
+    min_confidence: float,
+) -> bool:
+    """Promotion predicate for ``pursuit`` concepts (K85c).
+
+    The age floor is doing the real work here. A candidate is created the
+    first time three notes line up, which can happen inside a single long
+    afternoon of away beats; the week it then has to survive is what tells
+    a standing interest apart from a spell of gardening weather. It also
+    gives the K85d authored seeds somewhere honest to sit: a seed that
+    never comes up ages without accruing evidence and never promotes.
+    """
+    return set_evidence_gate(
+        distinct_source_count=distinct_source_count,
+        age_days=age_days,
+        confidence=confidence,
+        min_sources=max(int(min_sources), _PURSUIT_MIN_SOURCES),
+        min_age_days=max(float(min_age_days), _PURSUIT_MIN_AGE_DAYS),
+        min_confidence=max(float(min_confidence), _PURSUIT_MIN_CONFIDENCE),
+    )
+
+
 # L42 conduct findings are weekly, relationship-calibrated observations over
 # several ledger sources. They are more stable than a momentary affect read but
 # should remain revisable as conversational habits change.
@@ -745,6 +788,7 @@ __all__ = [
     "value_evidence_gate",
     "affective_evidence_gate",
     "taste_evidence_gate",
+    "pursuit_evidence_gate",
     "conduct_evidence_gate",
     "ritual_evidence_gate",
     "narrative_evidence_gate",

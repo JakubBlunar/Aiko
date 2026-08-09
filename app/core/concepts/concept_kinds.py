@@ -65,6 +65,7 @@ from app.core.concepts.concept_lifecycle import (
     generalization_evidence_gate,
     identity_evidence_gate,
     narrative_evidence_gate,
+    pursuit_evidence_gate,
     ritual_evidence_gate,
     taste_evidence_gate,
     tension_evidence_gate,
@@ -485,6 +486,58 @@ register_kind(
             context=0.5, recency=0.3, salience=0.2, activation=0.25,
             standing=0.1,
             recency_halflife_days=21.0, salience_halflife_days=21.0,
+        ),
+    )
+)
+
+
+# ── K85c: pursuit ─────────────────────────────────────────────────────
+# The *third subject*. Everything else she can lean on in a lull is about
+# him or about the two of them: taste is explicitly bond-scoped ("topics
+# she enjoys getting into with {user}"), value and identity are how she
+# reasons, and three quarters of them name him outright. So when the room
+# goes quiet she has nothing of her own to open with, and the measured
+# result is a companion who follows -- an 82% anaphoric-opener rate and
+# almost no material in a reply that wasn't in his message first (K90).
+#
+# A pursuit is something she keeps returning to in her own time: the
+# garden, a book series, whatever the away beats and hobby milestones say
+# she actually does. It is deliberately NOT called ``interest`` -- T6
+# already carries ``interest_drift_block`` (K64b) and
+# ``dormant_interest_block`` (K67), and both of those mean "a *shared*
+# topic cluster's mass moved", which is a different thing wearing the
+# same word.
+#
+# Mined from the K85b ``pursuit_note`` memories, which is why this kind
+# had to wait for them: nothing she did alone used to survive the week.
+register_kind(
+    ConceptKind(
+        name="pursuit",
+        subject="aiko",
+        evidence_model="set",
+        # L16: stickier than taste (0.5) and looser than a value (0.2). An
+        # interest of her own should outlive a quiet fortnight -- that is
+        # the whole point of it -- but a hobby she has genuinely dropped
+        # must be allowed to fade rather than harden into a claim she
+        # keeps making about herself.
+        plasticity_default=0.35,
+        # L32: above taste, below a value. It is worth more than enjoyment
+        # colour because she leads with it, and less than a principle
+        # because being wrong costs an awkward opener, not a broken trust.
+        importance=0.45,
+        promotion_gate=pursuit_evidence_gate,
+        # L24 / L27: emphatically NOT core_always_on. A pinned "you are
+        # into gardening" every single turn is the canned-hobby failure
+        # the backlog warns about; a pursuit earns its way into a turn
+        # either through T3 relevance or through the K85e lull block, and
+        # both of those are situational by construction.
+        # L18e: leans on stability -- an interest is a *settled* thing, so
+        # it should not be reshuffled by whichever note landed last week.
+        # Recency still gets a small share so a pursuit she has actually
+        # been at lately outranks one she has not.
+        surface_weights=SurfaceWeights(
+            context=0.55, stability=0.25, recency=0.2, activation=0.15,
+            standing=0.1, recency_halflife_days=45.0,
         ),
     )
 )
