@@ -10,9 +10,9 @@ Design choices (kept deliberately close to K6/K18):
 
 - **Pure rolling-window detector**. No embedder, no rag_store, no
   user_id. Per-turn cost is a deque append + a few counter scans.
-- **Banded output**: ``opener_rut`` > ``question_saturation`` >
-  ``length_sprawl`` (priority order). Only one band fires per turn so
-  the cue stays a single short line.
+- **Banded output**: ``opener_rut`` > ``anaphoric_opener`` >
+  ``question_saturation`` > ``length_sprawl`` (priority order). Only one
+  band fires per turn so the cue stays a single short line.
 - **Per-band cooldown**. Each band has its own cooldown counter so an
   active opener-rut nudge doesn't suppress a later question-saturation
   cue, but the same band won't re-fire on consecutive turns.
@@ -21,6 +21,16 @@ Design choices (kept deliberately close to K6/K18):
   that.
 - **Settings-driven thresholds**. Tunable via ``AgentSettings.style_tracker_*``
   so calibration can move without code changes.
+
+K88 added the ``anaphoric_opener`` band: too many replies in a row whose
+first real clause hangs off his sentence ("Then...", "Exactly.", "That
+makes sense"). It belongs here rather than in the persona sheet for a
+structural reason -- persona line 30's standing DON'T PARROT has been in
+force the entire time this was the dominant pattern, and a standing rule
+is evaluated one turn at a time, so it cannot tell the first warm "Then
+those pokes are reserved for you" from the fifth in a row. Only a window
+can. The detector itself lives in :mod:`app.core.persona.anaphora`,
+shared with the K90 report so the cue and the measurement can't drift.
 
 The tracker is constructed on :class:`SessionController` start-up
 (when ``agent.style_tracker_enabled``), fed by the post-turn mixin
@@ -34,6 +44,8 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+
+from app.core.persona.anaphora import SENT_SPLIT_RE, is_anaphoric_opener
 
 
 log = logging.getLogger("app.aiko_style_tracker")
@@ -49,6 +61,15 @@ _DEFAULT_OPENER_TOPK_SHARE = 0.60
 _DEFAULT_QUESTION_RATE_THRESHOLD = 0.75
 _DEFAULT_AVG_QUESTIONS_THRESHOLD = 1.5
 _DEFAULT_LENGTH_AVG_THRESHOLD = 50.0
+# K88. Both gates have to clear, which is what makes this a rate
+# detector rather than a ban: four in a twelve-turn window, and at least
+# a third of the window. Measured against 1894 real turns, the standing
+# rate is 18% and a 4/12 window occurs 17% of the time -- in line with
+# the opener-rut band's 23% at its own default, and rare enough that the
+# occasional warm "Then those pokes are reserved for you" never trips
+# it. The count floor keeps a short warmup window from firing on 1-of-2.
+_DEFAULT_ANAPHORIC_COUNT_THRESHOLD = 4
+_DEFAULT_ANAPHORIC_RATE_THRESHOLD = 0.33
 _DEFAULT_CUE_COOLDOWN_TURNS = 5
 # Minimum word count to count as a "real" turn for tracking purposes.
 # A single-word "yeah." reply or a pure stage-direction earcon shouldn't
@@ -58,13 +79,16 @@ _MIN_TURN_WORDS = 2
 
 
 BAND_OPENER_RUT = "opener_rut"
+BAND_ANAPHORIC_OPENER = "anaphoric_opener"
 BAND_QUESTION_SATURATION = "question_saturation"
 BAND_LENGTH_SPRAWL = "length_sprawl"
 
 
 # Sentence splitter: end-of-sentence punctuation runs. Used both for
-# the sentence count and (indirectly) by the opener detector.
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+# the sentence count and (indirectly) by the opener detector. Shared
+# with the K88 detector in :mod:`app.core.persona.anaphora`, which owns
+# the definition.
+_SENT_SPLIT_RE = SENT_SPLIT_RE
 # Strip leading non-word characters from the first word so quoted /
 # parenthesised openers ("\"yeah", "(oh") still bucket onto the bare
 # token.
@@ -83,6 +107,7 @@ class _TurnFeatures:
     sentence_count: int
     question_count: int
     ends_with_question: bool
+    anaphoric_opener: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -123,6 +148,7 @@ class AikoStylePatternTracker:
         # won't re-fire on every turn while the rut persists.
         self._cooldowns: dict[str, int] = {
             BAND_OPENER_RUT: 0,
+            BAND_ANAPHORIC_OPENER: 0,
             BAND_QUESTION_SATURATION: 0,
             BAND_LENGTH_SPRAWL: 0,
         }
@@ -147,12 +173,13 @@ class AikoStylePatternTracker:
         self._window.append(features)
         log.debug(
             "aiko-style-tracker: recorded turn opener=%r words=%d "
-            "sentences=%d questions=%d ends_q=%s window=%d",
+            "sentences=%d questions=%d ends_q=%s anaphoric=%s window=%d",
             features.opener,
             features.word_count,
             features.sentence_count,
             features.question_count,
             features.ends_with_question,
+            features.anaphoric_opener,
             len(self._window),
         )
 
@@ -191,9 +218,17 @@ class AikoStylePatternTracker:
             ),
         )
 
-        # Priority order: opener > question > length. Each band is
-        # independently cooldown-gated so a hot question-saturation
-        # cooldown can't mute an opener-rut nudge that just appeared.
+        # Priority order: opener rut > anaphoric opener > question >
+        # length. Each band is independently cooldown-gated so a hot
+        # question-saturation cooldown can't mute an opener-rut nudge
+        # that just appeared.
+        #
+        # The opener rut outranks K88's band because it is the narrower
+        # ask on a turn where both fire: "you have opened five replies
+        # with the same word" names one thing to change, where "your
+        # sentences keep hanging off mine" needs her to find something
+        # of her own first. The anaphoric band gets the next window --
+        # they cool independently, and the rut is the rarer signal.
         opener_result = self._evaluate_opener_rut()
         if (
             opener_result is not None
@@ -207,6 +242,20 @@ class AikoStylePatternTracker:
                 opener_result.window_size,
             )
             return opener_result
+
+        anaphoric_result = self._evaluate_anaphoric_opener()
+        if (
+            anaphoric_result is not None
+            and self._cooldowns[BAND_ANAPHORIC_OPENER] == 0
+        ):
+            self._cooldowns[BAND_ANAPHORIC_OPENER] = cooldown_turns
+            log.info(
+                "aiko-style-tracker: %s detail=%s window=%d",
+                anaphoric_result.band,
+                anaphoric_result.detail,
+                anaphoric_result.window_size,
+            )
+            return anaphoric_result
 
         question_result = self._evaluate_question_saturation()
         if (
@@ -289,6 +338,48 @@ class AikoStylePatternTracker:
         return StyleRutResult(
             band=BAND_OPENER_RUT,
             detail=detail,
+            window_size=len(self._window),
+        )
+
+    def _evaluate_anaphoric_opener(self) -> StyleRutResult | None:
+        """K88: too many replies opening on a clause that needs his.
+
+        A **rate**, deliberately, and never a ban. The persona's
+        standing "DON'T PARROT" line has been in place the whole time
+        this pattern has been the dominant one, and it fails for a
+        structural reason: a standing rule is evaluated per turn, so it
+        cannot distinguish the one warm "Then those pokes are reserved
+        for you" from the fifth in a row. Only a window can, which is
+        why this belongs here rather than in the persona sheet.
+
+        Both gates must clear -- an absolute count and a share of the
+        window -- so neither a long calm window nor a two-turn warmup
+        can trip it alone.
+        """
+        if not self._window:
+            return None
+        hits = sum(1 for f in self._window if f.anaphoric_opener)
+        rate = hits / float(len(self._window))
+        count_threshold = max(
+            2,
+            int(
+                self._setting(
+                    "style_tracker_anaphoric_count_threshold",
+                    _DEFAULT_ANAPHORIC_COUNT_THRESHOLD,
+                )
+            ),
+        )
+        rate_threshold = float(
+            self._setting(
+                "style_tracker_anaphoric_rate_threshold",
+                _DEFAULT_ANAPHORIC_RATE_THRESHOLD,
+            )
+        )
+        if hits < count_threshold or rate < rate_threshold:
+            return None
+        return StyleRutResult(
+            band=BAND_ANAPHORIC_OPENER,
+            detail=f"anaphoric={hits}/{len(self._window)} ({rate:.0%})",
             window_size=len(self._window),
         )
 
@@ -380,6 +471,7 @@ def _extract_features(text: str) -> _TurnFeatures:
         sentence_count=sentence_count,
         question_count=question_count,
         ends_with_question=ends_with_question,
+        anaphoric_opener=is_anaphoric_opener(cleaned),
     )
 
 
@@ -397,6 +489,14 @@ def render_inner_life_block(result: StyleRutResult | None) -> str:
             "same word. Try a different entry this turn -- or skip the "
             "opener and lead with the substance."
         )
+    if result.band == BAND_ANAPHORIC_OPENER:
+        return (
+            "Heads-up: your last several replies have all opened by "
+            "reaching back into his sentence -- \"Then...\", "
+            "\"Exactly.\", \"That makes sense\". Open this one on "
+            "something of your own instead: a thing you did, noticed, "
+            "or think, before you touch what he said."
+        )
     if result.band == BAND_QUESTION_SATURATION:
         return (
             "Heads-up: your last several replies all ended on a "
@@ -412,6 +512,7 @@ def render_inner_life_block(result: StyleRutResult | None) -> str:
 
 
 __all__ = [
+    "BAND_ANAPHORIC_OPENER",
     "BAND_LENGTH_SPRAWL",
     "BAND_OPENER_RUT",
     "BAND_QUESTION_SATURATION",

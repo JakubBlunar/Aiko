@@ -1228,6 +1228,13 @@ class AgentSettings:
     style_tracker_question_rate_threshold: float = 0.75
     style_tracker_avg_questions_threshold: float = 1.5
     style_tracker_length_avg_threshold: float = 50.0
+    # K88: the anaphoric-opener band. Both gates must clear, which is
+    # what makes it a rate detector rather than a ban -- the occasional
+    # warm "Then those pokes are reserved for you" must never trip it.
+    # Calibrated on 1894 real turns: an 18% standing rate puts a 4/12
+    # window at 17% frequency, in line with the opener-rut band.
+    style_tracker_anaphoric_count_threshold: int = 4
+    style_tracker_anaphoric_rate_threshold: float = 0.33
     style_tracker_cue_cooldown_turns: int = 5
 
     # ── K49: casual speech texture (disfluency permission) ────────────

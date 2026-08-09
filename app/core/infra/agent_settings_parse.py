@@ -832,6 +832,25 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     )
                 ),
             ),
+            style_tracker_anaphoric_count_threshold=max(
+                2,
+                int(
+                    agent_raw.get(
+                        "style_tracker_anaphoric_count_threshold", 4,
+                    )
+                ),
+            ),
+            style_tracker_anaphoric_rate_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        agent_raw.get(
+                            "style_tracker_anaphoric_rate_threshold", 0.33,
+                        )
+                    ),
+                ),
+            ),
             style_tracker_cue_cooldown_turns=max(
                 0,
                 int(
