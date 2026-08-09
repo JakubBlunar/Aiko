@@ -24,6 +24,14 @@ Marker semantics (all case-insensitive substring matches):
     that the reply must contain. The strongest *positive* signal.
   - ``forbid``       — corporate-tell phrases that must NOT appear
     ("as an ai", "i cannot", ...). The strongest *drift* signal.
+  - ``forbid_anaphoric`` — a boolean, not a phrase list: the reply must
+    not *open* on a sentence that can't stand without the user's
+    ("So am I", "That makes sense", "Exactly."). K88/K90's
+    :func:`~app.core.persona.anaphora.is_anaphoric_opener` decides, so
+    the fixture, the style-tracker band and the lead/follow report all
+    agree on what following looks like. Substring ``forbid`` can't
+    express this: "you're right" is fine in the middle of a reply and
+    is the whole problem at the front of one.
 
 A turn passes when every ``require_*`` is satisfied and no ``forbid``
 entry matches.
@@ -36,6 +44,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from app.core.persona.anaphora import is_anaphoric_opener
 
 log = logging.getLogger("app.persona_regression")
 
@@ -61,6 +71,7 @@ class GoldenTurn:
     require_all: tuple[str, ...] = ()
     require_tags: tuple[str, ...] = ()
     forbid: tuple[str, ...] = ()
+    forbid_anaphoric: bool = False
     notes: str = ""
 
 
@@ -115,6 +126,7 @@ def parse_golden_turn(raw: dict[str, Any]) -> GoldenTurn | None:
         require_all=_as_str_tuple(raw.get("require_all")),
         require_tags=_as_str_tuple(raw.get("require_tags")),
         forbid=_as_str_tuple(raw.get("forbid")),
+        forbid_anaphoric=bool(raw.get("forbid_anaphoric", False)),
         notes=str(raw.get("notes") or "").strip(),
     )
 
@@ -205,6 +217,12 @@ def score_reply(reply: str, turn: GoldenTurn) -> GoldenResult:
     for phrase in turn.forbid:
         if phrase.lower() in low:
             failures.append(f"forbidden: {phrase!r}")
+
+    # An empty reply has no opener to judge, matching how ``forbid``
+    # already declines to trip on nothing.
+    if turn.forbid_anaphoric and text.strip():
+        if is_anaphoric_opener(text):
+            failures.append("forbidden: anaphoric opener")
 
     preview = text.strip().replace("\n", " ")
     if len(preview) > _PREVIEW_CHARS:

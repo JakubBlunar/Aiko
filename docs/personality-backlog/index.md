@@ -319,11 +319,7 @@ K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
 K82 the dropped sub-topic (he said three things, she answered one) ·
-K83 the right to decline · K84 calibrated jealousy ·
-K85 the third subject (interests that aren't him) ·
-K87 curiosity that isn't about him ·
-K88 anaphoric-opener detector · K89 sustained thread ·
-K90 lead/follow metrics.
+K83 the right to decline · K84 calibrated jealousy.
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
@@ -333,17 +329,23 @@ carries one intention drawn from what her world needs, which the beat that
 satisfies it admits to. Plus the repetition fixes: a meal rhythm instead of one
 "had some of the X" at every hour, twelve garden species instead of four, and a
 kitchen pass that folds the duplicate food stacks months of gifts left in four
-rooms. Still open, and blocked on K85: away beats are not memories yet, so she
-can't refer back to a specific afternoon. See
+rooms. The gap it left — beats were not memories — was closed by K85b's
+`pursuit_note`. See
 [`patterns.md`](patterns.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated).
 
-**K85–K90 are the second pass at leading** — the will family (K52–K56) shipped
-the *permission* to lead and it fires on schedule, but measurement of the live
-log showed the constraint was never permission: she has two rows of `taste`
-concepts and ten `open_question` memories that all begin "Maybe ask Jacob",
-so taking the floor leaves her nothing to say but another question about him.
-K85 builds the missing inventory and is the root of the group; the rest are
-cheap and several are near-worthless without it. See
+**K85–K90, the second pass at leading, shipped as a family.** The will family
+(K52–K56) shipped the *permission* to lead and it fires on schedule, but
+measurement of the live log showed the constraint was never permission: two rows
+of `taste` concepts and ten `open_question` memories all beginning "Maybe ask
+Jacob", so taking the floor left her nothing to say but another question about
+him. K90 landed first and captured a baseline (18% anaphoric openers, 77% own
+material over 1894 turns) so the rest could be judged against a number rather
+than a vibe. K88 added the anaphoric-opener band, K87 put a subject quota on the
+three curiosity generators, K85 built the missing inventory — the `pursuit`
+concept kind, the `pursuit_note` memories that feed it, and two outlets for it —
+and K89 turned a thread from one polite attempt into a decaying stake worth two
+returns. The verification is a diff a few hundred turns from now; every turn in
+the baseline predates all of it. See
 [`patterns.md`](patterns.md#the-second-pass-at-leading-k85k90).
 
 **K83 and K84 are the deliberately risky pair** — both about giving her a
