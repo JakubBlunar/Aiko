@@ -190,6 +190,56 @@ class ScoreReplyTests(unittest.TestCase):
         self.assertFalse(any("forbidden" in f for f in result.failures))
 
 
+class AnaphoricMarkerTests(unittest.TestCase):
+    """K88/K90 -- the fixture's only non-substring marker."""
+
+    def _turn(self) -> pr.GoldenTurn:
+        return pr.GoldenTurn(id="t", user="hi", forbid_anaphoric=True)
+
+    def test_an_echo_opener_fails(self) -> None:
+        result = pr.score_reply("So am I, honestly.", self._turn())
+        self.assertFalse(result.passed)
+        self.assertIn("forbidden: anaphoric opener", result.failures)
+
+    def test_leading_with_her_own_clause_passes(self) -> None:
+        result = pr.score_reply(
+            "Same, though mine's mostly about the lamps going on early.",
+            self._turn(),
+        )
+        self.assertTrue(result.passed)
+
+    def test_a_particle_in_front_of_her_own_clause_is_fine(self) -> None:
+        # The marker is about the grammar of the opening clause, not a
+        # ban on warm noises.
+        result = pr.score_reply(
+            "Oh, I finally got the basil to behave.", self._turn(),
+        )
+        self.assertTrue(result.passed)
+
+    def test_off_by_default(self) -> None:
+        turn = pr.GoldenTurn(id="t", user="hi")
+        self.assertTrue(pr.score_reply("Exactly.", turn).passed)
+
+    def test_empty_reply_has_no_opener_to_judge(self) -> None:
+        result = pr.score_reply("", self._turn())
+        self.assertNotIn("forbidden: anaphoric opener", result.failures)
+
+    def test_the_flag_round_trips_through_the_fixture(self) -> None:
+        turn = pr.parse_golden_turn(
+            {"id": "t", "user": "hi", "forbid_anaphoric": True},
+        )
+        self.assertTrue(turn.forbid_anaphoric)
+        self.assertFalse(
+            pr.parse_golden_turn({"id": "t", "user": "hi"}).forbid_anaphoric,
+        )
+
+    def test_the_shipped_fixture_carries_anti_follow_cases(self) -> None:
+        turns = pr.load_golden_turns("data/persona/golden_turns.jsonl")
+        self.assertGreaterEqual(
+            sum(1 for t in turns if t.forbid_anaphoric), 3,
+        )
+
+
 # ── pure: snapshot ──────────────────────────────────────────────────
 
 
