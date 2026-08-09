@@ -34,6 +34,7 @@ import type {
   MemoryCreatePayload,
   MemoryCreateResponse,
   MemoryOrder,
+  LeadFollowSnapshot,
   MemoryUpdatePatch,
   MetricsResponse,
   LastSystemPromptResponse,
@@ -661,6 +662,8 @@ export const api = {
     jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift/run", {
       method: "POST",
     }),
+  // ── Lead/follow metrics (K90) ────────────────────────────────────
+  getLeadFollow: () => jsonFetch<LeadFollowSnapshot>("/api/lead-follow"),
   // ── Theory-of-mind beliefs (K2) ──────────────────────────────────
   listBeliefs: (
     options: {

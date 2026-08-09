@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 34
+_SCHEMA_VERSION = 35
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1068,6 +1068,42 @@ CREATE TABLE IF NOT EXISTS evolution_diary (
 );
 CREATE INDEX IF NOT EXISTS idx_evolution_diary_created
     ON evolution_diary(created_at);
+
+-- Schema v35: which prompt blocks actually fired on a turn (K90).
+--
+-- The assembler has computed a full per-block character table on every
+-- turn since P31a, and it has always been thrown away once the turn
+-- ended. G4's ``cue_decisions`` persists a slice of it -- the ~15
+-- registered cues, and only when armed -- which answers "did this cue
+-- reach the prompt" but cannot answer "how often does this block fire
+-- at all", because a block that never arms writes nothing and a block
+-- outside the cue registry writes nothing ever.
+--
+-- That question is the second half of K90. The lead/follow text metrics
+-- say whether her replies changed; this says which of the ~120 blocks
+-- were in front of her when they did. Without it, a steer that never
+-- renders and a steer that renders and gets ignored look identical from
+-- the transcript, which is exactly how K52-K56 shipped five mechanisms
+-- that all "work" while the behaviour persisted.
+--
+-- Rows exist only for blocks that RENDERED (``chars > 0``). The zero
+-- rows carry no information and would multiply the table by ~120 per
+-- turn; the denominator for any rate is
+-- ``COUNT(DISTINCT assistant_message_id)`` over the same window, which
+-- is exact because every recorded turn writes at least the persona.
+CREATE TABLE IF NOT EXISTS turn_prompt_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assistant_message_id INTEGER NOT NULL,
+    block TEXT NOT NULL,
+    chars INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_block
+    ON turn_prompt_blocks(block, created_at);
+CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_created
+    ON turn_prompt_blocks(created_at);
+CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_message
+    ON turn_prompt_blocks(assistant_message_id);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -1690,6 +1726,16 @@ class ChatDatabase:
         # v33 -> v34: ``hypotheses.answer_memory_ids``. The ALTER only
         # matters for a database created at exactly v33, before
         # graduation needed to know which memories carried the answers.
+        # v34 -> v35: K90's ``turn_prompt_blocks``. Brand-new table in
+        # ``_CREATE_TABLES``, so the executescript has it. Deliberately
+        # NOT backfilled and not backfillable: the per-block character
+        # table lives only in the telemetry object for the length of a
+        # turn, so no historical assembly can be reconstructed. Block
+        # firing rates therefore start empty and only mean anything
+        # after the upgraded build has run for a while -- which the
+        # report and the diagnostics panel both say out loud, because a
+        # rate of zero on a block that has simply never been recorded
+        # would otherwise read as a dead block.
         try:
             conn.execute(
                 "ALTER TABLE hypotheses ADD COLUMN answer_memory_ids TEXT "

@@ -1343,6 +1343,14 @@ class AgentSettings:
     # cooldowns are the follow-up), so turning it off costs only the
     # measurement.
     cue_accounting_enabled: bool = True
+    # ── K90 prompt-block accounting ──────────────────────────────────
+    # One row per block that RENDERED, per turn. Wider than the cue
+    # ledger above, which only sees the ~15 registered cues and only
+    # when armed; this sees all ~120 blocks, so "how often does this
+    # steer actually fire" becomes answerable for the ones that were
+    # never cues. Feeds the lead/follow report. Recorder only -- nothing
+    # reads it to change behaviour, so off costs only the measurement.
+    prompt_block_accounting_enabled: bool = True
     engagement_latency_z_strong_drop: float = 1.5
     engagement_length_z_strong_drop: float = -1.0
     engagement_closeness_delta_max: float = 0.04

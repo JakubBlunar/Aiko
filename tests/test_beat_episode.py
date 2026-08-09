@@ -40,7 +40,7 @@ class ChainTests(unittest.TestCase):
             chain = beat_episode.plan_chain(
                 "tea", ALL_KEYS, rng=random.Random(seed), length=3,
             )
-            for before, after in zip(chain, chain[1:]):
+            for before, after in zip(chain, chain[1:], strict=False):
                 self.assertIn(after, beat_episode.SUCCESSORS[before])
 
     def test_terminal_beat_ends_the_chain(self) -> None:

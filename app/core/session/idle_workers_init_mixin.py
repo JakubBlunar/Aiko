@@ -1296,6 +1296,28 @@ class IdleWorkersInitMixin:
                 log.warning("CueDecisionStore init failed", exc_info=True)
                 self._cue_decision_store = None
 
+        # K90 — prompt-block accounting. Same post-turn seam as G4 and
+        # the same inputs, one level wider: the cue ledger sees the
+        # registered cues, this sees every block that rendered, so a
+        # steer that is not a cue stops being invisible.
+        self._turn_prompt_block_store = None
+        if self._chat_db is not None and bool(
+            getattr(settings.agent, "prompt_block_accounting_enabled", True)
+        ):
+            try:
+                from app.core.memory.turn_prompt_block_store import (
+                    TurnPromptBlockStore,
+                )
+
+                self._turn_prompt_block_store = TurnPromptBlockStore(
+                    self._chat_db,
+                )
+            except Exception:
+                log.warning(
+                    "TurnPromptBlockStore init failed", exc_info=True,
+                )
+                self._turn_prompt_block_store = None
+
         # The cue pool. Unconditional where the decision ledger above is
         # gated: the pool is not diagnostics, it is where seven workers
         # keep the cues they have produced and where the providers read

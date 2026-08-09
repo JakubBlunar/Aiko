@@ -197,7 +197,7 @@ def memory_ids_from_edges(edges: Iterable[object]) -> tuple[int, ...]:
         if str(getattr(edge, "relation", "")) != "evidence":
             continue
         try:
-            out.append(int(getattr(edge, "src_id")))
+            out.append(int(edge.src_id))
         except (TypeError, ValueError):
             continue
     return tuple(out)

@@ -965,6 +965,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             cue_accounting_enabled=bool(
                 agent_raw.get("cue_accounting_enabled", True),
             ),
+            prompt_block_accounting_enabled=bool(
+                agent_raw.get("prompt_block_accounting_enabled", True),
+            ),
             engagement_latency_z_strong_drop=max(
                 0.1,
                 float(

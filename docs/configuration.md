@@ -347,6 +347,12 @@ Records one row per *armed* worker cue per turn — armed meaning it had materia
 
 - `agent.cue_accounting_enabled` *(bool, `true`)* — master switch. Off → the `cue_decisions` table stops growing and surfaced cues stop appearing in the L37 ledger; no behavioural change beyond losing the measurement.
 
+### K90 — prompt-block accounting
+
+The wider sibling of G4: one row per prompt block that actually *rendered*, per turn, rather than only the ~15 registered cues and only when armed. It exists so "how often does this steer fire" is answerable for the ~120 blocks that were never cues. Read it with `scripts/lead_follow_report.py` or the Diagnostics panel. Purely a recorder.
+
+- `agent.prompt_block_accounting_enabled` *(bool, `true`)* — master switch. Off → the `turn_prompt_blocks` table stops growing and the report's firing-rate section goes empty; the text metrics are unaffected, since those are computed from the message log.
+
 ### K5 — mood shell tilt
 
 Per-turn one-line emotional directive derived from the live [`AffectState`](../app/core/affect/affect_state.py) (valence + arousal) and [`RelationshipAxesState`](../app/core/relationship/relationship_axes.py) (closeness / humor / trust / comfort). Output reads like a stage direction — *"Lean affectionate and unhurried; let warmth show."* / *"Stay playful and quick; the room is laughing."* / *"Slow your tempo; let the words land before pushing forward."* — and colours Aiko's delivery (pacing, sentence length, warmth, word choice) **without** dictating content.

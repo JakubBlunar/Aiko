@@ -71,5 +71,29 @@ class PersonaDriftRunTests(unittest.TestCase):
         session.run_persona_regression.assert_called_once()
 
 
+class LeadFollowTests(unittest.TestCase):
+    """K90's neighbouring endpoint -- wiring only."""
+
+    def test_it_returns_the_snapshot(self) -> None:
+        session = MagicMock()
+        session.lead_follow_snapshot.return_value = {
+            "total_assistant_turns": 12,
+            "cohorts": [{"window_days": None, "turns": 12}],
+        }
+        client = TestClient(create_web_app(session))
+        resp = client.get("/api/lead-follow")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["total_assistant_turns"], 12)
+        session.lead_follow_snapshot.assert_called_once()
+
+    def test_an_unavailable_database_reports_rather_than_500s(self) -> None:
+        session = MagicMock()
+        session.lead_follow_snapshot.return_value = {"error": "unavailable"}
+        client = TestClient(create_web_app(session))
+        resp = client.get("/api/lead-follow")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["error"], "unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()
