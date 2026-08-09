@@ -1492,6 +1492,15 @@ class MemorySettings:
     # (open-vocab activity grounded in the live room) instead of the
     # curated weighted templates. 0.0 disables; 1.0 always LLM-composes.
     away_activities_llm_ratio: float = 0.5
+    # K91 — episodes. ``episode_ratio`` is the chance an eligible firing
+    # plays out as a chain instead of one beat; ``min_gap_seconds`` is how
+    # long she must have been left alone for a chain to read as plausible
+    # (default 3h, twice the beat cooldown); ``max_beats`` caps the chain
+    # so a quiet day doesn't turn into a montage. An episode still costs
+    # one beat against the daily cap and one rephrase generation.
+    away_activities_episode_ratio: float = 0.35
+    away_activities_episode_max_beats: int = 3
+    away_activities_episode_min_gap_seconds: int = 10800
     # H17 — idle beats feed the idea machine. ``ratio`` is the fraction of
     # beats that also produce a conversational seed (LLM-composed; needs a
     # worker model). ``daily_cap`` bounds seeds/day; ``max_ring`` bounds the
@@ -4263,6 +4272,32 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_llm_ratio=min(
                 1.0,
                 max(0.0, float(memory_raw.get("away_activities_llm_ratio", 0.5))),
+            ),
+            away_activities_episode_ratio=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get("away_activities_episode_ratio", 0.35)
+                    ),
+                ),
+            ),
+            away_activities_episode_max_beats=max(
+                1,
+                min(
+                    4,
+                    int(
+                        memory_raw.get("away_activities_episode_max_beats", 3)
+                    ),
+                ),
+            ),
+            away_activities_episode_min_gap_seconds=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "away_activities_episode_min_gap_seconds", 10800
+                    )
+                ),
             ),
             idle_seed_ratio=min(
                 1.0,

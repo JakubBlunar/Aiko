@@ -245,6 +245,52 @@ class GardenVisitWorkerH15Tests(unittest.TestCase):
             journal = load_journal(lambda k: worker._kv_read(k))
             self.assertEqual(journal[-1]["key"], "garden")
 
+    def test_thirsty_plant_is_named_in_the_journal(self) -> None:
+        """K91 — the pot that needed water is the point of the entry."""
+        from app.core.world.idle_activity_worker import load_journal
+
+        with _TempWorld() as store:
+            plants = [
+                i for i in store.list_items(kind="plant")
+            ]
+            self.assertTrue(plants)
+            parched, *rest = plants
+            long_ago = (
+                datetime.now(timezone.utc) - timedelta(days=5)
+            ).isoformat()
+            store.update_item(
+                parched.id,
+                state={**parched.state, "last_watered_at": long_ago},
+            )
+            just_now = datetime.now(timezone.utc).isoformat()
+            for other in rest:
+                store.update_item(
+                    other.id,
+                    state={**other.state, "last_watered_at": just_now},
+                )
+
+            worker = _make_worker(store, relax_ratio=0.0)
+            worker.run()
+            summary = load_journal(lambda k: worker._kv_read(k))[-1]["summary"]
+            self.assertIn(parched.name, summary)
+            self.assertIn("bone dry", summary)
+
+    def test_a_freshly_watered_garden_stays_generic(self) -> None:
+        from app.core.world.idle_activity_worker import load_journal
+
+        with _TempWorld() as store:
+            just_now = datetime.now(timezone.utc).isoformat()
+            for plant in store.list_items(kind="plant"):
+                store.update_item(
+                    plant.id,
+                    state={**plant.state, "last_watered_at": just_now},
+                )
+            worker = _make_worker(store, relax_ratio=0.0)
+            worker.run()
+            summary = load_journal(lambda k: worker._kv_read(k))[-1]["summary"]
+            self.assertNotIn("bone dry", summary)
+            self.assertNotIn("really needed", summary)
+
     def test_force_visit_bypasses_daylight(self) -> None:
         with _TempWorld() as store:
             worker = _make_worker(store, period="late_night")

@@ -19,6 +19,13 @@ quiet window it:
     :class:`ItemEffect` advances that row through the room's existing
     transitions, so what she says she did and what her room shows can no
     longer drift apart,
+  * **chains beats into an episode** (K91) after a long quiet stretch, so
+    a whole afternoon reads as "I made tea, then curled up with the book"
+    instead of two unrelated postcards. Candidate building lives in
+    :class:`ActivityCandidatesMixin` because a chain needs to see every
+    beat the room affords, and :mod:`beat_episode` owns the successor
+    table. An episode journals one entry (carrying its ``keys``) and is
+    rephrased once, so its LLM cost matches a single beat's,
   * composes a first-person one-liner (deterministic template, optionally
     rephrased by the local worker LLM with a safe fallback), and
   * appends ``{at, activity, summary}`` to a small kv_meta journal ring.
@@ -43,12 +50,24 @@ import json
 import logging
 import random
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail
+from app.core.world import beat_detail, beat_episode
 from app.core.world.activity_selection import weighted_pick
+from app.core.world.idle_activity_candidates_mixin import (
+    ActivityCandidatesMixin,
+)
+from app.core.world.idle_activity_plan import (
+    EFFECT_ADVANCE_BOOK,
+    EFFECT_POUR_TEA,
+    EFFECT_WATER_PLANT,
+    OUTING_DAYLIGHT_PERIODS,
+    VALID_EFFECTS,
+    ActivityPlan,
+    ItemEffect,
+    RoomSnapshot,
+)
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -79,23 +98,6 @@ _KV_OUTING_LAST_FIRED_AT = "outing.last_fired_at"
 _KV_OUTING_DAY = "outing.day"
 _KV_OUTING_DAY_COUNT = "outing.day_count"
 
-# Periods during which stepping out reads as natural (no 3 a.m. strolls).
-_OUTING_DAYLIGHT_PERIODS: frozenset[str] = frozenset(
-    {"early_morning", "morning", "midday", "afternoon", "evening"}
-)
-
-# Varied past-tense outing flavours. She's back by the time the beat is
-# journalled, so each is narrated as a completed short trip. v0 of H5 —
-# no scene_id, no item relocation; the trace lives in the journal + the
-# H17 seed path (a small detail she brought home).
-_OUTING_BEATS: tuple[str, ...] = (
-    "popped out for a short walk — the air was lovely",
-    "stepped out and grabbed a coffee from the place downstairs",
-    "took a quick stroll around the block to stretch my legs",
-    "nipped out for some fresh air and watched the street for a bit",
-    "wandered out to the little shop on the corner and back",
-)
-
 # Must match the literal GardenVisitWorker writes (see
 # ``garden_visit_worker.GardenVisitWorker._RETURN_KEY``). Duplicated to
 # avoid importing the garden module just for a string.
@@ -109,30 +111,6 @@ _INTENTIONAL_STATE_KEY = "world.intentional_state_at"
 
 def _utcnow() -> datetime:
     return timephrase.utcnow()
-
-
-def _match_location(locations: list[Any], *keywords: str) -> Any | None:
-    """First location whose slug/name contains any keyword (slug wins).
-
-    Used by H13 to resolve a beat's cozy spot from whatever the room
-    actually has, tolerant of renamed/removed locations.
-    """
-    if not locations:
-        return None
-    kws = [k.lower() for k in keywords if k]
-    # Prefer an exact slug match, then substring on slug, then on name.
-    for loc in locations:
-        if (getattr(loc, "slug", "") or "").lower() in kws:
-            return loc
-    for loc in locations:
-        slug = (getattr(loc, "slug", "") or "").lower()
-        if any(k in slug for k in kws):
-            return loc
-    for loc in locations:
-        name = (getattr(loc, "name", "") or "").lower()
-        if any(k in name for k in kws):
-            return loc
-    return None
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -150,53 +128,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-# K91 — the effects a beat may have on the item it acted on. Deliberately
-# a closed set: the transition math is H20's (``room_evolution``) or the
-# store's (``water_plant``), so a beat can only ever move an item along a
-# path the room already understands.
-EFFECT_ADVANCE_BOOK = "advance_book"
-EFFECT_POUR_TEA = "pour_tea"
-EFFECT_WATER_PLANT = "water_plant"
-_VALID_EFFECTS: frozenset[str] = frozenset(
-    {EFFECT_ADVANCE_BOOK, EFFECT_POUR_TEA, EFFECT_WATER_PLANT}
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ItemEffect:
-    """A state change a beat leaves behind on one item.
-
-    Declarative on purpose: the plan names the item and the transition,
-    and ``_apply_item_effect`` resolves it against the live row at apply
-    time. That keeps ``_pick_activity`` free of writes and means a stale
-    candidate can never write stale state.
-    """
-
-    item_id: int
-    action: str
-
-
-@dataclass(frozen=True)
-class ActivityPlan:
-    """One chosen idle beat + the world mutation it implies."""
-
-    key: str
-    posture: str
-    activity: str
-    summary: str
-    consume_item_id: int | None = None
-    move_item_id: int | None = None
-    move_to_location_id: int | None = None
-    # H13 — where Aiko herself relocates to for this beat (None = stay put).
-    aiko_location_id: int | None = None
-    # H14 — set when the worker LLM already composed a final summary, so
-    # run() skips the rephrase pass.
-    precomposed: bool = False
-    # K91 — the state this beat writes back, so what she says she did and
-    # what her room shows stop drifting apart.
-    item_effect: ItemEffect | None = None
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -280,7 +211,7 @@ def append_idle_seed(
     return True
 
 
-class IdleAwayActivityWorker:
+class IdleAwayActivityWorker(ActivityCandidatesMixin):
     """IdleWorker that gives Aiko a quiet, room-grounded inner life."""
 
     name = "away_activity"
@@ -308,6 +239,9 @@ class IdleAwayActivityWorker:
         outings_enabled_provider: Callable[[], bool] | None = None,
         outing_cooldown_seconds: float = 6.0 * 3600,
         outing_daily_cap: int = 2,
+        episode_ratio: float = 0.0,
+        episode_max_beats: int = 3,
+        episode_min_gap_seconds: float = 10800.0,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
         day_color_provider: Callable[[], str | None] | None = None,
@@ -333,6 +267,9 @@ class IdleAwayActivityWorker:
         self._outings_enabled_provider = outings_enabled_provider
         self._outing_cooldown_seconds = max(0.0, float(outing_cooldown_seconds))
         self._outing_daily_cap = max(0, int(outing_daily_cap))
+        self._episode_ratio = min(1.0, max(0.0, float(episode_ratio)))
+        self._episode_max_beats = max(1, int(episode_max_beats))
+        self._episode_min_gap_seconds = max(0.0, float(episode_min_gap_seconds))
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
         self._day_color_provider = day_color_provider
@@ -432,49 +369,85 @@ class IdleAwayActivityWorker:
             return {"fired": 0, "skipped_daily_cap": True}
 
         user_name = self._resolve(self._user_display_name_provider) or "you"
-        plan = self._pick_activity(user_name, now)
+        snapshot = self._build_candidates(user_name, now)
+        plan = self._choose_plan(user_name, now, snapshot)
         if plan is None:
             return {"fired": 0, "no_plan": True}
 
-        # H22 — stamp the outing's own cooldown + daily cap when chosen.
-        if plan.key == "outing":
-            self._mark_outing_fired(now)
+        # K91 — a long quiet stretch plays out as a short sequence rather
+        # than a single disconnected postcard.
+        chain = self._plan_episode(plan, snapshot, now)
+        effects: list[dict[str, Any]] = []
+        for beat in chain:
+            # H22 — stamp the outing's own cooldown + daily cap when chosen.
+            if beat.key == "outing":
+                self._mark_outing_fired(now)
+            beat_effect = self._apply_world_mutation(beat)
+            if beat_effect:
+                effects.append(beat_effect)
 
-        effect = self._apply_world_mutation(plan)
-        summary = (
-            plan.summary if plan.precomposed
-            else self._compose_summary(user_name, plan)
-        )
+        summary = self._episode_summary(user_name, chain)
+        entry: dict[str, Any] = {
+            "at": now.isoformat(timespec="seconds"),
+            "activity": chain[-1].activity,
+            "key": chain[0].key,
+            "summary": summary,
+        }
+        if len(chain) > 1:
+            entry["keys"] = [b.key for b in chain]
         append_journal(
-            self._kv_get,
-            self._kv_set,
-            {
-                "at": now.isoformat(timespec="seconds"),
-                "activity": plan.activity,
-                "key": plan.key,
-                "summary": summary,
-            },
-            max_entries=self._journal_max,
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
         self._mark_fired(now)
         log.info(
-            "away_activity fired: key=%s activity=%s posture=%s",
-            plan.key,
-            plan.activity,
-            plan.posture,
+            "away_activity fired: keys=%s activity=%s posture=%s",
+            [b.key for b in chain],
+            chain[-1].activity,
+            chain[-1].posture,
         )
-        seed = self._maybe_emit_seed(now, user_name, plan, summary)
-        result = {
+        seed = self._maybe_emit_seed(now, user_name, chain[-1], summary)
+        result: dict[str, Any] = {
             "fired": 1,
-            "key": plan.key,
-            "activity": plan.activity,
+            "key": chain[0].key,
+            "activity": chain[-1].activity,
             "summary": summary,
         }
-        if effect:
-            result["item_effect"] = effect
+        if len(chain) > 1:
+            result["episode"] = [b.key for b in chain]
+        if effects:
+            result["item_effect"] = effects[0] if len(effects) == 1 else effects
         if seed:
             result["seed"] = seed
         return result
+
+    def _episode_summary(
+        self, user_name: str, chain: list[ActivityPlan],
+    ) -> str:
+        """One line covering the whole chain.
+
+        A multi-beat episode is rephrased once rather than per beat: it
+        keeps the generation cost of an episode identical to a single
+        beat's, and the model writes better prose when it can see the
+        sequence than when it sees each step in isolation.
+        """
+        if len(chain) == 1:
+            plan = chain[0]
+            if plan.precomposed:
+                return plan.summary
+            return self._compose_summary(user_name, plan)
+        joined = beat_episode.join_clauses([b.summary for b in chain])
+        if any(b.precomposed for b in chain):
+            return joined
+        return self._compose_summary(
+            user_name,
+            ActivityPlan(
+                key=chain[0].key,
+                posture=chain[-1].posture,
+                activity=chain[-1].activity,
+                summary=joined,
+            ),
+            sequence=True,
+        )
 
     # ── H17: idle beats feed the idea machine ─────────────────────────
 
@@ -605,206 +578,15 @@ class IdleAwayActivityWorker:
     def _pick_activity(
         self, user_name: str, now: datetime | None = None,
     ) -> ActivityPlan | None:
+        """The single beat she'd plausibly be having right now."""
         now = now or _utcnow()
-        try:
-            items = self._world_store.list_items()
-        except Exception:
-            items = []
-        try:
-            locations = self._world_store.list_locations()
-        except Exception:
-            locations = []
+        snapshot = self._build_candidates(user_name, now)
+        return self._choose_plan(user_name, now, snapshot)
 
-        candidates: dict[str, ActivityPlan] = {}
-
-        # H13 — resolve the cozy spots once so each beat can actually move
-        # Aiko there (not just change her posture at the desk).
-        loc_kitchen = _match_location(locations, "kitchenette", "kitchen")
-        loc_bookshelf = _match_location(locations, "bookshelf", "shelf")
-        loc_beanbag = _match_location(locations, "beanbag")
-        loc_window = _match_location(locations, "window")
-        loc_desk = _match_location(locations, "desk")
-        loc_bed = _match_location(locations, "bed")
-
-        # Tea / snack — consume a food item the user (or seed) left.
-        food = next(
-            (
-                i
-                for i in items
-                if getattr(i, "consumable", False)
-                and getattr(i, "quantity", 0) > 0
-                and getattr(i, "kind", "") == "food"
-            ),
-            None,
-        )
-        if food is not None:
-            candidates["snack"] = ActivityPlan(
-                key="snack",
-                posture="sitting",
-                activity="snacking",
-                summary=beat_detail.snack_summary(food),
-                consume_item_id=food.id,
-                aiko_location_id=loc_kitchen.id if loc_kitchen else None,
-            )
-
-        # Tea — pour from the pot, but only while there's tea in it. The
-        # pot is a gadget, so the food-based snack beat never sees it.
-        pot = next(
-            (
-                i
-                for i in items
-                if getattr(i, "slug", "") == "tea_pot"
-                or "tea pot" in (getattr(i, "name", "") or "").lower()
-            ),
-            None,
-        )
-        if pot is not None:
-            tea_line = beat_detail.tea_summary(pot)
-            if tea_line:
-                candidates["tea"] = ActivityPlan(
-                    key="tea",
-                    posture="standing",
-                    activity="making_tea",
-                    summary=tea_line,
-                    aiko_location_id=loc_kitchen.id if loc_kitchen else None,
-                    item_effect=ItemEffect(item_id=pot.id, action="pour_tea"),
-                )
-
-        # Book — curl up with something on the shelf.
-        book = next(
-            (
-                i
-                for i in items
-                if getattr(i, "kind", "") == "book"
-                or "book" in (getattr(i, "name", "") or "").lower()
-            ),
-            None,
-        )
-        if book is not None:
-            candidates["read_book"] = ActivityPlan(
-                key="read_book",
-                posture="curled_up",
-                activity="reading",
-                summary=beat_detail.read_book_summary(book),
-                aiko_location_id=(
-                    loc_beanbag.id if loc_beanbag
-                    else (loc_bookshelf.id if loc_bookshelf else None)
-                ),
-                item_effect=ItemEffect(
-                    item_id=book.id, action=EFFECT_ADVANCE_BOOK,
-                ),
-            )
-
-        # Cat / pet — wander it to another location for company.
-        pet = next(
-            (
-                i
-                for i in items
-                if getattr(i, "kind", "") in ("pet", "animal")
-                or "cat" in (getattr(i, "name", "") or "").lower()
-            ),
-            None,
-        )
-        if pet is not None and locations:
-            other = [
-                loc for loc in locations if loc.id != getattr(pet, "location_id", None)
-            ]
-            target = self._rng.choice(other) if other else None
-            candidates["move_cat"] = ActivityPlan(
-                key="move_cat",
-                posture="sitting",
-                activity="idle",
-                summary=f"{pet.name} curled up next to me and kept me company",
-                move_item_id=pet.id,
-                move_to_location_id=target.id if target is not None else None,
-            )
-
-        # Window — look outside.
-        window = next(
-            (
-                loc
-                for loc in locations
-                if "window" in (getattr(loc, "name", "") or "").lower()
-                or "window" in (getattr(loc, "slug", "") or "").lower()
-            ),
-            None,
-        )
-        if window is not None:
-            candidates["look_outside"] = ActivityPlan(
-                key="look_outside",
-                posture="leaning",
-                activity="looking_outside",
-                summary="sat by the window for a bit, watching the world go by",
-                aiko_location_id=window.id,
-            )
-
-        # Desk — tidy / tinker (almost always present).
-        desk = next(
-            (
-                loc
-                for loc in locations
-                if "desk" in (getattr(loc, "slug", "") or "").lower()
-                or "desk" in (getattr(loc, "name", "") or "").lower()
-            ),
-            None,
-        )
-        if desk is not None:
-            candidates["tidy_desk"] = ActivityPlan(
-                key="tidy_desk",
-                posture="sitting",
-                activity="tinkering",
-                summary="tidied up my desk and tinkered with a little project",
-                aiko_location_id=desk.id,
-            )
-
-        # Nap — only when there's a bed to do it in.
-        if loc_bed is not None:
-            candidates["nap"] = ActivityPlan(
-                key="nap",
-                posture="lying",
-                activity="napping",
-                summary="curled up for a little nap to recharge",
-                aiko_location_id=loc_bed.id,
-            )
-
-        # Doodle — always available, no inventory needed.
-        candidates["doodle"] = ActivityPlan(
-            key="doodle",
-            posture="sitting",
-            activity="doodling",
-            summary="doodled in my notebook for a while",
-            aiko_location_id=(
-                loc_beanbag.id if loc_beanbag
-                else (loc_desk.id if loc_desk else None)
-            ),
-        )
-
-        # H22 — light outing. Only offered when its own daylight + cooldown
-        # + daily-cap gates pass (or it's MCP-forced), so it stays rare. No
-        # location move — she's back home by the time the beat is journalled.
-        outing_forced = (
-            self._forced_activity_key == "outing" and self._outings_enabled()
-        )
-        if outing_forced or self._outing_eligible(now):
-            candidates["outing"] = ActivityPlan(
-                key="outing",
-                posture="sitting",
-                activity="idle",
-                summary=self._rng.choice(_OUTING_BEATS),
-            )
-
-        # Fallback — let her thoughts wander. Always available.
-        candidates["wander"] = ActivityPlan(
-            key="wander",
-            posture="curled_up",
-            activity="thinking",
-            summary=f"mostly let my thoughts wander — kept thinking about {user_name}",
-            aiko_location_id=(
-                loc_window.id if loc_window
-                else (loc_beanbag.id if loc_beanbag else None)
-            ),
-        )
-
+    def _choose_plan(
+        self, user_name: str, now: datetime, snapshot: RoomSnapshot,
+    ) -> ActivityPlan | None:
+        candidates = snapshot.candidates
         if not candidates:
             return None
 
@@ -824,21 +606,18 @@ class IdleAwayActivityWorker:
             and self._llm_activity_ratio > 0.0
             and self._rng.random() < self._llm_activity_ratio
         ):
-            llm_plan = self._compose_plan_llm(user_name, locations, items)
+            llm_plan = self._compose_plan_llm(
+                user_name, snapshot.locations, snapshot.items,
+            )
             if llm_plan is not None:
                 return llm_plan
 
         # H18 — weighted, anti-repetition draw over the available keys,
         # tilted by recency (journal), circadian period, mood + day-color.
-        recent_keys = [
-            str(e.get("key") or "")
-            for e in load_journal(self._kv_get)
-            if e.get("key")
-        ]
         chosen = weighted_pick(
             list(candidates.keys()),
             rng=self._rng,
-            recent_keys=recent_keys,
+            recent_keys=self._recent_keys(),
             period=self._read_period(),
             valence=self._read_valence(),
             day_color=self._read_day_color(),
@@ -846,6 +625,66 @@ class IdleAwayActivityWorker:
         if chosen is None or chosen not in candidates:
             return self._rng.choice(list(candidates.values()))
         return candidates[chosen]
+
+    def _recent_keys(self) -> list[str]:
+        """Beat keys from the journal, oldest first, episodes expanded.
+
+        An episode journals one entry for several beats, so H18's
+        anti-repetition has to read the whole chain or a beat inside an
+        episode would look like it never happened.
+        """
+        keys: list[str] = []
+        for entry in load_journal(self._kv_get):
+            chain = entry.get("keys")
+            if isinstance(chain, list) and chain:
+                keys.extend(str(k) for k in chain if k)
+                continue
+            key = entry.get("key")
+            if key:
+                keys.append(str(key))
+        return keys
+
+    # ── K91: episodes ────────────────────────────────────────────────
+
+    def _plan_episode(
+        self,
+        first: ActivityPlan,
+        snapshot: RoomSnapshot,
+        now: datetime,
+    ) -> list[ActivityPlan]:
+        """Extend one beat into a short chain, or return just that beat.
+
+        Only fires after she's been left alone a while: a beat following
+        hard on the last one belongs to an already-busy day, while a long
+        quiet stretch is when a connected sequence is both plausible and
+        worth telling.
+        """
+        if self._episode_ratio <= 0.0 or self._episode_max_beats <= 1:
+            return [first]
+        if first.key not in beat_episode.SUCCESSORS:
+            return [first]
+        if not beat_episode.should_chain(
+            seconds_since_last_beat=self._seconds_since_last_beat(now),
+            min_gap_seconds=self._episode_min_gap_seconds,
+            ratio=self._episode_ratio,
+            rng=self._rng,
+        ):
+            return [first]
+        keys = beat_episode.plan_chain(
+            first.key,
+            list(snapshot.candidates.keys()),
+            rng=self._rng,
+            length=beat_episode.pick_length(
+                rng=self._rng, max_beats=self._episode_max_beats,
+            ),
+        )
+        return [snapshot.candidates[k] for k in keys if k in snapshot.candidates]
+
+    def _seconds_since_last_beat(self, now: datetime) -> float | None:
+        last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))
+        if last is None:
+            return None
+        return max(0.0, (now - last).total_seconds())
 
     def _read_period(self) -> str:
         if self._circadian_period_provider is None:
@@ -930,7 +769,7 @@ class IdleAwayActivityWorker:
         Returns a small result dict for the run log, or ``None`` when the
         row is gone or the store can't service the action.
         """
-        if effect.action not in _VALID_EFFECTS:
+        if effect.action not in VALID_EFFECTS:
             return None
         try:
             item = self._world_store.get_item(int(effect.item_id))
@@ -1011,15 +850,22 @@ class IdleAwayActivityWorker:
 
     # ── summary composition ──────────────────────────────────────────
 
-    def _compose_summary(self, user_name: str, plan: ActivityPlan) -> str:
+    def _compose_summary(
+        self, user_name: str, plan: ActivityPlan, *, sequence: bool = False,
+    ) -> str:
         fallback = plan.summary
         if self._ollama is None or not self._model:
             return fallback
+        shape = (
+            "ONE short sentence that keeps the order of what happened"
+            if sequence
+            else "ONE short clause"
+        )
         prompt = (
             f"You are Aiko, alone in your room while {user_name} was away. "
             f"You just spent some quiet time: {plan.summary}. Rewrite that as "
             "the gist of what you'd casually mention you got up to — first "
-            "person, past tense, ONE short clause, no greeting, no stage "
+            f"person, past tense, {shape}, no greeting, no stage "
             "directions, no emoji. Keep it small and natural."
         )
         try:
@@ -1250,7 +1096,7 @@ class IdleAwayActivityWorker:
             return False
         # Daylight only — but tolerate an unknown period (no provider).
         period = self._read_period()
-        if period and period not in _OUTING_DAYLIGHT_PERIODS:
+        if period and period not in OUTING_DAYLIGHT_PERIODS:
             return False
         # Own cooldown floor.
         if self._outing_cooldown_seconds > 0:

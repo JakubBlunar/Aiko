@@ -409,6 +409,16 @@ class IdleWorkersInitMixin:
                     llm_activity_ratio=getattr(
                         mem, "away_activities_llm_ratio", 0.5,
                     ),
+                    # K91 — chain beats into an episode after a long gap.
+                    episode_ratio=getattr(
+                        mem, "away_activities_episode_ratio", 0.35,
+                    ),
+                    episode_max_beats=getattr(
+                        mem, "away_activities_episode_max_beats", 3,
+                    ),
+                    episode_min_gap_seconds=getattr(
+                        mem, "away_activities_episode_min_gap_seconds", 10800,
+                    ),
                     # H17 — fraction of beats that also spawn a conversational
                     # seed (LLM-composed), plus the daily/ring bounds.
                     idle_seed_ratio=(
