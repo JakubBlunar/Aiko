@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail, beat_episode
+from app.core.world import beat_detail, beat_episode, day_intention
 from app.core.world.idle_activity_worker import (
     append_journal,
 )
@@ -434,6 +434,9 @@ class GardenVisitWorker:
         # H15 — leave a trace in the away journal so the K36 surfacing
         # provider can let her mention "I was out in the garden" next turn.
         summary = self._tend_summary(watered, harvested)
+        # K91 — if today's intention was to see to the garden, this is the
+        # visit that closes it, and the journal line should admit as much.
+        summary = self._close_garden_intention(summary, now)
         self._journal_visit(now, "gardening", summary)
         result = {
             "phase": "outbound",
@@ -528,6 +531,36 @@ class GardenVisitWorker:
         if picked:
             clauses.append("picked some ripe " + picked[0])
         return beat_episode.join_clauses(clauses)
+
+    def _close_garden_intention(self, summary: str, now: datetime) -> str:
+        """Satisfy a ``garden``-keyed day intention, if one is open.
+
+        The idle-activity worker proposes intentions but cannot service a
+        garden one -- watering and harvesting belong here -- so this is
+        the other half of that loop.
+        """
+        try:
+            current = day_intention.load(
+                self._kv_read(day_intention.DAY_INTENTION_KEY)
+            )
+        except Exception:
+            return summary
+        if current is None or current.satisfied:
+            return summary
+        if current.beat_key != "garden":
+            return summary
+        if current.day != day_intention.local_day(now):
+            return summary
+        try:
+            self._kv_write(
+                day_intention.DAY_INTENTION_KEY,
+                day_intention.dump(current.satisfy()),
+            )
+        except Exception:
+            log.debug("garden_visit intention write failed", exc_info=True)
+            return summary
+        log.info("day_intention satisfied in garden: %s", current.text)
+        return day_intention.close_out(summary, self._rng)
 
     @staticmethod
     def _standout_note(watered: list[dict[str, Any]]) -> str | None:

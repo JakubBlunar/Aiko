@@ -419,6 +419,14 @@ class IdleWorkersInitMixin:
                     episode_min_gap_seconds=getattr(
                         mem, "away_activities_episode_min_gap_seconds", 10800,
                     ),
+                    # K91 — one intention per day, drawn from her world's
+                    # needs and her current hobby.
+                    day_intention_enabled=bool(
+                        getattr(
+                            self._settings.agent, "day_intention_enabled", True,
+                        )
+                    ),
+                    hobby_provider=self._current_hobby_label,
                     # H17 — fraction of beats that also spawn a conversational
                     # seed (LLM-composed), plus the daily/ring bounds.
                     idle_seed_ratio=(
@@ -1618,6 +1626,27 @@ class IdleWorkersInitMixin:
             return None
         role = str(row[0] or "").lower()
         return role if role in ("user", "assistant") else None
+
+    def _current_hobby_label(self) -> str | None:
+        """The H19 hobby's label, for K91's day intention.
+
+        Best-effort: a missing worker, an unset hobby or a garbage blob all
+        read as "no hobby", which just means the intention falls back to
+        what her room needs.
+        """
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return None
+        try:
+            from app.core.proactive.hobby_worker import load_hobby
+
+            state = load_hobby(chat_db.kv_get)
+        except Exception:
+            return None
+        if not state:
+            return None
+        label = str(state.get("label") or "").strip()
+        return label or None
 
     def _away_activity_valence(self) -> float | None:
         """Current affect valence for the H18 idle-activity weighting.

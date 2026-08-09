@@ -2080,6 +2080,13 @@ class AgentSettings:
     # cadence + gap knobs live on ``MemorySettings.away_activities_*``.
     away_activities_enabled: bool = True
 
+    # K91: one small intention per local day, drawn from what her world
+    # actually needs (ripe produce, a thirsty pot, a nearly-finished book)
+    # or her current hobby. It tilts beat selection all day and the beat
+    # that satisfies it admits she'd been meaning to get to it, so a quiet
+    # day adds up to something. Off → beats are picked as before.
+    day_intention_enabled: bool = True
+
     # H21: sleep & overnight rhythm. Off → the sleep-return cue never
     # lands. On (default) → the first turn after a long typed gap that
     # plausibly spanned an overnight sleep may surface one casual line

@@ -61,6 +61,36 @@ class ComputeWeightsTests(unittest.TestCase):
         w = compute_weights(_KEYS, period="zzz", day_color="zzz")
         self.assertTrue(all(v == 1.0 for v in w.values()))
 
+    def test_day_intention_favours_its_beat(self) -> None:
+        w = compute_weights(
+            ["read_book", "tidy_desk"],
+            intent_key="read_book",
+            intent_boost=1.8,
+        )
+        self.assertAlmostEqual(w["read_book"], 1.8)
+        self.assertAlmostEqual(w["tidy_desk"], 1.0)
+
+    def test_day_intention_is_a_nudge_not_a_gate(self) -> None:
+        w = compute_weights(
+            ["read_book", "tidy_desk"],
+            intent_key="read_book",
+            intent_boost=1.8,
+        )
+        self.assertGreater(w["tidy_desk"], 0.0)
+
+    def test_absent_or_unmatched_intention_changes_nothing(self) -> None:
+        base = compute_weights(_KEYS)
+        self.assertEqual(compute_weights(_KEYS, intent_key=""), base)
+        self.assertEqual(
+            compute_weights(_KEYS, intent_key="garden", intent_boost=1.8), base
+        )
+
+    def test_intention_boost_below_one_cannot_penalise(self) -> None:
+        w = compute_weights(
+            ["read_book"], intent_key="read_book", intent_boost=0.1,
+        )
+        self.assertAlmostEqual(w["read_book"], 1.0)
+
 
 class WeightedPickTests(unittest.TestCase):
     def test_returns_none_on_empty(self) -> None:

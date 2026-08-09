@@ -291,6 +291,50 @@ class GardenVisitWorkerH15Tests(unittest.TestCase):
             self.assertNotIn("bone dry", summary)
             self.assertNotIn("really needed", summary)
 
+    def test_garden_visit_closes_a_garden_intention(self) -> None:
+        """K91 — the idle worker proposes it, the garden worker closes it."""
+        from app.core.world import day_intention
+        from app.core.world.idle_activity_worker import load_journal
+
+        with _TempWorld() as store:
+            worker = _make_worker(store, relax_ratio=0.0)
+            intention = day_intention.DayIntention(
+                day=day_intention.local_day(datetime.now(timezone.utc)),
+                text="give the lavender a proper soak",
+                beat_key="garden",
+            )
+            worker._kv_write(
+                day_intention.DAY_INTENTION_KEY, day_intention.dump(intention)
+            )
+            worker.run()
+            stored = day_intention.load(
+                worker._kv_read(day_intention.DAY_INTENTION_KEY)
+            )
+            assert stored is not None
+            self.assertTrue(stored.satisfied)
+            summary = load_journal(lambda k: worker._kv_read(k))[-1]["summary"]
+            self.assertIn(" — ", summary)
+
+    def test_garden_visit_ignores_a_non_garden_intention(self) -> None:
+        from app.core.world import day_intention
+
+        with _TempWorld() as store:
+            worker = _make_worker(store, relax_ratio=0.0)
+            intention = day_intention.DayIntention(
+                day=day_intention.local_day(datetime.now(timezone.utc)),
+                text="finish the book",
+                beat_key="read_book",
+            )
+            worker._kv_write(
+                day_intention.DAY_INTENTION_KEY, day_intention.dump(intention)
+            )
+            worker.run()
+            stored = day_intention.load(
+                worker._kv_read(day_intention.DAY_INTENTION_KEY)
+            )
+            assert stored is not None
+            self.assertFalse(stored.satisfied)
+
     def test_force_visit_bypasses_daylight(self) -> None:
         with _TempWorld() as store:
             worker = _make_worker(store, period="late_night")

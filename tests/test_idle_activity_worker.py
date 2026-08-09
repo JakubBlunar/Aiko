@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.world import day_intention
 from app.core.world.idle_activity_worker import (
     AWAY_ACTIVITIES_JOURNAL_KEY,
     EFFECT_POUR_TEA,
@@ -22,6 +23,10 @@ from app.core.world.idle_activity_worker import (
     load_idle_seeds,
     load_journal,
 )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class _FakeKV:
@@ -191,6 +196,8 @@ def _make_worker(
     period: str | None = None,
     episode_ratio: float = 0.0,
     episode_min_gap_seconds: float = 0.0,
+    day_intention: bool = False,
+    hobby: str | None = None,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -214,6 +221,8 @@ def _make_worker(
         ),
         episode_ratio=episode_ratio,
         episode_min_gap_seconds=episode_min_gap_seconds,
+        day_intention_enabled=day_intention,
+        hobby_provider=(lambda: hobby) if hobby is not None else None,
         rng=random.Random(seed),
     )
 
@@ -616,6 +625,163 @@ class EpisodeTests(unittest.TestCase):
         worker.force_activity("tea")
         result = worker.run()
         self.assertEqual(worker._recent_keys(), result["episode"])
+
+
+class DayIntentionTests(unittest.TestCase):
+    """K91 pass 4 — the day has something she meant to get to."""
+
+    def _book_world(self, progress: int = 14) -> _FakeWorldStore:
+        return _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    4, "The Glasshouse Letters", kind="book",
+                    slug="scifi_paperback",
+                    state={
+                        "title": "The Glasshouse Letters",
+                        "progress": progress,
+                        "total": 16,
+                    },
+                )
+            ],
+            locations=[_FakeLoc(1, "the desk", "desk")],
+        )
+
+    def test_first_beat_of_the_day_sets_an_intention(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(), kv=kv, cooldown=0.0, day_intention=True,
+        )
+        worker.run()
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertEqual(stored.text, "finish The Glasshouse Letters")
+        self.assertEqual(stored.beat_key, "read_book")
+
+    def test_the_intention_is_not_re_picked_within_a_day(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(),
+            kv=kv,
+            cooldown=0.0,
+            daily_cap=99,
+            day_intention=True,
+        )
+        worker.run()
+        first = kv.get(day_intention.DAY_INTENTION_KEY)
+        worker.force_activity("doodle")
+        worker.run()
+        self.assertEqual(kv.get(day_intention.DAY_INTENTION_KEY), first)
+
+    def test_yesterdays_intention_is_replaced(self) -> None:
+        kv = _FakeKV()
+        stale = day_intention.DayIntention(
+            day="2001-01-01", text="something ancient", beat_key="doodle",
+        )
+        kv.set(day_intention.DAY_INTENTION_KEY, day_intention.dump(stale))
+        worker = _make_worker(
+            world=self._book_world(), kv=kv, cooldown=0.0, day_intention=True,
+        )
+        worker.run()
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertNotEqual(stored.text, "something ancient")
+        self.assertEqual(stored.day, day_intention.local_day(_utc_now()))
+
+    def test_satisfying_the_intention_says_so_once(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(),
+            kv=kv,
+            cooldown=0.0,
+            daily_cap=99,
+            day_intention=True,
+        )
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertTrue(result.get("closed_intention"))
+        self.assertIn(" — ", result["summary"])
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertTrue(stored.satisfied)
+        # A second reading beat doesn't re-close it.
+        worker.force_activity("read_book")
+        again = worker.run()
+        self.assertFalse(again.get("closed_intention"))
+
+    def test_an_unrelated_beat_leaves_the_intention_open(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(), kv=kv, cooldown=0.0, day_intention=True,
+        )
+        worker.force_activity("doodle")
+        result = worker.run()
+        self.assertFalse(result.get("closed_intention"))
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertFalse(stored.satisfied)
+
+    def test_a_garden_intention_is_left_for_the_garden_worker(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    13, "lettuce", kind="plant",
+                    state={
+                        "stage": "growing",
+                        "last_watered_at": (
+                            _utc_now() - timedelta(days=4)
+                        ).isoformat(),
+                    },
+                )
+            ],
+            locations=[_FakeLoc(1, "the desk", "desk")],
+        )
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, day_intention=True,
+        )
+        result = worker.run()
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertEqual(stored.beat_key, "garden")
+        # No idle beat can service it, so it stays open.
+        self.assertFalse(stored.satisfied)
+        self.assertFalse(result.get("closed_intention"))
+
+    def test_disabled_switch_writes_no_intention(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(), kv=kv, cooldown=0.0, day_intention=False,
+        )
+        worker.force_activity("read_book")
+        result = worker.run()
+        self.assertIsNone(kv.get(day_intention.DAY_INTENTION_KEY))
+        self.assertFalse(result.get("closed_intention"))
+
+    def test_hobby_feeds_the_intention_when_the_room_is_content(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(),
+            kv=kv,
+            cooldown=0.0,
+            day_intention=True,
+            hobby="mapping the constellations",
+        )
+        worker.run()
+        stored = day_intention.load(kv.get(day_intention.DAY_INTENTION_KEY))
+        assert stored is not None
+        self.assertIn("constellations", stored.text)
+
+    def test_debug_state_reports_the_intention(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._book_world(), kv=kv, cooldown=0.0, day_intention=True,
+        )
+        worker.run()
+        state = worker.day_intention_debug_state()
+        self.assertTrue(state["enabled"])
+        self.assertEqual(
+            state["intention"]["text"], "finish The Glasshouse Letters"
+        )
 
 
 class NamedEffectResolutionTests(unittest.TestCase):
