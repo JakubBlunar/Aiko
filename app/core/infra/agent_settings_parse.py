@@ -260,6 +260,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             pursuit_synthesis_enabled=bool(
                 agent_raw.get("pursuit_synthesis_enabled", True),
             ),
+            pursuit_seeds_enabled=bool(
+                agent_raw.get("pursuit_seeds_enabled", True),
+            ),
             taste_steer_enabled=bool(
                 agent_raw.get("taste_steer_enabled", True),
             ),

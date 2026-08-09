@@ -829,6 +829,31 @@ class SpeakingWorkersInitMixin:
             self._concept_contradiction_rate_limiter = None
             return None
 
+    def _seed_pursuits(self, settings: AppSettings) -> None:
+        """K85d: file the authored starter pursuits once, as candidates.
+
+        Runs at boot rather than inside the synthesis pass because it is
+        not synthesis -- nothing is being inferred, and the pass may not
+        run for hours on a fresh install, which is precisely the window
+        the seeds exist to cover. Watermarked in ``kv_meta``, so this is
+        one kv read per boot after the first.
+        """
+        if not bool(
+            getattr(settings.agent, "pursuit_seeds_enabled", True)
+        ):
+            return
+        try:
+            from app.core.concepts.pursuit_seeds import seed_pursuits
+
+            seed_pursuits(
+                self._concept_store,
+                self._embedder,
+                kv_get=self._chat_db.kv_get,
+                kv_set=self._chat_db.kv_set,
+            )
+        except Exception:
+            log.warning("pursuit seeding failed", exc_info=True)
+
     def _repoint_concept_memory_edges(self, old_id: int, new_id: int) -> int:
         """L25: repoint hook passed to the ``MemoryConsolidator``. Resolves
         the edge reconciler lazily (it's built later in init than the
@@ -2049,6 +2074,7 @@ class SpeakingWorkersInitMixin:
                         self._idle_scheduler.register(
                             self._concept_synthesis_worker,
                         )
+                        self._seed_pursuits(settings)
                     except Exception:
                         log.warning(
                             "ConceptSynthesisWorker boot failed",

@@ -590,6 +590,12 @@ class AgentSettings:
     # skips that one pass. Thresholds live under MemorySettings
     # (``pursuit_min_notes`` / ``concept_synthesis_max_pursuit_memories``).
     pursuit_synthesis_enabled: bool = True
+    # K85d cold start -- file a handful of authored starter pursuits as
+    # ``candidate`` rows with zero evidence, once per install. They must
+    # clear ``pursuit_evidence_gate`` on lived notes like any other
+    # candidate, so a seed that never comes up never speaks and is retired
+    # by the L3 candidate TTL. Off means she waits for her own notes.
+    pursuit_seeds_enabled: bool = True
     # K81 taste steer -- the rare T6 "lean toward what you love" permission slip
     # (``_render_taste_lean_block``). Lull-gated + warmth-earned + once per
     # conversation: when a taste is confident enough, it nudges Aiko to steer
