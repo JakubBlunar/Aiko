@@ -485,6 +485,37 @@ re-tiering, recorded so the next pass does not chase them:
   genuinely byte-stable, so this is not explained by the divergence
   data. Worth a targeted experiment before assuming prompt structure is
   the lever.
+
+  **Update, Aug 09 — it is now total, and it is not a reporting bug.**
+  Summing `cached=` off the `turn done:` INFO lines in `data/app.log`
+  gives 55,040 cached on Aug 02 (19/19 turns hit) and 73,728 on Aug 03
+  (27/27), then 123,825 on Aug 05 with only 6 of 47 turns hitting, then
+  **zero on all 138 turns across Aug 06–09** — roughly 3.2M uncached
+  prompt tokens in four days. The cliff lands to the hour on `eadc80e`,
+  which moved this model onto `/v1/responses`.
+
+  Three things it is *not*, each checked: the Responses stream parser
+  reads `input_tokens_details.cached_tokens` correctly (those six Aug 05
+  hits were recorded *through that path*, so it demonstrably works and
+  the zeros are real); `prompt_cache_key` is still threaded from
+  `session_key`; and the prompt is ~17k tokens, far above the 1024-token
+  floor. OpenAI's own usage dashboard agrees on the cached figure —
+  its Aug 05 bar reads 123,825, matching our log to the digit — though
+  its *uncached* series is separately broken, reporting 23,384 for a day
+  that really cost 1.39M, so don't diff against that half of the chart.
+
+  Deliberately not chased further: the model answers correctly and the
+  cost is the only casualty. If it hasn't righted itself on its own,
+  the cheapest next probe is still the targeted one — two identical
+  back-to-back `/v1/responses` calls sharing a `prompt_cache_key`. If
+  the second one reports no cached tokens either, nothing about our
+  prompt structure is the lever and this belongs to the model.
+
+  Note for whoever picks this up: the `turn done:` line carries
+  `cached=` and `cached_pct=` on **every** turn, so the history above is
+  recoverable from `data/app.log` alone. The JSONL sink only needs
+  turning on when the question is *where* the prefix broke, not whether
+  it cached at all.
 - **The tool pass is the real latency cost on tool turns** — p50 7.1 s,
   p90 28 s, max 41 s — and it is invisible in `first_token_ms`, which
   only ever measures the streaming pass.
