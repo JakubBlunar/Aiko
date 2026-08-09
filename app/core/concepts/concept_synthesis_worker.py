@@ -488,6 +488,30 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _pursuit_min_notes(self) -> int:
+        """K85c: how many ``pursuit_note`` rows must exist before the pass
+        runs at all. Below the promotion gate's three-source floor there is
+        nothing that could clear it, so a cold pool is a pure no-op."""
+        return max(
+            1,
+            int(getattr(self._memory_settings, "pursuit_min_notes", 6)),
+        )
+
+    @property
+    def _max_pursuit_memories(self) -> int:
+        """K85c: cap on notes offered to the pursuit proposer per run."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_pursuit_memories",
+                    40,
+                )
+            ),
+        )
+
+    @property
     def _taste_min_affinity(self) -> float:
         """K81: the engaged-rate bar a cluster must clear to be offered as a
         taste candidate. It is a *rate*, so a rarely-raised topic that always
@@ -882,6 +906,7 @@ class ConceptSynthesisWorker:
             "aiko_dirty": False,
             "affect_dirty": False,
             "taste_dirty": False,
+            "pursuit_dirty": False,
             "conduct_dirty": False,
             "conduct_findings": 0,
             "ritual_dirty": False,
@@ -908,6 +933,8 @@ class ConceptSynthesisWorker:
                     proposals = self._run_affect_pass(ctx, spec, stats, force)
                 elif spec.population == "taste":
                     proposals = self._run_taste_pass(ctx, spec, stats, force)
+                elif spec.population == "pursuit":
+                    proposals = self._run_pursuit_pass(ctx, spec, stats, force)
                 elif spec.population == "conduct":
                     proposals = self._run_conduct_pass(ctx, spec, stats, force)
                 elif spec.population == "shared_moments":
@@ -1497,6 +1524,67 @@ class ConceptSynthesisWorker:
         )
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(focus_rows)}
+        )
+        return proposals
+
+    # ── pursuit pass (K85c) ─────────────────────────────────────────────
+
+    def _run_pursuit_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """K85c pursuit pass: mine her ``pursuit_note`` memories for the
+        threads she keeps returning to on her own.
+
+        Memories-only, and deliberately *oldest-inclusive* rather than
+        salience-sorted like :meth:`_run_aiko_pass`. Recurrence is the
+        signal here: the model is being asked whether the same thing shows
+        up across several occasions, and handing it only the most salient
+        notes would systematically hide the boring repetition that is the
+        actual evidence. So the batch is the most recent N in chronological
+        order, which is what a run of Tuesdays looks like.
+
+        A cold pool is a no-op -- the notes have to accumulate before
+        there is anything to see, which for a fresh install is a couple of
+        weeks. Gated by ``agent.pursuit_synthesis_enabled``.
+        """
+        if not bool(
+            getattr(self._agent_settings, "pursuit_synthesis_enabled", True)
+        ):
+            return []
+        pop = self._memory_store.iter_by_kinds(("pursuit_note",))
+        mem_count = len(pop)
+        if mem_count < self._pursuit_min_notes:
+            stats["pursuit_dirty"] = False
+            return []
+
+        sig_key = spec.sig_key or "concept_synth.pursuit_sig.aiko"
+        prev = self._load_sigs(sig_key)
+        prev_count = int(prev.get("mem_count", 0)) if prev else 0
+        delta = self._dirty_size_delta
+        is_dirty = force or (not prev) or (mem_count - prev_count) >= delta
+        stats["pursuit_dirty"] = bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        batch = sorted(
+            pop, key=lambda m: str(getattr(m, "created_at", "") or ""),
+        )[-self._max_pursuit_memories:]
+
+        proposals = spec.propose(
+            ctx,
+            memories=batch,
+            existing=self._existing_for(spec, memories=batch),
+        )
+        self._save_sigs(
+            sig_key,
+            {
+                "mem_count": mem_count,
+                "mem_max_id": max((int(m.id) for m in pop), default=0),
+            },
         )
         return proposals
 

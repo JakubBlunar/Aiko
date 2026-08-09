@@ -585,6 +585,11 @@ class AgentSettings:
     # / ``taste_min_settled`` / ``taste_min_affinity`` /
     # ``concept_synthesis_max_taste_clusters``).
     taste_synthesis_enabled: bool = True
+    # K85c pursuit synthesis (the *third subject* -- what she keeps returning
+    # to on her own, mined from the K85b ``pursuit_note`` memories). Off just
+    # skips that one pass. Thresholds live under MemorySettings
+    # (``pursuit_min_notes`` / ``concept_synthesis_max_pursuit_memories``).
+    pursuit_synthesis_enabled: bool = True
     # K81 taste steer -- the rare T6 "lean toward what you love" permission slip
     # (``_render_taste_lean_block``). Lull-gated + warmth-earned + once per
     # conversation: when a taste is confident enough, it nudges Aiko to steer

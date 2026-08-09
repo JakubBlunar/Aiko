@@ -77,6 +77,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   handed in as a per-cluster affinity annotation. Reuses the
   :func:`propose_aiko_hybrid` body with a taste-aware prompt; relationship-
   scoped, colours enthusiasm not availability.
+- ``pursuit_aiko`` -- *pursuit* (K85c), aiko-only and taste's opposite
+  number: what she keeps returning to *on her own*, with him out of the
+  picture entirely. Mines the ``"pursuit"`` population -- the K85b
+  ``pursuit_note`` memories written by her hobby milestones and her
+  substantive away beats -- looking for recurrence across several notes
+  rather than enthusiasm in any one of them. Memories-only through
+  :func:`propose_aiko_hybrid`; clustering the notes would just re-derive
+  the recurrence the prompt is there to spot.
 - ``tension_user`` / ``tension_relationship`` / ``tension_aiko`` -- *tension*
   (L12), the first *meta* proposers. Unlike every other proposer their raw
   material is not clusters/memories but the small set of active BASE (non-meta)
@@ -124,6 +132,7 @@ from app.core.concepts.proposers import (
     narrative_aiko,
     narrative_relationship,
     narrative_user,
+    pursuit_aiko,
     relationship_ritual,
     self_correction_aiko,
     taste_aiko,
@@ -183,6 +192,7 @@ from app.core.concepts.proposers.narrative_relationship import (
     propose_narrative_relationship,
 )
 from app.core.concepts.proposers.narrative_user import propose_narrative_user
+from app.core.concepts.proposers.pursuit_aiko import propose_pursuit_aiko
 from app.core.concepts.proposers.relationship_ritual import (
     propose_relationship_ritual,
 )
@@ -221,6 +231,10 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     # K81 taste -- aiko-only, over the L37 surfacing ledger's per-cluster
     # engaged rate. A ``set`` kind like affective, so it runs before the metas.
     taste_aiko.SPEC,
+    # K85c pursuit -- aiko-only, over her ``pursuit_note`` memories. Sits
+    # beside taste because it is the same shape and the opposite scope:
+    # taste is what she enjoys *with him*, a pursuit is hers alone.
+    pursuit_aiko.SPEC,
     conduct_aiko.SPEC,
     # Meta proposers run LAST: their base concepts must already be ``active``
     # (the L1 meta dependency-ordering rule).
@@ -276,6 +290,7 @@ __all__ = [
     "propose_narrative_relationship",
     "propose_narrative_user",
     "propose_ordered_concept",
+    "propose_pursuit_aiko",
     "propose_relationship_ritual",
     "propose_self_correction_aiko",
     "propose_taste_aiko",

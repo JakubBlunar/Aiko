@@ -865,6 +865,14 @@ class MemorySettings:
     taste_min_settled: int = 4
     taste_min_affinity: float = 0.5
     concept_synthesis_max_taste_clusters: int = 6
+    # K85c pursuit synthesis. The pass is a no-op until ``pursuit_min_notes``
+    # ``pursuit_note`` rows exist -- below the gate's three-source floor there
+    # is nothing that could promote -- and offers at most
+    # ``concept_synthesis_max_pursuit_memories`` notes per run, chronologically
+    # rather than by salience: recurrence is the signal, and a salience sort
+    # would hide exactly the dull repetition that proves it.
+    pursuit_min_notes: int = 6
+    concept_synthesis_max_pursuit_memories: int = 40
     # L42 weekly surfacing-conduct self-model.
     conduct_window_days: int = 90
     conduct_cadence_seconds: int = 604800
@@ -3110,6 +3118,17 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 1,
                 int(
                     memory_raw.get("concept_synthesis_max_taste_clusters", 6)
+                ),
+            ),
+            pursuit_min_notes=max(
+                1, int(memory_raw.get("pursuit_min_notes", 6)),
+            ),
+            concept_synthesis_max_pursuit_memories=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "concept_synthesis_max_pursuit_memories", 40,
+                    )
                 ),
             ),
             conduct_window_days=max(
