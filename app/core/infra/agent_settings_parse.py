@@ -513,6 +513,26 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     ),
                 ),
             ),
+            # K89. The guard rail clamps at 2: a config file must not be
+            # able to buy a third nudge, which is the failure mode this
+            # whole feature is one step away from.
+            thread_max_returns=min(
+                2, max(1, int(agent_raw.get("thread_max_returns", 2))),
+            ),
+            thread_stake_decay=min(
+                1.0,
+                max(0.01, float(agent_raw.get("thread_stake_decay", 0.35))),
+            ),
+            thread_min_stake=min(
+                1.0, max(0.0, float(agent_raw.get("thread_min_stake", 0.25))),
+            ),
+            thread_max_age_minutes=max(
+                0.0, float(agent_raw.get("thread_max_age_minutes", 45.0)),
+            ),
+            thread_cooling_margin=min(
+                1.0,
+                max(0.0, float(agent_raw.get("thread_cooling_margin", 0.05))),
+            ),
             topic_appetite_enabled=bool(
                 agent_raw.get("topic_appetite_enabled", True),
             ),

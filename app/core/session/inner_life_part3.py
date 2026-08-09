@@ -1435,15 +1435,20 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
 
     def _render_thread_ownership_block(self, user_text: str) -> str:
-        """K55: evaluate the reply to a thread Aiko opened.
+        """K55 / K89: evaluate the reply to a thread Aiko opened.
 
-        Runs only while ``_owned_thread`` is set (stamped post-turn
-        when a K53 directive / K52 imperative fired). Exactly one
-        evaluation per thread: an engaged reply clears it silently, a
-        short pivot renders the single return cue and the thread is
-        dropped forever. A blank ``user_text`` (proactive turn) skips
-        the evaluation without consuming the thread — the cue should
-        judge a real reply, not a silence.
+        Runs while ``_owned_thread`` is set (stamped post-turn when a
+        K53 directive / K52 imperative fired). An engaged reply clears
+        it silently; a short pivot spends part of the thread's stake
+        and renders a return cue; a substantial reply about something
+        else retires it without a word. K89 lets a thread survive its
+        first evaluation, so the slot is re-armed from the outcome
+        rather than always cleared -- the thread is worth two returns
+        at most and dies of age, stake or a cooling cosine before that.
+
+        A blank ``user_text`` (proactive turn) skips the evaluation
+        without touching the thread -- the cue should judge a real
+        reply, not a silence.
         """
         if not bool(
             getattr(self._settings.agent, "thread_ownership_enabled", True)
@@ -1455,8 +1460,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         text = (user_text or "").strip()
         if not text:
             return ""
-        # One evaluation max — consume the slot before anything can
-        # raise so a sick embedder can't make the cue fire twice.
+        # Clear the slot before anything can raise, so a sick embedder
+        # drops the thread rather than re-evaluating it every turn. It
+        # is re-armed below only when ``advance`` says the thread lives.
         self._owned_thread = None
         try:
             from app.core.conversation import thread_ownership as _town
@@ -1480,37 +1486,62 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     getattr(agent, "thread_min_topical_similarity", 0.30)
                 ),
             )
+            outcome = _town.advance(
+                thread,
+                verdict,
+                max_returns=int(getattr(agent, "thread_max_returns", 2)),
+                stake_decay=float(
+                    getattr(agent, "thread_stake_decay", 0.35)
+                ),
+                min_stake=float(getattr(agent, "thread_min_stake", 0.25)),
+                max_age_minutes=float(
+                    getattr(agent, "thread_max_age_minutes", 45.0)
+                ),
+                cooling_margin=float(
+                    getattr(agent, "thread_cooling_margin", 0.05)
+                ),
+            )
             log.info(
                 "thread-ownership: verdict=%s cosine=%s chars=%d "
-                "source=%s topic=%s",
+                "source=%s outcome=%s returns=%d topic=%s",
                 verdict.verdict,
                 f"{verdict.cosine:.3f}" if verdict.cosine is not None
                 else "n/a",
                 verdict.reply_chars,
                 thread.source,
+                outcome.reason,
+                thread.returns_used,
                 thread.topic[:60],
             )
-            if verdict.verdict != _town.VERDICT_PIVOT:
+            self._owned_thread = outcome.thread
+            if not outcome.cue:
                 return ""
             # K57: a brushed-off thread is a light miffed trigger —
             # comedy-weight, not a real sulk (the post-turn drain
-            # applies it).
-            try:
-                self._queue_emotion_trigger(
-                    emotion="miffed",
-                    cause=(
-                        "the thread you opened ("
-                        + thread.topic[:80]
-                        + ") got brushed off"
-                    ),
-                    intensity=0.25,
-                    source="thread_pivot",
-                )
-            except Exception:
-                log.debug("thread-pivot miffed queue failed", exc_info=True)
+            # applies it). Only on the FIRST brush-off: K89's second
+            # return would otherwise stack a second sulk on top of the
+            # gentler nudge, which is the opposite of gentler.
+            if thread.returns_used == 0:
+                try:
+                    self._queue_emotion_trigger(
+                        emotion="miffed",
+                        cause=(
+                            "the thread you opened ("
+                            + thread.topic[:80]
+                            + ") got brushed off"
+                        ),
+                        intensity=0.25,
+                        source="thread_pivot",
+                    )
+                except Exception:
+                    log.debug(
+                        "thread-pivot miffed queue failed", exc_info=True,
+                    )
             return _town.render_return_block(
                 thread.topic,
                 user_display_name=self.user_display_name,
+                attempt=thread.returns_used + 1,
+                last=outcome.thread is None,
             )
         except Exception:
             log.debug(
