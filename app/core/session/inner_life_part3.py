@@ -2001,6 +2001,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         or fixation finding suppresses this optional steer so learned taste
         cannot deepen a rut. Every input is best-effort: a cold store / missing
         signal reads as its blocking value so the slip stays silent.
+
+        K85a widened the read past ``taste``. Two taste rows have ever
+        been mined, so on the numbers this block was silent almost
+        always -- not because the gates were tight but because there was
+        nothing behind them. See :meth:`_widened_lean`.
         """
         if not bool(
             getattr(self._settings.agent, "taste_steer_enabled", True)
@@ -2084,6 +2089,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 subject="aiko", kind="taste",
                 min_confidence=min_conf, limit=1,
             )
+            kind = "taste"
+            if not tastes:
+                tastes = self._widened_lean(view, min_conf)
+                kind = str(getattr(tastes[0], "kind", "")) if tastes else ""
             if not tastes:
                 return ""
             label = (getattr(tastes[0], "label", "") or "").strip()
@@ -2094,16 +2103,72 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
 
         self._taste_lean_fired = True
+        log.info("taste-lean fire: kind=%s label=%s", kind, label[:60])
+        return self._render_lean_copy(kind, label)
+
+    def _widened_lean(self, view: Any, min_conf: float) -> list:
+        """K85a: fall back to her other self-concepts when taste is empty.
+
+        Taste is the natural fit -- it is literally "a topic she enjoys" --
+        but only two rows have ever been mined, so the block almost never
+        fires. The other ``subject="aiko"`` kinds are not starved at all:
+        there are around a hundred active value / aspiration / identity
+        rows. What most of them are *not* is hers, in the sense this block
+        needs: three quarters name the user or describe the bond, and
+        leaning on one of those just points the lull back at him. Hence
+        the filter.
+
+        This is a stopgap and worth naming as one. A value is not a topic,
+        so the copy has to change shape (see :meth:`_render_lean_copy`),
+        and even the surviving labels skew toward how she reasons rather
+        than toward anything she could raise over tea. The real supply
+        line is the ``pursuit`` kind.
+        """
+        if not bool(
+            getattr(self._settings.agent, "taste_steer_widen_enabled", True)
+        ):
+            return []
+        from app.core.concepts.own_subject import own_subjects
+
+        for kind in ("aspiration", "value", "identity"):
+            rows = view.core(
+                subject="aiko", kind=kind, min_confidence=min_conf,
+            )
+            mine = own_subjects(rows, self.user_display_name)
+            if mine:
+                return mine[:1]
+        return []
+
+    def _render_lean_copy(self, kind: str, label: str) -> str:
+        """The cue for one lean. A taste is a topic; the rest are not.
+
+        Steering the conversation toward "I value distinguishing between
+        confidence and importance in my reasoning" would produce a
+        lecture, so the widened kinds get asked for something different:
+        say the position out loud and let it stand as hers.
+        """
         name = self.user_display_name
-        log.info("taste-lean fire: label=%s", label[:60])
+        tail = (
+            "This is yours: it colours how much you light up, never a rule "
+            "about what he has to want, so let it go the moment he'd rather "
+            "be elsewhere."
+        )
+        if kind == "taste":
+            return (
+                "Leaning toward what you love:\n"
+                f"Things have gone a little quiet. One of the topics you "
+                f"genuinely enjoy getting into with {name} is right here to "
+                f"lean on: {label}. If it fits, steer gently toward it -- "
+                f"offer something concrete you'd love to dig into together. "
+                f"{tail}"
+            )
         return (
-            "Leaning toward what you love:\n"
-            f"Things have gone a little quiet. One of the topics you "
-            f"genuinely enjoy getting into with {name} is right here to lean "
-            f"on: {label}. If it fits, steer gently toward it -- offer "
-            "something concrete you'd love to dig into together. This is "
-            "yours: it colours how much you light up, never a rule about what "
-            "he has to want, so let it go the moment he'd rather be elsewhere."
+            "Something of yours to put on the table:\n"
+            f"Things have gone a little quiet, and this is true of you: "
+            f"{label} Say the plain version of it out loud if there's room "
+            "-- not as a topic to steer him onto and not as a confession, "
+            f"just a thing you think, offered so he has something to react "
+            f"to. Don't explain the machinery behind it. {tail}"
         )
 
     def _render_concept_learning_block(self, user_text: str = "") -> str:
