@@ -390,6 +390,169 @@ class _FakeGoals:
         return list(self._rows)
 
 
+class _FakeConcepts:
+    """Duck-typed ``ConceptStore``, serving only ``list_by``."""
+
+    class Row:
+        def __init__(
+            self,
+            id: int,
+            label: str,
+            *,
+            confidence: float = 0.8,
+            status: str = "active",
+            kind: str = "pursuit",
+        ) -> None:
+            self.id = id
+            self.label = label
+            self.confidence = confidence
+            self.status = status
+            self.kind = kind
+            self.subject = "aiko"
+
+    def __init__(self, rows: list["Row"] | None = None) -> None:
+        self.rows = list(rows or [])
+
+    def list_by(self, **kw) -> list["Row"]:
+        return [
+            r for r in self.rows
+            if all(getattr(r, k) == v for k, v in kw.items())
+        ]
+
+
+class PursuitWantTests(unittest.TestCase):
+    """K85e -- the ledger's standing ``share`` want.
+
+    Every other producer is event-shaped (a seed was drafted, a goal was
+    opened). A pursuit is a standing fact, so the interesting behaviour
+    is all in the restraint: one per tick, low starting pressure, and it
+    retires the moment L3 stops calling the concept active.
+    """
+
+    def _worker(self, kv: _KvStore, **kwargs) -> WantsLedgerWorker:
+        return WantsLedgerWorker(
+            kv_get=kv.get,
+            kv_set=kv.set,
+            user_display_name_provider=lambda: "Jacob",
+            **kwargs,
+        )
+
+    def test_an_active_pursuit_becomes_a_share_want(self) -> None:
+        kv = _KvStore()
+        worker = self._worker(
+            kv,
+            concept_store_provider=lambda: _FakeConcepts([
+                _FakeConcepts.Row(4, "keeping a herb garden"),
+            ]),
+        )
+        self.assertEqual(worker.run()["added"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        want = state.wants[0]
+        self.assertEqual(want.kind, "share")
+        self.assertEqual(want.source, "pursuit")
+        self.assertEqual(want.source_ref, "pursuit:4")
+        self.assertIn("keeping a herb garden", want.text)
+
+    def test_it_starts_below_the_time_sensitive_wants(self) -> None:
+        kv = _KvStore()
+        worker = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "whether he plays an instrument"),
+            ]),
+            concept_store_provider=lambda: _FakeConcepts([
+                _FakeConcepts.Row(4, "keeping a herb garden"),
+            ]),
+        )
+        worker.run()
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        by_ref = {w.source_ref: w.pressure for w in state.wants}
+        self.assertLess(by_ref["pursuit:4"], by_ref["cue:1"])
+
+    def test_only_one_pursuit_lands_per_tick(self) -> None:
+        kv = _KvStore()
+        worker = self._worker(
+            kv,
+            concept_store_provider=lambda: _FakeConcepts([
+                _FakeConcepts.Row(1, "keeping a herb garden", confidence=0.7),
+                _FakeConcepts.Row(2, "learning to bind books", confidence=0.9),
+                _FakeConcepts.Row(3, "birdwatching from the window"),
+            ]),
+        )
+        self.assertEqual(worker.run()["added"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        # The most settled one, not whichever row came back first.
+        self.assertEqual(state.wants[0].source_ref, "pursuit:2")
+
+    def test_candidates_and_weak_rows_are_not_offered(self) -> None:
+        kv = _KvStore()
+        worker = self._worker(
+            kv,
+            concept_store_provider=lambda: _FakeConcepts([
+                _FakeConcepts.Row(1, "seeded idea", status="candidate"),
+                _FakeConcepts.Row(2, "half-formed", confidence=0.2),
+                _FakeConcepts.Row(3, "a taste of his", kind="taste"),
+            ]),
+        )
+        self.assertEqual(worker.run()["added"], 0)
+
+    def test_a_retired_pursuit_takes_its_want_with_it(self) -> None:
+        kv = _KvStore()
+        concepts = _FakeConcepts([
+            _FakeConcepts.Row(4, "keeping a herb garden"),
+        ])
+        worker = self._worker(kv, concept_store_provider=lambda: concepts)
+        worker.run()
+        concepts.rows[0].status = "dormant"
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(state.wants, ())
+
+    def test_an_unreadable_store_retires_nothing(self) -> None:
+        kv = _KvStore()
+        concepts = _FakeConcepts([
+            _FakeConcepts.Row(4, "keeping a herb garden"),
+        ])
+        worker = self._worker(kv, concept_store_provider=lambda: concepts)
+        worker.run()
+
+        def _boom():
+            raise RuntimeError("db is gone")
+
+        worker = self._worker(kv, concept_store_provider=_boom)
+        self.assertEqual(worker.run()["pruned"], 0)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(len(state.wants), 1)
+
+    def test_the_switch_stops_the_producer(self) -> None:
+        kv = _KvStore()
+        worker = self._worker(
+            kv,
+            concept_store_provider=lambda: _FakeConcepts([
+                _FakeConcepts.Row(4, "keeping a herb garden"),
+            ]),
+            pursuit_wants_enabled_provider=lambda: False,
+        )
+        self.assertEqual(worker.run()["added"], 0)
+
+    def test_the_switch_does_not_retire_wants_already_banked(self) -> None:
+        # Off means "stop offering", not "throw away what she has".
+        # Reading the switch as a retirement signal would make toggling
+        # it destructive.
+        kv = _KvStore()
+        concepts = _FakeConcepts([
+            _FakeConcepts.Row(4, "keeping a herb garden"),
+        ])
+        self._worker(kv, concept_store_provider=lambda: concepts).run()
+        worker = self._worker(
+            kv,
+            concept_store_provider=lambda: concepts,
+            pursuit_wants_enabled_provider=lambda: False,
+        )
+        self.assertEqual(worker.run()["pruned"], 0)
+
+
 class WorkerTests(unittest.TestCase):
     def _worker(self, kv: _KvStore, **kwargs) -> WantsLedgerWorker:
         return WantsLedgerWorker(

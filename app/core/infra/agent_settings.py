@@ -602,6 +602,15 @@ class AgentSettings:
     # gently toward a topic she enjoys. Framed as enthusiasm, never a filter on
     # what he may raise. Off skips the block.
     taste_steer_enabled: bool = True
+    # K85e -- the same slip for a *pursuit* (a subject of her own rather than
+    # a shared one). Runs ahead of the taste lean and shares its
+    # once-per-conversation latch, so the two never both fire on a turn. Off
+    # leaves pursuits to the wants ledger's ``share`` want.
+    pursuit_lean_enabled: bool = True
+    # K85e -- feed active pursuits into the K52 wants ledger as ``share``
+    # wants, so K53's "this turn is yours" has something of hers to open on.
+    # Off keeps pursuits to the T6 slip above.
+    pursuit_share_wants_enabled: bool = True
     # L42: weekly self-model of how Aiko allocates conversational attention.
     surfacing_conduct_enabled: bool = True
     # Rare T6 permission to acknowledge one warmed conduct observation in

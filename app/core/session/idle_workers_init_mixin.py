@@ -1186,6 +1186,23 @@ class IdleWorkersInitMixin:
                     cue_store_provider=(
                         lambda: getattr(self, "_cue_store", None)
                     ),
+                    concept_store_provider=(
+                        lambda: getattr(self, "_concept_store", None)
+                    ),
+                    pursuit_wants_enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "pursuit_share_wants_enabled",
+                            True,
+                        )
+                    ),
+                    pursuit_min_confidence=float(
+                        getattr(
+                            self._memory_settings,
+                            "taste_steer_min_confidence",
+                            0.6,
+                        )
+                    ),
                     enabled_provider=lambda: bool(
                         getattr(
                             self._settings.agent,

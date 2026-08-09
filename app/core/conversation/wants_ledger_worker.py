@@ -14,6 +14,9 @@ deterministic:
 - **Active goals** (K1 ``GoalStore``) — the newest active goals
   become low-pressure ``steer`` wants ("steer toward something of
   yours: ...").
+- **Active pursuits** (K85 ``pursuit`` concepts) — a subject of hers
+  becomes a ``share`` want, so K53's "this turn is yours" has
+  something to open on that isn't about him.
 
 Dedup / capping / re-entry cooldown all live in the pure module's
 :func:`add_want`; the worker just walks the producers and offers each
@@ -46,11 +49,25 @@ log = logging.getLogger("app.wants_ledger_worker")
 _MAX_SEEDS_PER_RUN = 2
 _MAX_FORWARD_PER_RUN = 2
 _MAX_GOALS_PER_RUN = 2
+# K85e: one pursuit per tick. The ledger caps at 8 and a pursuit is a
+# standing fact rather than a fresh event, so letting several in at once
+# would crowd out the time-sensitive wants with things that will still
+# be true tomorrow.
+_MAX_PURSUITS_PER_RUN = 1
 # Most a single tick can ingest -- the saturation point for demand().
-_MAX_PER_RUN = _MAX_SEEDS_PER_RUN + _MAX_FORWARD_PER_RUN + _MAX_GOALS_PER_RUN
+_MAX_PER_RUN = (
+    _MAX_SEEDS_PER_RUN
+    + _MAX_FORWARD_PER_RUN
+    + _MAX_GOALS_PER_RUN
+    + _MAX_PURSUITS_PER_RUN
+)
 # Goal-derived wants start lower than ask/share wants: steering toward
 # a goal is a background pull, not a fresh itch.
 _GOAL_INITIAL_PRESSURE = 0.05
+# K85e: a pursuit starts lower still. It has no deadline and nothing
+# was asked of her, so it should surface on a genuinely open turn after
+# the questions and wonderings have had their chance, not before.
+_PURSUIT_INITIAL_PRESSURE = 0.04
 
 
 def _utcnow() -> datetime:
@@ -90,6 +107,9 @@ class WantsLedgerWorker:
         memory_store: "MemoryStore | None" = None,
         goal_store: "GoalStore | None" = None,
         cue_store_provider: Callable[[], Any] | None = None,
+        concept_store_provider: Callable[[], Any] | None = None,
+        pursuit_wants_enabled_provider: Callable[[], bool] | None = None,
+        pursuit_min_confidence: float = 0.6,
         enabled_provider: Callable[[], bool] | None = None,
         interval_seconds: float = 3600.0,
         cap: int = 8,
@@ -103,6 +123,9 @@ class WantsLedgerWorker:
         self._memory_store = memory_store
         self._goal_store = goal_store
         self._cue_store_provider = cue_store_provider
+        self._concept_store_provider = concept_store_provider
+        self._pursuit_wants_enabled_provider = pursuit_wants_enabled_provider
+        self._pursuit_min_confidence = max(0.0, float(pursuit_min_confidence))
         self._enabled_provider = enabled_provider
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cap = max(1, int(cap))
@@ -155,6 +178,9 @@ class WantsLedgerWorker:
         # Aiko to re-ask a question she'd already had answered. Self-heal
         # every tick.
         state, dropped, dead_refs = self._prune_dead_seed_wants(state)
+        state, gone, gone_refs = self._prune_dead_pursuit_wants(state)
+        dropped = list(dropped) + gone
+        dead_refs = list(dead_refs) + gone_refs
 
         added: list[tuple[str, str]] = []
         name = self._safe_name()
@@ -268,6 +294,71 @@ class WantsLedgerWorker:
         state, dropped = wants_ledger.drop_source_refs(state, dead)
         return state, dropped, sorted(dead)
 
+    def _prune_dead_pursuit_wants(
+        self, state: "wants_ledger.LedgerState",
+    ) -> tuple["wants_ledger.LedgerState", list[str], list[str]]:
+        """Retire ``pursuit`` wants whose concept is no longer active.
+
+        Same self-heal as the curiosity seeds above, for the same
+        reason: L3 can demote or decay a pursuit at any time, and a want
+        left behind by one keeps growing pressure until she volunteers
+        an interest she no longer has.
+        """
+        refs = {
+            w.source_ref for w in state.wants
+            if w.source == "pursuit" and w.source_ref.startswith("pursuit:")
+        }
+        if not refs:
+            return state, [], []
+        rows = self._active_pursuits()
+        if rows is None:
+            return state, [], []
+        live = {f"pursuit:{getattr(c, 'id', '')}" for c in rows}
+        dead = refs - live
+        if not dead:
+            return state, [], []
+        state, dropped = wants_ledger.drop_source_refs(state, dead)
+        return state, dropped, sorted(dead)
+
+    def _active_pursuits(self) -> list[Any] | None:
+        """Active ``pursuit`` concepts, or ``None`` if unreadable.
+
+        The ``None`` / ``[]`` distinction matters to the pruner exactly
+        as it does for the seed pool: an empty store retires every
+        pursuit want, a failed read must retire none of them.
+        """
+        provider = self._concept_store_provider
+        if provider is None:
+            return None
+        if self._pursuit_wants_enabled_provider is not None:
+            try:
+                if not bool(self._pursuit_wants_enabled_provider()):
+                    return None
+            except Exception:
+                pass
+        try:
+            store = provider()
+            if store is None:
+                return None
+            rows = store.list_by(
+                status="active", subject="aiko", kind="pursuit",
+            )
+        except Exception:
+            log.debug("wants: pursuit read failed", exc_info=True)
+            return None
+        rows = [
+            c for c in rows
+            if float(getattr(c, "confidence", 0.0) or 0.0)
+            >= self._pursuit_min_confidence
+        ]
+        # Strongest first, so the one want a tick may add is her most
+        # settled interest rather than whichever row L3 touched last.
+        rows.sort(
+            key=lambda c: float(getattr(c, "confidence", 0.0) or 0.0),
+            reverse=True,
+        )
+        return rows
+
     def _pending_seeds(self, *, limit: int) -> list[Any] | None:
         """Unspent curiosity seeds, or ``None`` if the pool can't be read.
 
@@ -363,6 +454,25 @@ class WantsLedgerWorker:
                     f"goal:{goal.id}",
                     _GOAL_INITIAL_PRESSURE,
                 ))
+
+        # 4. K85e -- active pursuits, as the ledger's standing ``share``
+        # want. Phrased as an offer of the concrete thing rather than
+        # the label, because "tell him about gardening" gets a topic
+        # announcement and "the bit of it that's on your mind" gets a
+        # sentence with something in it.
+        for concept in (self._active_pursuits() or [])[:_MAX_PURSUITS_PER_RUN]:
+            label = str(getattr(concept, "label", "") or "").strip()
+            cid = getattr(concept, "id", None)
+            if not label or cid is None:
+                continue
+            out.append((
+                f"offer something of your own: {_clip(label)}"
+                " -- the part of it that's actually on your mind",
+                "share",
+                "pursuit",
+                f"pursuit:{cid}",
+                _PURSUIT_INITIAL_PRESSURE,
+            ))
         return out
 
     # ── helpers ──────────────────────────────────────────────────────

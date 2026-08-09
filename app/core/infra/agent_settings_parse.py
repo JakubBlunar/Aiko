@@ -266,6 +266,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             taste_steer_enabled=bool(
                 agent_raw.get("taste_steer_enabled", True),
             ),
+            pursuit_lean_enabled=bool(
+                agent_raw.get("pursuit_lean_enabled", True),
+            ),
+            pursuit_share_wants_enabled=bool(
+                agent_raw.get("pursuit_share_wants_enabled", True),
+            ),
             surfacing_conduct_enabled=bool(
                 agent_raw.get("surfacing_conduct_enabled", True),
             ),

@@ -2016,64 +2016,8 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         try:
             from app.core.concepts.concept_view import concept_view_from
 
-            force = bool(
-                self._debug_overrides.take("taste_lean_force_next", False)
-            )
-            if not force:
-                from app.core.concepts.surfacing_conduct import (
-                    load_conduct_snapshot,
-                )
-
-                chat_db = getattr(self, "_chat_db", None)
-                conduct = (
-                    load_conduct_snapshot(chat_db.kv_get)
-                    if chat_db is not None
-                    and bool(
-                        getattr(
-                            self._settings.agent,
-                            "surfacing_conduct_enabled",
-                            True,
-                        )
-                    )
-                    else []
-                )
-                if any(
-                    row.get("shape") in {"concentration", "fixation"}
-                    for row in conduct
-                ):
-                    log.debug("taste-lean suppressed by L42 conduct finding")
-                    return ""
-                detector = getattr(self, "_topic_stagnation_detector", None)
-                lull_mean = getattr(detector, "last_mean", None)
-                lull_threshold = float(
-                    getattr(
-                        self._memory_settings,
-                        "stagnation_mild_threshold",
-                        0.18,
-                    )
-                )
-                if lull_mean is None or float(lull_mean) < lull_threshold:
-                    return ""
-                # Warmth earned: a lean toward what she loves is a familiarity
-                # she has to have earned, so a cold bond reads as no-fire.
-                closeness = comfort = None
-                axes_store = getattr(self, "_relationship_axes_store", None)
-                if axes_store is not None:
-                    try:
-                        axes = axes_store.get(self._user_id)
-                        closeness = float(axes.closeness)
-                        comfort = float(axes.comfort)
-                    except Exception:
-                        closeness = comfort = None
-                min_axes = float(
-                    getattr(self._settings.agent, "appetite_min_axes", 0.15)
-                )
-                if (
-                    closeness is None
-                    or comfort is None
-                    or (closeness < min_axes and comfort < min_axes)
-                ):
-                    return ""
+            if not self._lean_gate_open("taste_lean_force_next", "taste"):
+                return ""
 
             view = concept_view_from(self)
             if view is None or not view.enabled:
@@ -2105,6 +2049,129 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         self._taste_lean_fired = True
         log.info("taste-lean fire: kind=%s label=%s", kind, label[:60])
         return self._render_lean_copy(kind, label)
+
+    def _lean_gate_open(self, force_key: str, label: str) -> bool:
+        """The shared pacing gate for the T6 lean slips (K81 / K85e).
+
+        Three conditions, all of which read as blocking when their input
+        is cold: no L42 concentration / fixation finding (so a lean can
+        never deepen a rut she is already in), a standing K18 lull, and
+        relationship warmth earned on at least one axis. The debug
+        override skips all three.
+        """
+        if bool(self._debug_overrides.take(force_key, False)):
+            return True
+
+        from app.core.concepts.surfacing_conduct import load_conduct_snapshot
+
+        chat_db = getattr(self, "_chat_db", None)
+        conduct = (
+            load_conduct_snapshot(chat_db.kv_get)
+            if chat_db is not None
+            and bool(
+                getattr(
+                    self._settings.agent, "surfacing_conduct_enabled", True,
+                )
+            )
+            else []
+        )
+        if any(
+            row.get("shape") in {"concentration", "fixation"}
+            for row in conduct
+        ):
+            log.debug("%s-lean suppressed by L42 conduct finding", label)
+            return False
+
+        detector = getattr(self, "_topic_stagnation_detector", None)
+        lull_mean = getattr(detector, "last_mean", None)
+        lull_threshold = float(
+            getattr(self._memory_settings, "stagnation_mild_threshold", 0.18)
+        )
+        if lull_mean is None or float(lull_mean) < lull_threshold:
+            return False
+
+        # Warmth earned: a lean toward something of hers is a familiarity
+        # she has to have earned, so a cold bond reads as no-fire.
+        closeness = comfort = None
+        axes_store = getattr(self, "_relationship_axes_store", None)
+        if axes_store is not None:
+            try:
+                axes = axes_store.get(self._user_id)
+                closeness = float(axes.closeness)
+                comfort = float(axes.comfort)
+            except Exception:
+                closeness = comfort = None
+        min_axes = float(
+            getattr(self._settings.agent, "appetite_min_axes", 0.15)
+        )
+        return not (
+            closeness is None
+            or comfort is None
+            or (closeness < min_axes and comfort < min_axes)
+        )
+
+    def _render_pursuit_lean_block(self) -> str:
+        """K85e: a lull slip for a subject that is hers, not theirs.
+
+        Same pacing as the K81 taste lean and the same L42 counterweight,
+        and it shares taste's once-per-conversation latch -- there is one
+        permission slip here with two possible sources, and firing both
+        on the same quiet turn would read as a woman with an agenda.
+
+        It runs *first* of the two because it is the one the whole K85
+        family exists for. Taste is bond-scoped by construction ("topics
+        you enjoy getting into with him"), so leaning on it still points
+        the lull back at him; a pursuit is the only thing in the store
+        that doesn't.
+
+        Deliberately not a question and not an announcement. The failure
+        mode for this block is a hobbyhorse -- her turning a quiet moment
+        into a monologue about her tomatoes -- so the copy asks for the
+        small concrete thing that happened and then stops.
+        """
+        if not bool(
+            getattr(self._settings.agent, "pursuit_lean_enabled", True)
+        ):
+            return ""
+        if bool(getattr(self, "_taste_lean_fired", False)):
+            return ""
+        try:
+            from app.core.concepts.concept_view import concept_view_from
+
+            if not self._lean_gate_open("pursuit_lean_force_next", "pursuit"):
+                return ""
+            view = concept_view_from(self)
+            if view is None or not view.enabled:
+                return ""
+            min_conf = float(
+                getattr(
+                    self._memory_settings, "taste_steer_min_confidence", 0.6
+                )
+            )
+            rows = view.core(
+                subject="aiko", kind="pursuit",
+                min_confidence=min_conf, limit=1,
+            )
+            if not rows:
+                return ""
+            label = (getattr(rows[0], "label", "") or "").strip()
+            if not label:
+                return ""
+        except Exception:
+            log.debug("pursuit-lean block render failed", exc_info=True)
+            return ""
+
+        self._taste_lean_fired = True
+        log.info("pursuit-lean fire: label=%s", label[:60])
+        return (
+            "Something you've been up to:\n"
+            f"Things have gone a little quiet, and this is true of you: "
+            f"{label}. If there's room, say a small concrete thing about it "
+            "-- what you actually did with it lately, or the bit of it "
+            "you're stuck on. Offer it and leave it there; don't build it "
+            "into a topic, don't ask him to be interested, and let it drop "
+            "the moment he'd rather talk about something else."
+        )
 
     def _widened_lean(self, view: Any, min_conf: float) -> list:
         """K85a: fall back to her other self-concepts when taste is empty.
