@@ -189,6 +189,8 @@ def _make_worker(
     outing_cooldown_seconds: float = 6.0 * 3600,
     outing_daily_cap: int = 2,
     period: str | None = None,
+    episode_ratio: float = 0.0,
+    episode_min_gap_seconds: float = 0.0,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -210,6 +212,8 @@ def _make_worker(
         circadian_period_provider=(
             (lambda: period) if period is not None else None
         ),
+        episode_ratio=episode_ratio,
+        episode_min_gap_seconds=episode_min_gap_seconds,
         rng=random.Random(seed),
     )
 
@@ -501,6 +505,117 @@ class ItemEffectTests(unittest.TestCase):
         self.assertEqual(result["fired"], 1)
         self.assertNotIn("item_effect", result)
         self.assertEqual(len(load_journal(kv.get)), 1)
+
+
+class EpisodeTests(unittest.TestCase):
+    """K91 pass 3 — a long quiet stretch plays out as a sequence."""
+
+    def _furnished(self) -> _FakeWorldStore:
+        return _FakeWorldStore(
+            items=[
+                _FakeItem(
+                    9, "tea pot", kind="gadget", slug="tea_pot",
+                    state={"fullness": "full", "flavor": "genmaicha"},
+                ),
+                _FakeItem(
+                    4, "The Glasshouse Letters", kind="book",
+                    slug="scifi_paperback",
+                    state={
+                        "title": "The Glasshouse Letters",
+                        "progress": 3,
+                        "total": 16,
+                    },
+                ),
+            ],
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the kitchenette", "kitchenette"),
+                _FakeLoc(3, "the beanbag", "beanbag"),
+            ],
+        )
+
+    def test_a_long_gap_chains_beats_into_one_entry(self) -> None:
+        kv = _FakeKV()
+        world = self._furnished()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertGreaterEqual(len(result["episode"]), 2)
+        self.assertEqual(result["episode"][0], "tea")
+        # One journal entry for the whole episode, carrying the chain.
+        journal = load_journal(kv.get)
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(journal[0]["keys"], result["episode"])
+        self.assertIn(", then ", journal[0]["summary"])
+
+    def test_every_beat_in_the_chain_applies_its_effect(self) -> None:
+        kv = _FakeKV()
+        world = self._furnished()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0, seed=3,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        chain = result["episode"]
+        pot = world.get_item(9)
+        book = world.get_item(4)
+        assert pot is not None and book is not None
+        self.assertEqual(pot.state["fullness"], "half")
+        if "read_book" in chain:
+            self.assertEqual(book.state["progress"], 4)
+
+    def test_a_recent_beat_stays_a_single_postcard(self) -> None:
+        kv = _FakeKV()
+        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+        kv.set("away_activity.last_fired_at", recent.isoformat())
+        world = self._furnished()
+        worker = _make_worker(
+            world=world,
+            kv=kv,
+            cooldown=0.0,
+            episode_ratio=1.0,
+            episode_min_gap_seconds=10800.0,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertNotIn("episode", result)
+        self.assertEqual(len(load_journal(kv.get)), 1)
+        self.assertNotIn("keys", load_journal(kv.get)[0])
+
+    def test_episodes_off_by_ratio_keeps_single_beats(self) -> None:
+        kv = _FakeKV()
+        world = self._furnished()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=0.0,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertNotIn("episode", result)
+
+    def test_an_episode_costs_one_beat_against_the_daily_cap(self) -> None:
+        kv = _FakeKV()
+        world = self._furnished()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0, daily_cap=1,
+        )
+        worker.force_activity("tea")
+        first = worker.run()
+        self.assertEqual(first["fired"], 1)
+        second = worker.run()
+        self.assertTrue(second.get("skipped_daily_cap"))
+
+    def test_recency_reads_every_beat_of_an_episode(self) -> None:
+        kv = _FakeKV()
+        world = self._furnished()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0,
+        )
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertEqual(worker._recent_keys(), result["episode"])
 
 
 class NamedEffectResolutionTests(unittest.TestCase):

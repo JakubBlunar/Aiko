@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail
+from app.core.world import beat_detail, beat_episode
 from app.core.world.idle_activity_worker import (
     append_journal,
 )
@@ -507,23 +507,27 @@ class GardenVisitWorker:
         watered_names = [w for w in watered_names if w]
         note = self._standout_note(watered)
 
-        if picked:
-            crop = picked[0]
-            if watered_names:
-                base = (
-                    f"was out in the garden — watered the plants and "
-                    f"picked some ripe {crop}"
-                )
-            else:
-                base = f"was out in the garden and picked some ripe {crop}"
-            return base
-        if note:
-            return "was out watering the garden — " + note
-        if len(watered_names) == 1:
-            return f"was out watering the {watered_names[0]} in the garden"
+        # K91 — she arrives standing and stretching, so sometimes say so:
+        # the visit is a small sequence, not one undifferentiated chore.
+        clauses: list[str] = []
+        if watered_names and self._rng.random() < 0.5:
+            clauses.append("stretched out in the garden")
+
         if watered_names:
-            return "was out in the garden, watering the plants"
-        return "wandered out to the garden to check on the plants"
+            watering = "went round with the watering can"
+            if not clauses:
+                watering = "was out watering the garden"
+            if note:
+                watering += " — " + note
+            elif len(watered_names) == 1:
+                watering = "was out watering the " + watered_names[0]
+            clauses.append(watering)
+        elif not picked:
+            return "wandered out to the garden to check on the plants"
+
+        if picked:
+            clauses.append("picked some ripe " + picked[0])
+        return beat_episode.join_clauses(clauses)
 
     @staticmethod
     def _standout_note(watered: list[dict[str, Any]]) -> str | None:
