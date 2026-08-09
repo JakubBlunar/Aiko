@@ -294,6 +294,8 @@ Detects when **Aiko's own** recent output has fallen into a rut (same openers, e
 - `agent.style_tracker_question_rate_threshold` *(float, `0.75`, clamped `[0, 1]`)* — share of replies ending in `?` that trips the "you're ending everything as a question" cue. Higher → more tolerant.
 - `agent.style_tracker_avg_questions_threshold` *(float, `1.5`, min `0`)* — average questions-per-reply that trips the "you're piling on questions" cue.
 - `agent.style_tracker_length_avg_threshold` *(float, `50.0`, min `1`)* — average word-count that trips the "all your replies are paragraphs" cue.
+- `agent.style_tracker_anaphoric_count_threshold` *(int, `4`, min `2`)* — K88. How many replies in the window must open on a clause that hangs off his sentence ("Then…", "Exactly.", "That makes sense") before the cue fires.
+- `agent.style_tracker_anaphoric_rate_threshold` *(float, `0.33`, clamped `[0, 1]`)* — and what share of the window they must be. Both gates must clear, so it stays a rate detector rather than a ban on connectives — the occasional warm one is the point, five in a row is the problem.
 - `agent.style_tracker_cue_cooldown_turns` *(int, `5`, min `0`)* — turns to suppress a re-fire of the **same** style cue.
 
 ### K49 — casual speech texture

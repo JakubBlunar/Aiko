@@ -11,6 +11,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.core.persona.aiko_style_tracker import (
+    BAND_ANAPHORIC_OPENER,
     BAND_LENGTH_SPRAWL,
     BAND_OPENER_RUT,
     BAND_QUESTION_SATURATION,
@@ -35,6 +36,8 @@ def _settings(**overrides: object) -> SimpleNamespace:
         style_tracker_question_rate_threshold=0.75,
         style_tracker_avg_questions_threshold=1.5,
         style_tracker_length_avg_threshold=50.0,
+        style_tracker_anaphoric_count_threshold=4,
+        style_tracker_anaphoric_rate_threshold=0.33,
         style_tracker_cue_cooldown_turns=5,
     )
     base.update(overrides)
@@ -192,6 +195,160 @@ class OpenerRutTests(unittest.TestCase):
         tracker.record_turn(_short_reply("yeah", words=8))
         second = tracker.detect()
         self.assertIsNotNone(second)
+
+
+# ── anaphoric-opener band (K88) ─────────────────────────────────────
+
+
+def _anaphoric_reply(subject: str = "that") -> str:
+    """Statement reply whose first clause hangs off his sentence."""
+    body = " ".join(["really"] * 8)
+    return f"{subject.capitalize()} makes sense {body}."
+
+
+def _leading_reply(opener: str = "honestly") -> str:
+    """Same shape, but the clause after the hinge is hers."""
+    body = " ".join(["circuits"] * 8)
+    return f"{opener.capitalize()} I rewired {body}."
+
+
+class AnaphoricOpenerTests(unittest.TestCase):
+    def _tracker(self, **overrides: object) -> AikoStylePatternTracker:
+        # Every other band is pushed out of range so the K88 band is
+        # the only thing that can answer.
+        base: dict[str, object] = dict(
+            style_tracker_warmup=6,
+            style_tracker_opener_count_threshold=99,
+            style_tracker_opener_topk_share=2.0,
+            style_tracker_question_rate_threshold=2.0,
+            style_tracker_avg_questions_threshold=99.0,
+            style_tracker_length_avg_threshold=999.0,
+        )
+        base.update(overrides)
+        return _build(**base)
+
+    def test_rate_of_back_references_triggers(self) -> None:
+        tracker = self._tracker(
+            style_tracker_anaphoric_count_threshold=4,
+            style_tracker_anaphoric_rate_threshold=0.33,
+        )
+        # 4 of 6 open on a demonstrative: 67% of the window.
+        for subject in ["that", "this", "those", "these"]:
+            tracker.record_turn(_anaphoric_reply(subject))
+        tracker.record_turn(_leading_reply("honestly"))
+        tracker.record_turn(_leading_reply("well"))
+        result = tracker.detect()
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.band, BAND_ANAPHORIC_OPENER)
+        self.assertIn("4/6", result.detail)
+
+    def test_occasional_back_reference_is_left_alone(self) -> None:
+        # The whole point of the band being a rate: two warm "Then
+        # those are yours" turns in a six-turn window are fine.
+        tracker = self._tracker(
+            style_tracker_anaphoric_count_threshold=4,
+            style_tracker_anaphoric_rate_threshold=0.33,
+        )
+        tracker.record_turn(_anaphoric_reply("that"))
+        tracker.record_turn(_anaphoric_reply("this"))
+        for opener in ["honestly", "well", "oh", "hmm"]:
+            tracker.record_turn(_leading_reply(opener))
+        self.assertIsNone(tracker.detect())
+
+    def test_count_floor_holds_on_a_short_window(self) -> None:
+        # 3 of 6 clears the 33% rate but not the count floor, so a
+        # thin window can't trip it on its own.
+        tracker = self._tracker(
+            style_tracker_anaphoric_count_threshold=4,
+            style_tracker_anaphoric_rate_threshold=0.33,
+        )
+        for subject in ["that", "this", "those"]:
+            tracker.record_turn(_anaphoric_reply(subject))
+        for opener in ["honestly", "well", "oh"]:
+            tracker.record_turn(_leading_reply(opener))
+        self.assertIsNone(tracker.detect())
+
+    def test_rate_floor_holds_on_a_long_window(self) -> None:
+        # 4 hits clears the count floor, but at 4/12 = 33%... just
+        # barely clears too, so push it to 4/16 by widening. The rate
+        # gate is what stops a long calm window from accumulating.
+        tracker = self._tracker(
+            style_tracker_window=16,
+            style_tracker_anaphoric_count_threshold=4,
+            style_tracker_anaphoric_rate_threshold=0.33,
+        )
+        for subject in ["that", "this", "those", "these"]:
+            tracker.record_turn(_anaphoric_reply(subject))
+        for _ in range(12):
+            tracker.record_turn(_leading_reply("honestly"))
+        self.assertIsNone(tracker.detect())
+
+    def test_particles_in_front_of_her_own_subject_do_not_count(self) -> None:
+        tracker = self._tracker()
+        for opener in ["then", "so", "but", "exactly", "yeah", "right"]:
+            tracker.record_turn(_leading_reply(opener))
+        self.assertIsNone(tracker.detect())
+
+    def test_opener_rut_outranks_the_band(self) -> None:
+        # Same demonstrative every turn satisfies both bands; the
+        # narrower ask wins.
+        tracker = _build(
+            style_tracker_warmup=6,
+            style_tracker_opener_count_threshold=4,
+            style_tracker_opener_topk_share=2.0,
+            style_tracker_question_rate_threshold=2.0,
+            style_tracker_avg_questions_threshold=99.0,
+            style_tracker_length_avg_threshold=999.0,
+        )
+        for _ in range(6):
+            tracker.record_turn(_anaphoric_reply("that"))
+        result = tracker.detect()
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.band, BAND_OPENER_RUT)
+
+    def test_band_outranks_question_saturation(self) -> None:
+        tracker = _build(
+            style_tracker_warmup=6,
+            style_tracker_opener_count_threshold=99,
+            style_tracker_opener_topk_share=2.0,
+            style_tracker_question_rate_threshold=0.50,
+            style_tracker_avg_questions_threshold=99.0,
+            style_tracker_length_avg_threshold=999.0,
+            style_tracker_anaphoric_count_threshold=4,
+        )
+        for subject in ["that", "this", "those", "these", "there", "which"]:
+            tracker.record_turn(f"{subject.capitalize()} makes sense right?")
+        result = tracker.detect()
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.band, BAND_ANAPHORIC_OPENER)
+
+    def test_cooldown_silences_repeat(self) -> None:
+        tracker = self._tracker(
+            style_tracker_anaphoric_count_threshold=4,
+            style_tracker_cue_cooldown_turns=3,
+        )
+        for _ in range(6):
+            tracker.record_turn(_anaphoric_reply("that"))
+        self.assertIsNotNone(tracker.detect())
+        for _ in range(2):
+            tracker.record_turn(_anaphoric_reply("this"))
+            self.assertIsNone(tracker.detect())
+        tracker.record_turn(_anaphoric_reply("those"))
+        self.assertIsNotNone(tracker.detect())
+
+    def test_cue_text_names_the_fix(self) -> None:
+        cue = render_inner_life_block(
+            StyleRutResult(
+                band=BAND_ANAPHORIC_OPENER,
+                detail="anaphoric=4/6 (67%)",
+                window_size=6,
+            )
+        )
+        self.assertIn("your own", cue)
+        self.assertNotIn("4/6", cue)
 
 
 # ── question-saturation band ────────────────────────────────────────
