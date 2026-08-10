@@ -140,6 +140,7 @@ class MemoryConsolidationWorker:
         memory_settings: "MemorySettings",
         notify_memory_updated: Any | None = None,
         topic_graph_provider: Any | None = None,
+        cue_store_provider: Any | None = None,
         clock: Any | None = None,
     ) -> None:
         self._memory_store = memory_store
@@ -154,6 +155,9 @@ class MemoryConsolidationWorker:
         # F10j: late-bound accessor for the K9 topic graph so the
         # near-duplicate sweep can be scoped to within-cluster groups.
         self._topic_graph_provider = topic_graph_provider
+        # Pooled cues drafted from a row this worker archives have to go
+        # with it, or the merge leaves the duplicate question behind.
+        self._cue_store_provider = cue_store_provider
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -545,6 +549,8 @@ class MemoryConsolidationWorker:
             absorbed.append(int(mem.id))
             self._notify(mem.id)
 
+        self._retire_cues_for(absorbed)
+
         log.info(
             "memory-consolidation merged: primary=%s absorbed=%s llm=%s "
             "text_changed=%s content=%r",
@@ -618,6 +624,22 @@ class MemoryConsolidationWorker:
         return bool(
             getattr(self._agent_settings, "memory_consolidation_enabled", True)
         )
+
+    def _retire_cues_for(self, absorbed: list[int]) -> None:
+        """Take the absorbed rows' pooled cues down with them."""
+        if not absorbed or self._cue_store_provider is None:
+            return
+        try:
+            store = self._cue_store_provider()
+        except Exception:
+            log.debug("memory-consolidation: cue store unavailable", exc_info=True)
+            return
+        if store is None:
+            return
+        try:
+            store.retire_for_sources(absorbed)
+        except Exception:
+            log.debug("memory-consolidation: cue retire failed", exc_info=True)
 
     def _notify(self, memory_id: int) -> None:
         if self._notify_memory_updated is None:

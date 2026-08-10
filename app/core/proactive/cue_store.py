@@ -442,6 +442,70 @@ class CueStore:
             (STATE_EXPIRED, str(evidence or "")),
         )
 
+    def supersede(self, cue_id: int, *, evidence: str = "") -> bool:
+        """Another cue says this one's thing, so this one stops asking.
+
+        Distinct from :meth:`expire`, which is a cue that ran out of time
+        or retries. :meth:`add` performs this transition inline for the
+        subject it is about to claim; this is the same move addressed to
+        one row, for callers that decide the duplicate on something other
+        than an equal subject string.
+        """
+        return self._update(
+            cue_id,
+            "state = ?, used_evidence = ?",
+            (STATE_SUPERSEDED, str(evidence or "")),
+        )
+
+    def retire_for_sources(
+        self, source_ids: Iterable[Any], *, evidence: str = "source_merged",
+    ) -> int:
+        """Retire live cues drafted from memory rows that no longer stand.
+
+        A cue outlives the row it was drafted from. When K35 folds a
+        duplicate memory into its primary the cue built from the loser
+        stays pending, still asking about a fact whose row has been
+        archived -- and since the primary produces a cue of its own, the
+        question gets asked twice from two rows saying the same thing.
+        Matched on ``payload.source_id`` in Python rather than in SQL
+        because the payload is opaque JSON to the table.
+        """
+        wanted = {str(s) for s in source_ids if s is not None and str(s).strip()}
+        if not wanted:
+            return 0
+        try:
+            conn = self._conn()
+            rows = conn.execute(
+                "SELECT id, payload FROM cue_pool "
+                "WHERE user_id = ? AND payload IS NOT NULL AND state IN "
+                f"({','.join('?' * len(LIVE_STATES))})",
+                (self._user_id, *sorted(LIVE_STATES)),
+            ).fetchall()
+        except Exception:
+            log.warning("cue_pool source retire read failed", exc_info=True)
+            return 0
+        doomed: list[int] = []
+        for row in rows:
+            try:
+                blob = json.loads(row[1] or "{}")
+            except Exception:
+                continue
+            if str((blob or {}).get("source_id") or "").strip() in wanted:
+                doomed.append(int(row[0]))
+        if not doomed:
+            return 0
+        try:
+            conn.executemany(
+                "UPDATE cue_pool SET state = ?, used_evidence = ? WHERE id = ?",
+                [(STATE_SUPERSEDED, str(evidence or ""), cid) for cid in doomed],
+            )
+            conn.commit()
+        except Exception:
+            log.warning("cue_pool source retire failed", exc_info=True)
+            return 0
+        log.info("cue_pool retired %d cue(s) for merged sources", len(doomed))
+        return len(doomed)
+
     def sweep_expired(self, *, now: datetime | None = None) -> int:
         """Retire live cues past their TTL. Returns rows changed."""
         stamp = _stamp(now)
@@ -648,6 +712,46 @@ class CueStore:
             log.warning("cue_pool subject read failed", exc_info=True)
             return set()
         return {str(r[0] or "") for r in rows if r and r[0]}
+
+    def claimed_source_ids(
+        self,
+        cue_type: str | None = None,
+        *,
+        within_hours: float = 168.0,
+    ) -> set[str]:
+        """``payload.source_id`` values a cue already exists for.
+
+        The subject-based companion to :meth:`recent_subjects`, and the
+        exact one. A worker that drafts from memories keys its dedupe on
+        the row it drafted from, and its own journal ring only remembers
+        the last handful -- so the same memory came back around as soon
+        as it rotated out. The pool has no such horizon.
+        """
+        cutoff = (
+            timephrase.utcnow() - timedelta(hours=max(0.0, float(within_hours)))
+        ).isoformat()
+        where = "user_id = ? AND created_at >= ? AND payload IS NOT NULL"
+        params: list[Any] = [self._user_id, cutoff]
+        if cue_type:
+            where += " AND cue_type = ?"
+            params.append(str(cue_type))
+        try:
+            rows = self._conn().execute(
+                f"SELECT payload FROM cue_pool WHERE {where}", tuple(params),
+            ).fetchall()
+        except Exception:
+            log.warning("cue_pool source read failed", exc_info=True)
+            return set()
+        out: set[str] = set()
+        for row in rows:
+            try:
+                blob = json.loads(row[0] or "{}")
+            except Exception:
+                continue
+            source_id = str((blob or {}).get("source_id") or "").strip()
+            if source_id:
+                out.add(source_id)
+        return out
 
     def list_for_user(
         self,

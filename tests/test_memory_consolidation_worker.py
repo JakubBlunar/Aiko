@@ -140,6 +140,7 @@ def _make_worker(
     agent: SimpleNamespace | None = None,
     memory: SimpleNamespace | None = None,
     notify: Any | None = None,
+    cues: Any = None,
 ) -> MemoryConsolidationWorker:
     return MemoryConsolidationWorker(
         memory_store=store,
@@ -151,6 +152,7 @@ def _make_worker(
         agent_settings=agent or _agent(),
         memory_settings=memory or _memory(),
         notify_memory_updated=notify,
+        cue_store_provider=(lambda: cues) if cues is not None else None,
     )
 
 
@@ -258,6 +260,62 @@ class PrimaryAndCommitTests(unittest.TestCase):
         worker.run()
         self.assertIn(1, notified)
         self.assertIn(2, notified)
+
+
+class CueRetirementTests(unittest.TestCase):
+    """A cue drafted from an absorbed row goes with it.
+
+    Left behind, it keeps asking about a fact whose row is now archived
+    while the surviving primary produces a cue of its own -- which is how
+    one plan got asked about from two angles.
+    """
+
+    class _Cues:
+        def __init__(self) -> None:
+            self.retired: list[list[int]] = []
+
+        def retire_for_sources(self, source_ids, **kw) -> int:
+            self.retired.append([int(i) for i in source_ids])
+            return len(self.retired[-1])
+
+    def _pair(self) -> "_FakeStore":
+        return _FakeStore([
+            _FakeMemory(1, "trip a", confidence=0.95, embedding=_DUP_A),
+            _FakeMemory(2, "trip b", confidence=0.7, embedding=_DUP_B),
+        ])
+
+    def test_the_absorbed_rows_cues_are_retired(self) -> None:
+        cues = self._Cues()
+        _make_worker(self._pair(), cues=cues).run()
+        self.assertEqual(cues.retired, [[2]])
+
+    def test_the_primary_keeps_its_own_cue(self) -> None:
+        """Only what was archived loses its cue."""
+        cues = self._Cues()
+        _make_worker(self._pair(), cues=cues).run()
+        self.assertNotIn(1, cues.retired[0])
+
+    def test_a_merge_that_absorbs_nothing_retires_nothing(self) -> None:
+        cues = self._Cues()
+        store = _FakeStore([
+            _FakeMemory(1, "trip a", embedding=_DUP_A),
+            _FakeMemory(2, "unrelated", embedding=_FAR),
+        ])
+        _make_worker(store, cues=cues).run()
+        self.assertEqual(cues.retired, [])
+
+    def test_a_raising_cue_store_does_not_break_the_merge(self) -> None:
+        class _Broken:
+            def retire_for_sources(self, *a, **kw):
+                raise RuntimeError("pool down")
+
+        store = self._pair()
+        result = _make_worker(store, cues=_Broken()).run()
+        self.assertEqual(result["merged"], 1)
+
+    def test_no_cue_store_is_fine(self) -> None:
+        result = _make_worker(self._pair()).run()
+        self.assertEqual(result["merged"], 1)
 
 
 class MergeTextTests(unittest.TestCase):

@@ -55,6 +55,19 @@ class ChainTests(unittest.TestCase):
         )
         self.assertEqual(chain, ["llm"])
 
+    def test_the_first_beat_leads_even_when_unavailable(self) -> None:
+        """It was already chosen, so it is not the pool's to veto.
+
+        A forced or LLM-composed beat legitimately has no entry in the
+        candidate pool. Dropping it here left the caller with an empty
+        chain and an IndexError on ``chain[0]``.
+        """
+        chain = beat_episode.plan_chain(
+            "tidy_desk", ["read_book"], rng=random.Random(0), length=3,
+        )
+        self.assertEqual(chain[0], "tidy_desk")
+        self.assertTrue(chain)
+
     def test_length_one_returns_a_single_beat(self) -> None:
         chain = beat_episode.plan_chain(
             "tea", ALL_KEYS, rng=random.Random(0), length=1,

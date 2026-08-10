@@ -137,18 +137,18 @@ class DepthTests(unittest.TestCase):
         self.assertEqual(classify_depth(10.0)[2], 1.0)
         self.assertEqual(classify_depth(600.0)[0], "away")
         self.assertEqual(classify_depth(600.0)[2], 3.0)
-        self.assertEqual(classify_depth(7200.0)[0], "long_away")
+        self.assertEqual(classify_depth(2400.0)[0], "long_away")
         self.assertEqual(classify_depth(50000.0)[0], "overnight")
         self.assertEqual(classify_depth(50000.0)[2], 10.0)
 
     def test_max_multiplier_of_one_disables_scaling(self) -> None:
-        for secs in (10.0, 600.0, 7200.0, 50000.0):
+        for secs in (10.0, 600.0, 2400.0, 50000.0):
             self.assertEqual(
                 classify_depth(secs, max_multiplier=1.0)[2], 1.0,
             )
 
     def test_tier_index_is_monotonic(self) -> None:
-        indices = [classify_depth(s)[1] for s in (10, 600, 7200, 50000)]
+        indices = [classify_depth(s)[1] for s in (10, 600, 2400, 50000)]
         self.assertEqual(indices, [0, 1, 2, 3])
 
 

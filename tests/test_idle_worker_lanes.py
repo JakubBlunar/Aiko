@@ -322,7 +322,7 @@ class DepthAndContentionTests(unittest.TestCase):
     def test_swapping_pins_the_llm_lane_while_compute_scales(self) -> None:
         sched = _sched(
             contention_provider=lambda: CONTENTION_SWAPPING,
-            idle_depth_provider=lambda: 900.0,  # away -> 3x
+            idle_depth_provider=lambda: 600.0,  # away -> 3x
         )
         status = sched.get_status()
         self.assertEqual(status["idle_depth"], "away")
@@ -335,7 +335,7 @@ class DepthAndContentionTests(unittest.TestCase):
     def test_split_backends_let_the_llm_lane_follow_depth(self) -> None:
         sched = _sched(
             contention_provider=lambda: CONTENTION_NONE,
-            idle_depth_provider=lambda: 900.0,
+            idle_depth_provider=lambda: 600.0,  # away -> 3x
         )
         status = sched.get_status()
         self.assertEqual(status["effective_llm_budget_ms"], 18000.0)

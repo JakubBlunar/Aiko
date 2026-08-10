@@ -46,9 +46,10 @@ life and surfaces them passively on gap-return.
 
 Paced by its own wall-clock cooldown and, above that, by how many unasked
 questions are already in the cue pool: a stocked worker reports no demand
-and is simply not admitted. Every failure path is swallowed and logged at
-debug — the worst case is a missed beat, never a broken insert or a
-crashed tick.
+*and* declines to draft when ``run()`` is called anyway, since the
+scheduler still admits a zero-pressure worker on its plain interval.
+Every failure path is swallowed and logged at debug — the worst case is a
+missed beat, never a broken insert or a crashed tick.
 """
 from __future__ import annotations
 
@@ -279,6 +280,14 @@ class ForwardCuriosityWorker:
         now = _utcnow()
         if not self._cooldown_elapsed(now):
             return {"drafted": 0, "skipped_cooldown": True}
+        # Stock is a veto here and not only a demand signal. ``demand()``
+        # reporting zero pressure stops the scheduler *preferring* this
+        # worker, but it is still admitted on its plain interval, so
+        # without this the shelf grew to seven times its target and every
+        # hour added one more near-identical question.
+        stocked = self._cues.stock()
+        if stocked >= self._cues.inventory_target:
+            return {"drafted": 0, "skipped_stocked": True, "stocked": stocked}
 
         candidate = self._pick_candidate()
         if candidate is None:
@@ -327,7 +336,10 @@ class ForwardCuriosityWorker:
     def _pick_candidate(self) -> QuestionCandidate | None:
         from app.core.proactive.cue_store import normalise_subject
 
-        already = self._recent_source_ids()
+        # The ring only remembers the last few drafts; the pool remembers
+        # every source it ever drafted from, which is what stops a plan
+        # coming back around the moment it rotates out of the ring.
+        already = self._recent_source_ids() | self._cues.claimed_sources()
         # The pool remembers subjects the ring has long since rotated out,
         # and across the terminal states too -- a question that was asked
         # and answered is not worth drafting again either.
@@ -340,7 +352,9 @@ class ForwardCuriosityWorker:
         for mem in self._safe_list_temporal("future_plan"):
             sid = str(getattr(mem, "id", "") or "")
             topic = (getattr(mem, "content", "") or "").strip()
-            if not sid or not topic or sid in already:
+            if not sid or not topic:
+                continue
+            if self._merged_away(mem) or self._lineage(mem) & already:
                 continue
             if normalise_subject(topic) in pooled:
                 continue
@@ -358,7 +372,9 @@ class ForwardCuriosityWorker:
         for mem in self._safe_iter_kind("callback"):
             sid = str(getattr(mem, "id", "") or "")
             topic = (getattr(mem, "content", "") or "").strip()
-            if not sid or not topic or sid in already:
+            if not sid or not topic:
+                continue
+            if self._merged_away(mem) or self._lineage(mem) & already:
                 continue
             if normalise_subject(topic) in pooled:
                 continue
@@ -556,6 +572,32 @@ class ForwardCuriosityWorker:
             for e in recent
             if e.get("source_id")
         }
+
+    @staticmethod
+    def _merged_away(mem: "Memory") -> bool:
+        """Did K35 fold this row into another one?
+
+        Such a row is a duplicate the consolidation worker already
+        resolved; the surviving primary is in the same candidate list and
+        speaks for the whole group.
+        """
+        meta = getattr(mem, "metadata", None) or {}
+        return bool(meta.get("consolidated_into"))
+
+    @staticmethod
+    def _lineage(mem: "Memory") -> set[str]:
+        """This row's id plus the ids it absorbed.
+
+        A question drafted from one of the absorbed rows before the merge
+        happened is the same question, so the survivor inherits their
+        claims along with their content.
+        """
+        ids = {str(getattr(mem, "id", "") or "")}
+        meta = getattr(mem, "metadata", None) or {}
+        absorbed = meta.get("source_ids")
+        if isinstance(absorbed, list):
+            ids.update(str(i) for i in absorbed if i is not None)
+        return {i for i in ids if i}
 
     def _cooldown_elapsed(self, now: datetime) -> bool:
         if self._cooldown_seconds <= 0:

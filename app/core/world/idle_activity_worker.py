@@ -765,7 +765,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 rng=self._rng, max_beats=self._episode_max_beats,
             ),
         )
-        return [snapshot.candidates[k] for k in keys if k in snapshot.candidates]
+        # ``first`` leads rather than ``candidates[first.key]``: a forced
+        # or LLM-composed beat carries its own summary and may not be in
+        # the pool at all, and dropping it here left the chain empty.
+        return [first] + [
+            snapshot.candidates[k] for k in keys[1:] if k in snapshot.candidates
+        ]
 
     def _seconds_since_last_beat(self, now: datetime) -> float | None:
         last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))

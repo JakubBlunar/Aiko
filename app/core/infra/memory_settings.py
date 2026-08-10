@@ -25,6 +25,13 @@ class MemorySettings:
     score_threshold: float = 0.4
     max_memories: int = 5000  # long_term cap
     dedupe_threshold: float = 0.92
+    # The narrower second dedupe gate: a fact restated within
+    # ``restate_window_hours`` at this similarity is the same fact again,
+    # not a new one. Lower than ``dedupe_threshold`` on purpose, and only
+    # safe because the window and a matching kind / temporal type come
+    # with it. Set the window to 0 to disable.
+    restate_threshold: float = 0.85
+    restate_window_hours: float = 6.0
     extractor_enabled: bool = True
     self_tagged_salience: float = 0.7
 
@@ -1972,6 +1979,12 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             score_threshold=max(0.0, min(1.0, float(memory_raw.get("score_threshold", 0.4)))),
             max_memories=max(50, int(memory_raw.get("max_memories", 5000))),
             dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
+            restate_threshold=max(
+                0.5, min(0.999, float(memory_raw.get("restate_threshold", 0.85))),
+            ),
+            restate_window_hours=max(
+                0.0, float(memory_raw.get("restate_window_hours", 6.0)),
+            ),
             extractor_enabled=bool(memory_raw.get("extractor_enabled", True)),
             self_tagged_salience=max(
                 0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))
