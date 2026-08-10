@@ -741,6 +741,67 @@ class ConceptRenderSubjectTests(unittest.TestCase):
             text.index("systems thinker"), text.index("owning his data"),
         )
 
+    def test_the_stance_is_stated_once_for_the_whole_block(self) -> None:
+        # Three groups, three headers, and exactly one statement of how to
+        # hold any of it. The per-header hedge used to repeat this once per
+        # (subject, family) pair -- a dozen times in a full turn, which
+        # reads as distrust-what-you-know rather than as a posture.
+        host = self._host()
+        rows = [
+            SimpleNamespace(
+                concept_id=i, label=f"label {i}", confidence=0.9,
+                plasticity=0.3, kind=kind, subject=subject,
+                last_reinforced_at=None,
+            )
+            for i, (kind, subject) in enumerate(
+                (
+                    ("identity", "user"),
+                    ("value", "user"),
+                    ("boundary", "aiko"),
+                ),
+                start=1,
+            )
+        ]
+        text, _ = host._render_relevant_concepts(rows)
+        preamble, *groups = text.split("\n\n")
+        self.assertEqual(len(groups), 3)
+        self.assertTrue(preamble.startswith("How to hold everything below"))
+        for group in groups:
+            self.assertNotIn("wrong about", group)
+            self.assertNotIn("How to hold", group)
+
+    def test_the_stance_invites_revision_and_wondering(self) -> None:
+        # The positive half: hedging alone never says she may change her
+        # mind out loud, or that none of this bounds what she can wonder
+        # about. That absence was the L28m framing finding.
+        preamble = self._host()._concept_stance_preamble("Jacob")
+        self.assertIn("change your mind out loud", preamble)
+        self.assertIn("no limit on what you may wonder about", preamble)
+        self.assertIn("Jacob", preamble)
+
+    def test_no_group_header_repeats_the_stance(self) -> None:
+        from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+
+        families = (
+            "trait", "value", "affective", "taste", "conduct", "ritual",
+            "narrative", "aspiration", "boundary", "communication_style",
+            "generalization",
+        )
+        for subject in ("user", "relationship", "aiko"):
+            for family in families:
+                header = InnerLifePart1Mixin._concept_group_header(
+                    subject, family, "Jacob",
+                )
+                with self.subTest(subject=subject, family=family):
+                    for hedge in (
+                        "hold them lightly", "hold these lightly",
+                        "hold it lightly", "hold lightly",
+                        "stay open to being wrong",
+                        "wrong about yourself too",
+                        "not facts", "not as facts",
+                    ):
+                        self.assertNotIn(hedge, header)
+
 
 class RelevantContextResultTests(unittest.TestCase):
     def test_default_reason(self) -> None:

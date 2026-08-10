@@ -528,6 +528,115 @@ class OpennessReserveTests(unittest.TestCase):
         ]
         self.assertEqual(len(set(map(tuple, runs))), 1)
 
+    def test_two_subject_buckets_of_one_kind_do_not_take_every_slot(
+        self,
+    ) -> None:
+        # The live failure (L28m): the reserve drew ``(kind, subject)``
+        # buckets flat, so both aspiration subjects outranked the weaker
+        # taste and no other generative kind could ever reach a slot,
+        # however much supply it grew.
+        rows = [
+            _c(1, kind="identity", confidence=0.95),
+            _c(2, kind="aspiration", subject="user", confidence=0.90),
+            _c(3, kind="aspiration", subject="aiko", confidence=0.88),
+            _c(4, kind="taste", subject="aiko", confidence=0.60),
+        ]
+        out = _view(rows).core_lane(
+            limit=6, openness_slots=2, openness_min_confidence=0.5,
+        )
+        reserved = [
+            c.kind for c in out if get_kind(c.kind).role == ROLE_GENERATIVE
+        ]
+        self.assertEqual(sorted(reserved), ["aspiration", "taste"])
+
+    def test_breadth_before_depth_within_a_kind(self) -> None:
+        # Given the room, the second subject of the strongest kind is
+        # still drawn -- kind-first spreading is a priority, not a cap.
+        rows = [
+            _c(1, kind="aspiration", subject="user", confidence=0.90),
+            _c(2, kind="aspiration", subject="aiko", confidence=0.88),
+            _c(3, kind="taste", subject="aiko", confidence=0.60),
+        ]
+        out = _view(rows).core_lane(
+            limit=8, openness_slots=3, openness_min_confidence=0.5,
+        )
+        self.assertEqual(
+            sorted(c.concept_id for c in out[:3]), [1, 2, 3],
+        )
+
+    def test_a_cue_only_kind_never_holds_a_pin(self) -> None:
+        # A tension is the most generative kind in the registry and is
+        # dropped by the T3 renderer, so a slot spent on one is a slot
+        # spent on nothing -- or, worse, a standing friction pinned into
+        # every turn, which L12's cooldown exists to prevent.
+        rows = [
+            _c(1, kind="identity", confidence=0.95),
+            _c(2, kind="tension", confidence=0.99),
+            _c(3, kind="aspiration", confidence=0.55),
+        ]
+        out = _view(rows).core_lane(
+            limit=6, openness_slots=2, openness_min_confidence=0.5,
+        )
+        self.assertNotIn("tension", {c.kind for c in out})
+        self.assertIn("aspiration", {c.kind for c in out})
+
+    def test_rest_rotates_the_reserve_off_a_just_shown_concept(self) -> None:
+        # Without this the strongest generative concept is pinned every
+        # turn forever -- the repetition failure L23 exists to fix,
+        # reintroduced by the mechanism meant to keep her open.
+        rows = [
+            _c(1, kind="aspiration", subject="user", confidence=0.90),
+            _c(2, kind="aspiration", subject="aiko", confidence=0.88),
+        ]
+        shown = {1}
+        out = _view(rows).core_lane(
+            limit=2,
+            openness_slots=1,
+            openness_min_confidence=0.5,
+            openness_rest=lambda c: 0.5 if c.concept_id in shown else 1.0,
+        )
+        self.assertEqual([c.concept_id for c in out[:1]], [2])
+
+    def test_an_all_rested_state_keeps_the_balanced_order(self) -> None:
+        rows = self._pinned()
+        balanced = _view(rows).core_lane(limit=8, openness_slots=2)
+        rested = _view(rows).core_lane(
+            limit=8, openness_slots=2, openness_rest=lambda _c: 1.0,
+        )
+        self.assertEqual(
+            [c.concept_id for c in balanced],
+            [c.concept_id for c in rested],
+        )
+
+    def test_the_longest_rested_wins_among_stale_picks(self) -> None:
+        # Nothing is fully rested here, so the reserve still fills -- it is
+        # never suppressed out of contention -- and picks the one shown
+        # least recently (the higher habituation factor).
+        rows = [
+            _c(1, kind="aspiration", subject="user", confidence=0.90),
+            _c(2, kind="aspiration", subject="aiko", confidence=0.88),
+        ]
+        rest = {1: 0.5, 2: 0.9}
+        out = _view(rows).core_lane(
+            limit=2,
+            openness_slots=1,
+            openness_min_confidence=0.5,
+            openness_rest=lambda c: rest[c.concept_id],
+        )
+        self.assertEqual([c.concept_id for c in out[:1]], [2])
+
+    def test_a_failing_rest_read_leaves_the_reserve_intact(self) -> None:
+        def _boom(_c):
+            raise RuntimeError("no habituation state")
+
+        out = _view(self._pinned()).core_lane(
+            limit=8, openness_slots=2, openness_rest=_boom,
+        )
+        generative = [
+            c for c in out if get_kind(c.kind).role == ROLE_GENERATIVE
+        ]
+        self.assertEqual(len(generative), 2)
+
     def test_confidence_drift_does_not_resequence_the_reserve(self) -> None:
         # Banding is what buys that stability: L3 nudges confidence on
         # every tick, and raw ordering would trade neighbours constantly.

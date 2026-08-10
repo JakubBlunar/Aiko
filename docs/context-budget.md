@@ -188,6 +188,27 @@ rank and `concept_id` tiebreak as the rest of the lane: the pin moves only when
 the underlying concept moves, which is what the cache-prefix-sensitive tier
 requires. `0` restores the pre-L28 lane exactly.
 
+Three properties of the draw were corrected once it was measured on a real
+graph (see **L28m** in [`concepts.md`](personality-backlog/concepts.md)):
+
+- **Kinds rotate before subjects.** Drawing flat `(kind, subject)` buckets by
+  confidence gave both of the live graph's two slots to `aspiration`
+  (`user` + `aiko`), so `taste` and `pursuit` were unreachable no matter how
+  much supply they grew. The reserve now takes one kind at a time and balances
+  subjects *within* a kind, which is what makes the slot count buy breadth.
+- **A cue-only kind is never eligible.** `ConceptKind.static_render` (false
+  only for `tension`) says whether a kind may render in this block at all, and
+  the reserve reads it — so the flex lane, the hypothesis lane, the reserve and
+  the renderer share one source of truth instead of three copies of
+  `kind == "tension"`. A tension in the reserve would either waste the pin or
+  nail a standing friction into every turn, defeating the L12 cooldown.
+- **The reserve rotates.** `openness_rest` carries the caller's habituation
+  read into the draw (the view owns no clock), so the pick prefers rested
+  concepts and cannot pin the single strongest aspiration forever. The
+  ordinary lane gets its rotation from over-fetching `core_cap * 3`; the
+  reserve cannot, because it is sized against the real cap and sits at the
+  head of the returned list.
+
 The flex lane gets the matching correction (`concept_flex_generative_floor`) —
 it is tilted rather than closed, so the fix is a floor on the ranked pick rather
 than a change to the scorer. Both are documented together in

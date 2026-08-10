@@ -137,6 +137,15 @@ tiebreak as the rest of the lane, because the lane sits in a
 cache-prefix-sensitive tier: the selection moves only when the underlying
 concept moves.
 
+Measuring the reserve on a real graph (L28m) corrected three things about
+*how* it draws, none of which showed up in the unit tests: it rotates kinds
+before subjects (two `aspiration` subject buckets were taking every slot, so
+no other generative kind was reachable), it skips kinds that declare
+`static_render = False` (a `tension` cannot render in this block, so a slot
+spent on one is spent on nothing), and it takes the caller's habituation read
+through `openness_rest` so the pinned generative concept rests and rotates
+like everything else on the lane.
+
 **The per-turn flex lane was tilted, not closed.** Generative kinds can
 reach it, but `surface_score` ends in `boosted * habituation *
 importance_factor(...)`, which at the default `concept_importance_strength`

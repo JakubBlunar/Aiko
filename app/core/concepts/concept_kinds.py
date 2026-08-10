@@ -227,6 +227,16 @@ class ConceptKind:
     # how she wants to behave). Off by default: a kind opts in here so it
     # auto-joins the balanced core selection with no selector code change.
     core_always_on: bool = False
+    # Whether a concept of this kind may be *rendered* into the static T3
+    # relevant-context block at all. Off means the kind speaks only through
+    # its own dedicated surface: a ``tension`` reaches the prompt through the
+    # strictly-cooldowned T6 cue and nowhere else, so a standing friction can
+    # never nag. Declarative because three separate selection paths have to
+    # agree with the renderer -- the flex lane, the hypothesis lane and (since
+    # the L28 openness reserve) the pinned core lane, where a cue-only kind
+    # winning a slot would either waste the pin or defeat the cooldown the
+    # carve-out exists for.
+    static_render: bool = True
     # L27: the per-kind confidence bar for the core lane. Behaviour-loaded
     # kinds (value, boundary) should sit *higher* than tastes; this is the
     # natural companion to the L16 ``plasticity_default`` band (sticky kinds
@@ -346,6 +356,19 @@ def kinds_by_role(role: str) -> list[ConceptKind]:
         (k for k in CONCEPT_KINDS.values() if k.role == role),
         key=lambda k: k.name,
     )
+
+
+def renders_in_static_block(kind_name: str) -> bool:
+    """Whether concepts of ``kind_name`` may be rendered into the static
+    T3 relevant-context block.
+
+    The one place the ``static_render`` carve-out is read, so the three
+    selection lanes and the renderer cannot disagree about it. An unknown
+    kind answers ``True``: a row whose kind is not registered has no
+    dedicated surface to speak through instead, and silently dropping it
+    everywhere would make a registry gap look like a cold layer."""
+    kind = CONCEPT_KINDS.get(str(kind_name or ""))
+    return bool(kind.static_render) if kind is not None else True
 
 
 def kinds_for_target(target: str, subject: str | None = None) -> set[str]:
@@ -903,10 +926,12 @@ register_kind(
         importance=0.7,
         # An unresolved friction is the most generative thing in the
         # registry: it is the one kind that exists *because* something has
-        # not settled yet. Note it is filtered out of the static T3 render,
-        # so the flex-lane floor can never draw on it -- the openness
-        # reserve and the diets are where a tension counts.
+        # not settled yet. But it renders nowhere in the static block, so
+        # neither the flex-lane floor nor the openness reserve can draw on
+        # it -- the **diets** are where a tension counts, and its own T6
+        # cue is where it speaks.
         role=ROLE_GENERATIVE,
+        static_render=False,
         # L3: the meta gate -- floors the source count at 2 (both sides of the
         # friction), with a higher age + confidence bar than the fluid kinds
         # because a tension asserts with care.
@@ -996,6 +1021,7 @@ __all__ = [
     "get_kind",
     "kinds_by_role",
     "kinds_for_target",
+    "renders_in_static_block",
     "register_kind",
     "target_for",
     "targets_of",

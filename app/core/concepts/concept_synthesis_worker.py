@@ -513,12 +513,51 @@ class ConceptSynthesisWorker:
 
     @property
     def _taste_min_affinity(self) -> float:
-        """K81: the engaged-rate bar a cluster must clear to be offered as a
-        taste candidate. It is a *rate*, so a rarely-raised topic that always
-        lands clears it while a constantly-raised flat one does not -- the
-        asymmetry that separates taste from mere frequency."""
-        raw = float(getattr(self._memory_settings, "taste_min_affinity", 0.5))
+        """K81: the absolute floor under the engaged-rate bar.
+
+        Not the bar itself -- see :meth:`_taste_affinity_bar`. Its only job
+        is to stop a relationship where *nothing* lands from minting taste
+        out of noise, since a baseline-relative bar scales down with the
+        baseline.
+        """
+        raw = float(getattr(self._memory_settings, "taste_min_affinity", 0.15))
         return max(0.0, min(1.0, raw))
+
+    @property
+    def _taste_affinity_baseline_multiple(self) -> float:
+        """K81: how far above her own baseline a cluster must land."""
+        raw = float(
+            getattr(
+                self._memory_settings,
+                "taste_affinity_baseline_multiple",
+                1.4,
+            )
+        )
+        return max(1.0, raw)
+
+    def _taste_affinity_bar(
+        self, affinity: dict[int, Any],
+    ) -> tuple[float, float]:
+        """The engaged-rate bar for this snapshot, and the baseline it came
+        from.
+
+        It is a *rate*, so a rarely-raised topic that always lands clears it
+        while a constantly-raised flat one does not -- the asymmetry that
+        separates taste from mere frequency. What it is a rate *against* is
+        the part L28m had to correct: engagement labels are not balanced
+        classes (the pooled cluster rate measured ~0.2), so an absolute bar
+        set at a plausible-sounding 0.5 was unreachable by every cluster in
+        the graph. Calibrating against the pooled rate makes the bar mean
+        "she enjoys this more than she enjoys things generally", which is
+        what taste is, and keeps it meaningful as the relationship's overall
+        engagement moves.
+        """
+        baseline = engagement_baseline(affinity)
+        bar = max(
+            self._taste_min_affinity,
+            baseline * self._taste_affinity_baseline_multiple,
+        )
+        return min(1.0, bar), baseline
 
     @property
     def _max_taste_clusters(self) -> int:
@@ -1411,9 +1450,11 @@ class ConceptSynthesisWorker:
 
         The affinity is a *rate* (engaged / settled), so a rarely-raised topic
         that always lands outranks a constantly-raised flat one -- taste is not
-        the same as what the user brings up most. Each candidate cluster is
-        handed in already annotated with its affinity so the prompt only names
-        the enjoyment, never computes it. Dirty-tracked on a fingerprint of the
+        the same as what the user brings up most. The bar it must clear is
+        relative to her own pooled rate (:meth:`_taste_affinity_bar`), not an
+        absolute share. Each candidate cluster is handed in already annotated
+        with its affinity *and* that baseline, so the prompt only names the
+        enjoyment, never computes it. Dirty-tracked on a fingerprint of the
         affinity snapshot (reps + rounded rate + settled) so a settled ledger
         is a fast no-op, but a topic that starts landing re-fires the pass.
         Gated by ``agent.taste_synthesis_enabled``."""
@@ -1449,7 +1490,7 @@ class ConceptSynthesisWorker:
             log.debug("topic_clusters failed (taste pass)", exc_info=True)
             return []
         by_cid = {int(c.cluster_id): c for c in clusters}
-        min_affinity = self._taste_min_affinity
+        min_affinity, baseline = self._taste_affinity_bar(affinity)
 
         # Keep clusters that clear the affinity bar AND still resolve to a
         # live cluster with a label -- a rate against a cluster that has since
@@ -1470,6 +1511,13 @@ class ConceptSynthesisWorker:
                 continue
             kept.append((rep, float(rate), ct))
         if not kept:
+            # Logged rather than silent: an empty keep with a legible bar is
+            # the difference between "nothing lands well" and the L28m
+            # failure, where the bar itself was out of reach.
+            log.debug(
+                "taste: no cluster cleared %.3f (baseline %.3f, %d warmed)",
+                min_affinity, baseline, len(affinity),
+            )
             stats["taste_dirty"] = False
             return []
 
@@ -1501,7 +1549,7 @@ class ConceptSynthesisWorker:
             for rep, _rate, _ct in focus_rows
         ]
         affinity_by_rep = {
-            rep: self._affinity_phrase(ct)
+            rep: self._affinity_phrase(ct, baseline)
             for rep, _rate, ct in focus_rows
         }
         focus_clusters = [
@@ -1770,14 +1818,23 @@ class ConceptSynthesisWorker:
         return proposals
 
     @staticmethod
-    def _affinity_phrase(ct: Any) -> str:
+    def _affinity_phrase(ct: Any, baseline: float = 0.0) -> str:
         """Render one cluster's engagement as a short, prompt-legible phrase
-        (``82% engaged over 17 turns``). The denominator rides along so the
-        model can weigh a confident rate against a thin one."""
+        (``32% engaged over 174 turns, vs 20% typical``). The denominator
+        rides along so the model can weigh a confident rate against a thin
+        one, and the baseline rides along because the *rate* alone reads as
+        low: engagement labels are not balanced classes, so a topic at 32%
+        against a 20% norm is a genuine standout and a prompt that shows
+        only the 32% invites the model to dismiss it."""
         rate = ct.engaged_rate
         if rate is None:
             return "no settled evidence yet"
-        return f"{round(float(rate) * 100)}% engaged over {int(ct.settled)} turns"
+        phrase = (
+            f"{round(float(rate) * 100)}% engaged over {int(ct.settled)} turns"
+        )
+        if baseline > 0.0:
+            phrase += f", vs {round(float(baseline) * 100)}% typical"
+        return phrase
 
     @staticmethod
     def _taste_fingerprint(rows: list[tuple[int, float, Any]]) -> str:
