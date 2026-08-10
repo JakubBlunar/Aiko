@@ -43,10 +43,12 @@ Each kind declares:
   are *not* routed to a named for_target block -- they surface every turn
   through the T3 ``relevant_context`` path (core lane + relevance), so
   they have no entry here. A ``"*"`` key is the wildcard for any other
-  subject; an empty map falls back to ``surfacing_target``. Consumers
+  subject; an empty map falls back to   ``surfacing_target``. Consumers
   don't read this directly -- they call :func:`kinds_for_target`
   (via ``ConceptView.for_target``), so a new kind auto-flows to its
   declared consumers with no consumer code change.
+- ``role`` -- what a concept of this kind *does to a decision*, which is
+  orthogonal to both subject and kind. See :data:`ROLES`.
 
 v1 registers only ``identity`` end-to-end scaffolding; every other kind
 in the catalogue is a one-line ``register_kind`` call we grow into.
@@ -86,6 +88,30 @@ EVIDENCE_MODELS: tuple[str, ...] = (
     "recurring",
     "meta",
 )
+
+# What a concept of this kind does to a decision, as opposed to what it is
+# about. The axis exists because a selection ranked on strength alone
+# converges on the kinds with the highest stakes priors -- ``boundary``
+# (0.9) and ``value`` (0.85) -- and a prompt built only from those is one
+# that can restate what Aiko already holds but never reach past it.
+#
+# - ``anchor``     ground truth. Who someone is, what happened, the
+#                  pattern over it. Neither a rail nor a spur; the things
+#                  a reply needs to be *about the right person*.
+# - ``guide``      constrains action. A line to keep, a principle to
+#                  honour, a way to speak. Load-bearing and, in excess,
+#                  the thing that makes her careful instead of curious.
+# - ``generative`` could move. An enjoyment, an interest of her own, a
+#                  direction, an unresolved friction. What she reaches
+#                  *with* rather than what she reasons *within*.
+#
+# Consumed by the openness reserve on the core lane, the generative floor
+# on the flex lane, and the concept diets -- all of which ask "is this
+# selection all rails?" and none of which should branch on kind names.
+ROLE_ANCHOR = "anchor"
+ROLE_GUIDE = "guide"
+ROLE_GENERATIVE = "generative"
+ROLES: tuple[str, ...] = (ROLE_ANCHOR, ROLE_GUIDE, ROLE_GENERATIVE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +262,12 @@ class ConceptKind:
     # ``evidence_model == "meta"`` concepts, so setting it on a kind that also
     # has base-model rows (``communication_style``) is inert for those.
     meta_min_active_bases: int | None = None
+    # What this kind does to a decision -- one of :data:`ROLES`. Defaults
+    # to ``anchor``, which is the inert setting: an anchor is neither
+    # drawn on to open a selection up nor displaced to make room for one
+    # that does, so an unclassified kind changes no balance decision until
+    # it is deliberately labelled a rail or a spur.
+    role: str = ROLE_ANCHOR
 
 
 CONCEPT_KINDS: dict[str, ConceptKind] = {}
@@ -298,6 +330,24 @@ def core_lane_kinds() -> list[ConceptKind]:
     )
 
 
+def kinds_by_role(role: str) -> list[ConceptKind]:
+    """Every registered kind carrying ``role``, sorted by name.
+
+    The plug-in seam for the three balance mechanisms (openness reserve,
+    generative floor, diet invariants), mirroring :func:`core_lane_kinds`:
+    a new kind declares its ``role`` and auto-joins the right side of
+    every balance decision with no selector code change. An unrecognised
+    role returns ``[]`` rather than raising -- the mechanisms treat "no
+    candidates" as "leave the selection alone", which is the safe read of
+    a typo'd role name."""
+    if not role:
+        return []
+    return sorted(
+        (k for k in CONCEPT_KINDS.values() if k.role == role),
+        key=lambda k: k.name,
+    )
+
+
 def kinds_for_target(target: str, subject: str | None = None) -> set[str]:
     """The set of registered kind names that route to ``target`` (for the
     given ``subject`` when provided, else across all subjects).
@@ -330,6 +380,7 @@ register_kind(
         # L32: who someone is matters, but it is rarely *urgent* -- above the
         # neutral middle, below the kinds that carry a duty of care.
         importance=0.6,
+        role=ROLE_ANCHOR,
         # L3: identity carries its own set-evidence gate (distinct sources +
         # age-stability + confidence), floored at three sources and a real
         # stability delay. It used to ride the bare ``set_evidence_gate`` --
@@ -380,6 +431,9 @@ register_kind(
         # which is the same instinct behind this kind's ``protect_downward``
         # standing and its raised core-lane bar.
         importance=0.85,
+        # A value is the normative *why* under a choice, so it constrains
+        # the choice -- a rail, however warmly it is phrased.
+        role=ROLE_GUIDE,
         # L3: stricter than the plain set gate (more sources, non-instant age,
         # higher confidence) -- values should be slow and hard-won.
         promotion_gate=value_evidence_gate,
@@ -426,6 +480,10 @@ register_kind(
         # exists to stop burying. Note this is the kind whose concepts also
         # attract the largest affect lift, so the two compound.
         importance=0.75,
+        # Descriptive, not directive: "debugging drains him" is a fact about
+        # the weather over a topic. It shapes tone the way any ground truth
+        # does, but it does not tell her what she may or may not do.
+        role=ROLE_ANCHOR,
         # L3: the fluid-end gate (a lower age + confidence bar than value,
         # but still >= 2 distinct sources).
         promotion_gate=affective_evidence_gate,
@@ -471,6 +529,11 @@ register_kind(
         # wrong about, so it should not crowd out weightier beliefs however
         # confident it gets.
         importance=0.3,
+        # The lowest stakes prior in the registry paired with a generative
+        # role is the whole reason the role axis exists: on strength alone
+        # a taste never outranks a boundary, so without a seat kept for it
+        # the openest thing she holds is the first thing dropped.
+        role=ROLE_GENERATIVE,
         # K81: the taste gate -- >= 2 clusters of evidence, a short stability
         # delay, a moderate confidence bar (floors the shared set gate).
         promotion_gate=taste_evidence_gate,
@@ -525,6 +588,9 @@ register_kind(
         # colour because she leads with it, and less than a principle
         # because being wrong costs an awkward opener, not a broken trust.
         importance=0.45,
+        # An interest of her own is the thing she leads *with* -- the K85c
+        # answer to a companion who only ever follows.
+        role=ROLE_GENERATIVE,
         promotion_gate=pursuit_evidence_gate,
         # L24 / L27: emphatically NOT core_always_on. A pinned "you are
         # into gardening" every single turn is the canned-hobby failure
@@ -556,6 +622,10 @@ register_kind(
         # L32: how she allocates attention shapes behaviour, so it sits above
         # the middle -- but it is a self-observation, not a duty of care.
         importance=0.6,
+        # A self-observation phrased as a correction ("you have been
+        # fixating on X") reads as an instruction for the next turn, so it
+        # constrains even though nobody set it as a line.
+        role=ROLE_GUIDE,
         promotion_gate=conduct_evidence_gate,
         surface_weights=SurfaceWeights(
             context=0.6, recency=0.2, stability=0.2, activation=0.15,
@@ -590,6 +660,10 @@ register_kind(
         # should *do* -- the no-opinion middle, left explicit so the ladder
         # reads end to end.
         importance=0.5,
+        # A *closed* arc is settled history. Its open-ended sibling
+        # ``aspiration`` is the generative one; that is the whole
+        # difference between the two kinds.
+        role=ROLE_ANCHOR,
         # L18e: a closed arc asserts on how *settled* it is, not recency
         # (mirrors identity) -- context stays dominant, stability breaks ties.
         surface_weights=SurfaceWeights(
@@ -627,6 +701,9 @@ register_kind(
         # closed arc, since a trajectory is still live and can be helped or
         # hindered by how she responds.
         importance=0.6,
+        # A direction is unfinished by definition, which is exactly what
+        # makes it something to reach with.
+        role=ROLE_GENERATIVE,
         # L3: the aspiration gate -- >= 3 ordered steps, a *higher* age floor
         # than narrative (a trajectory must be sustained), moderate confidence.
         promotion_gate=aspiration_evidence_gate,
@@ -664,6 +741,9 @@ register_kind(
         # L32: relationship colour. Warm and worth having, low cost to be
         # wrong about -- just above taste.
         importance=0.4,
+        # An established pattern the two of them already have. Warm, but
+        # it describes what is rather than opening what could be.
+        role=ROLE_ANCHOR,
         # L3: recurrence gate (>= 3 distinct moments / non-instant age /
         # moderate confidence) -- a one-off evening isn't a ritual.
         promotion_gate=ritual_evidence_gate,
@@ -708,6 +788,10 @@ register_kind(
         # being right elsewhere -- so it outranks even a value, and stays
         # weighty at confidence levels that would bury an ordinary belief.
         importance=0.9,
+        # The archetypal rail: the one kind whose entire job is to gate
+        # behaviour. Highest stakes prior in the registry, which is why
+        # the balance mechanisms have to name it explicitly.
+        role=ROLE_GUIDE,
         # L3: the boundary gate -- floors the source count at 1 so a single
         # deliberate anchor can promote (cluster-only boundaries still need >= 2,
         # enforced by the proposer), with medium age + confidence bars.
@@ -763,6 +847,9 @@ register_kind(
         # L32: how to talk to someone shapes every turn, but getting it wrong
         # is recoverable in a way a boundary is not -- the neutral middle.
         importance=0.5,
+        # A softer rail than boundary -- it governs delivery rather than
+        # permission -- but still a rule about how she may speak.
+        role=ROLE_GUIDE,
         # L3: boundary-like gate -- a single self-authored anchor promotes
         # ("tell her once and it sticks"); cluster-only inference still needs >= 2
         # (enforced by the proposer composition rule), with medium age/confidence.
@@ -814,6 +901,12 @@ register_kind(
         # "with the most care of any kind". Read only by the T6 cue producer's
         # ripeness signal, since a tension never renders in the T3 block.
         importance=0.7,
+        # An unresolved friction is the most generative thing in the
+        # registry: it is the one kind that exists *because* something has
+        # not settled yet. Note it is filtered out of the static T3 render,
+        # so the flex-lane floor can never draw on it -- the openness
+        # reserve and the diets are where a tension counts.
+        role=ROLE_GENERATIVE,
         # L3: the meta gate -- floors the source count at 2 (both sides of the
         # friction), with a higher age + confidence bar than the fluid kinds
         # because a tension asserts with care.
@@ -859,6 +952,10 @@ register_kind(
         # L32: an abstraction inherits weight from the beliefs beneath it, so
         # it sits a little above the identity traits it usually generalizes.
         importance=0.65,
+        # It names a pattern over concepts that already exist, so it
+        # inherits their ground-truth character rather than opening
+        # anything new -- an anchor even when its children are rails.
+        role=ROLE_ANCHOR,
         # L3: the abstraction gate -- floors sources at 2 with age + confidence
         # bars a notch above tension, because a generalization should be slow
         # and well-supported before it speaks for the concepts beneath it.
@@ -887,12 +984,17 @@ __all__ = [
     "DEFAULT_PLASTICITY_MODULATION",
     "DEFAULT_SURFACE_WEIGHTS",
     "EVIDENCE_MODELS",
+    "ROLES",
+    "ROLE_ANCHOR",
+    "ROLE_GENERATIVE",
+    "ROLE_GUIDE",
     "SUBJECTS",
     "ConceptKind",
     "PlasticityModulation",
     "SurfaceWeights",
     "core_lane_kinds",
     "get_kind",
+    "kinds_by_role",
     "kinds_for_target",
     "register_kind",
     "target_for",

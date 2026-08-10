@@ -36,11 +36,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from app.core.concepts.concept_diets import DEFAULT_DIET_TUNING
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     import numpy as np
 
+    from app.core.concepts.concept_diets import DietTuning
     from app.core.concepts.concept_store import Concept, ConceptStore
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import MemoryStore
@@ -76,6 +79,73 @@ def _stable_rank(concept: "Concept") -> tuple[int, int]:
     confidence = float(getattr(concept, "confidence", 0.0) or 0.0)
     band = int(confidence * _CONFIDENCE_BANDS_PER_UNIT)
     return (-band, int(getattr(concept, "concept_id", 0) or 0))
+
+
+#: What one rendered concept costs beyond its own label -- the kind
+#: prefix, the confidence, the bullet and the newline that every consumer
+#: wraps a label in. Counted so a diet's budget is spent on what actually
+#: reaches the prompt rather than on bare label text, which would
+#: under-count by roughly a third at typical label lengths.
+_CONCEPT_RENDER_OVERHEAD_TOKENS = 6
+
+
+def _concept_tokens(concept: "Concept") -> int:
+    """Estimated prompt cost of one rendered concept."""
+    from app.llm.token_utils import estimate_tokens
+
+    label = str(getattr(concept, "label", "") or "")
+    return estimate_tokens(label) + _CONCEPT_RENDER_OVERHEAD_TOKENS
+
+
+def _band(strength: float) -> int:
+    """Quantise a ``[0, 1]`` strength onto the same ladder as
+    :func:`_stable_rank`, for the same anti-churn reason."""
+    return int(float(strength) * _CONFIDENCE_BANDS_PER_UNIT)
+
+
+def _round_robin(
+    buckets: "dict[tuple[str, str], list[Concept]]",
+    *,
+    strength: "Callable[[Concept], int] | None" = None,
+) -> list["Concept"]:
+    """Flatten ``(kind, subject)`` buckets into one balanced draw order.
+
+    Strongest bucket first, then one from each in turn, so a prolific
+    kind cannot crowd out the others no matter how many rows it has. The
+    caller decides where to cut -- :meth:`ConceptView.core_lane` slices
+    at a count, :meth:`ConceptView.for_consumer` spends a token budget --
+    which is the whole reason this returns an order rather than a
+    selection: *where* you stop is policy, *what order you stop in* is
+    the balance guarantee, and only the second one is shared.
+
+    ``strength`` scores a bucket's leading concept to order the buckets;
+    it must return a quantised band rather than a live float, or two
+    close areas trade places on L3's per-tick drift and reshuffle the
+    whole draw. Defaults to the banded confidence in :func:`_stable_rank`.
+    """
+    if not buckets:
+        return []
+    rank_of = strength or (lambda c: -_stable_rank(c)[0])
+
+    def _bucket_band(key: tuple[str, str]) -> int:
+        rows = buckets[key]
+        return rank_of(rows[0]) if rows else 0
+
+    # Name+subject breaks ties so the order is deterministic turn to turn.
+    order = sorted(buckets, key=lambda k: (-_bucket_band(k), k))
+    out: list["Concept"] = []
+    rank = 0
+    while True:
+        progressed = False
+        for key in order:
+            rows = buckets[key]
+            if rank < len(rows):
+                out.append(rows[rank])
+                progressed = True
+        if not progressed:
+            break
+        rank += 1
+    return out
 
 
 #: Stand-in age for the "would this promote if it were old enough?" probe
@@ -135,10 +205,18 @@ class ConceptView:
         *,
         topic_graph: "TopicGraph | None" = None,
         memory_store: "MemoryStore | None" = None,
+        kv_get: "Callable[[str], str | None] | None" = None,
+        tuning: "DietTuning | None" = None,
     ) -> None:
         self._store = store
         self._topic_graph = topic_graph
         self._memory_store = memory_store
+        # Only :meth:`for_consumer` reads these two. ``kv_get`` is the
+        # cluster-affect source behind L32 importance; ``tuning`` carries
+        # the diet budget. Both are optional so every existing direct
+        # construction keeps working unchanged -- see ``DietTuning``.
+        self._kv_get = kv_get
+        self._tuning = tuning or DEFAULT_DIET_TUNING
 
     @property
     def enabled(self) -> bool:
@@ -190,6 +268,8 @@ class ConceptView:
         limit: int,
         default_min_confidence: float = 0.0,
         per_kind_cap: int | None = None,
+        openness_slots: int = 0,
+        openness_min_confidence: float = 0.5,
     ) -> list["Concept"]:
         """The L27 always-on **core lane**: up to ``limit`` high-confidence
         concepts pinned into the prompt every turn regardless of the live
@@ -206,6 +286,15 @@ class ConceptView:
         the brain. ``per_kind_cap`` optionally caps how deep any single
         bucket is drawn before the round-robin.
 
+        ``openness_slots`` keeps that many of ``limit`` for the **openness
+        reserve** (see :meth:`_openness_picks`), which is the only way a
+        ``generative`` kind can reach this lane at all. It is capped at
+        half the lane so the reserve stays an opening rather than a
+        takeover: on the default ``core_cap`` of 2 a literal reading of
+        the default 2 slots would pin nothing *but* generative concepts
+        and lose the identity that says who she is talking to, which is
+        the opposite failure to the one this fixes.
+
         Turn-agnostic (no embedding); the turn-relevant fill layers on top
         via :meth:`relevant`. Returns ``[]`` when the layer is cold/disabled
         or no kind opts in.
@@ -214,9 +303,14 @@ class ConceptView:
             return []
         from app.core.concepts.concept_kinds import core_lane_kinds
 
+        cap = int(limit)
+        reserved = self._openness_picks(
+            slots=min(int(openness_slots), cap // 2),
+            min_confidence=openness_min_confidence,
+        )
         kinds = core_lane_kinds()
         if not kinds:
-            return []
+            return reserved
         default_bar = float(default_min_confidence)
         # Bucket by (kind, subject); each bucket is confidence-desc because
         # ``core`` sorts, so bucket[0] is that area's strongest concept.
@@ -232,36 +326,56 @@ class ConceptView:
                 subject = str(getattr(c, "subject", "") or "user")
                 buckets.setdefault((kind.name, subject), []).append(c)
         if not buckets:
+            return reserved
+        # Only the slots the reserve actually filled are spent: an
+        # unfillable reserve gives its room back to the ordinary lane
+        # rather than shortening the pin.
+        room = max(0, cap - len(reserved))
+        return reserved + _round_robin(buckets)[:room]
+
+    def _openness_picks(
+        self, *, slots: int, min_confidence: float,
+    ) -> list["Concept"]:
+        """The strongest ``generative``-role concepts, for the core lane.
+
+        Only ``core_always_on`` kinds are eligible for that lane, and the
+        four that opt in are ``identity``, ``value``, ``boundary`` and
+        ``generalization`` -- two anchors and two guides. So the pinned
+        prompt is structurally incapable of carrying an aspiration, a
+        taste, a pursuit or a tension, however wide the cap is set: every
+        turn is guaranteed to arrive carrying what Aiko must respect and
+        nothing she might move on. This reserve is the exception that
+        fixes it, and it deliberately draws from the kinds the lane
+        cannot otherwise reach rather than asking those kinds to opt in
+        -- ``core_always_on`` means "pin this whenever it qualifies",
+        which is the wrong promise for a taste.
+
+        Ranked on banded confidence and drawn round-robin like the lane
+        proper, so the pick is as prefix-stable as the rest of it: two
+        aspirations of similar confidence cannot trade places on L3's
+        per-tick drift and break the prompt cache.
+        """
+        if self._store is None or slots <= 0:
             return []
+        from app.core.concepts.concept_kinds import (
+            ROLE_GENERATIVE,
+            core_lane_kinds,
+            kinds_by_role,
+        )
 
-        def _bucket_band(key: tuple[str, str]) -> int:
-            lst = buckets[key]
-            if not lst:
-                return 0
-            # Banded, not raw: ordering buckets by their top concept's
-            # live confidence let two close areas trade places on L3
-            # drift, reshuffling the whole round-robin. See _stable_rank.
-            return -_stable_rank(lst[0])[0]
-
-        # Strongest area first at each round; name+subject breaks ties so
-        # selection is deterministic turn to turn.
-        order = sorted(buckets, key=lambda k: (-_bucket_band(k), k))
-        out: list["Concept"] = []
-        cap = int(limit)
-        rank = 0
-        while len(out) < cap:
-            progressed = False
-            for key in order:
-                lst = buckets[key]
-                if rank < len(lst):
-                    out.append(lst[rank])
-                    progressed = True
-                    if len(out) >= cap:
-                        break
-            if not progressed:
-                break
-            rank += 1
-        return out
+        already = {k.name for k in core_lane_kinds()}
+        buckets: dict[tuple[str, str], list["Concept"]] = {}
+        for kind in kinds_by_role(ROLE_GENERATIVE):
+            if kind.name in already:
+                continue
+            for c in self.core(
+                kind=kind.name, min_confidence=float(min_confidence),
+            ):
+                subject = str(getattr(c, "subject", "") or "user")
+                buckets.setdefault((kind.name, subject), []).append(c)
+        if not buckets:
+            return []
+        return _round_robin(buckets)[:slots]
 
     def relevant(
         self,
@@ -479,16 +593,24 @@ class ConceptView:
             out = out[: max(0, int(limit))]
         return out
 
-    def for_cluster(self, rep_id: object) -> list["Concept"]:
+    def for_cluster(
+        self, rep_id: object, *, kinds: "Sequence[str] | None" = None,
+    ) -> list["Concept"]:
         """Active concepts that span a topic cluster (keyed by the
         cluster's stable representative id).
 
         Walks the ``cluster -> concept`` evidence edges
         (:meth:`ConceptStore.edges_from`) and resolves them to their
         active concept rows -- the interest-map annotation seam.
+
+        ``kinds`` narrows the result to a consumer's declared diet.
+        Without it the caller gets whatever happens to be edged to the
+        cluster, which is the pre-diet behaviour: fine for a debug
+        surface, too indiscriminate for a worker prompt.
         """
         if self._store is None:
             return []
+        wanted = {str(k) for k in kinds} if kinds is not None else None
         try:
             edges = self._store.edges_from("cluster", rep_id)
         except Exception:
@@ -507,8 +629,110 @@ class ConceptView:
                 continue
             seen.add(cid)
             c = self._store.get(cid)
-            if c is not None and getattr(c, "status", None) == "active":
-                out.append(c)
+            if c is None or getattr(c, "status", None) != "active":
+                continue
+            if wanted is not None and str(getattr(c, "kind", "")) not in wanted:
+                continue
+            out.append(c)
+        return out
+
+    # ── worker concept diets ──────────────────────────────────────────
+
+    def for_consumer(
+        self, consumer: str, *, subject: str | None = None,
+    ) -> list["Concept"]:
+        """The concepts one worker is allowed to think with.
+
+        Reads that consumer's :class:`~app.core.concepts.concept_diets.ConceptDiet`
+        and returns a token-budgeted, kind-balanced selection. ``[]`` when
+        the consumer has no diet, which is the ordinary answer for most of
+        the codebase and never an error -- see ``diet_for``.
+
+        Two decisions matter here and they interact.
+
+        **Ranking is importance x confidence, within a kind.** Confidence
+        alone buries the belief that matters more than it is established
+        -- the "attention gap" the L22 report already tracks. Importance
+        is the kind's stakes prior lifted by the emotional charge of the
+        topics a concept is grounded in, so *within* one kind the prior is
+        constant and the axis reorders purely on charge: the tastes she
+        actually feels something about lead the tastes she does not.
+
+        **Selection is round-robin, across kinds.** That is what stops the
+        first decision becoming the very problem it is meant to solve. The
+        prior is constant within a kind but very much not across kinds, so
+        a single global sort by importance x confidence would return
+        boundaries and values until the budget ran out -- a strictly worse
+        result than confidence-only ranking, because it would be *more*
+        confident about being closed. Balancing the draw first and ranking
+        inside the bucket second gets the benefit of both.
+
+        ``subject`` overrides the diet's own subject scope for a caller
+        that already knows which side it is asking about.
+        """
+        from app.core.concepts.concept_diets import (
+            diet_for,
+            importance_lookup,
+            resolve_budget,
+        )
+
+        diet = diet_for(consumer)
+        if self._store is None or diet is None:
+            return []
+        scope = subject if subject is not None else diet.subject
+        pool: dict[str, list["Concept"]] = {
+            name: self.core(
+                subject=scope, kind=name, min_confidence=diet.min_confidence,
+            )
+            for name in diet.kinds
+        }
+        importance = importance_lookup(
+            {
+                int(getattr(c, "concept_id", 0) or 0)
+                for rows in pool.values()
+                for c in rows
+                if getattr(c, "concept_id", 0)
+            },
+            store=self._store,
+            topic_graph=self._topic_graph,
+            kv_get=self._kv_get,
+            tuning=self._tuning,
+        )
+
+        def _weight(concept: "Concept") -> float:
+            conf = float(getattr(concept, "confidence", 0.0) or 0.0)
+            return conf * importance(concept)
+
+        buckets: dict[tuple[str, str], list["Concept"]] = {}
+        for name, rows in pool.items():
+            # Re-rank inside the kind before the per-kind cap, or the cap
+            # would slice on confidence and discard exactly the charged
+            # rows the importance axis exists to promote.
+            rows.sort(key=lambda c: (-_band(_weight(c)), _stable_rank(c)))
+            if diet.per_kind_cap is not None:
+                rows = rows[: max(0, int(diet.per_kind_cap))]
+            for c in rows:
+                subj = str(getattr(c, "subject", "") or "user")
+                buckets.setdefault((name, subj), []).append(c)
+        if not buckets:
+            return []
+
+        budget = resolve_budget(diet, self._tuning)
+        order = _round_robin(buckets, strength=lambda c: _band(_weight(c)))
+        out: list["Concept"] = []
+        spent = 0
+        for concept in order:
+            if diet.max_concepts is not None and len(out) >= diet.max_concepts:
+                break
+            cost = _concept_tokens(concept)
+            if spent + cost > budget:
+                # Skip rather than stop: a long label should cost itself
+                # its slot, not everything queued behind it. The draw is
+                # already balanced, so continuing keeps trimming evenly
+                # instead of truncating whichever kind the long one is in.
+                continue
+            out.append(concept)
+            spent += cost
         return out
 
     def activated(
@@ -629,14 +853,23 @@ def concept_view_from(host: object) -> "ConceptView | None":
     host, so every consumer (the identity pin lane, ``recall_concept``, a
     background worker's late-bound provider) constructs the facade the
     same way. Returns ``None`` when the concept layer isn't wired.
+
+    Also resolves the diet budget and the affect source here, so a worker
+    gets a fully-configured :meth:`ConceptView.for_consumer` without any
+    call site having to know that diets are sized off the worker route.
     """
+    from app.core.concepts.concept_diets import tuning_from_host
+
     store = getattr(host, "_concept_store", None)
     if store is None:
         return None
+    chat_db = getattr(host, "_chat_db", None)
     return ConceptView(
         store,
         topic_graph=getattr(host, "_topic_graph", None),
         memory_store=getattr(host, "_memory_store", None),
+        kv_get=getattr(chat_db, "kv_get", None),
+        tuning=tuning_from_host(host),
     )
 
 

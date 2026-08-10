@@ -216,6 +216,14 @@ class StableRankTests(unittest.TestCase):
         # The structural half of the same guard: a future edit can only
         # break the ordering invariant above by reaching for the module,
         # and this fails at the import rather than at the symptom.
+        #
+        # ``for_consumer`` does rank on importance and does live in this
+        # module, which is exactly why its ranking, its affect context and
+        # its settings read were all put in ``concept_diets`` instead. A
+        # worker prompt is rebuilt every run and has no cache prefix to
+        # protect, so the axis is safe there and unsafe here -- keeping
+        # them in separate modules is what lets this stay a blanket check
+        # rather than a per-lane ordering assertion.
         import inspect
 
         from app.core.concepts import concept_view

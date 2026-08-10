@@ -7,7 +7,8 @@ curiosity) shipped on top of it. See [`shipped.md`](shipped.md) and
 details.
 
 Open: **G5** (self-tuning cooldowns) and **G6** (per-provider decline
-attribution) below — both follow-ups to G4, which has shipped. New background workers should
+attribution) below — both follow-ups to G4, which has shipped — plus **G7**
+(worker prompts have no input-token accounting). New background workers should
 register with the existing
 [`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py)
 rather than spinning up their own threads, and should mirror the
@@ -190,6 +191,67 @@ bucket unhelpful.
 
 **Effort.** Small per cue, Medium for all of them.
 **Depends on.** G4 (shipped).
+
+---
+
+## G7. Worker prompts have no input-token accounting
+
+**Motivation.** The chat prompt is budgeted to the token: `assemble_with_budget`
+sizes every region against the context window, `context_budget_fraction` caps
+surfacing, and the T3 selector drops the lowest-weighted survivors when the room
+runs out. **Worker prompts have none of that.** A worker assembles a string and
+hands it to the model, and if the string is too long the only feedback is a
+truncated or degraded answer — silent, and indistinguishable from the model
+simply doing badly.
+
+L28 fixed one instance of this and that is what surfaced the general gap: before
+concept diets, "read the concept layer" quietly meant "read all of it" as the
+store grew, so the diet budget (`concept_diet_token_fraction` capped by
+`concept_diet_max_tokens`) is the first worker input with a size. Nothing else a
+worker packs has one.
+
+**The clearest offender.**
+[`SummaryWorker._maybe_summarize`](../../app/core/proactive/summary_worker.py)
+calls `self._db.get_messages(session_key, offset=offset)` with **no limit** and
+renders every returned row through `format_transcript`, so the prompt is
+proportional to however many messages accumulated since the last summary. The
+normal case is small — `min_unsummarized_messages` is 6, and
+`_maybe_compact_on_pressure` fires on prompt pressure well before a window gets
+big — which is exactly why this has never been noticed: the bad case needs a
+long unsummarized run (a crash before a summary landed, a long voice session, a
+`min_msgs_override` path), and when it happens the failure is a worse summary
+rather than an error. A summary that silently drops its oldest beats also feeds
+compaction, so the loss propagates into the chat prompt.
+
+**Sketched approach.** Two steps, and the first is worth doing on its own.
+(1) **Measure before capping.** Log the rendered input size per worker run
+(chars and estimated tokens) against that worker's route context window, so the
+question "which worker prompts are actually near their window?" has an answer
+before anyone picks a limit. The route + window resolution already exists
+(`_worker_route_model_ctx`, used by the diet budget). (2) Cap the packers that
+the data says need it, using the diet shape — a fraction of the worker window
+with an absolute cap beside it, because the fraction is what protects a small
+local route and the cap is what actually binds on a large one. For
+`SummaryWorker` specifically the natural cap is a message count with the
+*oldest* rows dropped and the prior summary retained, since the prior summary is
+what already covers them.
+
+**Open questions.** (1) Is a shared helper right, or per-worker caps? A helper
+that takes "here are my candidate rows, here is my share of the window" would
+serve the transcript packers (`SummaryWorker`, the belief and extraction workers)
+but the units differ per worker — messages, memories, concepts — so it may only
+be worth a common *estimator*. (2) Should an over-budget pack be logged at
+`warning`? A worker quietly dropping half its input is the kind of thing that
+should be visible in the log stream rather than in a metric nobody reads.
+(3) Whether the estimate needs to be tokenizer-accurate: the concept diet uses
+`estimate_tokens`, which is good enough to size a section and cheap, and the
+same trade-off probably holds here.
+
+**Effort.** Small (measurement) / Small-Medium (caps, per worker).
+
+**Depends on.** Nothing. Related to P31a (`block_chars`, which did the same
+thing for *prompt-block* sizes) and to L28's diet budget, which is the pattern to
+copy.
 
 ---
 

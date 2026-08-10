@@ -57,6 +57,7 @@ from app.core.proactive.knowledge_gap_notice_worker import (
     topic_key,
     topic_relevant,
 )
+from app.core.concepts.concept_diets import diet_for
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -457,6 +458,12 @@ class InterestDriftWorker:
         direction. Resolved through ``ConceptView.for_cluster`` -- the same
         read path every other consumer uses (L28).
 
+        Narrowed to the ``interest_drift`` diet rather than taking whatever
+        is edged to the cluster. The unscoped read let a ``boundary`` win
+        the "why she cares" slot on confidence alone, which turns a cue
+        about being pulled toward something into a rail about it; the diet
+        keeps the answer to things that can express a pull.
+
         Deliberately paid only for the one topic that's actually being
         drafted: ``cluster_activity`` joins back to the memory mirror,
         which the per-tick ``interest_map`` pass avoids. Returns ``""``
@@ -487,15 +494,21 @@ class InterestDriftWorker:
             return ""
         if not rep:
             return ""
+        diet = diet_for("interest_drift")
         try:
-            concepts = view.for_cluster(rep)
+            concepts = view.for_cluster(
+                rep, kinds=diet.kinds if diet is not None else None,
+            )
         except Exception:
             log.debug("interest_drift for_cluster failed", exc_info=True)
             return ""
+        floor = float(diet.min_confidence) if diet is not None else 0.0
         best = ""
         best_conf = -1.0
         for concept in concepts:
             conf = float(getattr(concept, "confidence", 0.0) or 0.0)
+            if conf < floor:
+                continue
             label = " ".join(str(getattr(concept, "label", "")).split())
             if label and conf > best_conf:
                 best, best_conf = label, conf

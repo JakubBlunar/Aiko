@@ -14,7 +14,8 @@ deterministic:
 - **Active goals** (K1 ``GoalStore``) — the newest active goals
   become low-pressure ``steer`` wants ("steer toward something of
   yours: ...").
-- **Active pursuits** (K85 ``pursuit`` concepts) — a subject of hers
+- **Active pursuits** (K85 ``pursuit`` concepts, read through
+  ``ConceptView`` under the ``wants_ledger`` diet) — a subject of hers
   becomes a ``share`` want, so K53's "this turn is yours" has
   something to open on that isn't about him.
 
@@ -32,11 +33,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.conversation import wants_ledger
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_view import ConceptView
     from app.core.goals.goal_store import GoalStore
     from app.core.memory.memory_store import MemoryStore
 
@@ -107,7 +110,7 @@ class WantsLedgerWorker:
         memory_store: "MemoryStore | None" = None,
         goal_store: "GoalStore | None" = None,
         cue_store_provider: Callable[[], Any] | None = None,
-        concept_store_provider: Callable[[], Any] | None = None,
+        view_provider: Callable[[], "ConceptView | None"] | None = None,
         pursuit_wants_enabled_provider: Callable[[], bool] | None = None,
         pursuit_min_confidence: float = 0.6,
         enabled_provider: Callable[[], bool] | None = None,
@@ -123,7 +126,7 @@ class WantsLedgerWorker:
         self._memory_store = memory_store
         self._goal_store = goal_store
         self._cue_store_provider = cue_store_provider
-        self._concept_store_provider = concept_store_provider
+        self._view_provider = view_provider
         self._pursuit_wants_enabled_provider = pursuit_wants_enabled_provider
         self._pursuit_min_confidence = max(0.0, float(pursuit_min_confidence))
         self._enabled_provider = enabled_provider
@@ -313,7 +316,7 @@ class WantsLedgerWorker:
         rows = self._active_pursuits()
         if rows is None:
             return state, [], []
-        live = {f"pursuit:{getattr(c, 'id', '')}" for c in rows}
+        live = {f"pursuit:{_concept_ref(c)}" for c in rows}
         dead = refs - live
         if not dead:
             return state, [], []
@@ -323,11 +326,19 @@ class WantsLedgerWorker:
     def _active_pursuits(self) -> list[Any] | None:
         """Active ``pursuit`` concepts, or ``None`` if unreadable.
 
+        Read through :class:`~app.core.concepts.concept_view.ConceptView`
+        under the ``wants_ledger`` diet, per L24's "read through the view,
+        never the store": this worker was the last direct ``ConceptStore``
+        reader, which meant its own copy of the status / subject / kind
+        filter and its own confidence sort, both of which the view already
+        does and neither of which anything kept in step.
+
         The ``None`` / ``[]`` distinction matters to the pruner exactly
         as it does for the seed pool: an empty store retires every
-        pursuit want, a failed read must retire none of them.
+        pursuit want, a failed read must retire none of them. So a missing
+        or cold view is ``None``, not ``[]``.
         """
-        provider = self._concept_store_provider
+        provider = self._view_provider
         if provider is None:
             return None
         if self._pursuit_wants_enabled_provider is not None:
@@ -337,20 +348,30 @@ class WantsLedgerWorker:
             except Exception:
                 pass
         try:
-            store = provider()
-            if store is None:
-                return None
-            rows = store.list_by(
-                status="active", subject="aiko", kind="pursuit",
-            )
+            view = provider()
         except Exception:
-            log.debug("wants: pursuit read failed", exc_info=True)
+            log.debug("wants: concept view provider raised", exc_info=True)
             return None
-        rows = [
-            c for c in rows
-            if float(getattr(c, "confidence", 0.0) or 0.0)
-            >= self._pursuit_min_confidence
-        ]
+        if view is None or not getattr(view, "enabled", False):
+            return None
+        diet = diet_for(self.name)
+        kinds = diet.kinds if diet is not None else ("pursuit",)
+        subject = diet.subject if diet is not None else "aiko"
+        floor = max(
+            self._pursuit_min_confidence,
+            float(diet.min_confidence) if diet is not None else 0.0,
+        )
+        rows: list[Any] = []
+        for kind in kinds:
+            try:
+                rows.extend(
+                    view.core(
+                        kind=kind, subject=subject, min_confidence=floor,
+                    )
+                )
+            except Exception:
+                log.debug("wants: pursuit read failed", exc_info=True)
+                return None
         # Strongest first, so the one want a tick may add is her most
         # settled interest rather than whichever row L3 touched last.
         rows.sort(
@@ -400,12 +421,16 @@ class WantsLedgerWorker:
 
         # 2. Forward-curiosity journal (newest entries first).
         try:
-            from app.core.proactive.forward_curiosity_worker import load_questions
+            from app.core.proactive.forward_curiosity_worker import (
+                is_hers,
+                load_questions,
+            )
 
             ring = load_questions(self._kv_get)
         except Exception:
             log.debug("wants: forward-curiosity load failed", exc_info=True)
             ring = []
+            is_hers = lambda _e: False  # noqa: E731 - one-line degradation
         for entry in list(reversed(ring))[:_MAX_FORWARD_PER_RUN]:
             question = str(entry.get("question") or "").strip()
             if not question:
@@ -413,12 +438,14 @@ class WantsLedgerWorker:
             ref = str(entry.get("source_id") or entry.get("at") or "").strip()
             if not ref:
                 continue
-            # K87: a ``wondering`` entry is a subject of hers, not a
+            # K87: an entry of hers is a subject of her own, not a
             # question about him, and it becomes the ledger's first
             # ``share`` want. Filing it as an ``ask`` would hand K53 an
             # interview line under a different label, which is exactly
-            # the failure the quota exists to prevent.
-            if str(entry.get("source") or "") == "wondering":
+            # the failure the quota exists to prevent. L28's concepts of
+            # hers arrive on the same side, which is why the predicate is
+            # shared rather than a source check here.
+            if is_hers(entry):
                 out.append((
                     f"say what you've been chewing on: {_clip(question)}",
                     "share",
@@ -462,8 +489,8 @@ class WantsLedgerWorker:
         # sentence with something in it.
         for concept in (self._active_pursuits() or [])[:_MAX_PURSUITS_PER_RUN]:
             label = str(getattr(concept, "label", "") or "").strip()
-            cid = getattr(concept, "id", None)
-            if not label or cid is None:
+            cid = _concept_ref(concept)
+            if not label or not cid:
                 continue
             out.append((
                 f"offer something of your own: {_clip(label)}"
@@ -488,6 +515,23 @@ class WantsLedgerWorker:
             return (self._user_display_name_provider() or "them").strip() or "them"
         except Exception:
             return "them"
+
+
+def _concept_ref(concept: Any) -> str:
+    """The id half of a ``pursuit:{id}`` want ref.
+
+    A persisted ``Concept`` carries ``concept_id``; ``id`` is read as a
+    fallback so the pruner and the producer agree on the key regardless of
+    which shape a row arrives in.
+    """
+    for attr in ("concept_id", "id"):
+        raw = getattr(concept, attr, None)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text and text != "0":
+            return text
+    return ""
 
 
 def _clip(text: str, limit: int = 140) -> str:

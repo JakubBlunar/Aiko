@@ -248,6 +248,11 @@ whole **K-time** family shipped; see
   ones earn their keep. Record *armed* / *surfaced* / *settled* per cue plus
   the reason a provider declined to render, so silently-unreachable topic
   gates and hand-picked cooldowns stop being guesses.
+- **G7.** Worker prompts have no input-token accounting — the chat prompt is
+  budgeted to the token, a worker prompt is a string. `SummaryWorker` reads its
+  window with no limit, so the size is whatever accumulated; the failure is a
+  worse summary, never an error. L28's concept diets are the first worker input
+  with a size and the shape to copy. Measure before capping.
 - *Cleanup* — drop or wire the unused
   `consolidator_state.last_cluster_index` column.
 

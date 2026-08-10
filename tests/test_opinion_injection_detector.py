@@ -642,6 +642,129 @@ class RenderTests(unittest.TestCase):
         self.assertIn("one line", text)
 
 
+class ConceptStanceTests(unittest.TestCase):
+    """L28: a durable concept is a stance she holds, same as a self-memory.
+
+    The concept-shaped stub carries ``label`` / ``concept_id`` /
+    ``embedding`` -- the real ``Concept`` field names -- so the adapter is
+    tested against the shape it actually receives.
+    """
+
+    @dataclass(slots=True)
+    class _StubConcept:
+        concept_id: int
+        label: str
+        embedding: Any
+        kind: str = "taste"
+        subject: str = "aiko"
+
+    def test_concept_stance_fires_without_opinion_shaping(self) -> None:
+        # "dislikes horror movies" has no first-person predicate, so the
+        # regex would drop it. Its kind is what makes it a stance.
+        candidate = opinion_injection_detector.StanceConcept.from_concept(
+            self._StubConcept(
+                concept_id=7,
+                label="dislikes horror movies",
+                embedding=_VEC_ALIGNED,
+            )
+        )
+        assert candidate is not None
+        self.assertFalse(_has_opinion_shape(candidate.content))
+        result = detect(
+            "I like horror movies a lot",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[candidate],
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.trigger, "contradiction_definite")
+        self.assertEqual(
+            result.stance_origin, opinion_injection_detector.ORIGIN_CONCEPT
+        )
+
+    def test_concept_id_is_negated_so_the_source_is_unambiguous(self) -> None:
+        result = detect(
+            "I like horror movies a lot",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[
+                opinion_injection_detector.StanceConcept.from_concept(
+                    self._StubConcept(
+                        concept_id=7,
+                        label="dislikes horror movies",
+                        embedding=_VEC_ALIGNED,
+                    )
+                )
+            ],
+        )
+        assert result is not None
+        self.assertEqual(result.stance_memory_id, -7)
+
+    def test_memories_keep_the_memory_origin(self) -> None:
+        result = detect(
+            "I like smoking a lot",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[
+                _StubMemory(
+                    id=3,
+                    content="I don't like smoking",
+                    embedding=_VEC_ALIGNED,
+                )
+            ],
+        )
+        assert result is not None
+        self.assertEqual(
+            result.stance_origin, opinion_injection_detector.ORIGIN_MEMORY
+        )
+
+    def test_unusable_concepts_are_dropped_by_the_adapter(self) -> None:
+        # An unembedded concept (mid embedding-model swap) and a blank
+        # label are both dropped here rather than in the cosine pass.
+        for concept in (
+            self._StubConcept(
+                concept_id=7,
+                label="dislikes horror movies",
+                embedding=np.asarray([], dtype=np.float32),
+            ),
+            self._StubConcept(
+                concept_id=7, label="   ", embedding=_VEC_ALIGNED,
+            ),
+            self._StubConcept(
+                concept_id=0,
+                label="dislikes horror movies",
+                embedding=_VEC_ALIGNED,
+            ),
+        ):
+            self.assertIsNone(
+                opinion_injection_detector.StanceConcept.from_concept(concept)
+            )
+
+    def test_render_doesnt_claim_she_wrote_a_concept(self) -> None:
+        result = OpinionInjectionResult(
+            trigger="contradiction_definite",
+            stance_text="dislikes horror movies",
+            stance_memory_id=-7,
+            cosine=0.8,
+            heuristic_label="definite",
+            heuristic_signals=["negation_flip"],
+            stance_origin=opinion_injection_detector.ORIGIN_CONCEPT,
+        )
+        text = render_inner_life_block(result, user_display_name="Jacob")
+        self.assertNotIn("you wrote", text)
+        self.assertIn("dislikes horror movies", text)
+        # The memory path keeps its original wording.
+        memory_text = render_inner_life_block(
+            OpinionInjectionResult(
+                trigger="contradiction_definite",
+                stance_text="I don't like horror movies",
+                stance_memory_id=7,
+                cosine=0.8,
+                heuristic_label="definite",
+                heuristic_signals=["negation_flip"],
+            )
+        )
+        self.assertIn("you wrote", memory_text)
+
+
 class PublicSurfaceTests(unittest.TestCase):
     def test_defaults_are_reasonable(self) -> None:
         self.assertGreater(DEFAULT_MIN_COSINE, 0.0)

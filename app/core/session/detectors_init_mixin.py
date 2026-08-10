@@ -305,6 +305,7 @@ class DetectorsInitMixin:
             and bool(getattr(settings.agent, "belief_worker_enabled", True))
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.relationship.belief_worker import BeliefInferenceWorker
                 from app.core.memory.fact_check_rate_limiter import (
                     FactCheckRateLimiter,
@@ -364,6 +365,9 @@ class DetectorsInitMixin:
                         if getattr(self, "_topic_graph", None) is not None
                         else []
                     ),
+                    # L28: the durable layer as a third prior on what to
+                    # look for. Reads only -- K2 stays transient.
+                    view_provider=lambda: concept_view_from(self),
                 )
                 self._idle_scheduler.register(self._belief_worker)
             except Exception:

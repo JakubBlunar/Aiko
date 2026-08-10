@@ -1088,6 +1088,10 @@ def register(mcp, session: "SessionController") -> None:
                     "stance_memory_id": int(
                         getattr(last, "stance_memory_id", -1)
                     ),
+                    # L28: "memory" or "concept". A concept-sourced stance
+                    # also carries a negated id above, so a debug read can
+                    # tell which store the winner came from either way.
+                    "stance_origin": getattr(last, "stance_origin", "memory"),
                     "stance_text": (
                         (getattr(last, "stance_text", "") or "")[:200]
                     ),

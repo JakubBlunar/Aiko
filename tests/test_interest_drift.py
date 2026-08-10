@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive.interest_drift_worker import (
     InterestDriftWorker,
     _KV_MASS_SERIES,
@@ -73,6 +74,7 @@ class _FakeGraphWithActivity(_FakeGraph):
 class _Concept:
     label: str
     confidence: float = 0.5
+    kind: str = "identity"
 
 
 class _FakeView:
@@ -85,10 +87,16 @@ class _FakeView:
         self._by_rep = by_rep or {}
         self.enabled = enabled
         self.calls: list[int] = []
+        self.kinds_asked: list[tuple[str, ...] | None] = []
 
-    def for_cluster(self, rep_id) -> list[_Concept]:
+    def for_cluster(self, rep_id, *, kinds=None) -> list[_Concept]:
         self.calls.append(int(rep_id))
-        return list(self._by_rep.get(int(rep_id), []))
+        self.kinds_asked.append(tuple(kinds) if kinds is not None else None)
+        rows = list(self._by_rep.get(int(rep_id), []))
+        if kinds is None:
+            return rows
+        wanted = {str(k) for k in kinds}
+        return [r for r in rows if r.kind in wanted]
 
 
 class _KV:
@@ -390,6 +398,33 @@ class BeliefAnnotationTests(unittest.TestCase):
         entry = load_drifts(kv.kv_get)[0]
         self.assertEqual(
             entry["belief"], "she likes the puzzle of a stubborn bug"
+        )
+
+    def test_the_read_is_scoped_to_the_declared_diet(self) -> None:
+        view = _FakeView({7: [_Concept("something")]})
+        worker = _make_worker(self._graph(), _KV(), view_provider=lambda: view)
+        self._warm(worker)
+        self.assertEqual(
+            set(view.kinds_asked[0]), set(diet_for("interest_drift").kinds)
+        )
+
+    def test_a_rail_never_wins_the_why_she_cares_slot(self) -> None:
+        # A drift cue says she is being pulled toward something. Unscoped,
+        # the most-confident row edged to the cluster answered that, and a
+        # boundary is usually the most confident thing there is -- turning
+        # "you keep coming back to this" into a rule about it.
+        kv = _KV()
+        view = _FakeView({7: [
+            _Concept("she will not speculate about his health", 0.95,
+                     kind="boundary"),
+            _Concept("she likes the puzzle of a stubborn bug", 0.7,
+                     kind="taste"),
+        ]})
+        worker = _make_worker(self._graph(), kv, view_provider=lambda: view)
+        self._warm(worker)
+        self.assertEqual(
+            load_drifts(kv.kv_get)[0]["belief"],
+            "she likes the puzzle of a stubborn bug",
         )
 
     def test_view_only_consulted_when_drafting(self) -> None:

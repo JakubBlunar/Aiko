@@ -1251,7 +1251,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return ""
 
     def _render_goals_block(self) -> str:
-        """K1: "Aiko's quiet long-term goals." block.
+        """K1 + L28: "Aiko's quiet long-term goals." block.
+
+        Led by her ``aspiration`` concepts and floored by the K1 goal
+        rows -- the compose-first stance the profile block already uses for
+        identity and value. The two are different things and the block
+        keeps them apart: an aspiration is who she is *becoming*, a goal
+        is an actionable to-do, and collapsing them would either turn a
+        direction into a chore or a chore into a personality trait.
 
         Lists up to ``agent.goals_max_rendered`` (default 3) active
         goals as a bullet list, with a single sub-bullet showing the
@@ -1260,22 +1267,24 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         slow-burn anchors, not user-facing TODOs (the agenda block
         carries those).
 
-        Empty when the goals feature is disabled, the store is
-        missing, or no active goals exist. The block is owned by the
-        assembler's ``_StaticSlices`` cache, so render cost is paid
-        once per listening window even when 3+ goals are live.
+        Empty when the goals feature is disabled and when neither source
+        has anything -- but *not* when only one does: aspirations render
+        without a single goal row, which is the whole point of leading
+        with them. The block is owned by the assembler's ``_StaticSlices``
+        cache, so render cost is paid once per listening window even when
+        3+ goals are live.
         """
         if not bool(getattr(self._settings.agent, "goals_enabled", True)):
             return ""
         store = getattr(self, "_goal_store", None)
-        if store is None:
-            return ""
-        try:
-            active = store.list_active()
-        except Exception:
-            log.debug("goal_store list_active raised", exc_info=True)
-            return ""
-        if not active:
+        active: list = []
+        if store is not None:
+            try:
+                active = list(store.list_active())
+            except Exception:
+                log.debug("goal_store list_active raised", exc_info=True)
+        aspirations = self._aspiration_lines()
+        if not active and not aspirations:
             return ""
         max_rendered = max(
             1,
@@ -1308,6 +1317,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             f"Aiko's quiet long-term goals ({self.user_display_name} hasn't "
             "asked her about these — these are her own):"
         ]
+        lines.extend(aspirations)
         for goal in active[:max_rendered]:
             meta = goal.metadata or {}
             summary = str(meta.get("summary") or goal.content or "").strip()
@@ -1328,6 +1338,49 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             # validation would leave us with just the header.
             return ""
         return "\n".join(lines)
+
+    def _aspiration_lines(self) -> list[str]:
+        """L28: her ``aspiration`` concepts, as the goals block's lead.
+
+        L28 gated this on L14 and the gate lifted when aspirations
+        shipped, so ``app/core/goals/`` had no concept reference at all
+        while the layer that knows where she is heading sat beside it. The
+        integration is here rather than in ``GoalStore`` for the same
+        reason the profile block composes rather than the profile store
+        does: the write path and its cosine dedupe stay untouched, and one
+        renderer owns how the two sources read together.
+
+        Prefixed rather than plain-bulleted, because the bullets below are
+        to-dos and the prompt has to be able to tell the difference. Held
+        to two so a rich aspiration set cannot push the goals out of a
+        three-line block.
+        """
+        from app.core.concepts.concept_view import concept_view_from
+
+        try:
+            view = concept_view_from(self)
+        except Exception:
+            log.debug("goals block concept view failed", exc_info=True)
+            return []
+        if view is None or not getattr(view, "enabled", False):
+            return []
+        try:
+            rows = view.for_consumer("goals_block")
+        except Exception:
+            log.debug("goals block aspiration read failed", exc_info=True)
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for concept in rows:
+            label = " ".join(str(getattr(concept, "label", "") or "").split())
+            key = label.lower()
+            if not label or key in seen:
+                continue
+            seen.add(key)
+            out.append(f"- becoming: {label}")
+            if len(out) >= 2:
+                break
+        return out
 
     @staticmethod
     def _hedge_for_confidence(confidence: float) -> str:
@@ -1722,8 +1775,36 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 # round-robin is prefix-stable, so with all-fresh state the first
                 # ``core_cap`` are identical to a plain ``limit=core_cap`` call.
                 core_fetch = core_cap * 3 if hab_enabled else core_cap
+                # The openness reserve is sized against ``core_cap`` and NOT
+                # multiplied by the over-fetch. It sits at the head of the
+                # returned list, so scaling it with the fetch would put three
+                # generative concepts in front of a two-slot cut and hand the
+                # entire pinned lane to the reserve. Sized to the real cap it
+                # occupies exactly its share of the final selection. The cost
+                # is that the reserved pick rotates less than the rest of the
+                # lane -- habituation can still drop a just-shown one behind
+                # the fresh ordinary picks and out of the cut, which is the
+                # right behaviour, but there is no second aspiration fetched
+                # to rotate *to*.
                 core_concepts = view.core_lane(
                     limit=core_fetch, default_min_confidence=core_min,
+                    openness_slots=min(
+                        max(
+                            0,
+                            int(
+                                getattr(ms, "concept_core_openness_slots", 2)
+                            ),
+                        ),
+                        # ...and bounded by the real cap, not the fetch:
+                        # ``core_lane``'s own minority rule divides the limit
+                        # it is given, which here is the over-fetched one.
+                        core_cap // 2,
+                    ),
+                    openness_min_confidence=float(
+                        getattr(
+                            ms, "concept_core_openness_min_confidence", 0.5
+                        )
+                    ),
                 )
                 # Rotate softly: a core concept surfaced within the window drops
                 # *behind* fresh ones (both keep core_lane's balanced native
@@ -2147,6 +2228,16 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             budget_tokens=budget_tokens,
             degrade_level=degrade_level,
         )
+        floor_swap = self._apply_generative_floor(
+            selection, concept_cands,
+            enabled=max(
+                0, int(getattr(ms, "concept_flex_generative_floor", 1))
+            ) > 0,
+            min_relevance=float(
+                getattr(ms, "context_budget_concept_min_relevance", 0.30)
+            ),
+            score_components=score_components,
+        )
 
         # ── rendering ────────────────────────────────────────────────────
         sections: list[str] = []
@@ -2176,6 +2267,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # which is otherwise invisible from this trace alone.
         if claimed_skips:
             concept_trace["claimed_by_profile"] = sorted(claimed_skips)
+        # What kind of mind this turn's concepts add up to. The counts
+        # answer "is she arriving at this turn with anything she could move
+        # on, or only with what she must respect", which is a different
+        # question from whether any individual pick was good and is
+        # invisible in a per-concept trace. ``floor`` firing most turns is
+        # itself the finding: it would mean the tilt shuts generative kinds
+        # out as a rule rather than as an exception, and the answer then is
+        # to retune ``concept_importance_strength``, not to lean harder on
+        # a mechanism built for the exceptional case.
+        concept_trace["roles"] = self._role_mix(
+            [c.payload for c in selection.source("concept").chosen],
+            floor_swap=floor_swap,
+        )
         if concept_block:
             sections.append(concept_block)
 
@@ -2337,6 +2441,143 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 (getattr(ev, "event_type", ""), getattr(ev, "created_at", ""))
             )
         return out
+
+    @staticmethod
+    def _role_mix(concepts: list, *, floor_swap: dict | None = None) -> dict:
+        """Anchor / guide / generative counts for one turn's concepts.
+
+        ``constraint_ratio`` is ``guide / (guide + generative)`` -- how much
+        of what she is carrying tells her what she may not do, measured
+        against how much of it could take her somewhere. ``None`` when the
+        selection is all anchors, because a ratio over an empty
+        denominator would read as 0.0 and look like the openest possible
+        turn when in fact it is a turn with no opinion in it either way.
+        """
+        from app.core.concepts.concept_kinds import (
+            ROLE_ANCHOR,
+            ROLE_GENERATIVE,
+            ROLE_GUIDE,
+            ROLES,
+            get_kind,
+        )
+
+        counts = dict.fromkeys(ROLES, 0)
+        for concept in concepts:
+            kind = get_kind(getattr(concept, "kind", "") or "")
+            role = getattr(kind, "role", ROLE_ANCHOR)
+            if role in counts:
+                counts[role] += 1
+        directed = counts[ROLE_GUIDE] + counts[ROLE_GENERATIVE]
+        out: dict = dict(counts)
+        out["constraint_ratio"] = (
+            round(counts[ROLE_GUIDE] / directed, 4) if directed else None
+        )
+        out["floor_fired"] = floor_swap is not None
+        if floor_swap is not None:
+            out["floor"] = floor_swap
+        return out
+
+    def _apply_generative_floor(
+        self,
+        selection,
+        concept_cands: list,
+        *,
+        enabled: bool,
+        min_relevance: float,
+        score_components: dict,
+    ) -> dict | None:
+        """Make room for one ``generative`` concept when the turn's pick has
+        none. Returns a trace dict when it fired, else ``None``.
+
+        The flex lane is tilted, not closed. ``surface_score`` ends in
+        ``importance_factor``, which at the default strength is x1.16 for
+        a boundary against x0.92 for a taste -- a ~26% head start on every
+        comparison, only partly offset by habituation and only for
+        concepts shown recently. Most turns that is right: high stakes
+        usually should win. The failure is the turn where it wins
+        *completely* and the whole selection is rails.
+
+        A floor rather than a reweight, for the same reason importance is
+        a modulator rather than a summed term: it leaves the blend and its
+        single tuning knob completely intact and fires only in the one
+        case that matters. Lowering ``concept_importance_strength``
+        instead would buy the same diversity by weakening stakes
+        everywhere, including where stakes should decide.
+
+        The victim is always a ``guide``, never an ``anchor``. Losing a
+        boundary from one turn's flex pick is recoverable; losing the
+        identity concept that says who she is talking to is not. If
+        nothing guide-role was selected there is nothing to swap and the
+        pick stands as it is -- an all-anchor selection is not the problem
+        this solves.
+        """
+        if not enabled or selection is None:
+            return None
+        from app.core.concepts.concept_kinds import (
+            ROLE_ANCHOR,
+            ROLE_GENERATIVE,
+            ROLE_GUIDE,
+            get_kind,
+        )
+
+        def _role(cand) -> str:
+            kind = get_kind(getattr(cand.payload, "kind", "") or "")
+            return getattr(kind, "role", ROLE_ANCHOR)
+
+        picked = selection.source("concept")
+        chosen = list(picked.chosen)
+        if not chosen or any(_role(c) == ROLE_GENERATIVE for c in chosen):
+            return None
+        taken = {id(c) for c in chosen}
+        # Ranked on the lane's own ``relevance`` rather than on raw
+        # importance x confidence: this is the *turn-relevant* lane, and a
+        # generative concept with nothing to do with what he just said
+        # would be a worse pin than the boundary it displaced. Relevance
+        # already carries importance as a factor, so the stakes axis is
+        # still in the comparison -- it is just not the only thing in it.
+        promote = max(
+            (
+                c for c in concept_cands
+                if id(c) not in taken
+                and not getattr(c, "pinned", False)
+                and _role(c) == ROLE_GENERATIVE
+                and float(c.relevance) >= float(min_relevance)
+            ),
+            key=lambda c: (float(c.relevance), -int(c.order)),
+            default=None,
+        )
+        if promote is None:
+            return None
+        victim = min(
+            (c for c in chosen
+             if _role(c) == ROLE_GUIDE and not getattr(c, "pinned", False)),
+            key=lambda c: (float(c.relevance), -int(c.order)),
+            default=None,
+        )
+        if victim is None:
+            return None
+        # The swap has to stay inside the budget the selector already
+        # spent, or the floor would quietly grow the region it is meant to
+        # rebalance.
+        delta = int(promote.tokens) - int(victim.tokens)
+        if delta > 0 and (
+            int(selection.used_tokens) + delta > int(selection.budget_tokens)
+        ):
+            return None
+        picked.chosen = [promote if c is victim else c for c in chosen]
+        picked.tokens = int(picked.tokens) + delta
+        selection.used_tokens = int(selection.used_tokens) + delta
+        promoted_id = int(getattr(promote.payload, "concept_id", 0) or 0)
+        dropped_id = int(getattr(victim.payload, "concept_id", 0) or 0)
+        comp = score_components.get(promoted_id)
+        if comp is not None:
+            comp["generative_floor"] = True
+        return {
+            "promoted": promoted_id,
+            "promoted_kind": str(getattr(promote.payload, "kind", "")),
+            "dropped": dropped_id,
+            "dropped_kind": str(getattr(victim.payload, "kind", "")),
+        }
 
     def _build_importance_context(
         self, concepts: list, *, topic_clusters: list,

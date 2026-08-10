@@ -63,6 +63,7 @@ from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from app.core.concepts.concept_view import ConceptView
     from app.core.infra.chat_database import ChatDatabase
     from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
     from app.core.infra.settings import AgentSettings
@@ -87,6 +88,14 @@ _EXTRACT_MAX_TOKENS = 350
 # what the model returns. Tuned so a single noisy turn can't flood
 # the store; the next tick picks up anything we dropped.
 _MAX_BELIEFS_PER_RUN = 6
+
+
+# L28: how many durable concept labels reach the extraction prompt. The
+# diet's token budget governs how much is *read*; this is how much is
+# worth spending prompt on. A prior only has to point the extractor
+# somewhere -- a long list of them starts competing with the transcript
+# that is supposed to decide.
+_MAX_CONCEPT_HINTS = 5
 
 
 # Match the F1 / F5 / G3 prompt convention: a JSON array on one line.
@@ -214,6 +223,7 @@ class BeliefInferenceWorker:
         notify_belief_added: Callable[[dict[str, Any]], None] | None = None,
         notify_belief_updated: Callable[[dict[str, Any]], None] | None = None,
         interest_map_provider: Callable[[], Any] | None = None,
+        view_provider: Callable[[], "ConceptView | None"] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._belief_store = belief_store
@@ -236,6 +246,9 @@ class BeliefInferenceWorker:
         # size)`` tuples / bare label strings is accepted; ``None`` /
         # missing keeps the legacy flat-transcript behaviour.
         self._interest_map_provider = interest_map_provider
+        # L28: late-bound ConceptView, read once per run for the durable
+        # prior. ``None`` leaves the prompt exactly as K65b built it.
+        self._view_provider = view_provider
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -447,11 +460,22 @@ class BeliefInferenceWorker:
                     reconsider_count,
                 )
 
+        # L28: the durable layer as a third prior. K2 beliefs stay
+        # transient -- nothing here touches the store, its confidence
+        # semantics or its lifecycle; the concepts only shape what the
+        # extractor goes looking for.
+        concept_hint = self._concept_hint(user_names, assistant_name)
+        if concept_hint:
+            log.info(
+                "belief-worker concept-bias: chars=%d", len(concept_hint),
+            )
+
         t0 = time.monotonic()
         tuples = self._extract_with_llm(
             scrubbed,
             interest_hint=interest_hint,
             reconsider_block=reconsider_block,
+            concept_hint=concept_hint,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         if tuples is None:
@@ -634,6 +658,53 @@ class BeliefInferenceWorker:
                     break
         return out
 
+    def _concept_hint(
+        self,
+        user_names: list[str] | None,
+        assistant_name: str | None,
+    ) -> str:
+        """L28: what she durably holds about him, as an extraction prior.
+
+        The two K65b hints are both *topic* signals -- which subjects he
+        keeps returning to and which earlier beliefs are due a re-check.
+        Neither says anything about what he is *like*, so the extractor
+        infers a passing mood with no model of the person it is inferring
+        about, and the same transcript reads the same way whether he is
+        someone who withdraws under pressure or someone who gets louder.
+
+        Scrubbed on the same path as the interest labels, because a
+        concept label is free text about a named person and the worker may
+        be routed to an untrusted endpoint.
+
+        Deliberately one-directional: this reads concepts and writes
+        nothing back. K2's transient half stays transient -- a belief is a
+        prediction about right now, and promoting one on the strength of
+        agreeing with a durable concept is how a layer starts confirming
+        itself.
+        """
+        if self._view_provider is None:
+            return ""
+        try:
+            view = self._view_provider()
+        except Exception:
+            log.debug("belief-worker: view_provider raised", exc_info=True)
+            return ""
+        if view is None or not getattr(view, "enabled", False):
+            return ""
+        try:
+            rows = view.for_consumer("belief_inference")
+        except Exception:
+            log.debug("belief-worker: for_consumer failed", exc_info=True)
+            return ""
+        labels = [
+            " ".join(str(getattr(c, "label", "") or "").split())
+            for c in rows[:_MAX_CONCEPT_HINTS]
+        ]
+        clean = self._scrub_terms(
+            [line for line in labels if line], user_names, assistant_name,
+        )
+        return "; ".join(clean)
+
     def _scrub_terms(
         self,
         terms: list[str],
@@ -712,12 +783,20 @@ class BeliefInferenceWorker:
         *,
         interest_hint: str = "",
         reconsider_block: str = "",
+        concept_hint: str = "",
     ) -> list[_BeliefTuple] | None:
         sections = [_USER_TEMPLATE.format(transcript=scrubbed_transcript)]
         if interest_hint:
             sections.append(
                 "Topics this user keeps returning to (prioritise beliefs "
                 f"about these when the transcript supports it): {interest_hint}."
+            )
+        if concept_hint:
+            sections.append(
+                "What you durably hold about this user (a prior on what to "
+                "look for, not evidence -- the transcript decides, and it "
+                "may well contradict one of these): "
+                f"{concept_hint}."
             )
         if reconsider_block:
             sections.append(

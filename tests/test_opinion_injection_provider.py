@@ -440,5 +440,128 @@ class DeferredBorderlineTests(unittest.TestCase):
         self.assertIsNone(host._opinion_injection_pending_cue)
 
 
+@dataclass(slots=True)
+class _StubConcept:
+    concept_id: int
+    label: str
+    embedding: np.ndarray
+    kind: str = "taste"
+    subject: str = "aiko"
+
+
+class _StubView:
+    """``ConceptView``-shaped stub; records what the provider asked for."""
+
+    enabled = True
+
+    def __init__(self, rows: list[_StubConcept], *, raises: bool = False) -> None:
+        self._rows = rows
+        self._raises = raises
+        self.consumers: list[str] = []
+
+    def for_consumer(self, consumer: str) -> list[_StubConcept]:
+        self.consumers.append(consumer)
+        if self._raises:
+            raise RuntimeError("concept read failed")
+        return list(self._rows)
+
+
+class ConceptStanceTests(unittest.TestCase):
+    """L28: ``subject=aiko`` concepts join the candidate pool.
+
+    Patches ``concept_view_from`` rather than standing up a store: the
+    provider's job here is to adapt whatever the view returns and hand it
+    to the detector, and the view's own selection is covered by the diet
+    tests.
+    """
+
+    def _patch(self, view: Any) -> None:
+        from app.core.concepts import concept_view as cv_module
+
+        original = cv_module.concept_view_from
+        cv_module.concept_view_from = lambda host: view  # type: ignore[assignment]
+        self.addCleanup(setattr, cv_module, "concept_view_from", original)
+
+    def test_concept_stance_fires_with_no_self_memories(self) -> None:
+        # The whole point: a taste that only ever became a concept could
+        # be contradicted to her face without a flicker before L28.
+        view = _StubView(
+            [
+                _StubConcept(
+                    concept_id=9,
+                    label="dislikes horror movies",
+                    embedding=_VEC_ALIGNED,
+                )
+            ]
+        )
+        self._patch(view)
+        host = _Host(memories=[])
+        block = host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+        self.assertNotEqual(block, "")
+        self.assertEqual(view.consumers, ["stance"])
+        last = host._last_opinion_injection
+        assert last is not None
+        self.assertEqual(last.stance_origin, "concept")
+        self.assertEqual(last.stance_memory_id, -9)
+        # The cue can't tell her she wrote something she never phrased.
+        self.assertNotIn("you wrote", block)
+
+    def test_broken_view_leaves_k29_on_its_memory_path(self) -> None:
+        self._patch(_StubView([], raises=True))
+        host = _Host(memories=[_contradicting_stance(memory_id=42)])
+        block = host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+        self.assertNotEqual(block, "")
+        last = host._last_opinion_injection
+        assert last is not None
+        self.assertEqual(last.stance_memory_id, 42)
+
+    def test_cold_view_is_not_read(self) -> None:
+        view = _StubView(
+            [
+                _StubConcept(
+                    concept_id=9,
+                    label="dislikes horror movies",
+                    embedding=_VEC_ALIGNED,
+                )
+            ]
+        )
+        view.enabled = False  # type: ignore[assignment]
+        self._patch(view)
+        host = _Host(memories=[])
+        self.assertEqual(
+            host._render_opinion_injection_block(CONTRADICTING_USER_MSG),
+            "",
+        )
+        self.assertEqual(view.consumers, [])
+
+    def test_deferred_borderline_keeps_the_concept_origin(self) -> None:
+        # The origin has to survive the turn boundary, or a cue confirmed
+        # off the hot path tells her she wrote a concept.
+        view = _StubView(
+            [
+                _StubConcept(
+                    concept_id=11,
+                    label="prefers jogging 4 kilometres every morning",
+                    embedding=_VEC_ALIGNED,
+                )
+            ]
+        )
+        self._patch(view)
+        host = _Host(
+            memories=[],
+            rate_limiter=_AllowRateLimiter(allow=True),
+            ollama=object(),
+        )
+        host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        pending = host._opinion_injection_pending_borderline
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["stance_origin"], "concept")
+        host._opinion_injection_llm_verdict = lambda u, s: "YES"  # type: ignore[assignment]
+        host._resolve_opinion_injection_pending()
+        cue = host._opinion_injection_pending_cue
+        self.assertTrue(cue)
+        self.assertNotIn("you wrote", cue)
+
+
 if __name__ == "__main__":
     unittest.main()

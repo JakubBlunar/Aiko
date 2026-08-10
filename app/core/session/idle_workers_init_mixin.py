@@ -626,6 +626,7 @@ class IdleWorkersInitMixin:
             and getattr(self, "_memory_store", None) is not None
         ):
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.proactive.forward_curiosity_worker import (
                     ForwardCuriosityWorker,
                 )
@@ -642,6 +643,7 @@ class IdleWorkersInitMixin:
                     user_profile_store=getattr(
                         self, "_user_profile_store", None
                     ),
+                    view_provider=lambda: concept_view_from(self),
                     enabled_provider=lambda: bool(
                         getattr(
                             self._settings.agent,
@@ -1170,6 +1172,7 @@ class IdleWorkersInitMixin:
         self._wants_ledger_worker = None
         if self._idle_scheduler is not None:
             try:
+                from app.core.concepts.concept_view import concept_view_from
                 from app.core.conversation.wants_ledger_worker import (
                     WantsLedgerWorker,
                 )
@@ -1186,9 +1189,7 @@ class IdleWorkersInitMixin:
                     cue_store_provider=(
                         lambda: getattr(self, "_cue_store", None)
                     ),
-                    concept_store_provider=(
-                        lambda: getattr(self, "_concept_store", None)
-                    ),
+                    view_provider=lambda: concept_view_from(self),
                     pursuit_wants_enabled_provider=lambda: bool(
                         getattr(
                             self._settings.agent,

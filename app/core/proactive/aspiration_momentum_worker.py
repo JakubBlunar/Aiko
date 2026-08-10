@@ -2,7 +2,9 @@
 
 During a quiet window this worker reads the active ``aspiration`` concepts
 (through a :class:`~app.core.concepts.concept_view.ConceptView`, per the L24
-"read through the view, never the store" rule), picks at most one that is
+"read through the view, never the store" rule, with the kinds named by its
+``aspiration_momentum`` entry in :mod:`app.core.concepts.concept_diets`
+rather than inline), picks at most one that is
 confident, has gone *stale* since it was last reinforced, and is off its
 per-concept cooldown, and drafts ONE private cue into the
 ``aiko.aspiration_momentum`` kv ring. The consumer
@@ -27,6 +29,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive import aspiration_momentum as _am
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
@@ -124,20 +127,31 @@ class AspirationMomentumWorker:
         if view is None or not getattr(view, "enabled", False):
             return "no_view", None, 0
 
+        # Declared diet rather than an inline ``kind="aspiration"``: same
+        # single kind today, but the registry can only audit reads it can
+        # enumerate, and a hardcoded one is invisible to it.
+        diet = diet_for(self.name)
+        kinds = diet.kinds if diet is not None else ("aspiration",)
+        floor = max(
+            self._min_confidence,
+            float(diet.min_confidence) if diet is not None else 0.0,
+        )
         concepts: list[Any] = []
         for subject in self._subjects:
-            try:
-                concepts.extend(
-                    view.core(
-                        kind="aspiration",
-                        subject=subject,
-                        min_confidence=self._min_confidence,
+            for kind in kinds:
+                try:
+                    concepts.extend(
+                        view.core(
+                            kind=kind,
+                            subject=subject,
+                            min_confidence=floor,
+                        )
                     )
-                )
-            except Exception:
-                log.debug(
-                    "aspiration_momentum core(%s) raised", subject, exc_info=True
-                )
+                except Exception:
+                    log.debug(
+                        "aspiration_momentum core(%s/%s) raised", kind, subject,
+                        exc_info=True,
+                    )
         if not concepts:
             return "no_active", None, 0
 
@@ -147,7 +161,7 @@ class AspirationMomentumWorker:
             concepts,
             now=now,
             kv_get=self._kv_get,
-            min_confidence=self._min_confidence,
+            min_confidence=floor,
             staleness_min_days=0.0 if forced else self._staleness_min_days,
             cooldown_days=0.0 if forced else self._cooldown_days,
         )

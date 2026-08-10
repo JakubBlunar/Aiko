@@ -705,6 +705,64 @@ def _importance(
     }
 
 
+def _roles(concepts: Sequence["Concept"]) -> dict[str, Any]:
+    """What the active store adds up to on the anchor / guide / generative
+    axis, per subject.
+
+    The store-wide companion to the per-turn role mix in the surfacing
+    trace. That one answers "what did she carry into this turn"; this one
+    answers whether she has anything open to carry *at all*, which is the
+    prior question and the one a turn-level reading cannot distinguish
+    from bad luck. A ``constraint_ratio`` near 1.0 here means the layer
+    has mined rails and almost nothing else, and no amount of tuning the
+    openness reserve or the generative floor fixes that -- both of them
+    select from what exists, so the answer would be upstream, in what the
+    proposers are looking for.
+
+    ``by_subject`` matters because the two sides fail differently: her own
+    generative concepts (taste, pursuit) are what she leads *with*, and a
+    store rich in his and empty of hers is the measured "companion who
+    only follows" that K85c exists to fix.
+    """
+    from app.core.concepts.concept_kinds import (
+        ROLE_ANCHOR,
+        ROLE_GENERATIVE,
+        ROLE_GUIDE,
+        ROLES,
+        get_kind,
+    )
+
+    actives = [c for c in concepts if c.status == "active"]
+    overall: Counter[str] = Counter()
+    by_subject: dict[str, Counter[str]] = defaultdict(Counter)
+    for c in actives:
+        kind = get_kind(c.kind)
+        role = getattr(kind, "role", ROLE_ANCHOR)
+        if role not in ROLES:
+            role = ROLE_ANCHOR
+        overall[role] += 1
+        by_subject[c.subject][role] += 1
+
+    def _ratio(counts: Mapping[str, int]) -> float | None:
+        directed = counts.get(ROLE_GUIDE, 0) + counts.get(ROLE_GENERATIVE, 0)
+        if not directed:
+            return None
+        return round(counts.get(ROLE_GUIDE, 0) / directed, 3)
+
+    return {
+        "active": len(actives),
+        "by_role": {role: overall.get(role, 0) for role in ROLES},
+        "constraint_ratio": _ratio(overall),
+        "by_subject": {
+            subject: {
+                "by_role": {r: counts.get(r, 0) for r in ROLES},
+                "constraint_ratio": _ratio(counts),
+            }
+            for subject, counts in sorted(by_subject.items())
+        },
+    }
+
+
 # ── entry point ───────────────────────────────────────────────────────
 
 
@@ -745,6 +803,7 @@ def build_quality_report(
         "flow": _flow(rows, event_counts or {}, now=when),
         "confidence": _confidence(rows),
         "importance": _importance(rows, importance),
+        "roles": _roles(rows),
         "evidence": _evidence(rows, limits, facts),
         "duplicates": _duplicates(rows, limits),
         "register": _register(rows),
@@ -768,6 +827,7 @@ def disabled_quality_report() -> dict[str, Any]:
         "flow": {},
         "confidence": {},
         "importance": {},
+        "roles": {},
         "evidence": {},
         "duplicates": {"band": {}, "pair_count": 0, "pairs": []},
         "register": {},

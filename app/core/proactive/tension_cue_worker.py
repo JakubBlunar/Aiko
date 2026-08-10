@@ -2,7 +2,9 @@
 
 During a quiet window this worker reads the active ``tension`` concepts (through
 a :class:`~app.core.concepts.concept_view.ConceptView`, per the L24 "read
-through the view, never the store" rule), picks at most one that is confident
+through the view, never the store" rule, with the kinds named by its
+``tension_cue`` entry in :mod:`app.core.concepts.concept_diets` rather than
+inline), picks at most one that is confident
 and off its per-concept cooldown, and drafts ONE private cue into the
 ``aiko.tension_cue`` kv ring. The consumer
 :meth:`InnerLifeProvidersMixin._render_tension_block` surfaces the newest unseen
@@ -24,6 +26,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive import tension_cue as _tc
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
@@ -116,20 +119,33 @@ class TensionCueWorker:
         if view is None or not getattr(view, "enabled", False):
             return "no_view", None, 0
 
+        # Kinds come from the declared diet rather than a literal
+        # ``kind="tension"``, so the diet registry is the whole picture of
+        # who reads what -- a worker with a hardcoded read is invisible to
+        # it, and the audit that keeps guide-only diets from shipping can
+        # only see what it can enumerate.
+        diet = diet_for(self.name)
+        kinds = diet.kinds if diet is not None else ("tension",)
+        floor = max(
+            self._min_confidence,
+            float(diet.min_confidence) if diet is not None else 0.0,
+        )
         concepts: list[Any] = []
         for subject in self._subjects:
-            try:
-                concepts.extend(
-                    view.core(
-                        kind="tension",
-                        subject=subject,
-                        min_confidence=self._min_confidence,
+            for kind in kinds:
+                try:
+                    concepts.extend(
+                        view.core(
+                            kind=kind,
+                            subject=subject,
+                            min_confidence=floor,
+                        )
                     )
-                )
-            except Exception:
-                log.debug(
-                    "tension_cue core(%s) raised", subject, exc_info=True
-                )
+                except Exception:
+                    log.debug(
+                        "tension_cue core(%s/%s) raised", kind, subject,
+                        exc_info=True,
+                    )
         if not concepts:
             return "no_active", None, 0
 
@@ -139,7 +155,7 @@ class TensionCueWorker:
             concepts,
             now=now,
             kv_get=self._kv_get,
-            min_confidence=self._min_confidence,
+            min_confidence=floor,
             cooldown_days=0.0 if forced else self._cooldown_days,
         )
         if candidate is None:
