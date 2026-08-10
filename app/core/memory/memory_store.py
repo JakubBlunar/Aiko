@@ -31,6 +31,7 @@ import numpy as np
 
 from app.llm.embedder import cosine_similarity
 from app.core.infra import timephrase
+from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
 
 if TYPE_CHECKING:
     from app.core.rag.rag_store import RagStore
@@ -377,6 +378,23 @@ class SearchHit:
     score: float
 
 
+# Kinds the conversational extractor writes, and the only ones the
+# narrow restatement gate applies to. These are the rows that get
+# re-derived from the transcript every turn the subject comes up, so
+# "the same thing again, worded differently" is their characteristic
+# failure -- and nothing downstream depends on ``add`` handing back a
+# row for them.
+#
+# Worker-written kinds stay out on purpose. ``knowledge_gap``,
+# ``open_question``, ``callback`` and friends are minted deliberately,
+# one per distinct subject, by producers that run their own inventory
+# caps and read the returned row to know the write landed. Merging two
+# of those would both lose a distinct item and look like a failed write.
+_RESTATE_KINDS: frozenset[str] = frozenset({
+    "fact", "event", "preference", "self", "relationship",
+})
+
+
 def _now_iso() -> str:
     return timephrase.utcnow().isoformat()
 
@@ -442,6 +460,8 @@ class MemoryStore:
         scratchpad_cap: int = 1000,
         archive_cap: int = 10000,
         dedupe_threshold: float = 0.92,
+        restate_threshold: float = 0.85,
+        restate_window_hours: float = 6.0,
     ) -> None:
         self._db_path = db_path
         self._max = max(50, int(max_memories))
@@ -455,6 +475,11 @@ class MemoryStore:
             "archive": max(50, int(archive_cap)),
         }
         self._dedupe_threshold = float(dedupe_threshold)
+        # The narrow second gate for a fact restated minutes later. See
+        # ``_is_restatement`` for why it needs a window as well as a
+        # floor, and set the window to 0 to switch it off entirely.
+        self._restate_threshold = float(restate_threshold)
+        self._restate_window_hours = max(0.0, float(restate_window_hours))
         self._local = threading.local()
         self._lock = threading.Lock()
         # In-memory mirror so cosine search is a single NumPy pass.
@@ -940,9 +965,18 @@ class MemoryStore:
         # nearby row (matters most for shared_moment).
         dup_id: int | None = None
         if not pinned and not skip_dedupe:
+            written_at = timephrase.utcnow()
             with self._lock:
                 for mem in self._mirror.values():
-                    if cosine_similarity(emb, mem.embedding) >= self._dedupe_threshold:
+                    score = cosine_similarity(emb, mem.embedding)
+                    if score >= self._dedupe_threshold or self._is_restatement(
+                        mem,
+                        score,
+                        content=cleaned,
+                        kind=kind,
+                        temporal_type=temporal_type_normalized,
+                        written_at=written_at,
+                    ):
                         dup_id = mem.id
                         break
         if dup_id is not None:
@@ -1064,6 +1098,71 @@ class MemoryStore:
         if tier_count > self._tier_caps.get(tier_normalized, self._max):
             self.prune()
         return memory
+
+    def _is_restatement(
+        self,
+        mem: "Memory",
+        score: float,
+        *,
+        content: str,
+        kind: str,
+        temporal_type: str,
+        written_at: datetime,
+    ) -> bool:
+        """Is this the same thing said again a few minutes later?
+
+        The global :attr:`_dedupe_threshold` has to stay high because it
+        compares across every kind and every age, where a false merge
+        silently destroys a distinct memory. That leaves a gap the
+        extractor drives a truck through: the same fact restated with
+        slightly different wording minutes apart lands at 0.85-0.90 and
+        gets its own row, so one plan became six ("Jacob's cookies will
+        arrive in a few days" / "Jacob expects his cookie order to
+        arrive in a few days"). Downstream that is not merely bloat --
+        every consumer keyed on memory id treats them as separate
+        subjects, which is how a single plan produced three identical
+        forward-curiosity questions an hour apart.
+
+        Four conditions narrow the lower threshold to where a merge is
+        safe. The kind is one the extractor writes (see
+        ``_RESTATE_KINDS``). Same ``kind`` and same ``temporal_type``,
+        because a plan and the past event it became are genuinely
+        different rows even when they are worded almost identically. And
+        written inside ``_restate_window_hours``, which is the condition
+        that does the real work: measured over the live store, same-kind
+        pairs inside a few hours are overwhelmingly restatements, while
+        the similarly-scoring pairs a day or more apart are distinct
+        facts that happen to share a frame ("allergies make breathing
+        hard outdoors" and "allergies improve after rain" sit at 0.82).
+
+        The fifth condition is a **contradiction guard**, and it is the
+        one that makes the other four safe to lower a threshold behind.
+        F5's conflict detector reads the ``[0.80, 0.92)`` band precisely
+        because that is where a contradiction lives -- a negation flip
+        barely moves an embedding, so "Jacob loves spicy food" and
+        "Jacob does not like spicy food" sit *above* this gate's floor.
+        Merging those keeps the older row and silently discards the
+        correction, which is the worst outcome available here and the
+        exact opposite of what the newer statement means. So the same
+        pure-Python heuristic F5 uses adjudicates the pair, and anything
+        it does not label ``no`` is left as two rows for F5 to resolve
+        properly. It runs last because it is the only string-level check
+        in the chain, and by this point at most a handful of rows per
+        write have got past the vector, kind and window gates.
+        """
+        if score < self._restate_threshold or self._restate_window_hours <= 0.0:
+            return False
+        if kind not in _RESTATE_KINDS:
+            return False
+        if mem.kind != kind or mem.temporal_type != temporal_type:
+            return False
+        created = timephrase.parse_iso(mem.created_at)
+        if created is None:
+            return False
+        gap_hours = abs((written_at - created).total_seconds()) / 3600.0
+        if gap_hours > self._restate_window_hours:
+            return False
+        return classify_pair(content, mem.content).label == HEURISTIC_NO
 
     def _touch_existing(self, memory_id: int, candidate_salience: float) -> None:
         """Bump salience and refresh last_used_at on a deduped match."""

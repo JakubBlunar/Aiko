@@ -673,6 +673,50 @@ class EpisodeTests(unittest.TestCase):
         result = worker.run()
         self.assertEqual(worker._recent_keys(), result["episode"])
 
+    def _composed(self):
+        """A beat composed outside the candidate pool.
+
+        Both the H14 LLM path and the day-intention path build one of
+        these directly, so a plan whose key the room does not afford is a
+        normal thing to reach ``_plan_episode``.
+        """
+        from app.core.world.idle_activity_worker import ActivityPlan
+
+        return ActivityPlan(
+            key="snack",
+            posture="leaning",
+            activity="snacking",
+            summary="I raided the cupboard for something sweet",
+            precomposed=True,
+        )
+
+    def test_a_beat_outside_the_pool_still_leads_its_own_chain(self) -> None:
+        """Filtering the chain against the pool dropped the chosen beat."""
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._furnished(), kv=kv, cooldown=0.0, episode_ratio=1.0,
+        )
+        snapshot = worker._build_candidates("Jacob", _utc_now())
+        composed = self._composed()
+        self.assertNotIn("snack", snapshot.candidates)
+        chain = worker._plan_episode(composed, snapshot, _utc_now())
+        self.assertIs(chain[0], composed)
+
+    def test_an_unaffording_room_yields_the_one_beat_not_none(self) -> None:
+        """The observed crash: an empty chain, then IndexError on chain[0]."""
+        import dataclasses
+
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=self._furnished(), kv=kv, cooldown=0.0, episode_ratio=1.0,
+        )
+        bare = dataclasses.replace(
+            worker._build_candidates("Jacob", _utc_now()), candidates={},
+        )
+        composed = self._composed()
+        chain = worker._plan_episode(composed, bare, _utc_now())
+        self.assertEqual(chain, [composed])
+
 
 class _Notes:
     """Captures pursuit-note writes without a memory layer."""

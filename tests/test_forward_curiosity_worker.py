@@ -45,11 +45,13 @@ class _FakeMemory:
         *,
         kind: str = "fact",
         temporal_type: str = "durable",
+        metadata: dict | None = None,
     ) -> None:
         self.id = id_
         self.content = content
         self.kind = kind
         self.temporal_type = temporal_type
+        self.metadata = metadata or {}
 
 
 class _FakeMemoryStore:
@@ -471,6 +473,119 @@ class PoolTests(unittest.TestCase):
         kv.set("forward_curiosity.last_fired_at", recent.isoformat())
         worker = self._worker(_FakeMemoryStore(), kv, cooldown=3600.0)
         self.assertFalse(worker.is_ready(now=_NOW, last_run_at=None))
+
+    def test_a_stocked_worker_declines_to_draft(self) -> None:
+        """Zero demand is not enough; the scheduler admits it anyway.
+
+        The observed failure: 14 pending against a target of 2, one more
+        near-identical question every hour.
+        """
+        store = _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(i, f"plan {i}", temporal_type="future_plan")
+                for i in range(6)
+            ]
+        )
+        worker = self._worker(store, cooldown=0.0)
+        worker.run()
+        worker.run()
+        result = worker.run()
+        self.assertTrue(result.get("skipped_stocked"))
+        self.assertEqual(result["stocked"], 2)
+        self.assertEqual(self.cues.count_pending("forward_curiosity"), 2)
+
+
+class LineageTests(unittest.TestCase):
+    """One plan is one question, however many rows it left behind.
+
+    The live failure this covers: three ``future_plan`` rows written ten
+    minutes apart about the same cookie delivery produced three
+    near-identical questions an hour apart, because the worker dedupes on
+    the source row and each duplicate was a different row.
+    """
+
+    def setUp(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        from app.core.infra.chat_database import ChatDatabase
+        from app.core.proactive.cue_store import CueStore
+
+        tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.cues = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+
+    def _worker(self, store, kv=None, **kw) -> ForwardCuriosityWorker:
+        return _make_worker(
+            store=store, kv=kv or _FakeKV(), cues=self.cues, cooldown=0.0, **kw,
+        )
+
+    def test_the_same_source_is_not_redrafted_after_a_reword(self) -> None:
+        """The pool remembers the source, not just the phrasing.
+
+        The ring rotates and the subject text changes, so neither of the
+        old gates caught this.
+        """
+        kv = _FakeKV()
+        mem = _FakeMemory(
+            2411, "cookies arrive in a few days", temporal_type="future_plan",
+        )
+        store = _FakeMemoryStore(future_plans=[mem])
+        worker = self._worker(store, kv)
+        self.assertEqual(worker.run()["drafted"], 1)
+        kv.store.pop(FORWARD_CURIOSITY_JOURNAL_KEY, None)
+        mem.content = "he expects his cookie order to arrive in a few days"
+        self.assertTrue(worker.run().get("no_candidate"))
+
+    def test_a_row_merged_into_another_is_not_a_plan_of_its_own(self) -> None:
+        store = _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(
+                    2218,
+                    "surprise date in the near future",
+                    temporal_type="future_plan",
+                    metadata={"consolidated_into": 2241},
+                )
+            ]
+        )
+        self.assertTrue(self._worker(store).run().get("no_candidate"))
+
+    def test_a_survivor_inherits_the_claims_of_what_it_absorbed(self) -> None:
+        """A cue drafted before the merge still speaks for the group."""
+        kv = _FakeKV()
+        absorbed = _FakeMemory(
+            2218, "surprise date soon", temporal_type="future_plan",
+        )
+        store = _FakeMemoryStore(future_plans=[absorbed])
+        worker = self._worker(store, kv)
+        self.assertEqual(worker.run()["drafted"], 1)
+
+        # K35 folds 2218 into 2241; the primary now carries the content.
+        kv.store.pop(FORWARD_CURIOSITY_JOURNAL_KEY, None)
+        store._future = [
+            _FakeMemory(
+                2241,
+                "he is actively planning a surprise date",
+                temporal_type="future_plan",
+                metadata={"source_ids": [2218, 2241]},
+            )
+        ]
+        self.assertTrue(worker.run().get("no_candidate"))
+
+    def test_an_unrelated_plan_still_gets_through(self) -> None:
+        """The gate is lineage, not a blanket freeze on new questions."""
+        kv = _FakeKV()
+        store = _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(1, "the wedding", temporal_type="future_plan")
+            ]
+        )
+        worker = self._worker(store, kv)
+        self.assertEqual(worker.run()["drafted"], 1)
+        store._future.append(
+            _FakeMemory(2, "the interview", temporal_type="future_plan")
+        )
+        self.assertEqual(worker.run()["drafted"], 1)
+        self.assertEqual(self.cues.count_pending("forward_curiosity"), 2)
 
 
 class ArmingTests(unittest.TestCase):

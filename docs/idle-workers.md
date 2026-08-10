@@ -179,8 +179,8 @@ seconds since your last activity:
 | Tier | Up to | Multiplier |
 | --- | --- | --- |
 | `just_left` | 5 min | 1x |
-| `away` | 30 min | 3x |
-| `long_away` | 4 h | 6x |
+| `away` | 15 min | 3x |
+| `long_away` | 1 h | 6x |
 | `overnight` | — | 10x |
 
 `just_left` is deliberately 1x, so shallow idle behaves exactly as it

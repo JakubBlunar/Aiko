@@ -68,7 +68,15 @@ class _Fixture:
         self.tmp = TemporaryDirectory()
         self.path = Path(self.tmp.name) / "chat.db"
         self.db = ChatDatabase(self.path)
-        self.store = MemoryStore(self.path, max_memories=50, dedupe_threshold=0.999)
+        # Both store-level dedupe gates are turned off on purpose: these
+        # tests seed near-duplicate pairs and assert the *consolidator*
+        # merges them, so the store has to hand them over intact.
+        self.store = MemoryStore(
+            self.path,
+            max_memories=50,
+            dedupe_threshold=0.999,
+            restate_window_hours=0.0,
+        )
 
     def close(self):
         try:

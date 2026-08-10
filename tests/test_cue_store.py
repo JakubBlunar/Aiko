@@ -296,6 +296,74 @@ class RecentSubjectTests(_Base):
         )
 
 
+class SourceClaimTests(_Base):
+    """The pool as the memory-backed workers' dedupe memory."""
+
+    def test_claimed_sources_reads_the_payload(self) -> None:
+        self.store.add(
+            "forward_curiosity", "cookies", "line",
+            payload={"source_id": "2411"},
+        )
+        self.assertEqual(
+            self.store.claimed_source_ids("forward_curiosity"), {"2411"},
+        )
+
+    def test_a_cue_without_a_source_is_simply_absent(self) -> None:
+        self.store.add("forward_curiosity", "cookies", "line")
+        self.assertEqual(
+            self.store.claimed_source_ids("forward_curiosity"), set(),
+        )
+
+    def test_retiring_by_source_supersedes_the_cue(self) -> None:
+        """K35 archived the row, so the question goes with it."""
+        doomed = self.store.add(
+            "forward_curiosity", "surprise date", "line",
+            payload={"source_id": "2218"},
+        )
+        kept = self.store.add(
+            "forward_curiosity", "the wedding", "line",
+            payload={"source_id": "999"},
+        )
+        self.assertEqual(self.store.retire_for_sources([2218]), 1)
+        self.assertEqual(self.store.get(doomed).state, STATE_SUPERSEDED)
+        self.assertEqual(self.store.get(doomed).used_evidence, "source_merged")
+        self.assertEqual(self.store.get(kept).state, STATE_PENDING)
+
+    def test_retiring_nothing_is_a_no_op(self) -> None:
+        self.store.add(
+            "forward_curiosity", "cookies", "line",
+            payload={"source_id": "1"},
+        )
+        self.assertEqual(self.store.retire_for_sources([]), 0)
+        self.assertEqual(self.store.retire_for_sources([42]), 0)
+
+    def test_a_terminal_cue_is_left_alone(self) -> None:
+        """Only live cues are worth retiring; the rest are already done."""
+        done = self.store.add(
+            "forward_curiosity", "cookies", "line",
+            payload={"source_id": "7"},
+        )
+        self.store.mark_used(done)
+        self.assertEqual(self.store.retire_for_sources([7]), 0)
+        self.assertEqual(self.store.get(done).state, STATE_USED)
+
+    def test_supersede_retires_one_cue_with_its_reason(self) -> None:
+        """The transition ``add`` makes inline, addressed to one row."""
+        doomed = self.store.add("forward_curiosity", "cookies", "line")
+        kept = self.store.add("forward_curiosity", "the wedding", "line")
+        self.assertTrue(
+            self.store.supersede(doomed, evidence="backfill/duplicate_subject")
+        )
+        self.assertEqual(self.store.get(doomed).state, STATE_SUPERSEDED)
+        self.assertEqual(
+            self.store.get(doomed).used_evidence, "backfill/duplicate_subject",
+        )
+        self.assertEqual(self.store.get(kept).state, STATE_PENDING)
+
+    def test_superseding_a_missing_cue_reports_failure(self) -> None:
+        self.assertFalse(self.store.supersede(4242))
+
+
 # ── 3. the UI / diagnostic reads ──────────────────────────────────────
 
 

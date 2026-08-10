@@ -288,8 +288,8 @@ def default_is_ready(
 # 1.0 so shallow idle behaves exactly as it does today.
 DEPTH_TIERS: tuple[tuple[str, float, float], ...] = (
     ("just_left", 300.0, 1.0),
-    ("away", 1800.0, 3.0),
-    ("long_away", 14400.0, 6.0),
+    ("away", 900.0, 3.0),
+    ("long_away", 3600.0, 6.0),
     ("overnight", float("inf"), 10.0),
 )
 

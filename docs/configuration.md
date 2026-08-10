@@ -1106,6 +1106,8 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 - `memory.score_threshold` *(float, `0.4`, clamped `[0, 1]`)* — minimum cosine for a memory to be eligible for retrieval. Higher → stricter; lower → noisier.
 - `memory.max_memories` *(int, `5000`, min `50`)* — cap on the `long_term` tier. Higher → keeps more history (sub-millisecond NumPy + sub-linear LanceDB stay fast).
 - `memory.dedupe_threshold` *(float, `0.92`, clamped `[0.5, 0.999]`)* — cosine threshold above which a newly written memory is merged into an existing row. Higher → merges only near-identical rows; lower → can collapse distinct facts.
+- `memory.restate_threshold` *(float, `0.85`, clamped `[0.5, 0.999]`)* — the second, narrower dedupe gate: the cosine floor at which a fact **restated shortly after** the first telling is merged instead of given its own row. Deliberately below `dedupe_threshold`, and only safe because three further conditions come with it — see [restatements](memory.md#restatements) for why the pair of thresholds exists.
+- `memory.restate_window_hours` *(float, `6.0`, min `0`)* — how far apart two rows may be written and still count as a restatement. `0` disables the narrow gate entirely, leaving only `dedupe_threshold`. This is the condition doing most of the work: same-kind pairs a few hours apart are overwhelmingly rewordings, while similarly-scoring pairs a day or more apart are usually distinct facts sharing a frame.
 - `memory.extractor_enabled` *(bool, `true`)* — master switch for the post-summary `MemoryExtractor`. Off → only `[[remember:]]` tags + manual UI adds write memories.
 - `memory.self_tagged_salience` *(float, `0.7`, clamped `[0, 1]`)* — default salience for memories written from `[[remember:]]` tags.
 
@@ -1368,7 +1370,7 @@ the `main_chat` and `worker_default` routes:
 
 **Idle depth.** The longer the user has been gone, the less a long tick
 costs them, so both lanes scale by tier: `just_left` (<5 min) 1x, `away`
-(<30 min) 3x, `long_away` (<4 h) 6x, `overnight` 10x. Depth survives a
+(<15 min) 3x, `long_away` (<1 h) 6x, `overnight` 10x. Depth survives a
 restart via a wall-clock stamp in `kv_meta`; otherwise a reboot would
 make an eight-hour absence look like a fresh one.
 

@@ -1607,6 +1607,7 @@ class IdleWorkersInitMixin:
                     topic_graph_provider=lambda: getattr(
                         self, "_topic_graph", None
                     ),
+                    cue_store_provider=lambda: self._cue_store,
                 )
                 self._idle_scheduler.register(
                     self._memory_consolidation_worker

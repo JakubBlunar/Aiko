@@ -84,9 +84,13 @@ def plan_chain(
 ) -> list[str]:
     """Extend ``first_key`` into a chain of at most ``length`` beats.
 
-    Only ever returns keys present in ``available``, never repeats one,
-    and stops as soon as a beat has no eligible successor -- so a room
-    that affords nothing to continue with simply yields a single beat.
+    ``first_key`` always leads, whether or not it appears in
+    ``available`` -- the beat has already been chosen by the time this
+    runs, and a forced or LLM-composed one legitimately has no entry in
+    the candidate pool. Every *subsequent* key is drawn from
+    ``available``, never repeats one, and the chain stops as soon as a
+    beat has no eligible successor -- so a room that affords nothing to
+    continue with simply yields a single beat.
     """
     chain = [first_key]
     if length <= 1:

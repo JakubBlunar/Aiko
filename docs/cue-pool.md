@@ -174,6 +174,67 @@ This retired five config keys (`*_daily_cap` for associative wander,
 interest drift, dormant interest, curiosity gradient, and forward
 curiosity).
 
+### Cues drafted from a memory row: keyed on lineage, not wording
+
+`spoken_for()` is the right dedupe key for a worker that drafts from a
+*topic label*, and the wrong one for a worker that drafts from a **memory
+row** — chiefly [`ForwardCuriosityWorker`](../app/core/proactive/forward_curiosity_worker.py),
+which turns a `future_plan` memory into "did that ever happen?". Two rows
+saying the same thing in slightly different words are two subjects to
+`spoken_for()`, so the same question queued twice. Three mechanisms keep
+that closed, and the order matters — each one only has to handle what the
+previous cannot.
+
+1. **The row itself is deduped first.** The narrow restate gate in
+   `MemoryStore.add` (see [`configuration.md`](configuration.md#core-memory))
+   means a plan restated minutes later never becomes a second row, so
+   there is nothing to draft twice from. This is where paraphrases are
+   caught, because at the memory layer the two texts are directly
+   comparable — at the cue layer they have already been rewritten into
+   questions, and the distance between two *questions* is a much worse
+   signal than the distance between the two facts behind them.
+2. **`CueProducer.claimed_sources()`** reports every `payload.source_id`
+   the pool has ever drafted from, in any state. A worker's own journal
+   ring only remembers its last handful of drafts, so a memory came back
+   around the moment it rotated out; the pool has no such horizon. The
+   worker matches it against the candidate's **lineage** — the row's id
+   plus the `metadata.source_ids` it absorbed during consolidation — so a
+   question drafted from a row *before* it was merged still counts as
+   already asked. It also skips any candidate carrying
+   `metadata.consolidated_into`, since the surviving primary is in the
+   same candidate list and speaks for the whole group.
+3. **`CueStore.retire_for_sources()`** takes the losers' cues down with
+   them. A cue outlives the row it was drafted from, so when K35's
+   [`MemoryConsolidationWorker`](../app/core/memory/memory_consolidation_worker.py)
+   archives a duplicate the cue built from it stays pending, asking about
+   a row that no longer stands — and the primary produces a cue of its
+   own, so the question gets asked twice from two rows saying the same
+   thing. The worker now calls this for every row it absorbs, retiring
+   those cues as `superseded` with `used_evidence="source_merged"`.
+
+All three are **exact** matches — an id, or a set of ids — not a cosine
+threshold. The one threshold in the chain lives at step 1, where it
+compares the facts rather than the questions.
+
+Separately, `ForwardCuriosityWorker.run()` checks its own stock before
+drafting and declines when `inventory_target` is already met. Demand
+pressure is the scheduler's admission signal, not a production limit, so
+a worker admitted for other reasons would otherwise keep drafting a
+near-identical question every cooldown — which is how a target of 2
+became a shelf of 14.
+
+**Retrofitting an existing pool.** The gates above prevent duplicates;
+they do not clean up rows written before they existed.
+[`scripts/collapse_restated_duplicates.py`](../scripts/collapse_restated_duplicates.py)
+replays the restate gate over stored history and then retires the cues
+orphaned by it. It is a dry run unless passed `--apply`, and it replays
+the rule **sequentially in creation order** rather than clustering: a
+clustering pass is transitive and will chain A-B-C on two strong links,
+swallowing an A-C pair sitting well below the threshold, which the write
+path can never do (when B is deduped into A no B row is left to chain
+through). Stop the app first — `MemoryStore` keeps an in-memory mirror
+that would otherwise overwrite the result from stale state.
+
 ## Consumption: did she actually use it?
 
 [`CuePoolMixin`](../app/core/session/cue_pool_mixin.py), called from

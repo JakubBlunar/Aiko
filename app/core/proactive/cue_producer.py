@@ -156,6 +156,29 @@ class CueProducer:
         )
         return store.recent_subjects(self._cue_type, within_hours=window)
 
+    def claimed_sources(self, *, within_hours: float | None = None) -> set[str]:
+        """``payload.source_id`` values already drafted from, in any state.
+
+        For the workers that draft from a memory row rather than from a
+        topic label. Their own journal ring is a short window and the
+        source came back the moment it rotated out.
+        """
+        store = self.store()
+        if store is None:
+            return set()
+        window = (
+            float(within_hours)
+            if within_hours is not None
+            else self._policy.ttl_hours * 2.0
+        )
+        try:
+            return store.claimed_source_ids(self._cue_type, within_hours=window)
+        except Exception:
+            log.debug(
+                "cue source read failed: type=%s", self._cue_type, exc_info=True,
+            )
+            return set()
+
     def publish(
         self,
         subject: str,

@@ -517,6 +517,10 @@ class SessionController(
                     scratchpad_cap=self._memory_settings.scratchpad_cap,
                     archive_cap=self._memory_settings.archive_cap,
                     dedupe_threshold=self._memory_settings.dedupe_threshold,
+                    restate_threshold=self._memory_settings.restate_threshold,
+                    restate_window_hours=(
+                        self._memory_settings.restate_window_hours
+                    ),
                 )
                 # K76 flashbulb encoding — boost a new memory's salience by
                 # the live emotional charge (arousal + active K57 episode)
