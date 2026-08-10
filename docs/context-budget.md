@@ -169,6 +169,30 @@ self-model on alternating turns.
 *(Legacy `context_budget_identity_cap` / `context_budget_identity_min_confidence`
 config keys still parse into the renamed `core` knobs.)*
 
+#### The openness reserve (L28)
+
+The kinds that opt into this lane — `identity`, `value`, `boundary`,
+`generalization` — are two **anchors** and two **guides** (see the role axis in
+[`concept-integration.md`](concept-integration.md)); no `generative` kind is
+eligible. With a core cap of 15 that meant up to 15 concepts pinned into every
+turn, not one of which *could* be an aspiration, taste, pursuit or tension —
+structural, so no weighting reached it.
+
+`core_lane(..., openness_slots=)` reserves `concept_core_openness_slots`
+(default 2) of the cap for the strongest generative-role concepts drawn from
+those ineligible kinds, ranked by `importance x confidence` and gated on
+`concept_core_openness_min_confidence` (0.5 — pinning a half-formed aspiration
+into every turn is worse than pinning nothing). An unfilled reserve falls back
+to the normal lane, so nothing is wasted, and reserved picks use the same banded
+rank and `concept_id` tiebreak as the rest of the lane: the pin moves only when
+the underlying concept moves, which is what the cache-prefix-sensitive tier
+requires. `0` restores the pre-L28 lane exactly.
+
+The flex lane gets the matching correction (`concept_flex_generative_floor`) —
+it is tilted rather than closed, so the fix is a floor on the ranked pick rather
+than a change to the scorer. Both are documented together in
+[`configuration.md`](configuration.md#openness-and-worker-diets-l28--what-she-can-reach-past).
+
 It returns a `ContextSelection` (chosen items per source + scores + token usage +
 dropped counts) used for rendering and telemetry. Per-source `weight` biases the
 mix — concepts default slightly above memories (`1.1` vs `1.0`) so a
@@ -253,6 +277,9 @@ All under `memory.` — full descriptions + defaults in
 | `context_budget_{memory,cluster,concept}_min_relevance` | `0.0` / `0.30` / `0.30` | turn-relevance floor |
 | `context_budget_core_cap` | `2` | max pinned always-on core concepts across kinds/subjects (`0` disables the lane) |
 | `context_budget_core_min_confidence` | `0.75` | global fallback confidence bar for the core lane (per-kind `core_min_confidence` overrides) |
+| `concept_core_openness_slots` | `2` | slots of that cap reserved for generative-role concepts otherwise ineligible for the lane (`0` disables the reserve) |
+| `concept_core_openness_min_confidence` | `0.5` | bar a reserved pick must clear |
+| `concept_flex_generative_floor` | `1` | swap the weakest selected guide for the strongest generative concept when the flex pick has none (`0` disables) |
 
 **Tuning for small local models.** On a 64k window the defaults reserve roughly
 `min(0.15*64k, 4096) = 4096` tokens for surfacing (minus the history-floor clamp).

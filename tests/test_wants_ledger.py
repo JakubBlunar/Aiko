@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.conversation import wants_ledger as wl
 from app.core.conversation.wants_ledger_worker import WantsLedgerWorker
 
@@ -391,19 +392,25 @@ class _FakeGoals:
 
 
 class _FakeConcepts:
-    """Duck-typed ``ConceptStore``, serving only ``list_by``."""
+    """Duck-typed ``ConceptView``, serving only ``core``.
+
+    Rows carry ``concept_id`` rather than ``id`` because that is what a
+    persisted ``Concept`` carries -- the old double named it ``id``, which
+    hid the fact that the want ref was reading an attribute the real row
+    does not have.
+    """
 
     class Row:
         def __init__(
             self,
-            id: int,
+            concept_id: int,
             label: str,
             *,
             confidence: float = 0.8,
             status: str = "active",
             kind: str = "pursuit",
         ) -> None:
-            self.id = id
+            self.concept_id = concept_id
             self.label = label
             self.confidence = confidence
             self.status = status
@@ -412,11 +419,17 @@ class _FakeConcepts:
 
     def __init__(self, rows: list["Row"] | None = None) -> None:
         self.rows = list(rows or [])
+        self.enabled = True
+        self.asked: list[tuple[str | None, str | None]] = []
 
-    def list_by(self, **kw) -> list["Row"]:
+    def core(self, *, kind=None, subject=None, min_confidence=0.0, limit=None):
+        self.asked.append((kind, subject))
         return [
             r for r in self.rows
-            if all(getattr(r, k) == v for k, v in kw.items())
+            if r.status == "active"
+            and (kind is None or r.kind == kind)
+            and (subject is None or r.subject == subject)
+            and float(r.confidence) >= float(min_confidence)
         ]
 
 
@@ -441,7 +454,7 @@ class PursuitWantTests(unittest.TestCase):
         kv = _KvStore()
         worker = self._worker(
             kv,
-            concept_store_provider=lambda: _FakeConcepts([
+            view_provider=lambda: _FakeConcepts([
                 _FakeConcepts.Row(4, "keeping a herb garden"),
             ]),
         )
@@ -453,6 +466,18 @@ class PursuitWantTests(unittest.TestCase):
         self.assertEqual(want.source_ref, "pursuit:4")
         self.assertIn("keeping a herb garden", want.text)
 
+    def test_the_read_goes_through_the_view_under_its_diet(self) -> None:
+        # The last direct ConceptStore reader in the codebase: it kept its
+        # own status / subject / kind filter and its own confidence sort,
+        # both of which the view already does.
+        kv = _KvStore()
+        view = _FakeConcepts([_FakeConcepts.Row(4, "keeping a herb garden")])
+        self._worker(kv, view_provider=lambda: view).run()
+        diet = diet_for("wants_ledger")
+        self.assertEqual(
+            set(view.asked), {(kind, diet.subject) for kind in diet.kinds}
+        )
+
     def test_it_starts_below_the_time_sensitive_wants(self) -> None:
         kv = _KvStore()
         worker = self._worker(
@@ -460,7 +485,7 @@ class PursuitWantTests(unittest.TestCase):
             cue_store_provider=lambda: _FakeCues([
                 _FakeCues.Row(1, "whether he plays an instrument"),
             ]),
-            concept_store_provider=lambda: _FakeConcepts([
+            view_provider=lambda: _FakeConcepts([
                 _FakeConcepts.Row(4, "keeping a herb garden"),
             ]),
         )
@@ -473,7 +498,7 @@ class PursuitWantTests(unittest.TestCase):
         kv = _KvStore()
         worker = self._worker(
             kv,
-            concept_store_provider=lambda: _FakeConcepts([
+            view_provider=lambda: _FakeConcepts([
                 _FakeConcepts.Row(1, "keeping a herb garden", confidence=0.7),
                 _FakeConcepts.Row(2, "learning to bind books", confidence=0.9),
                 _FakeConcepts.Row(3, "birdwatching from the window"),
@@ -488,7 +513,7 @@ class PursuitWantTests(unittest.TestCase):
         kv = _KvStore()
         worker = self._worker(
             kv,
-            concept_store_provider=lambda: _FakeConcepts([
+            view_provider=lambda: _FakeConcepts([
                 _FakeConcepts.Row(1, "seeded idea", status="candidate"),
                 _FakeConcepts.Row(2, "half-formed", confidence=0.2),
                 _FakeConcepts.Row(3, "a taste of his", kind="taste"),
@@ -501,7 +526,7 @@ class PursuitWantTests(unittest.TestCase):
         concepts = _FakeConcepts([
             _FakeConcepts.Row(4, "keeping a herb garden"),
         ])
-        worker = self._worker(kv, concept_store_provider=lambda: concepts)
+        worker = self._worker(kv, view_provider=lambda: concepts)
         worker.run()
         concepts.rows[0].status = "dormant"
         stats = worker.run()
@@ -514,22 +539,34 @@ class PursuitWantTests(unittest.TestCase):
         concepts = _FakeConcepts([
             _FakeConcepts.Row(4, "keeping a herb garden"),
         ])
-        worker = self._worker(kv, concept_store_provider=lambda: concepts)
+        worker = self._worker(kv, view_provider=lambda: concepts)
         worker.run()
 
         def _boom():
             raise RuntimeError("db is gone")
 
-        worker = self._worker(kv, concept_store_provider=_boom)
+        worker = self._worker(kv, view_provider=_boom)
         self.assertEqual(worker.run()["pruned"], 0)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertEqual(len(state.wants), 1)
+
+    def test_a_cold_view_retires_nothing(self) -> None:
+        # "The concept layer is off" is not "she has no pursuits left".
+        kv = _KvStore()
+        concepts = _FakeConcepts([
+            _FakeConcepts.Row(4, "keeping a herb garden"),
+        ])
+        self._worker(kv, view_provider=lambda: concepts).run()
+        concepts.enabled = False
+        self.assertEqual(
+            self._worker(kv, view_provider=lambda: concepts).run()["pruned"], 0
+        )
 
     def test_the_switch_stops_the_producer(self) -> None:
         kv = _KvStore()
         worker = self._worker(
             kv,
-            concept_store_provider=lambda: _FakeConcepts([
+            view_provider=lambda: _FakeConcepts([
                 _FakeConcepts.Row(4, "keeping a herb garden"),
             ]),
             pursuit_wants_enabled_provider=lambda: False,
@@ -544,10 +581,10 @@ class PursuitWantTests(unittest.TestCase):
         concepts = _FakeConcepts([
             _FakeConcepts.Row(4, "keeping a herb garden"),
         ])
-        self._worker(kv, concept_store_provider=lambda: concepts).run()
+        self._worker(kv, view_provider=lambda: concepts).run()
         worker = self._worker(
             kv,
-            concept_store_provider=lambda: concepts,
+            view_provider=lambda: concepts,
             pursuit_wants_enabled_provider=lambda: False,
         )
         self.assertEqual(worker.run()["pruned"], 0)

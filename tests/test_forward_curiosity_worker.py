@@ -1,9 +1,10 @@
 """Tests for :class:`app.core.proactive.forward_curiosity_worker.ForwardCuriosityWorker`.
 
 Exercises candidate selection (from fake future_plan + callback
-memories, biased by a fake routine profile), de-dup against the kv ring
-and the cue pool, the kv journal ring trim, the pacing gates (cooldown,
-enabled switch), and the two-halves arming rule. Questions compose via
+memories, her own subject notes, and L28's concept pool, with a fake
+concept view and routine profile as phrasing context), de-dup against
+the kv ring and the cue pool, the kv journal ring trim, the pacing gates
+(cooldown, enabled switch), and the two-halves arming rule. Questions compose via
 the deterministic fallback (``ollama=None``) so assertions don't depend
 on a model; the pool tests use a real ``CueStore`` on a throwaway file,
 since its state machine is the thing under test.
@@ -94,11 +95,55 @@ class _FakeProfileStore:
         return dict(self._fields)
 
 
+class _FakeConcept:
+    def __init__(
+        self,
+        concept_id: int,
+        label: str,
+        *,
+        kind: str = "taste",
+        subject: str = "user",
+        confidence: float = 0.8,
+    ) -> None:
+        self.concept_id = concept_id
+        self.label = label
+        self.kind = kind
+        self.subject = subject
+        self.confidence = confidence
+        self.status = "active"
+
+
+class _FakeView:
+    """A ConceptView narrowed to the one read this worker performs."""
+
+    def __init__(
+        self,
+        concepts: list[_FakeConcept] | None = None,
+        *,
+        enabled: bool = True,
+        raises: bool = False,
+    ) -> None:
+        self._concepts = list(concepts or [])
+        self.enabled = enabled
+        self._raises = raises
+        self.calls: list[str | None] = []
+
+    def for_consumer(self, consumer, *, subject=None):
+        self.calls.append(subject)
+        if self._raises:
+            raise RuntimeError("store is gone")
+        return [
+            c for c in self._concepts
+            if subject is None or c.subject == subject
+        ]
+
+
 def _make_worker(
     *,
     store: _FakeMemoryStore,
     kv: _FakeKV,
     profile: _FakeProfileStore | None = None,
+    view: _FakeView | None = None,
     enabled: bool = True,
     cooldown: float = 3600.0,
     cues=None,
@@ -114,6 +159,7 @@ def _make_worker(
         user_id_provider=lambda: "jacob",
         user_display_name_provider=lambda: "Jacob",
         user_profile_store=profile,
+        view_provider=(lambda: view) if view is not None else None,
         enabled_provider=lambda: enabled,
         cue_store_provider=(lambda: cues) if cues is not None else None,
         ollama=None,  # deterministic fallback
@@ -364,6 +410,162 @@ class SubjectSourceTests(unittest.TestCase):
             "source": "future_plan",
         })
         self.assertTrue(line.startswith("You've been wondering"))
+
+
+class ConceptSourceTests(unittest.TestCase):
+    """L28's fourth pool: standing things, not events.
+
+    The three memory pools mean a plan, a callback or a note is the only
+    thing she can be curious about -- she can ask how something went, but
+    not whether a direction he is on still holds.
+    """
+
+    def test_a_concept_becomes_a_candidate(self) -> None:
+        kv = _FakeKV()
+        view = _FakeView([_FakeConcept(4, "he is drawn to slow crafts")])
+        worker = _make_worker(
+            store=_FakeMemoryStore(), kv=kv, view=view, cooldown=0.0,
+        )
+        result = worker.run()
+        self.assertEqual(result["source"], "concept")
+        self.assertEqual(result["source_id"], "concept:4")
+        self.assertIn("slow crafts", result["question"])
+
+    def test_the_question_asks_whether_it_still_holds(self) -> None:
+        # The distinguishing shape: an event wants "how did it go?", a
+        # standing read wants "is that still true?".
+        kv = _FakeKV()
+        view = _FakeView([_FakeConcept(4, "he is drawn to slow crafts")])
+        worker = _make_worker(
+            store=_FakeMemoryStore(), kv=kv, view=view, cooldown=0.0,
+        )
+        self.assertIn("still true", worker.run()["question"])
+
+    def test_a_concept_of_hers_lands_on_the_subject_side(self) -> None:
+        # The quota axis is whose it is, not which pool it came from.
+        kv = _FakeKV()
+        view = _FakeView([
+            _FakeConcept(4, "she loves the quiet of early mornings",
+                         subject="aiko"),
+        ])
+        worker = _make_worker(
+            store=_FakeMemoryStore(), kv=kv, view=view, cooldown=0.0,
+            subject_quota=1.0,
+        )
+        result = worker.run()
+        self.assertEqual(result["source"], "concept")
+        self.assertTrue(load_questions(kv.get)[0]["hers"])
+        self.assertIn("yours to say", render_question_cue(load_questions(kv.get)[0]))
+
+    def test_a_zero_quota_keeps_her_own_concepts_out(self) -> None:
+        kv = _FakeKV()
+        view = _FakeView([
+            _FakeConcept(4, "she loves early mornings", subject="aiko"),
+        ])
+        store = _FakeMemoryStore(
+            future_plans=[
+                _FakeMemory(i, f"his package {i}", temporal_type="future_plan")
+                for i in range(1, 6)
+            ],
+        )
+        for _ in range(4):
+            worker = _make_worker(
+                store=store, kv=kv, view=view, cooldown=0.0, subject_quota=0.0,
+            )
+            self.assertEqual(worker.run()["source"], "future_plan")
+
+    def test_the_ring_dedupes_a_concept_by_its_own_key(self) -> None:
+        # ``concept:{id}`` rides the existing lineage paths rather than
+        # introducing a fourth dedupe axis.
+        kv = _FakeKV()
+        view = _FakeView([_FakeConcept(4, "he is drawn to slow crafts")])
+        store = _FakeMemoryStore()
+        first = _make_worker(store=store, kv=kv, view=view, cooldown=0.0)
+        self.assertEqual(first.run()["drafted"], 1)
+        second = _make_worker(store=store, kv=kv, view=view, cooldown=0.0)
+        self.assertEqual(second.run()["drafted"], 0)
+
+    def test_the_pool_dedupes_a_concept_by_its_own_key(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        from app.core.infra.chat_database import ChatDatabase
+        from app.core.proactive.cue_store import CueStore
+
+        tmp = TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        cues = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
+        kv = _FakeKV()
+        view = _FakeView([_FakeConcept(4, "he is drawn to slow crafts")])
+        store = _FakeMemoryStore()
+        self.assertEqual(
+            _make_worker(
+                store=store, kv=kv, view=view, cues=cues, cooldown=0.0,
+            ).run()["drafted"],
+            1,
+        )
+        # A fresh ring: the pool, not the journal, is what remembers now.
+        kv.store.pop(FORWARD_CURIOSITY_JOURNAL_KEY, None)
+        self.assertEqual(
+            _make_worker(
+                store=store, kv=kv, view=view, cues=cues, cooldown=0.0,
+            ).run()["drafted"],
+            0,
+        )
+
+    def test_no_view_leaves_the_three_memory_pools_alone(self) -> None:
+        kv = _FakeKV()
+        store = _FakeMemoryStore(
+            future_plans=[_FakeMemory(7, "his move", temporal_type="future_plan")],
+        )
+        worker = _make_worker(store=store, kv=kv, cooldown=0.0)
+        self.assertEqual(worker.run()["source"], "future_plan")
+
+    def test_a_cold_or_broken_view_is_not_a_failed_tick(self) -> None:
+        store = _FakeMemoryStore(
+            future_plans=[_FakeMemory(7, "his move", temporal_type="future_plan")],
+        )
+        for view in (_FakeView(enabled=False), _FakeView(raises=True)):
+            kv = _FakeKV()
+            worker = _make_worker(
+                store=store, kv=kv, view=view, cooldown=0.0,
+            )
+            self.assertEqual(worker.run()["source"], "future_plan")
+
+
+class ConceptHintTests(unittest.TestCase):
+    """The phrasing hint: concepts first, the K3 profile as the floor."""
+
+    def _hint(self, **kwargs) -> str:
+        worker = _make_worker(store=_FakeMemoryStore(), kv=_FakeKV(), **kwargs)
+        return worker._context_hint()
+
+    def test_concepts_lead_the_hint(self) -> None:
+        hint = self._hint(
+            view=_FakeView([_FakeConcept(1, "he is happiest mid-build")]),
+            profile=_FakeProfileStore({"routines": "Monday check-ins"}),
+        )
+        self.assertLess(hint.index("mid-build"), hint.index("Monday"))
+
+    def test_the_profile_stays_the_floor(self) -> None:
+        # A cold concept layer must leave the hint no worse than the two
+        # flat profile strings it used to be.
+        hint = self._hint(
+            view=_FakeView([]),
+            profile=_FakeProfileStore(
+                {"routines": "Monday check-ins", "usual_hours": "evenings"}
+            ),
+        )
+        self.assertEqual(hint, "Monday check-ins; evenings")
+
+    def test_only_his_concepts_are_asked_for(self) -> None:
+        # A question about his life should not be phrased around her own
+        # tastes.
+        view = _FakeView([_FakeConcept(1, "he is happiest mid-build")])
+        self._hint(view=view)
+        self.assertIn("user", view.calls)
+
+    def test_no_sources_at_all_is_an_empty_hint(self) -> None:
+        self.assertEqual(self._hint(), "")
 
 
 class GateTests(unittest.TestCase):

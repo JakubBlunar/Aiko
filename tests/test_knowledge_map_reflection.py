@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive.knowledge_map_reflection_worker import (
     MINDMAP_PREFIX,
     KnowledgeMapReflectionWorker,
@@ -46,6 +47,7 @@ class _Activity:
 class _Concept:
     label: str
     confidence: float = 0.5
+    kind: str = "identity"
 
 
 class _FakeView:
@@ -62,12 +64,18 @@ class _FakeView:
         self.enabled = enabled
         self._raises = raises
         self.calls: list[int] = []
+        self.kinds_asked: list[tuple[str, ...] | None] = []
 
-    def for_cluster(self, rep_id) -> list[_Concept]:
+    def for_cluster(self, rep_id, *, kinds=None) -> list[_Concept]:
         self.calls.append(int(rep_id))
+        self.kinds_asked.append(tuple(kinds) if kinds is not None else None)
         if self._raises:
             raise RuntimeError("boom")
-        return list(self._by_rep.get(int(rep_id), []))
+        rows = list(self._by_rep.get(int(rep_id), []))
+        if kinds is None:
+            return rows
+        wanted = {str(k) for k in kinds}
+        return [r for r in rows if r.kind in wanted]
 
 
 class _FakeGraphWithActivity:
@@ -461,6 +469,8 @@ class ConceptAnnotationTests(unittest.TestCase):
         self.assertIn("20 memories, hot this week", llm.last_user)
 
     def test_most_confident_concepts_win_the_cap(self) -> None:
+        # Same kind throughout, so the kind-spreading draw collapses to a
+        # plain confidence order and a one-kind territory still fills up.
         view = _FakeView({
             11: [
                 _Concept("weak hunch", 0.2),
@@ -476,6 +486,55 @@ class ConceptAnnotationTests(unittest.TestCase):
         worker.run()
         self.assertIn("firm belief; middling", llm.last_user)
         self.assertNotIn("weak hunch", llm.last_user)
+
+    def test_the_read_is_scoped_to_the_declared_diet(self) -> None:
+        # Unscoped, the annotation took whatever was edged to the cluster.
+        view = _FakeView({11: [_Concept("something")]})
+        worker, _kv = _make_worker(
+            graph=self._graph(), min_clusters=4, view_provider=lambda: view,
+        )
+        worker.run()
+        asked = view.kinds_asked[0]
+        self.assertIsNotNone(asked)
+        self.assertEqual(set(asked), set(diet_for("knowledge_map_reflection").kinds))
+
+    def test_a_kind_outside_the_diet_never_annotates_a_territory(self) -> None:
+        llm = _CapturingLLM()
+        view = _FakeView({
+            11: [
+                _Concept("she will not discuss his ex", 0.95, kind="boundary"),
+                _Concept("he burns out on stacked deadlines", 0.6),
+            ],
+        })
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: view, concepts_per_cluster=1,
+        )
+        worker.run()
+        self.assertIn("he burns out on stacked deadlines", llm.last_user)
+        self.assertNotIn("his ex", llm.last_user)
+
+    def test_two_slots_go_to_two_different_kinds(self) -> None:
+        # The reason the draw is not a straight confidence sort: with two
+        # slots per territory, the firmest two things she holds are
+        # routinely the same kind, and a reflection on the whole map wants
+        # a taste beside a conviction rather than two of either.
+        llm = _CapturingLLM()
+        view = _FakeView({
+            11: [
+                _Concept("he is deadline-driven", 0.9),
+                _Concept("he is happiest shipping", 0.85),
+                _Concept("she loves the debugging part", 0.4, kind="taste"),
+            ],
+        })
+        worker, _kv = _make_worker(
+            graph=self._graph(), llm=llm, min_clusters=4,
+            view_provider=lambda: view, concepts_per_cluster=2,
+        )
+        worker.run()
+        self.assertIn("he is deadline-driven", llm.last_user)
+        self.assertIn("she loves the debugging part", llm.last_user)
+        self.assertNotIn("happiest shipping", llm.last_user)
 
     def test_unresolved_representative_is_not_queried(self) -> None:
         view = _FakeView({11: [_Concept("something")]})

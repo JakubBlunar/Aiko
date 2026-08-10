@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive import aspiration_momentum as _am
 from app.core.proactive.aspiration_momentum_worker import (
     AspirationMomentumWorker,
@@ -48,8 +49,10 @@ class _FakeView:
     def __init__(self, concepts, *, enabled=True) -> None:
         self._concepts = concepts
         self.enabled = enabled
+        self.kinds_asked: list[str | None] = []
 
     def core(self, *, kind=None, subject=None, min_confidence=0.0, limit=None):
+        self.kinds_asked.append(kind)
         return [
             c for c in self._concepts
             if getattr(c, "subject", None) == subject
@@ -92,6 +95,14 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(
             kv.store.get("aspiration_momentum.last_signature"),
             _am.signature(1),
+        )
+
+    def test_the_kinds_read_come_from_the_declared_diet(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, last_reinforced_at=_stale_iso(30))])
+        _worker(view, kv).run()
+        self.assertEqual(
+            set(view.kinds_asked), set(diet_for("aspiration_momentum").kinds)
         )
 
     def test_fresh_aspiration_not_stale_enough(self) -> None:

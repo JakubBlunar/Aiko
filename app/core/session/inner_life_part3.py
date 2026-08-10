@@ -31,7 +31,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
           suppresses the rest.
         * Predicate filter on stance memories (lives in the detector
           module). Only opinion-shaped self-tags qualify, not
-          biographical facts.
+          biographical facts. L28's concept candidates (see
+          :meth:`_stance_concept_candidates`) are exempt -- their kind
+          establishes them as stances.
         * Heuristic + LLM gate (lives in the detector module).
           Only ``definite`` contradictions fire immediately;
           ``borderline`` requires an LLM YES verdict via the
@@ -112,6 +114,13 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("opinion-injection: self memory snapshot failed", exc_info=True)
             return ""
+        # L28: her durable stances join the same pool. A concept can be the
+        # only place a recurring taste lives -- synthesis is what happens to
+        # the ones that come up often -- so without this the opinions she
+        # holds most firmly were the ones she couldn't notice being pushed
+        # on. Appended, so a self-memory and a concept saying the same thing
+        # compete on cosine and the sharper wording wins.
+        self_memories.extend(self._stance_concept_candidates())
         if not self_memories:
             return ""
 
@@ -189,6 +198,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 "cosine": result.cosine,
                 "heuristic_label": result.heuristic_label,
                 "heuristic_signals": list(result.heuristic_signals),
+                # Carried across the turn boundary so the deferred cue still
+                # knows not to tell her she wrote a concept.
+                "stance_origin": result.stance_origin,
             }
             log.debug(
                 "opinion-injection: borderline deferred stance_id=%d cosine=%.3f",
@@ -259,6 +271,49 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
         self._opinion_injection_cue_emitted = True  # K46
         return block
+
+    def _stance_concept_candidates(self) -> list[Any]:
+        """L28: her ``stance`` diet, adapted into K29 stance candidates.
+
+        The diet is ``value`` / ``taste`` / ``pursuit`` at ``subject=aiko``
+        -- values alone would make every opinion of hers a principle, which
+        is the register K29's cue text works hardest to avoid. Taste and
+        pursuit are what let a stance be a preference she simply has.
+
+        Read through ``for_consumer`` rather than ``relevant``, unlike the
+        L18c boundary-clash sibling: the detector runs its own cosine pass
+        over the whole candidate pool and picks one winner, so pre-ranking
+        by similarity here would just be a second, differently-tuned
+        version of the same sort. The diet budget is what keeps the pool
+        bounded.
+
+        Returns ``[]`` on every failure -- cold view, no diet, read error --
+        which lands K29 exactly on its pre-L28 behaviour.
+        """
+        try:
+            from app.core.affect.opinion_injection_detector import StanceConcept
+            from app.core.concepts.concept_view import concept_view_from
+        except Exception:
+            log.debug("opinion-injection: concept import failed", exc_info=True)
+            return []
+        try:
+            view = concept_view_from(self)
+        except Exception:
+            log.debug("opinion-injection: concept view failed", exc_info=True)
+            return []
+        if view is None or not getattr(view, "enabled", False):
+            return []
+        try:
+            rows = view.for_consumer("stance")
+        except Exception:
+            log.debug("opinion-injection: stance concept read failed", exc_info=True)
+            return []
+        out: list[Any] = []
+        for concept in rows:
+            candidate = StanceConcept.from_concept(concept)
+            if candidate is not None:
+                out.append(candidate)
+        return out
 
     def _render_boundary_clash_block(self, user_text: str) -> str:
         """L18c: surface a soft cue when the live turn nears an active boundary.
@@ -519,6 +574,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             heuristic_label=str(pending.get("heuristic_label", "")),
             heuristic_signals=list(pending.get("heuristic_signals", []) or []),
             llm_verdict="YES",
+            stance_origin=str(
+                pending.get("stance_origin", "")
+                or opinion_injection_detector.ORIGIN_MEMORY
+            ),
         )
 
         cooldown_turns = max(

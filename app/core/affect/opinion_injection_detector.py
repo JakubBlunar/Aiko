@@ -1,10 +1,12 @@
 """Opinion injection detector (K29).
 
 Per-turn detector that fires a one-line cue when {user_name}'s latest
-message contradicts one of Aiko's stored ``kind="self"`` stance
-memories. The whole point of K29 is to make the persona's "have
-opinions, disagree when you disagree" claim *actually fire* against
-LLM RLHF agreeability -- without flipping into contrarianism.
+message contradicts one of Aiko's stored stances -- a ``kind="self"``
+memory, or (L28) a ``subject=aiko`` value / taste / pursuit concept fed
+in as a :class:`StanceConcept`. The whole point of K29 is to make the
+persona's "have opinions, disagree when you disagree" claim *actually
+fire* against LLM RLHF agreeability -- without flipping into
+contrarianism.
 
 The anti-contrarianism guardrails are layered:
 
@@ -12,7 +14,8 @@ The anti-contrarianism guardrails are layered:
    predicate ("I prefer", "I don't like", "I love", "I find ...
    annoying", etc.) are eligible. Pure facts ("I was born in", "I
    live in") are filtered out -- those aren't stances, they're
-   biographical data.
+   biographical data. Concept candidates are exempt: their kind
+   already establishes that they are stances.
 2. **Cosine threshold**: top-cosine match against the live user
    message must clear ``min_cosine`` (default 0.55). Below that,
    topic match is too weak to claim a real contradiction.
@@ -68,6 +71,16 @@ log = logging.getLogger("app.opinion_injection_detector")
 # can wire user overrides through without losing the source-of-truth.
 DEFAULT_MIN_COSINE: float = 0.55
 DEFAULT_MIN_USER_WORDS: int = 4
+
+
+# Where the winning stance came from. L28 added the second: a
+# ``subject=aiko`` value / taste / pursuit concept is a stance she holds
+# just as much as a ``kind="self"`` memory is, and the two differ in two
+# ways the pipeline has to respect -- a concept does not need the
+# opinion-shape regex (its kind already says it is a stance) and it is
+# not something she *wrote*, so the cue cannot say she did.
+ORIGIN_MEMORY = "memory"
+ORIGIN_CONCEPT = "concept"
 DEFAULT_COOLDOWN_TURNS: int = 5
 DEFAULT_PER_SESSION_CAP: int = 3
 DEFAULT_PER_HOUR_CAP: int = 6
@@ -153,16 +166,84 @@ class OpinionInjectionResult:
     heuristic_label: str
     heuristic_signals: list[str]
     llm_verdict: str | None = None
+    #: ``ORIGIN_MEMORY`` or ``ORIGIN_CONCEPT``. Read by the renderer,
+    #: which cannot claim she *wrote* a concept, and by the debug tool.
+    stance_origin: str = ORIGIN_MEMORY
+
+
+@dataclass(frozen=True, slots=True)
+class StanceConcept:
+    """L28: a durable concept, in the shape the pipeline reads (K29).
+
+    Aiko's stances live in two places. ``kind="self"`` memories are what
+    she wrote in a moment; ``subject=aiko`` ``value`` / ``taste`` /
+    ``pursuit`` concepts are what the concept layer distilled from many
+    of them. K29 only ever saw the first, so a taste that had been
+    abstracted into a concept -- and *only* into a concept, because
+    synthesis is what happens to the ones that recur -- could be
+    contradicted to her face without a flicker. The strongest opinions
+    she has were the ones she could not notice being pushed on.
+
+    An adapter rather than a widened detector: the module stays pure and
+    knows nothing about ``ConceptStore``, and the cosine pass, heuristic
+    gate and cooldown all keep working on one candidate list.
+
+    ``id`` is the *negated* ``concept_id``, so a stance id is
+    unambiguous about which store it came from wherever it is logged or
+    stashed -- ``stance_memory_id`` is diagnostic only and nothing joins
+    back on it.
+    """
+
+    id: int
+    content: str
+    embedding: np.ndarray
+    stance_origin: str = ORIGIN_CONCEPT
+
+    @classmethod
+    def from_concept(cls, concept: object) -> "StanceConcept | None":
+        """Adapt one concept row, or ``None`` if it can't be a candidate.
+
+        An unembedded concept (empty array, e.g. mid embedding-model
+        swap) is dropped here rather than in the cosine pass, where it
+        would be a silently swallowed exception per turn.
+        """
+        cid = int(getattr(concept, "concept_id", 0) or 0)
+        label = " ".join(str(getattr(concept, "label", "") or "").split())
+        vec = getattr(concept, "embedding", None)
+        if cid <= 0 or not label or vec is None or not len(vec):
+            return None
+        return cls(id=-cid, content=label, embedding=vec)
 
 
 # ── Detection pipeline ───────────────────────────────────────────────────
 
 
+def _origin_of(candidate: object) -> str:
+    """Where ``candidate`` came from; ``ORIGIN_MEMORY`` unless it says so.
+
+    A duck-typed attribute rather than a second parameter on
+    :func:`detect`, so the pipeline below stays one list of candidates
+    with one cosine pass and one winner. ``Memory`` rows never carry it.
+    """
+    origin = str(getattr(candidate, "stance_origin", "") or "")
+    return origin or ORIGIN_MEMORY
+
+
 def _filter_opinion_memories(memories: Iterable["Memory"]) -> list["Memory"]:
-    """Drop stance memories that don't have an opinion-shaped predicate."""
+    """Drop stance candidates that don't have an opinion-shaped predicate.
+
+    A candidate that declares its own origin is exempt. The regex exists
+    to separate stances from biographical facts inside the mixed
+    ``kind="self"`` pool, and a ``value`` / ``taste`` / ``pursuit``
+    concept is not a mixed pool -- its kind already says it is a stance,
+    which is a stronger signal than first-person phrasing that a concept
+    label has no reason to use anyway.
+    """
     out: list["Memory"] = []
     for mem in memories:
-        if _has_opinion_shape(mem.content or ""):
+        if _origin_of(mem) != ORIGIN_MEMORY:
+            out.append(mem)
+        elif _has_opinion_shape(mem.content or ""):
             out.append(mem)
     return out
 
@@ -269,6 +350,7 @@ def detect(
             heuristic_label=label,
             heuristic_signals=list(verdict.signals),
             llm_verdict=None,
+            stance_origin=_origin_of(stance),
         )
     # ``borderline`` (numerical-mismatch) AND ``no`` paths route
     # through the LLM gate when one is available. The conservative
@@ -298,6 +380,7 @@ def detect(
             heuristic_label=label,
             heuristic_signals=list(verdict.signals),
             llm_verdict="PENDING",
+            stance_origin=_origin_of(stance),
         )
     if llm_gate is None:
         return None
@@ -317,6 +400,7 @@ def detect(
         heuristic_label=label,
         heuristic_signals=list(verdict.signals),
         llm_verdict=normalized,
+        stance_origin=_origin_of(stance),
     )
 
 
@@ -346,9 +430,18 @@ def render_inner_life_block(
     # system prompt; the full content is still on the memory row.
     if len(snippet) > 180:
         snippet = snippet[:177].rstrip() + "\u2026"
+    # A self-memory is something she wrote in her own words; a concept is
+    # something the layer distilled from many turns and she never phrased.
+    # Saying "you wrote" of the second one would put words in her mouth
+    # and invite her to defend a wording that isn't hers.
+    attribution = (
+        "it's something you hold"
+        if result.stance_origin == ORIGIN_CONCEPT
+        else "you wrote"
+    )
     head = (
         f"Heads-up: you've got a stored stance on this and it actually "
-        f"differs from what {user_display_name} just said -- you wrote: "
+        f"differs from what {user_display_name} just said -- {attribution}: "
         f"'{snippet}'."
     )
     body = (

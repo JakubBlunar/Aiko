@@ -442,6 +442,15 @@ def _ms() -> SimpleNamespace:
         context_budget_concept_min_relevance=0.3,
         context_budget_core_cap=2,
         context_budget_core_min_confidence=0.75,
+        # The two openness mechanisms are off here for the same reason
+        # standing is: they deliberately override the ranking these
+        # fixtures measure, so a legacy ranking test would start asserting
+        # about the override instead of about the rank. Both ship on by
+        # default and have their own tests (``OpennessWiringTests`` below,
+        # plus ``tests/test_concept_diets.py`` for the selection itself).
+        concept_core_openness_slots=0,
+        concept_core_openness_min_confidence=0.5,
+        concept_flex_generative_floor=0,
         concept_min_clusters=6,
         # Feature-focused tests opt in explicitly; keep legacy ranking fixtures
         # stable when no standing cache was part of their setup.
@@ -1275,6 +1284,182 @@ class ImportanceWiringTests(unittest.TestCase):
 #: Captured before any test deletes it off the class, so the teardown in
 #: ``test_a_missing_store_method_does_not_sink_the_turn`` can put it back.
 _cluster_evidence_for = _FakeConceptStore.cluster_evidence_for
+
+
+class OpennessWiringTests(unittest.TestCase):
+    """The two brain-line openness mechanisms, through the real builder.
+
+    Both exist because a concept selection ranked on strength converges on
+    the kinds that constrain Aiko: ``boundary`` and ``value`` carry the
+    two highest importance priors in the registry, and the pinned lane is
+    not even *eligible* to carry a generative kind. The selection logic is
+    unit-tested in ``tests/test_concept_diets.py``; what these pin is the
+    wiring, which is where a feature like this is easiest to lose --
+    every path is a silent no-op when it fails.
+    """
+
+    _host = HabituationWiringTests._host
+    _run = HabituationWiringTests._run
+    _trace_by_id = HabituationWiringTests._trace_by_id
+
+    @staticmethod
+    def _concept(cid: int, kind: str, *, conf: float = 0.9, subject="user"):
+        return SimpleNamespace(
+            concept_id=cid, label=f"{kind} belief {cid}", confidence=conf,
+            plasticity=0.4, kind=kind, subject=subject, status="active",
+            last_reinforced_at=None,
+        )
+
+    def _stocked(self, **settings):
+        host = self._host(
+            [
+                self._concept(1, "identity", conf=0.95),
+                self._concept(2, "value", conf=0.95),
+                self._concept(3, "boundary", conf=0.92),
+                self._concept(4, "aspiration", conf=0.80),
+            ],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        for key, value in settings.items():
+            setattr(host._memory_settings, key, value)
+        return host
+
+    def _pinned(self, region) -> set[int]:
+        return {
+            cid for cid, entry in self._trace_by_id(region).items()
+            if entry.get("pinned")
+        }
+
+    # ── the openness reserve (pinned lane) ────────────────────────────
+
+    def test_the_pinned_lane_carries_no_generative_kind_by_default(
+        self,
+    ) -> None:
+        # The state the reserve exists to fix, asserted here rather than
+        # only described in a comment: ``core_lane_kinds()`` returns two
+        # anchors and two guides, so no amount of tuning the cap reaches
+        # an aspiration.
+        pinned = self._pinned(
+            self._run(self._stocked(concept_core_openness_slots=0))
+        )
+        self.assertTrue(pinned)
+        self.assertNotIn(4, pinned)
+
+    def test_the_reserve_pins_a_generative_concept(self) -> None:
+        region = self._run(self._stocked(
+            concept_core_openness_slots=1,
+            concept_core_openness_min_confidence=0.5,
+            context_budget_core_cap=2,
+        ))
+        self.assertIn(4, self._pinned(region))
+
+    def test_the_reserve_does_not_take_over_a_small_lane(self) -> None:
+        # ``core_cap`` defaults to 2 and the reserve to 2 slots, so a
+        # literal reading would pin nothing but generative concepts and
+        # drop the identity that says who she is talking to.
+        pinned = self._pinned(self._run(self._stocked(
+            concept_core_openness_slots=2, context_budget_core_cap=2,
+        )))
+        self.assertIn(4, pinned)
+        self.assertTrue(pinned - {4})
+
+    def test_a_shaky_generative_concept_is_not_pinned(self) -> None:
+        host = self._stocked(
+            concept_core_openness_slots=1,
+            concept_core_openness_min_confidence=0.85,
+        )
+        self.assertNotIn(4, self._pinned(self._run(host)))
+
+    # ── the generative floor (flex lane) ──────────────────────────────
+
+    def _tilted(self, **settings):
+        """A turn whose flex pick would otherwise be guides only."""
+        host = self._host(
+            [
+                self._concept(11, "boundary", conf=0.9),
+                self._concept(12, "value", conf=0.9),
+                self._concept(13, "taste", conf=0.9, subject="aiko"),
+            ],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        host._memory_settings.context_budget_core_cap = 0
+        host._memory_settings.context_budget_concept_cap = 2
+        for key, value in settings.items():
+            setattr(host._memory_settings, key, value)
+        return host
+
+    def test_without_the_floor_the_tilt_wins_outright(self) -> None:
+        region = self._run(self._tilted(concept_flex_generative_floor=0))
+        surfaced = {
+            int(row["concept_id"]) for row in region.concept_trace["surfaced"]
+        }
+        self.assertEqual(surfaced, {11, 12})
+        self.assertFalse(region.concept_trace["roles"]["floor_fired"])
+
+    def test_the_floor_makes_room_for_the_generative_concept(self) -> None:
+        region = self._run(self._tilted(concept_flex_generative_floor=1))
+        surfaced = {
+            int(row["concept_id"]) for row in region.concept_trace["surfaced"]
+        }
+        self.assertIn(13, surfaced)
+        self.assertTrue(region.concept_trace["roles"]["floor_fired"])
+
+    def test_the_floor_displaces_a_guide_and_not_an_anchor(self) -> None:
+        # Losing a boundary from one turn's pick is recoverable; losing the
+        # identity concept that says who she is talking to is not.
+        host = self._host(
+            [
+                self._concept(11, "identity", conf=0.95),
+                self._concept(12, "boundary", conf=0.9),
+                self._concept(13, "taste", conf=0.9, subject="aiko"),
+            ],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        host._memory_settings.context_budget_core_cap = 0
+        host._memory_settings.context_budget_concept_cap = 2
+        host._memory_settings.concept_flex_generative_floor = 1
+        region = self._run(host)
+        surfaced = {
+            int(row["concept_id"]) for row in region.concept_trace["surfaced"]
+        }
+        self.assertIn(11, surfaced)
+        self.assertIn(13, surfaced)
+        self.assertNotIn(12, surfaced)
+
+    def test_the_floor_stays_quiet_when_the_pick_is_already_open(
+        self,
+    ) -> None:
+        host = self._tilted(concept_flex_generative_floor=1)
+        host._memory_settings.context_budget_concept_cap = 3
+        region = self._run(host)
+        self.assertFalse(region.concept_trace["roles"]["floor_fired"])
+
+    def test_the_floor_never_grows_the_region(self) -> None:
+        region = self._run(self._tilted(concept_flex_generative_floor=1))
+        self.assertLessEqual(
+            region.selection.used_tokens, region.selection.budget_tokens,
+        )
+
+    # ── the role mix ──────────────────────────────────────────────────
+
+    def test_the_trace_reports_the_role_mix(self) -> None:
+        roles = self._run(
+            self._tilted(concept_flex_generative_floor=1)
+        ).concept_trace["roles"]
+        self.assertEqual(roles["generative"], 1)
+        self.assertEqual(roles["guide"], 1)
+        self.assertEqual(roles["constraint_ratio"], 0.5)
+
+    def test_an_all_anchor_turn_reports_no_constraint_ratio(self) -> None:
+        # 0.0 would read as the openest possible turn; the honest answer is
+        # that the question does not apply.
+        host = self._host(
+            [self._concept(1, "identity")],
+            near_score=0.6, tracker=_FakeTracker(3), kv=_FakeKV(),
+        )
+        roles = self._run(host).concept_trace["roles"]
+        self.assertIsNone(roles["constraint_ratio"])
+        self.assertEqual(roles["anchor"], 1)
 
 
 class ProfileClaimDedupeTests(unittest.TestCase):

@@ -394,6 +394,68 @@ class DuplicateTests(unittest.TestCase):
         self.assertEqual(report["duplicates"]["pair_count"], 0)
 
 
+class RolesTests(unittest.TestCase):
+    """The store-wide anchor / guide / generative mix.
+
+    The per-turn role mix (in the surfacing trace) can only report on what
+    was available to pick. This section answers the prior question --
+    whether the layer has mined anything open at all -- which no
+    turn-level reading can distinguish from a run of unlucky turns.
+    """
+
+    def test_the_mix_is_counted_by_role(self) -> None:
+        report = _report([
+            _concept(cid=1, kind="identity"),
+            _concept(cid=2, kind="boundary"),
+            _concept(cid=3, kind="value"),
+            _concept(cid=4, kind="taste", subject="aiko"),
+        ])
+        self.assertEqual(
+            report["roles"]["by_role"],
+            {"anchor": 1, "guide": 2, "generative": 1},
+        )
+
+    def test_candidates_do_not_count(self) -> None:
+        # The question is what she can actually surface, and only active
+        # rows reach any lane.
+        report = _report([
+            _concept(cid=1, kind="taste", subject="aiko"),
+            _concept(cid=2, kind="taste", subject="aiko",
+                     status="candidate"),
+        ])
+        self.assertEqual(report["roles"]["by_role"]["generative"], 1)
+
+    def test_the_constraint_ratio_reads_a_rails_only_store(self) -> None:
+        # 1.0 is the finding the section exists for: every directed thing
+        # she holds tells her what not to do. Neither brain mechanism can
+        # fix this, because both select from what exists.
+        report = _report([
+            _concept(cid=1, kind="boundary"),
+            _concept(cid=2, kind="value"),
+        ])
+        self.assertEqual(report["roles"]["constraint_ratio"], 1.0)
+
+    def test_an_anchor_only_store_has_no_ratio(self) -> None:
+        report = _report([_concept(cid=1, kind="identity")])
+        self.assertIsNone(report["roles"]["constraint_ratio"])
+
+    def test_the_mix_is_split_by_subject(self) -> None:
+        # A store rich in his generative concepts and empty of hers is the
+        # measured "companion who only follows" -- invisible in the
+        # overall ratio, obvious here.
+        report = _report([
+            _concept(cid=1, kind="aspiration", subject="user"),
+            _concept(cid=2, kind="value", subject="aiko"),
+        ])
+        by_subject = report["roles"]["by_subject"]
+        self.assertEqual(by_subject["user"]["constraint_ratio"], 0.0)
+        self.assertEqual(by_subject["aiko"]["constraint_ratio"], 1.0)
+
+    def test_an_unregistered_kind_does_not_crash_the_report(self) -> None:
+        report = _report([_concept(cid=1, kind="not_a_kind")])
+        self.assertEqual(report["roles"]["by_role"]["anchor"], 1)
+
+
 class RegisterTests(unittest.TestCase):
     def test_interpretive_frame_is_detected(self) -> None:
         report = _report([

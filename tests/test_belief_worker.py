@@ -85,6 +85,37 @@ class _StubAgent:
     belief_worker_scrub_transcript: bool = False
 
 
+class _StubConcept:
+    def __init__(self, label: str, *, kind: str = "identity") -> None:
+        self.label = label
+        self.kind = kind
+        self.subject = "user"
+        self.confidence = 0.8
+        self.status = "active"
+
+
+class _StubView:
+    """A ConceptView narrowed to the one read the worker performs."""
+
+    def __init__(
+        self,
+        rows: list[_StubConcept] | None = None,
+        *,
+        enabled: bool = True,
+        raises: bool = False,
+    ) -> None:
+        self._rows = list(rows or [])
+        self.enabled = enabled
+        self._raises = raises
+        self.consumers: list[str] = []
+
+    def for_consumer(self, consumer, *, subject=None):
+        self.consumers.append(str(consumer))
+        if self._raises:
+            raise RuntimeError("store is gone")
+        return list(self._rows)
+
+
 @dataclass
 class _StubBeliefSettings:
     belief_worker_interval_seconds: int = 3600
@@ -103,6 +134,7 @@ def _build_world(
     user_messages: list[str] | None = None,
     agent: "_StubAgent | None" = None,
     interest_map: Any = None,
+    view: "_StubView | None" = None,
 ) -> tuple[BeliefInferenceWorker, BeliefStore, _StubOllama, FactCheckRateLimiter]:
     tmp = tempfile.mkdtemp()
     db = ChatDatabase(Path(tmp) / "t.db")
@@ -143,6 +175,7 @@ def _build_world(
         user_names_provider=lambda: ["Jacob"],
         assistant_name_provider=lambda: "Aiko",
         interest_map_provider=(lambda: interest_map) if interest_map is not None else None,
+        view_provider=(lambda: view) if view is not None else None,
     )
     return worker, store, ollama, rate_limiter
 
@@ -502,6 +535,110 @@ class InterestBiasTests(unittest.TestCase):
         )
         worker.run()
         self.assertEqual(len(ollama.chat_calls), 1)
+
+
+class ConceptBiasTests(unittest.TestCase):
+    """L28: the durable layer as a third prior on what to look for.
+
+    K65b's two hints are both *topic* signals. Neither says what he is
+    like, so the extractor reads a passing mood with no model of the
+    person it is inferring about.
+    """
+
+    def _prompt(self, ollama: _StubOllama) -> str:
+        return ollama.chat_calls[0]["messages"][-1]["content"]
+
+    def test_concepts_reach_the_extraction_prompt(self) -> None:
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            view=_StubView([_StubConcept("goes quiet when overloaded")]),
+        )
+        worker.run()
+        self.assertIn("goes quiet when overloaded", self._prompt(ollama))
+
+    def test_the_prompt_says_the_transcript_decides(self) -> None:
+        # A prior that reads as evidence would let the extractor confirm
+        # the concept layer from a transcript that contradicts it.
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            view=_StubView([_StubConcept("goes quiet when overloaded")]),
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertIn("not evidence", prompt)
+        self.assertIn("may well contradict", prompt)
+
+    def test_it_reads_the_declared_diet(self) -> None:
+        view = _StubView([_StubConcept("goes quiet when overloaded")])
+        worker, _, _, _ = _build_world(responses=["[]"], view=view)
+        worker.run()
+        self.assertEqual(view.consumers, ["belief_inference"])
+
+    def test_the_hint_is_capped(self) -> None:
+        # The diet's token budget governs how much is read; this cap is
+        # how much is worth spending prompt on, so a long list cannot
+        # start competing with the transcript that decides.
+        words = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+            "golf", "hotel", "india", "juliet", "kilo", "lima",
+        ]
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            view=_StubView([_StubConcept(f"likes {w}") for w in words]),
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        mentioned = sum(1 for w in words if f"likes {w}" in prompt)
+        self.assertEqual(mentioned, 5)
+
+    def test_a_pii_only_label_is_scrubbed_out(self) -> None:
+        # Concept labels are free text about a named person and the worker
+        # may be routed to an untrusted endpoint, so they go through the
+        # same gate as the interest labels.
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            view=_StubView([
+                _StubConcept("test@example.com"),
+                _StubConcept("prefers mornings"),
+            ]),
+        )
+        worker.run()
+        prompt = self._prompt(ollama)
+        self.assertNotIn("test@example.com", prompt)
+        self.assertIn("prefers mornings", prompt)
+
+    def test_no_view_is_the_legacy_prompt(self) -> None:
+        worker, _, ollama, _ = _build_world(responses=["[]"])
+        worker.run()
+        self.assertNotIn("durably hold", self._prompt(ollama))
+
+    def test_a_cold_or_broken_view_is_not_a_failed_run(self) -> None:
+        for view in (_StubView(enabled=False), _StubView(raises=True)):
+            worker, _, ollama, _ = _build_world(responses=["[]"], view=view)
+            self.assertEqual(worker.run().get("upserted"), 0)
+            self.assertNotIn("durably hold", self._prompt(ollama))
+
+    def test_it_still_rides_the_same_single_llm_call(self) -> None:
+        worker, _, ollama, _ = _build_world(
+            responses=["[]"],
+            interest_map=[_InterestEntry("tokyo travel", 9)],
+            view=_StubView([_StubConcept("goes quiet when overloaded")]),
+        )
+        worker.run()
+        self.assertEqual(len(ollama.chat_calls), 1)
+
+    def test_nothing_is_written_back_to_the_concept_layer(self) -> None:
+        # K2 stays transient in both directions: the durable layer shapes
+        # what the extractor looks for and learns nothing from the result.
+        view = _StubView([_StubConcept("goes quiet when overloaded")])
+        payload = json.dumps([{
+            "kind": "mood", "topic": "work", "predicted_state": "flat",
+            "confidence": 0.7,
+        }])
+        worker, _, _, _ = _build_world(responses=[payload], view=view)
+        worker.run()
+        self.assertEqual(view.consumers, ["belief_inference"])
+        self.assertFalse(hasattr(view, "upsert"))
 
 
 if __name__ == "__main__":

@@ -1171,6 +1171,48 @@ class MemorySettings:
     # disable it. (Legacy ``context_budget_identity_*`` keys still parse.)
     context_budget_core_cap: int = 2
     context_budget_core_min_confidence: float = 0.75
+    # The **openness reserve** on that lane. Only ``core_always_on`` kinds are
+    # eligible for the core lane, and today those are identity, value,
+    # boundary and generalization -- two anchors and two guides, with no
+    # ``generative`` kind among them. So however wide ``core_cap`` is set, not
+    # one pinned concept can be an aspiration, a taste, a pursuit or a
+    # tension: the lane is structurally incapable of carrying something that
+    # could move. This keeps ``openness_slots`` of the cap for the strongest
+    # generative-role concept instead, drawn from the kinds the lane cannot
+    # otherwise reach. An unfillable slot falls back to the ordinary lane, so
+    # the reserve never costs a pin it cannot use. ``0`` restores the
+    # guides-and-anchors-only lane exactly.
+    concept_core_openness_slots: int = 2
+    # The bar a reserved pick must clear. Pinning a half-formed aspiration
+    # into every single turn is worse than pinning nothing, so this sits well
+    # above the lifecycle's dormant floor without demanding the very high
+    # settledness the guide kinds are held to (value 0.85, boundary 0.8) --
+    # the point of the reserve is that something unfinished gets a seat.
+    concept_core_openness_min_confidence: float = 0.5
+    # The **generative floor** on the per-turn flex lane. That lane is tilted
+    # rather than closed: any kind can reach it, but ``surface_score`` ends in
+    # ``importance_factor``, which at the default strength is x1.16 for
+    # boundary against x0.92 for taste -- a ~26% head start on every
+    # comparison. When the tilt wins completely and a turn's pick contains no
+    # generative concept at all, this swaps the weakest selected *guide* for
+    # the strongest available generative one. A floor rather than a lower
+    # ``concept_importance_strength`` on purpose: the tilt is usually right,
+    # and this only fires in the one case where it isn't. ``0`` disables.
+    concept_flex_generative_floor: int = 1
+    # ── Worker concept diets ───────────────────────────────────────────
+    # What a *background worker* gets to think with. Each consumer declares a
+    # diet (kinds, subject, appetite) in ``app/core/concepts/concept_diets.py``
+    # and the budget below sizes it: ``min(fraction * worker_ctx, max_tokens)``
+    # scaled by the diet's weight, floored at ``min_tokens``.
+    #
+    # The fraction and the cap are not redundant. A concept renders at roughly
+    # 15-20 tokens, so on a 64k worker route even 6% is hundreds of concepts --
+    # likely more than the store holds, which would make every diet quietly
+    # mean "all of them". The fraction is what protects a *small* worker
+    # window; the cap is what actually sizes the section on a large one.
+    concept_diet_token_fraction: float = 0.06
+    concept_diet_max_tokens: int = 600
+    concept_diet_min_tokens: int = 150
     # L30a hypothesis lane: the *tentative* register. Every other concept
     # lane reads ``status="active"`` only, which hides a candidate rather
     # than merely hedging it -- yet that is exactly what a mind holds as
@@ -3743,6 +3785,39 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         )
                     ),
                 ),
+            ),
+            concept_core_openness_slots=max(
+                0, int(memory_raw.get("concept_core_openness_slots", 2))
+            ),
+            concept_core_openness_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_core_openness_min_confidence", 0.5
+                        )
+                    ),
+                ),
+            ),
+            concept_flex_generative_floor=max(
+                0, int(memory_raw.get("concept_flex_generative_floor", 1))
+            ),
+            # Clamped to [0, 0.8] like ``context_budget_fraction``: a worker
+            # whose prompt is four-fifths concepts has no room left for the
+            # thing it was actually asked to reason about.
+            concept_diet_token_fraction=min(
+                0.8,
+                max(
+                    0.0,
+                    float(memory_raw.get("concept_diet_token_fraction", 0.06)),
+                ),
+            ),
+            concept_diet_max_tokens=max(
+                0, int(memory_raw.get("concept_diet_max_tokens", 600))
+            ),
+            concept_diet_min_tokens=max(
+                0, int(memory_raw.get("concept_diet_min_tokens", 150))
             ),
             hypothesis_surfacing_enabled=bool(
                 memory_raw.get("hypothesis_surfacing_enabled", True)

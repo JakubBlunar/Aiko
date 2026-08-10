@@ -528,9 +528,12 @@ T0 `self_image_block` was removed).
   `subject=aiko` value: shared when aligned, a relationship tension when they
   clash) and the value-contradicted-by-behaviour case (a value concept vs a
   contradicting activity concept). Both live in the L12 tension family. See L12.
-- **K29 (enhancement)** — bias opinion-injection with Aiko's `subject=aiko`
-  value concepts, so her stance can draw on stored values, not only `kind="self"`
-  memories. K29 itself is shipped; this is an additive follow-up.
+- **K29 (enhancement) — SHIPPED (L28).** Opinion-injection now reads Aiko's
+  `stance` diet (`value` / `taste` / `pursuit` at `subject=aiko`) alongside the
+  `kind="self"` memories, so her stance draws on stored values. Values *alone*
+  would have made every opinion of hers a principle, which is the register the
+  cue text works hardest to avoid; taste and pursuit are what let a stance be a
+  preference she simply has. See L28.
 - **Tunable knobs** — an optional `concept_value_plasticity` (per-kind override,
   mirroring `concept_identity_plasticity`) plus a per-kind synthesis enable
   flag. Trivial add if wanted; today the value plasticity is the registry
@@ -1458,15 +1461,21 @@ each kind that ships).
 
 ---
 
-## L28. Roll remaining derivers/workers onto the `ConceptView` contract (in progress)
+## L28. Roll remaining derivers/workers onto the `ConceptView` contract
 
-**Status: in progress — substrate shipped (L24), four consumers migrated.** L24
-shipped the reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
-`kinds_for_target()` routing); the live consumers are `build_relevant_context`
-(T3 core lane + relevance), `recall_concept`, and — new — `user_profile` ->
-`profile_block`. This entry tracks migrating the *rest* of the
-concept-overlapping consumers onto the same contract so none is forgotten and no
-consumer keeps a bespoke read path into the layer.
+**Status: SHIPPED — every listed consumer migrated, both open questions closed.**
+L24 shipped the reusable substrate ([`ConceptView`](../../app/core/concepts/concept_view.py) +
+`kinds_for_target()` routing); this entry tracked migrating the *rest* of the
+concept-overlapping consumers onto the same contract so none was forgotten and no
+consumer kept a bespoke read path into the layer. The last pass also generalised
+*how* a consumer asks: instead of each one naming kinds inline, a consumer
+declares a **concept diet**
+([`concept_diets.py`](../../app/core/concepts/concept_diets.py)) and reads
+`ConceptView.for_consumer(name)`, which is what makes the read auditable — a
+hardcoded `kind=` is invisible to any check on who is allowed to think with what.
+See [`docs/concept-integration.md`](../concept-integration.md) for diets, the
+anchor / guide / generative role axis, and the exclusion principle (producers of
+concepts don't get diets, or synthesis confirms itself).
 
 **Migration order (decided).** Compose-first per consumer (concepts primary,
 raw derivation as the floor) per the L24 stance. Start with the consumer that
@@ -1511,22 +1520,52 @@ grounding) is the goal.
   its journal entry, and the inner-life cue appends "What you hold about it:
   …". Resolved *only* for the topic actually being drafted, so the
   mirror-joining read stays off the per-tick sampling path.
-- [`belief_store.py`](../../app/core/relationship/belief_store.py) /
-  belief inference — bias toward durable concepts (K2 stays the *transient* layer,
-  not migrated).
-- `ForwardCuriosityWorker` routine hints — the remaining interest-map reader.
-- [`goal_store.py`](../../app/core/goals/goal_store.py) — overlaps L14 aspiration
-  concepts (gated on L14 shipping).
-- **Additional candidates (noted while shipping user_profile).**
-  - `communication_style` concepts (L-comm, both subjects) overlap the profile's
-    `communication_style` field and the delivery-guidance cues — they surface via
-    the T3 relevance path today; a `for_target` route into a delivery-style block
-    (or the profile's `communication_style` line) would make them the source of
-    truth the same way identity/value now are.
-  - Opinion / stance injection (K29) could bias on `subject=aiko` value concepts
-    (not only `kind="self"` memories) via `ConceptView.core(subject="aiko",
-    kind="value")`, so her stance draws on stored values. Cross-ref the K29
-    follow-up already noted under L10.
+- **SHIPPED (decided, not migrated)** —
+  [`belief_store.py`](../../app/core/relationship/belief_store.py) / belief
+  inference: K2 stays the *transient* layer, which was the decision, not a skip —
+  a belief is a prediction about right now and the durable layer is a different
+  claim about a different timescale. What shipped is the **bias**:
+  [`belief_worker.py`](../../app/core/relationship/belief_worker.py) adds a
+  `concept_hint` beside the two K65b priors, so the extractor knows what she
+  durably holds about him before it infers a passing mood. One-directional by
+  design — nothing writes back, or a layer starts confirming itself.
+- **SHIPPED** — [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py):
+  the last interest-map reader, and it got both halves. A fourth candidate pool
+  (`concept:{id}`, riding the existing `oq:` dedupe and quota split) means she can
+  wonder whether a direction he is on still holds, or raise a taste of her own,
+  rather than only asking how a written-down event went. And the phrasing hint is
+  concept-grounded, with the flat `routines` / `usual_hours` profile strings as
+  the floor.
+- **SHIPPED** — [`goal_store.py`](../../app/core/goals/goal_store.py) overlap:
+  the L14 gate lifted when aspirations shipped, so `_render_goals_block` now leads
+  with `subject=aiko` aspirations and floors on the K1 goal rows. Composed in the
+  renderer, not in `GoalStore`, so the write path and its cosine dedupe are
+  untouched. The block keeps the two apart on purpose — an aspiration is who she
+  is *becoming*, a K1 goal is an actionable to-do, and collapsing them turns a
+  direction into a chore.
+- **RESOLVED (stays on T3)** — `communication_style` concepts (L-comm, both
+  subjects). They keep surfacing purely by relevance; no dedicated `for_target`
+  block. Three reasons, and the first is the strongest: `surfacing_targets` today
+  means "this kind leads a named block and the legacy derivation becomes the
+  floor", and there is no legacy communication-style derivation worth flooring —
+  the profile field is a *digest that guides mining*, not a competing source of
+  truth. Second, delivery style is inherently turn-dependent (how to talk *now*),
+  which is exactly what the T3 relevance region is for; a style line whose context
+  isn't live is noise. Third, it is a **guide**-role kind, so pinning it would add
+  a fourth standing guide surface and work directly against the openness work in
+  the same pass.
+- **SHIPPED** — opinion / stance injection (K29):
+  `_render_opinion_injection_block` feeds the detector her `stance` diet
+  (`value` / `taste` / `pursuit` at `subject=aiko`) alongside the `kind="self"`
+  rows. This mattered more than it looked — synthesis is what happens to the
+  opinions that *recur*, so a taste that had been abstracted into a concept and
+  only into a concept was one she could be contradicted on without a flicker. Two
+  wrinkles: concept candidates skip the opinion-shape regex (their kind already
+  establishes them as stances; the regex exists to sort the mixed `kind="self"`
+  pool), and the cue can't say she *wrote* one, so the result carries a
+  `stance_origin` the renderer reads. Reads as adding guide influence, but it is
+  the generative use of a guide kind — her holding an opinion, not a rail
+  restricting her.
 
 **Sketched approach.** For each consumer: take a `ConceptView` (late-bound
 provider via `concept_view_from(host)`), read via `core` / `relevant` / `for_target`
@@ -1540,12 +1579,12 @@ overlaps an already-shipped concept kind (`user_profile` overlaps `identity`
 today); others unblock as their kinds ship (value L10, boundary L18,
 aspiration L14).
 
-**Open questions.** Resolved for the shipped path: compose-first, `user_profile`
-first. Remaining per-consumer question: whether a relevance-only kind
-(`communication_style`) is worth a dedicated `for_target` block vs. leaving it on
-the T3 path.
+**Open questions.** None left. Compose-first with `user_profile` first was
+resolved on the shipped path; the relevance-only-kind question
+(`communication_style`) is answered above — it stays on T3; and `belief_store`'s
+transient half is recorded as **decided** rather than skipped.
 
-**Effort.** Medium, incremental (one small ticket per consumer).
+**Effort.** Medium, incremental (one small ticket per consumer). *Delivered.*
 
 ---
 

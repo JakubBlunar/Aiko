@@ -26,14 +26,18 @@ missed beat, never a broken insert or a crashed tick.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.core.concepts.concept_view import ConceptView
     from app.core.conversation.topic_graph import TopicGraph
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -59,7 +63,8 @@ class RichTerritory:
     ``label`` / ``size`` / ``days_since`` come from the topic graph (how
     much, how recently); ``concepts`` is the L28 annotation -- what Aiko
     *believes* about that territory, read through
-    :meth:`ConceptView.for_cluster` off ``representative_id``. Empty when
+    :meth:`ConceptView.for_cluster` off ``representative_id`` and scoped to
+    the ``knowledge_map_reflection`` diet. Empty when
     the concept layer is off, cold, or has nothing edged to the cluster,
     which is the normal early state and renders exactly as before.
     """
@@ -414,6 +419,15 @@ class KnowledgeMapReflectionWorker:
         point of the contract -- one read path, so this worker can't drift
         from what the rest of the system thinks the graph means.
 
+        Scoped to the ``knowledge_map_reflection`` diet, and spread across
+        kinds before it goes deep into one. With only two slots per
+        territory, straight confidence ordering reliably spent both on the
+        same kind -- and because the stakes priors run highest on
+        ``boundary`` and ``value``, a reflection on the whole shape of the
+        map arrived as two rails per region. One taste beside one
+        conviction is a truer summary of a territory than the two firmest
+        things she holds about it.
+
         Silent no-op when concepts are off, cold, or simply have nothing
         edged to a given cluster, which is the common case early on.
         """
@@ -426,29 +440,61 @@ class KnowledgeMapReflectionWorker:
             return
         if view is None or not getattr(view, "enabled", False):
             return
+        diet = diet_for("knowledge_map_reflection")
+        kinds = diet.kinds if diet is not None else None
         for row in rich:
             if not row.representative_id:
                 continue
             try:
-                concepts = view.for_cluster(row.representative_id)
+                concepts = view.for_cluster(row.representative_id, kinds=kinds)
             except Exception:
                 log.debug(
                     "knowledge_map_reflection for_cluster failed", exc_info=True
                 )
                 continue
-            # Most-confident first: a territory gets its firmest beliefs,
-            # not whichever edge happens to be listed first.
-            concepts = sorted(
-                concepts,
+            row.concepts = self._territory_labels(concepts)
+
+    def _territory_labels(self, concepts: "Sequence[object]") -> list[str]:
+        """Up to ``concepts_per_cluster`` labels, one kind at a time.
+
+        Most-confident within a kind, then round the kinds in order of
+        their leading concept -- so the first slot still goes to the
+        firmest thing she holds about the territory and only the *second*
+        one is forced to say something new.
+        """
+        buckets: dict[str, list[object]] = defaultdict(list)
+        for concept in concepts:
+            label = " ".join(str(getattr(concept, "label", "")).split())
+            if label:
+                buckets[str(getattr(concept, "kind", ""))].append(concept)
+        for rows in buckets.values():
+            rows.sort(
                 key=lambda c: float(getattr(c, "confidence", 0.0) or 0.0),
                 reverse=True,
             )
-            labels: list[str] = []
-            for concept in concepts[: self._concepts_per_cluster]:
-                label = " ".join(str(getattr(concept, "label", "")).split())
-                if label:
-                    labels.append(label)
-            row.concepts = labels
+
+        def _lead(kind: str) -> float:
+            return float(getattr(buckets[kind][0], "confidence", 0.0) or 0.0)
+
+        order = sorted(buckets, key=lambda k: (-_lead(k), k))
+        labels: list[str] = []
+        depth = 0
+        while len(labels) < self._concepts_per_cluster:
+            drew = False
+            for kind in order:
+                rows = buckets[kind]
+                if depth >= len(rows):
+                    continue
+                labels.append(
+                    " ".join(str(getattr(rows[depth], "label", "")).split())
+                )
+                drew = True
+                if len(labels) >= self._concepts_per_cluster:
+                    break
+            if not drew:
+                break
+            depth += 1
+        return labels
 
     def _compose(
         self,

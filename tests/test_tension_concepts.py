@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.concepts.concept_diets import diet_for
 from app.core.concepts.concept_kinds import (
     DEFAULT_SURFACE_WEIGHTS,
     core_lane_kinds,
@@ -602,8 +603,10 @@ class _FakeView:
     def __init__(self, concepts, *, enabled=True) -> None:
         self._concepts = concepts
         self.enabled = enabled
+        self.kinds_asked: list[str | None] = []
 
     def core(self, *, kind=None, subject=None, min_confidence=0.0, limit=None):
+        self.kinds_asked.append(kind)
         return [
             c for c in self._concepts
             if getattr(c, "subject", None) == subject
@@ -688,6 +691,17 @@ class CueProducerTests(unittest.TestCase):
         view = _FakeView([_concept(7, subject="aiko")])
         # default subjects include aiko -> a lone aiko tension still drafts.
         self.assertEqual(_cue_worker(view, kv).run()["drafted"], 1)
+
+    def test_the_kinds_read_come_from_the_declared_diet(self) -> None:
+        # The read used to name "tension" inline, which left it out of the
+        # one place that records who consumes concepts -- and out of the
+        # audit that runs over that record.
+        kv = _FakeKv()
+        view = _FakeView([_concept(1)])
+        _cue_worker(view, kv).run()
+        self.assertEqual(
+            set(view.kinds_asked), set(diet_for("tension_cue").kinds)
+        )
 
 
 class CueProducerDemandTests(unittest.TestCase):
