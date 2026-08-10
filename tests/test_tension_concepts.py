@@ -31,6 +31,7 @@ from app.core.concepts.concept_kinds import (
     DEFAULT_SURFACE_WEIGHTS,
     core_lane_kinds,
     get_kind,
+    renders_in_static_block,
 )
 from app.core.concepts.concept_lifecycle import tension_evidence_gate
 from app.core.concepts.concept_store import Concept, ConceptEdge
@@ -113,6 +114,14 @@ class GateAndRegistryTests(unittest.TestCase):
     def test_not_on_core_lane(self) -> None:
         self.assertNotIn("tension", {k.name for k in core_lane_kinds()})
         self.assertFalse(get_kind("tension").core_always_on)
+
+    def test_it_declares_itself_out_of_the_static_render(self) -> None:
+        # The T3 carve-out is declarative, so the flex lane, the hypothesis
+        # lane and the L28 openness reserve all agree with the renderer
+        # without any of them naming the kind.
+        self.assertFalse(get_kind("tension").static_render)
+        self.assertFalse(renders_in_static_block("tension"))
+        self.assertTrue(renders_in_static_block("aspiration"))
 
     def test_surface_weights_opt_in(self) -> None:
         w = get_kind("tension").surface_weights

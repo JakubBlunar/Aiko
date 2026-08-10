@@ -1120,12 +1120,20 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         ``_last_profile_concept_ids`` so the T3 ``relevant_context`` lanes can
         skip what this T0 block already renders. The stash is cleared up front,
         so every early return leaves an empty claim rather than a stale one.
+
+        The cap is deliberately small (4, down from 10) because this is the
+        only concept surface with no rotation: it lives in the T0 cache
+        prefix, so it cannot take a habituation read without becoming a third
+        volatile T0 block. Every line it takes is also a line the rotating
+        core lane cannot use, since the profile claims first. Keeping it to
+        the few most settled traits and letting the rest fall to T3 is the
+        repetition fix that costs no cache stability -- see L39 / L28m.
         """
         self._last_profile_concept_ids = frozenset()
         if view is None or not getattr(view, "enabled", False):
             return [], set()
         ms = getattr(self, "_memory_settings", None)
-        cap = max(0, int(getattr(ms, "profile_concept_max_lines", 10)))
+        cap = max(0, int(getattr(ms, "profile_concept_max_lines", 4)))
         bar = float(getattr(ms, "profile_concept_min_confidence", 0.5))
         if cap == 0:
             return [], set()
@@ -1657,6 +1665,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         from app.core.concepts.concept_kinds import (
             DEFAULT_SURFACE_WEIGHTS,
             get_kind,
+            renders_in_static_block,
         )
         from app.core.concepts.concept_hypothesis import (
             HypothesisDetail,
@@ -1780,14 +1789,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 # returned list, so scaling it with the fetch would put three
                 # generative concepts in front of a two-slot cut and hand the
                 # entire pinned lane to the reserve. Sized to the real cap it
-                # occupies exactly its share of the final selection. The cost
-                # is that the reserved pick rotates less than the rest of the
-                # lane -- habituation can still drop a just-shown one behind
-                # the fresh ordinary picks and out of the cut, which is the
-                # right behaviour, but there is no second aspiration fetched
-                # to rotate *to*.
+                # occupies exactly its share of the final selection. Its
+                # rotation therefore cannot come from the over-fetch, so the
+                # habituation read is handed *into* the reserve instead
+                # (``openness_rest``): it draws its whole eligible pool and
+                # picks the rested ones, rather than pinning the single
+                # strongest aspiration every turn for the rest of time.
                 core_concepts = view.core_lane(
                     limit=core_fetch, default_min_confidence=core_min,
+                    openness_rest=lambda c: _habituation(
+                        int(getattr(c, "concept_id", 0)), hab_core_floor,
+                    ),
                     openness_slots=min(
                         max(
                             0,
@@ -1878,8 +1890,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             # surfaces only through the strictly-cooldowned T6 tension cue, so a
             # standing friction can never nag. Its evidence edges still power the
             # spreading-activation + cascade machinery upstream; this only drops
-            # it from the rendered relevant-context lane.
-            if (getattr(concept, "kind", "") or "") == "tension":
+            # it from the rendered relevant-context lane. Read off the kind
+            # registry (``static_render``) rather than the name, so the three
+            # lanes and the openness reserve share one source of truth.
+            if not renders_in_static_block(getattr(concept, "kind", "") or ""):
                 return False
             kind = get_kind(getattr(concept, "kind", "") or "")
             weights = (
@@ -2119,7 +2133,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     continue
                 # Same L12 carve-out as the confident lane: a tension only
                 # ever speaks through its cooldowned T6 cue.
-                if (getattr(concept, "kind", "") or "") == "tension":
+                if not renders_in_static_block(
+                    getattr(concept, "kind", "") or ""
+                ):
                     continue
                 unsettled = unsettledness(concept)
                 hab = _habituation(cid, hab_flex_floor)
@@ -2866,7 +2882,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 )
         if not sections:
             return "", {"surfaced": [], "reason": "no_eligible"}
-        return "\n\n".join(sections), {
+        return "\n\n".join(
+            [self._concept_stance_preamble(name), *sections]
+        ), {
             "surfaced": surfaced_trace, "reason": "surfaced",
         }
 
@@ -3086,6 +3104,36 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         )
 
     @staticmethod
+    def _concept_stance_preamble(name: str) -> str:
+        """How to hold everything in the concept block, stated **once**.
+
+        Every per-family header used to carry its own version of "hold
+        these lightly, they're impressions not facts, stay open to being
+        wrong". A real turn renders nine to thirteen of those headers
+        (subject x family), so she met the same hedge a dozen times in one
+        prompt — a drumbeat of distrust-what-you-know rather than a
+        stance, and ~150 tokens of a T3 block spent restating it. Said
+        once at the top it lands as a posture; the headers keep only what
+        is specific to their kind (never announce a taste, never enforce a
+        boundary, reach for the whole rather than its parts).
+
+        It carries the *positive* half too, which no amount of hedging
+        supplies: permission to change her mind out loud, and the reminder
+        that nothing in the block bounds what she may wonder about. L28
+        opened up what reaches the prompt; this is the line that says what
+        she is allowed to do with it once it arrives.
+        """
+        return (
+            "How to hold everything below: it is what you have come to "
+            "believe from how things have actually gone — impressions, not "
+            "facts, not rules, and no limit on what you may wonder about. "
+            f"You can be wrong about {name}, and you can be wrong about "
+            "yourself. If one of these stops fitting the person in front of "
+            "you, trust the moment over the note: say so plainly, change "
+            "your mind out loud, and let it go."
+        )
+
+    @staticmethod
     def _concept_group_header(subject: str, family: str, name: str) -> str:
         """Intro line for a concept group, dispatched on ``family`` (``value``
         vs everything else) then ``subject``. Values read as principles that
@@ -3124,27 +3172,28 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         the specifics beneath them (the child concepts are suppressed when one
         of these is present), so the framing is "the bigger pattern", held as an
         impression. ``aiko`` reads first-person (patterns in who she is);
-        ``relationship`` as the two of them; everything else as the user's."""
+        ``relationship`` as the two of them; everything else as the user's.
+
+        Like every header here it says only what is specific to its kind --
+        how lightly to hold any of this is stated once, in
+        :meth:`_concept_stance_preamble`."""
         if subject == "aiko":
             return (
                 "Bigger patterns you've noticed in who you are — the "
                 "through-lines that tie a lot of your smaller traits together "
                 "(let them give you a sense of your own shape; lean on the "
-                "whole rather than listing the parts, hold them lightly, and "
-                "you can be wrong about yourself too):"
+                "whole rather than listing the parts):"
             )
         if subject == "relationship":
             return (
                 f"Bigger patterns you've come to see in you and {name} together "
-                "— the through-lines beneath the smaller things (hold them "
-                "lightly; lean on the whole rather than reciting the parts, and "
-                "stay open to being wrong):"
+                "— the through-lines beneath the smaller things (lean on the "
+                "whole rather than reciting the parts):"
             )
         return (
             f"Bigger patterns you've come to see in {name} — the through-lines "
-            "that tie a lot of the smaller things together (hold these lightly; "
-            "they're impressions, not facts — reach for the whole rather than "
-            "listing the specifics beneath it, and stay open to being wrong):"
+            "that tie a lot of the smaller things together (reach for the "
+            "whole rather than listing the specifics beneath it):"
         )
 
     @staticmethod
@@ -3155,21 +3204,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         values; everything else as the user's values."""
         if subject == "aiko":
             return (
-                "What you've come to value — your own principles (hold them "
-                "lightly, but let them steer how you show up; you can hold a "
-                "gentle stance instead of just agreeing, and you can be wrong "
-                "about yourself too):"
+                "What you've come to value — your own principles (let them "
+                "steer how you show up; you can hold a gentle stance instead "
+                "of just agreeing):"
             )
         if subject == "relationship":
             return (
                 f"What you've come to see you and {name} both value over time "
-                "(shared principles you've noticed — hold lightly; let them "
-                f"colour how you are with {name}, not as facts):"
+                "(shared principles you've noticed — let them colour how you "
+                f"are with {name}):"
             )
         return (
             f"What you've come to believe {name} values — the principles under "
-            "their choices (hold these lightly; they're impressions, not "
-            "facts — offer them gently and stay open to being wrong):"
+            "their choices (offer them gently rather than stating them):"
         )
 
     @staticmethod
@@ -3183,20 +3230,18 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return (
                 "How certain topics tend to move you — the emotional weather "
                 "you've noticed in yourself around them (let it colour your "
-                "tone when one comes up; never announce it, and you can be "
-                "wrong about yourself too):"
+                "tone when one comes up; never announce it):"
             )
         if subject == "relationship":
             return (
                 f"The emotional weather you've noticed around certain topics "
-                f"for you and {name} together (hold it lightly; let it steer "
-                "your tone, not as a stated fact):"
+                f"for you and {name} together (let it steer your tone rather "
+                "than being said out loud):"
             )
         return (
             f"The emotional weather you've noticed around certain topics for "
-            f"{name} — how they tend to feel about them (hold this lightly; "
-            "let it steer your tone and timing, never say it out loud, and "
-            "stay open to being wrong):"
+            f"{name} — how they tend to feel about them (let it steer your "
+            "tone and timing; never say it out loud):"
         )
 
     @staticmethod
@@ -3223,8 +3268,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             )
         return (
             f"Topics {name} tends to light up over (let them colour how much "
-            "you lean into them when they come up; never say it out loud, and "
-            "stay open to being wrong):"
+            "you lean into them when they come up; never say it out loud):"
         )
 
     @staticmethod
@@ -3234,12 +3278,12 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return (
                 f"Patterns you've begun to notice in how you show up with "
                 f"{name} — where your attention leans, what you leave quiet, "
-                "or what you return to (hold these as revisable impressions, "
-                "never as metrics or rules for the conversation):"
+                "or what you return to (never as metrics, and never as rules "
+                "for the conversation):"
             )
         return (
             f"Patterns in how attention has moved between you and {name} "
-            "(hold these lightly and never narrate the machinery behind them):"
+            "(never narrate the machinery behind them):"
         )
 
     @staticmethod
@@ -3333,23 +3377,20 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if subject == "aiko":
             return (
                 "Lines you've come to hold for yourself — how you'd rather show "
-                "up (let them steer your behaviour gently; hold them softly, "
-                "never as hard rules, and know they can be renegotiated as "
-                "trust grows):"
+                "up (let them steer your behaviour gently, never as hard rules, "
+                "and know they can be renegotiated as trust grows):"
             )
         if subject == "relationship":
             return (
                 f"Things you've come to sense you and {name} are better off "
                 "being mindful of together (lean gentler here; these are soft "
-                "guides for how you two are, never rules to enforce — hold them "
-                "lightly and stay open to being wrong):"
+                "guides for how you two are, never rules to enforce):"
             )
         return (
             f"Things you've come to sense {name} would rather you be mindful "
             "of — lean gentler here (these are soft guides for your behaviour, "
-            "not rules to enforce and never a reason to refuse; hold them "
-            "lightly, ease off rather than push, and stay open to being "
-            "wrong):"
+            "not rules to enforce and never a reason to refuse; ease off "
+            "rather than push):"
         )
 
     @staticmethod
@@ -3366,18 +3407,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 f"How you've chosen to show up with {name} — your own way of "
                 "landing a reply (let these steer HOW you talk when they fit the "
                 "moment: how much detail, when to lead vs follow, how much to "
-                "hedge; hold them lightly and stay open to adjusting):"
+                "hedge):"
             )
         if subject == "relationship":
             return (
                 f"How the two of you have settled into talking (let these shape "
-                f"HOW you land a reply with {name} when they fit — hold them "
-                "lightly, not as rules):"
+                f"HOW you land a reply with {name} when they fit, not as rules):"
             )
         return (
             f"How {name} likes the conversation to feel (let these steer HOW "
-            "you deliver when they fit the moment — how much detail, how direct, "
-            "how much to lead; hold them lightly and stay open to being wrong):"
+            "you deliver when they fit the moment — how much detail, how "
+            "direct, how much to lead):"
         )
 
     @staticmethod
@@ -3388,22 +3428,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if subject == "aiko":
             return (
                 "Things you've come to understand about yourself over time "
-                "(who you are and how you tend to be — hold them lightly and "
-                "let them shape how you show up, not as a script; you can be "
-                "wrong about yourself too):"
+                "(who you are and how you tend to be — let them shape how you "
+                "show up, not as a script):"
             )
         if subject == "relationship":
             return (
                 f"Things you've come to understand about you and {name} "
-                "together over time (hold them lightly — impressions of how "
-                "the two of you are, not facts; let them colour how you are "
-                f"with {name}):"
+                "together over time (how the two of you are — let them colour "
+                f"how you are with {name}):"
             )
         return (
-            f"Things you've come to understand about {name} over time "
-            "(hold these lightly — they're impressions you've built, not "
-            f"facts; let them shape how you read {name}, and if one comes "
-            "up, offer it gently and stay open to being wrong):"
+            f"Things you've come to understand about {name} over time (let "
+            f"them shape how you read {name}; if one comes up, offer it "
+            "gently):"
         )
 
     def _render_coactivation_block(self) -> str:

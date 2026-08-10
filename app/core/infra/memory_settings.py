@@ -865,12 +865,25 @@ class MemorySettings:
     # (a window, not lifetime, so taste tracks how the relationship works now),
     # trusts a cluster only once it has ``taste_min_settled`` settled surfacings
     # (warmup floor -- a cold ledger yields no taste), keeps clusters whose
-    # engaged rate clears ``taste_min_affinity`` (a *rate*, so a rare topic that
+    # engaged rate clears the affinity bar (a *rate*, so a rare topic that
     # always lands beats a frequent flat one), and offers at most
     # ``concept_synthesis_max_taste_clusters`` per run.
+    #
+    # The bar is **relative to her own baseline**:
+    # ``max(taste_min_affinity, baseline * taste_affinity_baseline_multiple)``,
+    # where the baseline is the pooled engaged rate across the same snapshot.
+    # An absolute bar was the original design and it was measured unreachable
+    # (L28m): across 39 warmed clusters the best engaged rate was 0.32 and the
+    # median 0.20 against a 0.5 bar, so the pass could never mint a taste. The
+    # labels are not balanced classes -- the same argument
+    # ``engagement_baseline`` makes for L38 standing -- so "lands better than
+    # her average" is the honest reading of enjoyment, and the absolute value
+    # survives only as a floor that stops a relationship where nothing lands
+    # from minting taste out of noise.
     taste_affinity_window_days: int = 90
     taste_min_settled: int = 4
-    taste_min_affinity: float = 0.5
+    taste_min_affinity: float = 0.15
+    taste_affinity_baseline_multiple: float = 1.4
     concept_synthesis_max_taste_clusters: int = 6
     # K85c pursuit synthesis. The pass is a no-op until ``pursuit_min_notes``
     # ``pursuit_note`` rows exist -- below the gate's three-source floor there
@@ -1069,7 +1082,19 @@ class MemorySettings:
     # many concept bullets lead the block; ``profile_concept_min_confidence``
     # is the confidence bar a concept must clear to appear there. Set the cap
     # to 0 to disable the concept lead entirely (pure SQLite profile).
-    profile_concept_max_lines: int = 10
+    #
+    # L39 lowered the cap from 10 to 4 on measured numbers rather than taste
+    # (L28m). This is the one concept surface with **no rotation at all** --
+    # it sits in the T0 cache prefix, so giving it a habituation read would
+    # make it a third volatile T0 block and break the prefix ladder. At 10
+    # lines it was ~620 tokens of identical always-on assertion every turn
+    # (concept labels are full sentences, ~60 tokens each) drawn from 170
+    # eligible rows, and because the profile claims *first*, those 10 also
+    # pre-empted two thirds of the 15-slot core lane -- which does rotate,
+    # and which now carries the openness reserve. Releasing six of them is
+    # the cheap version of the repetition fix: the same beliefs still reach
+    # the prompt, through the lane that rests them.
+    profile_concept_max_lines: int = 4
     profile_concept_min_confidence: float = 0.5
     # L23 cognitive surfacing -- emotional / recent-change salience. A concept
     # with a sharp recent lifecycle event (contradicted, plasticity_shift,
@@ -3167,7 +3192,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             taste_min_affinity=max(
                 0.0,
-                min(1.0, float(memory_raw.get("taste_min_affinity", 0.5))),
+                min(1.0, float(memory_raw.get("taste_min_affinity", 0.15))),
+            ),
+            taste_affinity_baseline_multiple=max(
+                1.0,
+                float(
+                    memory_raw.get("taste_affinity_baseline_multiple", 1.4)
+                ),
             ),
             concept_synthesis_max_taste_clusters=max(
                 1,
@@ -3595,7 +3626,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 ),
             ),
             profile_concept_max_lines=max(
-                0, int(memory_raw.get("profile_concept_max_lines", 10)),
+                0, int(memory_raw.get("profile_concept_max_lines", 4)),
             ),
             profile_concept_min_confidence=max(
                 0.0,

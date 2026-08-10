@@ -148,6 +148,36 @@ def _round_robin(
     return out
 
 
+#: A habituation factor at or above this counts as fully rested. Matches
+#: the core lane's own fresh/stale threshold in ``build_relevant_context``
+#: -- the factor is a float, so an exact ``1.0`` comparison would classify
+#: a rounded 0.9999 as recently shown.
+_FRESH_HABITUATION = 0.999
+
+
+def _rest_key(
+    concept: "Concept", rest: "Callable[[Concept], float]",
+) -> tuple[int, float]:
+    """Sort key preferring rested concepts, for a stable re-order.
+
+    Fresh first (as one group, so the caller's balanced order survives
+    inside it), then the rested-longest of the stale ones -- the same
+    two-tier ordering the core lane applies to its own picks, and for the
+    same reason: reading habituation as a bare threshold leaves the stale
+    group in confidence order, so a concept shown last turn outranks one
+    rested for three. A failed read counts as fresh, because losing the
+    reserve entirely is worse than pinning something recently seen.
+    """
+    try:
+        value = float(rest(concept))
+    except Exception:
+        log.debug("openness reserve: habituation read failed", exc_info=True)
+        return (0, 0.0)
+    if value >= _FRESH_HABITUATION:
+        return (0, 0.0)
+    return (1, -value)
+
+
 #: Stand-in age for the "would this promote if it were old enough?" probe
 #: in :meth:`ConceptView.testable`. Any value past the largest per-kind
 #: floor (3.0 engaged days today) settles the age leg; this leaves room
@@ -270,6 +300,7 @@ class ConceptView:
         per_kind_cap: int | None = None,
         openness_slots: int = 0,
         openness_min_confidence: float = 0.5,
+        openness_rest: "Callable[[Concept], float] | None" = None,
     ) -> list["Concept"]:
         """The L27 always-on **core lane**: up to ``limit`` high-confidence
         concepts pinned into the prompt every turn regardless of the live
@@ -293,7 +324,9 @@ class ConceptView:
         takeover: on the default ``core_cap`` of 2 a literal reading of
         the default 2 slots would pin nothing *but* generative concepts
         and lose the identity that says who she is talking to, which is
-        the opposite failure to the one this fixes.
+        the opposite failure to the one this fixes. ``openness_rest`` is
+        the caller's habituation read, passed through so the reserve
+        rotates like the rest of the lane (the view owns no clock).
 
         Turn-agnostic (no embedding); the turn-relevant fill layers on top
         via :meth:`relevant`. Returns ``[]`` when the layer is cold/disabled
@@ -307,6 +340,7 @@ class ConceptView:
         reserved = self._openness_picks(
             slots=min(int(openness_slots), cap // 2),
             min_confidence=openness_min_confidence,
+            rest=openness_rest,
         )
         kinds = core_lane_kinds()
         if not kinds:
@@ -334,7 +368,11 @@ class ConceptView:
         return reserved + _round_robin(buckets)[:room]
 
     def _openness_picks(
-        self, *, slots: int, min_confidence: float,
+        self,
+        *,
+        slots: int,
+        min_confidence: float,
+        rest: "Callable[[Concept], float] | None" = None,
     ) -> list["Concept"]:
         """The strongest ``generative``-role concepts, for the core lane.
 
@@ -342,18 +380,42 @@ class ConceptView:
         four that opt in are ``identity``, ``value``, ``boundary`` and
         ``generalization`` -- two anchors and two guides. So the pinned
         prompt is structurally incapable of carrying an aspiration, a
-        taste, a pursuit or a tension, however wide the cap is set: every
-        turn is guaranteed to arrive carrying what Aiko must respect and
-        nothing she might move on. This reserve is the exception that
-        fixes it, and it deliberately draws from the kinds the lane
-        cannot otherwise reach rather than asking those kinds to opt in
-        -- ``core_always_on`` means "pin this whenever it qualifies",
-        which is the wrong promise for a taste.
+        taste or a pursuit, however wide the cap is set: every turn is
+        guaranteed to arrive carrying what Aiko must respect and nothing
+        she might move on. This reserve is the exception that fixes it,
+        and it deliberately draws from the kinds the lane cannot
+        otherwise reach rather than asking those kinds to opt in --
+        ``core_always_on`` means "pin this whenever it qualifies", which
+        is the wrong promise for a taste.
 
-        Ranked on banded confidence and drawn round-robin like the lane
-        proper, so the pick is as prefix-stable as the rest of it: two
-        aspirations of similar confidence cannot trade places on L3's
-        per-tick drift and break the prompt cache.
+        Three things the first cut got wrong, all measured on the live
+        graph (L28m) rather than reasoned about:
+
+        **A cue-only kind cannot hold a pin.** ``tension`` is the most
+        generative kind in the registry and is filtered out of the static
+        T3 render, so a tension winning a slot either wastes it or --
+        worse, if the renderer's carve-out is ever relaxed -- pins a
+        standing friction into every turn, which is exactly what L12's
+        cooldown exists to prevent. Read off ``static_render`` so this
+        cannot drift from the renderer.
+
+        **The draw is one kind at a time, not one bucket at a time.** With
+        two slots and flat ``(kind, subject)`` buckets ordered by
+        confidence, both aspiration buckets outranked everything else and
+        took both slots -- ``taste`` and ``pursuit`` were unreachable by
+        construction, however much supply they grew. Rotating kinds first
+        and subjects within a kind means the reserve's *breadth* scales
+        with the slot count, which is what an openness mechanism should
+        spend its slots on.
+
+        **It has to rotate.** ``rest`` is the caller's habituation read
+        (the view owns no clock). Without it the same strongest
+        aspiration is pinned every turn forever, which is the repetition
+        failure L23 was built to fix, reintroduced by the mechanism meant
+        to keep her open. Fresh concepts are preferred and the rested-longest
+        wins among stale ones, matching the core lane's own ordering; the
+        sort is stable, so with an all-fresh state the draw is exactly the
+        balanced order above and stays prefix-stable for the prompt cache.
         """
         if self._store is None or slots <= 0:
             return []
@@ -361,21 +423,53 @@ class ConceptView:
             ROLE_GENERATIVE,
             core_lane_kinds,
             kinds_by_role,
+            renders_in_static_block,
         )
 
         already = {k.name for k in core_lane_kinds()}
-        buckets: dict[tuple[str, str], list["Concept"]] = {}
+        by_kind: dict[str, dict[str, list[Concept]]] = {}
         for kind in kinds_by_role(ROLE_GENERATIVE):
-            if kind.name in already:
+            if kind.name in already or not renders_in_static_block(kind.name):
                 continue
-            for c in self.core(
+            rows = self.core(
                 kind=kind.name, min_confidence=float(min_confidence),
-            ):
+            )
+            if not rows:
+                continue
+            subjects: dict[str, list[Concept]] = {}
+            for c in rows:
                 subject = str(getattr(c, "subject", "") or "user")
-                buckets.setdefault((kind.name, subject), []).append(c)
-        if not buckets:
+                subjects.setdefault(subject, []).append(c)
+            by_kind[kind.name] = subjects
+        if not by_kind:
             return []
-        return _round_robin(buckets)[:slots]
+
+        # Kinds in strongest-first order, each already balanced across its
+        # own subjects, then interleaved so slot N+1 goes to a different
+        # kind than slot N wherever one is available.
+        per_kind = {
+            name: _round_robin({
+                (name, subject): rows for subject, rows in subjects.items()
+            })
+            for name, subjects in by_kind.items()
+        }
+        # ``_stable_rank`` already leads with the negated band, so sorting
+        # on it ascending is strongest-band-first.
+        order = sorted(
+            per_kind,
+            key=lambda name: (_stable_rank(per_kind[name][0])[0], name),
+        )
+        draw: list[Concept] = []
+        depth = 0
+        while any(len(per_kind[name]) > depth for name in order):
+            for name in order:
+                rows = per_kind[name]
+                if depth < len(rows):
+                    draw.append(rows[depth])
+            depth += 1
+        if rest is not None:
+            draw.sort(key=lambda c: _rest_key(c, rest))
+        return draw[:slots]
 
     def relevant(
         self,

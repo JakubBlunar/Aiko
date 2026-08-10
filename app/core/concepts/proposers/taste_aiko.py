@@ -7,8 +7,10 @@ durable "you light up when this comes up between the two of you". The
 signal is the L37 surfacing ledger's per-cluster engaged rate: a topic
 that reliably *lands* when it surfaces, folded per topic cluster. The
 worker hands each candidate cluster in already annotated with that
-affinity ("lands well: 82% engaged over 17 turns"), so the prompt is only
-asked to name the enjoyment, never to compute it.
+affinity and with her own baseline rate ("lands well: 32% engaged over
+174 turns, vs 20% typical"), so the prompt is only asked to name the
+enjoyment, never to compute it -- and reads the rate as the comparison it
+is rather than as an absolute share.
 
 Reuses the L11 :func:`propose_aiko_hybrid` combined-evidence body (mixed
 ``cluster`` + ``memory`` edges; a NEW concept needs >= ``min_sources``
@@ -54,9 +56,11 @@ def _system(user_name: str, assistant_name: str) -> str:
         "- It is NOT an emotion label ('X makes me happy' is affective, not a "
         "taste), NOT a value or principle, and NOT a claim that HE should like "
         "the topic -- only that YOU enjoy it with him.\n"
-        "- Prefer topics that LAND well (high engaged-rate) even if they come "
-        "up rarely, over topics merely discussed often. The rate is the "
-        "signal, not the frequency.\n"
+        "- Prefer topics that LAND well even if they come up rarely, over "
+        "topics merely discussed often. The rate is the signal, not the "
+        "frequency -- and read each rate against the 'typical' figure beside "
+        "it, not against 100%: a topic well above her typical rate is a "
+        "genuine standout even when the absolute share looks modest.\n"
         "- Each NEW taste MUST be backed by at least two distinct topic "
         "sources (rep ids and/or memory ids). Only assert an enjoyment the "
         "sources genuinely support.\n"

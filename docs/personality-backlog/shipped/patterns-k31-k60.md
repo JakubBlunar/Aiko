@@ -1100,7 +1100,7 @@ an inference over how conversations went, never a single remembered note).
 `rep_annotation_label` / `mem_annotation_label` so the per-cluster affinity
 renders as "lands well: 82% engaged over 17 turns" instead of the affect
 "feels:"). `_run_taste_pass` (`population=="taste"`) reads the affinity
-read-model, keeps clusters above `taste_min_affinity` that still resolve to a
+read-model, keeps clusters above the affinity bar that still resolve to a
 live cluster, resolves `cluster_id -> rep + label`, and hands the top
 `concept_synthesis_max_taste_clusters` to the proposer. Dirty-tracked on a
 fingerprint of the affinity snapshot (reps + rounded rate + settled) so a
@@ -1131,16 +1131,38 @@ stays gentle and gated. Registered as `taste_lean_block` in **T6** right after
 
 **Settings.** `agent.taste_synthesis_enabled` / `taste_steer_enabled` (both
 true); `memory.taste_affinity_window_days` (90) / `taste_min_settled` (4) /
-`taste_min_affinity` (0.5) / `concept_synthesis_max_taste_clusters` (6).
+`taste_min_affinity` (0.15) / `taste_affinity_baseline_multiple` (1.4) /
+`concept_synthesis_max_taste_clusters` (6).
+
+**Retuned after measurement (L28m).** The bar shipped as an absolute engaged
+rate of 0.5 and no cluster ever cleared it: across 39 warmed clusters on the
+live ledger the best rate was **0.322** and the median **0.198**, because
+engagement labels are not balanced classes (~21% of settled rows land). Two
+tastes existed, both minted the day the kind shipped, and the silence was read
+at the time as "nothing behind the gates" rather than as a gate nobody could
+reach. `_taste_affinity_bar` now returns
+`max(taste_min_affinity, baseline * taste_affinity_baseline_multiple)` over
+the pooled rate of the same snapshot — the same argument `engagement_baseline`
+makes for L38 standing — so the bar means "she enjoys this more than she
+enjoys things generally" and moves with the relationship. `taste_min_affinity`
+survives as the absolute floor that stops a relationship where nothing lands
+from minting taste out of noise. The prompt annotation carries the baseline
+too ("32% engaged over 174 turns, vs 21% typical"), since a bare 32% invites
+the proposer to dismiss a genuine standout.
 
 **Tests:** `ClusterTasteTests` in
 [`tests/test_surfacing_outcome_ledger.py`](../../../tests/test_surfacing_outcome_ledger.py)
 (cluster + memory-join aggregation, unclustered/other-kind exclusion, the
-`min_settled` warmup floor, the window bound, and the broken-DB swallow).
+`min_settled` warmup floor, the window bound, and the broken-DB swallow);
+[`tests/test_taste_affinity.py`](../../../tests/test_taste_affinity.py) (the
+baseline-relative bar, the absolute floor, and the live-shaped ledger that the
+old absolute bar refused).
 
 **Notes / decisions.** Chose the concept path over a kv map so taste forms and
 drifts through the plasticity / contradiction / quality machinery for free —
 the L37 aggregate is the *signal*, the concept is the *store*. `engaged_rate`
-*is* the taste (no separate frequency baseline in v1; the rate already encodes
-the rare-but-lands asymmetry). Below `taste_min_settled` a cluster produces no
-taste, so a cold ledger simply yields nothing rather than noise.
+*is* the taste (the rate already encodes the rare-but-lands asymmetry), but it
+is read against her pooled rate rather than against 1.0 — the v1 decision to
+skip a baseline is what made the bar unreachable. Below `taste_min_settled` a
+cluster produces no taste, so a cold ledger simply yields nothing rather than
+noise.

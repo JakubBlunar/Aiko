@@ -1586,6 +1586,127 @@ transient half is recorded as **decided** rather than skipped.
 
 **Effort.** Medium, incremental (one small ticket per consumer). *Delivered.*
 
+**Measured after ship.** See L28m below: the selection code works and had
+almost nothing to select.
+
+---
+
+## L28m. What the openness pass actually measured
+
+**Status: MEASURED; three of the four findings fixed in the same pass.**
+[`scripts/concept_openness_report.py`](../../scripts/concept_openness_report.py)
+is the read-only diagnostic, built for this and kept for the next retune. It
+runs the *real* `ConceptView.core_lane` / `for_consumer` against the live rows
+loaded into a throwaway mirror, so what it prints is what the selector does
+rather than a restatement of it. The per-turn L28 telemetry (`role_mix`,
+`constraint_ratio`, flex-floor fire rate) could not answer this offline — it
+needs the app running and a week of turns — and the question was structural
+rather than statistical.
+
+**The graph at measurement time** (1508 concepts, 895 active, ledger from
+Aug 1):
+
+| role | active | share |
+| --- | --- | --- |
+| anchor | 432 | 48% |
+| guide | 324 | 36% |
+| generative | 139 | 15.5% |
+
+Constraint ratio **0.845**. Of the generative 139, `tension` is 77 and
+`tension` never renders in the static T3 block, so the openness reserve had
+**62 rows** in the whole store to draw a pin from — 60 aspirations and 2
+tastes.
+
+**Finding 1: three of the four generative kinds are empty, and one gate is
+unreachable.** `taste` had 2 rows, both minted the day the kind shipped;
+`pursuit` had 5, all candidates at `distinct_source_count = 0`; `conduct` had
+0 rows in five weeks. The taste pass needs a topic cluster whose *engaged
+rate* clears `taste_min_affinity = 0.5`; across 39 warmed clusters the best
+rate was **0.322** and the median **0.198**. The bar was set without the
+distribution, so K81 could not mint a taste however long it ran. Fixed by
+making the bar relative to her own baseline — see the `taste_min_affinity`
+retune. On the same snapshot the new bar lands at **0.274** and exactly one
+cluster of 39 clears it, which is the right shape: reachable, still rare.
+
+`pursuit` needed **no change**, and the reason is worth recording because the
+row counts look identical to the taste failure. Its five sourceless
+candidates are the K85 authored seeds, filed deliberately with zero evidence
+so they must earn the same gate on the same lived notes a grown pursuit
+needs. And the note pool is not stalled but *hours old*: K85b landed Aug 9,
+the first `pursuit_note` was written at 01:35 on Aug 10, and four arrived in
+the first ten hours with no dedupe rejections and no write failures — so the
+floor of 6 is crossed inside a day. What that exposed was a gap in the
+*diagnostic* rather than the feature: a bare count cannot tell a cold start
+from a stalled writer, so the report now prints the note rate and the
+projected time to the floor. `conduct` (0 rows in five weeks, weekly cadence,
+no last-run key) is filed rather than fixed.
+
+**Finding 2: the reserve could only ever hold an aspiration.** With
+`context_budget_core_cap = 15` the reserve gets 2 slots, and
+`_openness_picks` drew `(kind, subject)` buckets flat, ordered by confidence
+band. Both aspiration buckets outranked everything else, so both slots went
+to aspirations and `taste` / `pursuit` were unreachable *by construction*.
+Fixed by drawing one kind at a time and balancing subjects *within* a kind,
+so the slot count buys breadth; on the live graph the reserve immediately
+went from two aspirations to an aspiration plus a taste. The reserve also had
+no rotation at all — the ordinary lane earns its habituation rest-ordering by
+over-fetching `core_cap * 3`, which the reserve cannot do because it is sized
+against the real cap and sits at the head of the returned list, so the same
+strongest aspiration was pinned every turn forever (the L23 repetition
+failure, reintroduced by the mechanism meant to keep her open). `core_lane`
+now takes an `openness_rest` callback — the caller's habituation read, since
+the view owns no clock — and the reserve prefers rested picks.
+
+**Finding 3: a tension in the reserve was a silently wasted slot.** The
+renderer drops `kind == "tension"` from the T3 lanes (L12's anti-nag rule),
+but the core lane never had that carve-out because no `core_always_on` kind
+is a tension. The reserve introduced the path: a tension winning a slot
+would either be dropped downstream or, worse, pin a standing friction into
+every turn. Fixed by giving `ConceptKind` a declarative `static_render` flag
+that the reserve and the renderer both read.
+
+**Finding 4 (filed, not fixed): a small diet drops its own generative
+kinds.** `for_consumer` balances round-robin across kinds but orders the
+buckets by `importance x confidence`, and importance is a per-*kind* prior —
+so `taste` (0.3) and `pursuit` (0.45) sort last. On a tight budget the draw
+never reaches them: `interest_drift` (180 tokens, 4 concepts) came back
+**2 anchor + 2 guide + 0 generative**, and `identity` — a declared kind with
+196 active rows — contributed nothing. The guide-implies-generative invariant
+in `diet_problems` is *declarative*: it checks what a diet names, not what it
+receives. The flex lane has a generative floor for exactly this failure and
+`for_consumer` has none. Deliberately left until the supply fixes land, since
+a floor over an empty kind changes nothing; the report's per-diet
+`empty_kinds` line is the signal to act on. `wants_ledger` is the extreme
+case — its diet is `pursuit` alone, so the worker currently selects **0
+concepts** and is inert.
+
+**Finding 5: the framing was already saturated with hedging, and had no
+positive half.** Every per-family concept header carried its own version of
+*"hold these lightly, they're impressions not facts, stay open to being
+wrong"*. A full turn renders nine to thirteen headers (subject x family), so
+she met that same hedge a dozen times in one prompt — which is a drumbeat of
+distrust-what-you-know rather than a stance, and roughly 150 tokens of an
+already-large T3 block spent restating it. More hedging was clearly not the
+missing ingredient. The headers now say only what is specific to their kind
+(never announce a taste, never enforce a boundary, reach for the whole rather
+than its parts) and one block-level preamble
+(`_concept_stance_preamble`) states the posture once — including the two
+things hedging never supplies: permission to **change her mind out loud**, and
+that none of it bounds **what she may wonder about**. The persona got the
+matching pair of lines next to *"Have opinions. Disagree when you
+disagree."*: revising a take is the same skill as holding one, and she may
+follow a thread because it is interesting rather than because it is settled.
+
+**Prompt load, for L39.** The T0 profile block renders its full 10 lines
+(~622 tokens) from 171 eligible rows, the pinned core lane adds 15 (~480
+tokens), and the flex cap allows 15 more: **40 concept assertions** in a
+worst-case prompt. That number is what justified lowering
+`profile_concept_max_lines` rather than leaving the T0 block at 10.
+
+**Re-run it** before and after any intake or lane change:
+
+    python scripts/concept_openness_report.py
+
 ---
 
 ## L29. Relationship & meta narratives (split)
@@ -2444,7 +2565,7 @@ K81, DT5.
 
 ## L39. Identity concepts surface twice a turn, and one copy ignores habituation
 
-**Status: PARTLY SHIPPED (dedupe only).** The duplication is fixed.
+**Status: SHIPPED (dedupe + a smaller stable cap).** The duplication is fixed.
 `_profile_concept_lines` now stashes the concept ids it rendered on
 `_last_profile_concept_ids`, and `build_relevant_context` skips them in **all
 three** T3 lanes — core, flex, and activation. The core-lane skip happens before
@@ -2466,16 +2587,36 @@ the core lane can legitimately come up empty; `claimed_by_profile` is what makes
 that readable rather than looking like a cold layer, and it is the signal that
 open question (2) below (a smaller profile cap) has become worth acting on.
 
-**Still open: the repetition half.** Giving the profile path its own habituation
-read is *not* shipped, and the reason is worth recording rather than
-re-discovering. The T0 profile block is part of the stable prompt prefix that
-the `_PROMPT_BLOCK_TIERS` ladder exists to protect; rotating its lines
-turn-to-turn would make it a **third** volatile T0 block alongside
-`narrative_block` and `catchphrase_block`, which the same audit flagged as
-defects. That trades prompt-cache cost for the repetition fix. Open question (2)
-below — a smaller stable cap rather than a rotating set — is the cheaper lever
-and is the one to try first, since ten identity lines every turn is a lot of
-standing assertion whether or not they rotate.
+**The repetition half: a smaller stable cap, not a rotating set.** Giving the
+profile path its own habituation read stays deliberately *unshipped*, and the
+reason is worth recording rather than re-discovering. The T0 profile block is
+part of the stable prompt prefix that the `_PROMPT_BLOCK_TIERS` ladder exists
+to protect; rotating its lines turn-to-turn would make it a **third** volatile
+T0 block alongside `narrative_block` and `catchphrase_block`, which the same
+audit flagged as defects. That trades prompt-cache cost for the repetition fix.
+
+So the cheaper lever shipped instead: **`profile_concept_max_lines` 10 → 4**,
+on the numbers from
+[`scripts/concept_openness_report.py`](../../scripts/concept_openness_report.py)
+(see L28m) rather than on taste.
+
+- Concept labels are full sentences, so the 10 lines were **~620 tokens** of
+  identical, un-rotated assertion in the cache prefix of every single turn —
+  and 10 of the **40** concept assertions a worst-case prompt carried.
+- They were drawn from **170 eligible rows** and selected by confidence band
+  alone, so the same ten led the block indefinitely. This is the surface where
+  "she keeps telling me what I'm like" actually originates.
+- Because the profile claims *first* (settled above — T3 cannot win the
+  precedence argument), those 10 also pre-empted two thirds of the 15-slot
+  core lane, which *does* rotate and which now also carries the L28 openness
+  reserve. Releasing six of them does not remove those beliefs from the
+  prompt; it moves them to the lane that rests them and balances them against
+  other kinds.
+
+Four lines plus the structured SQLite facts (name, occupation, location,
+hobbies, schedule) is still a profile block that says who he is. The number is
+recorded here rather than left to a comment so the next change to it starts
+from the measurement instead of from the default.
 
 **Motivation.** Two independent paths render the same concepts into the same
 prompt, and they don't know about each other. `_profile_concept_lines`
@@ -2520,8 +2661,9 @@ saying so.
 slice-cached) before T3 exists, so making the turn-relevant lane take precedence
 would require either building T3 first, which breaks the reserve-before-history
 budget model, or re-rendering T0 afterwards, which breaks the tier ladder.
-(2) Does the profile block want its own smaller cap now that duplicates are
-gone? Still open, and now the leading candidate for the repetition half.
+(2) ~~Does the profile block want its own smaller cap now that duplicates are
+gone?~~ — **yes, and it shipped**: 10 → 4, on the prompt-load measurement
+above. It is the repetition half, bought without touching the tier ladder.
 (3) Should this share one "already surfaced this turn" set across *all* blocks,
 which is really the general version of the problem P43 is about? Still open —
 the claimed-id set shipped here is the narrow, concept-only case of it.
@@ -2538,7 +2680,8 @@ suppressing every unidentified candidate. Same-label siblings *are* claimed even
 though only the first renders a line, because the losing sibling's text is in
 the prompt via the line that won.
 
-**Effort.** Small. Two read sites and a per-turn claimed-id set.
+**Effort.** Small. Two read sites, a per-turn claimed-id set, and one retuned
+cap. *Delivered.*
 
 **Depends on.** Nothing. Pairs naturally with L40 and P31.
 

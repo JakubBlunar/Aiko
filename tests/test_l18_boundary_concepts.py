@@ -392,7 +392,8 @@ class RenderingTests(unittest.TestCase):
         aiko = InnerLifePart1Mixin._concept_group_header(
             "aiko", "boundary", "Jacob"
         )
-        self.assertIn("softly", aiko)
+        self.assertIn("gently", aiko)
+        self.assertIn("never as hard rules", aiko)
         self.assertIn("renegotiated", aiko)
 
 
