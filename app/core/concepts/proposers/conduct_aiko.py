@@ -70,6 +70,8 @@ def propose_conduct_aiko(
     existing_ids = {item.id for item in existing}
     proposals: list[CandidateProposal] = []
     used_keys: set[str] = set()
+    if not raw_items:
+        return _fallback(findings, min_sources=int(ctx.min_sources))
     for raw in raw_items:
         key = str(raw.get("finding_key", "") or "").strip()
         finding = finding_by_key.get(key)
@@ -103,7 +105,56 @@ def propose_conduct_aiko(
             )
         )
         used_keys.add(key)
+    if not proposals:
+        return _fallback(findings, min_sources=int(ctx.min_sources))
     return proposals
+
+
+def _fallback(
+    findings: Sequence[ConductFinding],
+    *,
+    min_sources: int,
+) -> list[CandidateProposal]:
+    """Mint conduct concepts straight from the findings, no model involved.
+
+    Detection is the expensive, careful half of L42 — the LLM pass only
+    puts the observation into words, and the detector already wrote a
+    perfectly serviceable sentence. Losing a real self-observation because
+    a local model returned an empty object is a bad trade, and it is not
+    hypothetical: one empty return in August left ``kind='conduct'`` at
+    zero rows with the detector working correctly the whole time.
+
+    Confidence is held below the LLM path's default because nothing judged
+    whether the observation is worth making — the lifecycle worker can
+    raise it later if the pattern keeps showing up.
+    """
+    out: list[CandidateProposal] = []
+    for finding in findings:
+        label = (finding.second_person or "").strip()
+        if not label:
+            continue
+        evidence = [
+            (kind, str(item_id))
+            for kind, item_id in finding.evidence
+            if kind in {"cluster", "memory", "concept"} and int(item_id) > 0
+        ]
+        if len(set(evidence)) < max(2, min_sources):
+            continue
+        out.append(
+            CandidateProposal(
+                label=label,
+                rationale=(
+                    f"Conduct shape={finding.shape}. Named from the detector's "
+                    "own summary because the naming pass returned nothing."
+                ),
+                confidence=0.5,
+                evidence=evidence,
+                kind="conduct",
+                subject="aiko",
+                evidence_model="set",
+            )
+        )
+    return out
 
 
 SPEC = ProposerSpec(

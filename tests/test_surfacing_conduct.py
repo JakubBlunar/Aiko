@@ -185,3 +185,207 @@ def test_conduct_proposer_uses_detector_evidence_and_can_reinforce() -> None:
     assert len(proposals) == 1
     assert proposals[0].reinforces_id == 42
     assert proposals[0].evidence == [("concept", "7"), ("concept", "8")]
+
+
+# ── the latch: an empty proposal pass must not retire the finding ───────
+#
+# L42 sat at zero conduct rows for its entire life while its detector was
+# working correctly. The detector found a valid neglect finding, the LLM
+# naming pass returned nothing, and the pass wrote the "already handled
+# these findings" fingerprint anyway — so that finding could never be
+# proposed again. These cover both halves of the repair: the proposer no
+# longer needs the model to produce something, and the pass no longer
+# closes the latch on a pass that produced nothing.
+
+
+def _conduct_finding(**over) -> ConductFinding:
+    base = dict(
+        shape="neglect",
+        key="concepts:7,8",
+        summary="I hold parts of this quietly",
+        second_person="You hold parts of this quietly",
+        evidence=(("concept", 7), ("concept", 8)),
+        score=0.7,
+    )
+    base.update(over)
+    return ConductFinding(**base)
+
+
+def test_conduct_proposer_falls_back_when_the_model_returns_nothing() -> None:
+    ctx = ProposerContext(
+        call_llm=lambda _system, _user: [],
+        min_sources=2,
+        user_name="Ben",
+        assistant_name="Aiko",
+    )
+    proposals = propose_conduct_aiko(ctx, findings=[_conduct_finding()])
+    assert len(proposals) == 1
+    assert proposals[0].label == "You hold parts of this quietly"
+    assert proposals[0].kind == "conduct"
+    assert proposals[0].subject == "aiko"
+    assert proposals[0].evidence == [("concept", "7"), ("concept", "8")]
+    # Below the LLM path's 0.65 default: nothing judged it worth saying.
+    assert proposals[0].confidence < 0.65
+
+
+def test_conduct_proposer_falls_back_when_the_model_returns_junk() -> None:
+    # Well-formed JSON that names a finding_key nobody asked about still
+    # leaves us with zero proposals, which is the same loss.
+    ctx = ProposerContext(
+        call_llm=lambda _system, _user: [{"finding_key": "nope", "label": "x"}],
+        min_sources=2,
+        user_name="Ben",
+        assistant_name="Aiko",
+    )
+    proposals = propose_conduct_aiko(ctx, findings=[_conduct_finding()])
+    assert len(proposals) == 1
+    assert proposals[0].label == "You hold parts of this quietly"
+
+
+def test_conduct_fallback_still_honours_the_evidence_floor() -> None:
+    ctx = ProposerContext(
+        call_llm=lambda _system, _user: [],
+        min_sources=3,
+        user_name="Ben",
+        assistant_name="Aiko",
+    )
+    assert propose_conduct_aiko(ctx, findings=[_conduct_finding()]) == []
+
+
+def test_every_detector_shape_can_be_named_without_the_model() -> None:
+    # A shape with no second-person rendering would silently lose its
+    # findings on the fallback path, which is the bug in miniature.
+    from app.core.concepts.surfacing_conduct import CONDUCT_SHAPES
+
+    now = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    old = (now - timedelta(days=200)).isoformat()
+    stats = {
+        1: ClusterTaste(1, surfaced=42, settled=40, engaged=25),
+        2: ClusterTaste(2, surfaced=12, settled=10, engaged=7),
+        3: ClusterTaste(3, surfaced=4, settled=3, engaged=2),
+    }
+    reps = {1: (101, "servers"), 2: (102, "music"), 3: (103, "books")}
+    produced: dict[str, ConductFinding] = {}
+    concentration = detect_concentration(
+        stats, {1: 1, 2: 30, 3: 30}, reps, min_excess=0.05,
+    )
+    if concentration is not None:
+        produced["concentration"] = concentration
+    neglect = detect_neglect(
+        [
+            SimpleNamespace(
+                concept_id=i,
+                kind="affective",
+                subject="aiko",
+                confidence=0.9,
+                created_at=old,
+                label=f"belief {i}",
+            )
+            for i in range(1, 5)
+        ],
+        {},
+        now=now,
+    )
+    if neglect is not None:
+        produced["neglect"] = neglect
+    fixation = detect_fixation(
+        [
+            Concept(
+                concept_id=i,
+                label=f"reading {i}",
+                kind="affective",
+                subject="aiko",
+                status="active",
+            )
+            for i in range(1, 4)
+        ],
+        {
+            1: ItemStats(surfaced=18, settled=12, engaged=2),
+            2: ItemStats(surfaced=5, settled=5, engaged=4),
+            3: ItemStats(surfaced=3, settled=3, engaged=2),
+        },
+        engaged_baseline=0.6,
+        core_kinds=frozenset({"identity", "value"}),
+    )
+    if fixation is not None:
+        produced["fixation"] = fixation
+    assert set(produced) == CONDUCT_SHAPES, (
+        "a detector shape produced nothing; adjust the fixtures"
+    )
+    for shape, finding in produced.items():
+        assert finding.second_person.strip(), f"{shape} cannot be named offline"
+        assert not finding.second_person.startswith("I "), shape
+
+
+def _conduct_worker(kv: dict[str, str], proposals):
+    """A ``ConceptSynthesisWorker`` with only what ``_run_conduct_pass``
+    touches, so the test is about the latch and nothing else."""
+    worker = object.__new__(ConceptSynthesisWorker)
+    worker._agent_settings = SimpleNamespace(surfacing_conduct_enabled=True)
+    worker._memory_settings = SimpleNamespace(conduct_cadence_seconds=604800)
+    worker._clock = lambda: datetime(2026, 7, 8, tzinfo=timezone.utc)
+    worker._kv_get = kv.get
+    worker._kv_set = kv.__setitem__
+    worker._surfacing_outcome_store_provider = lambda: SimpleNamespace(
+        engaged_rate_by_cluster=lambda **_kw: {},
+        stats_for=lambda *_a, **_kw: {},
+    )
+    worker._concept_store = SimpleNamespace(
+        list_by=lambda **_kw: [],
+        edges_into=lambda *_a, **_kw: [],
+    )
+    worker._topic_graph = SimpleNamespace(topic_clusters=lambda: [])
+    worker._user_vector_rows_provider = None
+    worker._existing_for = lambda _spec, **_kw: []
+    spec = SimpleNamespace(
+        propose=lambda _ctx, **_kw: list(proposals),
+        sig_key="concept_synth.conduct_sig.aiko",
+    )
+    return worker, spec
+
+
+def test_an_empty_proposal_pass_leaves_the_finding_proposable(monkeypatch) -> None:
+    from app.core.concepts import concept_synthesis_worker as module
+
+    monkeypatch.setattr(
+        module, "detect_conduct", lambda **_kw: [_conduct_finding()]
+    )
+    kv: dict[str, str] = {}
+    stats: dict[str, object] = {}
+    worker, spec = _conduct_worker(kv, proposals=[])
+    ctx = ProposerContext(
+        call_llm=lambda _s, _u: [],
+        min_sources=2,
+        user_name="Ben",
+        assistant_name="Aiko",
+    )
+
+    assert worker._run_conduct_pass(ctx, spec, stats) == []
+    assert "concept_synth.conduct_sig.aiko" not in kv, (
+        "an empty pass wrote the already-handled fingerprint, which retires "
+        "the finding permanently"
+    )
+    assert stats["conduct_latch_held_open"] is True
+
+
+def test_a_productive_pass_does_record_the_fingerprint(monkeypatch) -> None:
+    from app.core.concepts import concept_synthesis_worker as module
+
+    monkeypatch.setattr(
+        module, "detect_conduct", lambda **_kw: [_conduct_finding()]
+    )
+    kv: dict[str, str] = {}
+    worker, spec = _conduct_worker(kv, proposals=["a proposal"])
+    ctx = ProposerContext(
+        call_llm=lambda _s, _u: [],
+        min_sources=2,
+        user_name="Ben",
+        assistant_name="Aiko",
+    )
+
+    assert worker._run_conduct_pass(ctx, spec, {}) == ["a proposal"]
+    assert "concept_synth.conduct_sig.aiko" in kv
+    # ...and a second run with the same findings is correctly a no-op.
+    worker2, spec2 = _conduct_worker(kv, proposals=["another"])
+    kv.pop("concept.surfacing_conduct.last_run", None)
+    assert worker2._run_conduct_pass(ctx, spec2, {}) == []
