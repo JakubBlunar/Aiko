@@ -39,6 +39,7 @@ from app.core.concepts.gate_tuning import (
     POP_CLUSTER_ENGAGED_RATE,
     POP_CORE_POOL,
     POP_DORMANT_QUIET_DAYS,
+    POP_EVIDENCE_FIT,
     POP_FADED_CONFIDENCE,
     POP_OPENNESS_POOL,
     POP_PAIR_COSINE,
@@ -144,6 +145,7 @@ def populations(
     rows: Sequence[Any],
     *,
     cluster_engaged_rates: Sequence[float] = (),
+    evidence_fit: Sequence[float] = (),
     cosine_pairs: int = 0,
     rng: random.Random | None = None,
     now: datetime | None = None,
@@ -208,6 +210,15 @@ def populations(
     quiet = _quiet_days(by_status.get("dormant", []), when)
     if quiet:
         out[POP_DORMANT_QUIET_DAYS] = quiet
+
+    # L31. Passed in rather than measured here: these are the cosines the
+    # admission gate already computed as evidence arrived, rolled through
+    # ``kv_meta``. Re-deriving them from the stored graph would measure the
+    # wrong thing (evidence that got in) and cost a full memory-embedding
+    # scan to do it.
+    fit = [float(v) for v in evidence_fit if v is not None]
+    if fit:
+        out[POP_EVIDENCE_FIT] = fit
 
     return out
 

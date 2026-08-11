@@ -2207,6 +2207,59 @@ blocking re-invention, and the two master switches being unreachable from the UI
 
 ## L31. Concept fission -- split a bimodal concept into contextual children
 
+**Status: refuted by measurement, and replaced.** The bloat this was aimed at is
+real, but it is not the shape the sketch below assumes, and the detector it
+proposes cannot be built on this data. What shipped instead is **evidence
+admission control** — two bars at the inflow rather than a split at the outflow.
+See
+[`shipped/concepts.md`](shipped/concepts.md#l31-evidence-admission-control)
+for what landed. The sketch is kept below because the *reasoning* in it is sound
+and a differently-shaped graph might well support it; only the measurement
+against this one refutes it.
+
+**The detector cannot discriminate.** Over all 49 concepts holding 14+ sources,
+2-means on their evidence embeddings scored silhouette 0.10-0.43 — which looks
+promising until you run the control. Pool the evidence of two *genuinely
+different* same-`(kind, subject)` concepts and ask the same detector to find two
+modes in it: median silhouette **0.215**, range 0.10-0.45, recovering the true
+partition only 72% of the time. That is the same distribution as the
+within-concept scores. The measure cannot tell one concept's evidence from two
+concepts' evidence stapled together, so a bar drawn anywhere on it would fission
+coherent beliefs at the same rate as double ones. This is L46's lesson again in
+a different register: the cheap geometric signal reads the sentence template,
+not the meaning.
+
+**And the bloated rows are not bimodal.** Hand-reading the two worst:
+`ritual/relationship` "tender, playful wind-downs where vulnerability meets
+gentle teasing" cites **145 of the 158 `shared_moment` memories in the graph —
+92%** — including a repair after a tense patch, a silly song, and being urged
+indoors to avoid a cold. Single-link at 0.75 puts 102 of the 145 in one
+connected component; there are no modes in there to find. It is one vague truth
+restated 145 times. `aspiration/user` "deepening emotional and physical intimacy
+with Aiko…" cites *"Jacob really enjoyed Chainsaw Man's opening song"* and
+*"organizing the snack stash by moving cookies to the kitchenette"* — not a
+second truth but evidence that does not belong at all.
+
+**A split would also have duplicated rows that already exist.** The contextual
+children L31 would have carved out of the 145-source ritual were minted
+independently while it grew: "quietly holding hands and embracing before sleep"
+(13 sources), "winding down on Fridays with anime" (7), "Friday playful teasing"
+(6). Consolidation would then have had to merge the fresh children back. And the
+attractor was already losing: 61 new sources in June, 75 in July, **9 in
+August**, as the specific rituals started winning the evidence. Graph-wide the
+top 10 concepts hold only 8.9% of all evidence slots, so this was a handful of
+legacy rows rather than a distribution problem.
+
+**What would still be needed to revisit this.** A detector that reads *meaning*
+rather than geometry — an LLM asked "does this one label describe all of these?"
+over a concept's evidence set. That is affordable only for a handful of rows
+(the heavy ones run 20-145 sources each), and there is currently no measured
+population of genuinely-double concepts for it to find, so it would be a
+detector built before its target. The oscillation and fragmentation guards
+sketched below remain the right answers if that ever changes.
+
+---
+
 **Motivation.** The natural **inverse of merge** (L2 consolidation's `merge_into`)
 and the missing precursor to generalization (L20). Sometimes a single concept is
 carrying two truths at once: "user likes detailed answers" accretes evidence that

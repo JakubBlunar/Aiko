@@ -97,6 +97,14 @@ arriving early is cheap and reversible. The setting is registered as an
 **observe-only** L45 gate on a `dormant_quiet_days` population, measured but never
 auto-applied.
 
+Because the anchor is `last_reinforced_at`, anything that can *stop* that stamp
+moving becomes a retirement path. There is one: L31's evidence ceiling
+(`concept_evidence_max_sources`) refuses new sources on a concept that already
+holds its limit. So a refusal for that reason still bumps the stamp — otherwise a
+capped concept would drift `active → dormant → retired` while the evidence for it
+kept arriving, retiring the best-supported rows in the graph *because* they had
+the most evidence. Anything else added at the inflow needs the same check.
+
 The contradicted floor sits **above** the dormant floor (default `0.4` vs
 `0.35`) so "actively disproven" is a stronger signal than "faded": a
 contradiction is what *routes* to `contradicted`, and it takes priority

@@ -35,6 +35,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core.concepts.concept_evidence_admission import (  # noqa: E402
+    load_fit_sample,
+)
 from app.core.concepts.concept_store import Concept  # noqa: E402
 from app.core.concepts.gate_measure import populations  # noqa: E402
 from app.core.concepts.gate_tuning import (  # noqa: E402
@@ -151,6 +154,25 @@ def _cluster_rates(conn: sqlite3.Connection, *, min_settled: int) -> list[float]
     return out
 
 
+def _evidence_fit(conn: sqlite3.Connection) -> list[float]:
+    """The L31 admission gate's rolling sample of measured fit cosines.
+
+    The one population that is *read* rather than recomputed: these cosines
+    were measured as evidence arrived, and the graph no longer holds the
+    information (the sources that were refused left no edge behind).
+    """
+    def kv_get(key: str) -> "str | None":
+        try:
+            row = conn.execute(
+                "SELECT value FROM kv_meta WHERE key = ?", (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        return None if row is None else str(row["value"])
+
+    return load_fit_sample(kv_get)
+
+
 def collect(
     conn: sqlite3.Connection, *, settings: Any, pairs: int, seed: int | None,
 ) -> dict[str, Any]:
@@ -161,6 +183,7 @@ def collect(
         cluster_engaged_rates=_cluster_rates(
             conn, min_settled=int(getattr(ms, "taste_min_settled", 4)),
         ),
+        evidence_fit=_evidence_fit(conn),
         cosine_pairs=pairs,
         rng=random.Random(seed) if seed is not None else random.Random(),
     )

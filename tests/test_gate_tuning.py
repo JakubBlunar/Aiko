@@ -15,6 +15,7 @@ gate cannot quietly opt out of them.
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,6 +39,7 @@ from app.core.concepts.gate_tuning import (
     POP_ACTIVE_CONFIDENCE,
     POP_CANDIDATE_CONFIDENCE,
     POP_DORMANT_QUIET_DAYS,
+    POP_EVIDENCE_FIT,
     POP_OPENNESS_POOL,
     GateSpec,
     applied_settings,
@@ -342,6 +344,39 @@ class MeasurementTests(unittest.TestCase):
         spec = spec_for("concept_dormant_ttl_days")
         self.assertIsNotNone(spec)
         self.assertEqual(spec.mode, MODE_OBSERVE)
+
+    def test_evidence_fit_is_passed_in_rather_than_derived(self) -> None:
+        """L31: the one *inflow* population here.
+
+        The admission gate computed these cosines as evidence arrived, so
+        they are handed over rather than re-derived. Re-deriving them from
+        the stored graph would measure the wrong thing entirely -- the
+        evidence that got in -- and cost a memory-embedding scan to do it.
+        """
+        rows = [_c(1)]
+        self.assertNotIn(POP_EVIDENCE_FIT, populations(rows))
+        pops = populations(rows, evidence_fit=[0.3, 0.62])
+        self.assertEqual(pops[POP_EVIDENCE_FIT], [0.3, 0.62])
+
+    def test_the_admission_gate_is_observed_never_applied(self) -> None:
+        spec = spec_for("concept_evidence_admission_cosine")
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.mode, MODE_OBSERVE)
+        self.assertEqual(spec.population, POP_EVIDENCE_FIT)
+
+    def test_the_admission_gate_keeps_almost_everything_admissible(
+        self,
+    ) -> None:
+        # Solved against a distribution shaped like the measured one, the
+        # bar has to land in the low tail rather than in the body: it exists
+        # for evidence about something else, not for the merely weak.
+        samples = [0.2, 0.24, 0.3] + [0.4 + i / 100.0 for i in range(97)]
+        solution = solve(
+            spec_for("concept_evidence_admission_cosine"),
+            samples,
+            current=0.35,
+        )
+        self.assertLessEqual(solution.proposed, 0.4)
 
     def test_a_missing_population_is_skipped_rather_than_solved(self) -> None:
         solutions = solve_all(
@@ -729,7 +764,38 @@ class _Store:
         return list(self.rows)
 
 
-class SchedulingTests(unittest.TestCase):
+class _TuningDirIsolated(unittest.TestCase):
+    """Base for any test that lets the tuner *write*.
+
+    ``run()`` persists the solved gates and appends a population snapshot, so
+    a test that reaches it without this writes fabricated thresholds into the
+    developer's **live** ``data/tuning/`` -- which the app reads on boot and
+    can apply to real settings. That failure is silent in the worst way: the
+    test passes and the damage lands somewhere else entirely, weeks later, as
+    a threshold nobody set. It belongs in a base class rather than in each
+    test body, because "remember to call the redirect helper" is exactly the
+    kind of instruction that gets forgotten -- it already was, by the one
+    scheduling test that reached ``run()`` unguarded.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        tmp = TemporaryDirectory()
+        previous = os.environ.get("AIKO_TUNING_DIR")
+        os.environ["AIKO_TUNING_DIR"] = tmp.name
+
+        def restore() -> None:
+            if previous is None:
+                os.environ.pop("AIKO_TUNING_DIR", None)
+            else:
+                os.environ["AIKO_TUNING_DIR"] = previous
+            tmp.cleanup()
+
+        self.addCleanup(restore)
+        self.tuning_dir = Path(tmp.name)
+
+
+class SchedulingTests(_TuningDirIsolated):
     """Liveness on a machine that is switched off overnight."""
 
     def _worker(self, kv: _KV, **settings) -> ConceptGateTunerWorker:
@@ -749,6 +815,12 @@ class SchedulingTests(unittest.TestCase):
             memory_settings=SimpleNamespace(**base),
             kv_get=kv.get,
             kv_set=kv.set,
+            # Pinned to the same ``NOW`` the scheduling assertions use.
+            # ``run()`` reads its own clock rather than taking a ``now``
+            # argument, so without this the tests compared a fixed
+            # ``last_run`` against real time and aged into failure -- which
+            # they eventually did, months after being written.
+            clock=lambda: NOW,
         )
 
     def test_the_heartbeat_is_shorter_than_the_cadence(self) -> None:
@@ -780,13 +852,11 @@ class SchedulingTests(unittest.TestCase):
         kv.set(LAST_RUN_KEY, (NOW - timedelta(days=9)).isoformat())
         worker = self._worker(kv)
         self.assertIsNotNone(worker.demand(now=NOW, last_run_at=None))
-        with TemporaryDirectory() as tmp:
-            self._redirect(tmp)
-            self.assertIsNotNone(worker.run())
-            # One completed run clears the backlog; nine missed days do not
-            # queue nine runs.
-            self.assertIsNone(worker.demand(now=NOW, last_run_at=None))
-            self.assertIsNone(worker.run())
+        self.assertIsNotNone(worker.run())
+        # One completed run clears the backlog; nine missed days do not
+        # queue nine runs.
+        self.assertIsNone(worker.demand(now=NOW, last_run_at=None))
+        self.assertIsNone(worker.run())
 
     def test_run_is_a_no_op_when_not_due(self) -> None:
         kv = _KV()
@@ -804,39 +874,23 @@ class SchedulingTests(unittest.TestCase):
         worker = self._worker(_KV(), concept_min_clusters=50)
         self.assertFalse(worker.is_ready(now=NOW, last_run_at=None))
 
-    def _redirect(self, tmp: str) -> None:
-        """Point the tuning files at a temp dir for the duration of a test."""
-        import os
+    def test_the_history_span_is_measured_on_the_injected_clock(self) -> None:
+        """The maturity gate has to move with the DT1 debug clock too.
 
-        previous = os.environ.get("AIKO_TUNING_DIR")
-        os.environ["AIKO_TUNING_DIR"] = tmp
+        ``_graph_mature`` read ``datetime.now`` directly, so a fast-forwarded
+        app could not age a young graph past ``concept_min_history_days`` --
+        the one gate whose whole purpose is to wait for calendar time.
+        """
+        worker = self._worker(_KV(), concept_min_history_days=90.0)
+        # Rows are created 2026-01-01; NOW is well over 90 days later.
+        self.assertTrue(worker.is_ready(now=NOW, last_run_at=None))
+        worker._clock = lambda: datetime(
+            2026, 1, 15, tzinfo=timezone.utc,
+        )
+        self.assertFalse(worker.is_ready(now=NOW, last_run_at=None))
 
-        def restore() -> None:
-            if previous is None:
-                os.environ.pop("AIKO_TUNING_DIR", None)
-            else:
-                os.environ["AIKO_TUNING_DIR"] = previous
 
-        self.addCleanup(restore)
-
-
-class WorkerRunTests(unittest.TestCase):
-    def setUp(self) -> None:
-        import os
-
-        self._tmp = TemporaryDirectory()
-        previous = os.environ.get("AIKO_TUNING_DIR")
-        os.environ["AIKO_TUNING_DIR"] = self._tmp.name
-
-        def restore() -> None:
-            if previous is None:
-                os.environ.pop("AIKO_TUNING_DIR", None)
-            else:
-                os.environ["AIKO_TUNING_DIR"] = previous
-            self._tmp.cleanup()
-
-        self.addCleanup(restore)
-
+class WorkerRunTests(_TuningDirIsolated):
     def _settings(self) -> SimpleNamespace:
         values = {
             "concept_gate_tuning_enabled": True,
