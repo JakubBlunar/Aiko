@@ -27,6 +27,15 @@ CONDUCT_LAST_RUN_KEY = "concept.surfacing_conduct.last_run"
 
 @dataclass(frozen=True, slots=True)
 class ConductFinding:
+    """One observation about how Aiko has been showing up.
+
+    ``summary`` is first-person, for the prompt snapshot she reads.
+    ``second_person`` is the same observation addressed *to* her ("you
+    keep..."), which is the register conduct concepts are stored in — it
+    exists so the proposer can still mint a concept when the LLM naming
+    pass comes back empty, instead of losing the finding entirely.
+    """
+
     shape: str
     key: str
     summary: str
@@ -37,6 +46,7 @@ class ConductFinding:
     engaged: int = 0
     observed_share: float | None = None
     expected_share: float | None = None
+    second_person: str = ""
 
     def fingerprint(self) -> tuple[Any, ...]:
         return (
@@ -76,6 +86,7 @@ class ConductFinding:
             engaged=self.engaged,
             observed_share=self.observed_share,
             expected_share=self.expected_share,
+            second_person=self.second_person,
         )
 
 
@@ -206,6 +217,10 @@ def detect_concentration(
         shape="concentration",
         key=f"cluster:{top[1]}",
         summary=f"I keep steering our attention toward {label or 'one familiar topic'}",
+        second_person=(
+            "You keep steering your attention toward "
+            f"{label or 'one familiar topic'}"
+        ),
         evidence=evidence,
         score=min(1.0, max(0.0, top[3] / max(min_excess, 0.01) * 0.5)),
         surfaced=int(getattr(row, "surfaced", 0) or 0),
@@ -285,6 +300,11 @@ def detect_neglect(
         key="concepts:" + ",".join(str(item_id) for _kind, item_id in evidence),
         summary="I hold parts of this understanding quietly without bringing them forward: "
         + "; ".join(label for label in labels if label),
+        second_person=(
+            "You hold parts of your understanding quietly without bringing "
+            "them forward: "
+            + "; ".join(label for label in labels if label)
+        ),
         evidence=evidence,
         score=min(1.0, 0.5 + 0.1 * len(eligible)),
     )
@@ -342,6 +362,10 @@ def detect_fixation(
         key=f"concept:{cid}",
         summary=(
             f"I keep returning to {label or 'the same interpretation'} more "
+            "than it seems to open things up"
+        ),
+        second_person=(
+            f"You keep returning to {label or 'the same interpretation'} more "
             "than it seems to open things up"
         ),
         evidence=evidence,

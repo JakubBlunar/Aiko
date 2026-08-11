@@ -1821,6 +1821,16 @@ class ConceptSynthesisWorker:
             findings=findings,
             existing=self._existing_for(spec),
         )
+        if not proposals:
+            # The fingerprint is the "already handled these findings" latch,
+            # so writing it after a proposal pass that produced nothing
+            # retires the findings permanently on the strength of one empty
+            # return. That is how conduct reached zero rows ever while its
+            # detector was working: a single silent LLM failure in August
+            # closed the latch on a valid neglect finding forever. Leave it
+            # open; the findings are recomputed cheaply next run.
+            stats["conduct_latch_held_open"] = True
+            return []
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(findings)}
         )
