@@ -891,7 +891,14 @@ class MemorySettings:
     # ``concept_synthesis_max_pursuit_memories`` notes per run, chronologically
     # rather than by salience: recurrence is the signal, and a salience sort
     # would hide exactly the dull repetition that proves it.
-    pursuit_min_notes: int = 6
+    #
+    # 4, not the original 6. Notes accrue from her away beats at roughly one a
+    # fortnight, so 6 meant the pass had still never run months in -- and
+    # ``pursuit`` is the one kind that gives her something to say about her own
+    # day, which makes a long cold start expensive in a way its row count
+    # hides. The promotion gate still needs three distinct sources, so 4 keeps
+    # a margin: this lowers the bar for *asking*, not for believing.
+    pursuit_min_notes: int = 4
     concept_synthesis_max_pursuit_memories: int = 40
     # L42 weekly surfacing-conduct self-model.
     conduct_window_days: int = 90
@@ -1587,9 +1594,16 @@ class MemorySettings:
     concept_relabel_scan_limit: int = 40
     concept_drift_relabel_min_tokens: int = 1
     # L17e: how salient a change must be to be offered to the rare T6
-    # reflection, and how many are held in the pending snapshot.
+    # reflection, and how many are held in the pending shelf. The shelf
+    # keeps the most significant *unreported* changes rather than the
+    # latest ones -- the worker runs daily and the reflection speaks
+    # monthly, so overwriting meant the change she got to mention was
+    # picked by which day the cooldown lifted. The TTL is the other half
+    # of that: a change nobody has said in six weeks has stopped being
+    # news and should stop holding a slot.
     concept_reflection_min_salience: float = 0.6
     concept_drift_pending_cap: int = 3
+    concept_drift_pending_ttl_days: float = 45.0
     # A belief revision is an intimate thing to volunteer, so the T6 slip
     # needs warmth to land and an opening to land in, and it should stay
     # genuinely rare -- a month between them, on top of the per-change
@@ -3330,7 +3344,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 ),
             ),
             pursuit_min_notes=max(
-                1, int(memory_raw.get("pursuit_min_notes", 6)),
+                1, int(memory_raw.get("pursuit_min_notes", 4)),
             ),
             concept_synthesis_max_pursuit_memories=max(
                 1,
@@ -4453,6 +4467,12 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             concept_drift_pending_cap=max(
                 1, int(memory_raw.get("concept_drift_pending_cap", 3))
+            ),
+            concept_drift_pending_ttl_days=max(
+                1.0,
+                float(
+                    memory_raw.get("concept_drift_pending_ttl_days", 45.0)
+                ),
             ),
             concept_reflection_min_axes=min(
                 1.0,

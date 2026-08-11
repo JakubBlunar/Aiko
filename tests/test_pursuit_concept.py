@@ -298,5 +298,32 @@ class PassTests(unittest.TestCase):
         self.assertEqual(worker._memory_store.asked, [])
 
 
+class ShippedFloorTests(unittest.TestCase):
+    """Pin the production floor, which the tests above deliberately override.
+
+    The pass had never run months after shipping: notes accrue from her
+    away beats at about one a fortnight and the floor was 6. Nothing caught
+    it because every test here sets its own floor, so the number that
+    actually ships was untested.
+    """
+
+    def _default(self) -> int:
+        from app.core.infra.memory_settings import parse_memory_settings
+
+        return int(parse_memory_settings({}).pursuit_min_notes)
+
+    def test_the_floor_leaves_the_promotion_gate_a_margin(self) -> None:
+        from app.core.concepts.concept_lifecycle import _PURSUIT_MIN_SOURCES
+
+        # Asking below the gate's floor could never promote anything; asking
+        # exactly at it leaves no room for a note the proposer cannot use.
+        self.assertGreater(self._default(), int(_PURSUIT_MIN_SOURCES))
+
+    def test_the_floor_is_reachable_within_a_couple_of_months(self) -> None:
+        # ~1 note a fortnight on the reference install.
+        notes_per_day = 1.0 / 14.0
+        self.assertLessEqual(self._default() / notes_per_day, 60.0)
+
+
 if __name__ == "__main__":
     unittest.main()
