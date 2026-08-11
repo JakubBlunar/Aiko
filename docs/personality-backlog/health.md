@@ -182,6 +182,38 @@ Prefer the backlog-aware bypass.
 and assert the backlog shrinks over simulated days. Existing tests always pop the
 cooldown key between pages, which is exactly why the pacing mismatch is invisible.
 
+### Outcome
+
+Arrival is worse than the weekly average suggested: 285 salient events across 19
+active days is **~15 a day while she is actually in use**, against a drain of 12
+a week. Bypassing the cooldown alone would not have caught up either, since one
+page a day still loses ground to a busy day.
+
+So the cooldown now paces the quiet case only. It was always a proxy for "enough
+has happened to be worth a paragraph", and the pending count measures that
+directly, so two full pages waiting (24 events) releases the clock, and a
+released tick composes up to `evolution_diary_backlog_pages` entries in
+sequence (default 3) instead of one. Under the shipped settings a 200-event
+backlog drops below a page inside two weeks of daily ticks and then hands pacing
+back to the seven-day cooldown; the old ceiling would have taken four months.
+An empty compose still ends the tick rather than spending further calls on
+material the model just declined to describe.
+
+The suggested test exists, with the cooldown left in place and a moving clock.
+
+### Follow-on found while measuring: the diary can only tell one kind of story
+
+Worth its own entry (see H15). The salience floor is not selecting: 285 of 300
+events clear 0.45, so the floor admits 95% of everything. What it *does* do is
+select by shape, because salience is distributed per shape rather than evenly —
+`succession` averages 0.804 and contributes 216 of 300 rows, while **`emergence`
+averages 0.404 and 14 of its 15 events fall below the floor**. A diary about how
+her understanding changed is therefore structurally a log of relabelings, and
+the moment a new understanding first formed is the one thing it cannot report.
+Not fixed here: raising or shape-splitting the floor changes what counts as
+narratable, and that should be a deliberate decision rather than a side effect
+of a throughput fix.
+
 ---
 
 ## H4. The cue shelf produces well and spends badly
@@ -372,6 +404,55 @@ Recorded so they are not mistaken for defects on the next sweep.
   `shared_ritual_block` reads a *different* K73 store, so the low concept count
   is not starving the prompt. Reclassify as low-volume-by-design.
 - **`conduct` (0 rows)** is the one genuinely broken member of this group — see H1.
+
+---
+
+## H15. The diary's salience floor selects by shape, not by significance
+
+**Severity: medium — it decides what kind of change she is able to remember
+changing.**
+
+Found while fixing H3's throughput, and deliberately left for a separate
+decision.
+
+`evolution_diary_min_salience` reads like a significance filter and is not one:
+285 of 300 learning events clear 0.45, so **95% of everything is admitted**. The
+distribution is heavily left-skewed (p10 = 0.521, median 0.787), so no floor in
+the plausible range is selective either — 0.60 still admits 77%, and 0.80 admits
+39% by cutting into the middle of the dominant shape rather than at a boundary.
+
+The floor does have an effect, just not the intended one. Salience is not
+distributed evenly across shapes:
+
+| shape | n | mean salience | clears 0.45 |
+| --- | --- | --- | --- |
+| `succession` | 216 | 0.804 | 216 |
+| `revival` | 67 | 0.566 | 67 |
+| `emergence` | 15 | 0.404 | **1** |
+| `loss` | 2 | 0.512 | 1 |
+
+So a single global floor is in practice a shape filter that passes ~100% of
+relabelings and ~7% of formations. The diary is "how I've changed" and it can
+essentially only narrate one of the four ways she changes. A concept coming into
+existence — arguably the most interesting entry such a diary could hold — is the
+one it structurally cannot report, and `loss` is a coin flip.
+
+Two candidate reads, and they want different fixes:
+
+1. **Emergence salience is under-scored.** If a formation genuinely is as
+   significant as a relabeling, the scorer is wrong and the floor is fine.
+   Check how salience is computed per shape before touching the floor.
+2. **The floor should be per-shape.** Keep the global default, add overrides so
+   each shape passes a comparable *fraction* of its own population rather than a
+   comparable absolute score. This is the same self-calibration argument L45 and
+   the H4 K18 fix both landed on, and it survives a change of scorer.
+
+Do not simply lower the global floor: at 0.40 it admits 98% and stops being a
+gate at all.
+
+**Measure first:** entries per shape actually cited in `evolution_diary` rows
+(currently one entry, 12 events, all `succession`), and whether emergence
+salience correlates with anything a reader would call significance.
 
 ---
 
@@ -728,3 +809,6 @@ Across both parts, roughly by value per unit of risk:
 9. **H12**, **H13**, **H14** — re-measure after H9 and H10; all three have inputs
    those two change.
 10. **H6**, **H8** — mostly decisions to record rather than code to write.
+11. **H15** — raised during H3, and it needs a measurement before it needs a
+    patch. Now that the diary drains, wrong content matters more than it did
+    when there was one entry in total.

@@ -1598,10 +1598,19 @@ class MemorySettings:
     # weeks can still add up to one entry worth reading. The cooldown is
     # spent even when the model returns nothing, so an unproductive period
     # costs a period rather than looping on the same material.
+    #
+    # The cooldown paces the *quiet* case only. It is a proxy for "enough
+    # has happened to be worth a paragraph", and the pending count measures
+    # that directly, so a backlog of ``backlog_pages`` full pages releases
+    # the clock and lets one tick compose several entries in sequence.
+    # Without that the worker had a hard ceiling of one page per cooldown
+    # -- twelve changes a week against fifty arriving -- and fell further
+    # behind every week it ran.
     evolution_diary_interval_seconds: int = 86400
     evolution_diary_min_events: int = 3
     evolution_diary_min_salience: float = 0.45
     evolution_diary_cooldown_days: float = 7.0
+    evolution_diary_backlog_pages: int = 3
     # ── L17d: self-correction meta-concepts ───────────────────────────
     # A rule about how Aiko works, learned from several of her own
     # corrections landing for the same reason. The floor counts distinct
@@ -4458,6 +4467,9 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         memory_raw.get("evolution_diary_min_salience", 0.45)
                     ),
                 ),
+            ),
+            evolution_diary_backlog_pages=max(
+                1, int(memory_raw.get("evolution_diary_backlog_pages", 3))
             ),
             evolution_diary_cooldown_days=max(
                 0.0,

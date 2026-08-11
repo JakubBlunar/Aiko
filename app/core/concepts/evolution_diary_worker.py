@@ -26,6 +26,10 @@ Three rules shape it:
   any existing entry accounts for, so no change is told twice. The cooldown
   is tracked separately, so an empty compose costs a period rather than
   silently swallowing the events it failed to describe.
+- **Never fall behind.** One page per cooldown is a throughput ceiling, and
+  a ceiling below the arrival rate is a diary that is permanently, and
+  increasingly, out of date. Deep backlogs release the clock and drain
+  several pages in one tick, in order.
 
 This is deliberately NOT the H9 diary (``memories`` rows of
 ``kind='diary'``): that one is subjective inner-life journalling written
@@ -66,6 +70,10 @@ _MIN_ENTRY_CHARS = 24
 # rest are still marked accounted for, because the entry is meant to be a
 # paragraph, not a changelog dump.
 _MAX_EVENTS_PER_ENTRY = 12
+# Pages of unreported change that count as "the period is over regardless
+# of what the calendar says". Two, so the release needs a genuine backlog
+# rather than one busy afternoon, and the ordinary weekly rhythm survives.
+_BACKLOG_RELEASE_PAGES = 2
 
 
 def _utcnow() -> datetime:
@@ -98,6 +106,10 @@ class DiaryComposeResult:
     entry: str | None = None
     entry_id: int | None = None
     events: int = 0
+    # A catch-up tick writes several entries; ``entry``/``entry_id`` stay
+    # the first of them so the common single-page case reads unchanged.
+    entries: int = 0
+    pending: int = 0
 
 
 def render_learning_brief(events: "list[LearningEvent]") -> str:
@@ -225,8 +237,10 @@ class EvolutionDiaryWorker:
     ) -> str | None:
         """First reason a run would write nothing, or ``None``.
 
-        Cheapest gates first, so the counting query is only paid on a tick
-        where the feature is on, a model exists and the cooldown is clear.
+        The free gates come first, so the counting query is only paid on a
+        tick where the feature is on and a model exists. It can no longer be
+        skipped during the cooldown, because the backlog is what decides
+        whether the cooldown still applies.
         """
         if forced is None:
             forced = self._forced
@@ -234,14 +248,29 @@ class EvolutionDiaryWorker:
             return "disabled"
         if self._ollama is None or not self._chat_model:
             return "no_llm"
-        if not forced and not self._cooldown_elapsed(now):
-            return "cooldown"
+        pending = self._pending_count()
         floor = max(1, self._i("evolution_diary_min_events", 3))
-        if self._pending_count() < floor:
+        if pending < floor:
             # The pending events are NOT consumed here: they wait for
             # company rather than being narrated thinly or dropped.
             return "nothing_to_report"
+        if (
+            not forced
+            and not self._cooldown_elapsed(now)
+            and pending < self._backlog_release_floor()
+        ):
+            return "cooldown"
         return None
+
+    def _backlog_release_floor(self) -> int:
+        """Pending count at which the clock stops being the pacing signal.
+
+        The cooldown asks "has enough time passed for there to be something
+        worth saying"; the pending count answers the same question from the
+        evidence instead of from a guess about how fast change arrives. Once
+        this much is waiting, the period is over whatever the calendar says.
+        """
+        return max(1, _BACKLOG_RELEASE_PAGES * _MAX_EVENTS_PER_ENTRY)
 
     def _pending_count(self) -> int:
         try:
@@ -281,6 +310,9 @@ class EvolutionDiaryWorker:
             out["entry"] = result.entry
         if result.entry_id is not None:
             out["entry_id"] = result.entry_id
+        if result.entries > 1:
+            out["entries"] = result.entries
+            out["pending"] = result.pending
         return out
 
     def _run(self, *, forced: bool) -> DiaryComposeResult:
@@ -289,10 +321,58 @@ class EvolutionDiaryWorker:
         if blocker is not None:
             return DiaryComposeResult(reason=blocker)
 
+        first: DiaryComposeResult | None = None
+        entries = 0
+        events_total = 0
+        for _ in range(self._max_pages_this_run()):
+            page = self._compose_one_page(now)
+            if page is None:
+                break
+            if first is None:
+                first = page
+            events_total += page.events
+            if page.entry_id is not None:
+                entries += 1
+            if page.reason or self._cancelled():
+                # An empty or unpersisted page ends the run rather than
+                # spending more model calls on a backlog the model is
+                # currently unable to describe.
+                break
+        if first is None:
+            return DiaryComposeResult(reason="nothing_to_report")
+        return DiaryComposeResult(
+            fired=1,
+            reason=first.reason,
+            entry=first.entry,
+            entry_id=first.entry_id,
+            events=events_total,
+            entries=entries,
+            pending=self._pending_count(),
+        )
+
+    def _max_pages_this_run(self) -> int:
+        """How many entries one tick may compose, given the backlog.
+
+        One while keeping pace, which is the shape the worker has always
+        had. More only while genuinely behind, and bounded, because each
+        page is an LLM call and a runaway catch-up would spend a long
+        stretch of the idle budget on a diary nobody asked for yet.
+        """
+        pages = max(1, self._i("evolution_diary_backlog_pages", 3))
+        if self._pending_count() < self._backlog_release_floor():
+            return 1
+        return pages
+
+    def _compose_one_page(self, now: datetime) -> DiaryComposeResult | None:
+        """Compose the next page, or ``None`` when there is nothing left.
+
+        Returns a result carrying ``reason`` when the page was attempted and
+        produced no entry -- the caller stops there, since the cooldown has
+        already been spent on it.
+        """
         events = self._gather()
         if not events:
-            return DiaryComposeResult(reason="nothing_to_report")
-
+            return None
         body = self._compose(events)
         # The cooldown is spent whether or not a paragraph came back, so a
         # period the model had nothing to say about costs one period rather
@@ -302,7 +382,6 @@ class EvolutionDiaryWorker:
             return DiaryComposeResult(
                 fired=1, reason="empty", events=len(events)
             )
-
         entry = self._build_entry(body, events, now)
         entry_id = self._diary.add(entry)
         if entry_id <= 0:
@@ -316,6 +395,13 @@ class EvolutionDiaryWorker:
         return DiaryComposeResult(
             fired=1, entry=body, entry_id=entry_id, events=len(events)
         )
+
+    def _cancelled(self) -> bool:
+        event = self._cancel_event
+        try:
+            return event is not None and bool(event.is_set())
+        except Exception:
+            return False
 
     def _gather(self) -> "list[LearningEvent]":
         """The salient events since the last entry, oldest-first.
@@ -438,6 +524,8 @@ class EvolutionDiaryWorker:
             "min_salience": self._fl("evolution_diary_min_salience", 0.45),
             "watermark": self._watermark(),
             "pending": self._pending_count(),
+            "backlog_release_floor": self._backlog_release_floor(),
+            "pages_next_run": self._max_pages_this_run(),
             "entries": self._entry_count(),
             "last_fired_at": self._kv_get_safe(KV_LAST_FIRED_AT),
             "blocker": self._blocker(now),
