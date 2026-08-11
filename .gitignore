@@ -42,6 +42,10 @@ data/attachments/
 data/personas/
 data/plugins/
 data/plugins-deps/
+# L45 gate-tuner state. Derived from this machine's concept graph, so it
+# is the same personal data as the database it was measured from, and it
+# is rewritten on every tuning run.
+data/tuning/
 plugins/*/config/user.json
 web/src-tauri/target/
 web/src-tauri/gen/
