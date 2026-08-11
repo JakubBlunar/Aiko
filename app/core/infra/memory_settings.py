@@ -904,6 +904,12 @@ class MemorySettings:
     conduct_concentration_min_share: float = 0.30
     conduct_concentration_min_excess: float = 0.12
     conduct_concentration_min_ratio: float = 2.0
+    # How far the leading topic's share must sit above the runner-up before
+    # "I keep steering us here" is about one topic rather than a busy week.
+    # Was hardcoded in the detector, which made it the one conduct gate
+    # invisible to both configuration and the L45 tuner -- and it was the
+    # gate that declined, at 0.10 against a measured 0.049.
+    conduct_concentration_min_top_gap: float = 0.10
     conduct_neglect_min_confidence: float = 0.75
     conduct_neglect_min_age_days: float = 14.0
     conduct_neglect_max_surfaced: int = 1
@@ -3387,6 +3393,17 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             conduct_concentration_min_ratio=max(
                 1.0,
                 float(memory_raw.get("conduct_concentration_min_ratio", 2.0)),
+            ),
+            conduct_concentration_min_top_gap=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conduct_concentration_min_top_gap", 0.10
+                        )
+                    ),
+                ),
             ),
             conduct_neglect_min_confidence=max(
                 0.0,

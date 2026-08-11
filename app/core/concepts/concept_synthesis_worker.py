@@ -1748,6 +1748,7 @@ class ConceptSynthesisWorker:
         )
         baseline = engagement_baseline(concept_stats)
         core_kinds = frozenset(kind.name for kind in core_lane_kinds())
+        readings: dict[str, dict[str, Any]] = {}
         findings = detect_conduct(
             cluster_stats=cluster_stats,
             user_topic_counts=user_topics,
@@ -1759,7 +1760,24 @@ class ConceptSynthesisWorker:
             core_kinds=core_kinds,
             now=now,
             settings=self._memory_settings,
+            readings=readings,
         )
+        for shape, reading in sorted(readings.items()):
+            if reading.get("outcome") == "fired":
+                continue
+            logger.info(
+                "conduct.gate shape=%s declined_on=%s reading=%s",
+                shape,
+                reading.get("declined_on", "unknown"),
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in sorted(reading.items())
+                        if key not in {"outcome", "declined_on"}
+                    },
+                    default=str,
+                ),
+            )
         # Neglect/fixation are primarily grounded in affected concepts. When
         # those concepts have cluster evidence, carry a couple of those
         # representatives too so the observation rests on mixed, inspectable

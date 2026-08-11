@@ -150,6 +150,32 @@ measured population instead of hand-picked a second time. This is precisely the
 class of problem L45 was built for, and these gates were never registered with
 it. Do not simply hardcode the measured values — the sample is 5 weeks old.
 
+### Outcome: the gap is now a setting, and every decline is now legible
+
+`min_top_gap` is `conduct_concentration_min_top_gap`, default unchanged at 0.10.
+The default is deliberately *not* moved to the measured 0.049: with the two
+leading clusters within five points of each other, "I keep steering us toward
+one topic" is not a true thing to say about the data. The bar was never the
+problem — the shape was absent. Same for fixation, whose top candidate is
+engaged with *above* baseline. Two of three detectors are quiet because there is
+nothing there, which is the correct behaviour and is worth saying out loud.
+
+The real cost was that this took a hand audit of the ledger to establish, since
+a detector that declines and a detector that never ran look identical from
+outside. So `detect_conduct` now takes an optional `readings` dict, each
+detector records which gate it missed alongside the best value the data offered,
+and the synthesis worker logs one `conduct.gate` line per non-firing shape. The
+next calibration is a grep, not an investigation.
+
+Not enrolled in the L45 tuner, and this is a design decision rather than a
+shortfall. The tuner solves a threshold against a *population* — it reads
+concept rows and picks a percentile. Four of the five conduct gates are single
+scalars derived from a whole window (one top share, one gap, one frequency
+ratio), so there is no distribution to take a percentile of; feeding them to the
+tuner would mean inventing a population that does not exist. The gate readings
+give the same benefit the tuner would have — measured value next to its bar,
+recorded every run — without pretending these are the same kind of number.
+
 ---
 
 ## H3. L17f's diary drains 12 events a week against 55 arriving

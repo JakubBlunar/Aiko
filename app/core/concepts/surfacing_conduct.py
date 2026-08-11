@@ -151,6 +151,25 @@ def map_user_topic_counts(
     return counts, mapped
 
 
+def _note(
+    reading: "dict[str, Any] | None", outcome: str, why: str,
+) -> None:
+    """Record how a detector ended, for the per-run gate reading.
+
+    A detector that declines is indistinguishable from one that never ran,
+    which is how two of the three spent months unreachable without anyone
+    noticing: establishing that ``min_top_gap`` needed 0.10 against a
+    measured 0.049 took a hand audit of the ledger. The reading carries
+    each gate's bar next to the best value the data actually offered, so
+    the next calibration is a read rather than an investigation.
+    """
+    if reading is None:
+        return
+    reading["outcome"] = outcome
+    if why:
+        reading["declined_on"] = why
+
+
 def detect_concentration(
     cluster_stats: Mapping[int, Any],
     user_topic_counts: Mapping[int, int],
@@ -163,15 +182,25 @@ def detect_concentration(
     min_excess: float = 0.12,
     min_ratio: float = 2.0,
     min_top_gap: float = 0.10,
+    reading: "dict[str, Any] | None" = None,
 ) -> ConductFinding | None:
     total_settled = sum(
         max(0, int(getattr(row, "settled", 0) or 0))
         for row in cluster_stats.values()
     )
     total_user = sum(max(0, int(count or 0)) for count in user_topic_counts.values())
+    if reading is not None:
+        reading.update({
+            "total_settled": total_settled,
+            "min_total_settled": min_total_settled,
+            "total_user_turns": total_user,
+            "min_user_turns": min_user_turns,
+        })
     if total_settled < min_total_settled or total_user < min_user_turns:
+        _note(reading, "declined", "not_enough_history")
         return None
     ranked: list[tuple[float, int, float, float, Any]] = []
+    best_share = best_excess = best_ratio = 0.0
     for cid, row in cluster_stats.items():
         settled = max(0, int(getattr(row, "settled", 0) or 0))
         if settled < min_cluster_settled or int(cid) not in cluster_reps:
@@ -180,9 +209,19 @@ def detect_concentration(
         expected = max(0, int(user_topic_counts.get(int(cid), 0))) / total_user
         excess = observed - expected
         ratio = observed / max(expected, 0.02)
+        best_share = max(best_share, observed)
+        best_excess = max(best_excess, excess)
+        best_ratio = max(best_ratio, ratio)
         if observed >= min_share and excess >= min_excess and ratio >= min_ratio:
             ranked.append((observed, int(cid), expected, excess, row))
+    if reading is not None:
+        reading.update({
+            "best_share": round(best_share, 4), "min_share": min_share,
+            "best_excess": round(best_excess, 4), "min_excess": min_excess,
+            "best_ratio": round(best_ratio, 4), "min_ratio": min_ratio,
+        })
     if not ranked:
+        _note(reading, "declined", "no_cluster_clears_the_bars")
         return None
     ranked.sort(reverse=True)
     top = ranked[0]
@@ -194,7 +233,13 @@ def detect_concentration(
         ),
         default=0.0,
     )
+    if reading is not None:
+        reading.update({
+            "top_gap": round(top[0] - second_share, 4),
+            "min_top_gap": min_top_gap,
+        })
     if top[0] - second_share < min_top_gap:
+        _note(reading, "declined", "top_gap")
         return None
     rep_id, label = cluster_reps[top[1]]
     comparison_reps = [
@@ -211,8 +256,10 @@ def detect_concentration(
         + [("cluster", rep) for rep in comparison_reps if rep > 0]
     )
     if len(evidence) < 2:
+        _note(reading, "declined", "too_few_comparison_clusters")
         return None
     row = top[4]
+    _note(reading, "fired", "")
     return ConductFinding(
         shape="concentration",
         key=f"cluster:{top[1]}",
@@ -320,6 +367,7 @@ def detect_fixation(
     min_settled: int = 6,
     min_frequency_ratio: float = 3.0,
     min_rate_gap: float = 0.05,
+    reading: "dict[str, Any] | None" = None,
 ) -> ConductFinding | None:
     by_id = {
         int(getattr(concept, "concept_id", 0) or 0): concept
@@ -336,12 +384,29 @@ def detect_fixation(
         reverse=True,
     )
     if not ranked:
+        _note(reading, "declined", "no_flex_candidates")
         return None
     surfaced, cid, row = ranked[0]
     settled = int(getattr(row, "settled", 0) or 0)
     engaged = int(getattr(row, "engaged", 0) or 0)
     second = ranked[1][0] if len(ranked) > 1 else 0
     rate = engaged / settled if settled > 0 else None
+    if reading is not None:
+        reading.update({
+            "top_surfaced": surfaced, "min_surfaced": min_surfaced,
+            "top_settled": settled, "min_settled": min_settled,
+            "frequency_ratio": round(surfaced / max(1, second), 4),
+            "min_frequency_ratio": min_frequency_ratio,
+            "top_engaged_rate": round(rate, 4) if rate is not None else None,
+            "engaged_baseline": round(float(engaged_baseline), 4),
+            # The premise: fixation is "she keeps raising something he does
+            # not care about", so the top concept has to be engaged with
+            # *less* than usual. A rate at or above baseline means the shape
+            # is simply not present, which is a finding in itself.
+            "engaged_rate_ceiling": round(
+                float(engaged_baseline) - min_rate_gap, 4
+            ),
+        })
     if (
         surfaced < min_surfaced
         or settled < min_settled
@@ -349,13 +414,16 @@ def detect_fixation(
         or rate > float(engaged_baseline) - min_rate_gap
         or surfaced / max(1, second) < min_frequency_ratio
     ):
+        _note(reading, "declined", "gates")
         return None
     support = [other_cid for _count, other_cid, _row in ranked[1:3]]
     evidence = tuple(
         [("concept", cid)] + [("concept", other) for other in support]
     )
     if len(evidence) < 2:
+        _note(reading, "declined", "too_few_comparison_concepts")
         return None
+    _note(reading, "fired", "")
     label = str(getattr(by_id[cid], "label", "") or "").strip()
     return ConductFinding(
         shape="fixation",
@@ -388,7 +456,18 @@ def detect_conduct(
     core_kinds: frozenset[str],
     now: datetime,
     settings: Any,
+    readings: "dict[str, dict[str, Any]] | None" = None,
 ) -> list[ConductFinding]:
+    """Run all three self-observation detectors over one window.
+
+    ``readings`` opts into the per-detector gate reading: each shape's bar
+    next to the best value its data actually offered this run. It is how a
+    detector that has never fired is told apart from one that is simply
+    unreachable -- see :func:`_note`.
+    """
+    take = (lambda shape: readings.setdefault(shape, {})) if (
+        readings is not None
+    ) else (lambda shape: None)
     findings = [
         detect_concentration(
             cluster_stats,
@@ -412,6 +491,10 @@ def detect_conduct(
             min_ratio=float(
                 getattr(settings, "conduct_concentration_min_ratio", 2.0)
             ),
+            min_top_gap=float(
+                getattr(settings, "conduct_concentration_min_top_gap", 0.10)
+            ),
+            reading=take("concentration"),
         ),
         detect_neglect(
             concepts,
@@ -450,6 +533,7 @@ def detect_conduct(
             min_rate_gap=float(
                 getattr(settings, "conduct_fixation_min_rate_gap", 0.05)
             ),
+            reading=take("fixation"),
         ),
     ]
     return [finding for finding in findings if finding is not None]
