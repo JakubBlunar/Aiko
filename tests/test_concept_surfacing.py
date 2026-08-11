@@ -14,7 +14,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.core.concepts.concept_kinds import DEFAULT_SURFACE_WEIGHTS, SurfaceWeights
+from app.core.concepts.concept_kinds import (
+    CONCEPT_KINDS,
+    DEFAULT_SURFACE_WEIGHTS,
+    SurfaceWeights,
+)
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.concepts.concept_surfacing import (
     SURFACE_REASON_LABELS,
@@ -373,15 +377,32 @@ class SalienceTests(unittest.TestCase):
 
 
 class SurfaceReasonTests(unittest.TestCase):
-    def test_above_neutral_standing_can_be_debug_reason(self) -> None:
+    """L35: name the signal that won a concept its place in the prompt."""
+
+    def test_standing_is_a_score_term_and_never_a_reason(self) -> None:
+        """L38 tilts the ranking; it does not narrate. Even at a standing of
+        1.0 against a near-zero cosine it must not name the surfacing --
+        "I mention this because it usually lands well" is not a reason a
+        reader would recognise, and L41 has no framing for it.
+        """
         reason = surface_reason(
             lane="flex", cosine=0.05, standing=1.0,
             w=SurfaceWeights(context=0.1, standing=0.9),
         )
-        self.assertEqual(reason, "earned_standing")
-        self.assertIn(reason, SURFACE_REASON_LABELS)
+        self.assertNotEqual(reason, "earned_standing")
+        self.assertNotIn("earned_standing", SURFACE_REASON_LABELS)
 
-    """L35: name the signal that won a concept its place in the prompt."""
+    def test_standing_still_counts_towards_the_shares(self) -> None:
+        """Dropping it from the contest must not inflate the other terms:
+        it is a real term of the score and belongs in the denominator.
+        """
+        from app.core.concepts.concept_surfacing import surface_score
+
+        w = SurfaceWeights(context=0.5, standing=0.5)
+        self.assertAlmostEqual(
+            surface_score(cosine=1.0, confidence=0.0, standing=0.0, w=w),
+            0.5, places=6,
+        )
 
     # Every signal weighted, so no single term wins by default.
     _W = SurfaceWeights(
@@ -450,6 +471,104 @@ class SurfaceReasonTests(unittest.TestCase):
                     ),
                     expected,
                 )
+
+    def test_a_fresh_change_names_the_surfacing_under_real_weights(
+        self,
+    ) -> None:
+        """The regression the old tests could not catch, because they all
+        injected a salience weight of 1.0. Under the *production* weights
+        every kind is either salience-blind or needs a salience above 0.75
+        to out-share cosine, so the entire changed family scored zero
+        across 11,321 live surfacings. A change now names itself directly.
+        """
+        for kind_name in ("identity", "value", "boundary", "affective"):
+            with self.subTest(kind=kind_name):
+                self.assertEqual(
+                    surface_reason(
+                        lane="flex", cosine=0.6, confidence=0.8,
+                        stability=0.8, change_event="contradicted",
+                        change_charge=0.9,
+                        w=CONCEPT_KINDS[kind_name].surface_weights,
+                    ),
+                    "unresolved_contradiction",
+                )
+
+    def test_being_promoted_is_not_changing_her_mind(self) -> None:
+        """Promotion is the candidate-to-active step every concept takes
+        once. On the live graph 514 active concepts had a recent one, so
+        letting it jump the queue would frame two thirds of everything she
+        believes as freshly reconsidered.
+        """
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.6, change_event="promoted",
+                change_charge=1.0,
+                w=CONCEPT_KINDS["identity"].surface_weights,
+            ),
+            "topic_match",
+        )
+
+    def test_every_change_framing_l41_offers_is_reachable(self) -> None:
+        """The framings sat in the map unspoken. If a voice is offered it
+        has to be reachable under real weights, or it is decoration.
+        """
+        from app.core.session.inner_life_part1 import _REASON_FRAMINGS
+
+        w = CONCEPT_KINDS["identity"].surface_weights
+        spoken = {
+            event: surface_reason(
+                lane="flex", cosine=0.6, change_event=event,
+                change_charge=charge, w=w,
+            )
+            # Each driver at a charge it genuinely reaches: the base weights
+            # are contradicted 1.0, plasticity_shift 0.6, revived 0.5.
+            for event, charge in (
+                ("contradicted", 0.95),
+                ("plasticity_shift", 0.55),
+                ("revived", 0.45),
+            )
+        }
+        self.assertEqual(spoken, {
+            "contradicted": "unresolved_contradiction",
+            "plasticity_shift": "loosening_boundary",
+            "revived": "recently_revived",
+        })
+        for reason in spoken.values():
+            self.assertIn(reason, _REASON_FRAMINGS)
+
+    def test_a_faded_change_goes_back_to_ordinary_relevance(self) -> None:
+        """The short-circuit is gated on the charge, so a months-old
+        contradiction stops claiming to be news.
+        """
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.6, change_event="contradicted",
+                change_charge=0.1,
+                w=CONCEPT_KINDS["identity"].surface_weights,
+            ),
+            "topic_match",
+        )
+
+    def test_the_change_short_circuit_needs_a_real_event(self) -> None:
+        self.assertEqual(
+            surface_reason(
+                lane="flex", cosine=0.6, change_event=None, change_charge=0.9,
+                w=self._W,
+            ),
+            "topic_match",
+        )
+
+    def test_a_pinned_concept_is_still_pinned_however_much_changed(
+        self,
+    ) -> None:
+        """Core answers itself before any of this; the lane is the truth."""
+        self.assertEqual(
+            surface_reason(
+                lane="core", cosine=0.6, change_event="revived",
+                change_charge=1.0, w=self._W,
+            ),
+            "core_belief",
+        )
 
     def test_salience_win_without_a_known_driver_degrades(self) -> None:
         self.assertEqual(

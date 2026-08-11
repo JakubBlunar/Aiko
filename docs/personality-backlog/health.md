@@ -346,6 +346,49 @@ does not exist. Either is fine; the current state is the only bad one.
 injecting artificial weights of 0.9 and 1.0. A test using the real production
 `SurfaceWeights` for `boundary` would have caught both.
 
+### Outcome: L41 fixed, L38 retired from narration
+
+**L41.** Worse than "salience loses the weighted contest": **nine of the thirteen
+kinds set `salience` to 0**, so for identity, value, narrative, generalization,
+communication_style, aspiration, conduct, pursuit, ritual and tension a change
+was never a candidate at all — and the change event was not even *computed* for
+them, since detection was gated on the same weight. For the three kinds that do
+weight it, out-sharing `context` needs a salience above 0.75 at a cosine of 0.3
+and is arithmetically impossible past 0.4. Zero in 11,321 rows was the only
+possible outcome.
+
+A recent contradiction is a categorical fact about a belief, not another
+continuous signal to weigh against cosine, so it now names the surfacing
+outright. Detection runs for every kind (free — the events are already in hand);
+scoring is untouched, so *which* concepts surface and in what order is exactly
+as before. Only the framing changes.
+
+Two calibration findings while setting the floor, both from the live graph:
+
+- **`promoted` is not a change of mind.** It is the candidate-to-active step
+  every concept takes once, and 514 active concepts had a recent one against 80
+  plasticity shifts and 2 contradictions. Admitting it would have framed **66%
+  of everything she believes** as "lately you've come around to feeling that".
+  Excluded by event type rather than by threshold, so it cannot creep back in if
+  the weights move.
+- **The floor buys each driver a window proportional to the size of the change.**
+  At 0.40 against the 21-day half-life: ~28 days for a contradiction, ~12 for a
+  loosened belief, ~7 for a revival. 131 of 975 active concepts (13%) currently
+  qualify, which is a voice that means something rather than a tic.
+
+**L38: score-only, decided.** Standing is a real ranking term and stays one —
+466 entries, 288 off neutral, tilting the score as designed. But it is not a
+reason anyone would recognise: "I mention this because it usually lands well" is
+not a thing a person says, and tellingly `_REASON_FRAMINGS` never had an entry
+for it, so even winning would have produced the generic hedge. `REASON_STANDING`
+is removed from the contest and from the label set; the docstring now says where
+standing does act. `standing` stays in the denominator, since dropping it would
+inflate every other term's share.
+
+**The tests that passed by construction are replaced** with ones that use the
+production `SurfaceWeights`, plus a check that every change framing L41 offers is
+actually reachable.
+
 ---
 
 ## H6. L17e's reflection slip is silent for 30 days at a time

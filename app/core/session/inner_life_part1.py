@@ -1909,13 +1909,22 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 conf, float(getattr(concept, "plasticity", 0.0))
             )
             sal = 0.0
+            charge = 0.0
             change_event: str | None = None
-            if sal_enabled and weights.salience > 0.0:
+            if sal_enabled:
+                # Detected for every kind, weighted only for the kinds that
+                # asked for it. The charge names the surfacing (L35/L41)
+                # even where it does not score it -- nine of thirteen kinds
+                # set ``salience`` to zero, and gating detection on the
+                # weight left "she just changed her mind about this"
+                # invisible to the narration for all of them. Free: the
+                # events are already in hand as ``recent_events``.
                 charge, change_event = event_charge_detail(
                     recent_events.get(cid, ()),
                     surf_now, halflife_days=weights.salience_halflife_days,
                 )
-                sal = concept_salience(change=charge)
+                if weights.salience > 0.0:
+                    sal = concept_salience(change=charge)
             hab = _habituation(cid, hab_flex_floor)
             standing = (
                 standing_map.get(cid, 0.5) if standing_enabled else None
@@ -1951,6 +1960,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     recency=rec, stability=stab, salience=sal,
                     standing=standing,
                     activation=float(activation), change_event=change_event,
+                    change_charge=charge,
                     recency_known=bool(reinforced_at), w=weights,
                 ),
                 "cosine": round(float(cos), 4),
