@@ -502,7 +502,7 @@ class ConceptSynthesisWorker:
         nothing that could clear it, so a cold pool is a pure no-op."""
         return max(
             1,
-            int(getattr(self._memory_settings, "pursuit_min_notes", 6)),
+            int(getattr(self._memory_settings, "pursuit_min_notes", 4)),
         )
 
     @property
@@ -1892,7 +1892,24 @@ class ConceptSynthesisWorker:
         )
         return hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:16]
 
-    # ── ritual pass (L7) ────────────────────────────────────────────────
+    # ── shared-moment passes (L7 ritual, H12 shared value) ──────────────
+
+    #: ``kind`` -> (agent enable flag, stats key, default sig key). Two
+    #: proposers read the same ``shared_moment`` groups and ask different
+    #: questions of them: L7 names what the pair repeatedly *does*, H12 the
+    #: commitment that doing reveals.
+    _SHARED_MOMENT_PASSES: dict[str, tuple[str, str, str]] = {
+        "ritual": (
+            "ritual_synthesis_enabled",
+            "ritual_dirty",
+            "concept_synth.ritual_sig",
+        ),
+        "value": (
+            "shared_value_synthesis_enabled",
+            "shared_value_dirty",
+            "concept_synth.shared_value_sig",
+        ),
+    }
 
     def _run_ritual_pass(
         self,
@@ -1901,15 +1918,22 @@ class ConceptSynthesisWorker:
         stats: dict[str, Any],
         force: bool = False,
     ) -> list[CandidateProposal]:
-        """L7 ritual pass: group recurring ``shared_moment`` memories into
-        candidate relationship rituals. Evidence is the constituent moments;
-        the recurrence itself lives in the grouping (single-link cosine), not
-        in an edge-schema change. Count + max-id watermark dirty-tracking so a
-        settled corpus is a fast no-op."""
-        if not bool(
-            getattr(self._agent_settings, "ritual_synthesis_enabled", True)
-        ):
-            stats["ritual_dirty"] = False
+        """Group recurring ``shared_moment`` memories and offer the groups.
+
+        Evidence is the constituent moments; the recurrence itself lives in
+        the grouping (single-link cosine), not in an edge-schema change.
+        Count + max-id watermark dirty-tracking so a settled corpus is a
+        fast no-op. Each proposer on this population carries its own flag,
+        stats key and watermark, so one being disabled or settled never
+        speaks for the other.
+        """
+        flag, dirty_key, default_sig = self._SHARED_MOMENT_PASSES.get(
+            spec.kind,
+            ("ritual_synthesis_enabled", "ritual_dirty",
+             "concept_synth.ritual_sig"),
+        )
+        if not bool(getattr(self._agent_settings, flag, True)):
+            stats[dirty_key] = False
             return []
 
         from app.core.concepts import ritual_grouping as _rg
@@ -1917,11 +1941,11 @@ class ConceptSynthesisWorker:
         rows = self._memory_store.iter_by_kind("shared_moment")
         count = len(rows)
         if count < self._ritual_min_moments:
-            stats["ritual_dirty"] = False
+            stats[dirty_key] = False
             return []
         max_id = max((int(m.id) for m in rows), default=0)
 
-        sig_key = spec.sig_key or "concept_synth.ritual_sig"
+        sig_key = spec.sig_key or default_sig
         prev = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
         prev_count = int(prev.get("count", 0)) if prev else 0
@@ -1932,7 +1956,7 @@ class ConceptSynthesisWorker:
             or abs(count - prev_count) >= delta
             or max_id != prev_max
         )
-        stats["ritual_dirty"] = bool(is_dirty)
+        stats[dirty_key] = bool(is_dirty)
         if not is_dirty:
             return []
 

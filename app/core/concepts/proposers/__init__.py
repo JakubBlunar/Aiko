@@ -34,6 +34,14 @@ self-concept can be grounded by a theme, a memory, or a mix.
   ``shared_moment`` memories grouped by single-link cosine into recurring
   clusters, each named as a warm relationship ritual. Evidence is the
   constituent moments (``memory`` edges).
+- ``value_relationship`` -- *shared value* (H12), the second reader of the
+  ``"shared_moments"`` population. Same groups, different question: a ritual
+  is what the pair repeatedly does, a value is the commitment the doing
+  reveals. A NEW one must draw on moments from **two distinct groups**,
+  which is what keeps it from restating a ritual -- a principle visible in
+  only one recurring activity is that activity, named twice. Fills the gap
+  where ``_concept_value_header`` had a ``relationship`` branch that nothing
+  ever minted a row for.
 - ``narrative_user`` / ``narrative_aiko`` -- *narrative* (a closed causal arc;
   L8). The first ``sequence``-evidence proposers: they mine the
   ``"narrative"`` population -- each subject-dominant cluster's member memories
@@ -140,6 +148,7 @@ from app.core.concepts.proposers import (
     tension_relationship,
     tension_user,
     value_aiko,
+    value_relationship,
     value_user,
 )
 from app.core.concepts.proposers.base import (
@@ -206,6 +215,9 @@ from app.core.concepts.proposers.tension_relationship import (
 )
 from app.core.concepts.proposers.tension_user import propose_tension_user
 from app.core.concepts.proposers.value_aiko import propose_value_aiko
+from app.core.concepts.proposers.value_relationship import (
+    propose_value_relationship,
+)
 from app.core.concepts.proposers.value_user import propose_value_user
 
 CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
@@ -216,6 +228,10 @@ CONCEPT_PROPOSERS: tuple[ProposerSpec, ...] = (
     affective_user.SPEC,
     affective_aiko.SPEC,
     relationship_ritual.SPEC,
+    # H12 shared values -- the same ``shared_moment`` groups as the ritual
+    # above, read for the commitment rather than the habit. Runs immediately
+    # after so the two are obviously siblings and share one grouping pass.
+    value_relationship.SPEC,
     narrative_user.SPEC,
     narrative_aiko.SPEC,
     # L29(a) shared arcs -- same kind + evidence model as the two above, but
@@ -299,6 +315,7 @@ __all__ = [
     "propose_tension_relationship",
     "propose_tension_user",
     "propose_value_aiko",
+    "propose_value_relationship",
     "propose_value_user",
     "resolve_reinforces",
     "snippet",

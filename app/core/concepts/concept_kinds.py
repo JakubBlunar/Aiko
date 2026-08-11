@@ -439,7 +439,9 @@ register_kind(
 # over agreeableness"). Same ``set`` machinery as identity, but the deepest,
 # hardest-won layer: a stricter promotion gate and lower plasticity, and a
 # higher core-lane bar so a value only pins into every turn once it is very
-# settled. Subject-parameterized (user + aiko) exactly like identity.
+# settled. Subject-parameterized across all three: user + aiko exactly like
+# identity, plus relationship (H12) for what the pair holds together, mined
+# from the same shared-moment groups the ritual kind reads.
 register_kind(
     ConceptKind(
         name="value",
@@ -461,7 +463,7 @@ register_kind(
         # higher confidence) -- values should be slow and hard-won.
         promotion_gate=value_evidence_gate,
         # L24: same per-subject routing as identity -- a user value feeds the
-        # user profile view; an Aiko value surfaces via the T3
+        # user profile view; aiko and relationship values surface via the T3
         # relevant_context path, not a named for_target block.
         surfacing_target="profile_block",
         surfacing_targets={
