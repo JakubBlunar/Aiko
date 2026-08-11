@@ -1,6 +1,7 @@
 """L17: the drift worker -- relabel pipeline plus learning-event capture."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.core.concepts.concept_drift import DriftFinding
 from app.core.concepts.concept_drift_worker import (
     DRIFT_PENDING_KEY,
     DRIFT_SWEEP_KEY,
@@ -54,6 +56,7 @@ class Settings:
     concept_drift_relabel_min_tokens: int = 1
     concept_reflection_min_salience: float = 0.6
     concept_drift_pending_cap: int = 3
+    concept_drift_pending_ttl_days: float = 45.0
     concept_drift_sweep_enabled: bool = True
     concept_drift_sweep_page: int = 60
     concept_drift_sweep_max_findings: int = 24
@@ -601,6 +604,18 @@ class ClassificationTests(unittest.TestCase):
         self.assertNotIn("decisive_event_id", payload)
         self.assertNotIn("concept_id", payload)
 
+    def test_a_pending_row_carries_when_it_was_first_shelved(self) -> None:
+        cid = _concept(
+            self.h, "a hard-won value", [1.0, 0.0], status="retired",
+            kind="value", plasticity=0.2,
+        )
+        _event(self.h, cid, "promoted", 90, confidence=0.9)
+        _event(self.h, cid, "retired", 2, confidence=0.1)
+        self.h.settings.concept_reflection_min_salience = 0.0
+        _worker(self.h).run()
+        [row] = json.loads(self.h.kv[DRIFT_PENDING_KEY])
+        self.assertEqual(row["first_seen"], NOW.isoformat())
+
     def test_high_salience_floor_empties_the_snapshot(self) -> None:
         cid = _concept(self.h, "a belief", [1.0, 0.0], status="retired")
         _event(self.h, cid, "promoted", 90, confidence=0.85)
@@ -773,6 +788,88 @@ class SweepPagingTests(unittest.TestCase):
         self.assertEqual(
             self.h.events.concepts_with_events_after(0, limit=10), [cid]
         )
+
+
+class PendingShelfTests(unittest.TestCase):
+    """The shelf L17e reads from.
+
+    This worker runs daily and the reflection that consumes it speaks
+    once a month, so an overwriting snapshot meant the change she got to
+    mention was chosen by which day the cooldown happened to lift. It
+    keeps the most significant *unreported* changes instead.
+    """
+
+    def setUp(self) -> None:
+        self.h = _harness()
+
+    def _finding(self, ident: int, salience: float) -> DriftFinding:
+        return DriftFinding(
+            shape="succession",
+            concept_id=ident,
+            new_label=f"belief {ident}",
+            old_label=f"older belief {ident}",
+            because="he said so three times",
+            salience=salience,
+            decisive_event_id=ident,
+        )
+
+    def _publish(self, findings, *, now=NOW) -> list[dict]:
+        worker = _worker(self.h)
+        worker._clock = lambda: now
+        worker._publish_pending(list(findings))
+        return json.loads(self.h.kv[DRIFT_PENDING_KEY])
+
+    def test_a_weaker_later_batch_does_not_evict_a_stronger_change(
+        self,
+    ) -> None:
+        self._publish([self._finding(1, 0.95)])
+        rows = self._publish([self._finding(2, 0.65)])
+        self.assertEqual(
+            [row["new"] for row in rows], ["belief 1", "belief 2"]
+        )
+
+    def test_the_shelf_is_ordered_by_significance(self) -> None:
+        self._publish([self._finding(1, 0.70)])
+        rows = self._publish([self._finding(2, 0.90)])
+        self.assertEqual(rows[0]["new"], "belief 2")
+
+    def test_the_cap_keeps_the_strongest(self) -> None:
+        self.h.settings.concept_drift_pending_cap = 2
+        self._publish([self._finding(i, 0.60 + i / 100) for i in range(1, 4)])
+        rows = self._publish([self._finding(9, 0.99)])
+        self.assertEqual(
+            [row["new"] for row in rows], ["belief 9", "belief 3"]
+        )
+
+    def test_re_observing_a_change_does_not_refresh_its_age(self) -> None:
+        self._publish([self._finding(1, 0.9)])
+        later = NOW + timedelta(days=10)
+        rows = self._publish([self._finding(1, 0.9)], now=later)
+        self.assertEqual(rows[0]["first_seen"], NOW.isoformat())
+
+    def test_a_change_nobody_said_in_time_leaves_the_shelf(self) -> None:
+        self._publish([self._finding(1, 0.99)])
+        rows = self._publish(
+            [self._finding(2, 0.61)],
+            now=NOW + timedelta(days=46),
+        )
+        self.assertEqual([row["new"] for row in rows], ["belief 2"])
+
+    def test_a_legacy_row_without_a_stamp_is_kept(self) -> None:
+        # Rows written before the shelf existed have no ``first_seen``;
+        # discarding on a guess would drop real pending changes on the
+        # first run after an upgrade.
+        self.h.kv[DRIFT_PENDING_KEY] = json.dumps(
+            [{"fingerprint": "legacy", "new": "an older read", "salience": 0.9}]
+        )
+        rows = self._publish(
+            [self._finding(2, 0.7)], now=NOW + timedelta(days=200)
+        )
+        self.assertIn("an older read", [row["new"] for row in rows])
+
+    def test_the_floor_still_applies_to_new_arrivals(self) -> None:
+        rows = self._publish([self._finding(1, 0.2)])
+        self.assertEqual(rows, [])
 
 
 class MatrixSnapshotTests(unittest.TestCase):

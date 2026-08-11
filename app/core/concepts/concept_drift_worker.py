@@ -784,34 +784,94 @@ class ConceptDriftWorker:
             return []
 
     def _publish_pending(self, findings: list[DriftFinding]) -> None:
-        """Write the bounded snapshot the T6 reflection provider reads.
+        """Update the bounded shelf the T6 reflection provider reads.
 
         The turn path must never scan for this, so the worker leaves a
         small, already-rendered payload behind. Machinery (salience,
         ids, event types) is deliberately excluded from what a later
         prompt block could read: only what changed and why.
+
+        A shelf of the most significant *unreported* changes, not a
+        snapshot of today's. This ran daily and overwrote, while the
+        reflection that reads it speaks once a month, so what she got to
+        say was decided by which day the cooldown happened to lift --
+        every other change in the window was gone before she could reach
+        it. Now the new findings compete with what is already shelved
+        and the strongest survive, which makes the month's most
+        significant change the one she mentions.
+
+        ``first_seen`` bounds the squatting that follows: a change that
+        outlives ``concept_drift_pending_ttl_days`` unsaid is no longer
+        news and leaves to make room.
         """
         if self._kv_set is None:
             return
         cap = max(1, self._i("concept_drift_pending_cap", 3))
         floor = self._fl("concept_reflection_min_salience", 0.6)
-        payload = [
-            {
-                "fingerprint": finding.fingerprint(),
+        now = self._clock()
+        stamp = now.isoformat()
+        shelf: dict[str, dict[str, Any]] = {}
+        for row in self._load_pending():
+            fingerprint = str(row.get("fingerprint", ""))
+            if fingerprint:
+                shelf[fingerprint] = row
+        for finding in findings:
+            if finding.salience < floor:
+                continue
+            fingerprint = finding.fingerprint()
+            shelf[fingerprint] = {
+                "fingerprint": fingerprint,
                 "shape": finding.shape,
                 "subject": finding.subject,
                 "old": finding.old_label,
                 "new": finding.new_label,
                 "because": finding.because,
                 "salience": round(float(finding.salience), 4),
+                # Re-observing a change does not make it newer: keep the
+                # original stamp so the TTL measures how long it has gone
+                # unsaid, not how long it has kept recurring.
+                "first_seen": str(
+                    shelf.get(fingerprint, {}).get("first_seen") or stamp
+                ),
             }
-            for finding in findings
-            if finding.salience >= floor
-        ][:cap]
+        ttl_days = max(1.0, self._fl("concept_drift_pending_ttl_days", 45.0))
+        fresh = [
+            row
+            for row in shelf.values()
+            if self._pending_age_days(row, now) <= ttl_days
+        ]
+        fresh.sort(
+            key=lambda row: float(row.get("salience", 0.0) or 0.0),
+            reverse=True,
+        )
+        self._write_pending(fresh[:cap])
+
+    def _pending_age_days(self, row: dict[str, Any], now: datetime) -> float:
+        """How long this change has sat unsaid. An unstamped legacy row
+        reads as brand new, so the shelf never discards on a guess."""
+        seen = _parse(row.get("first_seen"))
+        if seen is None:
+            return 0.0
+        return max(0.0, (now - seen).total_seconds() / 86400.0)
+
+    def _load_pending(self) -> list[dict[str, Any]]:
+        if self._kv_get is None:
+            return []
+        try:
+            rows = json.loads(self._kv_get(DRIFT_PENDING_KEY) or "[]")
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _write_pending(self, rows: list[dict[str, Any]]) -> None:
+        if self._kv_set is None:
+            return
         try:
             self._kv_set(
                 DRIFT_PENDING_KEY,
-                json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+                json.dumps(rows, separators=(",", ":"), ensure_ascii=False),
             )
         except Exception:
             log.debug("drift pending snapshot write failed", exc_info=True)
