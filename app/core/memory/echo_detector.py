@@ -95,10 +95,20 @@ class EchoVerdict:
     scale, because they are not commensurable and pretending otherwise is
     what would let a guessed threshold slip in. Read it together with
     ``kind``.
+
+    ``cosine`` carries the similarity whenever both vectors were available,
+    *including on lexical verdicts and on turns no floor was supplied for*.
+    It is the calibration channel: deciding where a semantic floor belongs
+    means comparing the cosine on turns the unambiguous lexical test fired
+    against the cosine on turns it did not, and while ``score`` holds only
+    the winning signal, the lexical-fired half of that comparison does not
+    survive. ``None`` means there was nothing to compare, which is not the
+    same as a similarity of zero.
     """
 
     kind: str = ECHO_NONE
     score: float = 0.0
+    cosine: float | None = None
 
     @property
     def echoed(self) -> bool:
@@ -168,25 +178,28 @@ def detect(
     Returns :data:`ECHO_NONE` with a zero score when nothing matched;
     callers that need to distinguish "no echo" from "could not look"
     should check whether they had the item's text or vector at all.
+
+    The cosine is measured up front rather than only as a fallback, so it
+    reaches ``EchoVerdict.cosine`` on lexical hits too. Skipping it there
+    saved one dot product between two already-normalised vectors and cost
+    the calibration set its control group.
     """
+    similarity = _cosine(reply_vec, item_vec)
     item_tokens = tokens(item_text)
     if reply_tokens and item_tokens:
         overlap = len(reply_tokens & item_tokens)
         if overlap >= max(1, int(min_overlap)):
-            return EchoVerdict(ECHO_LEXICAL, float(overlap))
+            return EchoVerdict(ECHO_LEXICAL, float(overlap), similarity)
 
-    if min_cosine is None:
-        return EchoVerdict()
-    similarity = _cosine(reply_vec, item_vec)
-    if similarity is None:
-        return EchoVerdict()
+    if min_cosine is None or similarity is None:
+        return EchoVerdict(cosine=similarity)
     if similarity >= float(min_cosine):
-        return EchoVerdict(ECHO_SEMANTIC, similarity)
+        return EchoVerdict(ECHO_SEMANTIC, similarity, similarity)
     # A sub-floor cosine is still worth reporting as the *strength* of a
     # miss: it is exactly the distribution the deferred full-credit
     # decision needs, and a floor cannot be calibrated from verdicts that
     # discard their near misses.
-    return EchoVerdict(ECHO_NONE, similarity)
+    return EchoVerdict(ECHO_NONE, similarity, similarity)
 
 
 __all__ = [

@@ -322,7 +322,7 @@ class CuePoolMixin:
                 tokens=turn_tokens if whole_turn else reply_tokens,
                 text_vec=turn_vec if whole_turn else reply_vec,
             )
-            evidence = f"{verdict.kind}:{verdict.score:.2f}"
+            evidence = self._verdict_evidence(verdict)
             if not verdict.echoed:
                 if was_surfaced:
                     self._retire_or_retry(
@@ -432,6 +432,26 @@ class CuePoolMixin:
         except Exception:
             return policy
 
+    @staticmethod
+    def _verdict_evidence(verdict: "echo_detector.EchoVerdict") -> str:
+        """``kind:score`` for the audit trail, plus the cosine when it adds one.
+
+        ``score`` holds whichever signal decided the verdict, so a lexical
+        hit used to record an overlap count and nothing else. That made the
+        distribution stored here unusable for the job it is stored for:
+        siting the semantic floor means contrasting the cosine on turns the
+        lexical test fired with the cosine on turns it missed, and the
+        lexical rows carried no cosine to contrast. Appended only where it
+        is not already the score, to keep the semantic rows as they were.
+        """
+        out = f"{verdict.kind}:{verdict.score:.2f}"
+        cosine = verdict.cosine
+        if cosine is None or verdict.kind == echo_detector.ECHO_SEMANTIC:
+            return out
+        if verdict.kind == echo_detector.ECHO_NONE and cosine == verdict.score:
+            return out
+        return f"{out}/cos:{cosine:.2f}"
+
     def _match_cue(
         self,
         row: "CueRow",
@@ -449,6 +469,12 @@ class CuePoolMixin:
         it did not says where the real floor belongs for the two
         conservative types, and they can be promoted on evidence instead of
         on a guess.
+
+        The first few hundred did not answer that question, because the
+        cosine was skipped whenever lexical decided first and the
+        lexical-fired arm of the comparison came back empty. It is measured
+        unconditionally now; the read is worth retrying once verdicts have
+        accumulated under this version.
         """
         # An associative wander is about a *pair*, and the half worth
         # matching is the one the conversation was not already on --
@@ -504,7 +530,7 @@ class CuePoolMixin:
                 self._mark_cue_used(
                     store,
                     row,
-                    evidence=f"answered/{verdict.kind}:{verdict.score:.2f}",
+                    evidence=f"answered/{self._verdict_evidence(verdict)}",
                 )
                 continue
             # The question went by. That is a real signal rather than only

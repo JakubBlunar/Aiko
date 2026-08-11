@@ -121,6 +121,48 @@ class DetectorTests(unittest.TestCase):
         self.assertFalse(verdict.echoed)
         self.assertAlmostEqual(verdict.score, 0.7071, places=3)
 
+    def test_a_lexical_hit_still_reports_the_cosine(self) -> None:
+        """The calibration channel. ``score`` carries only the signal that
+        won, so a lexical verdict that dropped its cosine took the control
+        group out of the one comparison the stored distribution exists to
+        support: where the semantic floor belongs.
+        """
+        verdict = echo_detector.detect(
+            reply_tokens=echo_detector.tokens(
+                "sourdough starter fridge dmitri keeps",
+            ),
+            item_text="dmitri keeps a sourdough starter in the fridge",
+            min_overlap=3,
+            reply_vec=_vec(1.0, 1.0), item_vec=_vec(1.0, 0.0),
+            min_cosine=0.5,
+        )
+        self.assertEqual(verdict.kind, ECHO_LEXICAL)
+        self.assertGreaterEqual(verdict.score, 3.0)
+        self.assertAlmostEqual(verdict.cosine or 0.0, 0.7071, places=3)
+
+    def test_the_cosine_is_measured_even_with_no_floor_to_judge_it_by(
+        self,
+    ) -> None:
+        """Withholding the floor withholds the *verdict*, not the reading."""
+        verdict = echo_detector.detect(
+            reply_tokens={"unrelated", "words"},
+            item_text="dmitri keeps a sourdough starter",
+            min_overlap=3,
+            reply_vec=_vec(1.0, 1.0), item_vec=_vec(1.0, 0.0),
+            min_cosine=None,
+        )
+        self.assertEqual(verdict.kind, ECHO_NONE)
+        self.assertEqual(verdict.score, 0.0)
+        self.assertAlmostEqual(verdict.cosine or 0.0, 0.7071, places=3)
+
+    def test_nothing_to_compare_is_not_a_similarity_of_zero(self) -> None:
+        verdict = echo_detector.detect(
+            reply_tokens={"unrelated"},
+            item_text="dmitri keeps a sourdough starter",
+            min_overlap=3,
+        )
+        self.assertIsNone(verdict.cosine)
+
     def test_unusable_vectors_degrade_to_no_echo(self) -> None:
         for reply_vec, item_vec in (
             (None, _vec(1, 0)),
