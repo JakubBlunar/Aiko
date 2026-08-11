@@ -40,12 +40,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from app.core.concepts.concept_evidence_admission import load_fit_sample
 from app.core.concepts.gate_measure import populations, snapshot
 from app.core.concepts.gate_tuning import (
     GATE_SPECS,
     kind_floor_defaults,
     solve_all,
 )
+from app.core.infra import timephrase
 from app.core.infra.gate_tuning_store import (
     append_population,
     apply_gates,
@@ -101,6 +103,7 @@ class ConceptGateTunerWorker:
         event_store: Any = None,
         surfacing_outcome_store_provider: Callable[[], Any] | None = None,
         topic_graph: Any = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._concept_store = concept_store
         self._memory_settings = memory_settings
@@ -110,6 +113,12 @@ class ConceptGateTunerWorker:
         self._event_store = event_store
         self._outcome_store_provider = surfacing_outcome_store_provider
         self._topic_graph = topic_graph
+        # Every other concept worker takes its "now" from this seam, and
+        # this one used to read ``datetime.now`` directly. That silently
+        # exempted it from the DT1 debug clock: the cadence below and the
+        # history span in ``_graph_mature`` could not be fast-forwarded
+        # while the rest of the concept stack could.
+        self._clock = clock or timephrase.utcnow
 
     # ── settings ──────────────────────────────────────────────────────
 
@@ -180,7 +189,7 @@ class ConceptGateTunerWorker:
         if oldest is None:
             return False
         span_days = (
-            datetime.now(timezone.utc) - oldest
+            self._clock() - oldest
         ).total_seconds() / 86_400.0
         return span_days >= self._f("concept_min_history_days", 3.0)
 
@@ -264,7 +273,7 @@ class ConceptGateTunerWorker:
         return current
 
     def run(self) -> dict[str, Any] | None:
-        now = datetime.now(timezone.utc)
+        now = self._clock()
         if not self._due(now):
             return None
         started = time.monotonic()
@@ -281,6 +290,7 @@ class ConceptGateTunerWorker:
         pops = populations(
             rows,
             cluster_engaged_rates=self._cluster_engaged_rates(),
+            evidence_fit=load_fit_sample(self._kv_get),
             cosine_pairs=pairs,
             rng=random.Random(),
         )

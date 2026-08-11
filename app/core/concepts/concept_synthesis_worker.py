@@ -52,6 +52,14 @@ from app.core.concepts.proposers import (
 )
 from app.core.concepts.concept_dedupe import DEDUPE_COS, find_duplicate
 from app.core.concepts.concept_drift import is_material_relabel
+from app.core.concepts.concept_evidence_admission import (
+    ADMISSION_COS,
+    MAX_SOURCES,
+    Admission,
+    admit,
+    load_fit_sample,
+    save_fit_sample,
+)
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_kinds import core_lane_kinds
 from app.core.concepts.concept_surfacing import engagement_baseline
@@ -1009,6 +1017,7 @@ class ConceptSynthesisWorker:
             for proposal in proposals:
                 self._persist(proposal, stats)
 
+        self._flush_admission(stats)
         stats["llm_calls"] = self._llm_calls
         stats["llm_ms"] = int((time.monotonic() - started) * 1000)
         self._last_stats = stats
@@ -3096,9 +3105,7 @@ class ConceptSynthesisWorker:
         if proposal.reinforces_id is not None:
             concept = self._concept_store.get(proposal.reinforces_id)
             if concept is not None:
-                self._reinforce(concept, proposal)
-                stats["reinforced"] += 1
-                self._bump_subject(stats, proposal.subject, "reinforced")
+                self._reinforce(concept, proposal, stats)
             return
 
         try:
@@ -3116,9 +3123,7 @@ class ConceptSynthesisWorker:
         # below as ``novelty = 1 - top_sim`` for the discovery event.
         match, top_sim = self._find_duplicate(proposal, vec)
         if match is not None:
-            self._reinforce(match, proposal, cosine=top_sim)
-            stats["reinforced"] += 1
-            self._bump_subject(stats, proposal.subject, "reinforced")
+            self._reinforce(match, proposal, stats, cosine=top_sim)
             return
 
         now = _now_iso()
@@ -3252,24 +3257,200 @@ class ConceptSynthesisWorker:
         self,
         concept: Concept,
         proposal: CandidateProposal,
+        stats: dict[str, Any],
         *,
         cosine: float | None = None,
     ) -> None:
-        self._add_evidence_edges(
-            concept.concept_id,
+        """Attach a proposal's evidence to an existing concept (L31 gated).
+
+        The single choke point for both reinforcement paths -- the LLM
+        naming an id it was shown, and a fresh proposal landing at or above
+        the dedupe cosine -- so the admission gate only has to live here.
+        Counts its own ``stats``, because whether this was *a
+        reinforcement* is now the gate's verdict rather than a foregone
+        conclusion.
+        """
+        existing = self._concept_store.evidence_of(concept.concept_id)
+        verdict = admit(
             proposal.evidence,
-            evidence_model=concept.evidence_model,
+            label_vector=concept.embedding,
+            vectors=self._evidence_vectors(proposal.evidence),
+            existing_sources={
+                (e.src_type, str(e.src_id)) for e in existing
+            },
+            floor=self._admission_cosine(),
+            ceiling=self._max_sources(),
         )
-        ev = self._concept_store.evidence_of(concept.concept_id)
-        concept.evidence_count = len(ev)
-        concept.distinct_source_count = len(
-            {(e.src_type, e.src_id) for e in ev}
-        )
-        concept.last_reinforced_at = _now_iso()
+        self._record_admission(stats, concept, verdict)
+
+        if verdict.kept:
+            self._add_evidence_edges(
+                concept.concept_id,
+                verdict.kept,
+                evidence_model=concept.evidence_model,
+            )
+            ev = self._concept_store.evidence_of(concept.concept_id)
+            concept.evidence_count = len(ev)
+            concept.distinct_source_count = len(
+                {(e.src_type, e.src_id) for e in ev}
+            )
+        if verdict.reinforced:
+            concept.last_reinforced_at = _now_iso()
         # confidence / plasticity / status intentionally left to L3;
         # label / rationale intentionally left to the L17 drift worker.
         self._concept_store.update(concept)
+
+        if not verdict.reinforced:
+            # Nothing here was about this belief, so this proposal gets no
+            # say in how it is worded either.
+            return
+        stats["reinforced"] += 1
+        self._bump_subject(stats, proposal.subject, "reinforced")
         self._stage_relabel(concept, proposal, cosine)
+
+    # ── L31 evidence admission ─────────────────────────────────────────
+
+    def _admission_cosine(self) -> float:
+        """The bar a cited source must clear to be about the concept.
+
+        ``0.0`` disables the check. See
+        :mod:`~app.core.concepts.concept_evidence_admission` for where the
+        default came from.
+        """
+        return float(
+            getattr(
+                self._memory_settings,
+                "concept_evidence_admission_cosine",
+                ADMISSION_COS,
+            )
+        )
+
+    def _max_sources(self) -> int:
+        """The most distinct sources one concept may hold. ``0`` disables."""
+        return int(
+            getattr(
+                self._memory_settings,
+                "concept_evidence_max_sources",
+                MAX_SOURCES,
+            )
+        )
+
+    def _evidence_vectors(
+        self, evidence: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], Any]:
+        """An embedding per cited source, for the admission cosine.
+
+        Costs no embedder call: memory rows already carry their vector, and
+        a ``("cluster", rep)`` node is keyed by the cluster's representative
+        *memory* id, so it resolves through the same lookup. A
+        ``("concept", id)`` node -- L12 tension and L20 generalization bases
+        -- compares label to label.
+
+        Missing rows are simply absent from the map; ``admit`` reads that as
+        "cannot judge" and lets the source through.
+        """
+        out: dict[tuple[str, str], Any] = {}
+        memory_nodes: dict[int, list[tuple[str, str]]] = {}
+        for node in evidence:
+            node_type, node_id = node
+            if node in out:
+                continue
+            try:
+                ident = int(node_id)
+            except (TypeError, ValueError):
+                continue
+            if node_type in ("memory", "cluster"):
+                memory_nodes.setdefault(ident, []).append(node)
+            elif node_type == "concept":
+                try:
+                    target = self._concept_store.get(ident)
+                except Exception:
+                    log.debug("evidence concept lookup failed", exc_info=True)
+                    continue
+                if target is not None:
+                    out[node] = target.embedding
+
+        if memory_nodes:
+            try:
+                rows = self._memory_store.get_many(memory_nodes.keys())
+            except Exception:
+                log.debug("evidence memory lookup failed", exc_info=True)
+                rows = {}
+            for ident, nodes in memory_nodes.items():
+                mem = rows.get(ident)
+                embedding = getattr(mem, "embedding", None) if mem else None
+                if embedding is None:
+                    continue
+                for node in nodes:
+                    out[node] = embedding
+        return out
+
+    def _record_admission(
+        self,
+        stats: dict[str, Any],
+        concept: Concept,
+        verdict: Admission,
+    ) -> None:
+        """Count and log what the gate did, and sample the cosines it saw."""
+        offtopic = verdict.offtopic
+        full = verdict.full
+        if verdict.admitted:
+            stats["evidence_admitted"] = (
+                int(stats.get("evidence_admitted", 0)) + verdict.admitted
+            )
+        if offtopic:
+            stats["evidence_refused_offtopic"] = (
+                int(stats.get("evidence_refused_offtopic", 0)) + len(offtopic)
+            )
+        if full:
+            stats["evidence_refused_full"] = (
+                int(stats.get("evidence_refused_full", 0)) + len(full)
+            )
+        if verdict.cosines:
+            stats.setdefault("evidence_fit", []).extend(verdict.cosines)
+
+        for refusal in offtopic:
+            log.debug(
+                "evidence refused as off-topic: cos=%.3f source=%s:%s "
+                "concept=#%s %r",
+                refusal.cosine if refusal.cosine is not None else -1.0,
+                refusal.node[0], refusal.node[1],
+                concept.concept_id, concept.label[:60],
+            )
+        if full:
+            log.info(
+                "concept at its evidence ceiling (%d sources): refused %d "
+                "new source(s) for #%s %r",
+                concept.distinct_source_count, len(full),
+                concept.concept_id, concept.label[:60],
+            )
+
+    def _flush_admission(self, stats: dict[str, Any]) -> None:
+        """Summarise the pass's admissions and roll the observed sample.
+
+        The raw cosines leave ``stats`` -- it is returned to the debug UI and
+        the MCP tools, where a few hundred floats would be noise -- and go
+        into the bounded ``kv_meta`` sample the L45 tuner reads instead.
+        Sampling the *inflow* rather than the stored stock is deliberate:
+        the bar acts on arriving evidence, so that is the distribution it
+        should be calibrated against.
+        """
+        measured = [float(c) for c in stats.pop("evidence_fit", [])]
+        offtopic = int(stats.get("evidence_refused_offtopic", 0))
+        full = int(stats.get("evidence_refused_full", 0))
+        admitted = int(stats.get("evidence_admitted", 0))
+        if measured:
+            stats["evidence_fit_measured"] = len(measured)
+            save_fit_sample(
+                self._kv_set, load_fit_sample(self._kv_get) + measured,
+            )
+        if offtopic or full:
+            log.info(
+                "evidence admission: admitted=%d refused_offtopic=%d "
+                "refused_ceiling=%d floor=%.2f ceiling=%d",
+                admitted, offtopic, full,
+                self._admission_cosine(), self._max_sources(),
+            )
 
     def _stage_relabel(
         self,

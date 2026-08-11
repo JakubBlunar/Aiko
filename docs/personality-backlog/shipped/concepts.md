@@ -2585,3 +2585,95 @@ unasked. That is now harmless rather than fatal — the rows stay askable — bu
 means the lane's real rate is about one question a day whatever the shelf holds.
 Three smaller audit findings were recorded rather than fixed; they are listed
 under L30e in [`concepts.md`](../concepts.md).
+
+---
+
+## L31. Evidence admission control -- what a concept may accept
+
+**Status: SHIPPED**, in place of the concept fission L31 originally proposed.
+Fission was refuted by measurement before it was built; the reasoning and the
+control numbers are recorded under L31 in [`concepts.md`](../concepts.md). The
+short version is that no concept in the graph is cleanly bimodal, the two
+genuinely bloated rows are not carrying two truths, and a split would have
+manufactured children that already existed. So the work moved from the outflow
+to the inflow, where there turned out to be no gate at all.
+
+**What was actually wrong.** Creation is gated — a new concept must clear its
+kind's `min_sources` / `min_chain` / `directional` bars — but *reinforcement* was
+not gated in any way. `resolve_reinforces` checked only that the id the LLM named
+appeared in the list of 40 it had been shown, and `_reinforce` then attached
+every source it cited with no similarity check of any kind, while dropping the
+bars a new concept has to clear. Two shapes grew out of that, and the useful
+discovery is that **they need two different bars**, because neither one catches
+the other.
+
+- **Contamination**, caught by a cosine floor. An `aspiration/user` row
+  ("deepening emotional and physical intimacy with Aiko from functional
+  interaction to profound relational bonding") reached 97 sources including
+  *"Jacob really enjoyed Chainsaw Man's opening song"* and *"organizing the snack
+  stash by moving cookies to the kitchenette"*. Those are not weak evidence for
+  the belief — they are evidence for something else that happened to be the
+  nearest label on the shown list.
+- **Accretion**, caught only by a ceiling. A `ritual/relationship` row ended up
+  citing **145 of the 158 `shared_moment` memories in the graph, 92%** — and
+  none of it is off-topic. A label that vague ("tender, playful wind-downs where
+  vulnerability meets gentle teasing") really is near everything affectionate;
+  its *lowest*-cosine evidence still measures 0.385, comfortably above any floor
+  worth setting. Volume was the only thing wrong with it.
+
+**Both defaults were measured rather than chosen.** Over all 6091 live evidence
+edges, the cosine between a source and the label it supports runs p1 0.324, p5
+0.384, p10 0.424, p50 0.574, p90 0.756. `concept_evidence_admission_cosine =
+0.35` refuses 2.2% of that stock, and catches every piece hand-read as wrong on
+the contaminated row (0.243, 0.311, 0.328) while its genuine evidence sits at
+0.60-0.68; 0.40 refuses 6.7% and 0.45 refuses 15.1%, where real spread starts
+going with it. `concept_evidence_max_sources = 24` is the 99th percentile of
+`distinct_source_count` (p50 4, p90 10, p95 13), and is deliberately far above
+where it would *matter*: `confidence_target` saturates at its 0.97 cap by 8
+distinct sources, so everything past the eighth had already bought nothing.
+Nothing can lose confidence or fail a promotion floor by being capped.
+
+**One interaction had teeth, and it is the reason the gate is not just a
+filter.** A refused reinforcement must still be allowed to move
+`last_reinforced_at` when the *only* thing in the way was the ceiling. L3 reads
+that timestamp to decide a belief is still being observed, and L46's dormancy TTL
+retires a row by wall-clock silence — so a capped concept whose clock froze would
+drift `active → dormant → retired` while the evidence for it kept arriving. The
+gate would have quietly deleted the graph's best-supported beliefs *because* they
+had the most evidence. Off-topic refusal is the opposite case: nothing about the
+belief was observed, so nothing says it was, and the proposal gets no say in the
+concept's wording either (no `relabel_proposed` is staged).
+
+**Shape.** A pure module,
+[`concept_evidence_admission.py`](../../../app/core/concepts/concept_evidence_admission.py),
+sized like `concept_dedupe.py` and for the same reason — one bar, written once.
+`ConceptSynthesisWorker._reinforce` is the single choke point both reinforcement
+paths funnel through (the LLM naming an id, and a fresh proposal landing at or
+above `DEDUPE_COS`), so the gate only had to be installed once. Resolution costs
+no embedder call: memory rows already carry their vector, and a
+`("cluster", rep)` node is keyed by the cluster's representative *memory* id, so
+it resolves through the same lookup. A source whose vector cannot be resolved is
+**admitted** — failing open risks one loose edge, while failing closed would
+starve every concept the moment an embedding went missing or the embedding model
+was swapped.
+
+**Forward-only, by choice.** The bars refuse new sources and never remove an edge
+a concept already holds, so the rows that grew before the gate existed keep their
+history and simply stop growing. That was the cheap option and also the right
+one here: the 145-source ritual's inflow had already fallen from 75 new sources
+in July to 9 in August as the specific rituals started winning, so it is a legacy
+row decaying on its own rather than an engine still running.
+
+**Observability, before tuning.** The cosine it measures for every arriving
+source is rolled through a bounded `kv_meta` sample (`concept_synth.evidence_fit`,
+500 values) and read by the L45 tuner as `POP_EVIDENCE_FIT` — the one population
+there measured from *inflow* rather than from the stored graph, because
+re-deriving it from what got in would measure the wrong thing. Its `GateSpec`
+ships **observe-only**, like the dormancy TTL did, with `target=0.98`: the bar
+exists for evidence about something else, not for the merely weak. Refusals also
+land in the pass stats (`evidence_refused_offtopic` / `evidence_refused_full`)
+and in one log line per pass.
+
+**Not done.** No trimming of existing evidence, no split primitive, and no gate
+at concept *creation* — a new concept's label is generated from its own evidence,
+so there is no label/evidence drift to prevent there.

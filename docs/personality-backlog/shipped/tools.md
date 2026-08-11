@@ -76,5 +76,16 @@ database copy. And L3 decay is catch-up-clamped per sweep
 interleaving `advance_engagement(3)` with `force_concept_lifecycle`
 rather than one big jump.
 
+**The failure mode to watch for when adding a worker**, since it is silent
+and only shows up as "time travel didn't affect this one": a worker that
+calls `datetime.now(timezone.utc)` directly instead of taking `clock=` opts
+itself out of the seam. `ConceptGateTunerWorker` did exactly that and went
+unnoticed for weeks — its daily cadence *and* its `concept_min_history_days`
+maturity gate, the one whose entire purpose is waiting for calendar time,
+could not be advanced while the rest of the concept stack could. It surfaced
+from the other end, as a test that compared a fixed `last_run` against real
+time and aged into failure. Take `clock=` and default it to
+`timephrase.utcnow`, as every other concept worker does.
+
 **Workflow:** [`rules/debugging.md` §f](../../../rules/debugging.md).
 **Tool reference:** [`rules/mcp-server.md`](../../../rules/mcp-server.md).

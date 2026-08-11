@@ -86,6 +86,12 @@ POP_PAIR_COSINE = "pair_cosine"
 #: population here measured in days rather than in a score, because the gate
 #: it informes (``concept_dormant_ttl_days``) is a duration.
 POP_DORMANT_QUIET_DAYS = "dormant_quiet_days"
+#: L31: how well each arriving piece of evidence matched the concept it was
+#: cited for. Unlike every other population here this one is *inflow* rather
+#: than stock -- the synthesis worker records each cosine as it judges it and
+#: rolls the sample through ``kv_meta``, because the gate acts on evidence
+#: arriving, not on evidence already stored.
+POP_EVIDENCE_FIT = "evidence_fit"
 
 #: Per-kind confidence populations are keyed ``kind_confidence:<kind>``.
 POP_KIND_CONFIDENCE_PREFIX = "kind_confidence:"
@@ -542,6 +548,25 @@ _COSINE_GATES: tuple[GateSpec, ...] = (
         ),
     ),
     GateSpec(
+        setting="concept_evidence_admission_cosine",
+        population=POP_EVIDENCE_FIT,
+        objective=OBJ_SHARE_ABOVE,
+        # Keep 98% of arriving evidence admissible. The bar is there for the
+        # small tail that is about something else entirely, so asking it to
+        # refuse much more than the measured 2.2% of the existing stock would
+        # start costing real evidence -- 0.45 already refuses 15%.
+        target=0.98,
+        floor=0.25,
+        ceiling=0.5,
+        max_step=0.01,
+        # Half the rolling sample, so a few quiet days cannot move it.
+        min_samples=250,
+        why=(
+            "reinforcement should refuse only the evidence that is about "
+            "something else, not the merely weak"
+        ),
+    ),
+    GateSpec(
         setting="concept_contradiction_similarity_min",
         population=POP_PAIR_COSINE,
         objective=OBJ_SHARE_ABOVE,
@@ -631,6 +656,7 @@ __all__ = [
     "POP_CANDIDATE_CONFIDENCE",
     "POP_CLUSTER_ENGAGED_RATE",
     "POP_CORE_POOL",
+    "POP_EVIDENCE_FIT",
     "POP_FADED_CONFIDENCE",
     "POP_KIND_CONFIDENCE_PREFIX",
     "POP_OPENNESS_POOL",

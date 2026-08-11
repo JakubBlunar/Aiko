@@ -20,7 +20,8 @@ from pathlib import Path
 import numpy as np
 
 from app.core.concepts.concept_event_store import ConceptEventStore
-from app.core.concepts.concept_store import Concept, ConceptStore
+from app.core.concepts.concept_evidence_admission import load_fit_sample
+from app.core.concepts.concept_store import Concept, ConceptEdge, ConceptStore
 from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
 from app.core.infra.chat_database import ChatDatabase
 
@@ -151,11 +152,24 @@ def _mem_settings(
     interval=1800,
     min_clusters=0,
     min_history_days=0.0,
+    evidence_admission_cosine=None,
+    evidence_max_sources=None,
 ):
     # L21 maturity gate is disabled by default here (min_clusters=0,
     # min_history_days=0) so the proposer/dirty-tracking tests exercise
     # their own logic; the dedicated maturity tests set thresholds.
+    # L31 admission gate. Left absent unless a test names it, so everything
+    # else exercises the shipped defaults through the same ``getattr`` path
+    # the app uses.
+    admission: dict[str, float | int] = {}
+    if evidence_admission_cosine is not None:
+        admission["concept_evidence_admission_cosine"] = (
+            evidence_admission_cosine
+        )
+    if evidence_max_sources is not None:
+        admission["concept_evidence_max_sources"] = evidence_max_sources
     return types.SimpleNamespace(
+        **admission,
         concept_synthesis_interval_seconds=interval,
         concept_synthesis_max_clusters_per_run=cap_clusters,
         concept_synthesis_max_aiko_memories=cap_aiko,
@@ -393,6 +407,211 @@ class ReinforceTests(unittest.TestCase):
         self.assertEqual(stats["by_subject"]["user"].get("added", 0), 0)
         self.assertNotEqual(again[0].last_reinforced_at, first_reinforced_at)
         self.assertEqual(len(h.store.evidence_of(again[0].concept_id)), 2)
+
+
+class EvidenceAdmissionTests(unittest.TestCase):
+    """L31: reinforcement is gated, so "the LLM named an id" is no longer
+    enough to attach whatever it cited.
+
+    The vectors here are explicit rather than hashed, because the whole
+    subject is a cosine: ``_ON`` is the concept's own label direction and
+    ``_OFF`` is orthogonal to it, so "about this belief" and "about
+    something else" are unambiguous instead of probabilistic.
+    """
+
+    _ON = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    _OFF = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    _WAS_REINFORCED = "2026-01-01T00:00:00+00:00"
+
+    def _seed(self, store, *, held: int = 0) -> int:
+        cid = store.add(
+            Concept(
+                label="Jacob is a systems thinker",
+                kind="identity",
+                subject="user",
+                embedding=self._ON,
+                status="active",
+                last_reinforced_at=self._WAS_REINFORCED,
+            )
+        )
+        for i in range(held):
+            store.add_edge(
+                ConceptEdge(
+                    src_type="memory",
+                    src_id=f"9{i:03d}",
+                    dst_type="concept",
+                    dst_id=str(cid),
+                    relation="evidence",
+                    polarity=1,
+                )
+            )
+        if held:
+            row = store.get(cid)
+            row.distinct_source_count = held
+            row.evidence_count = held
+            store.update(row)
+        return cid
+
+    def _run(self, *, vectors, reps=(100, 101), held: int = 0, **settings):
+        """Reinforce the seeded concept with ``reps``, whose representative
+        memories carry ``vectors``."""
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []},
+            mem_settings=_mem_settings(**settings),
+        )
+        cid = self._seed(h.store, held=held)
+        # The reps a cluster cites resolve through the *representative
+        # memory* id, which is what the gate looks up.
+        for rep, vec in vectors.items():
+            h.mem._by_id[rep] = MemStub(
+                rep, f"memory {rep}", "fact", 0.5, embedding=vec,
+            )
+
+        def responder(system, user):
+            if "IDENTITY concepts about" not in system:
+                return {"concepts": []}
+            return {"concepts": [
+                {"reinforces_id": cid, "evidence_cluster_reps": list(reps),
+                 "rationale": "more support"}
+            ]}
+
+        h.ollama._responder = responder
+        return h, cid, h.worker.run()
+
+    def test_evidence_about_the_concept_is_attached(self) -> None:
+        h, cid, stats = self._run(
+            vectors={100: self._ON, 101: self._ON},
+        )
+        self.assertEqual(len(h.store.evidence_of(cid)), 2)
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+        self.assertEqual(stats.get("evidence_refused_offtopic", 0), 0)
+
+    def test_evidence_about_something_else_is_refused(self) -> None:
+        h, cid, stats = self._run(
+            vectors={100: self._OFF, 101: self._OFF},
+        )
+        self.assertEqual(h.store.evidence_of(cid), [])
+        self.assertEqual(stats["evidence_refused_offtopic"], 2)
+
+    def test_a_wholly_refused_reinforcement_is_not_counted_as_one(self) -> None:
+        _, _, stats = self._run(vectors={100: self._OFF, 101: self._OFF})
+        self.assertEqual(stats["reinforced"], 0)
+        self.assertEqual(stats["by_subject"], {})
+
+    def test_a_wholly_refused_reinforcement_does_not_move_the_clock(
+        self,
+    ) -> None:
+        # Nothing about the belief was observed, so nothing may say it was.
+        h, cid, _ = self._run(vectors={100: self._OFF, 101: self._OFF})
+        self.assertEqual(
+            h.store.get(cid).last_reinforced_at, self._WAS_REINFORCED,
+        )
+
+    def test_a_mixed_citation_keeps_only_what_belongs(self) -> None:
+        h, cid, stats = self._run(vectors={100: self._ON, 101: self._OFF})
+        self.assertEqual(
+            {e.src_id for e in h.store.evidence_of(cid)}, {"100"},
+        )
+        self.assertEqual(stats["evidence_refused_offtopic"], 1)
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+
+    def test_a_source_with_no_embedding_is_admitted(self) -> None:
+        # Fail open: a missing vector is "cannot judge", never "refuse".
+        h, cid, stats = self._run(vectors={})
+        self.assertEqual(len(h.store.evidence_of(cid)), 2)
+        self.assertEqual(stats.get("evidence_refused_offtopic", 0), 0)
+
+    def test_a_zero_floor_admits_anything(self) -> None:
+        h, cid, _ = self._run(
+            vectors={100: self._OFF, 101: self._OFF},
+            evidence_admission_cosine=0.0,
+        )
+        self.assertEqual(len(h.store.evidence_of(cid)), 2)
+
+    def test_a_concept_at_its_ceiling_takes_nothing_new(self) -> None:
+        h, cid, stats = self._run(
+            vectors={100: self._ON, 101: self._ON},
+            held=4,
+            evidence_max_sources=4,
+        )
+        self.assertEqual(len(h.store.evidence_of(cid)), 4, "still just held")
+        self.assertEqual(stats["evidence_refused_full"], 2)
+
+    def test_a_capped_concept_still_counts_as_observed(self) -> None:
+        # The dangerous case. If the ceiling froze ``last_reinforced_at``,
+        # L3 would decay the row to dormant and the L46 dormancy TTL would
+        # retire it -- deleting the graph's best-supported beliefs through a
+        # side door, precisely because they had the most evidence.
+        h, cid, stats = self._run(
+            vectors={100: self._ON, 101: self._ON},
+            held=4,
+            evidence_max_sources=4,
+        )
+        self.assertNotEqual(
+            h.store.get(cid).last_reinforced_at, self._WAS_REINFORCED,
+        )
+        self.assertEqual(stats["by_subject"]["user"]["reinforced"], 1)
+
+    def test_a_zero_ceiling_lets_a_concept_keep_growing(self) -> None:
+        h, cid, _ = self._run(
+            vectors={100: self._ON, 101: self._ON},
+            held=4,
+            evidence_max_sources=0,
+        )
+        self.assertEqual(len(h.store.evidence_of(cid)), 6)
+
+    def test_the_counts_are_recomputed_from_the_edges_that_landed(self) -> None:
+        h, cid, _ = self._run(vectors={100: self._ON, 101: self._OFF})
+        row = h.store.get(cid)
+        self.assertEqual(row.evidence_count, 1)
+        self.assertEqual(row.distinct_source_count, 1)
+
+    def test_measured_cosines_reach_the_rolling_sample(self) -> None:
+        h, _, stats = self._run(vectors={100: self._ON, 101: self._OFF})
+        self.assertEqual(stats["evidence_fit_measured"], 2)
+        # The raw floats stay out of the stats the debug UI renders.
+        self.assertNotIn("evidence_fit", stats)
+        sample = load_fit_sample(h.db.kv_get)
+        self.assertEqual(sorted(sample), [0.0, 1.0])
+
+    def test_the_sample_accumulates_across_runs(self) -> None:
+        # Two measured on the first run, then only one on the second: rep
+        # 100 is held by now, and re-citing it says nothing about where the
+        # bar should sit, so the sample stays a picture of arriving evidence
+        # rather than drifting toward whatever was admitted most often.
+        h, cid, _ = self._run(vectors={100: self._ON, 101: self._OFF})
+        for c in h.topic._clusters:
+            c.size += 5
+        h.worker.run()
+        self.assertEqual(load_fit_sample(h.db.kv_get), [1.0, 0.0, 0.0])
+
+    def test_a_refused_proposal_gets_no_say_in_the_wording(self) -> None:
+        # A relabel bid rides on the same proposal. If none of its evidence
+        # was about this belief, its phrasing does not get to rename it.
+        h = WorkerHarness(
+            lambda s, u: {"concepts": []}, mem_settings=_mem_settings(),
+        )
+        cid = self._seed(h.store)
+        h.mem._by_id[100] = MemStub(
+            100, "memory 100", "fact", 0.5, embedding=self._OFF,
+        )
+
+        def responder(system, user):
+            if "IDENTITY concepts about" not in system:
+                return {"concepts": []}
+            return {"concepts": [
+                {"reinforces_id": cid, "evidence_cluster_reps": [100],
+                 "label": "Jacob is an architect of his own tools",
+                 "rationale": "rewording"}
+            ]}
+
+        h.ollama._responder = responder
+        h.worker.run()
+        self.assertEqual(
+            [e for e in h.events.list(limit=50)
+             if e.event_type == "relabel_proposed"],
+            [],
+        )
 
 
 class DiscoveryEventTests(unittest.TestCase):

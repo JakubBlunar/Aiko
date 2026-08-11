@@ -1471,6 +1471,44 @@ class MemorySettings:
     # less templated could reasonably enable it. Raise it deliberately, and
     # dry-run before trusting it.
     concept_consolidation_auto_merge_cosine: float = 1.0
+    # ── L31: what a concept may accept as evidence ────────────────────
+    # Creation is gated (a new concept must clear its kind's min_sources /
+    # min_chain / directional bars) but *reinforcement* was not gated at
+    # all: ``resolve_reinforces`` checked only that the id the LLM named
+    # appeared in the list of 40 it was shown, and every cited source was
+    # then attached with no similarity check. Two shapes grew out of that,
+    # and they need two different bars -- see
+    # ``concept_evidence_admission`` for the full measurement.
+    #
+    # (1) Contamination, which the cosine floor catches. One
+    # ``aspiration/user`` row ("deepening emotional and physical intimacy
+    # with Aiko...") reached 97 sources including "Jacob really enjoyed
+    # Chainsaw Man's opening song" and "organizing the snack stash" --
+    # evidence for something else that happened to be the nearest label on
+    # the shown list. Over all 6091 live evidence edges the cosine between
+    # a source and the label it supports runs p1 0.324, p5 0.384, p50
+    # 0.574, so 0.35 refuses 2.2% of the existing stock while catching
+    # every piece hand-read as wrong on that row (0.243, 0.311, 0.328)
+    # against its genuine evidence at 0.60-0.68. 0.40 refuses 6.7% and
+    # 0.45 refuses 15.1%, which is where real spread starts going too.
+    # 0.0 disables the check.
+    concept_evidence_admission_cosine: float = 0.35
+    # (2) Accretion, which only the ceiling catches. One
+    # ``ritual/relationship`` row ended up citing 145 of the 158
+    # ``shared_moment`` memories in the graph -- 92% -- and none of it is
+    # off-topic: a label that vague really is near everything affectionate,
+    # and its lowest-cosine evidence still sits at 0.385. 24 is the 99th
+    # percentile of ``distinct_source_count`` (p50 4, p90 10, p95 13), so
+    # it binds on about one concept in a hundred, and it is deliberately
+    # far above where it would *matter*: ``confidence_target`` saturates at
+    # its 0.97 cap by 8 distinct sources, so everything past the eighth
+    # already bought nothing. No concept can lose confidence or fail a
+    # promotion floor by being capped. 0 disables the cap.
+    #
+    # Both bars are forward-only. They refuse *new* sources and never
+    # remove an edge a concept already holds, so rows that grew before the
+    # gate existed keep their history and simply stop growing.
+    concept_evidence_max_sources: int = 24
     # L25 edge referential integrity. Concept edges (evidence /
     # contradicts) point at memory rows that get deleted, pruned, and
     # merged. Most deletes are reconciled synchronously by the reconciler's
@@ -4230,6 +4268,21 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         )
                     ),
                 ),
+            ),
+            concept_evidence_admission_cosine=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_evidence_admission_cosine", 0.35
+                        )
+                    ),
+                ),
+            ),
+            concept_evidence_max_sources=max(
+                0,
+                int(memory_raw.get("concept_evidence_max_sources", 24)),
             ),
             concept_edge_integrity_enabled=bool(
                 memory_raw.get("concept_edge_integrity_enabled", True)
