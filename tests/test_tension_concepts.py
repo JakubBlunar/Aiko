@@ -645,10 +645,54 @@ class CueProducerTests(unittest.TestCase):
         ring = _tc.load_cues(kv.get)
         self.assertEqual(len(ring), 1)
         self.assertEqual(ring[-1]["concept_id"], 1)
-        self.assertIn(_tc.per_concept_cooldown_key(1), kv.store)
         self.assertEqual(
             kv.store.get("tension_cue.last_signature"), _tc.signature(1)
         )
+        # Drafting must NOT spend the per-tension cooldown — that is the
+        # renderer's to spend, once the cue has actually been shown. See
+        # ``_KV_PER_CONCEPT_PREFIX``: stamping it here silenced tensions
+        # for six days that were superseded before they ever surfaced.
+        self.assertNotIn(_tc.per_concept_cooldown_key(1), kv.store)
+
+    def test_does_not_draft_over_an_unshown_cue(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, confidence=0.95), _concept(2)])
+        self.assertEqual(_cue_worker(view, kv).run()["drafted"], 1)
+        second = _cue_worker(view, kv).run()
+        self.assertEqual(second["drafted"], 0)
+        self.assertTrue(second.get("unconsumed"))
+        self.assertEqual(len(_tc.load_cues(kv.get)), 1)
+
+    def test_drafts_again_once_the_cue_has_surfaced(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, confidence=0.95), _concept(2)])
+        _cue_worker(view, kv).run()
+        kv.store[_tc.KV_LAST_SURFACED_AT] = _tc.load_cues(kv.get)[-1]["at"]
+        self.assertEqual(_cue_worker(view, kv).run()["drafted"], 1)
+        self.assertEqual(len(_tc.load_cues(kv.get)), 2)
+
+    def test_a_stale_unshown_cue_stops_wedging_the_producer(self) -> None:
+        # Otherwise a cue drafted right before a week of silence would block
+        # the producer for that whole week.
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, confidence=0.95), _concept(2)])
+        _cue_worker(view, kv).run()
+        ring = _tc.load_cues(kv.get)
+        ring[-1]["at"] = (
+            datetime.now(_UTC)
+            - timedelta(hours=_tc.UNCONSUMED_CUE_MAX_AGE_HOURS + 1)
+        ).isoformat()
+        kv.store[_tc.TENSION_JOURNAL_KEY] = json.dumps(ring)
+        self.assertEqual(_cue_worker(view, kv).run()["drafted"], 1)
+
+    def test_demand_reports_no_pressure_while_a_cue_waits(self) -> None:
+        kv = _FakeKv()
+        view = _FakeView([_concept(1, confidence=0.95), _concept(2)])
+        worker = _cue_worker(view, kv)
+        worker.run()
+        signal = worker.demand(now=datetime.now(_UTC), last_run_at=None)
+        self.assertEqual(signal.pressure, 0.0)
+        self.assertEqual(signal.reason, "unconsumed")
 
     def test_per_concept_cooldown_suppresses(self) -> None:
         kv = _FakeKv()
@@ -663,7 +707,19 @@ class CueProducerTests(unittest.TestCase):
         kv.store["tension_cue.last_signature"] = _tc.signature(1)
         out = _cue_worker(_FakeView([_concept(1)]), kv).run()
         self.assertEqual(out["drafted"], 0)
-        self.assertEqual(out.get("same_signature"), _tc.signature(1))
+        self.assertTrue(out.get("no_candidate"))
+
+    def test_the_repeat_guard_steps_down_instead_of_stalling(self) -> None:
+        # The just-drafted tension is skipped rather than selected and then
+        # rejected, so the next-best friction gets the tick. Without this the
+        # top-ranked tension wins selection forever and nothing is drafted.
+        kv = _FakeKv()
+        kv.store["tension_cue.last_signature"] = _tc.signature(1)
+        out = _cue_worker(
+            _FakeView([_concept(1, confidence=0.95), _concept(2)]), kv
+        ).run()
+        self.assertEqual(out["drafted"], 1)
+        self.assertEqual(out["concept_id"], 2)
 
     def test_disabled_switch(self) -> None:
         kv = _FakeKv()
@@ -748,11 +804,13 @@ class CueProducerDemandTests(unittest.TestCase):
         self.assertEqual(self._probe(w).pressure, 0.0)
 
     def test_the_signature_watermark_shows_up_as_no_pressure(self) -> None:
+        # The repeat guard now filters during selection, so the sole tension
+        # is skipped and there is genuinely no candidate left.
         kv = _FakeKv()
         kv.store["tension_cue.last_signature"] = _tc.signature(1)
         signal = self._probe(_cue_worker(_FakeView([_concept(1)]), kv))
         self.assertEqual(signal.pressure, 0.0)
-        self.assertEqual(signal.reason, "same_signature")
+        self.assertEqual(signal.reason, "no_candidate")
 
     def test_disabled_is_no_pressure(self) -> None:
         w = _cue_worker(
@@ -817,6 +875,27 @@ class CueConsumerTests(unittest.TestCase):
         self.assertEqual(
             host._chat_db.store.get("tension_cue.last_surfaced_at"),
             _cue()["at"],
+        )
+
+    def test_surfacing_is_what_spends_the_per_tension_cooldown(self) -> None:
+        host = _Host(cues=[_cue()])
+        self.assertNotIn(
+            _tc.per_concept_cooldown_key(1), host._chat_db.store
+        )
+        host._render_tension_block()
+        self.assertEqual(
+            host._chat_db.store.get(_tc.per_concept_cooldown_key(1)),
+            _cue()["at"],
+        )
+
+    def test_a_cue_that_does_not_render_spends_nothing(self) -> None:
+        # Already-surfaced cue: the block returns empty and must not
+        # re-stamp anything.
+        host = _Host(cues=[_cue()])
+        host._chat_db.store[_tc.KV_LAST_SURFACED_AT] = _cue()["at"]
+        self.assertEqual(host._render_tension_block(), "")
+        self.assertNotIn(
+            _tc.per_concept_cooldown_key(1), host._chat_db.store
         )
 
     def test_relationship_cue_names_user(self) -> None:

@@ -41,11 +41,57 @@ TENSION_JOURNAL_KEY = "aiko.tension_cue"
 
 # Per-concept cooldown watermark prefix -- one key per tension so a fresh cue
 # rotates across the active set instead of repeating the strongest one.
+#
+# **Stamped when the cue is SURFACED, not when it is drafted.** The renderer
+# only ever shows the newest ring entry, so a cue drafted while an earlier one
+# is still unconsumed silently replaces it. Stamping at draft time therefore
+# spent a six-day silence on tensions she never actually said: half of all
+# drafted cues were superseded before they rendered, which is 34 frictions
+# muted for a week each without reaching the prompt once. The cooldown is
+# meant to pace *how often she raises a given friction*, so it has to be
+# driven by delivery.
 _KV_PER_CONCEPT_PREFIX = "tension_cue.last."
+
+# Watermark holding the ``at`` of the most recently surfaced cue. Shared:
+# the renderer writes it, and the producer reads it as back-pressure so it
+# does not draft over a cue that has not been shown yet.
+KV_LAST_SURFACED_AT = "tension_cue.last_surfaced_at"
+
+# How long an unconsumed cue blocks fresh drafting. Without a ceiling a cue
+# drafted just before a long quiet spell would wedge the producer forever;
+# a day is long enough that normal conversation always consumes first.
+UNCONSUMED_CUE_MAX_AGE_HOURS = 24.0
 
 
 def per_concept_cooldown_key(concept_id: int) -> str:
     return f"{_KV_PER_CONCEPT_PREFIX}{int(concept_id)}"
+
+
+def newest_cue_is_unconsumed(
+    kv_get: Callable[[str], "str | None"],
+    *,
+    now: datetime,
+) -> bool:
+    """Is there a drafted cue still waiting to be shown?
+
+    True means the producer should hold off: drafting now would overwrite an
+    observation that has never reached her. Goes False once the renderer
+    consumes the cue, or once the cue is stale enough that it is no longer
+    worth waiting for.
+    """
+    ring = load_cues(kv_get)
+    if not ring:
+        return False
+    at = str(ring[-1].get("at") or "")
+    if not at:
+        return False
+    if str(_kv_get_safe(kv_get, KV_LAST_SURFACED_AT) or "") == at:
+        return False
+    drafted = _parse_iso(at)
+    if drafted is None:
+        return False
+    age_hours = (now - drafted).total_seconds() / 3600.0
+    return age_hours < UNCONSUMED_CUE_MAX_AGE_HOURS
 
 
 def signature(concept_id: int) -> str:
@@ -89,16 +135,25 @@ def select_candidate(
     kv_get: Callable[[str], "str | None"],
     min_confidence: float,
     cooldown_days: float,
+    exclude_signature: str | None = None,
 ) -> TensionCue | None:
     """Return the single active tension worth surfacing now, or ``None``.
 
-    A tension qualifies when it clears ``min_confidence`` and its per-concept
-    cooldown has elapsed. Among qualifiers the most *confident* wins (the
-    friction we're surest of), ties broken by id for determinism -- which, with
-    the per-concept cooldown, naturally rotates cues across whatever tensions
-    are live rather than repeating one."""
+    A tension qualifies when it clears ``min_confidence``, its per-concept
+    cooldown has elapsed, and it is not the ``exclude_signature`` the caller
+    just drafted. Among qualifiers the most *confident* wins (the friction
+    we're surest of), ties broken by id for determinism.
+
+    Rotation comes from two places. The per-concept cooldown, spent at
+    *delivery*, keeps a friction she has actually raised quiet for days.
+    ``exclude_signature`` covers the gap before that: the top-ranked tension
+    is still top-ranked the instant after it is drafted, so without it the
+    caller picks the same one, rejects it for repeating itself, and drafts
+    nothing at all — which is a stall, not a rotation.
+    """
     floor = float(min_confidence)
     cooldown_seconds = max(0.0, float(cooldown_days) * 86400.0)
+    excluded = (exclude_signature or "").strip()
 
     qualifiers: list[TensionCue] = []
     for c in concepts:
@@ -110,6 +165,8 @@ def select_candidate(
             continue
         cid = int(getattr(c, "concept_id", 0))
         if cid <= 0:
+            continue
+        if excluded and signature(cid) == excluded:
             continue
         if cooldown_seconds > 0:
             last = _parse_iso(
@@ -227,10 +284,13 @@ def append_cue(
 
 
 __all__ = [
+    "KV_LAST_SURFACED_AT",
     "TENSION_JOURNAL_KEY",
+    "UNCONSUMED_CUE_MAX_AGE_HOURS",
     "TensionCue",
     "append_cue",
     "load_cues",
+    "newest_cue_is_unconsumed",
     "per_concept_cooldown_key",
     "render_inner_life_block",
     "select_candidate",
