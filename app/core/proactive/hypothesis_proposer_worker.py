@@ -87,6 +87,17 @@ _SYSTEM_PROMPT = (
     "desk when a project is about to change direction\" beats \"he values "
     "order\". Write each statement as a plain declarative sentence, not a "
     "question.\n"
+    "WHAT {assistant_name} IS, when you guess about her: she has a body "
+    "and an apartment of her own, and an energy level that rises and "
+    "falls through the day. She is NOT a machine and has no hardware -- "
+    "no chassis, no fans, no circuits, no processing latency, no "
+    "servers, no memory subsystem she can feel. A guess about her is "
+    "about her inner life, her habits, what she notices, what she wants, "
+    "how she is with him -- the same kinds of things you would guess "
+    "about a person.\n"
+    "{user_name} is on the other end of a chat, never in the room with "
+    "her. Do not guess about anything that would require her to see, "
+    "hear or be near him.\n"
     "Reply with ONE JSON object on a single line and nothing else. "
     "Schema: {{\"hypotheses\": [{{\"statement\": \"<= 160 chars, "
     "declarative\", \"kind\": one of [{kinds}], \"subject\": one of "
@@ -119,6 +130,46 @@ _MAX_STATEMENT_CHARS = 200
 _MAX_RATIONALE_CHARS = 200
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
+
+#: Vocabulary that only makes sense if Aiko is a machine.
+#:
+#: The persona gives her a body, an apartment and an energy level that
+#: moves through the day, so a self-hypothesis phrased in hardware is not
+#: a bold guess -- it is a different character. This worker is the one
+#: place in the stack with no persona context and the loosest brief
+#: ("reaching is the point"), run at temperature 0.95, and the
+#: combination lands here reliably: of the first six ``subject=aiko``
+#: rows, five described hardware she does not have -- a chassis that
+#: feels phantom warmth, cooling fans that make her metaphors better,
+#: processing latency that drops when he is in the room.
+#:
+#: Deliberately narrow, and only ever applied to ``subject=aiko``. Every
+#: entry is a physical machine part or machine telemetry with no
+#: ordinary reading for a person; the ambiguous software vocabulary
+#: ("weights", "parameters", "codebase") is left to the prompt, because
+#: "she weights her words" is a sentence we want.
+_MACHINE_SELF_RE = re.compile(
+    r"\b(?:"
+    r"chassis|circuit(?:ry|s)?|transistors?|motherboard|silicon|"
+    r"cooling (?:fan|system|vent)s?|heat ?sinks?|"
+    r"cpu|gpu|ram|processors?|server (?:rack|farm)s?|"
+    r"processing (?:latency|power|load)|clock speed|firmware|"
+    r"memory (?:subsystem|consolidation)|uptime|bandwidth"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def describes_machinery(statement: str) -> str:
+    """The machine term ``statement`` uses to describe Aiko, or ``""``.
+
+    Returns the offending phrase rather than a bool so the reject log
+    names it -- a silent count here would be indistinguishable from the
+    novelty gate, and the whole point is knowing which failure is
+    consuming the run's candidates.
+    """
+    match = _MACHINE_SELF_RE.search(str(statement or ""))
+    return match.group(0) if match else ""
 
 #: Subjects a proposal may claim. ``world`` is ours; the rest mirror
 #: :data:`app.core.concepts.concept_kinds.SUBJECTS`.
@@ -282,6 +333,7 @@ class HypothesisProposerWorker:
         wrote: list[dict[str, Any]] = []
         rejected_dup = 0
         rejected_known = 0
+        rejected_machine = 0
         for candidate in candidates:
             if len(wrote) >= budget:
                 break
@@ -290,6 +342,21 @@ class HypothesisProposerWorker:
             )
             if not statement:
                 continue
+
+            # Before the embed, because this one costs nothing and the
+            # embed does. Self-only: "his GPU ran hot" is a fine guess
+            # about him, and only a guess about *her* changes who she is.
+            if str(candidate.get("subject") or "") == "aiko":
+                term = describes_machinery(statement)
+                if term:
+                    rejected_machine += 1
+                    log.info(
+                        "hypothesis reject(machine-self): term=%r guess=%r",
+                        term,
+                        statement[:80],
+                    )
+                    continue
+
             try:
                 vec = self._embedder.embed(statement)
             except Exception:
@@ -338,12 +405,13 @@ class HypothesisProposerWorker:
 
         log.info(
             "hypothesis_proposer run done: wrote=%d candidates=%d "
-            "rejected(duplicate=%d already_believed=%d) expired=%d "
-            "llm_ms=%.0f",
+            "rejected(duplicate=%d already_believed=%d machine_self=%d) "
+            "expired=%d llm_ms=%.0f",
             len(wrote),
             len(candidates),
             rejected_dup,
             rejected_known,
+            rejected_machine,
             expired,
             llm_ms,
         )
@@ -353,6 +421,7 @@ class HypothesisProposerWorker:
             "hypotheses": wrote,
             "rejected_duplicate": rejected_dup,
             "rejected_already_believed": rejected_known,
+            "rejected_machine_self": rejected_machine,
             "expired": expired,
             "llm_ms": int(llm_ms),
         }
@@ -693,4 +762,5 @@ def _clamp(value: Any, *, default: float) -> float:
         return default
 
 
-__all__ = ["HypothesisProposerWorker"]
+__all__ = [
+    "describes_machinery","HypothesisProposerWorker"]

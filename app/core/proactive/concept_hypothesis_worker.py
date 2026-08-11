@@ -303,21 +303,25 @@ class ConceptHypothesisWorker:
         from app.core.concepts.concept_hypothesis import unsettledness
 
         ranked = sorted(
-            ((row, unsettledness(row)) for row in pool),
-            key=lambda pair: (
-                -(pair[1] * _kind_importance(pair[0].kind)),
-                int(pair[0].hypothesis_id),
+            (
+                (row, unsettledness(row), _kind_importance(row.kind))
+                for row in pool
+            ),
+            key=lambda triple: (
+                -(triple[1] * triple[2]),
+                int(triple[0].hypothesis_id),
             ),
         )
         drafted: list[dict[str, Any]] = []
-        for row, unsettled in ranked[: self._max_per_run]:
-            cue_id = self._publish_invented(row, unsettled)
+        for row, unsettled, importance in ranked[: self._max_per_run]:
+            cue_id = self._publish_invented(row, unsettled, importance)
             if cue_id:
                 drafted.append(
                     {
                         "hypothesis_id": int(row.hypothesis_id),
                         "statement": str(row.statement)[:200],
                         "credence": round(float(row.credence), 4),
+                        "importance": round(float(importance), 4),
                         "unsettled": round(float(unsettled), 4),
                         "cue_id": cue_id,
                     }
@@ -325,7 +329,7 @@ class ConceptHypothesisWorker:
         return drafted
 
     def _publish_invented(
-        self, row: "Hypothesis", unsettled: float,
+        self, row: "Hypothesis", unsettled: float, importance: float,
     ) -> int:
         statement = str(row.statement or "").strip()
         if not statement:
@@ -345,6 +349,14 @@ class ConceptHypothesisWorker:
                 "subject": subject,
                 "origin": "invented",
                 "credence": round(float(row.credence), 4),
+                # The gap path gates on this and reads a missing key as
+                # 0.0, so omitting it made every invented cue unreachable
+                # out of a lull -- the one branch that exists to raise a
+                # hunch that matters. It is the same number the ranking
+                # above already used; ``credence`` is not a substitute,
+                # since how likely a guess is to be true says nothing
+                # about whether settling it is worth a question.
+                "importance": round(float(importance), 4),
                 "unsettled": round(float(unsettled), 4),
             },
             embedding=getattr(row, "embedding", None),
@@ -359,9 +371,10 @@ class ConceptHypothesisWorker:
         # ``SessionController._stamp_hypothesis_ask``, which owns the
         # counter now, and the L30 note in the backlog.
         log.info(
-            "invented hypothesis queued to ask: hid=%s unsettled=%.2f "
-            "statement=%r cue=%s",
+            "invented hypothesis queued to ask: hid=%s importance=%.2f "
+            "unsettled=%.2f statement=%r cue=%s",
             row.hypothesis_id,
+            importance,
             unsettled,
             statement[:80],
             cue_id,
