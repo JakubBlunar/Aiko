@@ -15,6 +15,7 @@ Covers the full vertical slice:
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import types
 import unittest
@@ -97,6 +98,38 @@ class ClusterAffectStoreTests(unittest.TestCase):
         back = ca.load_map(store.get, ca.KV_CLUSTER_AFFECT_USER)
         self.assertEqual(set(back), {"10", "11"})
         self.assertAlmostEqual(back["10"].valence, 0.5, places=4)
+
+    def test_an_unread_axis_carries_forward_untouched(self) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        seeded = ca.update_state(None, -0.6, 0.8, now_iso=now)
+        after = ca.update_state(seeded, None, 0.2, now_iso=now)
+        self.assertAlmostEqual(after.valence, -0.6, places=4)
+        self.assertLess(after.arousal, 0.8)
+        self.assertEqual(after.samples, 2)
+        self.assertEqual(after.valence_samples, 1)
+
+    def test_the_first_real_read_seeds_rather_than_blends(self) -> None:
+        # An axis with no samples has nothing to average against. This is
+        # also what lets a map written under the old fold-everything
+        # behaviour recover instead of dragging its smear along.
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        arousal_only = ca.update_state(None, None, 0.9, now_iso=now)
+        self.assertEqual(arousal_only.valence, 0.0)
+        self.assertEqual(arousal_only.valence_samples, 0)
+        first = ca.update_state(arousal_only, -0.4, None, now_iso=now)
+        self.assertAlmostEqual(first.valence, -0.4, places=4)
+        self.assertAlmostEqual(first.arousal, 0.9, places=4)
+
+    def test_a_legacy_row_has_no_valence_evidence(self) -> None:
+        store = {
+            ca.KV_CLUSTER_AFFECT_USER: json.dumps(
+                {"5": {"valence": 0.3, "arousal": 0.5, "samples": 40,
+                       "updated_at": datetime.now(timezone.utc).isoformat()}}
+            )
+        }
+        back = ca.load_map(store.get, ca.KV_CLUSTER_AFFECT_USER)
+        self.assertEqual(back["5"].samples, 40)
+        self.assertEqual(back["5"].valence_samples, 0)
 
     def test_prune_cap_and_age(self) -> None:
         store: dict[str, str] = {}
@@ -207,6 +240,9 @@ def _sampler_obj(graph, chat_db, *, enabled=True):
     obj._sample_cluster_affect = types.MethodType(
         PostTurnHelpersMixin._sample_cluster_affect, obj
     )
+    obj._read_user_affect_axes = types.MethodType(
+        PostTurnHelpersMixin._read_user_affect_axes, obj
+    )
     return obj
 
 
@@ -215,12 +251,11 @@ class SamplerTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.db = ChatDatabase(Path(self.tmp) / "s.db")
 
-    def test_updates_both_maps_when_user_affect_present(self) -> None:
+    def test_updates_both_maps_when_the_turn_reads_on_both_sides(self) -> None:
         graph = _GraphStub([(42, "debugging", 0.9)])
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
-            user_text="the debugging is driving me nuts",
-            user_affect=(-0.5, 0.8),
+            user_text="the debugging has me completely frustrated today",
             state=_state(),
             reaction="concerned",
         )
@@ -228,7 +263,8 @@ class SamplerTests(unittest.TestCase):
         amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertIn("42", umap)
         self.assertIn("42", amap)
-        self.assertAlmostEqual(umap["42"].valence, -0.5, places=4)
+        self.assertLess(umap["42"].valence, 0.0)
+        self.assertEqual(umap["42"].valence_samples, 1)
         expected = reaction_affect_target("concerned")
         assert expected is not None
         self.assertAlmostEqual(amap["42"].valence, expected[0], places=4)
@@ -243,22 +279,21 @@ class SamplerTests(unittest.TestCase):
         state = _state(valence=0.35, arousal=0.5)
         _sampler_obj(graph_a, self.db)._sample_cluster_affect(
             user_text="the deadline slipped again and it is bad",
-            user_affect=None, state=state, reaction="concerned",
+            state=state, reaction="concerned",
         )
         _sampler_obj(graph_b, self.db)._sample_cluster_affect(
             user_text="tell me about our evenings together",
-            user_affect=None, state=state, reaction="excited",
+            state=state, reaction="excited",
         )
         amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertLess(amap["1"].valence, 0.0)
         self.assertGreater(amap["2"].valence, 0.5)
 
-    def test_aiko_only_when_user_affect_none(self) -> None:
+    def test_a_turn_that_says_nothing_about_him_records_nothing(self) -> None:
         graph = _GraphStub([(7, "love", 0.95)])
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
             user_text="tell me about romance and love please",
-            user_affect=None,
             state=_state(),
             reaction="tender",
         )
@@ -268,14 +303,45 @@ class SamplerTests(unittest.TestCase):
         amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertIn("7", amap)
 
+    def test_an_arousal_only_read_does_not_claim_a_valence(self) -> None:
+        # Message length reads as energy on nearly every turn. Folding that
+        # as a valence of "neutral" is how the map ended up describing 24 of
+        # 34 topics with a feeling nobody measured.
+        graph = _GraphStub([(9, "logistics", 0.9)])
+        obj = _sampler_obj(graph, self.db)
+        obj._sample_cluster_affect(
+            user_text="what time tomorrow", state=_state(), reaction=None,
+        )
+        umap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_USER)
+        self.assertIn("9", umap)
+        self.assertEqual(umap["9"].samples, 1)
+        self.assertEqual(umap["9"].valence_samples, 0)
+
+    def test_a_mood_word_is_not_carried_into_the_next_topic(self) -> None:
+        # The K37 estimator carries the last mood band forward with no decay
+        # and no session boundary, so one "exhausted" would annotate every
+        # topic raised afterwards. The map takes this turn's read only.
+        tired = _sampler_obj(_GraphStub([(1, "his week", 0.9)]), self.db)
+        tired._sample_cluster_affect(
+            user_text="honestly I am exhausted after all of that",
+            state=_state(), reaction=None,
+        )
+        after = _sampler_obj(_GraphStub([(2, "the cats", 0.9)]), self.db)
+        after._sample_cluster_affect(
+            user_text="anyway the cats knocked the plant over again",
+            state=_state(), reaction=None,
+        )
+        umap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_USER)
+        self.assertLess(umap["1"].valence, 0.0)
+        self.assertNotIn("2", umap)
+
     def test_user_only_when_the_reaction_points_nowhere(self) -> None:
         # ``neutral`` implies no direction, so there is nothing to record
         # about how she felt — but the user's half of the turn still counts.
         graph = _GraphStub([(9, "logistics", 0.9)])
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
-            user_text="what time does the appointment start tomorrow",
-            user_affect=(0.2, 0.3),
+            user_text="the appointment tomorrow has me stressed out",
             state=_state(),
             reaction="neutral",
         )
@@ -291,7 +357,6 @@ class SamplerTests(unittest.TestCase):
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
             user_text="what time does the appointment start tomorrow",
-            user_affect=(0.2, 0.3),
             state=_state(),
             reaction=None,
         )
@@ -304,7 +369,6 @@ class SamplerTests(unittest.TestCase):
         obj = _sampler_obj(graph, self.db, enabled=False)
         obj._sample_cluster_affect(
             user_text="a long enough message here",
-            user_affect=(0.1, 0.1),
             state=_state(),
             reaction="cheerful",
         )
@@ -317,7 +381,6 @@ class SamplerTests(unittest.TestCase):
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
             user_text="a long enough message here",
-            user_affect=(0.1, 0.1),
             state=_state(),
             reaction="cheerful",
         )
@@ -330,7 +393,6 @@ class SamplerTests(unittest.TestCase):
         obj = _sampler_obj(graph, self.db)
         obj._sample_cluster_affect(
             user_text="hi",
-            user_affect=(0.1, 0.1),
             state=_state(),
             reaction="cheerful",
         )
@@ -384,7 +446,7 @@ class AffectStampTests(unittest.TestCase):
 def _seed_affect_map(db, key, entries) -> None:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     m = {
-        str(cid): ca.ClusterAffectState(v, a, samples, now)
+        str(cid): ca.ClusterAffectState(v, a, samples, now, samples)
         for cid, (v, a, samples) in entries.items()
     }
     ca.save_map(db.kv_set, key, m)

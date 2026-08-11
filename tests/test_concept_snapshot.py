@@ -433,6 +433,7 @@ class ImportanceFieldTests(unittest.TestCase):
             return json.dumps({
                 "7": {
                     "valence": -0.9, "arousal": 0.8, "samples": 12,
+                    "valence_samples": 12,
                     "updated_at": timephrase.utcnow().isoformat(),
                 }
             })

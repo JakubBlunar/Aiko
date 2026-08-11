@@ -55,43 +55,83 @@ class ClusterAffectState:
     ``valence`` is an EWMA in ``[-1, 1]`` and ``arousal`` an EWMA in
     ``[0, 1]`` (matching the ``AffectState`` scales). ``samples`` is how
     many affect-bearing turns have been folded in; ``updated_at`` is ISO-8601
-    for the age-out sweep."""
+    for the age-out sweep.
+
+    ``valence_samples`` counts only the turns that actually carried a
+    *valence* read. The two differ because most turns are readable on one
+    axis only: message length gives arousal on almost every turn, while
+    valence needs a mood word or a venting act. Counting them together let
+    a cluster clear the annotation floor on arousal evidence alone and then
+    be described with a valence nobody measured.
+    """
 
     valence: float
     arousal: float
     samples: int
     updated_at: str
+    valence_samples: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "valence": round(float(self.valence), 4),
             "arousal": round(float(self.arousal), 4),
             "samples": int(self.samples),
+            "valence_samples": int(self.valence_samples),
             "updated_at": self.updated_at,
         }
 
 
 def update_state(
     prev: ClusterAffectState | None,
-    valence: float,
-    arousal: float,
+    valence: "float | None",
+    arousal: "float | None",
     *,
     learning_rate: float = 0.2,
     now_iso: str,
 ) -> ClusterAffectState:
-    """Blend one ``(valence, arousal)`` sample into the per-cluster EWMA."""
+    """Blend one affect sample into the per-cluster EWMA, per axis.
+
+    ``None`` on an axis means *this turn said nothing about it*: the stored
+    value carries forward untouched rather than being pulled toward a
+    neutral default. Folding an unread axis as "neutral" is not a small
+    inaccuracy — it is the majority case, and it flattens the map toward
+    the population mean, which is exactly the signal the map exists to
+    depart from.
+
+    An axis with no samples yet has nothing to blend against, so the first
+    real read seeds it. That also lets a map written under the old
+    fold-everything behaviour heal: those rows carry
+    ``valence_samples == 0``, so their first measured valence replaces the
+    smeared value instead of averaging with it.
+    """
     lr = max(0.01, min(1.0, float(learning_rate)))
-    v = max(-1.0, min(1.0, float(valence)))
-    a = max(0.0, min(1.0, float(arousal)))
+    v = None if valence is None else max(-1.0, min(1.0, float(valence)))
+    a = None if arousal is None else max(0.0, min(1.0, float(arousal)))
     if prev is None:
         return ClusterAffectState(
-            valence=v, arousal=a, samples=1, updated_at=now_iso
+            valence=0.0 if v is None else v,
+            arousal=0.4 if a is None else a,
+            samples=1,
+            updated_at=now_iso,
+            valence_samples=0 if v is None else 1,
         )
+    if v is None:
+        new_v = float(prev.valence)
+    elif int(prev.valence_samples) <= 0:
+        new_v = v
+    else:
+        new_v = max(-1.0, min(1.0, (1.0 - lr) * float(prev.valence) + lr * v))
+    new_a = (
+        float(prev.arousal)
+        if a is None
+        else max(0.0, min(1.0, (1.0 - lr) * float(prev.arousal) + lr * a))
+    )
     return ClusterAffectState(
-        valence=max(-1.0, min(1.0, (1.0 - lr) * float(prev.valence) + lr * v)),
-        arousal=max(0.0, min(1.0, (1.0 - lr) * float(prev.arousal) + lr * a)),
+        valence=new_v,
+        arousal=new_a,
         samples=int(prev.samples) + 1,
         updated_at=now_iso,
+        valence_samples=int(prev.valence_samples) + (0 if v is None else 1),
     )
 
 
@@ -172,6 +212,11 @@ def load_map(
                 arousal=float(row.get("arousal", 0.4)),
                 samples=int(row.get("samples", 0)),
                 updated_at=str(row.get("updated_at", "")),
+                # Absent on rows written before the split. Reading it as 0
+                # rather than as ``samples`` is deliberate: those valences
+                # were folded from unread axes, so they have not earned the
+                # annotation floor and should re-earn it.
+                valence_samples=int(row.get("valence_samples", 0)),
             )
         except Exception:
             continue

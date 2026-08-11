@@ -566,14 +566,27 @@ this, so L13 first stands up a durable topic->affect signal:
 - **Per-cluster affect maps** — [`cluster_affect`](../../../app/core/concepts/cluster_affect.py),
   a pure kv-backed EWMA store (mirrors K75 `user_expertise`). Two maps,
   `concept.cluster_affect.user` / `concept.cluster_affect.aiko`, keyed by topic
-  `cluster_id`, each holding `{valence, arousal, samples, updated_at}`, bounded by
-  cap + age-out.
+  `cluster_id`, each holding
+  `{valence, arousal, samples, valence_samples, updated_at}`, bounded by cap +
+  age-out.
 - **Post-turn sampler** — `_sample_cluster_affect` in
   [`post_turn_helpers_mixin`](../../../app/core/session/post_turn_helpers_mixin.py),
   called after `apply_turn`. It embeds `user_text`, resolves the live cluster via
-  `best_clusters_for`, and EWMA-folds the K37 `user_affect` estimate into the user
-  map (when a real estimate exists) and Aiko's post-turn `AffectState` into the
-  aiko map. Gated by `agent.affect_sampler_enabled`; fully best-effort.
+  `best_clusters_for`, and EWMA-folds this turn's read into each map. Gated by
+  `agent.affect_sampler_enabled`; fully best-effort.
+- **Both halves take a per-turn read, and only on the axis that was read.**
+  Learned the hard way, twice — see health H9 and H14. Her half originally
+  folded the smoothed global `AffectState` scalar and his the K37 contagion
+  estimate, which carries the last mood band forward indefinitely; both are
+  near-constant across topics, and an EWMA fed a constant returns that
+  constant, so every cluster converged on one reading. Her half now folds the
+  target implied by this turn's `[[reaction:…]]`; his folds this turn's own
+  mood/energy words. Independently, an axis the turn says nothing about is
+  carried forward rather than folded as "neutral" — message length reads as
+  arousal on nearly every turn while valence needs a mood word, so the fused
+  estimate was mostly folding an unmeasured valence of 0.0. `valence_samples`
+  exists so the annotation floor and L32's `affect_charge`, both of which are
+  valence claims, cannot be satisfied by arousal evidence.
 - **Self-memory affect stamping** — `MemoryStore.set_affect_provider` stamps
   `metadata.affect = {valence, arousal}` on `self`/`reflection`/`diary` writes
   (Aiko's self-narrative tone), the aiko-only second signal.

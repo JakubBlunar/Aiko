@@ -906,6 +906,70 @@ Emotion episodes tell the same story from a different angle: **2 episodes ever**
 (`warm_glow`, `lonely`), though the block renders on 116/146 turns, so that
 pipeline is at least alive.
 
+### Outcome: the prompt is fine, the input could not express unhappiness
+
+Read both L13 proposer prompts first, since that was the cheaper hypothesis.
+They are not the problem — their own worked examples are `admin and logistics
+drain him`, `release-week pressure stresses him out`, `debugging frustrates him
+before it satisfies him`, `conflict leaves me tense`, `I don't enjoy talking
+about X`. If anything the negative examples outnumber the positive. Left
+unchanged.
+
+The map they read from is the problem, and it is not subtle. Of 38 clusters in
+the live user affect map, **zero** are on the negative side of neutral; the
+lowest valence anywhere is −0.112 against a `neg` bucket that starts at −0.20.
+There is no annotation a proposer could turn into "this drains him", so the
+prompt never had the chance the audit assumed it was fumbling.
+
+Two independent defects in the feed, both variations on the H9 shape — a value
+that is the same everywhere cannot describe a difference between places:
+
+1. **The mood band is carried forward with no decay and no session boundary.**
+   `UserStateEstimator.estimate` falls back to the last known band whenever this
+   turn states none, which is right for a "how does he seem right now" line and
+   wrong for attributing a feeling to what was being discussed. Replaying 2,001
+   historical turns: 359 turns actually state a positive mood, and the carry
+   turns that into **1,520 turns of "high"**; 107 negative become 424. A topic
+   raised on Thursday gets annotated with a mood word from Monday.
+2. **An unread axis was folded as "neutral".** `estimate_user_affect` fuses to
+   one point and fills a missing axis from the baseline, which is correct for
+   the K37 contagion tilt (one blended target) and corrosive for anything that
+   *accumulates*. Message length reads as energy on nearly every turn while
+   valence needs a mood word, so the common case was folding a valence of 0.0
+   that nobody measured — pulling every cluster's EWMA toward the base rate.
+
+Replaying all four combinations over the real corpus, against the shipped feed's
+24-of-34 clusters reading "energizing and upbeat" with exactly one negative:
+
+| Feed | negative-bucket | positive-bucket | valence spread |
+| --- | --- | --- | --- |
+| sticky mood, fused axes (shipped) | 1 | 24 | 0.73 |
+| this turn's read, fused axes | 1 | 3 | 0.57 |
+| this turn's read, **split axes** | **3** | 9 | **0.80** |
+| carried 6 turns, split axes | 2 | 17 | 0.80 |
+
+Split axes with no carry is the one that discriminates, and the topics it puts
+at the bottom are ones a person would recognise: sleep and rest habits (4 of 6
+valence reads negative), religious skepticism, mindfulness. Note the third row
+also shows why the carry has to go entirely rather than be shortened — six turns
+of carry re-latches most of the smear back on.
+
+Shipped: `estimate_user_affect_axes` reports each axis or `None`;
+`ClusterAffectState` counts `valence_samples` separately and `update_state`
+carries an unread axis forward untouched; the sampler reads this turn's own
+mood/energy rather than the carried band. The annotation floor and L32's
+`affect_charge` both apply to the valence count, because both are claims about
+valence and neither should be satisfied by arousal evidence.
+
+**Expect the map to go quiet for a while.** Rows written under the old feed load
+with `valence_samples = 0`, so they have to re-earn the floor, and the first
+measured valence seeds rather than blends — a deliberate choice so the smear is
+not averaged into the recovery. Under the replay 16 of 38 clusters eventually
+carry enough valence reads to be annotated, with a mix of 6 warm / 6 neutral /
+2 downbeat / 2 energizing. Fewer topics described, but described from evidence.
+
+Re-measure the 0-of-41 figure after a few weeks of accumulation.
+
 ---
 
 ## What Part 2 changes about priority
