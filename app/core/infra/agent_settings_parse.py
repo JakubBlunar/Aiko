@@ -620,6 +620,10 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             history_age_prefix_enabled=bool(
                 agent_raw.get("history_age_prefix_enabled", True),
             ),
+            continuity_max_messages=max(
+                0,
+                int(agent_raw.get("continuity_max_messages", 6)),
+            ),
             cue_register_rotation_enabled=bool(
                 agent_raw.get("cue_register_rotation_enabled", True),
             ),

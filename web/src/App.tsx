@@ -17,6 +17,7 @@ import { api } from "./api";
 import { setCrashContextProvider } from "./crashContext";
 import { useActivityReporter } from "./hooks/useActivityReporter";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
+import { useSessionHistory } from "./hooks/useSessionHistory";
 import { usePresenceReporter } from "./hooks/usePresenceReporter";
 import { debugLog } from "./log";
 import { useAssistantStore } from "./store";
@@ -124,6 +125,8 @@ function usePersonaVisibilitySync() {
 
 export default function App() {
   const { send, sendBytes } = useAssistantSocket();
+  // Both layouts: the phone tree has no always-mounted sidebar to do it.
+  useSessionHistory();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Keep the lazy settings chunk out of the initial load: don't mount the

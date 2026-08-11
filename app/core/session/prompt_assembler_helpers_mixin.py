@@ -17,6 +17,7 @@ from app.core.infra import timephrase
 from app.core.infra import timephrase as _timephrase
 from app.core.infra.chat_database import MessageRow, SummaryRow
 from app.core.proactive.cue_accounting import CUE_POLICIES
+from app.core.session.session_continuity import render_continuity_block
 from app.core.session.prompt_support import (
     _MESSAGE_OVERHEAD,
     build_speech_grammar_addendum,
@@ -611,6 +612,11 @@ class PromptAssemblerHelpersMixin:
                     if getattr(row, "id", 0) and int(row.id) > already_summarized
                 ]
         thread_note = self._thread_note_block(session_key)
+        continuity_block = self._continuity_block(
+            session_key,
+            history_len=len(history_msgs),
+            already_summarized=already_summarized,
+        )
         ambient = self._ambient_block()
         mood_hint = self._mood_carryover_hint()
         circadian_block = _safe_provider(self._circadian_provider)
@@ -650,6 +656,7 @@ class PromptAssemblerHelpersMixin:
             summary_row=summary,
             already_summarized=already_summarized,
             thread_note=thread_note,
+            continuity_block=continuity_block,
             history_msgs=history_msgs,
             ambient=ambient,
             mood_hint=mood_hint,
@@ -746,6 +753,51 @@ class PromptAssemblerHelpersMixin:
         if not note:
             return ""
         return "Where this conversation stands now:\n" + note
+
+    def _continuity_block(
+        self,
+        session_key: str,
+        *,
+        history_len: int,
+        already_summarized: int,
+    ) -> str:
+        """Bridge the seam when this conversation has only just started.
+
+        See :mod:`app.core.session.session_continuity` for why the seam
+        needs bridging at all. This half is the gate and the reads.
+
+        **"Is this a seam?" costs no query.** ``already_summarized > 0``
+        means the SummaryWorker has already compacted this session, so it
+        is long and self-sustaining; otherwise every message it has is in
+        ``history_msgs``, and its length is the message count. So the
+        common case — an established conversation — is decided from
+        values the caller already computed, and the two extra reads only
+        happen during the handful of turns that open a session.
+        """
+        if self._continuity_max_messages <= 0:
+            return ""
+        if already_summarized > 0:
+            return ""
+        if history_len >= self._continuity_max_messages:
+            return ""
+        try:
+            previous = self._db.latest_other_session(session_key)
+            if previous is None:
+                return ""
+            prev_session_id, last_iso = previous
+            note = ""
+            row = self._db.get_thread_note(prev_session_id)
+            if row is not None:
+                note = row.note or ""
+            return render_continuity_block(
+                last_message_iso=last_iso,
+                note=note,
+                now=timephrase.now(),
+                user_name=self._resolve_user_display_name(),
+            )
+        except Exception:
+            log.debug("continuity block failed", exc_info=True)
+            return ""
 
     @staticmethod
     def _ambient_block() -> str:

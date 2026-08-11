@@ -1139,4 +1139,8 @@ class _StaticSlices:
     # concept trace now rides the relevant_context region telemetry instead.
     coactivation_trace: dict
     built_at: float
+    # Bridges a session seam; empty on all but the opening turns of a
+    # conversation. Defaulted so the many test fixtures that build slices
+    # positionally keep working.
+    continuity_block: str = ""
 

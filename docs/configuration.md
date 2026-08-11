@@ -61,6 +61,7 @@ exists to keep them in lock-step.
 | Dormant-interest re-opener "we haven't talked about X in ages" (K67) | `agent.dormant_interest_enabled` | `true` |
 | Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
+| Bridge a new conversation to the previous one (K91) | `agent.continuity_max_messages` | `6` (`0` disables) |
 | Cue-register rotation (K51 de-"Heads-up") | `agent.cue_register_rotation_enabled` | `true` |
 | Destructive-task approval mode | `agent.task_approval_mode` | `"ask"` (`"ask"` / `"auto"`) |
 | Per-capability approval overrides | `agent.task_approval_overrides` | `{}` (e.g. `{"file_write": "auto"}`) |
@@ -1105,6 +1106,22 @@ Why: without per-message timestamps the LLM has no clock against the conversatio
 Cost: ~4–6 tokens per kept history message. Negligible against the configured `llm.routes.main_chat.context_window` budget.
 
 Verification: enable INFO logging on `app.core.session.prompt_assembler`; the rendered prompt's history messages start with `[…]` brackets. The `_format_age` ladder is unit-tested in `tests/test_prompt_assembler.py::WallClockHistoryPrefixTests`.
+
+### K91 — session-continuity bridge
+
+A "conversation" is a UI affordance: the user starts a new one to get a visual divider in his own sidebar. It is filing, and it says nothing about whether the relationship paused. Aiko's side of it was the opposite — *everything* session-scoped resets at that boundary and nothing crosses it. The transcript is empty, the rolling summary and the K21 thread note are keyed by `session_id` so both come back blank, and every gap cue (J5 reconnection, K14 absence curiosity, K28 turning over, H21 sleep return, K36 away activities, K34 forward curiosity) measures from the previous assistant message *in the same session* and therefore stays silent, because there isn't one.
+
+So the moment she most needs "we were talking about X, about three hours ago" was exactly the moment she knew least: she woke with long-term memory and relationship state intact but no idea a conversation had just ended, and greeted him accordingly.
+
+While the new conversation holds fewer than `agent.continuity_max_messages` messages, a T2 block names how long ago the previous conversation ended and what it was about (its K21 thread note). Two tails, chosen by elapsed time against `CONTINUOUS_WINDOW_SECONDS` (6 h, deliberately under J5's reconnection floor so the two never both speak): under it, "that is close enough to be the same sitting, carry on"; over it, "noticing the gap is natural, but the thread above is where you left off".
+
+- `agent.continuity_max_messages` *(int, `6`)* — how many messages a conversation may hold and still count as "just opened". `0` disables the block.
+
+Deciding "is this a seam?" costs no query: a compacted session is by definition long, and an uncompacted one has all its messages in the history window already loaded, so the common case is settled from values the assembler has in hand. The two extra reads (`latest_other_session`, `get_thread_note`) only happen on the handful of turns that open a conversation.
+
+The elapsed phrase is computed from message timestamps and never read out of the note prose — K21 notes carry their own dates and those are not reliable (the live store has one opening "Jacob fell asleep on June 29, 2026" on a thread whose messages are all from August).
+
+Pure renderer: [`app/core/session/session_continuity.py`](../app/core/session/session_continuity.py). Tests: [`tests/test_session_continuity.py`](../tests/test_session_continuity.py) (both tails and the window boundary, missing note, unparseable timestamp, display-name fallback, elapsed-not-quoted-from-note) and `ContinuitySlotTests` in [`tests/test_prompt_assembler.py`](../tests/test_prompt_assembler.py) (lands on a fresh conversation, quiet once it stands alone, silent on the first conversation ever, `0` disables, `latest_other_session` ordering).
 
 ### Brain orchestration — long-running tasks (schema v16)
 

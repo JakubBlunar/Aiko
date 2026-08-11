@@ -136,6 +136,83 @@ class ResolveInitialSessionIdTests(unittest.TestCase):
         self.assertEqual(controller._resolve_initial_session_id(), "main")
 
 
+class TouchLastActiveSessionTests(unittest.TestCase):
+    """The pointer has to follow the transcript, not just explicit clicks.
+
+    ``switch_session`` records **intent**. Anything that lands on a
+    session without a click — the startup fallback chain, a persist that
+    failed and logged at debug — leaves the pointer naming a conversation
+    the user has moved on from, and the resolver honours it over the
+    database. It was found a full day stale in the live install: the
+    pointer said ``s2``, last used on the 10th, while 75 messages had
+    since landed in another session, so every restart reopened the older
+    thread.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _persisted(self) -> str:
+        body = json.loads(self.user_json.read_text(encoding="utf-8"))
+        return body["session"]["last_active_id"]
+
+    def test_a_turn_repoints_a_stale_pointer(self) -> None:
+        self.user_json.write_text(
+            json.dumps({"session": {"last_active_id": "s2"}}),
+            encoding="utf-8",
+        )
+        settings_mod._config_cache.pop(str(self.user_json), None)
+        controller = _make_controller()
+        # Landed here via the fallback chain, not via a click.
+        controller._session_id = "fa7593d7"
+        controller._touch_last_active_session()
+        self.assertEqual(self._persisted(), "fa7593d7")
+
+    def test_repeat_turns_do_not_rewrite_the_file(self) -> None:
+        controller = _make_controller()
+        controller._session_id = "chatty"
+        controller._touch_last_active_session()
+        first = self.user_json.stat().st_mtime_ns
+        for _ in range(10):
+            controller._touch_last_active_session()
+        self.assertEqual(self.user_json.stat().st_mtime_ns, first)
+
+    def test_a_switch_marks_the_pointer_clean(self) -> None:
+        """``switch_session`` already wrote it, so the first turn in the
+        new session must not write it a second time."""
+        controller = _make_controller()
+        controller._session_id = "main"
+        controller._clear_merge_buffer = MagicMock()
+        controller.switch_session("picked")
+        before = self.user_json.stat().st_mtime_ns
+        controller._touch_last_active_session()
+        self.assertEqual(self.user_json.stat().st_mtime_ns, before)
+
+    def test_a_blank_session_id_is_ignored(self) -> None:
+        controller = _make_controller()
+        controller._session_id = "   "
+        controller._touch_last_active_session()
+        self.assertFalse(self.user_json.exists())
+
+    def test_a_write_failure_does_not_break_the_turn(self) -> None:
+        controller = _make_controller()
+        controller._session_id = "unwritable"
+        with mock.patch(
+            "app.core.session.lifecycle_mixin.persist_user_overrides",
+            side_effect=OSError("read-only volume"),
+        ):
+            controller._touch_last_active_session()
+        # Still dirty, so a later turn retries rather than giving up.
+        self.assertEqual(controller._persisted_last_active_id, "")
+
+
 class SwitchSessionPersistenceTests(unittest.TestCase):
     """Calling ``switch_session`` should write the new id to user.json
     so the next ``_resolve_initial_session_id`` finds it."""

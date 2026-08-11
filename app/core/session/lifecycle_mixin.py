@@ -40,6 +40,12 @@ _KV_LAST_USER_ACTIVITY = "idle.last_user_activity_at"
 class LifecycleMixin(DebugOverridesHostMixin):
     """Identity, session switch/clear, model getters, accessors, shutdown."""
 
+    #: Last value written to ``session.last_active_id`` in ``user.json``.
+    #: Declared on the class so ``_touch_last_active_session`` is safe on a
+    #: partially-constructed controller; ``__init__`` re-sets it per
+    #: instance.
+    _persisted_last_active_id: str = ""
+
     @property
     def state(self) -> SessionState:
         return self._state
@@ -236,6 +242,37 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # back on whatever was previously persisted on next launch.
         try:
             persist_user_overrides({"session": {"last_active_id": normalized}})
+            self._persisted_last_active_id = normalized
+        except Exception:
+            log.debug("failed to persist last_active_id", exc_info=True)
+
+    def _touch_last_active_session(self) -> None:
+        """Record the session the user is *actually* talking in.
+
+        :meth:`switch_session` persists the pointer when the user picks a
+        conversation, which records **intent**, not activity. Anything
+        that lands on a session without a click — the startup fallback
+        chain, a write that failed and logged at debug, a session created
+        by another surface — leaves the pointer naming a conversation the
+        user has since moved on from, and
+        :meth:`_resolve_initial_session_id` honours that pointer over the
+        database's own record of where the last message actually went. It
+        was found a full day stale in the wild: the pointer named a
+        session last used on the 10th while 75 messages had since landed
+        in another one, so every restart re-opened the older thread.
+
+        Called once per user turn and guarded by an in-memory copy, so it
+        costs one small write per session rather than one per message.
+        The in-memory copy starts empty on purpose: the first turn after a
+        cold start always writes, which is what repairs a pointer that
+        drifted while a previous build was running.
+        """
+        session_id = (self._session_id or "").strip()
+        if not session_id or session_id == self._persisted_last_active_id:
+            return
+        try:
+            persist_user_overrides({"session": {"last_active_id": session_id}})
+            self._persisted_last_active_id = session_id
         except Exception:
             log.debug("failed to persist last_active_id", exc_info=True)
 

@@ -196,6 +196,7 @@
     "mask_slip_cooldown_days": 2.0,
     "grounding_line_mode": "off",
     "history_age_prefix_enabled": true,
+    "continuity_max_messages": 6,
     "cue_register_rotation_enabled": true,
     "goals_enabled": true,
     "goal_worker_bootstrap_enabled": true,

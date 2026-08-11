@@ -1120,6 +1120,16 @@ class AgentSettings:
     # behaviour (e.g. for A/B comparison, or if your LLM treats the
     # bracketed metadata as part of the dialogue).
     history_age_prefix_enabled: bool = True
+    # Session-continuity bridge. A new conversation is a UI divider Jacob
+    # creates for his own filing, but on Aiko's side every session-scoped
+    # thing resets at that boundary -- transcript, rolling summary, K21
+    # thread note -- and every gap cue measures from the previous
+    # assistant message *in the same session*, so all of them stay silent
+    # too. She wakes with no idea a conversation just ended. While the new
+    # conversation holds fewer than this many messages, a T2 block tells
+    # her what the previous thread was about and how long ago it ended.
+    # 0 disables the block entirely.
+    continuity_max_messages: int = 6
     # K51 -- cue-register rotation. When ON, inner-life cue blocks that
     # open with the literal "Heads-up:" get the prefix rotated across a
     # few register shapes ("Heads-up:" / "Quiet note:" / "Noticing:" /

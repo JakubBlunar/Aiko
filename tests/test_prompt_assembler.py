@@ -1823,6 +1823,115 @@ class WellbeingConcernProviderSlotTests(unittest.TestCase):
         )
 
 
+class ContinuitySlotTests(unittest.TestCase):
+    """The session-continuity bridge lands on the opening turns of a new
+    conversation, goes quiet once the conversation stands on its own, and
+    stays silent when there is nothing on the other side of the seam."""
+
+    _MARK = "Continuing an ongoing conversation"
+
+    @staticmethod
+    def _seed_previous(db: ChatDatabase) -> None:
+        db.add_message(
+            session_id="older", role="user", content="hi", token_count=2,
+        )
+        db.add_message(
+            session_id="older", role="assistant", content="hey",
+            token_count=2,
+        )
+        db.save_thread_note(
+            "older", "Cat plans", "They talked about the cat.", 2,
+        )
+
+    def _assemble(self, db: ChatDatabase, session: str) -> str:
+        assembler = _make_assembler(db, persona_text="P")
+        messages, _ = assembler.assemble_with_budget(
+            session, "x", context_window=4096, response_budget=256,
+        )
+        return messages[0]["content"]
+
+    def test_the_bridge_lands_on_a_fresh_conversation(self) -> None:
+        with _TempDb() as db:
+            self._seed_previous(db)
+            db.add_message(
+                session_id="fresh", role="user", content="hi", token_count=2,
+            )
+            system = self._assemble(db, "fresh")
+            self.assertIn(self._MARK, system)
+            self.assertIn("They talked about the cat.", system)
+
+    def test_it_goes_quiet_once_the_conversation_stands_alone(self) -> None:
+        with _TempDb() as db:
+            self._seed_previous(db)
+            for i in range(8):
+                db.add_message(
+                    session_id="grown", role="user", content="m%d" % i,
+                    token_count=2,
+                )
+            self.assertNotIn(self._MARK, self._assemble(db, "grown"))
+
+    def test_the_first_conversation_ever_has_nothing_to_bridge(self) -> None:
+        with _TempDb() as db:
+            db.add_message(
+                session_id="only", role="user", content="hi", token_count=2,
+            )
+            self.assertNotIn(self._MARK, self._assemble(db, "only"))
+
+    def test_a_previous_session_without_a_note_still_bridges(self) -> None:
+        """The elapsed time alone is worth saying: without it she cannot
+        tell a new window from a first meeting."""
+        with _TempDb() as db:
+            db.add_message(
+                session_id="older", role="user", content="hi", token_count=2,
+            )
+            db.add_message(
+                session_id="fresh", role="user", content="hi", token_count=2,
+            )
+            system = self._assemble(db, "fresh")
+            self.assertIn(self._MARK, system)
+            self.assertNotIn("Where that thread stood", system)
+
+    def test_zero_disables_the_block(self) -> None:
+        with _TempDb() as db:
+            self._seed_previous(db)
+            db.add_message(
+                session_id="fresh", role="user", content="hi", token_count=2,
+            )
+            assembler = PromptAssembler(
+                db, recent_window=20, continuity_max_messages=0,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "fresh", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._MARK, messages[0]["content"])
+
+    def test_latest_other_session_picks_the_most_recent(self) -> None:
+        with _TempDb() as db:
+            # Explicit timestamps: ``add_message`` stamps "now", and the
+            # ordering this asserts must not rest on clock resolution.
+            conn = db._get_conn()
+            for sid, ts in (
+                ("a", "2026-08-01T10:00:00+00:00"),
+                ("b", "2026-08-02T10:00:00+00:00"),
+                ("c", "2026-08-03T10:00:00+00:00"),
+            ):
+                conn.execute(
+                    "INSERT INTO messages (session_id, role, content, "
+                    "token_count, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (sid, "user", "hi", 2, ts),
+                )
+            conn.commit()
+            self.assertEqual(db.latest_other_session("c")[0], "b")
+            self.assertEqual(db.latest_other_session("a")[0], "c")
+
+    def test_latest_other_session_is_none_when_alone(self) -> None:
+        with _TempDb() as db:
+            db.add_message(
+                session_id="solo", role="user", content="hi", token_count=2,
+            )
+            self.assertIsNone(db.latest_other_session("solo"))
+
+
 class SharedRitualProviderSlotTests(unittest.TestCase):
     """K73 shared-ritual block lands in the system prompt, is silent when
     empty, RETAINED under aggressive mode (cooldown/ack-consuming one-shot),
