@@ -463,7 +463,7 @@ def _intake_section(
             span_days = max(
                 (end - start).total_seconds() / 86400.0, 0.0
             )
-    floor = max(1, int(getattr(ms, "pursuit_min_notes", 6)))
+    floor = max(1, int(getattr(ms, "pursuit_min_notes", 4)))
     per_day = round(notes / span_days, 2) if span_days >= 0.5 else None
     out["pursuit"] = {
         "min_notes": floor,
