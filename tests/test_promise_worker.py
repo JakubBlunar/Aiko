@@ -132,7 +132,10 @@ def _build_world(
     responses: list[str] | None = None,
     cap_hour: int = 10,
     cap_day: int = 50,
-    session_id: str = "session-1",
+    # Shaped like the real thing: ``messages.session_id`` holds the scoped
+    # ``user_id:session_id`` key, and wiring the bare id here is what kept
+    # this worker from finding a transcript for 54 days.
+    session_key: str = "u1:session-1",
     messages: list[tuple[str, str]] | None = None,
     existing: list[_FakeMemory] | None = None,
     agent: _StubAgent | None = None,
@@ -154,7 +157,7 @@ def _build_world(
             ("assistant", "I'll dig into the LanceDB indexing docs for you tonight."),
         ]
     for role, content in messages:
-        db.add_message(session_id=session_id, role=role, content=content)
+        db.add_message(session_id=session_key, role=role, content=content)
     worker = PromiseExtractionWorker(
         memory_store=store,
         chat_db=db,
@@ -165,7 +168,7 @@ def _build_world(
         cancel_event=threading.Event(),
         agent_settings=agent or _StubAgent(),
         memory_settings=memory_settings or _StubMemorySettings(),
-        session_id_provider=lambda: session_id,
+        session_key_provider=lambda: session_key,
         user_display_name_provider=lambda: "Jacob",
         user_names_provider=lambda: ["Jacob"],
         assistant_name_provider=lambda: "Aiko",
@@ -179,6 +182,52 @@ def _seed_promise(content: str, who: str = "user") -> _FakeMemory:
         content,
         {"promise_who": who, "promise_status": "open"},
     )
+
+
+class SessionKeyTests(unittest.TestCase):
+    """The worker keys every chat-db read on the scoped
+    ``user_id:session_id``. Wired to the bare session id it found no
+    transcript on any run for 54 days while logging the benign-looking
+    "no recent turns", so a mismatch has to be loud and distinguishable
+    from an idle window."""
+
+    def test_a_key_that_names_no_session_is_reported_as_a_fault(self) -> None:
+        worker, store, ollama, _rl = _build_world(
+            responses=[json.dumps([{"who": "user", "what": "call the dentist"}])],
+            session_key="session-1",  # unscoped: the shipped bug
+            messages=[],
+        )
+        # The messages themselves live under the scoped key.
+        worker._chat_db.add_message(
+            session_id="u1:session-1", role="user", content="I'll call them.",
+        )
+        out = worker.run()
+        self.assertEqual(out.get("reason"), "unknown_session")
+        self.assertEqual(ollama.chat_calls, [])
+
+    def test_an_idle_window_is_not_reported_as_a_fault(self) -> None:
+        # A real session with messages, none of them recent enough to
+        # render, must stay at the quiet "no_turns" reading.
+        worker, _store, _ollama, _rl = _build_world(messages=[])
+        worker._chat_db.add_message(
+            session_id="u1:session-1", role="user", content="hi",
+        )
+        worker._snapshot_transcript = lambda **_kw: ""
+        self.assertEqual(worker.run().get("reason"), "no_turns")
+
+    def test_the_demand_probe_reads_the_same_key_the_run_does(self) -> None:
+        # The two disagreeing is what let the heartbeat wake this worker
+        # hourly to do nothing.
+        worker, _store, _ollama, _rl = _build_world()
+        signal = worker.demand(now=datetime.now(timezone.utc), last_run_at=None)
+        assert signal is not None
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertNotEqual(
+            worker._snapshot_transcript(
+                session_key="u1:session-1", lookback_turns=12,
+            ),
+            "",
+        )
 
 
 class QualityGateTests(unittest.TestCase):
