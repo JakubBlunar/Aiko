@@ -205,7 +205,12 @@ class PromiseExtractionWorker:
         cancel_event: threading.Event,
         agent_settings: "AgentSettings",
         memory_settings: "MemorySettings",
-        session_id_provider: Callable[[], str | None],
+        # The **scoped** ``user_id:session_id`` key, not the bare session
+        # id: that is what ``messages.session_id`` actually holds, and
+        # every chat-db read here keys on it exactly. Wired to the bare id
+        # this worker finds no transcript on any run, forever, while
+        # reporting the benign-looking "no recent turns".
+        session_key_provider: Callable[[], str | None],
         user_display_name_provider: Callable[[], str] | None = None,
         user_names_provider: Callable[[], list[str]] | None = None,
         assistant_name_provider: Callable[[], str | None] | None = None,
@@ -220,7 +225,7 @@ class PromiseExtractionWorker:
         self._cancel_event = cancel_event
         self._agent_settings = agent_settings
         self._memory_settings = memory_settings
-        self._session_id_provider = session_id_provider
+        self._session_key_provider = session_key_provider
         self._user_display_name_provider = user_display_name_provider
         self._user_names_provider = user_names_provider
         self._assistant_name_provider = assistant_name_provider
@@ -300,14 +305,14 @@ class PromiseExtractionWorker:
                 return None
             if snapshot["day_used"] >= snapshot["day_cap"]:
                 return None
-            session_id = (
-                self._session_id_provider()
-                if self._session_id_provider else None
+            session_key = (
+                self._session_key_provider()
+                if self._session_key_provider else None
             )
-            if not session_id:
+            if not session_key:
                 return None
             fresh = self._chat_db.count_messages_since(
-                session_id, last_run_at,
+                session_key, last_run_at,
             )
         except Exception:
             log.debug("promise-worker demand probe failed", exc_info=True)
@@ -320,10 +325,10 @@ class PromiseExtractionWorker:
         if self._cancel_event.is_set():
             return {"skipped": True, "reason": "cancelled_before_start"}
 
-        session_id = (
-            self._session_id_provider() if self._session_id_provider else None
+        session_key = (
+            self._session_key_provider() if self._session_key_provider else None
         )
-        if not session_id:
+        if not session_key:
             return {"skipped": True, "reason": "no_session"}
 
         lookback_turns = int(
@@ -334,17 +339,30 @@ class PromiseExtractionWorker:
 
         now = self._clock()
         transcript = self._snapshot_transcript(
-            session_id=session_id, lookback_turns=lookback_turns,
+            session_key=session_key, lookback_turns=lookback_turns,
         )
         if not transcript:
+            # An empty window is normal; a session key that matches *no*
+            # message ever is a wiring fault, and the two look identical
+            # from here. Separating them costs one COUNT on a path that
+            # already decided to do nothing, and the un-separated version
+            # hid a mis-scoped key for 54 days.
+            if self._session_is_unknown(session_key):
+                log.warning(
+                    "promise-worker: session key %r matches no messages at "
+                    "all -- expected the scoped 'user_id:session_id' form. "
+                    "The worker cannot mine anything until this is fixed.",
+                    session_key,
+                )
+                return {"skipped": True, "reason": "unknown_session"}
             log.info(
-                "promise-worker skip: no recent turns session=%s", session_id,
+                "promise-worker skip: no recent turns session=%s", session_key,
             )
             return {"skipped": True, "reason": "no_turns"}
 
         if not self._rate_limiter.allow(now):
             log.info(
-                "promise-worker skip: rate-limited session=%s", session_id,
+                "promise-worker skip: rate-limited session=%s", session_key,
             )
             return {"skipped": True, "reason": "rate_limited"}
 
@@ -372,7 +390,7 @@ class PromiseExtractionWorker:
             log.info(
                 "promise-worker skip: privacy-blocked transcript session=%s "
                 "raw_chars=%d",
-                session_id,
+                session_key,
                 len(transcript),
             )
             return {"skipped": True, "reason": "privacy_blocked"}
@@ -380,7 +398,7 @@ class PromiseExtractionWorker:
         log.info(
             "promise-worker start: session=%s lookback_turns=%d raw_chars=%d "
             "preview=%r",
-            session_id,
+            session_key,
             lookback_turns,
             len(transcript),
             _preview(transcript),
@@ -393,7 +411,7 @@ class PromiseExtractionWorker:
             log.info(
                 "promise-worker llm-unparseable elapsed_ms=%.0f session=%s",
                 elapsed_ms,
-                session_id,
+                session_key,
             )
             return {
                 "skipped": True,
@@ -427,7 +445,7 @@ class PromiseExtractionWorker:
             if self._is_duplicate(body_words, existing):
                 dropped_dup += 1
                 continue
-            if self._persist(p, session_key=session_id):
+            if self._persist(p, session_key=session_key):
                 persisted += 1
                 # Keep the in-run dedupe set fresh so two near-identical
                 # promises in one batch don't both land.
@@ -445,10 +463,18 @@ class PromiseExtractionWorker:
 
     # ?? transcript snapshot ??????????????????????????????????????????
 
+    def _session_is_unknown(self, session_key: str) -> bool:
+        """True when the key names a session the message store never saw."""
+        try:
+            return int(self._chat_db.get_message_count(session_key)) <= 0
+        except Exception:
+            log.debug("promise-worker session probe failed", exc_info=True)
+            return False
+
     def _snapshot_transcript(
         self,
         *,
-        session_id: str,
+        session_key: str,
         lookback_turns: int,
     ) -> str:
         """Join the last N turns (both sides) into one prompt block.
@@ -486,7 +512,7 @@ class PromiseExtractionWorker:
         ) or "the user"
         try:
             rows = self._chat_db.get_messages(
-                session_id, limit=lookback_turns * 2
+                session_key, limit=lookback_turns * 2
             )
         except Exception:
             log.debug("promise-worker get_messages failed", exc_info=True)

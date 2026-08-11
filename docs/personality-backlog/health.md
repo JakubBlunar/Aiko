@@ -22,10 +22,10 @@ twice. **Part 1** asks whether each shipped feature actually runs (H1-H8).
 a person who has her own inner life, feels things, and holds beliefs (H9-H14).
 Part 2 found the higher-value work. H15-H17 were found while fixing the earlier
 entries and are filed rather than folded in, since each is a decision in its own
-right. **Part 3** (H18 onward) asks the question the first two passes skipped —
-not whether a signal is *produced* but whether it carries any *information* —
-and the first thing it looked at turned out not to. The K-series patterns have
-not been audited yet.
+right. **Part 3** (H18 onward) widens the scope past the concept layer to the
+worker fleet, and asks the question the first two passes skipped — not whether
+a signal is *produced* but whether it carries any *information*. The K-series
+patterns have not been audited yet.
 
 Re-measure before acting on any entry — several of these are rate problems, and
 a rate that was wrong in August may be right in October.
@@ -62,6 +62,7 @@ latched, or throttled to roughly zero:**
 | K23 misattunement | noticing she misread him | fires ~4×/day, **persisted nowhere** |
 | L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
 | L38 earned standing | usefulness learned from what lands | runs perfectly on a signal with **0.05 reliability** (H18) |
+| Belief + promise workers | mining his commitments and predicted states | **1 belief ever, 0 promises in 54 days** — querying a session key that does not exist (H19) |
 
 Trace the provenance and the split is stark. Of her 629 concepts, **624 came
 from LLM synthesis over conversation transcripts** and 5 are authored cold-start
@@ -761,6 +762,79 @@ gates.
 
 ---
 
+## H19. Two workers were asking the database for a session that does not exist
+
+**Severity: high — two whole subsystems produced nothing for months, and the
+logs said so hourly in a phrasing that reads as "nothing to do".**
+
+Found by widening the audit past the concept layer to the worker fleet, and
+the cheapest finding in this file: it took one query against `kv_meta` and one
+`rg` over `data/app.log`.
+
+Aiko stores messages under a **scoped** session key, `f"{user_id}:{session_id}"`
+— `default:0404fec2`. Every reader in the codebase uses the `session_key`
+property that builds it. Two did not: `BeliefInferenceWorker` and
+`PromiseExtractionWorker` were wired with `session_id_provider=lambda:
+self._session_id`, the *bare* id, so every `get_messages` and
+`count_messages_since` they issued matched zero rows.
+
+The result, in the data:
+
+| | shipped | actual |
+| --- | --- | --- |
+| `beliefs` table | rolling predictions of his mood/opinion state | **1 row, ever** (2026-06-06), `last_checked_at` never set |
+| `promise` memories | commitments either side makes | 59 rows in 24 days, then **0 in 54 days** |
+| promise worker runs in the log | mine the last 12 turns | **88 of 88 skipped**, "no recent turns" |
+| belief worker runs in the log | mine the last 12 user turns | **44 of 44 skipped**, "no recent user turns" |
+
+The 100% skip rate is what makes it unambiguous. And the workers were *woken*
+every hour to do it: the demand probe reads the same broken key, so pressure is
+always 0.0, and the idle scheduler's **heartbeat** — the deliberate liveness
+guarantee for "a worker whose probe is broken" — admitted them anyway. The
+safety net worked exactly as designed and delivered them, hourly, to a function
+that could not succeed.
+
+Two decoys ruled out on the way, both worth recording so nobody re-runs them.
+The promise dedupe (a 3-content-word overlap against *every* still-active
+promise) looks like it must tighten as the store fills; replayed in arrival
+order against the real 59 it rejects 10% and does not trend with store size
+(6% → 3% → 10% → 11% → 0%). And the 61% of `aspiration` labels that are gerund
+fragments ("moving from ritualized pauses toward effortless stillness") read
+correctly under that kind's header, which is phrased for directions.
+
+### Outcome: the parameter now says what it needs
+
+The wiring fix is one word in two places, so the substance is in stopping it
+recurring. The parameter is renamed `session_key_provider` in both workers —
+`session_id_provider` is what invited the bug, since the bare id is a real,
+plausible-looking value — and both now document that the scoped form is what
+`messages.session_id` holds.
+
+The test harnesses could not have caught it: each seeded its messages under
+whatever string it passed as the session id, so writer and reader agreed on a
+wrong convention. They now default to a scoped-looking `"u1:session-1"`, and
+each worker has a test that seeds under the scoped key, provides the bare one,
+and asserts the run reports a fault.
+
+The detection gap is the more general fix. "No recent turns" was true, logged,
+and useless, because an idle window and a key that names nothing are the same
+observation from inside `run()`. Both workers now separate them with one
+`COUNT` on the skip path: a key matching *no message ever* is a wiring fault
+and logs at **WARNING** naming the key, while a genuinely quiet window keeps
+the quiet INFO. This is shape 1 (silent-empty) in a form the existing rule did
+not cover — the pass *did* log its empty result, it just could not tell which
+kind of empty it was.
+
+**Still open, same neighbourhood.** `memories` shows several kinds with a last
+write far in the past — `callback` (2 rows, last 2026-06-06), `knowledge_gap`
+(1 row, 2026-05-27), `goal` (10 rows, 2026-07-04) — and `user_notes` holds 44
+rows all written in one burst on 2026-03-20. Each is the same question this
+entry asked, and the log stream will answer it the same cheap way. Worth one
+pass with `rg -o "<worker>-worker [a-z-]+" data/app.log | sort | uniq -c` per
+worker before assuming any of them is idle by choice.
+
+---
+
 ## The seven recurring shapes
 
 More useful than any single entry — these are the bug families to check for
@@ -774,6 +848,13 @@ line, and the only symptom an absence. **Rule: never advance a watermark,
 fingerprint, or cursor on a pass that produced zero output.** Absence of output
 is the one thing worth an explicit log line, because it is the one thing that
 looks identical to "nothing to do".
+
+H19 sharpens this: logging the empty result is not enough if the line cannot
+distinguish *kinds* of empty. Both broken workers announced "no recent turns"
+hourly for months, which was true, and which is also exactly what a quiet
+evening looks like. **Corollary: when a pass reports nothing to do, it must
+also say whether its inputs were reachable.** One `COUNT` on a path that has
+already decided to do nothing is always affordable.
 
 **2. Drain rate below arrival rate.** A page cap multiplied by a cooldown gives a
 throughput ceiling that nobody computes at design time. H3 is 12/week against

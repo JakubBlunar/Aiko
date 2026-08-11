@@ -130,7 +130,10 @@ def _build_world(
     responses: list[str] | None = None,
     cap_hour: int = 10,
     cap_day: int = 50,
-    session_id: str = "session-1",
+    # Shaped like the real thing: ``messages.session_id`` holds the scoped
+    # ``user_id:session_id`` key, and wiring the bare id here is why this
+    # worker mined one belief in three months.
+    session_key: str = "u1:session-1",
     user_messages: list[str] | None = None,
     agent: "_StubAgent | None" = None,
     interest_map: Any = None,
@@ -154,10 +157,10 @@ def _build_world(
         ]
     for content in user_messages:
         db.add_message(
-            session_id=session_id, role="user", content=content,
+            session_id=session_key, role="user", content=content,
         )
         db.add_message(
-            session_id=session_id, role="assistant",
+            session_id=session_key, role="assistant",
             content="ack",
         )
     worker = BeliefInferenceWorker(
@@ -170,7 +173,7 @@ def _build_world(
         cancel_event=threading.Event(),
         agent_settings=agent or _StubAgent(),
         belief_settings=_StubBeliefSettings(),
-        session_id_provider=lambda: session_id,
+        session_key_provider=lambda: session_key,
         user_id_provider=lambda: "u1",
         user_names_provider=lambda: ["Jacob"],
         assistant_name_provider=lambda: "Aiko",
@@ -178,6 +181,43 @@ def _build_world(
         view_provider=(lambda: view) if view is not None else None,
     )
     return worker, store, ollama, rate_limiter
+
+
+class SessionKeyTests(unittest.TestCase):
+    """The worker keys every chat-db read on the scoped
+    ``user_id:session_id``. Wired to the bare session id it mined one
+    belief in three months while logging the benign-looking "no recent
+    user turns", so a mismatch has to be loud and distinguishable from an
+    idle window."""
+
+    def test_a_key_that_names_no_session_is_reported_as_a_fault(self) -> None:
+        worker, store, ollama, _rl = _build_world(
+            session_key="session-1",  # unscoped: the shipped bug
+            user_messages=[],
+        )
+        worker._chat_db.add_message(
+            session_id="u1:session-1", role="user", content="I love Tokyo.",
+        )
+        out = worker.run()
+        self.assertEqual(out.get("reason"), "unknown_session")
+        self.assertEqual(ollama.chat_calls, [])
+
+    def test_an_idle_window_is_not_reported_as_a_fault(self) -> None:
+        worker, _store, _ollama, _rl = _build_world()
+        worker._snapshot_transcript = lambda **_kw: ""
+        self.assertEqual(worker.run().get("reason"), "no_user_turns")
+
+    def test_the_demand_probe_reads_the_same_key_the_run_does(self) -> None:
+        worker, _store, _ollama, _rl = _build_world()
+        signal = worker.demand(now=datetime.now(timezone.utc), last_run_at=None)
+        assert signal is not None
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertNotEqual(
+            worker._snapshot_transcript(
+                session_key="u1:session-1", lookback_turns=12,
+            ),
+            "",
+        )
 
 
 class ExtractionTests(unittest.TestCase):

@@ -216,7 +216,12 @@ class BeliefInferenceWorker:
         cancel_event: threading.Event,
         agent_settings: "AgentSettings",
         belief_settings: Any,
-        session_id_provider: Callable[[], str | None],
+        # The **scoped** ``user_id:session_id`` key, not the bare session
+        # id: that is what ``messages.session_id`` actually holds, and
+        # every chat-db read here keys on it exactly. Wired to the bare id
+        # this worker finds no transcript on any run, forever, while
+        # reporting the benign-looking "no recent user turns".
+        session_key_provider: Callable[[], str | None],
         user_id_provider: Callable[[], str],
         user_names_provider: Callable[[], list[str]] | None = None,
         assistant_name_provider: Callable[[], str | None] | None = None,
@@ -235,7 +240,7 @@ class BeliefInferenceWorker:
         self._cancel_event = cancel_event
         self._agent_settings = agent_settings
         self._belief_settings = belief_settings
-        self._session_id_provider = session_id_provider
+        self._session_key_provider = session_key_provider
         self._user_id_provider = user_id_provider
         self._user_names_provider = user_names_provider
         self._assistant_name_provider = assistant_name_provider
@@ -332,14 +337,14 @@ class BeliefInferenceWorker:
                 return None
             if snapshot["day_used"] >= snapshot["day_cap"]:
                 return None
-            session_id = (
-                self._session_id_provider()
-                if self._session_id_provider else None
+            session_key = (
+                self._session_key_provider()
+                if self._session_key_provider else None
             )
-            if not session_id:
+            if not session_key:
                 return None
             fresh = self._chat_db.count_messages_since(
-                session_id, last_run_at,
+                session_key, last_run_at,
             )
         except Exception:
             log.debug("belief-worker demand probe failed", exc_info=True)
@@ -358,8 +363,10 @@ class BeliefInferenceWorker:
         if self._cancel_event.is_set():
             return {"skipped": True, "reason": "cancelled_before_start"}
 
-        session_id = self._session_id_provider() if self._session_id_provider else None
-        if not session_id:
+        session_key = (
+            self._session_key_provider() if self._session_key_provider else None
+        )
+        if not session_key:
             return {"skipped": True, "reason": "no_session"}
 
         lookback_turns = int(
@@ -374,12 +381,25 @@ class BeliefInferenceWorker:
 
         now = self._clock()
         transcript = self._snapshot_transcript(
-            session_id=session_id, lookback_turns=lookback_turns,
+            session_key=session_key, lookback_turns=lookback_turns,
         )
         if not transcript:
+            # An empty window is normal; a session key that matches *no*
+            # message ever is a wiring fault, and the two look identical
+            # from here. Separating them costs one COUNT on a path that
+            # already decided to do nothing, and the un-separated version
+            # hid a mis-scoped key for three months.
+            if self._session_is_unknown(session_key):
+                log.warning(
+                    "belief-worker: session key %r matches no messages at "
+                    "all -- expected the scoped 'user_id:session_id' form. "
+                    "The worker cannot mine anything until this is fixed.",
+                    session_key,
+                )
+                return {"skipped": True, "reason": "unknown_session"}
             log.info(
                 "belief-worker skip: no recent user turns session=%s",
-                session_id,
+                session_key,
             )
             return {"skipped": True, "reason": "no_user_turns"}
 
@@ -387,7 +407,7 @@ class BeliefInferenceWorker:
         if not self._rate_limiter.allow(now):
             log.info(
                 "belief-worker skip: rate-limited session=%s",
-                session_id,
+                session_key,
             )
             return {"skipped": True, "reason": "rate_limited"}
 
@@ -413,7 +433,7 @@ class BeliefInferenceWorker:
                 log.info(
                     "belief-worker skip: privacy-blocked transcript session=%s "
                     "raw_chars=%d",
-                    session_id,
+                    session_key,
                     len(transcript),
                 )
                 return {"skipped": True, "reason": "privacy_blocked"}
@@ -423,7 +443,7 @@ class BeliefInferenceWorker:
         log.info(
             "belief-worker start: session=%s lookback_turns=%d "
             "raw_chars=%d scrubbed_chars=%d preview=%r",
-            session_id,
+            session_key,
             lookback_turns,
             len(transcript),
             len(scrubbed),
@@ -482,7 +502,7 @@ class BeliefInferenceWorker:
             log.info(
                 "belief-worker llm-unparseable elapsed_ms=%.0f session=%s",
                 elapsed_ms,
-                session_id,
+                session_key,
             )
             return {
                 "skipped": True,
@@ -737,10 +757,18 @@ class BeliefInferenceWorker:
                 return first
         return "the user"
 
+    def _session_is_unknown(self, session_key: str) -> bool:
+        """True when the key names a session the message store never saw."""
+        try:
+            return int(self._chat_db.get_message_count(session_key)) <= 0
+        except Exception:
+            log.debug("belief-worker session probe failed", exc_info=True)
+            return False
+
     def _snapshot_transcript(
         self,
         *,
-        session_id: str,
+        session_key: str,
         lookback_turns: int,
     ) -> str:
         """Join the last N user messages into one speaker-attributed block.
@@ -752,7 +780,7 @@ class BeliefInferenceWorker:
         makes "what does the user believe" resolvable. We cap each user
         message at 600 chars so a long rant can't blow the budget.
         """
-        rows = self._chat_db.get_messages(session_id, limit=lookback_turns * 2)
+        rows = self._chat_db.get_messages(session_key, limit=lookback_turns * 2)
         user_msgs = [r for r in rows if r.role == "user"]
         if not user_msgs:
             return ""

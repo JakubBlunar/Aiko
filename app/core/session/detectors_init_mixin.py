@@ -340,7 +340,7 @@ class DetectorsInitMixin:
                     cancel_event=self._fact_check_cancel,
                     agent_settings=settings.agent,
                     belief_settings=self._memory_settings,
-                    session_id_provider=lambda: self._session_id,
+                    session_key_provider=lambda: self.session_key,
                     user_id_provider=lambda: self._user_id,
                     user_names_provider=lambda: [self.user_display_name]
                     if self.user_display_name
@@ -424,7 +424,7 @@ class DetectorsInitMixin:
                     cancel_event=self._fact_check_cancel,
                     agent_settings=settings.agent,
                     memory_settings=self._memory_settings,
-                    session_id_provider=lambda: self._session_id,
+                    session_key_provider=lambda: self.session_key,
                     user_display_name_provider=lambda: self.user_display_name,
                     user_names_provider=lambda: [self.user_display_name]
                     if self.user_display_name
