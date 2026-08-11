@@ -72,7 +72,9 @@ class _Host(InnerLifePart3Mixin):
         *,
         pending: list[dict] | None = None,
         axes: _Axes | None = None,
-        lull: float | None = 0.4,
+        # A *distance*: quiet is low. The default is inside the band, so
+        # the gate is open unless a test asks for a moving conversation.
+        lull: float | None = 0.10,
         kv: dict[str, str] | None = None,
         armed: set[str] | None = None,
         reflection_enabled: bool = True,
@@ -84,7 +86,11 @@ class _Host(InnerLifePart3Mixin):
         self._chat_db = _Kv(seed)
         self._debug_overrides = _Overrides(armed)
         self._relationship_axes_store = _AxesStore(axes or _Axes())
-        self._topic_stagnation_detector = SimpleNamespace(last_mean=lull)
+        # ``mild_threshold`` is the band K18 self-calibration actually
+        # publishes; consumers must read it rather than the constant.
+        self._topic_stagnation_detector = SimpleNamespace(
+            last_mean=lull, mild_threshold=0.20,
+        )
         self._user_id = "u1"
         self.user_display_name = "Ben"
         self._settings = SimpleNamespace(
@@ -216,18 +222,32 @@ class GateTests(unittest.TestCase):
         self.assertEqual(host._render_concept_learning_block("hi"), "")
 
     def test_needs_a_lull_or_live_relevance(self) -> None:
-        busy = _Host(pending=[_ITEM], lull=0.0)
+        busy = _Host(pending=[_ITEM], lull=0.9)
         self.assertEqual(busy._render_concept_learning_block("hi"), "")
 
+    def test_a_window_that_has_not_filled_is_not_a_lull(self) -> None:
+        cold = _Host(pending=[_ITEM], lull=None)
+        self.assertEqual(cold._render_concept_learning_block("hi"), "")
+
+    def test_the_gate_reads_the_bands_the_detector_publishes(self) -> None:
+        # 0.30 is a lull against a calibrated 0.35 band and not one
+        # against the shipped 0.18 constant. Reading the constant is how
+        # this gate came to be open on every turn but the quiet ones.
+        host = _Host(pending=[_ITEM], lull=0.30)
+        self.assertEqual(host._render_concept_learning_block("hi"), "")
+        host = _Host(pending=[_ITEM], lull=0.30)
+        host._topic_stagnation_detector.mild_threshold = 0.35
+        self.assertNotEqual(host._render_concept_learning_block("hi"), "")
+
     def test_live_relevance_substitutes_for_a_lull(self) -> None:
-        host = _Host(pending=[_ITEM], lull=0.0)
+        host = _Host(pending=[_ITEM], lull=0.9)
         out = host._render_concept_learning_block(
             "do you want detailed answers or shorter ones about depth?"
         )
         self.assertNotEqual(out, "")
 
     def test_one_shared_word_is_not_relevance(self) -> None:
-        host = _Host(pending=[_ITEM], lull=0.0)
+        host = _Host(pending=[_ITEM], lull=0.9)
         self.assertEqual(
             host._render_concept_learning_block("what about depth"), ""
         )
@@ -236,7 +256,7 @@ class GateTests(unittest.TestCase):
         host = _Host(
             pending=[_ITEM],
             axes=_Axes(trust=0.0, closeness=0.0, comfort=0.0),
-            lull=0.0,
+            lull=0.9,
             kv={_LAST_KEY: timephrase.utcnow().isoformat()},
             armed={"concept_learning_force_next"},
         )
@@ -247,6 +267,25 @@ class GateTests(unittest.TestCase):
         host._render_concept_learning_block("hi")
         self.assertEqual(host._chat_db.data[_FP_KEY], "fp-1")
         self.assertIn(_LAST_KEY, host._chat_db.data)
+
+    def test_she_says_the_most_significant_change_on_the_shelf(self) -> None:
+        # Not the first one written. She gets one of these a month, and
+        # position in the shelf is an artifact of the worker's batching.
+        big = dict(_ITEM, fingerprint="fp-2", new="the bigger shift", salience=0.95)
+        host = _Host(pending=[dict(_ITEM, salience=0.65), big])
+        self.assertIn(
+            "the bigger shift", host._render_concept_learning_block("hi")
+        )
+
+    def test_a_spoken_change_comes_off_the_shelf(self) -> None:
+        # The one-fingerprint watermark cannot do this alone: it
+        # remembers a single change, so the next reflection would make
+        # this one eligible again.
+        other = dict(_ITEM, fingerprint="fp-2", new="a second shift")
+        host = _Host(pending=[_ITEM, other])
+        host._render_concept_learning_block("hi")
+        left = json.loads(host._chat_db.data[DRIFT_PENDING_KEY])
+        self.assertEqual([row["fingerprint"] for row in left], ["fp-2"])
 
     def test_missing_axes_store_stays_quiet(self) -> None:
         host = _Host(pending=[_ITEM])

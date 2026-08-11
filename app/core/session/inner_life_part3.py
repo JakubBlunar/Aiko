@@ -1970,6 +1970,8 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 except Exception:
                     closeness = comfort = None
 
+            from app.core.conversation.topic_stagnation import lull_band
+
             detector = getattr(self, "_topic_stagnation_detector", None)
             lull_mean = getattr(detector, "last_mean", None)
 
@@ -2034,13 +2036,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 short_reply_share=short_share,
                 want_text=want_text,
                 want_pressure=want_pressure,
-                lull_threshold=float(
-                    getattr(
-                        self._memory_settings,
-                        "stagnation_mild_threshold",
-                        0.18,
-                    )
-                ),
+                lull_threshold=lull_band(detector, self._memory_settings),
                 short_share_threshold=float(
                     getattr(agent, "appetite_short_share_threshold", 0.6)
                 ),
@@ -2172,12 +2168,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             log.debug("%s-lean suppressed by L42 conduct finding", label)
             return False
 
+        from app.core.conversation.topic_stagnation import in_standing_lull
+
         detector = getattr(self, "_topic_stagnation_detector", None)
-        lull_mean = getattr(detector, "last_mean", None)
-        lull_threshold = float(
-            getattr(self._memory_settings, "stagnation_mild_threshold", 0.18)
-        )
-        if lull_mean is None or float(lull_mean) < lull_threshold:
+        if not in_standing_lull(detector, self._memory_settings):
             return False
 
         # Warmth earned: a lean toward something of hers is a familiarity
@@ -2383,15 +2377,21 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             settings = self._memory_settings
             fired_key = "concept.drift.last_reflection_fp"
             seen = str(chat_db.kv_get(fired_key) or "")
-            item = next(
-                (
-                    row
-                    for row in pending
-                    if isinstance(row, dict)
-                    and str(row.get("fingerprint", "")) != seen
-                    and str(row.get("new", "")).strip()
-                ),
-                None,
+            # The most significant change on the shelf, not the first one
+            # the worker happened to write. She speaks about this once a
+            # month; picking by position spends that on whichever change
+            # sorted highest in a single day's batch.
+            eligible = [
+                row
+                for row in pending
+                if isinstance(row, dict)
+                and str(row.get("fingerprint", "")) != seen
+                and str(row.get("new", "")).strip()
+            ]
+            item = max(
+                eligible,
+                key=lambda row: float(row.get("salience", 0.0) or 0.0),
+                default=None,
             )
             if item is None:
                 return ""
@@ -2422,6 +2422,19 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 timephrase.utcnow().isoformat(),
             )
             chat_db.kv_set(fired_key, str(item.get("fingerprint", "")))
+            # Off the shelf: it is now a reported change, and the shelf
+            # only holds unreported ones. The single-fingerprint
+            # watermark above cannot do this on its own -- it remembers
+            # one change, so the next reflection would make this one
+            # eligible again.
+            chat_db.kv_set(
+                DRIFT_PENDING_KEY,
+                json.dumps(
+                    [row for row in pending if row is not item],
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
             self._learning_reflection_fired = True
 
             shift = (
@@ -2483,12 +2496,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         if turn and subject and len(turn & subject) >= 2:
             return True
 
-        detector = getattr(self, "_topic_stagnation_detector", None)
-        lull = getattr(detector, "last_mean", None)
-        threshold = float(
-            getattr(settings, "stagnation_mild_threshold", 0.18)
+        from app.core.conversation.topic_stagnation import in_standing_lull
+
+        return in_standing_lull(
+            getattr(self, "_topic_stagnation_detector", None), settings
         )
-        return lull is not None and float(lull) >= threshold
 
     def _render_conduct_notice_block(self) -> str:
         """L42: rare permission to acknowledge a relationship habit naturally."""
@@ -2512,16 +2524,12 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             if chat_db is None or not load_conduct_snapshot(chat_db.kv_get):
                 return ""
             if not force:
-                detector = getattr(self, "_topic_stagnation_detector", None)
-                lull = getattr(detector, "last_mean", None)
-                threshold = float(
-                    getattr(
-                        self._memory_settings,
-                        "stagnation_mild_threshold",
-                        0.18,
-                    )
+                from app.core.conversation.topic_stagnation import (
+                    in_standing_lull,
                 )
-                if lull is None or float(lull) < threshold:
+
+                detector = getattr(self, "_topic_stagnation_detector", None)
+                if not in_standing_lull(detector, self._memory_settings):
                     return ""
                 axes_store = getattr(self, "_relationship_axes_store", None)
                 if axes_store is None:
