@@ -24,6 +24,31 @@ so [`data/app.log`](../../../data/app.log) is the audit trail. Tests:
 [`tests/test_fact_check_privacy.py`](../../../tests/test_fact_check_privacy.py),
 [`tests/test_fact_check_rate_limiter.py`](../../../tests/test_fact_check_rate_limiter.py).
 
+**Known sharp edge: the payload the enqueue hook receives.** For most of this
+worker's life it checked nothing at all — one web search in three months — and the
+cause was a type mismatch, not a gate. `MemoryFacadeMixin._maybe_enqueue_claims`
+read its argument with `getattr(memory, "id", None)`, but `_notify_memory_added` is
+called with **both** a `Memory` and its dict form: the turn path and the REST facade
+pass the object, while [`idle_knowledge_worker.py`](../../../app/core/proactive/idle_knowledge_worker.py),
+[`topic_digest_worker.py`](../../../app/core/conversation/topic_digest_worker.py),
+[`pre_thought_worker.py`](../../../app/core/proactive/pre_thought_worker.py) and the
+K1 goal path in [`post_turn_mixin.py`](../../../app/core/session/post_turn_mixin.py)
+all pass `mem.to_dict()`. A dict has no `.id`, so the hook returned silently on
+exactly the impersonal `knowledge` writes that are the only thing the privacy gate
+would ever let through. The failure was invisible: the "enqueue done" log line is
+guarded on `if enqueued or skipped`, so a silent return logs nothing, and the
+symptom was an absence.
+
+Two rules follow. **The dual payload shape is the contract, not a caller bug** —
+the WS listener in [`server.py`](../../../app/web/server.py) has always handled
+both, so a consumer of `_notify_memory_added` must too; read fields through
+`_memory_field`. And **an always-empty queue is a symptom worth alerting on**: the
+diagnostic that finally found this was counting rows, not reading logs.
+[`scripts/fact_check_backfill.py`](../../../scripts/fact_check_backfill.py) replays
+the stored corpus through the real gates and reports what *would* queue, which is
+the cheap way to ask "is this subsystem alive?" — it found 46 claims across 34
+memories that should have been checked and never were.
+
 ---
 
 ## F2. Knowledge-gap journal

@@ -2511,7 +2511,9 @@ question blocking the item, and it now has a design: a strategy's effectiveness
 is the engaged rate of the turns where it was in play. (3) Guard against
 over-fitting rigid rules that make her robotic — plasticity + context-gating.
 (4) L44 (per-domain self-calibration) is the natural reliability axis for a
-strategy: "this approach works, in the domains where my judgement is any good".
+strategy: "this approach works, in the domains where my judgement is any good" —
+though L44 is now blocked on supply, so this stays an aspiration rather than a
+dependency worth waiting on.
 
 **Effort.** Large (new kind + conditional context-gated surfacing + an
 effectiveness signal).
@@ -2520,7 +2522,7 @@ effectiveness signal).
 source — **now shipped**, so the source exists and its output is already a
 comm-style rule), L34 (belief -> strategy edges), K14 (effectiveness signal),
 L37 (which turns that signal into a per-strategy measure), L44 (per-domain
-reliability).
+reliability — blocked on supply, treat as optional).
 
 ---
 
@@ -2885,6 +2887,68 @@ K77 (candor gate). Renders through L41 / F16's tentative voice.
 ---
 
 ## L44. Knowing where she's usually wrong -- per-domain self-calibration
+
+**Status: blocked on supply, not on design.** The aggregation this describes is
+buildable and the reasoning below is sound. It has nothing to aggregate. Every
+incident source the entry names was counted against the live graph over 12 weeks
+and 4039 messages, and the premise — "the raw material is largely already produced
+and thrown away" — turns out to be false in a more basic way than expected: the
+material is **not produced at all**. The sketch is kept in full below; only the
+measurement blocks it.
+
+**The count.** Per source, lifetime:
+
+| Source | Rows | Usable outcomes |
+| --- | --- | --- |
+| `[[predict:]]` → `beliefs` | **1** | 0. Never verified, and **0 rows carry `valence`**, so `_detect_mood_gaps` skips every mood belief before it compares anything — no production caller passes valence to `upsert()` |
+| Belief status flips (`confirmed` / `contradicted`) | 0 | 0 |
+| F13 user corrections | 0 | 0. The worker ran **1079 times in one day**, every time `no_candidates` |
+| Fact-checker verdicts | 0 | 0. `fact_checker.rate_state` records **one** web search ever, on 2026-06-13 |
+| Hypothesis adjudications | 12 open | 0 support, 0 refute |
+| K23 misattunement | ~4/day | 0 — fires and is persisted **nowhere**; `MisattunementResult` never reaches a table |
+
+A hit rate over that is not thin, it is undefined, and the shrink-toward-neutral
+treatment the sketch itself (correctly) asks for would refuse to emit a finding
+even if a handful appeared.
+
+**Two of the sources were broken rather than quiet, and both are now fixed.** The
+fact-checker had never queued anything because `_maybe_enqueue_claims` read its
+payload with `getattr` while the knowledge / topic-digest / pre-thought / K1-goal
+workers all pass `mem.to_dict()` — a dict has no `.id`, so it returned silently on
+every impersonal write the system makes. Replaying the stored rows through the real
+gates finds **46 queueable claims across 34 memories**; see
+[`scripts/fact_check_backfill.py`](../../scripts/fact_check_backfill.py). F13's
+marker set was separately cut from 12 lifetime hits to 1, all 11 removed ones being
+false positives on ordinary contrast ("not scare me, but…"). Neither repair rescues
+L44 on its own — the fact-checker will produce single-digit *contradict* verdicts
+per quarter — but the tape is at least running now, which it was not before.
+
+**The engagement ledger cannot substitute, and it is worth knowing why.** Two of
+the four motivating examples below ("reliably good on the technical material",
+"reliably bad at predicting what he will find funny") are predictions about his
+*reaction* rather than factual claims, and L37 has 23,759 settled rows of exactly
+that. It still does not work: K14's typed-mode label is a length z-score against a
+rolling 12-turn window of his own messages, so it is self-normalizing and every
+cluster lands between 0.152 and 0.256 around a pooled ~0.20. Per-cluster reliability
+is a constant plus noise. (The register confound everyone assumes — that quiet
+intimate turns read as disengaged — was measured and is **not** present: median
+reply length is 21-28 words in every cluster, r = 0.214.) Full numbers under
+"What the label measures, measured" in
+[`shipped/concepts.md`](shipped/concepts.md#l37-surfacing-outcome-ledger).
+
+**What would unblock this.** A stream of adjudicated outcomes at a rate that
+supports per-bucket rates — order hundreds, not dozens. The realistic routes, in
+descending order of plausibility: (1) let the now-working fact-checker accumulate
+for a few quarters and see what the *contradict* rate per topic looks like;
+(2) persist K23 misattunement with the turn's topic attached, which is the only
+existing signal with daily volume, accepting that it measures her read of him
+rather than her correctness; (3) write `valence` / `arousal` on `[[predict:mood:]]`
+beliefs so the mood gap detector can actually adjudicate the predictions it was
+built for. Re-measure before building; the honest thing this item taught is that
+the incident sources sound plentiful in the aggregate and are individually empty.
+
+Attribution — open question (2) below — remains the deeper problem underneath the
+volume one, and is unchanged.
 
 **Motivation.** Confidence in this system is always *per claim*. There is no
 notion of confidence in a **class** of her own judgements — no memory of the fact

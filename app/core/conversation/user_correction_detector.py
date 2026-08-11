@@ -80,11 +80,20 @@ _LABEL_RANK = {HEURISTIC_DEFINITE: 2, HEURISTIC_BORDERLINE: 1}
 # NOT disagreement of opinion ("I disagree", "I don't think so") -- those
 # must not trigger a memory rewrite. Each is a standalone signal that the
 # user is repairing a factual claim.
+#
+# Two markers were removed after measuring the set against a full history
+# (1997 user messages): a bare ``not X, but/it's`` and a bare ``it's not``.
+# Between them they produced 11 of the 12 lifetime hits and *zero* true
+# positives -- they match ordinary conversational contrast ("not scare me,
+# but ...", "Its not weird at all"), which is a shape warm conversation is
+# full of. Nothing was ever wrongly rewritten, because the content-overlap
+# gate below rejected all 11 downstream, but a marker that only ever fires
+# on false positives is a liability the moment that second gate loosens.
+# The surviving ``, not <determiner>`` form is the narrow version of the
+# same idea and keeps the genuine "it's my sister, not my brother" case.
 _CORRECTION_MARKERS: tuple[re.Pattern[str], ...] = (
-    # "not X, (it's) Y" / "it's my sister, not my brother"
+    # "it's my sister, not my brother"
     re.compile(r",\s*not\s+(?:my|a|an|the|his|her|your|their)\b", re.IGNORECASE),
-    re.compile(r"\bnot\s+\w+[\w\s]*?,\s*(?:it'?s|but|it\s+is)\b", re.IGNORECASE),
-    re.compile(r"\bit'?s\s+not\b", re.IGNORECASE),
     re.compile(r"\bthat'?s\s+not\s+(?:right|correct|true|it|what)\b", re.IGNORECASE),
     re.compile(r"\bthat'?s\s+wrong\b", re.IGNORECASE),
     re.compile(r"\bno,?\s+it'?s\b", re.IGNORECASE),

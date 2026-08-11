@@ -1889,6 +1889,46 @@ routine; the off-by-one settling dance and the read-API shape took the thought.
 **Depends on.** K14 (`EngagementTracker`, shipped). Unblocks L42, F12, G4, P43,
 K81, and the rest of DT5; L38 is now shipped below.
 
+### What the label measures, measured (added later, while scoping L44)
+
+L44 wanted a per-domain reliability signal and this ledger is the only place with
+the volume for one — 23,759 settled rows. Before building on it, the label itself
+was checked. Two findings, both worth keeping.
+
+**The register confound is not real.** The obvious worry is that K14's label
+punishes tender turns: in typed mode the label is the message-length z-score and
+nothing else (latency is deliberately dropped there — a typing pause is thinking
+time), so a quiet "mmm, love you" should read as disengaged while a fast technical
+paragraph reads as engaged. Measured across the 37 clusters with 40+ settled rows,
+it does not: median next-user-message length is **21-28 words in every single
+cluster**, and Pearson r between a cluster's engaged rate and its median reply
+length is **0.214**. Intimacy is not being marked down. Worth recording precisely
+because it is the first thing anyone suspects, and the suspicion is expensive — a
+feature built to "correct" it would have taught Aiko to hedge about closeness.
+
+**But the metric is self-normalizing, which is the real limit.** The z-score is
+taken against a rolling 12-turn window of the user's *own* recent messages, so by
+construction roughly a fixed fraction of turns clears +0.7σ regardless of topic.
+Every cluster lands between **0.152 and 0.256**, and the pooled rate is
+**~0.195-0.204** across all four `item_kind`s. A per-cluster engaged rate is
+therefore close to a constant plus noise, and any gate written as an absolute
+number is really a gate on sample noise. This is the same lesson L45 learned from
+`taste_min_affinity` sitting at 0.5 when nothing on the ledger could score above
+~0.32, arriving from the other direction.
+
+The shipped consumers already handle it correctly and new ones must copy them:
+K81 gates on `max(taste_min_affinity, baseline * taste_affinity_baseline_multiple)`,
+L38 shrinks toward the observed baseline with prior strength 10, L42 fixation uses
+`conduct_fixation_min_rate_gap` against baseline, and L45 solves the taste gate
+against `POP_CLUSTER_ENGAGED_RATE` rather than a constant.
+
+Real spread *does* survive at memory granularity — joining `item_kind="memory"`
+rows through `memory_topic_assignments` gives 0.095 ("physical intimacy and
+closeness") to 0.492 ("Aiko development updates"). It is thinner than it looks:
+those rest on 29 and 14 **distinct memories** respectively, surfaced repeatedly, so
+the effective sample is the item count and not the 190 / 65 rows. Shrink on
+distinct items.
+
 ---
 
 ## L38. Earned standing -- let outcomes move the surfacing score

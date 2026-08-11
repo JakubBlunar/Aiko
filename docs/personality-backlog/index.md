@@ -10,10 +10,15 @@ history stays grep-able. Items that have already shipped live in
 [`shipped.md`](shipped.md), one paragraph each with a link to the
 implementation file or detail doc that owns them.
 
-Two series didn't come from a brainstorm and read differently. The
+Three series didn't come from a brainstorm and read differently. The
 A-series in [`architecture.md`](architecture.md) is code-quality debt from
 a static audit — no user-visible behaviour in any of it. The P-series in
 [`perf.md`](perf.md) is the same idea for performance and observability.
+The H-series in [`health.md`](health.md) is **not a feature queue at all**:
+it is shipped work measured against the live graph and found to be doing
+something other than what its shipped entry claims. Read it before picking
+up anything new in the same area — several L-series items that read as
+"shipped" are latched, starved, or decorative in production.
 
 The K-series in [`patterns.md`](patterns.md) is a separate beast —
 companion-AI design patterns we haven't tried yet, sketched at one
@@ -114,12 +119,17 @@ terminates in a database write instead of becoming conversation:
   `inferred`) now labels each user-fact by how it was learned, so an
   inference renders with an `(inferred)` hedge and ranks just below equal-
   cosine testimony instead of being asserted as something he said.
-- **L43 / L44.** Engagement history and her own error record are both
-  accumulated and never aggregated into a model of how she's received or
-  where her judgement is weak.
+- **L43.** Engagement history is accumulated and never aggregated into a model
+  of how she's being received.
+- **L44.** ⛔ **Blocked on supply** — the intended twin of L43, and the
+  exception that proves the rule below. Her error record turned out not to be
+  accumulated at all: 1 belief row, 0 corrections, 0 fact-check verdicts over
+  12 weeks. Counted in [`concepts.md`](concepts.md#l44-knowing-where-shes-usually-wrong----per-domain-self-calibration).
 
 Four of those five need no new data collection — only a bar, a cue, and a
-cooldown on information already being gathered.
+cooldown on information already being gathered. L44 was assumed to be the
+fifth and is not: check the row counts before assuming a source that *exists*
+is a source that *fires*.
 
 ---
 
@@ -641,10 +651,13 @@ that relationship-local signal back into concept ranking:
   which is the substrate for adjusting because of how she's landing and for
   "am I too much sometimes?". Needs floors on the negative side or it
   becomes a doom spiral.
-- **L44.** Per-domain self-calibration — confidence is always per *claim*,
-  never per *class of her own judgements*. Knowing which of her opinions to
-  lean on is most of what makes confidence trustworthy; a precondition for
-  K77's candor gate.
+- **L44.** ⛔ **Blocked on supply.** Per-domain self-calibration — confidence is
+  always per *claim*, never per *class of her own judgements*. Still the right
+  idea and still a precondition for K77's candor gate, but every incident
+  source it would aggregate is empty on a 12-week graph (1 belief row, 0
+  corrections, 0 fact-check verdicts, 0 hypothesis adjudications), and the L37
+  engagement ledger cannot stand in because its label is self-normalizing.
+  Numbers in [`concepts.md`](concepts.md).
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
