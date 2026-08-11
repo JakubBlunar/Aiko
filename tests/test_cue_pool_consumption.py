@@ -200,6 +200,47 @@ class CosineTests(_Fixture):
         self.assertTrue(evidence.startswith("none:"))
         self.assertAlmostEqual(float(evidence.split(":")[1]), 0.8, places=1)
 
+    def test_a_lexical_hit_records_its_cosine_alongside_the_overlap(
+        self,
+    ) -> None:
+        """Where the semantic floor belongs is answered by contrasting the
+        cosine on lexical-hit turns against the cosine on missed turns, and
+        the first arm of that only exists if a lexical row carries one.
+        """
+        cue_id = self.store.add(
+            "interest_drift", "rust debugging", "cue",
+            embedding=_vec(1.0, 0.0, 0.0),
+        )
+        self.host.take_pool_cue("interest_drift")
+        self.host._settle_pool_cues(
+            user_text="hi",
+            assistant_text="the rust debugging is going somewhere",
+            reply_vec=_vec(0.8, 0.6, 0.0),
+        )
+        self.assertEqual(self._state(cue_id), STATE_USED)
+        evidence = self._row(cue_id).used_evidence
+        self.assertTrue(evidence.startswith("lexical:"))
+        self.assertIn("/cos:", evidence)
+        self.assertAlmostEqual(
+            float(evidence.split("/cos:")[1]), 0.8, places=1,
+        )
+
+    def test_a_semantic_verdict_is_not_padded_with_its_own_cosine(
+        self,
+    ) -> None:
+        """It is already the score; repeating it would only be noise."""
+        vec = _vec(1.0, 0.0, 0.0)
+        cue_id = self.store.add(
+            "associative_wander", "rust debugging", "cue", embedding=vec,
+        )
+        self.host.take_pool_cue("associative_wander")
+        self.host._settle_pool_cues(
+            user_text="hi",
+            assistant_text="funny how patience shows up in both",
+            reply_vec=vec,
+        )
+        self.assertNotIn("/cos:", self._row(cue_id).used_evidence)
+
     def test_a_wander_matches_the_far_half_of_the_pair(self) -> None:
         cue_id = self.store.add(
             "associative_wander",

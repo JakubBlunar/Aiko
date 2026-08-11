@@ -228,6 +228,52 @@ nothing to say about them. **Check the matcher before touching the renderer**:
 a `used` rate of exactly zero across 31 surfaces in four families smells more
 like a measurement artifact than four independently unpersuasive cue types.
 
+### Outcome (a)
+
+Split three ways once measured, and only one of the three was a bug.
+
+`dormant_interest` was the bug, and it was not in the cue: it waits on a K18
+lull that could not be reported, because K18's mild band was a hardcoded 0.18
+mean cosine distance and every reading this install has produced sits between
+0.310 and 0.422. All 52 logged readings were `band=silent`; the gate was
+unreachable from the day it shipped. K18 now calibrates its bands as
+percentiles of its own rolling baseline of window means (mild at p15, strong at
+p5, persisted in `kv_meta`, shipped constants kept as the cold-start fallback
+below 60 samples). Same failure mode as L45 was built to end — an absolute
+cosine threshold encoding one embedding model's scale — so the same answer.
+
+`self_callback` was **not** wedged; the audit misread it. Its last surfacing was
+2026-08-02, not 2026-07-30, which is 8.9 days into a 10-day cooldown with 25.9h
+still to run. Six cues waiting behind a deliberately slow policy is the policy
+working. No change.
+
+`turning_over` and `curiosity_gradient` are genuinely declined, not wedged: both
+were eligible at audit time with no cooldown to serve.
+
+### Outcome (b)
+
+The matcher is exonerated, and the check that exonerated it was not possible
+until it was fixed.
+
+The recorded cosines are nowhere near the bar. Across every verdict this install
+has stored, `turning_over` peaks at 0.50 against a 0.55 floor with a median of
+0.41, and `curiosity_gradient` peaks at 0.47 with a median of 0.32 — not
+marginal misses that a slightly kinder threshold would convert, but replies that
+were not about the cue. Four families missing by 0.1-0.2 of cosine is not a
+measurement artifact. The zero is real: she is offered these and has nothing to
+say about them, which makes it a question for the renderer or the producer, and
+`turning_over`'s 12h TTL means each one gets a single day to land.
+
+That leaves the floor itself unjustified but no longer suspected. `_match_cue`
+has always intended to site it on evidence — "comparing the distribution on
+turns where lexical fired against turns where it did not" — and the stored
+distribution could never answer it, because `EchoVerdict.score` holds only the
+signal that won and `detect()` returned on a lexical hit before measuring any
+cosine. The lexical-fired arm of that comparison did not exist. The cosine is
+measured unconditionally now and recorded as `lexical:3.00/cos:0.62`, so the
+comparison becomes possible as verdicts accumulate. Worth re-reading after a few
+hundred; there is nothing to decide from today's data.
+
 ---
 
 ## H5. L41's change framings never fire, and L38's standing never gets named
