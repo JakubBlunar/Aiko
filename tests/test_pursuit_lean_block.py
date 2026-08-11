@@ -53,7 +53,7 @@ class _Host(InnerLifePart3Mixin):
         view: _FakeView,
         *,
         enabled: bool = True,
-        lull: float | None = 0.9,
+        lull: float | None = 0.05,
         conduct: list[dict] | None = None,
         closeness: float = 0.8,
     ) -> None:
@@ -76,7 +76,11 @@ class _Host(InnerLifePart3Mixin):
         self._user_id = "jacob"
         self._conduct = conduct or []
         self._chat_db = SimpleNamespace(kv_get=lambda _k: None)
-        self._topic_stagnation_detector = SimpleNamespace(last_mean=lull)
+        # A lull is a *low* mean distance -- the conversation circling --
+        # measured against the band K18 publishes after calibration.
+        self._topic_stagnation_detector = SimpleNamespace(
+            last_mean=lull, mild_threshold=0.20,
+        )
         self._relationship_axes_store = SimpleNamespace(
             get=lambda _uid: SimpleNamespace(
                 closeness=closeness, comfort=closeness,
@@ -146,7 +150,7 @@ class GateTests(unittest.TestCase):
         return _FakeView([_FakeConcept("pursuit", "keeping a herb garden")])
 
     def test_a_live_conversation_is_not_a_lull(self) -> None:
-        self.assertEqual(_render(_Host(self._view(), lull=0.05)), "")
+        self.assertEqual(_render(_Host(self._view(), lull=0.9)), "")
 
     def test_a_cold_detector_reads_as_no_fire(self) -> None:
         self.assertEqual(_render(_Host(self._view(), lull=None)), "")

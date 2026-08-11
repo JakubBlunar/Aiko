@@ -2508,24 +2508,15 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             return ""
 
         # Natural-lull gate (same standing reading K54 consumes). When the
-        # window hasn't filled (last_mean is None) or the conversation is
-        # still moving, hold — a re-opener only lands on a real quiet beat.
+        # window hasn't filled or the conversation is still moving, hold —
+        # a re-opener only lands on a real quiet beat.
         if not force_next:
-            detector = getattr(self, "_topic_stagnation_detector", None)
-            lull_mean = getattr(detector, "last_mean", None)
-            # The detector's *effective* mild band, not the configured
-            # constant. K18 self-calibrates against this install's own
-            # distance distribution, and reading the raw setting here
-            # meant testing against a bar the detector had abandoned —
-            # on this corpus the constant sits below every reading ever
-            # taken, so the re-opener could never find a lull to land on.
-            threshold = float(
-                getattr(detector, "mild_threshold", None)
-                or getattr(
-                    self._memory_settings, "stagnation_mild_threshold", 0.18,
-                )
-            )
-            if lull_mean is None or float(lull_mean) >= threshold:
+            from app.core.conversation.topic_stagnation import in_standing_lull
+
+            if not in_standing_lull(
+                getattr(self, "_topic_stagnation_detector", None),
+                self._memory_settings,
+            ):
                 return ""
 
         try:
