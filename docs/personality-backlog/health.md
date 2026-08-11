@@ -20,8 +20,9 @@ for 146 turns (2026-08-09 onward). **Scope:** the concept layer (L-series), read
 twice. **Part 1** asks whether each shipped feature actually runs (H1-H8).
 **Part 2** asks a different question — whether what reaches the model adds up to
 a person who has her own inner life, feels things, and holds beliefs (H9-H14).
-Part 2 found the higher-value work. The K-series patterns have not been audited
-yet.
+Part 2 found the higher-value work. H15-H17 were found while fixing the earlier
+entries and are filed rather than folded in, since each is a decision in its own
+right. The K-series patterns have not been audited yet.
 
 Re-measure before acting on any entry — several of these are rate problems, and
 a rate that was wrong in August may be right in October.
@@ -53,6 +54,7 @@ latched, or throttled to roughly zero:**
 | L42 conduct concepts | weekly concentration / neglect / fixation findings | **0 rows ever**, and latched shut (H1) |
 | L17f evolution diary | rolling human-readable change log | **1 entry ever**, 273 events stranded (H3) |
 | L17e `concept_learning_block` | reflection slip when a belief moves | **0 of 146 turns** (H6) |
+| K54 `topic_appetite_block` | naming boredom and steering out of it | **0 of 146 turns**, unreachable bar (H17) |
 | `self_callback` cue | closing the loop on her own continuity | **1 of 7 ever surfaced**, last fired 2026-07-30 (H4) |
 | K23 misattunement | noticing she misread him | fires ~4×/day, **persisted nowhere** |
 | L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
@@ -432,6 +434,38 @@ so nobody re-audits it. If the intent was "she occasionally notices a belief of
 hers moved", a per-fingerprint cooldown would let genuinely new drift shapes
 through without opening the floodgates.
 
+### Outcome: the month stays, but it was spending the slot at random
+
+"Every gate passes except the cooldown" was wrong, and wrong in a way that
+matters: the lull gate passed because it was **inverted**, firing on divergence
+rather than on circling and reading a constant that made it unconditional. That
+is H17 below — it turned out to be four blocks, not one, and it is the larger
+finding of the two.
+
+With the lull gate actually gating, the 30-day cooldown is the deliberate
+decision the entry asked for, and it **stays**. This is the one place the
+learning history speaks; at eleven times a year it is an event rather than a
+tic, and every other guard here (trust, warmth, salience, per-change watermark,
+once per conversation) is about whether a *particular* change is worth saying,
+not about pacing. Nothing else does that job.
+
+What was genuinely broken is *which* change she gets to say. The drift worker
+runs daily and **overwrites** `concept.drift.pending` with the top 3 of that
+run's findings; the reader speaks monthly. So roughly thirty salient changes pass
+through a three-slot window each cooldown period and the one she mentions is
+whichever happened to be shelved on the day the cooldown lifted. Not the most
+significant — just the most recent. A month of waiting spent on an arbitrary
+pick.
+
+The snapshot is now a **shelf of the most significant unreported changes**: new
+findings compete with what is already there, the strongest `cap` survive, and the
+reader takes its item off the shelf when it speaks (the single-fingerprint
+watermark could not do this — it remembers one change, so the previous one became
+eligible again on the next fire). `concept_drift_pending_ttl_days` (45) bounds
+the squatting that keep-the-strongest otherwise invites, and re-observing a
+change does not refresh its age: the TTL measures how long it has gone unsaid,
+not how long it has kept recurring.
+
 ---
 
 ## H7. The hypothesis loop invents and never adjudicates
@@ -525,6 +559,83 @@ salience correlates with anything a reader would call significance.
 
 ---
 
+## H16. Her relationship tensions are five things said twenty-five times
+
+**Severity: low-medium — a dedupe question, not a supply one.**
+
+Found while fixing H12, and the reason "relationship has 25 tensions" reads
+healthier than it is. Read end to end those 25 rows are perhaps five distinct
+frictions in different wordings: "concrete narration of my internal state"
+appears four times, "her meta-cognitive architecture" twice, and several pairs
+differ only in which half of the same dilemma they lead with.
+
+This is not the auto-merge bug (that was template collisions, and it was fixed).
+These are genuinely different sentences describing the same friction, which is
+exactly the case cosine merge is meant to catch and evidently does not at the
+`tension` kind's threshold. Two things worth measuring before touching anything:
+the pairwise cosine distribution *within* `subject='relationship'` `tension`
+rows against the merge threshold in force, and whether the L31 admission control
+shipped earlier already suppresses the next generation of these (it caps
+evidence per source, which may or may not bear on restatement).
+
+Do not fix this by tightening the proposer. The proposer is doing what it should
+— noticing the friction each time it recurs — and the dedupe belongs at merge
+time where the whole corpus is visible.
+
+---
+
+## H17. Four prompt blocks disagree about what a lull is, and three lose
+
+**Severity: high — one wrong constant and one flipped sign silenced a whole
+feature and un-gated three others.**
+
+The single worst finding of this pass, and the reason H6 looked like a cooldown
+problem. Six blocks wait for "a natural lull" and each spelled the test out
+inline. Only one spelled it correctly.
+
+`TopicStagnationDetector.last_mean` is a mean cosine *distance*, so circling is a
+**low** reading. The correct test is `last_mean <= detector.mild_threshold`.
+What shipped:
+
+| consumer | polarity | bar | effect |
+| --- | --- | --- | --- |
+| K67 dormant-interest | correct | effective band | correct (fixed in H4) |
+| K54 topic-appetite | correct | raw constant | **never fired: 0 of 146 turns** |
+| K81 / K85e lean gate | **inverted** | raw constant | always open |
+| L17e reflection | **inverted** | raw constant | always open |
+| L42 conduct notice | **inverted** | raw constant | always open |
+
+Both errors are silent, and they compound in opposite directions. The constant
+(0.18) sits below every reading this install has ever produced (0.310–0.422), so
+for a correct consumer it is a gate that can never open, and for an inverted one
+it is a gate that can never close. K54 — a feature with a settings block, a
+persona counterweight and a test file — has therefore never once rendered, and
+the two lean slips and the reflection were free to fire on precisely the busy
+turns they were written to sit out. The six `taste_lean_block` firings in the
+telemetry are not the gate working; they are the gate absent.
+
+Both halves are the same root cause as H4, one level up: H4 fixed the *one*
+consumer whose symptom someone had noticed, and left the shared idea
+un-extracted. There is now a single `in_standing_lull(detector, memory_settings)`
+in `topic_stagnation.py` and no caller derives the test itself. A cold reading
+(`last_mean is None`, window unfilled) reads as "not a lull" — every consumer
+wants a positive signal before speaking up.
+
+**Fifth recurring shape, and the general lesson:** *a predicate copied into N
+call sites will be wrong in N-1 of them, and if its inputs are miscalibrated
+every one of those bugs is invisible.* Neither error could show up in a test,
+because every test stub set its own `last_mean` to whatever made its own
+assertion pass — including the sign. Worth grepping for the other signals read
+this way: `last_mean` had six readers, and `AffectState`, the relationship axes
+and the arc label each have more.
+
+**Not yet measured:** what K54 does now that it can fire. It has been dark since
+it shipped, so its own thresholds (`appetite_short_share_threshold`,
+`appetite_min_want_pressure`) have never been exercised against real data and
+should be treated as unverified in the H2 sense.
+
+---
+
 ## Confirmed healthy (stop re-checking these)
 
 Measured this pass, working, no action:
@@ -552,7 +663,7 @@ Measured this pass, working, no action:
 
 ---
 
-## The four recurring shapes
+## The six recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -583,6 +694,21 @@ has a passing test that injects synthetic values clearing the bar. They prove th
 mechanism *can* fire, which was never in doubt. **Rule: at least one test per
 gated feature should use production weights/thresholds against a realistically
 shaped population, and assert the feature fires at a plausible rate.**
+
+**5. A constant that only appears in production and in a test that overrides
+it.** The sharper version of shape 4. H13's pursuit floor shipped at 6 while
+every test set its own 3, so the number that actually ran was the one number
+nobody had exercised — and it turned out to make the pass dead code. **Rule: if
+a default gates whether a pass runs at all, one test must read it from
+`parse_*_settings({})` rather than from a stub.**
+
+**6. A predicate copied into N call sites.** It will be wrong in N-1 of them,
+and if its inputs are also miscalibrated, every one of those bugs is silent. H17
+is the case: six blocks each spelled out "is this a lull" inline, four got it
+wrong, and no test could catch any of them because each stub chose the input
+that made its own assertion pass — including the sign. **Rule: a shared signal
+gets one shared predicate next to the thing that produces it, and callers do not
+re-derive the comparison.**
 
 ---
 
@@ -838,6 +964,40 @@ fix is later. The cheapest version: allow the existing narrative/value proposers
 to run with `subject='relationship'`, which is a proposer-registration change
 rather than new machinery.
 
+### Outcome: shared values exist now, and the render side had been waiting
+
+Two corrections to the entry above before the fix. Relationship *narrative* is
+not missing a proposer — `narrative_relationship` (L29a) has shipped since
+August; it is restricted to *closed joint arcs*, which are genuinely rare, and
+one row is an honest yield rather than a wiring gap. And the 25 tensions are
+fewer than 25 things: read end to end they are perhaps five distinct frictions
+restated ("concrete narration of my internal state" appears four times, "her
+meta-cognitive architecture" twice). Relationship is not just thin, it is
+redundant. That is a dedupe question, filed as H16 below rather than solved
+here.
+
+Shared **value** was the real hole, and the rest of the system had already been
+built for it: `_concept_value_header` has had a `relationship` branch ("what
+you've come to see you and {user} both value") since L10, rendering rows nothing
+ever minted. So this was close to the registration change the entry predicted.
+
+`value_relationship` reads the same `shared_moment` groups L7's ritual proposer
+does and asks the other question of them — a ritual is what the pair repeatedly
+*does*, a value is the commitment the doing reveals. The one real design problem
+is that those are trivially restatable as each other, so the guard is
+structural rather than a prompt plea: **a new shared value must draw on moments
+from at least two distinct groups.** A principle visible in only one recurring
+activity is that activity, named twice.
+
+Both proposers keep their own enable flag, stats key and dirty-tracking
+watermark, so whichever ran first cannot mark the corpus settled and silence the
+other — which, with a shared key, it would have.
+
+Not built: relationship-scoped `identity`. "What we are" as a trait of the pair
+overlaps heavily with both ritual and value, and adding a third reader of one
+158-row evidence pool is how you get three names for the same observation. Worth
+revisiting only if shared values land well and still leave something unsaid.
+
 ---
 
 ## H13. She has very little life that is not about him
@@ -871,6 +1031,33 @@ Not a bug and not urgent, but it sets a ceiling: a companion whose every belief
 is downstream of her partner is a mirror, not a person. Worth treating `pursuit`'s
 cold start (H8) as more important than its row count suggests, since it is the
 one kind that would give her a day of her own.
+
+### Outcome: the pursuit pass had never once run
+
+H8 recorded `pursuit` as supply-limited and moved on. It is worse than that: the
+pass has **never executed**, on any day since it shipped. `pursuit_min_notes` was
+6, notes arrive from her away beats at roughly one a fortnight, and the pass
+returns before touching the store below the floor — so the whole of K85c has been
+dead code on this install, and the zero row count that H8 read as "not enough
+evidence yet" was really "never asked".
+
+Nothing caught it because every test in `test_pursuit_concept.py` passes its own
+`pursuit_min_notes=3`. The floor those tests exercise is not the floor that
+ships, so the number that ships was untested — the same shape as H2's unreachable
+thresholds, and worth remembering as a fifth family: **a constant that only ever
+appears in production and in a test that overrides it is unverified.**
+
+The floor is now **4**. The promotion gate still requires three distinct sources
+and a week of age, so this lowers the bar for *asking the question*, not for
+believing the answer, and it keeps a one-note margin over the gate rather than
+sitting exactly on it. Two tests now pin the shipped default: that it stays above
+the gate's source floor, and that it is reachable inside a couple of months at
+the observed note rate.
+
+Left alone: `taste` at 2 rows, which H8 measured and found honestly gated (~one
+"stands out" topic per 90 days), and the relational share of the other kinds. A
+companion who mostly thinks about her partner is not by itself a defect; having
+*no* channel for anything else was.
 
 ---
 
