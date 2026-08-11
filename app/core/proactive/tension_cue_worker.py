@@ -149,23 +149,37 @@ class TensionCueWorker:
         if not concepts:
             return "no_active", None, 0
 
-        # Forced runs relax the per-concept cooldown so an MCP poke always
-        # produces a cue when *any* qualifying tension exists.
+        # Forced runs relax the per-concept cooldown and the repeat guard so
+        # an MCP poke always produces a cue when *any* qualifying tension
+        # exists.
         candidate = _tc.select_candidate(
             concepts,
             now=now,
             kv_get=self._kv_get,
             min_confidence=floor,
             cooldown_days=0.0 if forced else self._cooldown_days,
+            exclude_signature=(
+                None if forced else self._kv_get_safe(_KV_LAST_SIGNATURE)
+            ),
         )
         if candidate is None:
             return "no_candidate", None, len(concepts)
-
-        if not forced:
-            last_sig = self._kv_get_safe(_KV_LAST_SIGNATURE)
-            if last_sig and last_sig == candidate.signature:
-                return "same_signature", candidate, len(concepts)
         return None, candidate, len(concepts)
+
+    def _shelf_is_full(self, now: datetime) -> bool:
+        """Is the previous cue still waiting to be shown?
+
+        The renderer only ever reads the newest ring entry, so drafting on
+        top of an unconsumed cue throws that observation away. This worker
+        used to run purely on the clock and did exactly that to half of
+        everything it produced. Now it produces on demand: one cue, then
+        wait until she has actually said it.
+        """
+        try:
+            return _tc.newest_cue_is_unconsumed(self._kv_get, now=now)
+        except Exception:
+            log.debug("tension_cue shelf probe raised", exc_info=True)
+            return False
 
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
@@ -178,6 +192,8 @@ class TensionCueWorker:
         """
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
+        if self._shelf_is_full(now):
+            return WorkSignal(pressure=0.0, reason="unconsumed")
         reason, candidate, _active = self._select(now, forced=False)
         if reason is not None or candidate is None:
             return WorkSignal(pressure=0.0, reason=reason or "no_candidate")
@@ -197,6 +213,9 @@ class TensionCueWorker:
         forced = self._force_next
         self._force_next = False
 
+        if not forced and self._shelf_is_full(now):
+            return {"drafted": 0, "unconsumed": True}
+
         reason, candidate, active = self._select(now, forced=forced)
         if reason == "no_view":
             return {"drafted": 0, "no_view": True}
@@ -204,8 +223,6 @@ class TensionCueWorker:
             return {"drafted": 0, "no_active": True}
         if reason == "no_candidate":
             return {"drafted": 0, "no_candidate": True, "active": active}
-        if reason == "same_signature" and candidate is not None:
-            return {"drafted": 0, "same_signature": candidate.signature}
         assert candidate is not None
 
         _tc.append_cue(
@@ -219,7 +236,7 @@ class TensionCueWorker:
             },
             max_entries=self._journal_max,
         )
-        self._mark_fired(now, candidate)
+        self._mark_fired(candidate)
         log.info(
             "tension-cue drafted: id=%d subject=%s conf=%.2f",
             candidate.concept_id,
@@ -239,11 +256,15 @@ class TensionCueWorker:
         """Arm a one-shot bypass of the cooldown + signature gates."""
         self._force_next = True
 
-    def _mark_fired(self, now: datetime, candidate: "_tc.TensionCue") -> None:
-        stamp = now.isoformat(timespec="seconds")
-        self._kv_set_safe(
-            _tc.per_concept_cooldown_key(candidate.concept_id), stamp
-        )
+    def _mark_fired(self, candidate: "_tc.TensionCue") -> None:
+        """Record that this friction was *drafted*.
+
+        Only the signature, which stops the same tension re-drafting
+        back-to-back. The per-concept cooldown is deliberately not written
+        here — see ``_KV_PER_CONCEPT_PREFIX`` in ``tension_cue``: it is a
+        pace limit on how often she raises a friction out loud, so the
+        renderer stamps it when the cue is actually shown.
+        """
         self._kv_set_safe(_KV_LAST_SIGNATURE, candidate.signature)
 
     def _kv_get_safe(self, key: str) -> str | None:

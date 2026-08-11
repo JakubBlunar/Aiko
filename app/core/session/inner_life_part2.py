@@ -1865,7 +1865,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not label:
             return ""
 
-        watermark_key = "tension_cue.last_surfaced_at"
+        watermark_key = _tc.KV_LAST_SURFACED_AT
         if not force_next:
             try:
                 last_surfaced = chat_db.kv_get(watermark_key)
@@ -1887,7 +1887,28 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("tension_cue watermark write failed", exc_info=True)
 
-        log.info("tension-cue fire: at=%s subject=%s", at, subject)
+        # The six-day per-tension cooldown is spent here, not at draft time:
+        # it paces how often she raises a given friction *out loud*, and a
+        # cue that never rendered was never raised. Stamping it in the
+        # producer silenced tensions she had not actually mentioned.
+        try:
+            concept_id = int(newest.get("concept_id") or 0)
+        except (TypeError, ValueError):
+            concept_id = 0
+        if concept_id > 0:
+            try:
+                chat_db.kv_set(
+                    _tc.per_concept_cooldown_key(concept_id), at
+                )
+            except Exception:
+                log.debug(
+                    "tension_cue cooldown write failed", exc_info=True
+                )
+
+        log.info(
+            "tension-cue fire: at=%s subject=%s concept=%d",
+            at, subject, concept_id,
+        )
         return line
 
     def _render_self_callback_block(self) -> str:
