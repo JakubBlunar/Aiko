@@ -746,8 +746,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 warmed = bool(getattr(self, "_style_signal_warmed", False))
                 if not warmed and analyzer.window_size() == 0:
                     try:
+                        # Deep enough to seed the *baseline*, not just the
+                        # 30-turn window: the block stays silent until it
+                        # has ~60 user turns of "usual" to compare against,
+                        # and roughly half of any message slice is his. One
+                        # scan, once per process, on the first turn after a
+                        # cold start.
                         recent = self._chat_db.get_messages(
-                            self.session_key, limit=60,
+                            self.session_key, limit=400,
                         )
                         history = [
                             (row.role, row.content) for row in recent

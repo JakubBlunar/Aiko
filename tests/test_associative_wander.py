@@ -122,6 +122,10 @@ def _make_worker(graph, kv, *, llm=None, store=None, **kw) -> AssociativeWanderW
         "journal_max": 6,
         "min_size": 4,
         "max_pair_cosine": 0.25,
+        # These fixtures hand-build two or three clusters and assert on
+        # the geometry, so they want every qualifying pair. The shipped
+        # 0.10 has its own tests in DistantPairSelectionTests.
+        "pair_quantile": 1.0,
         "pair_cooldown_hours": 168.0,
         "member_samples": 0,
     }
@@ -154,7 +158,9 @@ class HelperTests(unittest.TestCase):
             _Cluster(2, "rust debugging", 6, _vec(0, 1, 0)),  # cos 0 vs c1
             _Cluster(3, "trail running", 5, _vec(0.98, 0.2, 0)),  # near c1
         ]
-        pairs = find_distant_pairs(clusters, max_cosine=0.25, min_size=4)
+        pairs = find_distant_pairs(
+            clusters, max_cosine=0.25, min_size=4, quantile=1.0,
+        )
         keys = {(p.cluster_id_a, p.cluster_id_b) for p in pairs}
         # (1,2) distant, (2,3) distant; (1,3) is a near neighbour → excluded.
         self.assertIn((1, 2), keys)
@@ -170,7 +176,79 @@ class HelperTests(unittest.TestCase):
             _Cluster(3, "rust", 9, _vec(0, 0, 1)),
         ]
         self.assertEqual(
-            find_distant_pairs(clusters, max_cosine=0.25, min_size=4), []
+            find_distant_pairs(
+                clusters, max_cosine=0.25, min_size=4, quantile=1.0,
+            ),
+            [],
+        )
+
+    def test_a_realistic_embedding_spread_still_yields_pairs(self) -> None:
+        """The regression this exists for.
+
+        The gate was ``cos <= 0.25``, which is a number in the abstract
+        and not a property of any real embedding space -- sentence
+        encoders put genuinely unrelated text around 0.3-0.5, not near
+        zero. Over the live topic graph the *minimum* cosine across all
+        561 eligible pairs was 0.2648, so nothing could ever qualify and
+        the worker reported ``no_pair`` on 107 consecutive runs. Ranking
+        within the corpus cannot be put out of reach that way.
+        """
+        # Every pair here sits in the 0.30-0.75 band a real encoder
+        # produces -- i.e. all of them would have failed the old bar.
+        clusters = [
+            _Cluster(1, "anime series details", 9, _vec(1.00, 0.00, 0.00)),
+            _Cluster(2, "finding inner stillness", 9, _vec(0.35, 0.94, 0.00)),
+            _Cluster(3, "GPU hardware issues", 9, _vec(0.45, 0.30, 0.84)),
+            _Cluster(4, "gardening and walking", 9, _vec(0.60, 0.62, 0.50)),
+        ]
+        self.assertEqual(
+            find_distant_pairs(clusters, max_cosine=0.25, min_size=4), [],
+            "fixture must fail the old absolute bar, or it proves nothing",
+        )
+        pairs = find_distant_pairs(clusters, max_cosine=0.60, min_size=4)
+        self.assertTrue(pairs)
+
+    def test_quantile_keeps_the_most_distant_slice(self) -> None:
+        clusters = [
+            _Cluster(1, "a", 9, _vec(1.00, 0.00, 0.00)),
+            _Cluster(2, "b", 9, _vec(0.35, 0.94, 0.00)),
+            _Cluster(3, "c", 9, _vec(0.45, 0.30, 0.84)),
+            _Cluster(4, "d", 9, _vec(0.60, 0.62, 0.50)),
+        ]
+        every = find_distant_pairs(
+            clusters, max_cosine=1.0, min_size=4, quantile=1.0,
+        )
+        slice_ = find_distant_pairs(
+            clusters, max_cosine=1.0, min_size=4, quantile=0.5,
+        )
+        self.assertEqual(len(slice_), 3)
+        self.assertEqual(len(every), 6)
+        # And it is the *far* half, not an arbitrary one.
+        self.assertEqual([p.key for p in slice_], [p.key for p in every[:3]])
+
+    def test_a_tiny_graph_still_offers_its_furthest_pair(self) -> None:
+        """``ceil`` rather than ``round``: on a two-cluster graph a 10%
+        quantile must not floor to zero and reproduce the old silence."""
+        clusters = [
+            _Cluster(1, "a", 9, _vec(1.0, 0.0, 0.0)),
+            _Cluster(2, "b", 9, _vec(0.4, 0.9, 0.0)),
+        ]
+        pairs = find_distant_pairs(
+            clusters, max_cosine=0.60, min_size=4, quantile=0.10,
+        )
+        self.assertEqual(len(pairs), 1)
+
+    def test_the_ceiling_still_rejects_a_uniform_corpus(self) -> None:
+        """Relative selection must not mean "always finds something": a
+        corpus where every topic is the same topic has no distant pair,
+        and saying otherwise is the failure mode the ceiling prevents."""
+        clusters = [
+            _Cluster(1, "rust borrow checker", 9, _vec(1.00, 0.02, 0.00)),
+            _Cluster(2, "rust lifetimes", 9, _vec(0.99, 0.05, 0.01)),
+            _Cluster(3, "rust async", 9, _vec(0.98, 0.08, 0.02)),
+        ]
+        self.assertEqual(
+            find_distant_pairs(clusters, max_cosine=0.60, min_size=4), [],
         )
 
     def test_wander_relevant_either_topic(self) -> None:

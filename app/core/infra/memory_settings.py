@@ -504,11 +504,19 @@ class MemorySettings:
     # A cluster must have at least this many members to be worth connecting
     # — a one-off topic isn't a real strand of thought.
     associative_wander_min_size: int = 4
-    # Upper bound on the centroid cosine of the two clusters for the pair to
-    # count as "distant". At/below this the topics are genuinely far apart
-    # (the interesting kind of connection); above it they're neighbours and
-    # the link would be obvious. 0.25 ≈ "clearly different topics".
-    associative_wander_max_pair_cosine: float = 0.25
+    # Which slice of the eligible pairs, ranked by centroid cosine, counts
+    # as "distant" for this corpus. Relative because the absolute version
+    # was unreachable: at the old 0.25 bar the *most distant* pair in the
+    # live graph scored 0.2648, so the worker reported no_pair on 107
+    # consecutive runs. Sentence encoders put unrelated text around
+    # 0.3-0.5, not near zero, so any fixed number here is a guess about
+    # the embedding model rather than about the topics. See health.md H23.
+    associative_wander_pair_quantile: float = 0.10
+    # Ceiling, no longer the primary gate: it only stops a corpus where
+    # every topic is the same topic from nominating its two least similar
+    # clusters as a striking connection. Observed median over the live
+    # graph is 0.66, so this excludes the closer half outright.
+    associative_wander_max_pair_cosine: float = 0.60
     # Per-pair cooldown: once a connection between two topics is drafted,
     # don't re-connect the same pair for this long (a week default), so Aiko
     # doesn't keep re-noticing the same link. Keyed on a stable hash of the
@@ -2661,13 +2669,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 2,
                 int(memory_raw.get("associative_wander_min_size", 4)),
             ),
+            associative_wander_pair_quantile=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "associative_wander_pair_quantile", 0.10,
+                        )
+                    ),
+                ),
+            ),
             associative_wander_max_pair_cosine=max(
                 0.0,
                 min(
                     1.0,
                     float(
                         memory_raw.get(
-                            "associative_wander_max_pair_cosine", 0.25,
+                            "associative_wander_max_pair_cosine", 0.60,
                         )
                     ),
                 ),

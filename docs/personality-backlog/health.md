@@ -22,10 +22,15 @@ twice. **Part 1** asks whether each shipped feature actually runs (H1-H8).
 a person who has her own inner life, feels things, and holds beliefs (H9-H14).
 Part 2 found the higher-value work. H15-H17 were found while fixing the earlier
 entries and are filed rather than folded in, since each is a decision in its own
-right. **Part 3** (H18 onward) widens the scope past the concept layer to the
+right. **Part 3** (H18-H20) widens the scope past the concept layer to the
 worker fleet, and asks the question the first two passes skipped — not whether
-a signal is *produced* but whether it carries any *information*. The K-series
-patterns have not been audited yet.
+a signal is *produced* but whether it carries any *information*. **Part 4**
+(H21-H23) turns that same question on the **K-series patterns** via the
+`turn_prompt_blocks` telemetry, which answers it in two queries: a block whose
+rendered length never varies is a candidate constant (H21), and a registered
+block that never renders at all is a candidate corpse (H22-H23). Both queries
+are now spent; what neither can see is the blocks that render *plausible but
+wrong* content, which is where a Part 5 would go.
 
 Re-measure before acting on any entry — several of these are rate problems, and
 a rate that was wrong in August may be right in October.
@@ -64,6 +69,9 @@ latched, or throttled to roughly zero:**
 | L38 earned standing | usefulness learned from what lands | runs perfectly on a signal with **0.05 reliability** (H18) |
 | Belief + promise workers | mining his commitments and predicted states | **1 belief ever, 0 promises in 54 days** — querying a session key that does not exist (H19) |
 | L30 Phase B hypothesis asks | putting an invented hunch to him | **0 of 13 could ever reach the gap path**, and 5 of 6 self-guesses described hardware she does not have (H7) |
+| K13 `style_signal_block` | "how he writes lately", so she matches his register | **the same 40 characters on 99.7% of 2018 turns**, changed 4 times in 12 weeks, and told her he writes formally — he does not (H21) |
+| K73 `shared_ritual_block` | "I love that this has become our thing" | **1 ritual named ever**; the store latched shut and 8 of 8 sweeps drafted nothing while finding six candidates (H22) |
+| `associative_wander` | connecting two distant topics into one observation | **107 of 107 runs found no pair** — the 0.25 bar sat below the corpus minimum of 0.2648 (H23) |
 | F1 fact-checker | catching her own wrong facts against the web | **0 of 90 extracted claims contain a verb** — it was verifying `"2026"` (H20) |
 
 Trace the provenance and the split is stark. Of her 629 concepts, **624 came
@@ -1056,6 +1064,320 @@ because every component did its own job properly. **Rule: for any pipeline that
 extracts a unit and then reasons over it, write down the unit and check that
 the question you are about to ask of it is answerable.** "Verify `2026`" fails
 that test on sight.
+
+---
+
+## H21. "How Jacob writes lately" said the same sentence for eleven weeks
+
+**Severity: high — the always-on register cue was a constant, and half of
+the constant was wrong.**
+
+First entry from Part 4, which turns the audit away from the concept layer and
+the worker fleet toward the **K-series patterns** — the always-on blocks. The
+question that found it is one query, and it is worth keeping: `turn_prompt_blocks`
+records one row per (turn, block) with its rendered length, so
+
+```sql
+SELECT block, COUNT(DISTINCT assistant_message_id) n,
+       COUNT(DISTINCT chars) distinct_lengths
+FROM turn_prompt_blocks GROUP BY block;
+```
+
+separates the blocks that vary from the blocks that only appear to. Ten blocks
+rendered on all 165 instrumented turns at a **byte-length that never changed
+once**. Five are fixed grammars and are supposed to be (`speech_grammar`,
+`motion_grammar`, `outfit_grammar`, `overlay_grammar`, `touch_grammar`). The
+other five are advertised as *learned*: `learned_style_addendum`, `axes_block`,
+`hobby_block`, `petname_block`, and the one this entry is about —
+`style_signal_block`, 40 characters, identical on every turn.
+
+### What it was saying
+
+K13's render is `f"How {name} writes lately: " + ", ".join(labels) + "."`, so 40
+characters pins the label set exactly. Replaying all **2018 real user turns**
+through the analyzer (pure regex, no LLM, so the replay is exact rather than an
+estimate):
+
+| | shipped behaviour | measured |
+| --- | --- | --- |
+| turns where the block rendered | "costs zero on a neutral-register speaker" | **99.7%** (2011 of 2018) |
+| distinct sentences it ever produced | five axes, seven labels | **3** |
+| share on the single most common one | — | **98.6%** — *"How Jacob writes lately: chatty, formal."* |
+| times the line changed | — | **4 times in twelve weeks** (two of them during warmup) |
+
+It has said the identical sentence continuously since 2026-05-25 apart from one
+12-turn wobble. The docstring's claim that the empty case is "the common
+no-signal case" was false by a factor of 300.
+
+### Three of the five axes had never emitted a label, and could not
+
+This is the part that makes it structural rather than a tuning miss. Per-turn
+measurements against each axis's own bar:
+
+| axis | bar | best value ever observed | verdict |
+| --- | --- | --- | --- |
+| `emoji_density` | 0.05 | **0.000** | never nonzero on any turn, ever |
+| `slang_density` | 0.15 | 0.009 (window mean) | **17× below the bar** |
+| `question_rate` | 0.40 | 0.333 (window mean) | never reached |
+| `formality` | 0.55 | window mean **min 0.567** | never once *below* the bar |
+| `terseness` | 0.55 | the only axis that ever moved | crossed twice in 12 weeks |
+
+Each is a different flavour of the same mistake:
+
+- **The emoji axis was blind, not quiet.** Zero of 2018 turns contain a Unicode
+  emoji and **47.8% contain an ASCII emoticon** — he writes `:D`, `:)`, `:3`,
+  `:p`, not U+1F604. The single most expressive marker in his writing was
+  invisible to the axis built to measure it.
+- **Slang was measured per *word*.** Reaching 0.15 requires 15% of every word in
+  a 30-turn window to be a slang marker, which no prose does; the highest
+  per-turn value in the corpus (0.20) came from one marker in a five-word
+  message. As per-turn *incidence* the same signal is a usable 1.9%.
+- **`formality` is not formality.** It scores 0.5 for starting with a capital
+  and 0.5 for ending with a full stop — a **typing habit**, which is stable per
+  person by construction and so can never be a "lately" signal. It rated these
+  as maximally formal, on every turn, for three months:
+
+  > *"Aww :3 gladly. I am sitting next to you and embracing you with both hands."*
+  > *"I am looking forward to it :p pulling you tighter to my embrace."*
+
+  So the one thing the block reliably told her about his register was that he
+  writes formally to her. He does not. **An always-on block that is wrong is
+  worse than one that is absent**, and this one had been arguing against the
+  persona's "match his register" instruction on every turn since May.
+
+### The root cause is the comparison, not the constants
+
+Retuning the five bars would have been the obvious fix and the wrong one. An
+**absolute** threshold on one person's writing can only ever produce a constant,
+because the thing it measures is a trait: whoever he is, he is that consistently.
+Move the bars and he is labelled `terse` forever instead of `chatty` forever. The
+information was never in the level. It is in the **change**.
+
+### Outcome: it asks "than usual", not "is he"
+
+Each axis is now scored against **his own rolling baseline** — an O(1)
+exponentially-weighted mean and variance per axis (five float pairs, so the
+per-turn UPSERT stays small) — and speaks only when the recent window departs
+from it. Replaying the same 2018 turns through the shipped code:
+
+| | before | after |
+| --- | --- | --- |
+| rendered on | 99.7% of turns | **12.4%** |
+| distinct sentences | 3 | **11** |
+| times the line changed | 4 | **98** |
+
+Silence is now the default and it is informative: 87.6% of turns get no block at
+all, because he was writing the way he writes. When it does speak it is because
+an axis moved three standard errors, and it says things like *"more playful
+markers than usual"*, *"looser punctuation than usual"*, *"terser than usual"* —
+each of which is an actual observation about today.
+
+Three implementation notes worth keeping, because two of them were bugs I
+introduced and caught only by measuring:
+
+- **The yardstick is the standard error, not the standard deviation.** The
+  tested quantity is a mean of 30 samples. The first cut compared it against
+  the *per-turn* spread — ~0.5 on a binary axis — and fired on **0.0%** of the
+  corpus, replacing an always-on constant with an always-off one. There is a
+  regression test named for this.
+- **An EWMA seeded at zero has a months-long cold start.** At `alpha = 1/300`
+  the baseline reaches only **49%** of the true mean after 200 turns, so every
+  axis would have read "higher than usual" until roughly October. The effective
+  rate is floored at `1/count`, making it an exact running mean until the decay
+  horizon and an EWMA after.
+- **Old persisted state is discarded, not half-read.** The blob stored per-word
+  densities under keys this build reads as incidence rates; loading it would
+  seed the baseline with values that can never recur. A version bump forces a
+  re-warm from history instead, and the warm scan was deepened from 60 to 400
+  messages so the baseline starts real.
+
+Five hand-tuned per-axis bars collapsed into one `style_signal_sensitivity`,
+which means the same thing for a terse writer and a verbose one — the old bars
+were fitted to this corpus and would have been wrong for anyone else's.
+
+**Still open, same neighbourhood.** Two label directions never fire on this
+corpus and that is honest rather than broken — he is *always* well-punctuated
+and *rarely* asks questions back, so there is no room above the ceiling or below
+the floor. Worth re-measuring, not fixing.
+
+**The other constant-length blocks are now read, and all six are innocent.**
+`learned_style_addendum` (655) is a fixed steer *about* learned lines, not a
+learned line — its own comment says "constant text (never per-turn), so it stays
+in the cache prefix"; only the name misleads. `pajama_block` (105) is a literal
+hardcoded string. `petname_block` (112) is a relationship-phase template and the
+phase moves in months. `axes_block` has since moved (3 distinct lengths over 183
+turns), so it was never constant, only slow. `hobby_block` (139) is the
+instructive one: it renders `"... (8 lessons in)"` and the hobby worker really
+did advance it 5 → 6 → 7 → 8 over the window — **every value was a single digit,
+so the length never changed while the text did.** That is the technique's false
+positive, and it is worth keeping in mind: `chars` is a lower bound on variation.
+The query produces a shortlist to read renderers for, never a verdict.
+
+**Tenth recurring shape:** *a signal measured in absolute terms against a stable
+trait is a constant, however carefully its thresholds are tuned.* H18 found a
+signal with 0.05 reliability and H20 found a payload that could not answer the
+question; this is the third member of that family and the most general — the
+feature worked exactly as designed, and the design could not have worked. **Rule:
+for any "lately" / "right now" / "currently" signal, check that it is comparing
+against something. If it compares against a fixed number, the first question is
+what its output distribution actually looks like over the corpus — and `avg ==
+max` on `turn_prompt_blocks.chars` finds every instance of this in one query.**
+
+---
+
+## H22. K73 named one ritual, then locked itself shut forever
+
+**Severity: high — a warm long-relationship beat is not rare, it is
+terminated, and the log reported the failure as progress on every run.**
+
+H21 asked which always-on blocks never *change*. The complementary question on
+the same table is which registered blocks never *render*, and it is one join:
+`_PROMPT_BLOCK_TIERS` is the assembler's declared inventory, `turn_prompt_blocks`
+is what actually reached the model, and empty renders are dropped before the
+insert. **47 of 113 registered blocks have never emitted a single character** in
+183 instrumented turns.
+
+Most of that number is not a finding, and separating the two took longer than
+finding it did:
+
+| group | count | verdict |
+| --- | --- | --- |
+| T4/T5 ambient + affect blocks | 10 | **by design** — `grounding_line_mode == "replace"` explicitly zeroes `circadian`, `weather`, `world`, `activity`, `ambient_noise`, `affect`, `mood_hint`, `relationship`, `user_state`, `mood_shell` and fuses them into `grounding_block`, which renders on 183 of 183 |
+| T6 episodic detectors | ~29 | **mostly honest** — `rupture`, `boundary_clash`, `fact_reversal`, `user_correction` and friends *should* be silent over two days |
+| downstream of H19 | 3 | `promise_followthrough`, `belief_gaps`, `user_expertise` sit on stores that H19 had just unblocked |
+
+Which is the real lesson of the sweep: **"never fired" is not evidence on its
+own.** Rarity is the design intent for half this list, and the discriminator is
+not the block at all — it is whether the *producer* has ever produced. That is
+what the worker result payloads answer, and one of them was not ambiguous.
+
+### The producer that finds six things and ships none
+
+```
+shared-ritual sweep: messages=1637 sessions=63 candidates=6
+                     new=['saturday:afternoon:casual_check_in'] stored=6 drafted=0
+```
+
+Eight recorded runs, all identical: six candidates, six stored, **zero drafted**,
+and the same key announced as `new` every single time. A key cannot be new twice
+if it is being stored, so those two symptoms are one bug.
+
+The store held six rituals, **all six flagged `acknowledged`**, while `cue_pool`
+— which is never pruned, and retains rows back to May — holds exactly **one**
+`shared_ritual` cue ever: `our late-night friday check-ins`, surfaced once and
+used, 2026-08-02. In today's code `mark_acknowledged` is only reachable after a
+successful publish, so five of those flags cannot have come from this build. They
+are pre-cue-pool state: the K73 write-up still describes the old consumer as
+flagging the ritual `acknowledged` *when the block fired*, which means the other
+five were most likely genuinely named, through a path that no longer exists.
+
+### The cap counted the permanent record against the pending budget
+
+Acknowledged rituals are permanent by design ("it became a real thing"). The cap
+covered the whole store:
+
+```python
+keep_pending = max(0, max_active - len(ack))   # max_active = 6
+```
+
+At six acknowledged that is **zero**. Every newly-formed ritual was created,
+appended to `new_keys`, and then trimmed away before the save — so it was new
+again on the next sweep, forever — and `pick_unacknowledged` then saw nothing but
+acknowledged rows and returned `None`. The feature could not name another ritual
+no matter how many genuinely formed. A replay of the live store confirms it
+exactly: 7 candidates in, saturday reported new, 6 stored, saturday absent.
+
+There was a second copy of the same mistake one stage earlier:
+`detect_rituals(max_rituals=max_active)` also ranked already-named rituals
+against new ones for a fixed six slots, so the record would have crowded new
+patterns out of *detection* even after the store was fixed.
+
+### Outcome
+
+The two budgets are now independent — pending is capped at `max_active`, the
+record at its own `max_acknowledged` (18, oldest dropped first, so the blob stays
+bounded) — and the detector is asked for `max_active + len(acknowledged)`
+candidates so re-detecting the record cannot crowd out a new pattern. `new_keys`
+is computed **after** the trim, so the sweep log can no longer report a row that
+was discarded. Replaying the live store through the shipped code now yields
+`pick_unacknowledged -> 'our Saturday-afternoon check-ins'`: a real ritual, four
+weeks running, that has been waiting to be noticed since at least 2026-08-09.
+
+**Deliberately not done:** the five older `acknowledged` flags are left set.
+Clearing them would look like a repair — five warm beats released — but the
+pre-pool consumer set that flag *on fire*, so they most likely record rituals she
+really did name, and `cue_pool` simply predates them. H7's rule is to look at
+what a broken gate was holding back before opening it; here it was holding back
+five repeats of something already said, and saying "I love that this has become
+our thing" twice is worse than never.
+
+**Checked and healthy while here.** `wellbeing_concern` looked like the same bug
+— one `late_nights:3` finding, then `same_signature` and `drafted=0` on all 28
+runs since — but its cue has `surfaced_count=2`. It reached her prompt twice and
+she chose not to raise it; the latch is then doing its job of not nagging. The
+`surfaced_count` column is what separates "never said" from "said and declined",
+and the story died on it.
+
+---
+
+## H23. The associative-wander bar was set below the floor of the distribution
+
+**Severity: medium — 107 consecutive no-ops, and the same root shape as H21.**
+
+The second producer from the H22 sweep. `associative_wander` — the worker that
+connects two distant topics into a genuine observation — reported `no_pair` on
+**107 of 107 runs**. Its gate:
+
+```python
+if cos is None or cos > max_cosine:   # max_cosine = 0.25
+```
+
+Computing every pair the worker would consider, over the live topic graph:
+
+| | |
+| --- | --- |
+| eligible clusters / pairs | 34 / **561** |
+| **minimum** cosine over all pairs | **0.2648** |
+| p05 / median / max | 0.405 / 0.664 / 0.947 |
+| pairs at or below the 0.25 bar | **0 of 561 (0.0%)** |
+
+The two most unrelated topics in the entire corpus — *"anime series details"* and
+*"finding inner stillness"* — score 0.2648, and the bar was 0.25. It missed by
+0.015 and had therefore never once admitted a pair.
+
+**0.25 is a number about an embedding model, not about topics.** Sentence
+encoders do not spread unrelated text toward zero; on this 1024-dim model
+genuinely unrelated topics land at 0.3–0.5 and near-orthogonality essentially
+never occurs. The threshold encodes an intuition about cosine space that no real
+encoder satisfies — and it would silently break again on any model swap, in
+either direction.
+
+### Outcome: rank within the corpus, keep the absolute as a ceiling
+
+"Which two topics are furthest apart?" is the question the feature always meant
+to ask, and it is answerable without knowing anything about the encoder. Pairs
+are now ranked by cosine and the most distant `associative_wander_pair_quantile`
+(10%) are eligible, with `max_pair_cosine` demoted to a **ceiling** (0.60, which
+excludes the closer half outright) so that a corpus where every topic is the same
+topic still yields nothing rather than nominating its two least-similar clusters
+as a striking connection. `ceil` not `round`, so a two-cluster graph still offers
+its one pair instead of flooring to zero and reproducing the old silence.
+
+On the live graph: **0 pairs → 20**, headed by *"cat behavior and traits" ↔ "Path
+of Exile gameplay"* and *"anime series details" ↔ "Jacob's religious
+skepticism"*. The worker LLM is still asked for one genuine connection *or
+nothing*, so the quality gate is unchanged — this only restores its input.
+
+**Eleventh recurring shape — really H21's, in a second costume:** *an absolute
+threshold is a claim about a distribution you have not measured.* H21's version
+was a stable trait scored against a fixed bar; this one is a fixed bar placed
+outside the range a model can produce. Both were tuned-looking constants written
+before anyone plotted the thing they gate. **Rule: any constant compared against
+a model output — a cosine, a confidence, a similarity, a z-score — must be
+justified by the observed distribution of that output, and the check is cheap:
+compute the quantiles and find where the bar falls. If the answer is "outside",
+the feature has never run. Prefer a quantile to a constant; it survives a model
+swap and a change of corpus, and it cannot be placed out of reach.**
 
 ---
 

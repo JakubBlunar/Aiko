@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date, timedelta
 
 from app.core.relationship import shared_ritual as sr
 
@@ -125,6 +126,99 @@ class MergeRitualsTests(unittest.TestCase):
         }]
         merged, _ = sr.merge_rituals(existing, [], now_date="2026-06-01")
         self.assertEqual(len(merged), 1)
+
+
+class BudgetStarvationTests(unittest.TestCase):
+    """The permanent record must not consume the pending budget.
+
+    K73 named one ritual and then stopped forever. Acknowledged rituals
+    are permanent by design and the cap covered the whole store, so the
+    pending budget was ``max(0, max_active - len(acknowledged))`` -- at
+    six acknowledged that is zero, every newly-formed ritual was trimmed
+    away before the save, and ``pick_unacknowledged`` returned ``None``
+    on every sweep from then on. The live store reached exactly that
+    state: 6 of 6 acknowledged, ``drafted=0`` on all eight recorded runs.
+    """
+
+    def _full_record(self, n=sr.DEFAULT_MAX_ACTIVE):
+        start = date(2026, 1, 1)
+        return [
+            {
+                "key": "day%d:evening:casual_check_in" % i,
+                "label": "our thing %d" % i,
+                "weeks_seen": 4,
+                "acknowledged": True,
+                "first_seen": (start + timedelta(days=i)).isoformat(),
+            }
+            for i in range(n)
+        ]
+
+    def _new_cand(self, key="saturday:afternoon:casual_check_in"):
+        return sr.RitualCandidate(
+            key=key, weekday="saturday", bucket="afternoon",
+            shape="casual_check_in", cadence="Saturday afternoons",
+            shape_label="check-ins",
+            label="our Saturday-afternoon check-ins",
+            weeks_seen=4, share=0.5,
+        )
+
+    def test_a_new_ritual_survives_a_full_record(self) -> None:
+        merged, _ = sr.merge_rituals(
+            self._full_record(), [self._new_cand()], now_date="2026-08-11",
+        )
+        keys = {r["key"] for r in merged}
+        self.assertIn("saturday:afternoon:casual_check_in", keys)
+
+    def test_and_is_therefore_offerable(self) -> None:
+        """The assertion that actually matters -- surviving the trim is
+        only useful if the publish step can then see it."""
+        merged, _ = sr.merge_rituals(
+            self._full_record(), [self._new_cand()], now_date="2026-08-11",
+        )
+        pick = sr.pick_unacknowledged(merged)
+        self.assertIsNotNone(pick)
+        assert pick is not None
+        self.assertEqual(pick["key"], "saturday:afternoon:casual_check_in")
+
+    def test_new_keys_only_names_rows_that_survived(self) -> None:
+        """``new_keys`` was collected before the trim, so the sweep log
+        reported the same doomed key as "new" on every run forever --
+        eight identical lines that read like progress."""
+        merged, new = sr.merge_rituals(
+            self._full_record(),
+            [self._new_cand()],
+            now_date="2026-08-11",
+            max_active=0,
+        )
+        kept = {r["key"] for r in merged}
+        for key in new:
+            self.assertIn(key, kept)
+
+    def test_the_record_stays_bounded(self) -> None:
+        """Independent budgets must not mean an unbounded blob: the
+        record is trimmed against its own cap, oldest first."""
+        merged, _ = sr.merge_rituals(
+            self._full_record(n=40), [], now_date="2026-08-11",
+        )
+        self.assertEqual(len(merged), sr.DEFAULT_MAX_ACKNOWLEDGED)
+
+    def test_the_record_drops_the_oldest_first(self) -> None:
+        merged, _ = sr.merge_rituals(
+            self._full_record(n=40), [], now_date="2026-08-11",
+            max_acknowledged=2,
+        )
+        self.assertEqual(
+            sorted(r["first_seen"] for r in merged),
+            ["2026-02-08", "2026-02-09"],
+        )
+
+    def test_pending_is_still_capped(self) -> None:
+        cands = [
+            self._new_cand(key="d%d:evening:casual_check_in" % i)
+            for i in range(20)
+        ]
+        merged, _ = sr.merge_rituals([], cands, now_date="2026-08-11")
+        self.assertEqual(len(merged), sr.DEFAULT_MAX_ACTIVE)
 
 
 class PickAndRenderTests(unittest.TestCase):

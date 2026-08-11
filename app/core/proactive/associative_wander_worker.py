@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -70,6 +71,17 @@ _KV_LAST_FIRED_AT = "associative_wander.last_fired_at"
 
 # Cap how much of any text we render in a single log line / feed the LLM.
 _LOG_PREVIEW_CHARS = 120
+
+#: Share of the eligible pairs, ranked by centroid cosine, that counts as
+#: "distant" for this corpus. Relative rather than absolute because the
+#: absolute version was unreachable: see :func:`find_distant_pairs`.
+DEFAULT_PAIR_QUANTILE = 0.10
+
+#: Ceiling, not the primary gate. Its only job now is to stop a corpus
+#: where every topic is the same topic from nominating its two least
+#: similar clusters as a striking connection. The observed median over
+#: the live graph is 0.66, so this excludes the closer half outright.
+DEFAULT_MAX_PAIR_COSINE = 0.60
 _MEMBER_SNIPPET_CHARS = 140
 
 
@@ -151,15 +163,29 @@ def find_distant_pairs(
     *,
     max_cosine: float,
     min_size: int,
+    quantile: float = DEFAULT_PAIR_QUANTILE,
 ) -> list[WanderPair]:
-    """All eligible distant pairs, most-distant first.
+    """The most distant eligible pairs, most-distant first.
 
     A pair qualifies when both clusters clear ``min_size``, both have a
-    non-blank label, and their centroid cosine is at or below
-    ``max_cosine`` (i.e. they are genuinely far apart in topic space — the
-    interesting kind of connection, not two neighbours). Pure + sortable so
-    the worker can rank candidates and the tests can pin the geometry
-    without a live graph.
+    non-blank label, and the pair lands in the most-distant ``quantile``
+    of everything this corpus actually contains — with ``max_cosine`` kept
+    only as a ceiling, so a corpus where every topic is about the same
+    thing yields nothing rather than calling two neighbours far apart.
+
+    **"Distant" is relative on purpose.** This used to be a flat
+    ``cos <= max_cosine`` test at 0.25, which is a number in the abstract
+    and not a property of any real embedding space: modern sentence
+    encoders put genuinely unrelated text around 0.3–0.5, not near zero.
+    Measured over the live graph, the *minimum* cosine across all 561
+    eligible pairs was 0.2648 — the bar sat below the floor of the
+    distribution, so the worker reported ``no_pair`` on 107 consecutive
+    runs. Ranking within the corpus asks the question that was meant all
+    along ("which two topics are furthest apart?") and cannot be put out
+    of reach by a change of embedding model. See health.md H23.
+
+    Pure + sortable so the worker can rank candidates and the tests can
+    pin the geometry without a live graph.
     """
     eligible: list["TopicCluster"] = []
     for c in clusters:
@@ -195,7 +221,14 @@ def find_distant_pairs(
                 )
             )
     pairs.sort(key=lambda p: p.cosine)
-    return pairs
+    if not pairs:
+        return pairs
+    q = min(1.0, max(0.0, float(quantile)))
+    # At least one pair whenever anything cleared the ceiling: the point
+    # of the worker is to connect the two most distant things she knows
+    # about, and on a small graph that is a single pair.
+    keep = max(1, int(math.ceil(q * len(pairs))))
+    return pairs[:keep]
 
 
 # ── journal helpers (shared with the surfacing provider) ────────────────
@@ -299,7 +332,8 @@ class AssociativeWanderWorker:
         cooldown_seconds: float = 7200.0,
         journal_max: int = 6,
         min_size: int = 4,
-        max_pair_cosine: float = 0.25,
+        max_pair_cosine: float = DEFAULT_MAX_PAIR_COSINE,
+        pair_quantile: float = DEFAULT_PAIR_QUANTILE,
         pair_cooldown_hours: float = 168.0,
         member_samples: int = 3,
         rng: random.Random | None = None,
@@ -317,6 +351,7 @@ class AssociativeWanderWorker:
         self._journal_max = max(1, int(journal_max))
         self._min_size = max(2, int(min_size))
         self._max_pair_cosine = float(max_pair_cosine)
+        self._pair_quantile = min(1.0, max(0.0, float(pair_quantile)))
         self._pair_cooldown_hours = max(0.0, float(pair_cooldown_hours))
         self._member_samples = max(0, int(member_samples))
         self._rng = rng or random.Random()
@@ -373,10 +408,13 @@ class AssociativeWanderWorker:
             return {"drafted": 0, "no_graph": True}
 
         pairs = find_distant_pairs(
-            clusters, max_cosine=self._max_pair_cosine, min_size=self._min_size,
+            clusters,
+            max_cosine=self._max_pair_cosine,
+            min_size=self._min_size,
+            quantile=self._pair_quantile,
         )
         if not pairs:
-            return {"drafted": 0, "no_pair": True}
+            return {"drafted": 0, "no_pair": True, "clusters": len(clusters)}
 
         cooldowns = self._load_cooldowns()
         chosen = self._choose_pair(pairs, cooldowns, now, force=force)

@@ -313,16 +313,14 @@ If the model over-corrects and sprinkles a filler into every reply, the existing
 
 ### K13 — Jacob-side stylometric mirror
 
-Tracks Jacob's writing style across recent user turns and emits a "How Jacob writes lately: terse, casual, asks back often" directive so Aiko's register stays calibrated. Five axes: terseness / formality / emoji / slang / question rate. No embedder, no LLM. **Always rendered** (including aggressive context-mode) because register is the first thing aggressive mode wants to preserve.
+Emits a "How Jacob is writing today: terser than usual, drier than usual" directive so Aiko's register follows his. Five axes: terseness / punctuation / playfulness / slang / question. No embedder, no LLM. **Eligible on every turn** (including aggressive context-mode) because register is the first thing aggressive mode wants to preserve — but it only *renders* when an axis has actually moved, which on the reference corpus is 12% of turns.
+
+Each axis is scored as a deviation from the user's **own rolling baseline**, not against an absolute bar. That is deliberate and it is why there is one knob here instead of five: an absolute bar can only produce a constant on a stable writer. The previous build rendered on 99.7% of 2018 turns, said one of three things, and changed what it said four times in twelve weeks — see `docs/personality-backlog/health.md` H21.
 
 - `agent.style_signal_enabled` *(bool, `true`)* — master switch.
-- `agent.style_signal_window` *(int, `30`, min `2`)* — recent-user-turn rolling window.
-- `agent.style_signal_warmup_min` *(int, `8`, min `2`)* — minimum turns before any axis renders.
-- `agent.style_signal_terse_threshold` *(float, `0.55`, clamped `[0, 1]`)* — share of short messages required for "terse" to render. Higher → cue is stricter.
-- `agent.style_signal_formal_threshold` *(float, `0.55`, clamped `[0, 1]`)* — share of formal markers required for "formal."
-- `agent.style_signal_emoji_threshold` *(float, `0.05`, clamped `[0, 1]`)* — share of messages containing emoji required for "emoji-heavy."
-- `agent.style_signal_slang_threshold` *(float, `0.15`, clamped `[0, 1]`)* — share of slang-flagged messages required for "slangy."
-- `agent.style_signal_question_threshold` *(float, `0.40`, clamped `[0, 1]`)* — share of user messages ending in `?` required for "asks back often."
+- `agent.style_signal_window` *(int, `30`, min `2`)* — the "lately" window, in recent user turns.
+- `agent.style_signal_warmup_min` *(int, `8`, min `2`)* — minimum turns before the window reports at all. Separately, no axis speaks until 60 turns of baseline exist.
+- `agent.style_signal_sensitivity` *(float, `3.0`, clamped `[1, 10]`)* — how many baseline standard errors an axis must move before it is named. Higher → quieter and more selective; `3.0` lands near 12% of turns on the reference corpus. Consecutive windows overlap heavily, so this reads stricter than a textbook 3-sigma; going below `2.0` narrates sampling noise as a change in register.
 
 ### K14 — implicit engagement signals (latency + length)
 

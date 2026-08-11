@@ -946,58 +946,15 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             style_signal_warmup_min=max(
                 2, int(agent_raw.get("style_signal_warmup_min", 8)),
             ),
-            style_signal_terse_threshold=max(
-                0.0,
+            # Floored at 1.0: below one standard error the block would
+            # narrate ordinary sampling noise as a change in how he
+            # writes, which is worse than the constant it replaced.
+            style_signal_sensitivity=max(
+                1.0,
                 min(
-                    1.0,
+                    10.0,
                     float(
-                        agent_raw.get(
-                            "style_signal_terse_threshold", 0.55,
-                        )
-                    ),
-                ),
-            ),
-            style_signal_formal_threshold=max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        agent_raw.get(
-                            "style_signal_formal_threshold", 0.55,
-                        )
-                    ),
-                ),
-            ),
-            style_signal_emoji_threshold=max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        agent_raw.get(
-                            "style_signal_emoji_threshold", 0.05,
-                        )
-                    ),
-                ),
-            ),
-            style_signal_slang_threshold=max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        agent_raw.get(
-                            "style_signal_slang_threshold", 0.15,
-                        )
-                    ),
-                ),
-            ),
-            style_signal_question_threshold=max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        agent_raw.get(
-                            "style_signal_question_threshold", 0.40,
-                        )
+                        agent_raw.get("style_signal_sensitivity", 3.0)
                     ),
                 ),
             ),
