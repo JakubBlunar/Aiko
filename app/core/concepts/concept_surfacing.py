@@ -384,7 +384,16 @@ REASON_REVIVED = "recently_revived"
 REASON_LOOSENED = "loosening_boundary"
 REASON_PROMOTED = "newly_promoted"
 REASON_CHANGE = "recent_change"
-REASON_STANDING = "earned_standing"
+# There is deliberately no ``earned_standing`` reason. L38 standing tilts
+# the *ranking* and nothing else: it answers "is this worth bringing
+# forward", which is a property of the surfacing machinery rather than a
+# reason a reader would recognise, and L41 has no framing for it because
+# "I mention this because it usually lands well" is not a thing anyone
+# says. It was a candidate here for a while and won zero of 11,321 live
+# surfacings -- at a weight of 0.10 against a context weight of 0.45-0.65
+# it would have needed a standing above 1.0, past its own ceiling -- so
+# the label promised a capability that did not exist and could not have
+# been used if it had. See ``surface_score`` for where standing does act.
 
 #: Human phrasing for the debug view, keyed by reason token.
 SURFACE_REASON_LABELS: dict[str, str] = {
@@ -399,8 +408,31 @@ SURFACE_REASON_LABELS: dict[str, str] = {
     REASON_LOOSENED: "boundary loosening",
     REASON_PROMOTED: "newly promoted",
     REASON_CHANGE: "changed recently",
-    REASON_STANDING: "has reliably landed well",
 }
+
+#: Lifecycle events that count as *she changed her mind*, and may therefore
+#: name a surfacing ahead of the weighted contest.
+#:
+#: ``promoted`` is deliberately absent. Promotion is the ordinary
+#: candidate-to-active transition every concept undergoes exactly once, not
+#: a revision of anything: on the live graph 514 active concepts had a
+#: recent promotion against 80 plasticity shifts and 2 contradictions, so
+#: admitting it would frame two thirds of everything she believes as
+#: "lately you've come around to feeling that" and make the voice
+#: meaningless. It can still win the ordinary contest and label itself
+#: ``newly_promoted``; it just cannot jump the queue.
+_CHANGE_NAMING_EVENTS = frozenset({
+    "contradicted", "plasticity_shift", "revived",
+})
+
+#: How much decayed charge it takes for such an event to name the
+#: surfacing. The charge is the event's base weight halved every
+#: ``salience_halflife_days`` (21 by default), so a single floor buys each
+#: driver a window in proportion to how big a change it was: roughly four
+#: weeks for a contradiction, twelve days for a loosened belief, a week for
+#: a revival. After that the belief goes back to being narrated as ordinary
+#: relevance, which by then it is. Gates the *label*, never the score.
+CHANGE_REASON_FLOOR = 0.4
 
 #: Which salience driver maps to which reason. A salience win is only ever
 #: as specific as the event behind it; anything unrecognised degrades to the
@@ -425,6 +457,7 @@ def surface_reason(
     activation: float = 0.0,
     recency_known: bool = True,
     change_event: str | None = None,
+    change_charge: float = 0.0,
     w: SurfaceWeights = DEFAULT_SURFACE_WEIGHTS,
 ) -> str:
     """Name the signal that won this concept its place in the prompt.
@@ -449,6 +482,13 @@ def surface_reason(
     reported as their own fields on the L26 trace instead, where the lift
     they applied is visible without being misattributed.
 
+    **L38 standing is not a candidate either**, though it is a genuine
+    ranking term. It answers "is this worth bringing forward", which is a
+    fact about the surfacing machinery rather than a reason a reader would
+    recognise; it is reported on the trace as its own field. ``standing``
+    stays in the signature because it belongs in ``total`` -- leaving it
+    out would inflate every other term's share.
+
     ``recency_known=False`` drops recency from contention. Its neutral
     value is ``1.0`` -- the *highest* it goes -- so a concept that has
     simply never been reinforced would otherwise win on a missing signal.
@@ -459,11 +499,37 @@ def surface_reason(
     :func:`event_charge_detail`) into the specific story behind the charge.
     Ties resolve toward the more specific signal, which is why the
     candidate order below is deliberate rather than alphabetical.
+
+    **A fresh change short-circuits the contest.** A recent contradiction
+    or revival is a categorical fact about the belief, not another
+    continuous signal to weigh against cosine, and the weighted contest
+    could never surface one: nine of thirteen kinds set ``salience`` to
+    zero (so a change was not even a candidate), and for the three that do
+    weight it, out-sharing ``context`` needs a salience above ``0.75`` at a
+    cosine of only ``0.3`` and is arithmetically impossible past ``0.4``.
+    Across 11,321 live surfacings the entire changed family -- and
+    ``unresolved_contradiction`` with it -- came back zero, against a graph
+    holding 207 contradictions and 72 revivals. So a
+    :data:`_CHANGE_NAMING_EVENTS` driver whose ``change_charge`` clears
+    :data:`CHANGE_REASON_FLOOR` names the reason outright.
+
+    This is the one place the answer is "the most informative true thing
+    about why this belief is worth raising now" rather than strictly "the
+    largest weighted term". It is deliberate: the reason drives L41's
+    lead-in phrasing, where "you haven't fully settled it, but" earns its
+    place over "this came up" even on a turn cosine also matched. It does
+    not touch :func:`surface_score`, so *which* concepts surface, and in
+    what order, is unchanged.
     """
     if lane == "core":
         return REASON_CORE
     if lane == "activation":
         return REASON_ASSOCIATION
+    if (
+        str(change_event or "") in _CHANGE_NAMING_EVENTS
+        and float(change_charge) >= CHANGE_REASON_FLOOR
+    ):
+        return _salience_reason(change_event)
     total = (
         float(w.context)
         + float(w.confidence)
@@ -481,11 +547,6 @@ def surface_reason(
         (float(w.salience) * _c01(salience) / total, _salience_reason(change_event)),
         (float(w.activation) * _c01(activation), REASON_ASSOCIATION),
         (float(w.stability) * _c01(stability) / total, REASON_SETTLED),
-        (
-            float(w.standing) * _c01(standing) / total
-            if standing is not None else 0.0,
-            REASON_STANDING,
-        ),
         (float(w.context) * _c01(cosine) / total, REASON_TOPIC),
         (float(w.confidence) * _c01(confidence) / total, REASON_CONFIDENT),
     ]
@@ -656,6 +717,7 @@ def save_habituation(
 
 
 __all__ = [
+    "CHANGE_REASON_FLOOR",
     "HABITUATION_KV_KEY",
     "STANDING_KV_KEY",
     "STANDING_NEUTRAL",
