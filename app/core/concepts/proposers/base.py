@@ -15,7 +15,7 @@ few parsing helpers. One proposer per sibling module (``identity_user``,
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -581,6 +581,7 @@ def propose_boundary(
     cluster_index: Sequence[tuple[int, str, int]] = (),
     memories: Sequence[Any] = (),
     existing: Sequence[ExistingConcept] = (),
+    deliberate_kinds: Collection[str] = (),
 ) -> list[CandidateProposal]:
     """Shared body for the L18 boundary proposers (both subjects).
 
@@ -592,23 +593,42 @@ def propose_boundary(
     carry mixed ``("cluster", rep)`` / ``("memory", id)`` nodes (the ``set``
     model allows it).
 
-    **Composition rule.** A NEW boundary is accepted when it is grounded by at
-    least ONE explicit anchor memory OR by at least TWO clusters -- a single
-    deliberate anchor is enough (that is the whole point of the anchor path),
-    but a lone cluster is not (that would be a stray topic, not a line). This
-    upstream rule is what lets the L3 :func:`boundary_evidence_gate` safely
-    floor the source count at 1. ``subject`` shapes the prompt voice only (the
-    system prompt already carries the first-/third-person framing)."""
+    **Composition rule.** A NEW boundary is accepted when it is grounded by
+    ONE memory of a ``deliberate_kinds`` kind, or by at least TWO sources of
+    any kind. A single deliberate anchor is enough -- that is the whole point
+    of the anchor path, and it is what lets the L3
+    :func:`boundary_evidence_gate` safely floor the source count at 1 -- but a
+    lone cluster is not (that would be a stray topic, not a line).
+
+    L46: the second arm used to read "one memory of any kind", which was
+    written when the only memories here *were* deliberate anchors -- lines the
+    user chose to have remembered. L18e widened the pool to include
+    ``preference`` rows, which are extractor output nobody signed off on, and
+    the rule did not move with it, so a single automatic guess could mint a
+    standing behavioural line. It measured: 97 new boundaries in one month
+    against 46 the month before. Passing no ``deliberate_kinds`` therefore
+    means "nothing here is deliberate", i.e. always require two sources --
+    the safe reading if a caller forgets.
+
+    ``subject`` shapes the prompt voice only (the system prompt already
+    carries the first-/third-person framing)."""
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
+    trusted_kinds = {str(k) for k in deliberate_kinds}
     valid_mem_ids: set[int] = set()
-    mem_lines: list[str] = []
+    deliberate_ids: set[int] = set()
+    anchor_lines: list[str] = []
+    stated_lines: list[str] = []
     for mem in memories:
         try:
             mid = int(mem.id)
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
-        mem_lines.append(mem_line(mem))
+        if str(getattr(mem, "kind", "") or "") in trusted_kinds:
+            deliberate_ids.add(mid)
+            anchor_lines.append(mem_line(mem))
+        else:
+            stated_lines.append(mem_line(mem))
 
     if not valid_reps and not valid_mem_ids:
         return []
@@ -633,10 +653,22 @@ def propose_boundary(
                 parts.append(f"  digest: {snippet(fc.digest)}")
             focus_lines.append("\n".join(parts))
         sections.append("FOCUS CLUSTERS (detail):\n" + "\n\n".join(focus_lines))
-    if mem_lines:
+    # Two blocks, not one, because the two carry different weight and the
+    # grounding rule below enforces exactly that difference. The old single
+    # block was headed "deliberate anchors" for *every* row in it, which
+    # became untrue the moment L18e folded in automatically-extracted
+    # preferences -- so the prompt was vouching for evidence nobody had
+    # vouched for.
+    if anchor_lines:
         sections.append(
             "NOTABLE REMEMBERED NOTES (deliberate anchors -- a single one can "
-            "ground a boundary):\n" + "\n".join(mem_lines)
+            "ground a boundary):\n" + "\n".join(anchor_lines)
+        )
+    if stated_lines:
+        sections.append(
+            "OTHER STATED PREFERENCES (picked up automatically, not "
+            "deliberately saved -- one alone cannot ground a boundary; it "
+            "needs a second source):\n" + "\n".join(stated_lines)
         )
     sections.append("ALREADY-KNOWN BOUNDARIES:\n" + format_existing(existing))
     sections.append(
@@ -688,8 +720,13 @@ def propose_boundary(
             continue
 
         label = str(item.get("label") or "").strip()
-        # Composition rule: one deliberate anchor OR >= 2 clusters.
-        if not label or not (len(mids) >= 1 or len(reps) >= 2):
+        # Composition rule: one deliberate anchor, OR >= 2 sources of any
+        # kind. Counting reps and mids together (rather than "2 clusters")
+        # means an automatically-extracted preference backed by a recurring
+        # topic still qualifies -- that is two independent observations,
+        # which is the thing the rule is actually asking for.
+        deliberate = any(m in deliberate_ids for m in mids)
+        if not label or not (deliberate or len(mids) + len(reps) >= 2):
             continue
         proposals.append(
             CandidateProposal(

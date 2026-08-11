@@ -50,11 +50,12 @@ REFLECTIVE = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 # them. ``app/web`` is at 0: routes have a facade to talk to, so they have no
 # excuse. ``app/mcp/server_tools`` is a debug surface whose whole job is poking
 # at internals, so it gets a budget rather than a ban. It came down from 569
-# when the one-shot ``_force_*`` flags moved into ``session.debug_overrides``;
-# the rest waits on typed handle accessors for the subsystems.
+# when the one-shot ``_force_*`` flags moved into ``session.debug_overrides``,
+# then to 467 with the ``session.debug_clock`` accessor; the rest waits on
+# typed handle accessors for the subsystems.
 BUDGETS: dict[str, int] = {
     "app/web": 0,
-    "app/mcp/server_tools": 468,
+    "app/mcp/server_tools": 467,
 }
 
 MAX_REPORTED = 15

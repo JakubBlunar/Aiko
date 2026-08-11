@@ -41,7 +41,7 @@ def _engagement() -> EngagementClock:
 
 def _tools(clock) -> dict:
     mcp = _FakeMCP()
-    debug_clock_tools.register(mcp, SimpleNamespace(_debug_clock=clock))
+    debug_clock_tools.register(mcp, SimpleNamespace(debug_clock=clock))
     return mcp.tools
 
 
@@ -166,7 +166,7 @@ class GetStatusExposureTests(unittest.TestCase):
     def _status(self, clock) -> dict:
         mcp = _FakeMCP()
         session = SimpleNamespace(
-            _debug_clock=clock,
+            debug_clock=clock,
             effective_chat_model="m",
             context_window_size=1,
             tts_provider="p",

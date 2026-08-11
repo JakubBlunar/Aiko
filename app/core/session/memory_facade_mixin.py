@@ -1275,6 +1275,88 @@ class MemoryFacadeMixin:
             log.warning("forced concept drift run failed", exc_info=True)
             return {"enabled": True, "stats": {"error": "run_failed"}}
 
+    # ── L45: self-tuning concept gates ───────────────────────────────────
+
+    def gate_tuning_state(self) -> dict[str, Any]:
+        """Debug view of the L45 tuner: cadence, learned gates, live values.
+
+        ``live`` is read off the running ``MemorySettings`` rather than off the
+        file, because those are the two things that can disagree: a gate whose
+        file entry says ``applied`` but whose live value still shows the
+        default means the apply path did not reach it, which is the failure
+        this view exists to make visible in one read.
+        """
+        from app.core.concepts.gate_tuning import GATE_SPECS
+        from app.core.infra.gate_tuning_store import (
+            gates_path,
+            load_gates,
+            population_path,
+            user_memory_overrides,
+        )
+        from app.core.concepts.gate_tuner_worker import LAST_RUN_KEY
+
+        worker = getattr(self, "_concept_gate_tuner", None)
+        chat_db = getattr(self, "_chat_db", None)
+        settings = getattr(self, "_memory_settings", None)
+        document = load_gates()
+        overrides = user_memory_overrides()
+        return {
+            "enabled": worker is not None,
+            "gates_file": str(gates_path()),
+            "population_file": str(population_path()),
+            "last_run_at": (
+                chat_db.kv_get(LAST_RUN_KEY) if chat_db is not None else None
+            ),
+            "cadence_seconds": (
+                worker.cadence_seconds if worker is not None else None
+            ),
+            "heartbeat_seconds": (
+                worker.interval_seconds if worker is not None else None
+            ),
+            "graph_mature": (
+                worker.is_ready(now=timephrase.utcnow(), last_run_at=None)
+                if worker is not None
+                else None
+            ),
+            "updated_at": document.get("updated_at"),
+            "gates": document.get("gates") or {},
+            "user_overridden": sorted(
+                spec.setting
+                for spec in GATE_SPECS
+                if spec.is_setting_field and spec.setting in overrides
+            ),
+            "live": {
+                spec.setting: getattr(settings, spec.setting, None)
+                for spec in GATE_SPECS
+                if spec.is_setting_field
+            },
+        }
+
+    def run_gate_tuning(self, *, force: bool = True) -> dict[str, Any]:
+        """Run one L45 tuning pass now (debug). Returns its stats.
+
+        ``force`` clears the internal cadence stamp first, since the worker's
+        own ``run()`` is a no-op until the day is up -- without this the tool
+        would silently do nothing on any day the tuner already ran, which
+        looks identical to a broken tuner.
+        """
+        worker = getattr(self, "_concept_gate_tuner", None)
+        if worker is None:
+            return {"enabled": False}
+        chat_db = getattr(self, "_chat_db", None)
+        if force and chat_db is not None:
+            try:
+                from app.core.concepts.gate_tuner_worker import LAST_RUN_KEY
+
+                chat_db.kv_set(LAST_RUN_KEY, "")
+            except Exception:
+                log.debug("gate tuning cadence clear failed", exc_info=True)
+        try:
+            return {"enabled": True, "stats": worker.run() or {}}
+        except Exception:
+            log.warning("forced gate tuning run failed", exc_info=True)
+            return {"enabled": True, "stats": {"error": "run_failed"}}
+
     # ── L19: self-history (the autobiography traversal) ──────────────────
 
     def self_history(

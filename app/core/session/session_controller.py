@@ -73,6 +73,7 @@ from app.core.session import (
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
+from app.core.infra.gate_tuning_store import apply_gates
 from app.core.infra.settings import (
     AppSettings,
     LLM_ROLE_MAIN_CHAT,
@@ -492,6 +493,16 @@ class SessionController(
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
+        # L45: fold learned concept thresholds in before anything reads them.
+        # Applied here rather than in the tuner's own boot path because
+        # several subsystems snapshot settings at construction, and the point
+        # of the tuning file is that the first turn after a restart already
+        # behaves the way the last run decided. Values explicitly set in
+        # ``config/user.json`` are skipped; see ``gate_tuning_store``.
+        try:
+            apply_gates(self._memory_settings)
+        except Exception:
+            log.debug("gate tuning apply at boot failed", exc_info=True)
         self._embedder: Embedder | None = None
         self._memory_store: MemoryStore | None = None
         self._memory_retriever: MemoryRetriever | None = None

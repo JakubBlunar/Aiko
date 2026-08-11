@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.core.concepts.proposers.base import (
+    AIKO_SELF_KINDS,
     CandidateProposal,
     ExistingConcept,
     FocusCluster,
@@ -24,6 +25,15 @@ from app.core.concepts.proposers.base import (
     ProposerSpec,
     propose_boundary,
 )
+
+# The whole offered pool counts as deliberate here, which keeps this subject's
+# behaviour exactly as it was before the split. L18e only widened the *user*
+# pool, so nothing automatic entered this one: ``self`` and ``diary`` are her
+# explicit ``[[remember:self:...]]`` / ``[[diary:...]]`` writes, and while
+# ``reflection`` is worker-authored it is still her own noticing rather than an
+# extractor's guess about someone else. Tightening it would be a separate
+# judgement call with its own evidence, not a consequence of this one.
+_DELIBERATE_KINDS = AIKO_SELF_KINDS
 
 
 def _system(user_name: str, assistant_name: str) -> str:
@@ -85,6 +95,7 @@ def propose_boundary_aiko(
         cluster_index=cluster_index,
         memories=memories,
         existing=existing,
+        deliberate_kinds=_DELIBERATE_KINDS,
     )
 
 

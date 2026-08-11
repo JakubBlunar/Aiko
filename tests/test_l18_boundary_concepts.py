@@ -10,8 +10,9 @@ Covers the full vertical slice:
 * the ``_run_boundary_pass`` worker pass for user AND aiko (single deliberate
   anchor seeds a boundary, dirty-tracking no-op, the ``boundary_synthesis_enabled``
   switch),
-* the shared ``propose_boundary`` composition rule (>=1 anchor OR >=2 clusters),
-  mixed evidence, reinforce-by-id, and the user/aiko prompt voice,
+* the shared ``propose_boundary`` composition rule (>=1 *deliberate* anchor OR
+  >=2 sources of any kind), mixed evidence, reinforce-by-id, and the user/aiko
+  prompt voice,
 * the soft/guiding rendering header (both subjects + relationship).
 """
 from __future__ import annotations
@@ -208,9 +209,23 @@ def _pref_boundary_responder(system, user):
     return {"concepts": []}
 
 
+def _pref_plus_cluster_responder(system, user):
+    # Same preference, now backed by the recurring topic: two sources.
+    if "BOUNDARIES" in system and "for HERSELF" not in system:
+        return {"concepts": [{
+            "label": "Be gentle with Jacob about deadlines",
+            "evidence_memory_ids": [550],
+            "evidence_cluster_reps": [100],
+            "rationale": "he'd rather not be rushed",
+            "confidence": 0.7,
+        }]}
+    return {"concepts": []}
+
+
 class L18eBroadeningTests(unittest.TestCase):
-    """L18e: a stated ``preference`` memory (never a deliberate anchor) can
-    seed a user boundary when broadening is on, and is ignored when off."""
+    """L18e + L46: a stated ``preference`` memory (never a deliberate anchor)
+    reaches the user boundary pass when broadening is on, but -- unlike a
+    deliberate anchor -- cannot ground a boundary by itself."""
 
     def _pref(self) -> MemStub:
         return MemStub(
@@ -218,19 +233,51 @@ class L18eBroadeningTests(unittest.TestCase):
             "preference", 0.9,
         )
 
-    def test_preference_seeds_boundary_when_broadening_on(self) -> None:
-        # Default agent leaves the flag unset -> broadening defaults on.
+    def test_lone_preference_does_not_ground_a_boundary(self) -> None:
+        # Default agent leaves the flag unset -> broadening defaults on, so
+        # the memory *is* offered; what stops it is the composition rule.
         h = WorkerHarness(
             _pref_boundary_responder, clusters=[_user_cluster()],
             self_memories=[self._pref()],
         )
         h.worker.run()
+        self.assertEqual(h.store.list_by(subject="user", kind="boundary"), [])
+
+    def test_preference_grounds_a_boundary_with_a_second_source(self) -> None:
+        h = WorkerHarness(
+            _pref_plus_cluster_responder, clusters=[_user_cluster()],
+            self_memories=[self._pref()],
+        )
+        h.worker.run()
         out = h.store.list_by(subject="user", kind="boundary")
         self.assertEqual(len(out), 1)
-        ev = h.store.evidence_of(out[0].concept_id)
-        self.assertEqual(
-            [(e.src_type, e.src_id) for e in ev], [("memory", "550")]
+        ev = {(e.src_type, e.src_id) for e in h.store.evidence_of(
+            out[0].concept_id)}
+        self.assertEqual(ev, {("memory", "550"), ("cluster", "100")})
+
+    def test_preference_reaches_the_prompt_in_its_own_block(self) -> None:
+        """The pool widened, so the prompt must stop calling everything in it
+        a deliberate anchor -- an automatic row offered under that heading is
+        the proposer being told to trust something nobody vouched for."""
+        seen: list[str] = []
+
+        def responder(system, user):
+            if "BOUNDARIES" in system and "for HERSELF" not in system:
+                seen.append(user)
+            return {"concepts": []}
+
+        h = WorkerHarness(
+            responder, clusters=[_user_cluster()],
+            self_memories=[self._pref()],
         )
+        h.worker.run()
+        prompt = "\n".join(seen)
+        self.assertIn("OTHER STATED PREFERENCES", prompt)
+        tail = prompt.split("OTHER STATED PREFERENCES")[1]
+        self.assertIn("[550]", tail)
+        # And it is *not* under the deliberate-anchor heading.
+        head = prompt.split("OTHER STATED PREFERENCES")[0]
+        self.assertNotIn("[550]", head)
 
     def test_preference_ignored_when_broadening_off(self) -> None:
         agent = types.SimpleNamespace(
@@ -354,6 +401,105 @@ class ProposerCompositionTests(unittest.TestCase):
         self.assertEqual(out[0].reinforces_id, 42)
         self.assertEqual(out[0].label, "")
         self.assertEqual(out[0].kind, "boundary")
+
+    def test_lone_non_deliberate_memory_dropped(self) -> None:
+        """L46: the single-source path is for lines the user *chose* to have
+        remembered. A ``preference`` row is the extractor's reading of a
+        passing sentence, and granting it that path let one automatic guess
+        mint a standing behavioural line -- 97 new boundaries in the month
+        after the pool widened, against 46 in the month before."""
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Be gentle about deadlines",
+                "evidence_memory_ids": [550],
+                "confidence": 0.9,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_boundary_user(
+            ctx, cluster_index=_clusters(100),
+            memories=[MemStub(550, "would rather not be rushed",
+                              "preference", 0.9)],
+        )
+        self.assertEqual(out, [])
+
+    def test_two_non_deliberate_memories_accepted(self) -> None:
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Be gentle about deadlines",
+                "evidence_memory_ids": [550, 551],
+                "confidence": 0.7,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_boundary_user(
+            ctx, cluster_index=_clusters(100),
+            memories=[
+                MemStub(550, "would rather not be rushed", "preference", 0.9),
+                MemStub(551, "dislikes tight deadlines", "preference", 0.9),
+            ],
+        )
+        self.assertEqual(len(out), 1)
+
+    def test_non_deliberate_memory_plus_a_cluster_accepted(self) -> None:
+        """Two independent observations is what the rule asks for, so the
+        second one being a recurring topic rather than a note is fine."""
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Be gentle about deadlines",
+                "evidence_memory_ids": [550],
+                "evidence_cluster_reps": [100],
+                "confidence": 0.7,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_boundary_user(
+            ctx, cluster_index=_clusters(100),
+            memories=[MemStub(550, "would rather not be rushed",
+                              "preference", 0.9)],
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(
+            out[0].evidence, [("cluster", "100"), ("memory", "550")]
+        )
+
+    def test_aiko_self_memories_keep_the_single_source_path(self) -> None:
+        """L18e only widened the *user* pool, so nothing automatic entered
+        this subject's and its behaviour is unchanged."""
+        for kind in ("self", "reflection", "diary"):
+            with self.subTest(kind=kind):
+                def responder(system, user):
+                    return {"concepts": [{
+                        "label": "I won't fake agreement",
+                        "evidence_memory_ids": [600],
+                        "confidence": 0.7,
+                    }]}
+
+                ctx, _ = _ctx(responder)
+                out = propose_boundary_aiko(
+                    ctx, memories=[MemStub(600, "a note", kind, 0.9)],
+                )
+                self.assertEqual(len(out), 1)
+
+    def test_a_deliberate_anchor_in_a_mixed_citation_is_enough(self) -> None:
+        """The rule looks for *a* deliberate id among those cited, so a
+        preference riding alongside an anchor does not weaken it."""
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Be gentle about work",
+                "evidence_memory_ids": [550, 500],
+                "confidence": 0.7,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_boundary_user(
+            ctx, cluster_index=_clusters(100),
+            memories=[
+                MemStub(550, "auto", "preference", 0.9),
+                MemStub(500, "anchored", "self_tagged", 0.9),
+            ],
+        )
+        self.assertEqual(len(out), 1)
 
     def test_user_voice_third_person(self) -> None:
         ctx, calls = _ctx(lambda s, u: {"concepts": []})

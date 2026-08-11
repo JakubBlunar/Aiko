@@ -2083,6 +2083,56 @@ class SpeakingWorkersInitMixin:
                         )
                         self._concept_synthesis_worker = None
 
+                # L45: ConceptGateTunerWorker. Calibrates the concept
+                # thresholds to this relationship's own distribution instead
+                # of the constants one person's graph happened to suggest.
+                # Cheap-ish (no LLM, one pass over the store plus a bounded
+                # cosine sample) and daily; the read-side gates it may move
+                # are all read per turn, so a run takes effect without a
+                # restart. Non-fatal on failure -- an absent tuner just
+                # leaves every threshold at its shipped default.
+                self._concept_gate_tuner = None
+                if (
+                    self._idle_scheduler is not None
+                    and getattr(self, "_concept_store", None) is not None
+                    and bool(getattr(settings.agent, "concepts_enabled", False))
+                    and bool(
+                        getattr(
+                            self._memory_settings,
+                            "concept_gate_tuning_enabled",
+                            True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.concepts.gate_tuner_worker import (
+                            ConceptGateTunerWorker,
+                        )
+
+                        self._concept_gate_tuner = ConceptGateTunerWorker(
+                            concept_store=self._concept_store,
+                            memory_settings=self._memory_settings,
+                            agent_settings=settings.agent,
+                            kv_get=self._chat_db.kv_get,
+                            kv_set=self._chat_db.kv_set,
+                            event_store=self._concept_event_store,
+                            # The L37 ledger is built in idle-workers init,
+                            # which runs after this; resolve it lazily.
+                            surfacing_outcome_store_provider=(
+                                lambda: getattr(
+                                    self, "_surfacing_outcome_store", None
+                                )
+                            ),
+                            topic_graph=getattr(self, "_topic_graph", None),
+                        )
+                        self._idle_scheduler.register(self._concept_gate_tuner)
+                    except Exception:
+                        log.warning(
+                            "ConceptGateTunerWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._concept_gate_tuner = None
+
                 # L3: ConceptLifecycleWorker. The single writer of concept
                 # confidence / plasticity / status. Cheap (no LLM), runs a
                 # small rolling batch per tick so a growing concept set
@@ -2253,10 +2303,12 @@ class SpeakingWorkersInitMixin:
 
                 # L2: ConceptConsolidationWorker. Retroactive near-duplicate
                 # fusion -- an LLM-adjudicated merge of paraphrase-twin
-                # concepts that slipped under the creation-time dedup bar.
-                # Needs the concept store + a maintenance LLM client; opt-in
-                # via ``concepts_enabled`` AND ``concept_consolidation_enabled``.
-                # Its own FactCheckRateLimiter budget. Non-fatal on failure.
+                # concepts that slipped under the creation-time dedup bar,
+                # plus (L46) an unadjudicated merge of the ones that drifted
+                # back *over* it after birth. Needs the concept store + a
+                # maintenance LLM client; opt-in via ``concepts_enabled``
+                # AND ``concept_consolidation_enabled``. Its own
+                # FactCheckRateLimiter budget. Non-fatal on failure.
                 self._concept_consolidation_worker = None
                 self._concept_consolidation_rate_limiter = None
                 if (
@@ -2341,6 +2393,13 @@ class SpeakingWorkersInitMixin:
                                     lambda: self._fact_check_assistant_name()
                                     or "Aiko"
                                 ),
+                                # L46: the "not the same belief" verdicts
+                                # persist. They used to die with the
+                                # process, so every restart re-litigated
+                                # the same template collisions out of a
+                                # thirty-a-day LLM budget.
+                                kv_get=self._chat_db.kv_get,
+                                kv_set=self._chat_db.kv_set,
                             )
                         )
                         self._idle_scheduler.register(

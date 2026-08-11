@@ -825,20 +825,15 @@ reusable and was also what L17d reads through.
 
 ## L18e. Boundary evidence broadening
 
-**Motivation.** L18 mines *deliberate* anchors (`[[remember:…]]`) + clusters. Many
-stated limits/preferences never become a deliberate anchor but still deserve to
-seed a boundary; and now that the per-kind `surface_weights` mechanism exists, the
-non-boundary kinds can be tuned too.
-
-**Sketched approach.** A dedicated preference/limit memory signal (mine explicit
-stated-limit memories beyond deliberate anchors), plus tuning `surface_weights`
-for identity/value/etc. now that the composite scorer is in place.
-
-**Key files.** The anchor-kind selection in `_run_boundary_pass`, the memory
-tagging/signal source, per-kind `surface_weights` in
-[`concept_kinds.py`](../../app/core/concepts/concept_kinds.py).
-
-**Effort.** Small-medium.
+**Status: SHIPPED** — moved to
+[`shipped/concepts.md`](shipped/concepts.md#l18e-boundary-evidence-broadening-shipped--both-halves-then-corrected).
+Both halves had already landed when this entry was finally audited: `preference`
+memories fold into the user anchor pool behind
+`agent.boundary_evidence_broadening_enabled`, and all thirteen registered kinds
+carry tuned `surface_weights` rather than the context-only default. What the audit
+*did* find is that widening the pool without moving the composition rule with it
+let one automatic extraction mint a standing boundary — 46 new boundaries in July
+against 97 in August — which **L46** fixed.
 
 ---
 
@@ -2870,3 +2865,415 @@ granularity are where it gets hard.
 **Depends on.** F13 and L37 for a decent incident stream (buildable without
 them, but thin). Feeds K77 (candor needs calibration) and L36 (a strategy's
 reliability is a per-domain fact).
+
+---
+
+## L45. Self-tuning concept gates -- thresholds as intent, not constants
+
+**Status: PHASE 1 SHIPPED (read-side gates apply, everything else observed).**
+
+**Motivation.** Nearly every threshold in this layer was set by hand, once,
+against one person's graph — and then retuned by hand each time a measurement
+showed it was in the wrong place. The retunes always had the same shape: look at
+the live distribution, notice the bar is wrong *relative to that distribution*,
+move it. Three examples from a single week of measurement:
+
+- `taste_min_affinity` at 0.5 sat **above what any topic cluster on this ledger
+  can score** (the best was 0.32), so the taste pass minted nothing for five
+  weeks. Not a wrong number in the abstract — a number that made the gate
+  unopenable on this data.
+- `profile_concept_max_lines` at 10 filled the T0 block with a rotation-free
+  wall of traits, because the cap had been chosen from what would *fit* rather
+  than from what the eligible pool could support.
+- `concept_core_openness_min_confidence` at 0.5 admitted a pool barely larger
+  than the lane's cap, which quietly made habituation inert: with nothing to
+  rotate *to*, the same rows pinned every turn.
+
+None of these is discoverable from the number. All three are obvious the moment
+you put the bar next to the distribution it gates. And a constant cannot be
+right for two relationships anyway — a chattier user, a different memory volume
+or a different embedding model produces a different concept population, and the
+same value lands somewhere else in it.
+
+So the fix is not to tune numbers automatically; it is to **stop storing numbers
+and start storing intent**. A gate declares what it is *for* ("admit roughly a
+third of the candidate pool", "leave an eligible pool three times the lane cap",
+"stay under what the population can actually reach") and a daily worker solves
+for the value that hits it. The shipped constant becomes the fallback for a
+graph too young to have a distribution yet.
+
+**Key files.**
+- [`gate_tuning.py`](../../app/core/concepts/gate_tuning.py) — the pure solver:
+  `GateSpec`, the three objectives, the rails, and the v1 registry. This is the
+  file to read first; the specs *are* the design.
+- [`gate_measure.py`](../../app/core/concepts/gate_measure.py) — rows in,
+  distributions out, plus the population snapshot row.
+- [`gate_tuner_worker.py`](../../app/core/concepts/gate_tuner_worker.py) — the
+  daily idle worker.
+- [`gate_tuning_store.py`](../../app/core/infra/gate_tuning_store.py) — the two
+  files under `data/tuning/` and the apply decision.
+- [`concept_gate_report.py`](../../scripts/concept_gate_report.py) — offline dry
+  run, `--trend`, and the `--adopt` handoff. `get_gate_tuning` /
+  `force_gate_tuning` are the live equivalents.
+
+### The read/write split, which is the load-bearing decision
+
+The obvious way to scope v1 would have been "start with the gates we understand
+best". The right axis turned out to be different: **does the gate write to the
+store, or only read from it?**
+
+A **read gate** decides what goes into one prompt. A bad value costs one turn,
+self-corrects on the next run, and leaves no trace. Those apply immediately:
+`context_budget_core_min_confidence`, `concept_core_openness_min_confidence`,
+`profile_concept_min_confidence`.
+
+A **write gate** mutates persistent state *and* moves the distribution the
+tuner measures next time. Lower the promote bar, promote more, the
+active-confidence distribution shifts, the next solve moves again — a feedback
+loop with the store as its integrator. Worse, the damage is durable: a concept
+promoted at a bar that was briefly too low stays promoted. So every write gate
+ships in **observe mode**: measured, solved, recorded in the file, never
+applied. `concept_promote_min_confidence`,
+`concept_dormant_confidence_floor`, `concept_retire_confidence_floor` and
+`taste_min_affinity` are all in this set, and promoting one is a one-word change
+in its spec once its recorded history looks boring.
+
+Two independent locks enforce it, because one would eventually be refactored
+away: the spec's `mode`, re-checked against the registry at apply time rather
+than trusted from the (hand-editable) file, and `is_setting_field`, which is
+false for anything that has no settings attribute to be written to.
+
+### What else is observed, and why that was worth doing now
+
+Everything the later phases will need, even where nothing acts on it yet:
+
+- **The thirteen per-kind promotion floors.** These were invisible: module
+  constants applied via `max` inside thirteen separate gate functions, so
+  nothing could report them or compare one against the pool it gates.
+  `KIND_PROMOTION_FLOORS` now gathers them (a view of the constants, not a
+  second definition) and each is measured against its own kind's confidence
+  distribution. First finding: **the global
+  `concept_promote_min_confidence` of 0.6 is dominated by every one of them**,
+  so on first-time promotion the global bar is inert — which is worth knowing
+  before anyone tunes it.
+- **The cosine bars** (`concept_dedupe_cosine`,
+  `concept_consolidation_merge_cosine`,
+  `concept_contradiction_similarity_min`) against a bounded random sample of
+  pairwise label similarity. First reading: the dedupe bar at 0.86 is above the
+  **maximum** observed pair similarity in a 4,000-pair sample (0.88), so
+  creation-time dedupe is catching approximately nothing. That may be correct —
+  the sample is over concepts that already survived dedupe — which is exactly
+  why it wants months of trend rather than an immediate move.
+- **A population snapshot per run** in `data/tuning/concept_population.jsonl`:
+  counts by status / kind / subject / role, per-population and per-kind
+  confidence quantiles, candidate age and source distributions, event deltas
+  since the previous line, and `hours_since_previous`. Nothing proposes anything
+  from it. It exists because every retune so far began by measuring the graph
+  from scratch, reasoning from one day's shape; this turns the same question
+  into a trend read, and each later phase is designed against it.
+
+### Liveness, which is where the real bug was going to be
+
+A daily worker on an always-on server is trivial. On a machine that is switched
+off overnight it is not, and three separate mechanisms in the idle scheduler
+conspire against it: `last_run_at` persists (fine), but `evaluate_admission`
+charges the run against a lane budget using an EMA of past durations, and an
+over-budget worker waits for **three of its own heartbeats** before it escapes.
+At a 24-hour heartbeat that is a three-day worst case on a machine with partial
+uptime — and the failure is silent.
+
+The fix is to decouple the two clocks: a **six-hour scheduler heartbeat** with
+the real daily spacing enforced by a `kv_meta` key, mirroring the L42 conduct
+pass. The scheduler ranks and multiplies the heartbeat, so the fit-escape
+shrinks to eighteen hours of *uptime*, while the work still happens about once a
+day. Two rules follow from the same premise: catch up **once** rather than
+backfilling a run per missed day, and never assume even spacing — hence
+`hours_since_previous` on every snapshot line.
+
+### The seeded handoff
+
+Resolution order is **default -> tuned -> user**: `config/user.json` always
+wins, and no background pass ever edits it. That leaves the question of how a
+hand-set value ever gets *given up*, since a permanently overridden gate is a
+gate the tuner can only watch.
+
+`scripts/concept_gate_report.py --adopt NAME` is the answer, and it is
+deliberately manual. It records the current value in the tuning file as the
+gate's **seed**, then removes the key from the `memory` block of `user.json`.
+Seeding first is the point: the step clamp walks the value from where the user
+left it rather than from a code default, so behaviour does not jump at the
+moment of handoff. Until then, an overridden gate is still measured and its
+**drift** recorded — "you set 0.7, six weeks of data says 0.62" is useful
+whether or not the handoff ever happens.
+
+### Finding recorded along the way: the revival bar is lower than the promote bar
+
+Not part of this feature, but found by reading every consumer of the gates.
+First-time promotion routes `concept_promote_min_confidence` through the kind's
+promotion gate, which floors it with the per-kind constants — a `value` needs
+0.72, a `generalization` 0.72. The **revival** branches for `contradicted` and
+`dormant` concepts in
+[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
+compare against the raw global bar instead, so a disproven `value` can come back
+at 0.60: **lower than the bar it originally cleared**. That is a sharp edge
+independent of tuning (and a reason the promote gate is observe-only for now).
+Fix is Phase 2 — route revival through the same kind gate.
+
+### Phased roadmap
+
+1. **Phase 1 (shipped).** Three read gates apply; all write gates, the thirteen
+   per-kind floors and the three cosine bars are observed; population snapshot;
+   dry-run script, `--trend`, two MCP tools, seeded handoff.
+2. **Phase 2 — lifecycle, once the history is boring.** Route revival through
+   the per-kind promotion gates (above), then promote
+   `concept_dormant_confidence_floor` and `concept_retire_confidence_floor` to
+   apply. These two are the safest write gates: they move a concept *out* of the
+   prompt, which is recoverable, and the retire floor's population is already
+   the faded tail. `concept_promote_min_confidence` last, and possibly never —
+   if the per-kind floors dominate it, applying it changes nothing anyway.
+3. **Phase 3 — `taste_min_affinity` and the generative supply.** Needs the taste
+   pass to have minted enough to have a distribution of its own; the current
+   reading is 39 clusters against 2 taste concepts.
+4. **Phase 4 — per-kind floors become settings.** Move
+   `KIND_PROMOTION_FLOORS` into `MemorySettings` (or a per-kind block) so the
+   observed values have somewhere to be applied. Wants a season of history
+   first, because thirteen simultaneously-moving bars is the one change here
+   that could plausibly destabilise intake.
+5. **Phase 5 — the cosine band.** Dedupe, merge and contradiction bars as a
+   *coupled* set rather than three independent gates: they partition one
+   similarity axis, and solving them separately can invert their ordering. Needs
+   the trend file to say whether the current bars are as inert as one sample
+   suggests.
+6. **Phase 6 — relevance bars.** `context_budget_*_min_relevance` compares
+   against per-turn relevance *scores*, which no store snapshot contains. This
+   needs new telemetry from the selection path (a sample of the scores actually
+   seen per lane per turn) before a solver has anything to work with — a
+   different kind of work from the rest of this item, which is why it is last.
+
+**Open questions.** (1) Should a gate whose `clamped_by` is `floor` on every
+single run raise something louder than a log line? A permanently pinned gate
+means its spec is wrong, and today only a human reading the file notices.
+(2) The step clamp makes a gate take a week or more to walk a large distance,
+which is right for stability and wrong for a fresh install; a warmup period with
+a wider clamp is tempting but adds a mode. (3) `pool_multiple` targets (3x, 5x,
+6x) are themselves hand-chosen constants — one layer up from where they were,
+which is genuine progress, but not turtles all the way down. (4) Should the
+population snapshot be exposed in the web UI? It is the closest thing to a
+"health of the concept layer over time" view that exists.
+
+**Effort.** Phase 1: Medium (shipped). Phases 2-3: Small each, mostly waiting
+for history. Phase 4-5: Medium. Phase 6: Medium-Large (new telemetry).
+
+**Depends on.** L22 (the quality scoreboard established what to measure), L37
+(the ledger supplies the taste gate's population), L21 (the young-graph gate is
+the cold-start guard this reuses). Feeds every future threshold decision in this
+document — the intended end state is that a new gate ships as a `GateSpec`
+rather than as a number.
+
+---
+
+## L46. Concept twin fusion and graph outflow
+
+**Status: SHIPPED (all three phases).**
+
+**Motivation.** This started as an attempt to *broaden* boundary evidence (L18e)
+and turned into its opposite once the graph was actually measured. Boundaries
+were not scarce — 143 of them existed, 46 minted in July and 97 in August, a
+population entirely six weeks old and growing at roughly three a day, with 106
+active and only two that had gone a fortnight without reinforcement. Meanwhile
+**147 same-`(subject, kind)` pairs across the graph sat above the 0.84 merge bar,
+18 of them at or above 0.86** — the *creation-time* dedup bar, which is supposed
+to make two such rows impossible. Consolidation had fused 20 concepts in six
+weeks. Retirement had fired eight times, ever.
+
+So the diagnosis was: intake outran fusion, fusion could not converge, and
+nothing could leave.
+
+```mermaid
+flowchart LR
+    mint["synthesis mints a boundary<br/>1 anchor is enough"] --> guard{"find_duplicate<br/>cos >= 0.86?"}
+    guard -->|"no (twins land at 0.84-0.86)"| active["active row"]
+    guard -->|yes| reinforce["reinforce existing"]
+    active --> drift["L17 relabel moves the label"]
+    drift -->|"18 pairs cross 0.86 post-birth,<br/>nothing re-checks"| active
+    active --> consol{"consolidation<br/>0.84 + LLM verdict"}
+    consol -->|"30 adjudications/day<br/>vs 147 pairs"| starved["budget gone by 04:00"]
+    consol -->|"reject cached 6h,<br/>in memory only"| relitigate["re-spent after each restart"]
+    active --> decay["confidence decays"]
+    decay --> dorm["dormant at < 0.35"]
+    dorm -->|"needs < 0.15;<br/>no row is under 0.30"| stuck["parked"]
+```
+
+### Phase 1 — make fusion converge
+
+Three independent ceilings, all in
+[`concept_consolidation_worker.py`](../../app/core/concepts/concept_consolidation_worker.py).
+
+**Free merges above the dedup bar — built, then switched off.** The plan was
+that `find_duplicate` runs against the graph as it stood *at proposal time* and
+L17 relabels move rows afterwards, so pairs drift over 0.86 post-birth with
+nothing watching for it; above that cosine the creation path already fuses
+without asking anyone
+([`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) measured it),
+so the worker could merge those directly and spend no token.
+
+Dry-running the finished worker against a copy of the live graph killed that
+argument. The two uses of the same cosine fail in **opposite directions**: at
+creation a false positive merely reinforces an existing row, whereas here it
+*destroys* a distinct belief — so a bar chosen for a cheap failure mode was
+being reused for an expensive one. Reading all 18 above-bar pairs by hand found
+**2 genuine twins against 14 template collisions**, and the worst offender was
+the highest-cosine pair in the entire set: 0.900 between "reflecting on
+relationship depth energizes Jacob" and "playful anticipation and lighthearted
+connection energize Jacob". The first run merged "building and refining Aiko's
+systems energizes Jacob" into "romantic intimacy with Aiko energizes Jacob" at
+0.886. This is the same template-collision failure the 0.80–0.84 band was
+rejected for, reaching higher up the scale than expected — with 13 kinds
+generating labels from a handful of sentence shapes, `<X> energizes Jacob`
+collides with itself at almost any cosine.
+
+Token overlap was tried as a cheap discriminator and does not separate the
+groups: the twins span Jaccard 0.14–0.52, straddling the collisions' 0.07–0.27.
+So the conclusion is that on templated labels *only the adjudicator can tell*,
+and the merge path must stay behind it.
+
+`concept_consolidation_auto_merge_cosine` therefore ships at `1.0`, disabled.
+The mechanism is kept, tested, and floored at the candidate bar on load (an auto
+bar *below* the candidate bar would fuse everything the scan found and silently
+turn off the judgement this worker exists to apply), because a graph with less
+templated labels could reasonably enable it. A test pins the default and the
+reason, so re-lowering it has to be a decision rather than a drift.
+
+The consequence for the rest of Phase 1 is that **budget is the only lever**,
+which makes the verdict cache the load-bearing fix rather than a supporting one:
+14 of those 18 pairs are collisions that will be rejected once and must then
+stay rejected.
+
+**Persist the verdicts.** The rejection cache was a `dict[frozenset[int],
+datetime]` with a six-hour TTL, in process memory. The pairs that get rejected
+are template collisions, which are *stable*, so every restart re-litigated the
+same answers out of a thirty-a-day budget — the live `rate_state` showed it
+exhausted by 04:02 with the worker's last run at 21:57, i.e. eighteen hours of
+silent denial. Verdicts now live in `kv_meta` under
+`concept_consolidation.verdicts`, keyed on the pair **plus a blake2s digest of
+both labels**, with a 30-day TTL. The digest is what makes a relabel re-open the
+question rather than freeze a stale answer — precisely the case that produced
+the 18 above-bar pairs. An unparseable expiry reads as expired, because a stamp
+we cannot honour should re-ask rather than suppress forever.
+
+**Discover worst-first, globally.** `_collect_pairs` walked
+`list_stalest(batch_size)` keeping one neighbour per seed, so a tick saw at most
+forty pairs — and its cursor was `last_lifecycle_at`, a column only the L3
+worker writes, so consolidation could not advance its own position and
+re-derived roughly the same forty every fifteen minutes. It now takes one
+`matrix_snapshot` over the active set and one matmul per `(subject, kind)` block
+of row slices. Both halves are load-bearing: stacking once keeps it off the
+per-call `_filtered_matrix` path that once took the `demand()` probe down with an
+access violation, and blocking keeps cost near `sum(n_block²)` rather than
+`n_total²` — ~19k comparisons instead of 475k at 975 actives, measured well under
+a second. `batch_size` is now the cap on pairs *acted on*, not seeds scanned.
+
+**Observability.** The worker logged nothing on a run, a rate-limit denial, or a
+`not same` verdict, which is why an eighteen-hour starvation was invisible. One
+INFO line per run: `scanned`, `pairs`, `auto_merged`, `adjudicated`, `merged`,
+`rate_limited`, `duration_ms`. `demand()` also stopped claiming `needs_llm` when
+every fresh pair is auto-mergeable, so free work is not parked behind an LLM gate
+it will never use.
+
+### Phase 2 — throttle boundary inflow
+
+The composition rule in
+[`base.py`](../../app/core/concepts/proposers/base.py) accepted a new boundary on
+one memory id or two cluster reps. "One is enough" was reasoned about
+`self_tagged`; L18e widened the pool to `preference` and the rule did not move
+with it. It is now **one deliberate anchor, or two sources of any kind**, with
+`deliberate_kinds` passed in by each proposer — `("self_tagged",)` for the user,
+the whole pool for aiko, whose pool L18e never widened. Reps and mids count
+*together*, so an automatic preference backed by a recurring topic still
+qualifies: two independent observations is what the rule is actually asking for.
+
+The prompt was also lying. It offered the whole batch under "NOTABLE REMEMBERED
+NOTES (deliberate anchors)" even with `preference` rows in it, vouching for
+evidence nobody had vouched for. Automatic rows now get their own
+"OTHER STATED PREFERENCES" block that says so.
+
+### Phase 3 — unseal outflow
+
+`_next_status`'s dormant branch retired only on `conf <
+concept_retire_confidence_floor` (0.15), and the initial read was that no dormant
+row was under 0.30 so the path was sealed. The data said something more precise:
+**247 of 251 dormant rows had not been reinforced in a fortnight and 222 not in a
+month**, yet all sat at ~0.45. The L22 sweep demotes never-reinforced actives
+while their confidence is still high, and from there decay needs ~19 engaged days
+— five or six calendar weeks — to reach 0.15. The path was not sealed; it was
+weeks behind a conclusion the evidence already supported.
+
+So the new route retires on the *evidence*: `concept_dormant_ttl_days` (30)
+wall-clock days since `last_reinforced_at`, mirroring how
+`concept_candidate_ttl_days` already retires stale candidates. Two deliberate
+choices there. **Wall-clock**, breaking the engaged-days convention every other
+age floor here uses — that convention stops a concept idling its way to
+*maturity* on the calendar, where age is a bar to clear; retirement asks the
+opposite question, and a month in which a belief never came up is itself the
+observation whether or not the app was running. And **`last_reinforced_at` rather
+than a moment-of-fading anchor**, so one re-observation restarts the window,
+which is the same read the revival branch above it makes. Revival is checked
+first, so a belief that comes back on the tick it would have aged out comes back.
+`retired` is revivable and dormant rows never surface, so arriving early costs
+nothing.
+
+The setting is registered in
+[`gate_tuning.py`](../../app/core/concepts/gate_tuning.py) as an **observe-only**
+gate beside `concept_retire_confidence_floor` and
+`concept_dormant_confidence_floor`, on a new `dormant_quiet_days` population —
+the one population measured in days rather than in a score. Against the live
+graph it reads n=251, median 33 quiet days, solving to 35 against the 30-day
+default.
+
+### Expected effect on the count
+
+Being explicit, since "fewer boundaries" was the goal:
+
+- Phase 1 is now **slower than planned and permanent instead**. With auto-merge
+  off, every one of the 147 pairs goes through the 30/day budget, so the backlog
+  takes about five days to work rather than clearing on the first ticks. What
+  changed is that it now *finishes*: the 14-of-18 collisions are paid for once
+  and stay rejected for 30 days, and discovery no longer re-derives the same
+  forty pairs every quarter hour. Expect the ~20 twins the LLM confirms — 106
+  active boundaries landing near 90 — arriving over a week.
+- Phase 2 is what stops 106 becoming 300 by October. It does not reduce today's
+  count.
+- Phase 3 drains the dormant parking lot — over half of it on the first sweeps,
+  given the median row is 33 days quiet. Those never surface, so this is graph
+  hygiene and prompt-cache size rather than prompt pressure.
+
+**Deliberately not done.** A lower merge bar for `boundary` specifically. The
+0.80–0.84 band holds 70 boundary pairs, and spot-checking them shows template
+collisions rather than twins ("shared coffee cups as sacred" against "nighttime
+blanket-covering as sacred") — exactly the failure `concept_dedupe.py` warns
+about at that cosine.
+
+**Key files.** `concept_consolidation_worker.py`, `proposers/base.py`,
+`proposers/boundary_{user,aiko}.py`, `concept_lifecycle_worker.py`,
+`gate_tuning.py`, `gate_measure.py`, `memory_settings.py`. Tests in
+`tests/test_concept_consolidation_worker.py` (`AutoMergeTests`,
+`VerdictCacheTests`, `GlobalDiscoveryTests`, `DemandTests`),
+`tests/test_l18_boundary_concepts.py`, `tests/test_concept_lifecycle_worker.py`
+(`DormantTtlTests`), `tests/test_gate_tuning.py`.
+
+**Open questions.** (1) The real lever on fusion throughput is now the
+adjudication budget, and 30/day was set for a worker that saw forty pairs a tick;
+with global discovery it may simply be too low. Raising it is a cost decision
+that wants a maintenance-tier token measurement first. (2) Because the labels
+collide by *template*, the cheaper fix might be upstream of consolidation
+entirely — if the proposers varied sentence shape, cosine would carry more
+meaning and the adjudicator would be asked fewer stupid questions. Unexplored.
+(3) Phase 2 stops single-source minting but does nothing about the *rate* at
+which two-source boundaries form — if 3/day merely becomes 2/day, the next lever
+is the synthesis interval or a per-kind population cap, not the composition rule.
+(4) Nothing yet measures whether a *confirmed* merge was right; the `merged`
+timeline events exist, so a spot-check pass over them is cheap and has not been
+done.
+
+**Depends on.** L2 (the consolidation worker), L18/L18e (the boundary pool), L3
+(the lifecycle engine), L45 (the observe-only gate rails this registers into).

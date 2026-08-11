@@ -64,7 +64,6 @@ from app.core.concepts.concept_kinds import (  # noqa: E402
     CONCEPT_KINDS,
     ROLES,
     ROLE_GENERATIVE,
-    ROLE_GUIDE,
     core_lane_kinds,
     kinds_by_role,
 )

@@ -243,6 +243,17 @@ class WebFacadeMixin:
         return getattr(self, "_idle_scheduler", None)
 
     @property
+    def debug_clock(self) -> Any:
+        """The DT1 :class:`DebugClock`, or ``None`` if it failed to install.
+
+        Public for the MCP debug tools, which are its only consumers — a
+        shifted "now" is something you drive from outside the app, never
+        from a code path inside it. Read via ``getattr`` because init
+        tolerates the clock failing to build.
+        """
+        return getattr(self, "_debug_clock", None)
+
+    @property
     def tasks(self) -> TaskHandles:
         """The task stores, or a bundle of ``None`` when tasks are disabled."""
         return TaskHandles(

@@ -290,6 +290,29 @@ isn't derived twice.
 | behaviour boundaries (soft guiding lines) | `boundary` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance (composite-scored) | **shipped (L18)** |
 | abstraction / through-lines (the bigger pattern over several concepts) | `generalization` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance; children suppressed beneath a present parent | **shipped (L20)** — rides the L12 meta `evidence` rails; single-level only |
 
+## Thresholds are calibrated, not chosen (L45)
+
+The confidence bars in this contract — the core lane's, the openness reserve's,
+the profile block's — are **not** fixed constants at runtime. A daily worker
+measures the live distribution each lane draws from and solves each bar against
+a declared intent, because the same number lands in a different place on a
+different person's graph. The registry of intents is
+[`gate_tuning.py`](../app/core/concepts/gate_tuning.py); learned values and the
+statistics behind them are in `data/tuning/concept_gates.json`.
+
+Two consequences for a new consumer. First, **read your bar per call**, never
+snapshot it at construction: `getattr(ms, "…", default)` at use time is what
+makes a tuning run take effect without a restart, and a value captured in
+`__init__` silently opts out. Second, a lane whose eligible pool is barely
+larger than its cap has nothing to rotate through, which makes habituation
+inert — so if your consumer has a cap, the bar in front of it wants a
+`pool_multiple` spec rather than a hand-picked confidence.
+
+Only read-side bars are applied. Anything that *writes* to the concept store is
+measured and recorded but left alone; see **L45** in
+[`docs/personality-backlog/concepts.md`](personality-backlog/concepts.md) for
+why that line is drawn there.
+
 ## Recipe for a new consumer
 
 1. Take a `ConceptView` (a late-bound provider is fine — see

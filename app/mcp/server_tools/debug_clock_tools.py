@@ -37,7 +37,7 @@ _NO_CLOCK = (
 
 def register(mcp, session: "SessionController") -> None:
     def _clock():
-        return getattr(session, "_debug_clock", None)
+        return session.debug_clock
 
     def _dump(payload: object) -> str:
         return json.dumps(payload, indent=2, default=str)

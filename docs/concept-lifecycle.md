@@ -70,8 +70,32 @@ worker is also gated by `agent.concepts_enabled`.
 | `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
 | `contradicted → retired` | keeps decaying below `retire_floor` | `concept_retire_confidence_floor` |
 | `dormant → active` | fresh evidence (`last_reinforced_at` newer than the last pass) **and** `confidence >= promote_min_confidence`. The evidence half used to be implicit — while decay was the only route into `dormant`, recovered confidence could only come from reinforcement — but the L22 sweep parks concepts still sitting near their promotion confidence, so it is now checked. Revival still does **not** re-run the kind's `promotion_gate`, unlike the `retired` row below: a faded concept returns on its original evidence. | `concept_promote_min_confidence` |
-| `dormant → retired` | `confidence < retire_floor` | `concept_retire_confidence_floor` |
+| `dormant → retired` | `confidence < retire_floor`, **or** (L46) nothing has reinforced it for `dormant_ttl_days` — see below | `concept_retire_confidence_floor`, `concept_dormant_ttl_days` |
 | `retired → active / dormant / candidate` | fresh evidence (`last_reinforced_at` newer than the last lifecycle pass) lifts confidence; routed to `active` if it clears the gate, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
+
+**The dormancy TTL (L46).** Confidence was the only route out of `dormant`, and
+it is a slow one. The L22 sweep demotes never-reinforced actives while their
+confidence is still high, and from there decay needs ~19 engaged days — five or
+six calendar weeks — to reach `0.15`. Measured live: **251 dormant rows averaging
+0.45 confidence with 222 of them unreinforced for over a month**, while eight
+concepts total had ever retired. The floor was weeks behind a conclusion the
+evidence already supported, so `_is_stale_dormant` retires on the evidence
+directly: `concept_dormant_ttl_days` (default `30`, `0` disables) since
+`last_reinforced_at`.
+
+Two details are deliberate. It is measured in **wall-clock** days, breaking the
+engaged-time convention the promotion floor and the candidate TTL use — that
+convention stops a concept idling its way to *maturity* on the calendar, where
+age is a bar to clear and offline time would be unearned credit; retirement asks
+the opposite question, and a month in which a belief never came up is itself the
+observation whether or not the app was running. And the anchor is
+`last_reinforced_at` rather than a moment-of-fading stamp, so one re-observation
+restarts the window — the same read the `dormant → active` row above makes.
+Revival is checked first, so a belief that returns on the tick it would have aged
+out returns instead. `retired` is revivable and dormant rows never surface, so
+arriving early is cheap and reversible. The setting is registered as an
+**observe-only** L45 gate on a `dormant_quiet_days` population, measured but never
+auto-applied.
 
 The contradicted floor sits **above** the dormant floor (default `0.4` vs
 `0.35`) so "actively disproven" is a stronger signal than "faded": a
