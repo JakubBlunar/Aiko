@@ -270,8 +270,14 @@ class ConceptHypothesisWorker:
           speaks for it now, and asking again would be asking about
           something settled.
         - **unasked** — ``asked_count == 0``. The same ``max_asks=1``
-          policy the grounded side runs on, enforced at production so a
-          second row is never written for a guess she already raised.
+          policy the grounded side runs on. The counter moves when the
+          question is actually *put* (``_stamp_hypothesis_ask``), not when
+          this cue is queued, because the shelf surfaces roughly one of
+          these a day and a cue that is never rendered has asked nothing.
+        - **unclaimed** — no cue already drafted from this row. This is
+          what keeps the queue from filling with re-drafts of the same
+          guess, a job ``asked_count`` used to do by accident while it was
+          being spent at publish time.
         """
         store = self._hypothesis_store()
         if store is None:
@@ -281,10 +287,15 @@ class ConceptHypothesisWorker:
         except Exception:
             log.debug("concept_hypothesis: list_by failed", exc_info=True)
             return []
+        claimed = set() if force else self._cues.claimed_sources()
         pool = [
             row
             for row in rows
-            if force or int(getattr(row, "asked_count", 0) or 0) <= 0
+            if force
+            or (
+                int(getattr(row, "asked_count", 0) or 0) <= 0
+                and f"hypothesis:{int(row.hypothesis_id)}" not in claimed
+            )
         ]
         if not pool:
             return []
@@ -300,7 +311,7 @@ class ConceptHypothesisWorker:
         )
         drafted: list[dict[str, Any]] = []
         for row, unsettled in ranked[: self._max_per_run]:
-            cue_id = self._publish_invented(store, row, unsettled)
+            cue_id = self._publish_invented(row, unsettled)
             if cue_id:
                 drafted.append(
                     {
@@ -314,7 +325,7 @@ class ConceptHypothesisWorker:
         return drafted
 
     def _publish_invented(
-        self, store: "HypothesisStore", row: "Hypothesis", unsettled: float,
+        self, row: "Hypothesis", unsettled: float,
     ) -> int:
         statement = str(row.statement or "").strip()
         if not statement:
@@ -326,6 +337,9 @@ class ConceptHypothesisWorker:
             payload={
                 "target_type": "hypothesis",
                 "target_id": int(row.hypothesis_id),
+                # What stops a second cue being queued for the same guess,
+                # now that ``asked_count`` no longer moves at publish time.
+                "source_id": f"hypothesis:{int(row.hypothesis_id)}",
                 "label": statement[:300],
                 "kind": str(row.kind or ""),
                 "subject": subject,
@@ -337,14 +351,13 @@ class ConceptHypothesisWorker:
         )
         if not cue_id:
             return 0
-        # Stamped only once the cue exists, so a failed publish does not
-        # burn the row's single ask -- and so the TTL sweep stops treating
-        # it as never-tested.
-        row.asked_count = int(row.asked_count) + 1
-        try:
-            store.update(row)
-        except Exception:
-            log.debug("hypothesis asked_count bump failed", exc_info=True)
+        # ``asked_count`` is deliberately NOT bumped here. Publishing a cue
+        # is not asking: the shelf renders a ``concept_hypothesis`` roughly
+        # once a day by policy, so most queued cues are never surfaced at
+        # all, and stamping on publish spent each row's single ask on a
+        # question that was never put. That wedged the layer shut -- see
+        # ``SessionController._stamp_hypothesis_ask``, which owns the
+        # counter now, and the L30 note in the backlog.
         log.info(
             "invented hypothesis queued to ask: hid=%s unsettled=%.2f "
             "statement=%r cue=%s",

@@ -2076,10 +2076,42 @@ Rank by `importance x (1 - evidence_strength)`; the top zone becomes a curiosity
 target (L30b). Retire a zone once evidence crosses a threshold — at which point it
 has become a real concept.
 
-**Open questions.** (1) Enumerate expected dimensions per kind (a schema of
-"things worth knowing"), or purely derive from graph sparsity? (2) Overlap with F2
-`knowledge_gap` — extend that store, or a concept-level layer above it?
-(3) How many zones stay "open" at once before it feels like an interrogation queue?
+**Open questions, answered by measurement (Aug 2026).** The graph was surveyed
+before starting this, and the sketch above does not survive it.
+
+*(1) Expected dimensions per kind, or graph sparsity?* **Neither, as stated.**
+`ConceptKind.subject` is documented as "the *typical* subject… a default, not a
+constraint" and explicitly "never an allow-list", so the kind × subject grid is
+not a schema of what ought to exist and emptiness in it means nothing. Reading
+gaps off it invents them: `pursuit/user`, `taste/user` and `ritual/user` are all
+empty *by design*, since pursuit and taste were built as hers and ritual as the
+relationship's. Sparsity does not discriminate either — 210 of the candidates sit
+at exactly 2 distinct sources, the promotion floor, so "weak evidence" is the
+pool's resting state rather than a signal (matching L30a's finding that 144 of 261
+candidates were held back only by the age clock). The genuinely thin cells are
+hers: `pursuit/aiko` at 5 candidates, 0 sources, 0.22 confidence, plus
+`narrative/aiko` and `boundary/aiko`.
+
+*(2) Extend F2, or a layer above it?* **Extend it — and the reason is that F2 is
+starved, not crowded.** The journal is wired end-to-end (inline-tag write path,
+three independent resolvers, a T6 prompt block, REST, a settings panel) and holds
+**one row in its entire life**: a `music:` gap written 27 May and closed two days
+later by `memory_match`. Its only inflow is a `[[gap:…]]` tag the persona tells
+her to use sparingly. So the useful version of this item is an automatic inflow
+into machinery that already exists, not a new store.
+
+*(3) How many zones before it feels like an interrogation?* **Already past it.**
+The cue pool holds 355 rows, 180 of them curiosity seeds, with 74 seeds having
+expired unused.
+
+**Blocked on, and why this was not built next.** The consumer L30d is supposed to
+aim was deadlocked: 12 open hypotheses against a cap of 12, none ever answered,
+because the one-ask counter was spent at cue-publish time. Fixed first — see the
+deadlock note in
+[`shipped/concepts.md`](shipped/concepts.md#l30-phase-b-inventing-a-hypothesis----the-forward-direction).
+Even fixed, the lane's throughput is about one question a day, so a third
+generator upstream of it would queue work nothing can consume. Whatever L30d
+becomes should be measured against that ceiling first.
 
 **Effort.** Medium.
 

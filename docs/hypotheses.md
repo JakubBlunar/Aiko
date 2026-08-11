@@ -125,7 +125,7 @@ drops the rows where age is the only one.
 ```mermaid
 stateDiagram-v2
     [*] --> open: proposer invents (novelty gates pass)
-    open --> expired: never asked, age > hypothesis_ttl_hours
+    open --> expired: never answered, age > hypothesis_ttl_hours
     open --> supported: CONFIRM (credence += step)
     open --> refuted: DENY
     open --> open: CORRECT — restated, credence -= step/2
@@ -150,7 +150,7 @@ not come back.
 | Transition | Condition | Setting(s) |
 | --- | --- | --- |
 | `[*] → open` | the proposer's LLM returned a statement that cleared **both** novelty gates and the shelf had room | `hypothesis_min_novelty`, `hypothesis_concept_novelty`, `hypothesis_max_open`, `hypothesis_invention_max_per_run` |
-| `open → expired` | `asked_count == 0` **and** age past the TTL. A row that *was* asked never expires on a clock — it has a real answer pending or has been settled | `hypothesis_ttl_hours` |
+| `open → expired` | **never answered** (`last_tested_at IS NULL`) **and** age past the TTL. Exemption is on having been *answered*, not on having been *asked* — see the deadlock note below | `hypothesis_ttl_hours` |
 | `open/supported → supported` | adjudicator returned `CONFIRM`; `support_count += 1`, `credence += step`, the answer memory is remembered on the row | `hypothesis_credence_step` |
 | `open/supported → refuted` | adjudicator returned `DENY` — closes immediately, one "no" is enough | `hypothesis_credence_step` |
 | stays `open` | adjudicator returned `CORRECT` — the statement is **rewritten** to the user's wording and re-embedded, at half the credence penalty | `hypothesis_credence_step` |
@@ -284,7 +284,26 @@ unanswered hunch retires instead of being released.
   through [`concept_dedupe.find_duplicate`](../app/core/concepts/concept_dedupe.py)
   at `DEDUPE_COS`. Two independently-tuned thresholds would agree for
   months and then silently diverge.
-- **One ask per hunch, one lane slot per origin.**
+- **One ask per hunch, one lane slot per origin — and the ask is spent
+  when the question is *put*, never when the cue is queued.** These are
+  three different events (queued → rendered → asked) and conflating the
+  first with the last deadlocked the whole layer on the live graph.
+  `asked_count` used to be bumped in `_publish_invented`, reasoning that a
+  cue in the pool is a question asked. It is not: the shelf renders a
+  `concept_hypothesis` about once a day by policy
+  (`surface_cooldown_hours=20`) while the proposer queues several, so **22
+  of 26 cues were never rendered at all** — and each of their rows still
+  counted as asked, which made it simultaneously un-re-askable (the ask
+  worker filters `asked_count <= 0`) *and* un-expirable (the TTL skipped
+  asked rows). Twelve such rows filled `hypothesis_max_open` and invention
+  stopped permanently, reported only as a healthy-looking
+  `skipped: max_open`. Two changes hold the invariant now:
+  `SessionController._stamp_hypothesis_ask` owns the counter and moves it
+  where the cue reaches `awaiting`, and a `source_id` on the cue payload is
+  what stops a second cue being drafted for the same guess — the job
+  `asked_count` had been doing by accident. Expiry exempts *answered* rows
+  rather than asked ones, so a question put a fortnight ago that never got
+  a reply can still age out instead of holding a slot for good.
 - **A terminal row is kept, not deleted.** A `refuted` row is what stops
   re-invention — but an `expired` one is not. Expiry means she never got
   round to asking, so nothing was learned about the guess and the row can
@@ -404,7 +423,10 @@ Start with the two reads, in this order:
 - `get_hypothesis_state` — stock against the caps. `live` at zero means
   the shelf is bare; `live` at `max_open` with a high `linked` count
   means everything on it is already spoken for by a concept and will
-  never surface, which is the usual explanation for a quiet lane.
+  never surface, which is the usual explanation for a quiet lane. `live`
+  at `max_open` with everything **`asked_count > 0` and `last_tested_at`
+  null** is the other one, and it used to be terminal — see the one-ask
+  invariant above.
 - `get_hypotheses` — the rows themselves, least settled first, with
   `origin` distinguishing invented from grounded.
 
@@ -418,7 +440,13 @@ Then, depending on the symptom:
 - **Rows exist but she never asks** → `force_hypothesis_ask` to queue,
   then `get_cue_pool_state` to watch the cue, then `send_message` with a
   topically-related line to trigger the provider. Remember that queuing
-  is not asking.
+  is not asking — and check the *ratio* while you are in there. A pool
+  holding many `pending` `concept_hypothesis` cues with
+  `surfaced_count = 0` means the producer is outrunning the 20-hour
+  render cadence, so most of them will hit the 7-day cue TTL without ever
+  being put. That is throughput, not breakage: the rows they point at stay
+  askable, which is the whole reason the ask is no longer spent at queue
+  time.
 - **She asked and nothing was learned** → the answer went through the
   adjudicator; `get_last_response_detail` plus the
   `app.hypothesis_resolution` log lines show the verdict and the credence

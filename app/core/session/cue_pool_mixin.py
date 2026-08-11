@@ -333,12 +333,49 @@ class CuePoolMixin:
                 # She raised it. Whether that was worth anything depends on
                 # what the user says next -- stage B.
                 store.mark_asked(row.id, now=now)
+                self._stamp_hypothesis_ask(row)
                 log.info(
                     "cue asked: type=%s subject=%r via=%s",
                     row.cue_type, row.subject[:60], verdict.kind,
                 )
                 continue
             self._mark_cue_used(store, row, evidence=evidence)
+
+    def _stamp_hypothesis_ask(self, row: "CueRow") -> None:
+        """Spend an invented hypothesis's one ask, now that it was asked.
+
+        L30 Phase B allows each invention a single ask, and this is the
+        only place that knows the ask happened. The counter used to be
+        bumped when the *cue was published* instead, which deadlocked the
+        whole lane on the live graph: the shelf surfaces a
+        ``concept_hypothesis`` about once a day by policy while the
+        proposer queues several, so 22 of 26 cues were never rendered --
+        yet every one of their rows counted as asked, which made them
+        simultaneously un-re-askable (the ask worker filters
+        ``asked_count <= 0``) and un-expirable (TTL skips asked rows).
+        Twelve of them then filled ``hypothesis_max_open`` and invention
+        stopped for good, reported only as a healthy-looking
+        ``skipped: max_open``.
+
+        Best-effort: a missing store or a row deleted since the cue was
+        published just means no counter to move.
+        """
+        try:
+            payload = row.payload or {}
+            if str(payload.get("target_type") or "") != "hypothesis":
+                return
+            store = getattr(self, "_hypothesis_store", None)
+            if store is None:
+                return
+            target = store.get(int(payload.get("target_id") or 0))
+            if target is None:
+                return
+            target.asked_count = int(target.asked_count) + 1
+            store.update(target)
+        except Exception:
+            log.debug(
+                "hypothesis ask stamp failed: cue=%s", row.id, exc_info=True,
+            )
 
     def _either_party_pending(
         self, store: "CueStore", *, skip: list["CueRow"],

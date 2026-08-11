@@ -281,6 +281,106 @@ class AnsweredTests(_Fixture):
         self.assertEqual(embedder.calls, 0)
 
 
+class _FakeHypothesis:
+    def __init__(self, hid: int) -> None:
+        self.hypothesis_id = hid
+        self.asked_count = 0
+
+
+class _FakeHypothesisStore:
+    """Only the two calls ``_stamp_hypothesis_ask`` makes."""
+
+    def __init__(self, *rows: _FakeHypothesis) -> None:
+        self.rows = {row.hypothesis_id: row for row in rows}
+        self.updates = 0
+
+    def get(self, hid: int):
+        return self.rows.get(int(hid))
+
+    def update(self, row) -> None:
+        self.updates += 1
+
+
+class HypothesisAskStampTests(_Fixture):
+    """L30 Phase B spends an invention's one ask *here*, not at publish.
+
+    Publishing used to spend it, which deadlocked the lane on the live
+    graph: the shelf renders about one ``concept_hypothesis`` a day while
+    the producer queues several, so most cues were never surfaced and yet
+    every row counted as asked -- un-re-askable and un-expirable at once,
+    until twelve of them filled ``hypothesis_max_open`` and invention
+    stopped for good.
+    """
+
+    def _cue(self, hid: int = 7, subject: str = "walking clears his head"):
+        return self.store.add(
+            "concept_hypothesis",
+            subject,
+            "does walking clear your head?",
+            payload={
+                "target_type": "hypothesis",
+                "target_id": hid,
+                "source_id": f"hypothesis:{hid}",
+            },
+        )
+
+    def _ask(self, hid: int = 7) -> int:
+        cue_id = self._cue(hid)
+        row = self.host.take_pool_cue("concept_hypothesis")
+        self.assertIsNotNone(row)
+        self.host._settle_pool_cues(
+            user_text="hey",
+            assistant_text="does walking clears his head, you think?",
+        )
+        return cue_id
+
+    def test_the_real_ask_spends_it(self) -> None:
+        row = _FakeHypothesis(7)
+        self.host._hypothesis_store = _FakeHypothesisStore(row)
+
+        cue_id = self._ask()
+
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+        self.assertEqual(row.asked_count, 1)
+
+    def test_surfacing_without_asking_spends_nothing(self) -> None:
+        """The exact case that wedged the shelf: rendered, not raised."""
+        row = _FakeHypothesis(7)
+        self.host._hypothesis_store = _FakeHypothesisStore(row)
+
+        self._cue()
+        self.assertIsNotNone(self.host.take_pool_cue("concept_hypothesis"))
+        self.host._settle_pool_cues(
+            user_text="hey", assistant_text="anyway, lunch was good",
+        )
+
+        self.assertEqual(row.asked_count, 0)
+
+    def test_a_non_hypothesis_cue_is_left_alone(self) -> None:
+        store = _FakeHypothesisStore(_FakeHypothesis(7))
+        self.host._hypothesis_store = store
+
+        self._surface("dormant_interest", "garage band")
+        self.host._settle_pool_cues(
+            user_text="hey",
+            assistant_text="whatever happened with the garage band?",
+        )
+
+        self.assertEqual(store.updates, 0)
+
+    def test_a_row_deleted_since_publish_does_not_raise(self) -> None:
+        self.host._hypothesis_store = _FakeHypothesisStore()
+
+        cue_id = self._ask(hid=99)
+
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+
+    def test_no_hypothesis_store_still_asks_the_cue(self) -> None:
+        cue_id = self._ask()
+
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+
+
 class BroadcastTests(_Fixture):
     def test_a_used_cue_reaches_the_listener(self) -> None:
         seen: list[dict] = []

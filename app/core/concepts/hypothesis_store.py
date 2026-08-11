@@ -539,18 +539,27 @@ class HypothesisStore:
     # ── hygiene ───────────────────────────────────────────────────────
 
     def expire_stale(self, *, ttl_hours: float, now: Any = None) -> int:
-        """Close untested rows past their TTL. Returns how many.
+        """Close never-answered rows past their TTL. Returns how many.
 
-        Only ``open`` rows with no asks age out. A row that has been put
-        to the user is either settled or has a real answer pending, and a
-        clock should not decide either way.
+        Exemption is on having been *answered* (``last_tested_at``), not on
+        having been *asked*. Asking used to be the guard, on the reasoning
+        that a question put to the user is either settled or has a real
+        answer pending and a clock should not decide either way. That holds
+        for a question asked this week; it fails for one asked a fortnight
+        ago whose cue has long since expired unanswered, and such a row
+        cannot be re-asked either (one ask per invention), so it occupies
+        ``hypothesis_max_open`` permanently. Twelve of them shut the live
+        lane down completely.
+
+        A restated row keeps the exemption: it did get an answer, which is
+        exactly what the original guard was protecting.
         """
         if ttl_hours <= 0:
             return 0
         moment = now or timephrase.utcnow()
         closed = 0
         for row in list(self._rows.values()):
-            if row.status != STATUS_OPEN or row.asked_count > 0:
+            if row.status != STATUS_OPEN or row.last_tested_at is not None:
                 continue
             age_h = _age_hours(row.created_at, moment)
             if age_h is None or age_h < float(ttl_hours):
