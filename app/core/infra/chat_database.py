@@ -2422,6 +2422,32 @@ class ChatDatabase:
         ).fetchone()
         return ThreadNoteRow(*row) if row else None
 
+    def latest_other_session(
+        self, session_id: str,
+    ) -> tuple[str, str] | None:
+        """The most recently active session that is **not** ``session_id``.
+
+        Returns ``(session_id, last_created_at)``, or ``None`` when this
+        is the only conversation on record. Backs the continuity block,
+        which needs "what were we talking about before this window" — a
+        question no other reader asks, because everything else in the
+        prompt is deliberately scoped to the active session.
+
+        Served by ``idx_messages_session (session_id, created_at)``: a
+        grouped scan over the session count (tens, not thousands), and
+        the caller only asks during the opening messages of a session.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT session_id, MAX(created_at) AS last_at FROM messages "
+            "WHERE session_id != ? GROUP BY session_id "
+            "ORDER BY last_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        return str(row[0]), str(row[1])
+
     def save_thread_note(
         self,
         session_id: str,

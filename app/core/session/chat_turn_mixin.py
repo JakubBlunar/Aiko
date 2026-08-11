@@ -152,6 +152,10 @@ class ChatTurnMixin:
                 attachments=attachments_json,
             )
 
+        # The transcript just moved; make the restore pointer follow it so
+        # the next launch reopens the conversation he was actually in.
+        self._touch_last_active_session()
+
         if mode == "live":
             with self._merge_lock:
                 self._merge_buffer[merge_key] = _MergeBuffer(

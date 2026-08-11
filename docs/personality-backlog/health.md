@@ -1381,6 +1381,92 @@ swap and a change of corpus, and it cannot be placed out of reach.**
 
 ---
 
+## H24. Every continuity signal she has is scoped to the thing that resets
+
+**Severity: high — not a rate problem or a tuning problem. Six features
+were switched off simultaneously by a UI affordance, and each one of them
+was working correctly.**
+
+Reported rather than found: *"when I start the desktop app or the PWA I
+land on a new conversation or some older one. Those conversations are
+separators for me. But for Aiko everything should be continuous."*
+
+A conversation is **filing**. He starts one to get a divider in his own
+sidebar, and it says nothing about whether the relationship paused. On
+Aiko's side it says everything, because `session_id` is the key that
+*every* short-term continuity mechanism happens to be scoped by:
+
+| what she loses at the seam | why |
+| --- | --- |
+| the transcript | `get_messages(session_key)` |
+| the rolling summary | `session_summaries.session_id` |
+| the K21 thread note | `thread_notes.session_id` |
+| J5 reconnection, K14 absence curiosity, K28 turning over, H21 sleep return, K36 away activities, K34 forward curiosity | **all six** measure from the previous assistant message *in the same session* — and a fresh session has none, so all six return `None` together |
+
+Nothing here is broken. Every one of those gates is doing exactly what it
+says. But the composition means the moment she most needs "we were
+talking about X, three hours ago" is precisely the moment she knows
+least: long-term memory and relationship state survive, so she is warm
+and knows who he is, and has no idea a conversation just ended.
+
+**Twelfth recurring shape:** *a scope that is right for each feature
+individually can be wrong for all of them at once.* H18/H20/H21 were each
+one signal carrying no information; this is six signals that each carry
+information and are all keyed to the same resetting value, so they fail
+as a block and the failure looks like a personality trait rather than a
+bug. **Rule: when several features share a gating key, ask what happens
+on the turn that key changes. If the honest answer is "all of them go
+quiet", that turn needs a feature of its own.**
+
+### Outcome: bridge the seam rather than widen the scope
+
+Widening any individual gate would have been wrong — J5 measuring across
+sessions would fire on a *deliberate* switch into an old thread, and the
+per-session summary is per-session for good reason. So K91 adds one T2
+block that exists only at the seam: while the new conversation holds
+fewer than `agent.continuity_max_messages` (6) messages, it names how
+long ago the previous conversation ended and what it was about, and takes
+one of two tails depending on whether the gap is under six hours (same
+sitting, carry on) or over (noticing it is natural). Deciding "is this a
+seam?" costs no query. Full write-up in
+[configuration.md](../configuration.md#k91--session-continuity-bridge).
+
+### And the restore pointer was a day stale
+
+The other half of the report — "or some older one" — was a real bug with
+a one-line tell. `config/user.json` said `last_active_id: "s2"`, last
+used 2026-08-10; 75 messages had since landed in `fa7593d7`. Every launch
+reopened the older thread.
+
+The pointer is written by `switch_session`, so it records **intent**, not
+activity — and `_resolve_initial_session_id` honours it *over* the
+database's own record of where the last message went, with no
+self-correction. Anything that lands on a session without a click leaves
+it stale forever. It is now also written on the first user turn in a
+session, guarded by an in-memory copy so it costs one small write per
+session; the copy starts empty at boot, so the first turn after a cold
+start repairs a pointer that drifted under a previous build.
+
+**Also fixed while here:** on phones the transcript was never fetched at
+all. `useSessionHistory` lived in `SessionSidebar`, which the desktop
+tree always mounts but the phone tree only mounts inside
+`MobileNavDrawer` — and that returns `null` while closed. The socket
+connected, `hello` set a perfectly good session key, and the user got the
+empty state with no way to tell it from a genuinely new conversation.
+That is most of "I land on a new conversation" on the PWA, and it is a
+different bug from the pointer with the same symptom.
+
+**Left open — K21 notes carry unreliable dates.** The bridge shows the
+previous thread's fresh-eyes note, and one in the live store opens
+*"Jacob fell asleep on June 29, 2026"* on a thread whose messages are all
+from 2026-08-10. Five of the six most recent notes have correct dates, so
+this is an outlier rather than a systematic fault, but it is worth a pass
+over the ThreadResummaryWorker prompt: it is being asked to date events
+and has no reliable clock for them. K91 sidesteps it by computing elapsed
+time from message timestamps and never reading it out of the note prose.
+
+---
+
 ## The eight recurring shapes
 
 More useful than any single entry — these are the bug families to check for

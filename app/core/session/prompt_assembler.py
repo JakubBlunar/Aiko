@@ -121,8 +121,14 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "day_color_block",
     ),
     # T2 — compaction only. Only mutates when a SummaryWorker run
-    # collapses old history into a new summary row.
+    # collapses old history into a new summary row. ``continuity_block``
+    # is the exception: it renders on the opening turns of a conversation
+    # and then goes quiet for good. It leads the tier because it is about
+    # the conversation *before* this one, and the two blocks under it are
+    # about this one — and it costs no extra cache churn wherever it
+    # sits, since its disappearance moves everything below T2 regardless.
     "T2_summary": (
+        "continuity_block",
         "summary_text",
         "thread_note_text",
     ),
@@ -455,6 +461,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         history_age_prefix_enabled: bool = True,
         cue_register_rotation_enabled: bool = True,
         speech_texture_enabled: bool = True,
+        continuity_max_messages: int = 6,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
@@ -475,6 +482,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``[just now]``, ``[yesterday 18:45]``). Set False for a
         # byte-identical history to the pre-K-time1 behaviour.
         self._history_age_prefix_enabled = bool(history_age_prefix_enabled)
+        # How many messages a conversation may hold and still count as
+        # "just opened" for the continuity bridge. 0 disables the block.
+        self._continuity_max_messages = max(0, int(continuity_max_messages))
         # P44: last turn's prompt shape per session, for prefix-divergence
         # diagnosis. Bounded because a long-lived process accumulates
         # sessions it will never assemble for again.
@@ -1330,6 +1340,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # until the ThreadResummaryWorker re-drafts). Sits in T2 right after
         # the rolling summary so the cache prefix stays intact.
         thread_note_text = slices.thread_note
+        # Bridges the seam from the previous conversation; empty on all
+        # but the opening turns. Built with the slices so an established
+        # session decides "not a seam" without touching the database.
+        continuity_block = slices.continuity_block
 
         # Per-turn dynamic blocks read fresh on every assemble (NOT cached
         # in static slices). Vocal-tone is captured by the live-capture
@@ -2857,6 +2871,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Only mutates when SummaryWorker collapses old history into a
         # new summary row. Stable across consecutive turns until the
         # next compaction event, so it caches for the whole arc.
+        if continuity_block:
+            system_parts.append(continuity_block)
         if summary_text:
             system_parts.append(summary_text)
         if thread_note_text:

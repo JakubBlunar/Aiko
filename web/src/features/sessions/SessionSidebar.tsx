@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, mapRawMessages } from "@/api";
+import { api } from "@/api";
 import { useAssistantStore } from "@/store";
 import type { SessionRow, WsClientCommand } from "@/types";
 import { NotificationBell } from "@/features/notifications/NotificationBell";
-
-/** Initial history page size on a session load. A full page means there
- * may be older messages to page back through (I6 "load older"). */
-const INITIAL_HISTORY_LIMIT = 200;
 
 interface SessionSidebarProps {
   send: (cmd: WsClientCommand) => void;
@@ -169,9 +165,6 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const sessionKey = useAssistantStore((s) => s.sessionKey);
   const sessionListSignal = useAssistantStore((s) => s.sessionListSignal);
-  const setMessages = useAssistantStore((s) => s.setMessages);
-  const setHistoryHasMore = useAssistantStore((s) => s.setHistoryHasMore);
-  const clearMessages = useAssistantStore((s) => s.clearMessages);
   const pushSystemMessage = useAssistantStore((s) => s.pushSystemMessage);
 
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -197,35 +190,9 @@ export function SessionSidebar({
     void refresh();
   }, [refresh, sessionKey, sessionListSignal]);
 
-  // Whenever the active session key changes, hydrate the message list.
-  useEffect(() => {
-    if (!sessionKey) return;
-    let cancelled = false;
-    api
-      .getMessages(sessionKey, INITIAL_HISTORY_LIMIT)
-      .then((rows) => {
-        if (cancelled) return;
-        setMessages(mapRawMessages(rows));
-        // I6: a full initial page means there may be older messages to
-        // page back through; a short page means we already have it all.
-        setHistoryHasMore(rows.length >= INITIAL_HISTORY_LIMIT);
-      })
-      .catch((err) => {
-        console.error("Failed to load messages:", err);
-        clearMessages();
-        setHistoryHasMore(false);
-        pushSystemMessage(`Failed to load history: ${String(err)}`);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    sessionKey,
-    setMessages,
-    setHistoryHasMore,
-    clearMessages,
-    pushSystemMessage,
-  ]);
+  // Transcript hydration deliberately does NOT live here: this component
+  // is unmounted on phones until the nav drawer opens. See
+  // ``useSessionHistory``, called from ``App``.
 
   // New / switch go over REST, not the fire-and-forget WS ``send``:
   // ``send`` silently drops the command when the socket is momentarily

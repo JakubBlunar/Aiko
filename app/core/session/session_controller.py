@@ -257,6 +257,11 @@ class SessionController(
         # ``switch_session`` — see ``_resolve_initial_session_id`` for
         # the fallback chain.
         self._session_id = self._resolve_initial_session_id(default="main")
+        # Last value written to ``user.json``. Empty at boot so the first
+        # user turn re-asserts whichever session we actually resolved to
+        # — see ``_touch_last_active_session`` for why the pointer cannot
+        # be trusted to already agree.
+        self._persisted_last_active_id = ""
 
         # One-shot overrides the MCP debug tools arm and the inner-life
         # providers consume. Cleared wholesale on a session switch so an
@@ -917,6 +922,9 @@ class SessionController(
             ),
             speech_texture_enabled=bool(
                 getattr(self._settings.agent, "speech_texture_enabled", True)
+            ),
+            continuity_max_messages=int(
+                getattr(self._settings.agent, "continuity_max_messages", 6)
             ),
         )
 
