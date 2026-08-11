@@ -38,6 +38,7 @@ class Settings:
     evolution_diary_min_events: int = 3
     evolution_diary_min_salience: float = 0.45
     evolution_diary_cooldown_days: float = 7.0
+    evolution_diary_backlog_pages: int = 3
 
 
 @dataclass
@@ -257,6 +258,116 @@ class GateTests(unittest.TestCase):
         assert signal is not None
         self.assertGreater(signal.pressure, 0.0)
         self.assertTrue(signal.needs_llm)
+
+
+class BacklogTests(unittest.TestCase):
+    """One page per cooldown is a ceiling, and a ceiling below the arrival
+    rate is a diary that falls further behind every week it runs. The live
+    graph had 273 unreported changes against a 12-a-week drain.
+    """
+
+    def setUp(self) -> None:
+        self.h = _harness()
+
+    def _stock(self, count: int, *, start: int = 0) -> None:
+        for n in range(start, start + count):
+            _event(self.h, n)
+
+    def _pending(self) -> int:
+        return self.h.learning.count_since(
+            self.h.diary.latest_watermark(), min_salience=0.45,
+        )
+
+    def test_a_deep_backlog_releases_the_cooldown(self) -> None:
+        self._stock(100)
+        worker = _worker(self.h)
+        worker.run()
+        # The cooldown is stamped and the clock has not moved, yet enough
+        # is still waiting that the period counts as over.
+        self.assertIn(KV_LAST_FIRED_AT, self.h.kv)
+        self.assertEqual(self.h.diary.count(), 3)
+        worker.run()
+        self.assertEqual(self.h.diary.count(), 6)
+
+    def test_a_shallow_backlog_still_waits_for_the_clock(self) -> None:
+        """The release needs a real backlog; one busy afternoon is not one."""
+        self._stock(14)
+        worker = _worker(self.h)
+        worker.run()
+        self._stock(4, start=14)
+        self.assertEqual(worker.run()["reason"], "cooldown")
+        self.assertEqual(self.h.diary.count(), 1)
+
+    def test_a_catch_up_tick_composes_several_entries(self) -> None:
+        self._stock(200)
+        stats = _worker(self.h).run()
+        self.assertEqual(stats["entries"], 3)
+        self.assertEqual(stats["events"], 36)
+        self.assertEqual(self.h.diary.count(), 3)
+
+    def test_the_page_cap_bounds_one_tick(self) -> None:
+        self.h.settings.evolution_diary_backlog_pages = 2
+        self._stock(200)
+        self.assertEqual(_worker(self.h).run()["entries"], 2)
+
+    def test_keeping_pace_still_writes_one_entry_a_period(self) -> None:
+        """The ordinary rhythm is untouched by the catch-up path."""
+        self._stock(10)
+        stats = _worker(self.h).run()
+        self.assertEqual(stats.get("entries", 1), 1)
+        self.assertEqual(self.h.diary.count(), 1)
+
+    def test_the_backlog_shrinks_over_simulated_days(self) -> None:
+        """The regression the existing tests could not see: they pop the
+        cooldown key between pages, so the pacing mismatch was invisible.
+        Here the cooldown stays in place and the clock does the work.
+        """
+        self._stock(200)
+        day = [0]
+        worker = EvolutionDiaryWorker(
+            learning_store=self.h.learning,
+            diary_store=self.h.diary,
+            memory_settings=self.h.settings,
+            agent_settings=self.h.agent,
+            ollama=FakeOllama(ENTRY),
+            chat_model="m",
+            kv_get=self.h.kv.get,
+            kv_set=lambda k, v: self.h.kv.__setitem__(k, v),
+            user_name_provider=lambda: "Jacob",
+            clock=lambda: NOW + timedelta(days=day[0]),
+        )
+        start = self._pending()
+        self.assertEqual(start, 200)
+        seen = [start]
+        for d in range(14):
+            day[0] = d
+            worker.run()
+            seen.append(self._pending())
+        # Down to under a single page, from a backlog that the old ceiling
+        # of twelve a week would have taken four months to clear.
+        self.assertLess(seen[-1], 12)
+        # And the last of it is paced normally again: once the backlog is
+        # shallow the cooldown takes back over, which is the point.
+        self.assertGreater(seen[-1], 0)
+        # Monotone: no tick may put events back above the watermark.
+        self.assertEqual(seen, sorted(seen, reverse=True))
+
+    def test_an_empty_compose_stops_the_catch_up_rather_than_burning_calls(
+        self,
+    ) -> None:
+        self._stock(200)
+        ollama = FakeOllama("")
+        stats = _worker(self.h, ollama=ollama).run()
+        self.assertEqual(stats["reason"], "empty")
+        self.assertEqual(len(ollama.calls), 1)
+        self.assertEqual(self.h.diary.count(), 0)
+
+    def test_state_reports_what_the_next_tick_will_do(self) -> None:
+        self._stock(200)
+        state = _worker(self.h).state()
+        self.assertEqual(state["backlog_release_floor"], 24)
+        self.assertEqual(state["pages_next_run"], 3)
+        self._stock(0)
 
 
 class CompositionTests(unittest.TestCase):
