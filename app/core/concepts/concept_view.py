@@ -148,6 +148,52 @@ def _round_robin(
     return out
 
 
+def _kind_first(
+    by_kind: "dict[str, dict[str, list[Concept]]]",
+) -> list["Concept"]:
+    """Draw order that rotates kinds first and subjects within a kind.
+
+    :func:`_round_robin` balances ``(kind, subject)`` buckets, which shares
+    evenly between *buckets* and therefore hands a kind one share per
+    subject it happens to be populated in. A kind mined for both the user
+    and Aiko then takes twice the room of one mined for a single subject,
+    for no reason a reader of the prompt would recognise -- which is the
+    opposite of the "no one kind crowds out the rest" guarantee the
+    bucketing is there to provide.
+
+    So each kind is balanced across its own subjects first, and the kinds
+    are then interleaved, strongest-band-first. Every kind present gets its
+    turn before any kind gets a second, and a kind's subjects still
+    alternate inside its own share.
+    """
+    if not by_kind:
+        return []
+    per_kind = {
+        name: _round_robin({
+            (name, subject): rows for subject, rows in subjects.items()
+        })
+        for name, subjects in by_kind.items()
+        if any(subjects.values())
+    }
+    if not per_kind:
+        return []
+    # ``_stable_rank`` already leads with the negated band, so sorting on
+    # it ascending is strongest-band-first. Name breaks ties so the order
+    # is identical turn to turn, which the prompt cache depends on.
+    order = sorted(
+        per_kind, key=lambda name: (_stable_rank(per_kind[name][0])[0], name),
+    )
+    draw: list["Concept"] = []
+    depth = 0
+    while any(len(per_kind[name]) > depth for name in order):
+        for name in order:
+            rows = per_kind[name]
+            if depth < len(rows):
+                draw.append(rows[depth])
+        depth += 1
+    return draw
+
+
 #: A habituation factor at or above this counts as fully rested. Matches
 #: the core lane's own fresh/stale threshold in ``build_relevant_context``
 #: -- the factor is a float, so an exact ``1.0`` comparison would classify
@@ -309,13 +355,21 @@ class ConceptView:
         Generalises the old identity-only pin: every kind that opts in via
         ``ConceptKind.core_always_on`` contributes, each gated by its own
         ``core_min_confidence`` bar (falling back to
-        ``default_min_confidence``). Candidates are bucketed by
-        ``(kind, subject)`` and drawn round-robin — strongest bucket first,
-        then one from each in turn — so a prolific kind (usually identity,
-        the only one mined today) can't crowd out value / boundary /
-        relationship, and both the user-model and Aiko's self-model reach
-        the brain. ``per_kind_cap`` optionally caps how deep any single
-        bucket is drawn before the round-robin.
+        ``default_min_confidence``). Candidates are drawn kind-first and
+        subject-second (:func:`_kind_first`) — every kind present gets a
+        slot before any kind gets a second — so a prolific kind can't crowd
+        out value / boundary / relationship, and both the user-model and
+        Aiko's self-model reach the brain. ``per_kind_cap`` optionally caps
+        how deep any single kind is drawn before the interleave.
+
+        That draw used to balance ``(kind, subject)`` buckets flat, which
+        shares evenly between buckets rather than between kinds: a kind
+        mined for both subjects took two shares and a kind mined for one
+        took a single share. On the live graph that made ``boundary`` --
+        the only core kind with two deep subject pools -- 38% of the pinned
+        lane, on nothing more principled than which kinds happen to be
+        populated on both sides. Same defect ``_openness_picks`` was fixed
+        for, so now the same fix, shared.
 
         ``openness_slots`` keeps that many of ``limit`` for the **openness
         reserve** (see :meth:`_openness_picks`), which is the only way a
@@ -346,9 +400,9 @@ class ConceptView:
         if not kinds:
             return reserved
         default_bar = float(default_min_confidence)
-        # Bucket by (kind, subject); each bucket is confidence-desc because
-        # ``core`` sorts, so bucket[0] is that area's strongest concept.
-        buckets: dict[tuple[str, str], list["Concept"]] = {}
+        # Bucket by kind, then subject; each bucket is confidence-desc
+        # because ``core`` sorts, so bucket[0] is that area's strongest.
+        by_kind: dict[str, dict[str, list["Concept"]]] = {}
         for kind in kinds:
             bar = (
                 float(kind.core_min_confidence)
@@ -358,14 +412,16 @@ class ConceptView:
             rows = self.core(kind=kind.name, min_confidence=bar, limit=per_kind_cap)
             for c in rows:
                 subject = str(getattr(c, "subject", "") or "user")
-                buckets.setdefault((kind.name, subject), []).append(c)
-        if not buckets:
+                by_kind.setdefault(kind.name, {}).setdefault(
+                    subject, [],
+                ).append(c)
+        if not by_kind:
             return reserved
         # Only the slots the reserve actually filled are spent: an
         # unfillable reserve gives its room back to the ordinary lane
         # rather than shortening the pin.
         room = max(0, cap - len(reserved))
-        return reserved + _round_robin(buckets)[:room]
+        return reserved + _kind_first(by_kind)[:room]
 
     def _openness_picks(
         self,
@@ -447,26 +503,7 @@ class ConceptView:
         # Kinds in strongest-first order, each already balanced across its
         # own subjects, then interleaved so slot N+1 goes to a different
         # kind than slot N wherever one is available.
-        per_kind = {
-            name: _round_robin({
-                (name, subject): rows for subject, rows in subjects.items()
-            })
-            for name, subjects in by_kind.items()
-        }
-        # ``_stable_rank`` already leads with the negated band, so sorting
-        # on it ascending is strongest-band-first.
-        order = sorted(
-            per_kind,
-            key=lambda name: (_stable_rank(per_kind[name][0])[0], name),
-        )
-        draw: list[Concept] = []
-        depth = 0
-        while any(len(per_kind[name]) > depth for name in order):
-            for name in order:
-                rows = per_kind[name]
-                if depth < len(rows):
-                    draw.append(rows[depth])
-            depth += 1
+        draw = _kind_first(by_kind)
         if rest is not None:
             draw.sort(key=lambda c: _rest_key(c, rest))
         return draw[:slots]

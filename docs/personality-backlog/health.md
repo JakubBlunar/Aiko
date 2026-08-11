@@ -674,6 +674,75 @@ alongside identity/value so feeling is pinned rather than competing on cosine.
 Measure after changing: this is the kind of ratio the L45 tuner should own rather
 than a hand-picked constant, and it interacts with H10's proposed tension slot.
 
+### Measured — and the framing above is wrong in one important way
+
+**`boundary` does not hold boundaries.** Of 106 active `boundary` concepts, **4
+read as a limit**; 46% are behavioural directives and 50% are descriptions.
+That is not a defect in the miner — it is the specification. `boundary_user.py`
+tells the model *"A boundary is a guide… These are GUIDING, never hard
+refusals… Phrase it as a gentle guide for how Aiko should act"*, and it does
+exactly that. The kind is a **standing behavioural instruction**, and only its
+name says otherwise.
+
+So the concern is real but sharper than "reminded of its limits": the single
+largest category in her prompt is 8.5 imperatives a turn, 28% of them literally
+beginning "Aiko should". Consent and pacing — the load-bearing material the
+original entry wanted to protect — is 4 concepts, and capping the kind's share
+would evict it at the same rate as everything else. Anything done here must not
+be reasoned about as if it were trading safety against warmth. It is trading
+*instruction* against warmth.
+
+**Where the 8.5 comes from.** Split evenly: 2067 core (38% of the pinned lane)
+and 1236 flex (23%). The pinned half is the notable one, since it arrives every
+turn regardless of topic. Its cause is not scoring but supply — only three core
+kinds currently have anything above their bar:
+
+| core kind | bar | active rows | eligible |
+| --- | --- | --- | --- |
+| `identity` | 0.70 | 201 | 43 |
+| `boundary` | 0.80 | 106 | 14 |
+| `value` | 0.85 | 128 | 6 |
+| `generalization` | 0.80 | 111 | **0** |
+
+Thirteen pinned slots split three ways is 5/4/4, which is the observed 38%.
+`generalization` decayed below its own bar (max active confidence 0.773) and was
+still surfacing as recently as 2026-08-10, so it is locked out today rather than
+permanently — worth re-checking rather than treating as a fifth unreachable
+gate.
+
+### Done: the lane now balances between kinds, not between buckets
+
+Separate latent defect found while measuring, and fixed. `core_lane` bucketed by
+`(kind, subject)` and drew round-robin across buckets, which shares evenly
+between *buckets* — so a kind mined for both subjects took two shares and a kind
+mined for one took a single share. `_openness_picks` had this exact bug and was
+already fixed for it ("the draw is one kind at a time, not one bucket at a
+time"); the interleave is now shared between them as `_kind_first`.
+
+**This changes nothing on today's data** (verified by replaying both draws
+against the live graph: both give 5/4/4), because all three eligible kinds are
+deeper than their share. It matters as soon as a fourth kind returns or a core
+kind is mined for one subject only, and it makes the lane behave the way its own
+docstring already promised.
+
+### Still open: the ratio itself
+
+Deliberately not decided here. It changes how she reads rather than whether
+something works, the levers are not equivalent, and the original entry's two
+suggestions both have costs worth stating:
+
+- *Cap boundary's share.* Bounds the instruction load, but evicts by kind rather
+  than by register, so the 4 real limits go with the rest.
+- *Promote `affective` to the core lane.* Pins feeling every turn — but the core
+  lane is topic-independent, so this pins feelings about topics that are not
+  being discussed, which cuts directly against what H9 just fixed.
+- *Lower the total.* 28.6 concepts a turn is a lot of standing context; less of
+  everything may read warmer than a different mix of the same volume.
+- *Change the register, not the ratio.* The imperative phrasing is a prompt
+  instruction in `boundary_user.py` / `boundary_aiko.py`, not an emergent
+  property. Asking for observations rather than directives would change how the
+  same knowledge reads. Only affects newly mined concepts.
+
 ---
 
 ## H12. "Us" is not a first-class subject
