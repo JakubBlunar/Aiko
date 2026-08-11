@@ -25,6 +25,7 @@ from app.core.concepts.concept_surfacing import (
     composite_score,
     earned_standing,
     engagement_baseline,
+    landing_baseline,
     event_charge,
     event_charge_detail,
     habituation_factor,
@@ -53,20 +54,37 @@ class EarnedStandingTests(unittest.TestCase):
         self.assertAlmostEqual(engagement_baseline(stats), 0.35)
         self.assertEqual(engagement_baseline({}), 0.5)
 
+    def test_the_standing_baseline_pools_echoes_not_labels(self) -> None:
+        # Standing is per-item, so its prior must come from the per-item
+        # signal. The two baselines disagree here on purpose.
+        stats = {
+            1: SimpleNamespace(settled=10, engaged=2, judged=10, echoed=6),
+            2: SimpleNamespace(settled=30, engaged=12, judged=30, echoed=18),
+        }
+        self.assertAlmostEqual(landing_baseline(stats), 0.6)
+        self.assertAlmostEqual(engagement_baseline(stats), 0.35)
+        self.assertEqual(landing_baseline({}), 0.5)
+
+    def test_an_unjudged_population_leaves_the_baseline_neutral(self) -> None:
+        # Clusters get no echo test at all; dividing by surfacings would
+        # report a confident 0.0 for something nobody measured.
+        stats = {1: SimpleNamespace(surfaced=40, judged=0, echoed=0)}
+        self.assertEqual(landing_baseline(stats), 0.5)
+
     def test_dynamic_baseline_maps_to_neutral(self) -> None:
         self.assertAlmostEqual(
             earned_standing(
-                engaged=3, settled=10, baseline=0.3, prior_strength=10
+                landed=3, judged=10, baseline=0.3, prior_strength=10
             ),
             0.5,
         )
 
     def test_shrinkage_and_asymmetric_safe_floor(self) -> None:
         above = earned_standing(
-            engaged=10, settled=10, baseline=0.3, prior_strength=10
+            landed=10, judged=10, baseline=0.3, prior_strength=10
         )
         below = earned_standing(
-            engaged=0, settled=10, baseline=0.3, prior_strength=10
+            landed=0, judged=10, baseline=0.3, prior_strength=10
         )
         self.assertAlmostEqual(above, 0.75)
         self.assertAlmostEqual(below, 0.425)
@@ -74,21 +92,21 @@ class EarnedStandingTests(unittest.TestCase):
 
     def test_cold_and_malformed_data_are_neutral(self) -> None:
         self.assertEqual(
-            earned_standing(engaged=3, settled=3, baseline=0.3), 0.5
+            earned_standing(landed=3, judged=3, baseline=0.3), 0.5
         )
         self.assertEqual(
-            earned_standing(engaged="bad", settled=10, baseline=0.3), 0.5
+            earned_standing(landed="bad", judged=10, baseline=0.3), 0.5
         )
         self.assertEqual(
-            earned_standing(engaged=3, settled=10, baseline=float("nan")), 0.5
+            earned_standing(landed=3, judged=10, baseline=float("nan")), 0.5
         )
 
     def test_bounds_and_protected_kinds_never_drop_below_neutral(self) -> None:
         low = earned_standing(
-            engaged=0, settled=100, baseline=0.3, floor=0.35
+            landed=0, judged=100, baseline=0.3, floor=0.35
         )
         protected = earned_standing(
-            engaged=0, settled=100, baseline=0.3, floor=0.35,
+            landed=0, judged=100, baseline=0.3, floor=0.35,
             protect_downward=True,
         )
         self.assertGreaterEqual(low, 0.35)

@@ -215,10 +215,19 @@ class EarnedStandingRefreshTests(unittest.TestCase):
             h.store, status="active", kind="taste",
             label="Aiko likes quiet mysteries",
         )
+        # Standing reads the echo verdict; the engaged counts here are
+        # deliberately the reverse, so a regression back to the label
+        # would flip both signs rather than pass quietly.
         ledger.rows = {
-            ordinary.concept_id: ItemStats(settled=10, engaged=8),
-            boundary.concept_id: ItemStats(settled=10, engaged=0),
-            cold.concept_id: ItemStats(settled=3, engaged=3),
+            ordinary.concept_id: ItemStats(
+                settled=10, engaged=0, judged=10, echoed=8,
+            ),
+            boundary.concept_id: ItemStats(
+                settled=10, engaged=8, judged=10, echoed=0,
+            ),
+            cold.concept_id: ItemStats(
+                settled=3, engaged=3, judged=3, echoed=3,
+            ),
         }
 
         stats = h.worker.run()
@@ -238,6 +247,27 @@ class EarnedStandingRefreshTests(unittest.TestCase):
         self.assertEqual(cached[str(boundary.concept_id)], 0.5)
         self.assertEqual(stats["standing_warmed"], 2)
 
+    def test_warmth_counts_judged_rows_not_settled_ones(self) -> None:
+        # A settled row is one the *turn* got a label for; a judged row is
+        # one this item got an echo test on. Gating on the former would
+        # warm a concept on evidence its estimator cannot see.
+        ledger = _StandingLedger({})
+        h = _harness(
+            settings=self._standing_settings(),
+            surfacing_outcome_store_provider=lambda: ledger,
+        )
+        concept = _add(h.store, status="active", kind="identity")
+        ledger.rows = {
+            concept.concept_id: ItemStats(
+                settled=40, engaged=30, judged=2, echoed=2,
+            )
+        }
+
+        stats = h.worker.run()
+
+        self.assertEqual(stats["standing_warmed"], 0)
+        self.assertEqual(json.loads(h.kv.get("concept.earned_standing") or "{}"), {})
+
     def test_hourly_cadence_and_cache_replacement_prune_stale_ids(self) -> None:
         ledger = _StandingLedger({})
         h = _harness(
@@ -246,7 +276,9 @@ class EarnedStandingRefreshTests(unittest.TestCase):
         )
         concept = _add(h.store, status="active")
         ledger.rows = {
-            concept.concept_id: ItemStats(settled=10, engaged=5)
+            concept.concept_id: ItemStats(
+                settled=10, engaged=5, judged=10, echoed=5,
+            )
         }
         h.kv.set("concept.earned_standing", '{"999":0.9}')
 

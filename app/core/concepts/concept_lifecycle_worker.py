@@ -91,7 +91,7 @@ from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_store import ConceptEdge
 from app.core.concepts.concept_surfacing import (
     earned_standing,
-    engagement_baseline,
+    landing_baseline,
     load_standing,
     save_standing,
 )
@@ -378,8 +378,8 @@ class ConceptLifecycleWorker:
         outcome_stats = ledger.stats_for(
             "concept", ids, window_days=window_days,
         )
-        baseline = engagement_baseline(outcome_stats)
-        min_settled = max(
+        baseline = landing_baseline(outcome_stats)
+        min_judged = max(
             1, self._i("concept_surfacing_standing_min_settled", 4)
         )
         prior_strength = max(
@@ -393,13 +393,13 @@ class ConceptLifecycleWorker:
         for concept in active:
             cid = int(getattr(concept, "concept_id", 0) or 0)
             row = outcome_stats.get(cid)
-            if row is None or int(getattr(row, "settled", 0) or 0) < min_settled:
+            if row is None or int(getattr(row, "judged", 0) or 0) < min_judged:
                 continue
             standing_map[cid] = earned_standing(
-                engaged=int(getattr(row, "engaged", 0) or 0),
-                settled=int(getattr(row, "settled", 0) or 0),
+                landed=int(getattr(row, "echoed", 0) or 0),
+                judged=int(getattr(row, "judged", 0) or 0),
                 baseline=baseline,
-                min_settled=min_settled,
+                min_judged=min_judged,
                 prior_strength=prior_strength,
                 floor=floor,
                 ceiling=ceiling,

@@ -199,35 +199,52 @@ def salience(*, change: float = 0.0, affect: float = 0.0) -> float:
 
 
 def engagement_baseline(stats_by_id: dict[int, object]) -> float:
-    """Relationship-local engaged rate across a concept outcome snapshot.
+    """Relationship-local engaged rate across an outcome snapshot.
 
     L37's labels are not balanced classes: in the first real ledger sample
     only about 29% of settled rows were ``engaged``. Treating a raw rate of
-    0.5 as the population norm would therefore push almost every concept
+    0.5 as the population norm would therefore push almost every item
     below neutral. The empirical baseline is the honest prior. Empty or
     malformed snapshots fall back to ``0.5`` so standing remains a no-op.
+
+    For **cluster**-scoped consumers only (K81 taste affinity, L42 neglect).
+    Per-item standing uses :func:`landing_baseline`, because the engaged
+    label is a property of the turn rather than of any one item on it.
     """
-    settled = 0
-    engaged = 0
+    return _pooled(stats_by_id, "engaged", "settled")
+
+
+def landing_baseline(stats_by_id: dict[int, object]) -> float:
+    """Relationship-local echo rate across a concept outcome snapshot.
+
+    The same shrinkage prior as :func:`engagement_baseline`, over the
+    signal that is actually attributable to the item.
+    """
+    return _pooled(stats_by_id, "echoed", "judged")
+
+
+def _pooled(stats_by_id: dict[int, object], hit: str, total: str) -> float:
+    hits = 0
+    seen = 0
     for stats in (stats_by_id or {}).values():
         try:
-            row_settled = max(0, int(getattr(stats, "settled", 0) or 0))
-            row_engaged = max(0, int(getattr(stats, "engaged", 0) or 0))
+            row_total = max(0, int(getattr(stats, total, 0) or 0))
+            row_hits = max(0, int(getattr(stats, hit, 0) or 0))
         except (TypeError, ValueError):
             continue
-        settled += row_settled
-        engaged += min(row_settled, row_engaged)
-    if settled <= 0:
+        seen += row_total
+        hits += min(row_total, row_hits)
+    if seen <= 0:
         return STANDING_NEUTRAL
-    return _c01(engaged / settled)
+    return _c01(hits / seen)
 
 
 def earned_standing(
     *,
-    engaged: int,
-    settled: int,
+    landed: int,
+    judged: int,
     baseline: float,
-    min_settled: int = 4,
+    min_judged: int = 4,
     prior_strength: float = 10.0,
     floor: float = 0.35,
     ceiling: float = 1.0,
@@ -237,19 +254,37 @@ def earned_standing(
 
     ``confidence`` answers whether a concept is true; standing answers whether
     it is useful to bring forward. They must remain separate. The observed
-    engaged rate is shrunk toward the relationship-local ``baseline`` and then
+    landing rate is shrunk toward the relationship-local ``baseline`` and then
     mapped so that baseline performance is neutral (``0.5``), a zero posterior
     reaches only ``floor``, and a perfect posterior reaches ``ceiling``.
 
+    ``landed`` is the count of surfacings the reply **actually drew on** (the
+    L37 echo verdict), out of the ``judged`` surfacings an echo test was run
+    on. It used to be the count of *turns labelled engaged* that this item
+    happened to be present for, which cannot work: the label belongs to the
+    turn and the median turn surfaces 67 items, so every item on a good turn
+    was credited equally and the resulting per-item rate was statistically
+    indistinguishable from shuffling the labels at random (split-half
+    reliability 0.05; the echo verdict on the same rows scores 0.60).
+
+    The trade is real and worth naming. Engagement is the user's verdict and
+    echo is only Aiko's, so rewarding echo does risk favouring what she
+    already reaches for. But a reliable measure of a near-enough quantity
+    beats a measure of the right quantity that carries no information, and
+    the alternative was to retire standing entirely. Combining the two --
+    crediting only echoes on engaged turns -- measures *worse* than echo
+    alone (0.12 vs 0.48): the AND inherits the label's noise and thins the
+    positive class to 5%.
+
     Thin samples return neutral. ``protect_downward`` is for values/boundaries:
     an uncomfortable truth or behaviour guard may earn more standing, but can
-    never be suppressed because the user did not enjoy hearing it.
+    never be suppressed because it went unquoted.
     """
     neutral = STANDING_NEUTRAL
     try:
-        total = max(0, int(settled))
-        hits = min(total, max(0, int(engaged)))
-        warmup = max(0, int(min_settled))
+        total = max(0, int(judged))
+        hits = min(total, max(0, int(landed)))
+        warmup = max(0, int(min_judged))
         raw_strength = float(prior_strength)
         raw_prior = float(baseline)
         raw_low = float(floor)
@@ -725,6 +760,7 @@ __all__ = [
     "composite_score",
     "earned_standing",
     "engagement_baseline",
+    "landing_baseline",
     "event_charge",
     "event_charge_detail",
     "habituation_factor",

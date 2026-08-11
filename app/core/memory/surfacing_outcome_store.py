@@ -127,24 +127,40 @@ class ItemStats:
     settled: int = 0
     engaged: int = 0
     echoed: int = 0
+    # Rows an echo test was actually *run* on. Not the same as ``surfaced``:
+    # item kinds differ in whether an echo test is meaningful (clusters get
+    # none at all), so dividing echoes by surfacings reports "never echoed"
+    # for a population nobody ever measured.
+    judged: int = 0
 
     @property
     def engaged_rate(self) -> float | None:
         """Share of *settled* rows that landed, or ``None`` when nothing
         has settled yet. ``None`` rather than ``0.0`` on purpose: "no
         evidence" and "evidence that it never lands" must not collapse
-        into the same number."""
+        into the same number.
+
+        A turn-level quantity: every item surfaced on a turn shares that
+        turn's one label, and the median turn surfaces 67 items. Measured
+        against this corpus the per-item rate carries no item-level
+        information at all (see :func:`landing_rate`), so do not rank
+        items by it.
+        """
         if self.settled <= 0:
             return None
         return self.engaged / self.settled
 
     @property
     def echo_rate(self) -> float | None:
-        """Share of surfaced rows Aiko referenced in her own reply, or
-        ``None`` when nothing was surfaced."""
-        if self.surfaced <= 0:
+        """Share of *judged* rows Aiko referenced in her own reply, or
+        ``None`` when no echo test was run.
+
+        Unlike :attr:`engaged_rate` this is attributed to the item rather
+        than to the turn, which is what makes it usable for ranking.
+        """
+        if self.judged <= 0:
             return None
-        return self.echoed / self.surfaced
+        return self.echoed / self.judged
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +423,8 @@ class SurfacingOutcomeStore:
                 "SELECT item_id, COUNT(*), "
                 "       SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END), "
                 "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END), "
-                "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END) "
+                "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END), "
+                "       SUM(CASE WHEN echoed IS NOT NULL THEN 1 ELSE 0 END) "
                 "FROM surfacing_outcomes "
                 f"WHERE item_kind = ? AND item_id IN ({placeholders})"
                 f"{lane_clause}"
@@ -424,6 +441,7 @@ class SurfacingOutcomeStore:
                 settled=int(r[2] or 0),
                 engaged=int(r[3] or 0),
                 echoed=int(r[4] or 0),
+                judged=int(r[5] or 0),
             )
             for r in rows
         }
@@ -537,7 +555,8 @@ class SurfacingOutcomeStore:
                 "       COUNT(*) AS surfaced, "
                 "       SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled, "
                 "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END) AS engaged, "
-                "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END) AS echoed "
+                "       SUM(CASE WHEN echoed = 1 THEN 1 ELSE 0 END) AS echoed, "
+                "       SUM(CASE WHEN echoed IS NOT NULL THEN 1 ELSE 0 END) AS judged "
                 "FROM surfacing_outcomes "
                 f"WHERE {' AND '.join(where)} "
                 "GROUP BY item_kind, item_id, item_key "
@@ -554,6 +573,7 @@ class SurfacingOutcomeStore:
             stats = ItemStats(
                 surfaced=int(r[3] or 0), settled=int(r[4] or 0),
                 engaged=int(r[5] or 0), echoed=int(r[6] or 0),
+                judged=int(r[7] or 0),
             )
             out.append({
                 "item_kind": str(r[0] or ""),

@@ -1951,14 +1951,37 @@ active concept a slowly learned surfacing prior. This is deliberately a measure
 of "how useful has this been to bring forward?", never "how true is it":
 standing remains independent from concept confidence.
 
-**Estimator and persistence.** `engagement_baseline` pools the current 90-day
-concept window so the relationship's observed engaged rate maps to neutral
-`0.5`. For concepts with at least four settled rows, `earned_standing` computes
-`(engaged + 10 * baseline) / (settled + 10)`, maps below-baseline performance
+**Estimator and persistence.** `landing_baseline` pools the current 90-day
+concept window so the relationship's observed echo rate maps to neutral
+`0.5`. For concepts with at least four *judged* rows, `earned_standing` computes
+`(landed + 10 * baseline) / (judged + 10)`, maps below-baseline performance
 toward the safe `0.35` floor and above-baseline performance toward `1.0`, and
 clamps `value` / `boundary` concepts to at least neutral. Cold, missing, stale,
 and malformed evidence is neutral. The bounded `concept.earned_standing`
 `kv_meta` map needs no schema migration.
+
+**Which signal, and why (revised — see H18).** This originally learned from
+`engaged / settled`: the share of *turns labelled engaged* that the concept was
+present for. That cannot work, and the corpus was eventually large enough to
+prove rather than argue it. The engagement label is a property of the **turn**
+and the median turn surfaces **67 items**, so every concept on a good turn was
+credited equally. Measured over 358 labelled turns, the per-item engaged rate
+has a split-half reliability of **0.05**, and its between-item spread falls
+inside the band produced by shuffling turn labels at random (p=0.07) — the map
+was well-formed and its ordering was noise.
+
+Standing now reads `echoed / judged`, the L37 echo verdict recorded on the same
+rows, which is attributed to the item by construction and measures **0.61**.
+Replayed on the live window this roughly doubles the map's interquartile spread
+(0.035 → 0.081). Two things not to redo: **the hybrid is worse** (crediting only
+echoes on engaged turns scores 0.12 — the AND inherits the label's noise and
+thins the positive class to 5%), and **the denominator is `judged`, not
+`surfaced`** (item kinds differ in whether an echo test is meaningful; clusters
+get none, and dividing by surfacings reports a confident 0.0 for something
+nobody measured). The trade-off is honest and worth restating: echo is Aiko's
+verdict rather than the user's, so it mildly favours what she already reaches
+for — accepted because a reliable measure of a near-enough quantity beats an
+empty measure of the right one, and the alternative was retiring standing.
 
 **Off-turn refresh.** `ConceptLifecycleWorker` resolves the
 `SurfacingOutcomeStore` lazily (preserving session initialization order), reads
