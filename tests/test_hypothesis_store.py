@@ -305,13 +305,30 @@ class ExpiryTests(_Fixture):
         self.assertEqual(self.store.expire_stale(ttl_hours=336.0), 0)
         self.assertEqual(self.store.get(row.hypothesis_id).status, STATUS_OPEN)
 
-    def test_an_asked_guess_is_never_expired_by_the_clock(self) -> None:
-        # She put this one to the user. It is either settled or has a
-        # real answer pending, and a TTL should not decide either way.
+    def test_an_answered_guess_is_never_expired_by_the_clock(self) -> None:
+        # The answer came back and moved it, so the row is settled or being
+        # settled; a TTL should not overrule that.
         row = self._add(asked_count=1)
+        row.last_tested_at = timephrase.utcnow().isoformat()
+        self.store.update(row)
         self._age(row, 5000.0)
         self.assertEqual(self.store.expire_stale(ttl_hours=336.0), 0)
         self.assertEqual(self.store.get(row.hypothesis_id).status, STATUS_OPEN)
+
+    def test_asked_but_never_answered_still_ages_out(self) -> None:
+        """The wedge that shut the live lane down.
+
+        Asking used to grant permanent immunity, but a row asked once and
+        never answered cannot be asked again either (one ask per
+        invention), so it held a ``hypothesis_max_open`` slot forever.
+        Twelve such rows filled the shelf and invention stopped.
+        """
+        row = self._add(asked_count=1)
+        self._age(row, 5000.0)
+        self.assertEqual(self.store.expire_stale(ttl_hours=336.0), 1)
+        self.assertEqual(
+            self.store.get(row.hypothesis_id).status, STATUS_EXPIRED,
+        )
 
     def test_a_closed_row_is_left_alone(self) -> None:
         row = self._add(status=STATUS_REFUTED)

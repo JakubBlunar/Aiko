@@ -2544,12 +2544,44 @@ row is closed so it can never be asked now. That is the layer sterilising itself
 over Aiko's own inattention — the exact failure `hypothesis_min_novelty` sits
 high to avoid. `_nearest_hypothesis` now matches every status except `expired`.
 
+**The deadlock found in production, and fixed.** Six weeks in, the lane had gone
+completely silent: 12 open rows against a `hypothesis_max_open` of 12, all with
+`last_tested_at` null, and `demand()` reporting `shelf_full` forever. The cause
+was one line spending the wrong event. `_publish_invented` bumped `asked_count`
+when it queued the cue, on the reasoning that stamping only after a successful
+publish protects the row's single ask from a failed one. But **queued, rendered
+and asked are three different events**: the shelf renders a `concept_hypothesis`
+about once a day by policy (`surface_cooldown_hours=20`) while the proposer
+queues several, so **22 of the 26 cues were never rendered at all** — and each of
+their rows still counted as asked. That made every one of them
+un-re-askable (the producer filters `asked_count <= 0`) *and* un-expirable (the
+TTL skipped asked rows) at the same moment, so twelve of them wedged the cap shut
+with no way out and no log line saying so — just a healthy-looking
+`skipped: max_open`. Total delivery across the whole period was 4 surfacings and
+1 real ask.
+
+Three changes, because the counter had been doing two jobs. `asked_count` now
+moves in `SessionController._stamp_hypothesis_ask`, at the point the cue reaches
+`awaiting` — the only place that knows the question was actually put. A
+`source_id` on the cue payload takes over the job the stamp had been doing by
+accident, keeping the producer from drafting a second cue for the same guess (via
+the `claimed_sources` mechanism the memory-drafting producers already use). And
+`expire_stale` exempts rows that were **answered** rather than rows that were
+asked: a question put a fortnight ago that never got a reply cannot be re-asked
+either, so immunity from the clock meant immunity from everything. The live shelf
+was unwedged by resetting `asked_count` only where the cue had never surfaced —
+all 12, since none had.
+
 **Still open.** The proposer has no *aim* — L30d's uncertainty zones would give
 it a target worth guessing about instead of speculating from whatever the context
 pack happens to hold. Nothing measures whether inventions are any good: a
 confirm/deny ratio per origin and kind is what would say whether the temperature
 and the two novelty bars are set anywhere near right. And `origin_refs` is
 written but unread — everything files as `free`, so "this guess came from *that*
-concept" is a hook with nothing on it yet. Three smaller audit findings were
-recorded rather than fixed; they are listed under L30e in
-[`concepts.md`](../concepts.md).
+concept" is a hook with nothing on it yet. The throughput mismatch behind the
+deadlock is also still there and deliberately left: the producer queues faster
+than a 20-hour render cadence can spend, so most cues reach their 7-day TTL
+unasked. That is now harmless rather than fatal — the rows stay askable — but it
+means the lane's real rate is about one question a day whatever the shelf holds.
+Three smaller audit findings were recorded rather than fixed; they are listed
+under L30e in [`concepts.md`](../concepts.md).

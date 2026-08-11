@@ -339,20 +339,34 @@ class InventedPoolTests(_WorkerFixture):
 
         self.assertEqual(self._worker().run()["drafted"], 0)
 
-    def test_one_ask_per_guess(self) -> None:
+    def test_one_cue_per_guess(self) -> None:
+        """Two ticks must not queue the same guess twice. With the ask no
+        longer spent at publish, the claimed-source check is what holds
+        this."""
         self._invented()
         worker = self._worker()
         worker.run()
 
         self.assertEqual(worker.run()["drafted"], 0)
 
-    def test_publishing_is_what_spends_the_ask(self) -> None:
+    def test_a_guess_already_asked_is_not_re_queued(self) -> None:
+        """One real ask per invention, the ``max_asks=1`` policy."""
+        self._invented(asked=1)
+
+        self.assertEqual(self._worker().run()["drafted"], 0)
+
+    def test_publishing_does_not_spend_the_ask(self) -> None:
+        """The deadlock this replaced: the shelf renders about one of these
+        a day while the producer queues several, so stamping at publish
+        spent each guess's only ask on a question that was never put --
+        leaving the row un-re-askable *and* un-expirable until twelve of
+        them filled ``hypothesis_max_open`` and invention stopped."""
         row = self._invented()
 
         self._worker().run()
 
         self.assertEqual(
-            self.hypotheses.get(row.hypothesis_id).asked_count, 1
+            self.hypotheses.get(row.hypothesis_id).asked_count, 0
         )
 
     def test_an_empty_statement_does_not_spend_an_ask(self) -> None:

@@ -436,8 +436,25 @@ class TtlTests(_Fixture):
         self.assertEqual(self.hypotheses.get(stale.hypothesis_id).status,
                          STATUS_EXPIRED)
 
-    def test_a_guess_she_actually_asked_about_is_left_alone(self) -> None:
-        """A clock must not settle a question with an answer pending."""
+    def test_a_guess_that_got_an_answer_is_left_alone(self) -> None:
+        """A clock must not settle a question the user already answered."""
+        answered = self._existing("answered guess", embedding=_FAR)
+        answered.created_at = (
+            timephrase.utcnow() - timedelta(hours=400)
+        ).isoformat()
+        answered.asked_count = 1
+        answered.last_tested_at = timephrase.utcnow().isoformat()
+        self.hypotheses.update(answered)
+
+        result = self._build(ttl_hours=336.0).run()
+
+        self.assertEqual(result["expired"], 0)
+        self.assertTrue(self.hypotheses.get(answered.hypothesis_id).is_live)
+
+    def test_a_guess_asked_but_never_answered_ages_out(self) -> None:
+        """Otherwise it holds a ``max_open`` slot with no way to ever move:
+        one ask per invention means it cannot be re-asked, and immunity
+        from the clock meant it could not expire either."""
         asked = self._existing("asked guess", embedding=_FAR)
         asked.created_at = (
             timephrase.utcnow() - timedelta(hours=400)
@@ -447,8 +464,8 @@ class TtlTests(_Fixture):
 
         result = self._build(ttl_hours=336.0).run()
 
-        self.assertEqual(result["expired"], 0)
-        self.assertTrue(self.hypotheses.get(asked.hypothesis_id).is_live)
+        self.assertEqual(result["expired"], 1)
+        self.assertFalse(self.hypotheses.get(asked.hypothesis_id).is_live)
 
 
 # ── failure paths ─────────────────────────────────────────────────────
