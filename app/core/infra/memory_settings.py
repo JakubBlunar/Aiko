@@ -1003,6 +1003,20 @@ class MemorySettings:
     concept_decay_max_catchup_days: float = 3.0
     concept_dormant_confidence_floor: float = 0.35
     concept_retire_confidence_floor: float = 0.15
+    # L46: the second route out of ``dormant``, beside the confidence floor
+    # above. Wall-clock days since a dormant belief was last reinforced,
+    # after which it retires -- see ``_is_stale_dormant`` for why *this* one
+    # is wall-clock while every other age floor here is engagement-driven.
+    #
+    # It exists because the floor alone barely fired: eight concepts had ever
+    # retired, against 251 sitting dormant at ~0.45 average confidence with
+    # 222 of them unreinforced for over a month. The L22 sweep demotes
+    # never-reinforced actives while their confidence is still high, and from
+    # there decay needs ~19 engaged days -- five or six calendar weeks -- to
+    # reach 0.15, so the floor was always weeks behind a conclusion the
+    # evidence already supported. ``retired`` is revivable and dormant rows
+    # never surface, so arriving early costs nothing. 0 disables the route.
+    concept_dormant_ttl_days: float = 30.0
     concept_candidate_ttl_days: float = 21.0
     concept_identity_plasticity: float = 0.3
     # L16 plasticity governor. Plasticity is the per-concept learning rate
@@ -1224,6 +1238,33 @@ class MemorySettings:
     # ``concept_importance_strength`` on purpose: the tilt is usually right,
     # and this only fires in the one case where it isn't. ``0`` disables.
     concept_flex_generative_floor: int = 1
+    # ── L45 gate tuning ────────────────────────────────────────────────
+    # Most thresholds in this file were set by hand, against one person's
+    # graph, and several turned out to be unreachable on it: the taste bar sat
+    # above what any topic cluster could score, so the pass minted nothing for
+    # five weeks. A constant cannot be right for two relationships with
+    # different concept populations, so the L45 worker measures the live
+    # distribution and solves each calibratable gate against a *declared
+    # intent* ("admit roughly this share", "leave a pool this many times the
+    # cap") instead. Learned values and the statistics behind them live in
+    # ``data/tuning/concept_gates.json``; anything set explicitly in
+    # ``config/user.json`` always wins, and no background pass ever edits that
+    # file. See ``app/core/concepts/gate_tuning.py`` for the registry and
+    # which gates are cleared to move.
+    concept_gate_tuning_enabled: bool = True
+    # The scheduler heartbeat, *not* how often the work happens. The idle
+    # scheduler admits an over-budget worker only once it is three heartbeats
+    # overdue, so a 24h heartbeat on a machine that sleeps overnight risks a
+    # three-day gap; a 6h heartbeat with a daily internal cadence key gets the
+    # same once-a-day work with an 18h worst case.
+    concept_gate_tuning_heartbeat_seconds: int = 21600
+    concept_gate_tuning_cadence_seconds: int = 86400
+    # Pairs drawn for the similarity-distribution sample. Exhaustive
+    # comparison is quadratic (~420k pairs at 900 actives) while all the
+    # cosine gates need is the distribution's *shape*, which a random sample
+    # estimates fine -- and successive runs draw fresh pairs, so the picture
+    # sharpens without any one run paying for it. ``0`` skips the sample.
+    concept_gate_tuning_cosine_pairs: int = 4000
     # ── Worker concept diets ───────────────────────────────────────────
     # What a *background worker* gets to think with. Each consumer declares a
     # diet (kinds, subject, appetite) in ``app/core/concepts/concept_diets.py``
@@ -1379,17 +1420,23 @@ class MemorySettings:
     # L2 near-duplicate consolidation. Creation-time dedup keeps anything at
     # / above the dedup cosine from splitting into two rows; this idle worker
     # is the retroactive fix for paraphrase twins that land just *below* that
-    # bar and accumulate in the ``active`` set. Each tick pulls a rolling
-    # batch of the stalest actives and, for each, finds its nearest same-
-    # ``(subject, kind)`` active neighbour; a pair over ``merge_cosine`` is a
-    # *candidate* an LLM adjudicates (same belief? paraphrase / subset), and
-    # only a ``same`` verdict merges (folding the weaker row's evidence into
-    # the stronger via ``ConceptStore.merge_into``). Never mutates
-    # confidence / plasticity / status -- the stronger row always survives, so
-    # the L3 engine stays the single writer. LLM spend is bounded by the
-    # agent-side ``concept_consolidation_per_hour/day_cap`` limiter.
+    # bar and accumulate in the ``active`` set. Each tick stacks the active
+    # set once and finds every same-``(subject, kind)`` pair over
+    # ``merge_cosine``; a pair over ``auto_merge_cosine`` is fused outright,
+    # and below it the pair is a *candidate* an LLM adjudicates (same
+    # belief? paraphrase / subset), where only a ``same`` verdict merges
+    # (folding the weaker row's evidence into the stronger via
+    # ``ConceptStore.merge_into``). Never mutates confidence / plasticity /
+    # status -- the stronger row always survives, so the L3 engine stays the
+    # single writer. LLM spend is bounded by the agent-side
+    # ``concept_consolidation_per_hour/day_cap`` limiter.
     concept_consolidation_enabled: bool = True
     concept_consolidation_interval_seconds: int = 900
+    # Now a cap on *pairs acted on per run*, not on seeds scanned: discovery
+    # became a single global scan (L46), so the whole backlog is visible
+    # every tick and this is what keeps one tick from trying to work all of
+    # it. Worst-first ordering means the cut falls on the least-similar
+    # pairs, which are the ones that can wait.
     concept_consolidation_batch_size: int = 40
     # Was 0.88, which admitted only 12 candidate pairs across a month of
     # real use -- barely wider than the (never-firing) creation-time bar,
@@ -1401,6 +1448,29 @@ class MemorySettings:
     # sharing a sentence template, which is noise the adjudicator would
     # have to reject over and over.
     concept_consolidation_merge_cosine: float = 0.84
+    # L46: the bar above which a pair merges with no LLM adjudication at
+    # all. **Disabled by default** (1.0 = adjudicate all the way up), which
+    # is the opposite of how L46 was planned, so the reasoning matters.
+    #
+    # The plan was to set this to ``concept_dedupe.DEDUPE_COS`` (0.86) on
+    # the argument that the creation-time guard fuses at that cosine
+    # without asking anyone, so a pair reaching it *after* birth is the
+    # same belief by the same measurement. That argument is wrong, and
+    # asymmetrically so: at creation a false positive merely reinforces an
+    # existing row, while here it *destroys* a distinct belief. Hand-reading
+    # all 18 above-bar pairs in the live graph found 2 genuine twins and 14
+    # template collisions -- including the highest-cosine pair of the set at
+    # 0.900 ("reflecting on relationship depth energizes Jacob" against
+    # "playful anticipation and lighthearted connection energize Jacob").
+    # Token overlap does not separate the two groups either: the twins span
+    # Jaccard 0.14-0.52, straddling the collisions' 0.07-0.27. On this data
+    # the embedding is reading the sentence template, and no cheap proxy
+    # rescues it -- only the adjudicator can tell them apart.
+    #
+    # Kept as a knob rather than deleted because a graph whose labels are
+    # less templated could reasonably enable it. Raise it deliberately, and
+    # dry-run before trusting it.
+    concept_consolidation_auto_merge_cosine: float = 1.0
     # L25 edge referential integrity. Concept edges (evidence /
     # contradicts) point at memory rows that get deleted, pruned, and
     # merged. Most deletes are reconciled synchronously by the reconciler's
@@ -3441,6 +3511,10 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0.0,
                 float(memory_raw.get("concept_retire_confidence_floor", 0.15)),
             ),
+            concept_dormant_ttl_days=max(
+                0.0,
+                float(memory_raw.get("concept_dormant_ttl_days", 30.0)),
+            ),
             concept_candidate_ttl_days=max(
                 0.0,
                 float(memory_raw.get("concept_candidate_ttl_days", 21.0)),
@@ -3834,6 +3908,42 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             concept_flex_generative_floor=max(
                 0, int(memory_raw.get("concept_flex_generative_floor", 1))
             ),
+            concept_gate_tuning_enabled=bool(
+                memory_raw.get("concept_gate_tuning_enabled", True)
+            ),
+            # Floored well above the scheduler's wake interval: a heartbeat
+            # shorter than that just burns ticks on a ``demand()`` probe that
+            # answers "not yet" until the daily cadence comes round.
+            concept_gate_tuning_heartbeat_seconds=max(
+                600,
+                int(
+                    memory_raw.get(
+                        "concept_gate_tuning_heartbeat_seconds", 21600
+                    )
+                ),
+            ),
+            concept_gate_tuning_cadence_seconds=max(
+                3600,
+                int(
+                    memory_raw.get(
+                        "concept_gate_tuning_cadence_seconds", 86400
+                    )
+                ),
+            ),
+            # Capped as well as floored: the sample is the one part of the run
+            # that can grow without bound, and the scheduler stops admitting a
+            # worker whose average duration outgrows its lane budget.
+            concept_gate_tuning_cosine_pairs=min(
+                50_000,
+                max(
+                    0,
+                    int(
+                        memory_raw.get(
+                            "concept_gate_tuning_cosine_pairs", 4000
+                        )
+                    ),
+                ),
+            ),
             # Clamped to [0, 0.8] like ``context_budget_fraction``: a worker
             # whose prompt is four-fifths concepts has no room left for the
             # thing it was actually asked to reason about.
@@ -4091,6 +4201,32 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     float(
                         memory_raw.get(
                             "concept_consolidation_merge_cosine", 0.84
+                        )
+                    ),
+                ),
+            ),
+            # Floored at the merge cosine, not at 0: an auto-merge bar
+            # *below* the candidate bar would fuse every pair the scan
+            # finds without ever adjudicating one, silently turning off the
+            # judgement this worker exists to apply.
+            concept_consolidation_auto_merge_cosine=min(
+                1.0,
+                max(
+                    min(
+                        1.0,
+                        max(
+                            0.0,
+                            float(
+                                memory_raw.get(
+                                    "concept_consolidation_merge_cosine",
+                                    0.84,
+                                )
+                            ),
+                        ),
+                    ),
+                    float(
+                        memory_raw.get(
+                            "concept_consolidation_auto_merge_cosine", 1.0
                         )
                     ),
                 ),

@@ -1384,6 +1384,41 @@ tests in `tests/test_tension_concepts.py` (`BoundaryClashShapeTests`).
 
 ---
 
+## L18e. Boundary evidence broadening (SHIPPED — both halves, then corrected)
+
+**Motivation.** L18 mined *deliberate* anchors (`[[remember:…]]`) plus clusters, so
+a limit the user stated but never had saved could not seed a boundary. And the
+`SurfaceWeights` mechanism L18 introduced shipped with only `boundary` itself
+tuned — every other kind sat on the context-only default, scoring purely by
+cosine.
+
+**Status: SHIPPED.** Both halves landed, and are worth stating separately because
+they had independent fates.
+
+- **The wider pool.** `_run_boundary_pass` folds `preference` memories into the
+  user anchor pool behind `agent.boundary_evidence_broadening_enabled` (default
+  on), alongside the `self_tagged` deliberate anchors. Covered by
+  `tests/test_l18_boundary_concepts.py::L18eBroadeningTests`.
+- **Per-kind surfacing weights.** All thirteen registered kinds now carry tuned
+  `surface_weights` in [`concept_kinds.py`](../../../app/core/concepts/concept_kinds.py)
+  — nothing remains on the context-only default. `pursuit`, `narrative`,
+  `aspiration` and `ritual` are commented "L18e" there.
+
+**Corrected in L46.** Widening the pool was right; leaving the *composition rule*
+alone while doing it was not. "One memory is enough to seed a boundary" had been
+reasoned about `self_tagged` — a line the user chose to have remembered — and
+`preference` rows are extractor output nobody signed off on. Granting them the
+single-source path let one automatic guess mint a standing behavioural line: **46
+new boundaries in July, then 97 in August.** The prompt compounded it by offering
+the whole batch under the heading "notes she deliberately chose to remember",
+which vouched for evidence nobody had vouched for. L46 splits the two apart — one
+deliberate anchor, or two sources of any kind — so the wider pool changes what can
+be *noticed* without lowering what it takes to mint.
+
+**Effort.** Small-medium, as sketched.
+
+---
+
 ## L19. Aiko's autobiography — self-history as a traversable timeline
 
 **Status: SHIPPED.** Asked "have you changed?", she walks her own record instead

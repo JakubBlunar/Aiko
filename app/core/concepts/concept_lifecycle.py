@@ -774,8 +774,88 @@ def generalization_evidence_gate(
     )
 
 
+# The built-in floors above, gathered in one readable place. Each gate
+# function still owns its own logic -- this is a *view* of the constants, not
+# a second definition of them -- so the numbers stay written once.
+#
+# It exists because the floors are otherwise invisible: they are module
+# constants applied via ``max`` inside thirteen separate functions, so nothing
+# could report them, compare them against the pool they gate, or notice that
+# the global ``concept_promote_min_confidence`` at 0.6 is *dominated* by every
+# one of them and therefore inert. L45's tuner reads this to observe each
+# floor against its own kind's confidence distribution.
+KIND_PROMOTION_FLOORS: dict[str, dict[str, float]] = {
+    "identity": {
+        "min_sources": _IDENTITY_MIN_SOURCES,
+        "min_age_days": _IDENTITY_MIN_AGE_DAYS,
+        "min_confidence": _IDENTITY_MIN_CONFIDENCE,
+    },
+    "value": {
+        "min_sources": _VALUE_MIN_SOURCES,
+        "min_age_days": _VALUE_MIN_AGE_DAYS,
+        "min_confidence": _VALUE_MIN_CONFIDENCE,
+    },
+    "affective": {
+        "min_sources": _AFFECTIVE_MIN_SOURCES,
+        "min_age_days": _AFFECTIVE_MIN_AGE_DAYS,
+        "min_confidence": _AFFECTIVE_MIN_CONFIDENCE,
+    },
+    "taste": {
+        "min_sources": _TASTE_MIN_SOURCES,
+        "min_age_days": _TASTE_MIN_AGE_DAYS,
+        "min_confidence": _TASTE_MIN_CONFIDENCE,
+    },
+    "pursuit": {
+        "min_sources": _PURSUIT_MIN_SOURCES,
+        "min_age_days": _PURSUIT_MIN_AGE_DAYS,
+        "min_confidence": _PURSUIT_MIN_CONFIDENCE,
+    },
+    "conduct": {
+        "min_sources": _CONDUCT_MIN_SOURCES,
+        "min_age_days": _CONDUCT_MIN_AGE_DAYS,
+        "min_confidence": _CONDUCT_MIN_CONFIDENCE,
+    },
+    "ritual": {
+        "min_sources": _RITUAL_MIN_SOURCES,
+        "min_age_days": _RITUAL_MIN_AGE_DAYS,
+        "min_confidence": _RITUAL_MIN_CONFIDENCE,
+    },
+    "narrative": {
+        "min_sources": _NARRATIVE_MIN_SOURCES,
+        "min_age_days": _NARRATIVE_MIN_AGE_DAYS,
+        "min_confidence": _NARRATIVE_MIN_CONFIDENCE,
+    },
+    "aspiration": {
+        "min_sources": _ASPIRATION_MIN_SOURCES,
+        "min_age_days": _ASPIRATION_MIN_AGE_DAYS,
+        "min_confidence": _ASPIRATION_MIN_CONFIDENCE,
+    },
+    "boundary": {
+        "min_sources": _BOUNDARY_MIN_SOURCES,
+        "min_age_days": _BOUNDARY_MIN_AGE_DAYS,
+        "min_confidence": _BOUNDARY_MIN_CONFIDENCE,
+    },
+    "communication_style": {
+        "min_sources": _COMM_STYLE_MIN_SOURCES,
+        "min_age_days": _COMM_STYLE_MIN_AGE_DAYS,
+        "min_confidence": _COMM_STYLE_MIN_CONFIDENCE,
+    },
+    "tension": {
+        "min_sources": _TENSION_MIN_SOURCES,
+        "min_age_days": _TENSION_MIN_AGE_DAYS,
+        "min_confidence": _TENSION_MIN_CONFIDENCE,
+    },
+    "generalization": {
+        "min_sources": _GENERALIZATION_MIN_SOURCES,
+        "min_age_days": _GENERALIZATION_MIN_AGE_DAYS,
+        "min_confidence": _GENERALIZATION_MIN_CONFIDENCE,
+    },
+}
+
+
 __all__ = [
     "CONFIDENCE_CAP",
+    "KIND_PROMOTION_FLOORS",
     "RelationshipSignal",
     "confidence_target",
     "effective_halflife",

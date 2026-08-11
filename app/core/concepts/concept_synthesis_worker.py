@@ -2217,7 +2217,10 @@ class ConceptSynthesisWorker:
         ``subject="aiko"``. L18e also folds ``preference`` memories into the
         user pool when ``agent.boundary_evidence_broadening_enabled`` (stated
         tastes/limits that never became a deliberate anchor). The proposer's
-        composition rule lets a single deliberate anchor seed a boundary.
+        composition rule lets a single *deliberate* anchor seed a boundary and
+        requires two sources for anything else, so widening the pool here
+        widens what can be *noticed* without lowering what it takes to mint
+        a standing line (L46).
         Combined cluster + memory dirty-tracking (mirrors :meth:`_run_aiko_pass`)
         so a settled corpus is a fast no-op. Gated by
         ``agent.boundary_synthesis_enabled``."""

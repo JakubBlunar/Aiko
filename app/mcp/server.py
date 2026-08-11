@@ -47,6 +47,7 @@ def create_mcp_server(
         resource_file_tools,
         surfacing_outcome_tools,
         cue_outcome_tools,
+        gate_tuning_tools,
     )
 
     core_tools.register(mcp, session)
@@ -60,5 +61,6 @@ def create_mcp_server(
     resource_file_tools.register(mcp, session)
     surfacing_outcome_tools.register(mcp, session)
     cue_outcome_tools.register(mcp, session)
+    gate_tuning_tools.register(mcp, session)
     return mcp
 

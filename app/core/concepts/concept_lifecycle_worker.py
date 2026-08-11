@@ -31,10 +31,11 @@ clock-disabled deployments fall back to wall-clock age.
 
 Transitions (each emits one :class:`ConceptEvent` to the discovery
 timeline): ``candidate -> active`` (promotion gate), ``candidate ->
-retired`` (stale), ``active -> dormant`` / ``dormant -> retired``
-(confidence floors), and revival of a ``dormant`` / ``retired`` concept
-when fresh evidence lifts confidence back up. ``retired`` is revivable,
-not terminal.
+retired`` (stale), ``active -> dormant`` (confidence floor), ``dormant ->
+retired`` (confidence floor *or* ``concept_dormant_ttl_days`` of
+wall-clock quiet -- L46), and revival of a ``dormant`` / ``retired``
+concept when fresh evidence lifts confidence back up. ``retired`` is
+revivable, not terminal.
 
 **L9 living beliefs.** When a :class:`ConceptContradictionDetector` is
 injected, each tick also checks a bounded rolling sub-batch of *active*
@@ -897,6 +898,19 @@ class ConceptLifecycleWorker:
                 return "active", "revived"
             if conf < retire_floor:
                 return "retired", "retired"
+            # L46: retire on the *evidence*, not only on the proxy for it.
+            # Confidence was the sole route out of dormancy, and it is a slow
+            # one: 251 dormant rows sat at ~0.45 average with 247 of them
+            # unreinforced for a fortnight and 222 for a month, because the
+            # L22 sweep demotes never-reinforced actives while their
+            # confidence is still high and decay then needs ~19 engaged days
+            # -- five or six calendar weeks -- to fall from there to the 0.15
+            # floor. Eight concepts had ever retired. "Nothing has re-observed
+            # this belief in a month" is the same conclusion, available now,
+            # and it is the direct reading rather than an inference from a
+            # number still catching up to it.
+            if self._is_stale_dormant(concept, now):
+                return "retired", "retired"
             return "dormant", ""
 
         if status == "retired":
@@ -985,6 +999,35 @@ class ConceptLifecycleWorker:
             self._age_days(concept, now) >= ttl
             and concept.distinct_source_count < min_sources
         )
+
+    def _is_stale_dormant(self, concept: "Concept", now: datetime) -> bool:
+        """Has a faded belief gone unreinforced long enough to retire?
+
+        Measured in **wall-clock** days, which is a deliberate break from the
+        engaged-days convention the promotion floors and the candidate TTL
+        use. That convention exists so a concept cannot idle its way to
+        *maturity* on the calendar -- age there is a bar to clear, and letting
+        offline time count would hand out credit nothing was earned for.
+        Retirement asks the opposite question. Here the calendar time is not a
+        proxy for anything: a month in which the belief never came up is
+        itself the observation, whether or not the app was running for it.
+
+        ``last_reinforced_at`` is the anchor rather than the (nonexistent)
+        moment of going dormant, so a row reinforced *after* fading gets the
+        full window again -- something re-observed once is not stale, and
+        that read is the same one the revival branch above makes.
+        ``ttl <= 0`` disables the route, leaving the confidence floor as the
+        only way out, which is exactly the pre-L46 behaviour.
+        """
+        ttl = self._f("concept_dormant_ttl_days", 30.0)
+        if ttl <= 0:
+            return False
+        last = _parse_iso(concept.last_reinforced_at) or _parse_iso(
+            concept.created_at
+        )
+        if last is None:
+            return False
+        return (now - last).total_seconds() / 86400.0 >= ttl
 
     # ── helpers ─────────────────────────────────────────────────────────
 

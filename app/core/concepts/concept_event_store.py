@@ -387,5 +387,27 @@ class ConceptEventStore:
             return {}
         return {str(r[0] or ""): int(r[1] or 0) for r in rows}
 
+    def counts_by_type_since(self, since: str) -> dict[str, int]:
+        """``event_type -> count`` for events newer than ``since`` (ISO-8601).
+
+        :meth:`counts_by_type` is a whole-history tally, which cannot answer
+        "what moved lately" -- on a graph with tens of thousands of events the
+        recent window is a rounding error inside it. L45's population snapshot
+        needs the delta between two runs so its lines carry flow rather than
+        only shape, and the app is not always on, so "lately" has to mean
+        "since the previous line" rather than a fixed window.
+        """
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        try:
+            rows = conn.execute(
+                "SELECT event_type, COUNT(*) FROM concept_events "
+                "WHERE created_at > ? GROUP BY event_type",
+                (str(since),),
+            ).fetchall()
+        except Exception:
+            log.warning("concept event delta counts failed", exc_info=True)
+            return {}
+        return {str(r[0] or ""): int(r[1] or 0) for r in rows}
+
 
 __all__ = ["ConceptEvent", "ConceptEventStore"]

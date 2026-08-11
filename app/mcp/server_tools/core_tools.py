@@ -62,7 +62,7 @@ def register(mcp, session: "SessionController") -> None:
         # A shifted DT1 clock makes every time-gated feature misbehave in
         # ways that look like unrelated bugs, so it has to be visible from
         # the first thing anyone calls. Absent entirely when on real time.
-        clock = getattr(session, "_debug_clock", None)
+        clock = session.debug_clock
         if clock is not None and getattr(clock, "active", False):
             info["debug_clock"] = clock.status()
         return json.dumps(info, indent=2, default=str)

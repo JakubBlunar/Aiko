@@ -49,6 +49,7 @@ def _settings(**over) -> SimpleNamespace:
         concept_decay_max_catchup_days=3.0,
         concept_dormant_confidence_floor=0.35,
         concept_retire_confidence_floor=0.15,
+        concept_dormant_ttl_days=30.0,
         concept_candidate_ttl_days=21.0,
         concept_promote_young_min_sources=3,
         concept_promote_young_min_confidence=0.72,
@@ -606,6 +607,98 @@ class TransitionTests(unittest.TestCase):
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "dormant")
         self.assertEqual(h.events.count(), 0)
+
+
+class DormantTtlTests(unittest.TestCase):
+    """L46: the second route out of ``dormant`` -- wall-clock quiet, beside
+    the confidence floor.
+
+    The floor alone barely fired: the L22 sweep demotes never-reinforced
+    actives while their confidence is still high, and from there decay needs
+    five or six calendar weeks to reach 0.15, so a pool of 251 dormant rows
+    sat at ~0.45 with 222 of them unreinforced for over a month while eight
+    concepts total had ever retired.
+    """
+
+    def _dormant(self, h, **over):
+        base = dict(
+            status="dormant",
+            confidence=0.45,  # comfortably above the 0.15 retire floor
+            distinct_source_count=3,
+            first_evidence_at=_iso(60),
+            last_lifecycle_at=_iso(2),
+            promoted_at=_iso(50),
+        )
+        base.update(over)
+        return _add(h.store, **base)
+
+    def test_long_quiet_retires_despite_confidence_above_the_floor(
+        self,
+    ) -> None:
+        h = _harness(with_clock=False)
+        c = self._dormant(h, last_reinforced_at=_iso(40))
+        h.worker.run()
+        got = h.store.get(c.concept_id)
+        self.assertEqual(got.status, "retired")
+        # Still well above the confidence floor, so the *duration* is what
+        # retired it -- that is the whole point of the second route.
+        self.assertGreater(got.confidence, 0.15)
+        self.assertIn("retired", [e.event_type for e in h.events.list()])
+
+    def test_recent_quiet_stays_dormant(self) -> None:
+        h = _harness(with_clock=False)
+        c = self._dormant(h, last_reinforced_at=_iso(10))
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "dormant")
+
+    def test_reinforcement_after_fading_restarts_the_window(self) -> None:
+        """A row re-observed since it faded is not stale, however old it is.
+
+        ``last_reinforced_at`` is the anchor precisely so this holds: the
+        window measures quiet, not age, and one re-observation ends the quiet.
+        """
+        h = _harness(with_clock=False)
+        c = self._dormant(
+            h, first_evidence_at=_iso(200), last_reinforced_at=_iso(3),
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "dormant")
+
+    def test_zero_ttl_disables_the_route(self) -> None:
+        h = _harness(
+            _settings(concept_dormant_ttl_days=0.0), with_clock=False,
+        )
+        c = self._dormant(h, last_reinforced_at=_iso(400))
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "dormant")
+
+    def test_never_reinforced_falls_back_to_creation(self) -> None:
+        """A row nothing ever reinforced still has to be measurable, or the
+        oldest dead weight in the pool would be the one thing exempt."""
+        h = _harness(with_clock=False)
+        c = self._dormant(h, last_reinforced_at=None, created_at=_iso(40))
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "retired")
+
+    def test_fresh_evidence_still_revives_before_the_ttl_can_retire(
+        self,
+    ) -> None:
+        """Revival is checked first, so a belief that came back on the same
+        tick it would have aged out comes back rather than retiring."""
+        h = _harness(with_clock=False)
+        c = self._dormant(
+            h,
+            confidence=0.7,
+            distinct_source_count=4,
+            # The reinforcement is past the 30-day TTL, so the duration route
+            # would retire this row -- but it is still *newer* than the last
+            # evaluation, so it is fresh evidence the revival branch acts on
+            # first.
+            last_lifecycle_at=_iso(50),
+            last_reinforced_at=_iso(40),
+        )
+        h.worker.run()
+        self.assertEqual(h.store.get(c.concept_id).status, "active")
 
 
 class DisciplineTests(unittest.TestCase):
