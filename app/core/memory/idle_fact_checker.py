@@ -254,10 +254,17 @@ class IdleFactChecker:
                 _preview(claim.claim_text),
             )
             return {"skipped": True, "reason": "privacy_gate"}
+        # The proposition the model adjudicates. Scrubbed separately
+        # from the query and never sent outbound -- it only reaches the
+        # local LLM, which the threat model already trusts with this
+        # content. When it can't be scrubbed we fall back to the span
+        # rather than dropping the claim, matching the old behaviour.
+        safe_sentence = self._scrub_sentence(claim) or safe_query
         log.info(
-            "fact-check scrubbed: memory_id=%s safe_query=%r",
+            "fact-check scrubbed: memory_id=%s safe_query=%r claim=%r",
             claim.memory_id,
             _preview(safe_query),
+            _preview(safe_sentence),
         )
 
         search_t0 = time.monotonic()
@@ -310,7 +317,7 @@ class IdleFactChecker:
             return {"cancelled": True}
 
         distil_t0 = time.monotonic()
-        verdict = self._distil(claim, snippets, safe_query=safe_query)
+        verdict = self._distil(claim, snippets, safe_claim=safe_sentence)
         distil_ms = (time.monotonic() - distil_t0) * 1000.0
         if verdict is None:
             log.info(
@@ -352,16 +359,12 @@ class IdleFactChecker:
 
     # ── pieces ───────────────────────────────────────────────────────
 
-    def _scrub_claim(self, claim: "ClaimItem") -> str | None:
-        """Return a privacy-scrubbed variant of the claim text.
+    def _current_names(self) -> tuple[list[str] | None, str | None]:
+        """Return the live (user_names, assistant_name) pair.
 
-        Pulls the current user / assistant names from the configured
-        providers so a mid-session rename is honoured immediately. The
-        actual scrubbing logic lives in
-        :func:`app.core.memory.fact_check_privacy.scrub_claim_for_search`.
+        Read from the providers on every call so a mid-session rename is
+        honoured immediately.
         """
-        from app.core.memory.fact_check_privacy import scrub_claim_for_search
-
         user_names: list[str] | None = None
         if self._user_names_provider is not None:
             try:
@@ -376,6 +379,40 @@ class IdleFactChecker:
                 assistant_name = self._assistant_name_provider() or None
             except Exception:
                 assistant_name = None
+        return user_names, assistant_name
+
+    def _scrub_sentence(self, claim: "ClaimItem") -> str | None:
+        """Return a scrubbed variant of the claim's enclosing sentence.
+
+        This is what the local model adjudicates, so it deliberately
+        skips the F6 query reformulator — that exists to turn a personal
+        claim into a neutral *search* query, and rewriting the
+        proposition would change what is being verified. ``None`` when
+        there is no sentence or it cannot be scrubbed; the caller falls
+        back to the span.
+        """
+        from app.core.memory.fact_check_privacy import scrub_claim_for_search
+
+        sentence = (getattr(claim, "claim_sentence", "") or "").strip()
+        if not sentence:
+            return None
+        user_names, assistant_name = self._current_names()
+        return scrub_claim_for_search(
+            sentence,
+            user_names=user_names,
+            assistant_name=assistant_name,
+        )
+
+    def _scrub_claim(self, claim: "ClaimItem") -> str | None:
+        """Return a privacy-scrubbed variant of the claim text.
+
+        This is the **outbound** search query. The actual scrubbing
+        logic lives in
+        :func:`app.core.memory.fact_check_privacy.scrub_claim_for_search`.
+        """
+        from app.core.memory.fact_check_privacy import scrub_claim_for_search
+
+        user_names, assistant_name = self._current_names()
         if self._query_reformulator is not None:
             from app.core.memory.query_reformulation import (
                 reformulate_query_for_search,
@@ -436,7 +473,7 @@ class IdleFactChecker:
         claim: "ClaimItem",
         snippets: list[dict[str, str]],
         *,
-        safe_query: str | None = None,
+        safe_claim: str | None = None,
     ) -> Verdict | None:
         if not snippets:
             return Verdict(kind="inconclusive", delta=0.0, rewrite=None)
@@ -449,7 +486,9 @@ class IdleFactChecker:
         # keeps the privacy boundary consistent — there's only one
         # place that sees the original claim text (the verdict
         # application step, which writes back to the memory store).
-        prompt_claim = safe_query if safe_query else claim.claim_text
+        # Prefer the enclosing sentence: the bare span is not a
+        # proposition, so a verdict on it is uninterpretable.
+        prompt_claim = safe_claim or claim.claim_sentence or claim.claim_text
         user_content = _USER_TEMPLATE.format(
             claim=prompt_claim,
             excerpts=excerpts_text,

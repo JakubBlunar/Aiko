@@ -410,6 +410,57 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
         # Confirm the stub web search was never called.
         self.assertEqual(len(world["web_search"].calls), 0)
 
+    def test_the_sentence_is_scrubbed_before_it_reaches_the_model(self) -> None:
+        """The verified sentence goes through the same gate as the query.
+
+        The sentence carries more context than the span by construction,
+        so it gets scrubbed too. The model is local and the threat model
+        already trusts it with this content -- this keeps the boundary
+        uniform so there is exactly one place that sees raw claim text.
+        """
+        world = _build_world(user_names=["Jacob"])
+        memory_store: MemoryStore = world["memory_store"]
+        embedder = world["embedder"]
+        emb = embedder.embed("Trine 2 was developed by Frozen Byte")
+        mem = memory_store.add(
+            "Trine 2 was developed by Frozen Byte", "fact", emb, salience=0.5,
+        )
+        assert mem is not None
+        world["queue"].enqueue(
+            memory_id=int(mem.id),
+            claim_text="Frozen Byte",
+            claim_kind="proper_noun",
+            claim_sentence="Jacob says Trine 2 was developed by Frozen Byte.",
+        )
+        world["worker"].run()
+        prompt = world["ollama"].chat_calls[0]["messages"][-1]["content"]
+        self.assertNotIn("Jacob", prompt)
+        self.assertIn("Frozen Byte", prompt)
+
+    def test_the_sentence_never_reaches_the_search_engine(self) -> None:
+        """Outbound surface is unchanged by the sentence work.
+
+        Only the span is searched. The sentence is strictly richer, so
+        sending it outbound would have widened the leak surface that
+        this whole module exists to keep narrow.
+        """
+        world = _build_world(user_names=["Jacob"])
+        embedder = world["embedder"]
+        emb = embedder.embed("Trine 2 was developed by Frozen Byte")
+        mem = world["memory_store"].add(
+            "Trine 2 was developed by Frozen Byte", "fact", emb, salience=0.5,
+        )
+        assert mem is not None
+        world["queue"].enqueue(
+            memory_id=int(mem.id),
+            claim_text="Frozen Byte",
+            claim_kind="proper_noun",
+            claim_sentence="Trine 2 was developed by Frozen Byte in 2011.",
+        )
+        world["worker"].run()
+        query = world["web_search"].calls[0]["query"]
+        self.assertEqual(query, "Frozen Byte")
+
     def test_neutral_claim_is_sent_with_redaction(self) -> None:
         world = _build_world(user_names=["Jacob"])
         memory_store: MemoryStore = world["memory_store"]

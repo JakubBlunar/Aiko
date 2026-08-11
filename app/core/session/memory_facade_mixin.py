@@ -501,6 +501,7 @@ class MemoryFacadeMixin:
                 memory_id=int(memory_id),
                 claim_text=claim.text,
                 claim_kind=claim.kind,
+                claim_sentence=claim.sentence,
             )
             enqueued += 1
         if enqueued or skipped:
