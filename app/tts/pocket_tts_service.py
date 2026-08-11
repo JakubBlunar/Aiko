@@ -47,10 +47,11 @@ _BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "ep
 # into chipmunk territory at the high end or "underwater" at the low
 # end. These are the *baseline* per-reaction speeds; the cadence layer
 # can further nudge per-sentence via the ``speed`` kwarg on
-# :meth:`speak_async`. Includes every reaction the affect/cadence
-# pipeline emits (matches ``app.core.affect.affect_state._REACTION_IMPULSE``)
-# so a missing entry here means the LLM produced something we don't
-# recognise — silently falls back to 1.0 via ``.get(..., 1.0)``.
+# :meth:`speak_async`. Must cover every name in
+# ``app.core.affect.reactions.REACTIONS`` (locked by
+# ``tests/test_reaction_table_coverage.py``): the lookup falls back to
+# 1.0, so a canonical reaction missing here is not an error, just a
+# permanently flat delivery for that shade.
 _REACTION_SPEED: dict[str, float] = {
     "excited":      1.08,
     "enthusiastic": 1.07,
@@ -78,6 +79,14 @@ _REACTION_SPEED: dict[str, float] = {
     "gentle":       0.94,
     "angry":        1.04,
     "frustrated":   1.03,
+    "confused":     0.97,
+    "embarrassed":  1.01,
+    "nervous":      1.04,
+    "defiant":      1.02,
+    "smug":         1.01,
+    "pouty":        1.01,
+    "sulky":        0.95,
+    "mischievous":  1.04,
 }
 
 # Hard caps applied AFTER any caller-supplied speed, so a runaway

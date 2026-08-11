@@ -69,8 +69,8 @@ def reaction_affect_target(reaction: str) -> tuple[float, float] | None:
     """Implied (valence, arousal) point of a reaction tag.
 
     Returns ``None`` for unknown reactions and for tags whose impulse is
-    too weak to imply a direction (``neutral``, ``thoughtful``) — those
-    can never produce a mismatch.
+    too weak to imply a direction (``neutral``, ``thoughtful``,
+    ``serious``) — those can never produce a mismatch.
     """
     impulse = _REACTION_IMPULSE.get((reaction or "").strip().lower())
     if impulse is None:
