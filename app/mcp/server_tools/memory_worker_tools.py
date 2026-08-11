@@ -1746,10 +1746,19 @@ def register(mcp, session: "SessionController") -> None:
         detector = getattr(session, "_topic_stagnation_detector", None)
         out["lull_mean"] = getattr(detector, "last_mean", None)
         out["lull_threshold"] = float(
-            getattr(
+            getattr(detector, "mild_threshold", None)
+            or getattr(
                 session._memory_settings, "stagnation_mild_threshold", 0.18,
             )
         )
+        # What the band is calibrated against. A ``lull_threshold`` far
+        # below ``observed_min`` is the signature of the gate being
+        # unreachable rather than merely strict.
+        if detector is not None and hasattr(detector, "baseline_snapshot"):
+            try:
+                out["lull_calibration"] = detector.baseline_snapshot()
+            except Exception:
+                out["lull_calibration"] = None
         chat_db = getattr(session, "_chat_db", None)
         if chat_db is not None and hasattr(chat_db, "kv_get"):
             try:

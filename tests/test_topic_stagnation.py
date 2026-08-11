@@ -205,6 +205,105 @@ class PostNoveltySuppressionTests(unittest.TestCase):
         self.assertIsNotNone(out)
 
 
+class SelfCalibrationTests(unittest.TestCase):
+    """The bands are percentiles of the install's own history.
+
+    The shipped constants (mild 0.18) turned out to be below the lowest
+    reading this corpus has ever produced — 52 consecutive windows in
+    0.310-0.422, all silent — so K18 could not fire and the
+    dormant-interest re-opener downstream of it never rendered once.
+    Absolute cosine thresholds do not survive a change of embedding
+    model; the distribution does.
+    """
+
+    def _kv(self):
+        store: dict[str, str] = {}
+        return store, store.get, store.__setitem__
+
+    def _feed(self, det, values):
+        for value in values:
+            det.detect(value)
+
+    def test_the_configured_constants_hold_until_there_is_a_baseline(
+        self,
+    ) -> None:
+        det = _build(stagnation_window=4)
+        self.assertFalse(det.adaptive)
+        self.assertAlmostEqual(det.mild_threshold, 0.18)
+        self.assertAlmostEqual(det.strong_threshold, 0.10)
+
+    def test_a_high_distance_corpus_still_produces_a_lull_band(self) -> None:
+        # The live failure in miniature: every reading sits well above the
+        # configured 0.18, so under absolute thresholds nothing ever fires.
+        store, kv_get, kv_set = self._kv()
+        det = TopicStagnationDetector(
+            memory_settings=_settings(stagnation_window=2),
+            kv_get=kv_get,
+            kv_set=kv_set,
+        )
+        stream = [0.30 + (i % 13) * 0.01 for i in range(200)]
+        self._feed(det, stream)
+        self.assertTrue(det.adaptive)
+        self.assertGreater(det.mild_threshold, 0.18)
+        self.assertLessEqual(det.strong_threshold, det.mild_threshold)
+        # And the band is genuinely reachable: the quietest stretch of
+        # the same corpus now scores as a lull.
+        self.assertLess(det.strong_threshold, det.mild_threshold + 1e-9)
+        det._cooldown_remaining = 0
+        det._post_novelty_suppression = 0
+        out = det.detect(0.20)
+        self.assertIsNotNone(out)
+
+    def test_the_band_is_a_minority_of_her_own_readings(self) -> None:
+        # A threshold that fires on half of all turns is not a lull.
+        store, kv_get, kv_set = self._kv()
+        det = TopicStagnationDetector(
+            memory_settings=_settings(stagnation_window=2),
+            kv_get=kv_get,
+            kv_set=kv_set,
+        )
+        self._feed(det, [0.20 + (i % 40) * 0.01 for i in range(400)])
+        snapshot = det.baseline_snapshot()
+        below = sum(
+            1 for v in det._baseline if v < det.mild_threshold
+        )
+        share = below / max(1, snapshot["samples"])
+        self.assertLess(share, 0.25, f"mild band fires on {share:.0%} of turns")
+        self.assertGreater(share, 0.02)
+
+    def test_the_baseline_survives_a_restart(self) -> None:
+        store, kv_get, kv_set = self._kv()
+        first = TopicStagnationDetector(
+            memory_settings=_settings(stagnation_window=2),
+            kv_get=kv_get, kv_set=kv_set,
+        )
+        self._feed(first, [0.30 + (i % 11) * 0.01 for i in range(200)])
+        self.assertTrue(first.adaptive)
+        second = TopicStagnationDetector(
+            memory_settings=_settings(stagnation_window=2),
+            kv_get=kv_get, kv_set=kv_set,
+        )
+        self.assertTrue(second.adaptive)
+        self.assertAlmostEqual(
+            second.mild_threshold, first.mild_threshold, places=3
+        )
+
+    def test_no_kv_means_no_calibration_and_no_crash(self) -> None:
+        det = _build(stagnation_window=2)
+        self._feed(det, [0.30 + (i % 11) * 0.01 for i in range(200)])
+        self.assertTrue(det.adaptive, "in-memory baseline should still build")
+        self.assertIsNotNone(det.baseline_snapshot()["samples"])
+
+    def test_a_corrupt_baseline_falls_back_instead_of_raising(self) -> None:
+        det = TopicStagnationDetector(
+            memory_settings=_settings(),
+            kv_get=lambda _k: "{not json",
+            kv_set=lambda _k, _v: None,
+        )
+        self.assertFalse(det.adaptive)
+        self.assertAlmostEqual(det.mild_threshold, 0.18)
+
+
 class RenderTests(unittest.TestCase):
     def test_render_strong_lull(self) -> None:
         block = render_inner_life_block(
