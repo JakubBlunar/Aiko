@@ -226,6 +226,59 @@ _USER_DACT_VALENCE: dict[str, float] = {
 _CONTAGION_TONE_WEIGHT = 1.0
 
 
+def estimate_user_affect_axes(
+    *,
+    mood: str | None = None,
+    energy: str | None = None,
+    dialogue_act: str | None = None,
+    tone: "VocalTone | None" = None,
+) -> tuple["float | None", "float | None"]:
+    """Per-axis read of the user's affect: ``None`` where nothing was said.
+
+    :func:`estimate_user_affect` fuses these into one point, filling an
+    unread axis from the neutral baseline, which is right for the K37
+    contagion tilt (a single blended target) and wrong for anything that
+    *accumulates* the reads. Most turns are readable on one axis only —
+    message length gives arousal almost always, while valence needs a mood
+    word or a venting act — so a consumer that cannot tell "neutral" from
+    "unread" spends most of its samples averaging in a default.
+    """
+    val_contrib: float | None = None
+    aro_contrib: float | None = None
+
+    def _add_val(amount: float) -> None:
+        nonlocal val_contrib
+        val_contrib = (val_contrib or 0.0) + amount
+
+    def _add_aro(amount: float) -> None:
+        nonlocal aro_contrib
+        aro_contrib = (aro_contrib or 0.0) + amount
+
+    mood_key = (mood or "").strip().lower()
+    if mood_key in _USER_MOOD_AFFECT:
+        mv, ma = _USER_MOOD_AFFECT[mood_key]
+        _add_val(mv)
+        _add_aro(ma)
+
+    energy_key = (energy or "").strip().lower()
+    if energy_key in _USER_ENERGY_AROUSAL:
+        _add_aro(_USER_ENERGY_AROUSAL[energy_key])
+
+    dact_key = (dialogue_act or "").strip().lower()
+    if dact_key in _USER_DACT_VALENCE:
+        _add_val(_USER_DACT_VALENCE[dact_key])
+
+    if tone is not None and getattr(tone, "confident", False):
+        hint = float(getattr(tone, "arousal_hint", 0.0))
+        if hint:
+            _add_aro(hint * _CONTAGION_TONE_WEIGHT)
+
+    return (
+        None if val_contrib is None else max(-1.0, min(1.0, val_contrib)),
+        None if aro_contrib is None else max(0.0, min(1.0, 0.4 + aro_contrib)),
+    )
+
+
 def estimate_user_affect(
     *,
     mood: str | None = None,
@@ -244,40 +297,15 @@ def estimate_user_affect(
     Returns ``None`` when no signal is readable (mood/energy unknown, no
     sentiment-bearing dialogue act, no confident tone) so the K37
     contagion pass can stay silent rather than pulling toward neutral.
+    Use :func:`estimate_user_affect_axes` when you need to know *which*
+    axis was read.
     """
-    val_contrib = 0.0
-    aro_contrib = 0.0
-    seen = False
-
-    mood_key = (mood or "").strip().lower()
-    if mood_key in _USER_MOOD_AFFECT:
-        mv, ma = _USER_MOOD_AFFECT[mood_key]
-        val_contrib += mv
-        aro_contrib += ma
-        seen = True
-
-    energy_key = (energy or "").strip().lower()
-    if energy_key in _USER_ENERGY_AROUSAL:
-        aro_contrib += _USER_ENERGY_AROUSAL[energy_key]
-        seen = True
-
-    dact_key = (dialogue_act or "").strip().lower()
-    if dact_key in _USER_DACT_VALENCE:
-        val_contrib += _USER_DACT_VALENCE[dact_key]
-        seen = True
-
-    if tone is not None and getattr(tone, "confident", False):
-        hint = float(getattr(tone, "arousal_hint", 0.0))
-        if hint:
-            aro_contrib += hint * _CONTAGION_TONE_WEIGHT
-            seen = True
-
-    if not seen:
+    val, aro = estimate_user_affect_axes(
+        mood=mood, energy=energy, dialogue_act=dialogue_act, tone=tone
+    )
+    if val is None and aro is None:
         return None
-
-    user_val = max(-1.0, min(1.0, 0.0 + val_contrib))
-    user_aro = max(0.0, min(1.0, 0.4 + aro_contrib))
-    return (user_val, user_aro)
+    return (0.0 if val is None else val, 0.4 if aro is None else aro)
 
 
 def _apply_user_contagion(

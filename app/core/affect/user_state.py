@@ -208,6 +208,23 @@ class UserStateEstimator:
         return new_state
 
 
+def read_mood(text: str) -> str | None:
+    """Mood band stated by *this* turn, or ``None`` if it states none.
+
+    :meth:`UserStateEstimator.estimate` carries the last known band
+    forward instead, which is right for a "how does he seem right now"
+    line and wrong for anything that attributes the read to what was being
+    discussed: the carry has no decay and no session boundary, so one
+    "sounds good" can annotate every topic raised over the following days.
+    """
+    return _detect_mood(text)
+
+
+def read_energy(text: str) -> str | None:
+    """Energy band stated by *this* turn. See :func:`read_mood`."""
+    return _detect_energy(text)
+
+
 def _detect_mood(text: str) -> str | None:
     for pattern, label in _MOOD_PATTERNS:
         if pattern.search(text):
@@ -260,4 +277,6 @@ __all__ = [
     "UserStateNow",
     "UserStateStore",
     "UserStateEstimator",
+    "read_energy",
+    "read_mood",
 ]

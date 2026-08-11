@@ -906,7 +906,6 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         self,
         *,
         user_text: str,
-        user_affect: "tuple[float, float] | None",
         state: Any,
         reaction: str | None = None,
     ) -> None:
@@ -915,8 +914,9 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         Resolves the live turn's topic cluster and folds the affect signal
         into that cluster's rolling EWMA, once per subject:
 
-        * **user** map — the K37 ``user_affect`` estimate (skipped when the
-          turn carried no readable user-affect signal, i.e. ``None``).
+        * **user** map — this turn's own per-axis read (see
+          :meth:`_read_user_affect_axes`), skipped when neither axis is
+          readable.
         * **aiko** map — the *implied target of this turn's*
           ``[[reaction:...]]`` tag (skipped when the tag is missing or too
           weak to point anywhere: ``neutral`` / ``thoughtful`` /
@@ -992,11 +992,11 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             except Exception:
                 log.debug("cluster-affect aiko update failed", exc_info=True)
 
-        # User map — only when the turn carried a readable user-affect signal.
-        if user_affect is None:
+        # User map — this turn's own read, one axis at a time.
+        u_val, u_ar = self._read_user_affect_axes(text)
+        if u_val is None and u_ar is None:
             return
         try:
-            u_val, u_ar = float(user_affect[0]), float(user_affect[1])
             key = _ca.KV_CLUSTER_AFFECT_USER
             umap = _ca.load_map(chat_db.kv_get, key)
             for cid, _label, _sim in matches:
@@ -1010,6 +1010,42 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             )
         except Exception:
             log.debug("cluster-affect user update failed", exc_info=True)
+
+    def _read_user_affect_axes(
+        self, user_text: str,
+    ) -> tuple["float | None", "float | None"]:
+        """This turn's per-axis user affect for the L13 cluster map.
+
+        Deliberately not the K37 contagion estimate, on both counts that
+        make that one unfit here. It reads the *carried* mood band, which
+        persists across days until another mood word appears, so a topic
+        gets annotated with a feeling from some earlier conversation about
+        something else; and it fuses the axes, so a turn readable only for
+        arousal still folds a valence of "neutral". Between them the map
+        converged on the base rate: 24 of 34 clusters read "energizing and
+        upbeat" and exactly one was ever negative, in a corpus where a
+        fifth of turns carry a negative read.
+        """
+        from app.core.affect.affect_state import estimate_user_affect_axes
+        from app.core.affect.user_state import read_energy, read_mood
+
+        act: str | None = None
+        try:
+            from app.core.conversation.dialogue_act_tagger import tag_regex
+
+            tagged = tag_regex(user_text)
+            act = tagged.act if tagged is not None else None
+        except Exception:
+            log.debug("cluster-affect dialogue-act tag failed", exc_info=True)
+        try:
+            return estimate_user_affect_axes(
+                mood=read_mood(user_text),
+                energy=read_energy(user_text),
+                dialogue_act=act,
+            )
+        except Exception:
+            log.debug("cluster-affect user read failed", exc_info=True)
+            return (None, None)
 
     def _apply_vitality_turn(self, raw_assistant_text: str) -> None:
         """K68: apply this turn's energy spend + interest boost, then broadcast.

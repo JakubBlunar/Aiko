@@ -1273,9 +1273,16 @@ class ConceptSynthesisWorker:
         annotated: dict[int, tuple[str, int, str, str, int]] = {}
 
         # (a) conversation-topic affect from the subject's per-cluster map.
+        # Both counts have to clear the floor. The whole annotation is a
+        # claim about how a topic *feels*, so a cluster that reached the
+        # sample count on arousal reads alone has not earned one -- and
+        # arousal is readable on nearly every turn while valence needs a
+        # mood word, so that is the common case rather than an edge one.
         affect_map = _ca.load_map(self._kv_get, _ca.kv_key_for(subject))
         for cid_str, st in affect_map.items():
             if int(st.samples) < min_samples:
+                continue
+            if int(st.valence_samples) < min_samples:
                 continue
             try:
                 cid = int(cid_str)

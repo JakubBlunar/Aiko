@@ -1203,6 +1203,7 @@ class ImportanceWiringTests(unittest.TestCase):
             str(cluster_id): ClusterAffectState(
                 valence=-0.9, arousal=0.85, samples=12,
                 updated_at=timephrase.utcnow().isoformat(),
+                valence_samples=12,
             )
         })
         return kv

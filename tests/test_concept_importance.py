@@ -53,12 +53,14 @@ def _state(
     *,
     samples: int = 9,
     days_ago: float = 1.0,
+    valence_samples: int | None = None,
 ) -> ClusterAffectState:
     return ClusterAffectState(
         valence=valence,
         arousal=arousal,
         samples=samples,
         updated_at=_iso(days_ago),
+        valence_samples=samples if valence_samples is None else valence_samples,
     )
 
 
@@ -180,9 +182,25 @@ class ChargeTests(unittest.TestCase):
     def test_an_unparseable_stamp_reads_as_fresh(self) -> None:
         # Dropping a real signal over a junk timestamp is the worse error.
         junk = ClusterAffectState(
-            valence=-0.9, arousal=0.9, samples=9, updated_at="not a date"
+            valence=-0.9, arousal=0.9, samples=9, updated_at="not a date",
+            valence_samples=9,
         )
         self.assertGreater(affect_charge([junk], now=NOW), 0.0)
+
+    def test_a_cluster_sampled_only_for_arousal_carries_no_charge(self) -> None:
+        # The charge is a valence magnitude, so arousal evidence alone
+        # cannot earn one however much of it there is.
+        loud = _state(-0.9, 0.9, samples=40, valence_samples=1)
+        self.assertEqual(affect_charge([loud], min_samples=3, now=NOW), 0.0)
+
+    def test_a_legacy_row_re_earns_its_charge(self) -> None:
+        # Rows written before the axes were counted separately have no
+        # valence sample count, and their valence was folded from unread
+        # turns, so they should not lift anything until re-measured.
+        legacy = ClusterAffectState(
+            valence=-0.9, arousal=0.9, samples=40, updated_at=_iso(1.0)
+        )
+        self.assertEqual(affect_charge([legacy], min_samples=3, now=NOW), 0.0)
 
     def test_no_clusters_is_no_charge(self) -> None:
         self.assertEqual(affect_charge([], now=NOW), 0.0)

@@ -116,17 +116,15 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("self-noticing affect-ring append failed", exc_info=True)
 
-        # L13 — per-cluster affect sampler. Fold this turn's user-affect
-        # estimate (K37) and the implied target of Aiko's own reaction tag
-        # into the active topic cluster's rolling EWMA, so affective concepts
-        # have a durable topic->emotion signal to synthesize from. Her half
-        # is the per-turn tag, not the smoothed global scalar: the scalar is
-        # the same number for every topic, so it cannot carry a
-        # topic->emotion signal. Best-effort.
+        # L13 — per-cluster affect sampler. Folds this turn's reads into the
+        # active topic cluster's rolling EWMA, so affective concepts have a
+        # durable topic->emotion signal to synthesize from. Both halves take
+        # the per-turn read rather than a carried one, for the same reason:
+        # a value that is the same for every topic cannot describe a
+        # difference between topics. Best-effort.
         try:
             self._sample_cluster_affect(
                 user_text=user_text,
-                user_affect=user_affect,
                 state=state,
                 reaction=reaction,
             )

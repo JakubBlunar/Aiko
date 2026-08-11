@@ -193,6 +193,54 @@ class EstimateUserAffectTests(unittest.TestCase):
         self.assertLessEqual(est[1], 1.0)
 
 
+class EstimateUserAffectAxesTests(unittest.TestCase):
+    """The per-axis read: ``None`` has to mean unread, not neutral."""
+
+    def test_an_energy_read_says_nothing_about_valence(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect_axes
+
+        val, aro = estimate_user_affect_axes(mood="unknown", energy="high")
+        self.assertIsNone(val)
+        self.assertGreater(aro, 0.4)
+
+    def test_a_vent_says_nothing_about_arousal(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect_axes
+
+        val, aro = estimate_user_affect_axes(dialogue_act="vent")
+        self.assertLess(val, 0.0)
+        self.assertIsNone(aro)
+
+    def test_nothing_readable_is_none_on_both(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect_axes
+
+        self.assertEqual(
+            estimate_user_affect_axes(mood="neutral", energy="unknown"),
+            (None, None),
+        )
+
+    def test_the_fused_estimate_is_unchanged(self) -> None:
+        # The contagion tilt wants one blended point and is right to fill an
+        # unread axis from the baseline; only accumulating consumers care
+        # about the difference.
+        from app.core.affect.affect_state import (
+            estimate_user_affect,
+            estimate_user_affect_axes,
+        )
+
+        for kwargs in (
+            {"mood": "low"},
+            {"energy": "high"},
+            {"dialogue_act": "banter"},
+            {"mood": "high", "energy": "low", "dialogue_act": "vent"},
+        ):
+            with self.subTest(**kwargs):
+                val, aro = estimate_user_affect_axes(**kwargs)
+                self.assertEqual(
+                    estimate_user_affect(**kwargs),
+                    (0.0 if val is None else val, 0.4 if aro is None else aro),
+                )
+
+
 class ContagionTests(unittest.TestCase):
     """K37: apply_turn tilts toward user affect, capped + gated."""
 

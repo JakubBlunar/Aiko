@@ -109,6 +109,10 @@ def affect_charge(
     only on *write*, so a read can see entries the sweep has not reached
     yet. No qualifying cluster returns ``0.0``, which means "no lift",
     never a penalty.
+
+    The floor applies to the *valence* sample count as well as the total,
+    since :func:`state_charge` is a statement about valence magnitude and
+    most turns are readable on arousal only.
     """
     moment = now or timephrase.utcnow()
     if moment.tzinfo is None:
@@ -116,6 +120,8 @@ def affect_charge(
     best = 0.0
     for state in states:
         if int(getattr(state, "samples", 0)) < int(min_samples):
+            continue
+        if int(getattr(state, "valence_samples", 0)) < int(min_samples):
             continue
         if _age_days(state, moment) > float(max_age_days):
             continue
