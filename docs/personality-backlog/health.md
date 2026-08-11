@@ -63,6 +63,7 @@ latched, or throttled to roughly zero:**
 | L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
 | L38 earned standing | usefulness learned from what lands | runs perfectly on a signal with **0.05 reliability** (H18) |
 | Belief + promise workers | mining his commitments and predicted states | **1 belief ever, 0 promises in 54 days** — querying a session key that does not exist (H19) |
+| F1 fact-checker | catching her own wrong facts against the web | **0 of 90 extracted claims contain a verb** — it was verifying `"2026"` (H20) |
 
 Trace the provenance and the split is stark. Of her 629 concepts, **624 came
 from LLM synthesis over conversation transcripts** and 5 are authored cold-start
@@ -835,7 +836,108 @@ worker before assuming any of them is idle by choice.
 
 ---
 
-## The seven recurring shapes
+## H20. The fact-checker was being asked to verify the claim "2026"
+
+**Severity: high — not idle, not miscalibrated: structurally unable to produce
+a correct answer, and a wrong answer rewrites a memory.**
+
+Found by pointing H19's one-liner at the rest of the log. `enqueue skip:
+personal` appears 91 times and *no other enqueue outcome appears at all* — the
+same 100%-single-reason signature, so I went looking for the over-blocking
+gate. There isn't one. The gate is right and the payload is wrong.
+
+### First, the decoy, because it is the more attractive answer
+
+The privacy classifier blocks the whole memory on `user_name` (53 of 91) and
+`first_person_pronoun` (7), while `scrub_claim_for_search` — which runs on
+every claim anyway — is built to *redact* exactly those tokens and keep the
+rest. That reads like textbook gate-ordering: a coarse gate in front of a fine
+one, making the fine one unreachable. Its own docstring advertises the case
+("violin practice since 2010").
+
+Reading the blocked rows killed it. All 26 `kind=fact` blocks are wholly
+personal — "Jacob has allergies that improve after rain", "Jacob carries
+lingering sadness about a past physical boundary violation". Scrubbing removes
+the *name*, not the *content*, so relaxing the memory-level gate would have
+sent "carries lingering sadness about a past physical boundary violation" to
+DuckDuckGo. **The memory-level name check is not redundant with the token-level
+scrubber: it is the only thing carrying "this row is about a person."** Leave
+it alone.
+
+### The actual finding
+
+Every pattern in [`claim_extractor.py`](../../app/core/memory/claim_extractor.py)
+— `year`, `measurement`, `date`, `proper_noun` — matches a **sub-sentence
+token**. So by construction no extracted span is ever a proposition. Measured
+over the 436 `knowledge`/`fact`/`curiosity_finding`/`topic_digest` rows: 90
+spans extracted, and **0 of them contain a verb.**
+
+That span is then used as the claim. `_distil` prompts the model with
+`CLAIM: {span}` plus three search excerpts and demands
+`support` / `contradict` / `inconclusive`. Real examples from the live corpus:
+
+| what the model was asked to verify | what the memory actually asserted |
+| --- | --- |
+| `2026` | Jacob will return to work on July 6, 2026 after getting proper rest. |
+| `The Rent` | The Rent-a-Girlfriend manga has sold over 10 million copies. |
+| `Frozen Byte` | Trine 2 was developed by Frozen Byte and published by Atlus on December 9, 2011. |
+| `Media Lab` | Research from Harvard Business School, MIT Media Lab, and the APA … |
+| `When Jacob` | When Jacob struggles to fall asleep, he often becomes frustrated … |
+
+Note the hyphen-splitting: "The Rent" and "Ranked Neuro" are fragments of
+"Rent-a-Girlfriend" and "Memory-Ranked Neuro-Symbolic". And note the last row —
+`proper_noun` happily matches sentence-initial "When" plus a name.
+
+The checkable proposition was present in `memory.content` every single time,
+and never used. `ClaimCandidate` has carried `start`/`end` offsets since the
+original commit, and the docstring says they exist "so callers can correlate to
+the original sentence later if needed." Nobody ever did.
+
+**Why this is high and not low.** A `contradict` verdict with `|delta| > 0.2`
+sets `new_content = verdict.rewrite` — it replaces the memory's whole content,
+drops confidence, sets a `conflict` flag, and can arm the F14 "I looked into
+that and had it wrong" cue to the user. Asked to adjudicate `2026`, the model's
+answer is arbitrary; when it comes back `contradict`, a true memory is silently
+overwritten with a sentence about the year 2026. Nothing has been damaged only
+because the queue has been empty for three months (the dict-payload bug fixed
+earlier this session) and the privacy gate rejects the rest. **The supply
+repair removed one of the two accidental protections without anyone noticing
+the third gate was the load-bearing one.**
+
+### Outcome: the span is the query, the sentence is the claim
+
+Each `ClaimCandidate` now carries its enclosing `sentence`, threaded through
+`ClaimItem.claim_sentence` (defaulted, so queue entries written by the previous
+build still load) to the verifier. Then:
+
+- **Outbound is byte-for-byte unchanged.** DuckDuckGo still gets the scrubbed
+  *span*, which is what a narrow entity string is good for. The sentence is
+  strictly richer and never leaves the machine.
+- **The local model is asked about the scrubbed sentence**, which is a
+  proposition it can actually adjudicate. It goes through the same scrubber for
+  boundary uniformity, not because the local model is untrusted.
+- **A span whose sentence asserts nothing is no longer extracted at all.** A
+  bare title like "Magical Shopping Arcade Abenobashi" matches `proper_noun`
+  and looks like a claim; there is no question to ask about it. This drops 3 of
+  90 spans and is what stops the empty-verdict path existing.
+
+Replayed over the corpus, the 44 claims that clear every gate go from bare
+noun phrases to sentences like *"Trine 2 was developed by Frozen Byte and
+published by Atlus on December 9, 2011"* — which is checkable, and which
+happens to be worth checking.
+
+**Eighth recurring shape:** *a pipeline can be correct at every stage and still
+carry a payload that cannot answer the question.* This is H18's lesson one
+layer further down — there, a signal was measured and found empty; here, the
+unit of work was never the right shape to begin with. Both were invisible
+because every component did its own job properly. **Rule: for any pipeline that
+extracts a unit and then reasons over it, write down the unit and check that
+the question you are about to ask of it is answerable.** "Verify `2026`" fails
+that test on sight.
+
+---
+
+## The eight recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -898,6 +1000,17 @@ is found by asking "did this run?"; this one is only found by asking "does this
 mean anything?" **Rule: any learned rate that ranks, gates or weights something
 must have its reliability measured against the null of shuffling it, and the
 figure recorded in the shipped entry.**
+
+**8. A unit of work that cannot answer the question asked of it.** Shape 7 one
+layer down: there the signal was empty, here the *unit* is the wrong shape, so
+no amount of care downstream can help. H20's extractor pulled spans — `2026`,
+`The Rent` — and the verifier asked "true or false?", which is not a question
+about a noun phrase. Every stage was individually correct, the offsets needed
+to recover the sentence had been carried since day one, and a wrong answer
+overwrote a memory. **Rule: for any pipeline that extracts a unit and then
+reasons over it, write the unit down next to the question and check the
+question is answerable. Do this at design time — it costs one line and it is
+invisible in every test that stubs the reasoning step.**
 
 ---
 

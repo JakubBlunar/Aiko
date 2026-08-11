@@ -48,6 +48,11 @@ class ClaimItem:
     claim_kind: str  # "year" / "measurement" / "date" / "proper_noun" /
     # "knowledge_gap" — set when the queued item is a gap question.
     enqueued_at: str  # ISO-8601 UTC
+    # The sentence ``claim_text`` was cut from. ``claim_text`` is the
+    # search query; this is the proposition a verifier adjudicates.
+    # Defaults to empty so queue entries written before this field
+    # existed still load — consumers fall back to ``claim_text``.
+    claim_sentence: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -59,6 +64,7 @@ class ClaimItem:
             claim_text=str(raw.get("claim_text") or ""),
             claim_kind=str(raw.get("claim_kind") or "fact"),
             enqueued_at=str(raw.get("enqueued_at") or ""),
+            claim_sentence=str(raw.get("claim_sentence") or ""),
         )
 
 
@@ -116,6 +122,7 @@ class FactCheckQueue:
         memory_id: int,
         claim_text: str,
         claim_kind: str,
+        claim_sentence: str = "",
     ) -> None:
         """Append one claim. No-op on empty text or duplicate (memory_id, text)."""
         cleaned = (claim_text or "").strip()
@@ -127,6 +134,7 @@ class FactCheckQueue:
             claim_text=cleaned,
             claim_kind=str(claim_kind or "fact"),
             enqueued_at=timephrase.utcnow().isoformat(),
+            claim_sentence=(claim_sentence or "").strip(),
         )
         with self._lock:
             items = self._load()

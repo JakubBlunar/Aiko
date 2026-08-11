@@ -123,7 +123,13 @@ def collect(
             if safe is None:
                 skips["scrub_refused_span"] += 1
                 continue
-            kept.append({"text": claim.text, "kind": claim.kind})
+            kept.append(
+                {
+                    "text": claim.text,
+                    "kind": claim.kind,
+                    "sentence": claim.sentence,
+                }
+            )
         if not kept:
             skips["all_spans_scrubbed"] += 1
             continue
@@ -187,6 +193,7 @@ def apply(db: Path, plan: list[dict[str, Any]]) -> int:
                 memory_id=int(entry["memory_id"]),
                 claim_text=claim["text"],
                 claim_kind=claim["kind"],
+                claim_sentence=claim.get("sentence", ""),
             )
             already.add(key)
             appended += 1

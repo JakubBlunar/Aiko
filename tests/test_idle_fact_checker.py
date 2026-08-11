@@ -292,6 +292,53 @@ class TestClaimExtractorPatterns(unittest.TestCase):
         self.assertLessEqual(len(claims), 2)
 
 
+class TestClaimsCarryTheirSentence(unittest.TestCase):
+    """A span is a search query; the sentence is the claim.
+
+    Every pattern in the extractor matches a sub-sentence token, so no
+    span is ever a proposition. Measured over the live corpus, 0 of 90
+    spans contained a verb -- the model was being asked to adjudicate
+    ``"2026"``. Each candidate now carries the sentence it was cut from.
+    """
+
+    def test_the_span_is_paired_with_the_sentence_it_came_from(self) -> None:
+        claims = find_claims("Trine 2 was developed by Frozen Byte in 2011.")
+        self.assertTrue(claims)
+        for c in claims:
+            self.assertEqual(
+                c.sentence, "Trine 2 was developed by Frozen Byte in 2011.",
+            )
+            # The span itself stays narrow -- it is the search query.
+            self.assertLess(len(c.text), len(c.sentence))
+
+    def test_the_right_sentence_is_attributed_in_a_multi_sentence_memory(
+        self,
+    ) -> None:
+        text = (
+            "Lavazza is an Italian coffee brand. "
+            "The Gaggia Anima was released in 2015."
+        )
+        by_span = {c.text: c.sentence for c in find_claims(text)}
+        self.assertEqual(
+            by_span.get("2015"), "The Gaggia Anima was released in 2015.",
+        )
+
+    def test_a_span_whose_sentence_asserts_nothing_is_dropped(self) -> None:
+        """The failure this filter exists for.
+
+        A bare title matches ``proper_noun`` and reads like a claim, but
+        there is no question to ask about it -- and a spurious
+        ``contradict`` rewrites the memory content.
+        """
+        self.assertEqual(find_claims("Magical Shopping Arcade Abenobashi"), [])
+
+    def test_a_real_assertion_still_survives_the_filter(self) -> None:
+        claims = find_claims(
+            "Magical Shopping Arcade Abenobashi was written by Satoru Akahori."
+        )
+        self.assertTrue(claims)
+
+
 # ── F1.2 — queue persistence round-trip via kv_meta ────────────────────
 
 
@@ -310,6 +357,50 @@ class TestQueuePersistence(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertEqual(items[0].memory_id, 11)
         self.assertEqual(items[1].claim_text, "12 km")
+
+    def test_the_sentence_round_trips(self) -> None:
+        d = tempfile.mkdtemp()
+        path = Path(d) / "mem.db"
+        q1 = FactCheckQueue(ChatDatabase(path))
+        q1.enqueue(
+            memory_id=11,
+            claim_text="2023",
+            claim_kind="year",
+            claim_sentence="Python 3.12 was released in 2023.",
+        )
+        item = FactCheckQueue(ChatDatabase(path)).peek_all()[0]
+        self.assertEqual(
+            item.claim_sentence, "Python 3.12 was released in 2023.",
+        )
+
+    def test_an_entry_written_before_the_field_existed_still_loads(
+        self,
+    ) -> None:
+        """Backward compatibility for the live queue.
+
+        Entries persisted by the previous build have no
+        ``claim_sentence`` key; they must load rather than being dropped
+        as corrupt, and read as empty so consumers fall back to the span.
+        """
+        d = tempfile.mkdtemp()
+        path = Path(d) / "mem.db"
+        chat_db = ChatDatabase(path)
+        chat_db.kv_set(
+            "fact_checker.queue",
+            json.dumps(
+                [
+                    {
+                        "memory_id": 7,
+                        "claim_text": "2023",
+                        "claim_kind": "year",
+                        "enqueued_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            ),
+        )
+        items = FactCheckQueue(chat_db).peek_all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].claim_sentence, "")
 
 
 # ── F1.4 + F1.8 — readiness gate ───────────────────────────────────────
@@ -583,6 +674,58 @@ class TestVerdictApplication(unittest.TestCase):
         self.assertEqual(
             after.content, "Python 3.12 shipped in October 2023",
         )
+
+    def test_the_span_is_searched_but_the_sentence_is_verified(self) -> None:
+        """The two halves of a claim go to different places.
+
+        A narrow entity span is a good search query and an
+        uninterpretable proposition; the sentence is the reverse. The
+        span keeps going outbound to the search engine -- so the
+        outbound privacy surface is unchanged -- while the local model
+        is asked about the sentence.
+        """
+        world = _build_world()
+        memory_store: MemoryStore = world["memory_store"]
+        mem_id = _add_fact(
+            memory_store,
+            world["embedder"],
+            "Trine 2 was developed by Frozen Byte.",
+        )
+        world["queue"].enqueue(
+            memory_id=mem_id,
+            claim_text="Frozen Byte",
+            claim_kind="proper_noun",
+            claim_sentence="Trine 2 was developed by Frozen Byte.",
+        )
+        world["worker"].run()
+
+        query = world["web_search"].calls[0]["query"]
+        self.assertEqual(query, "Frozen Byte")
+
+        prompt = world["ollama"].chat_calls[0]["messages"][-1]["content"]
+        self.assertIn("Trine 2 was developed by Frozen Byte.", prompt)
+
+    def test_a_legacy_queue_entry_still_verifies_its_span(self) -> None:
+        """No sentence recorded -> fall back rather than skip.
+
+        Entries queued by the previous build carry no sentence. They
+        should still be processed the old way instead of being dropped.
+        """
+        world = _build_world()
+        mem_id = _add_fact(
+            world["memory_store"],
+            world["embedder"],
+            "Python 3.12 was released in 2023.",
+        )
+        world["queue"].enqueue(
+            memory_id=mem_id,
+            claim_text="Python 3.12 released 2023",
+            claim_kind="year",
+        )
+        result = world["worker"].run()
+        self.assertEqual(result.get("verdict"), "support")
+        prompt = world["ollama"].chat_calls[0]["messages"][-1]["content"]
+        self.assertIn("Python 3.12 released 2023", prompt)
 
     def test_contradict_with_small_delta_keeps_original_content(self) -> None:
         world = _build_world(
