@@ -25,11 +25,19 @@ like a matched pair in the persona block):
   is in the middle of a topic shift -- distances will be weird for a
   few turns. We mute K18 for a configurable suppression window so
   the two detectors don't talk past each other.
-- **Conservative defaults**. Thresholds are intentionally narrow
-  (a 6-turn mean distance must drop below ~0.18 for the mild band,
-  below ~0.10 for the strong band). Calibration is the kind of thing
-  only live testing settles; the persona explicitly tells Aiko that
-  *not* hearing the cue is also a signal.
+- **Self-calibrating thresholds**. What counts as "circling" is a
+  question about *this* conversation against its own history, not an
+  absolute cosine distance, and the absolute version does not survive
+  contact with a different embedding model. The shipped constants
+  (mild 0.18, strong 0.10) turned out to sit below the *minimum*
+  distance this install has ever produced: 52 consecutive readings
+  spanning 0.310-0.422, every one of them ``band=silent``. K18 could
+  not fire, and neither could anything downstream of it — the
+  dormant-interest re-opener needs a lull to land on and had never
+  rendered once in 378 attempts. So the bands are now percentiles of
+  the install's own rolling baseline (persisted in ``kv_meta``), with
+  the constants kept as the cold-start fallback until enough turns
+  have been measured to have a distribution at all.
 
 The detector is constructed on :class:`SessionController` start-up
 (when ``agent.topic_stagnation_enabled``) and registered as the
@@ -41,10 +49,11 @@ just fired this turn.
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import statistics
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 log = logging.getLogger("app.topic_stagnation")
@@ -58,6 +67,35 @@ _DEFAULT_MILD_THRESHOLD = 0.18
 _DEFAULT_STRONG_THRESHOLD = 0.10
 _DEFAULT_COOLDOWN_TURNS = 4
 _DEFAULT_POST_NOVELTY_SUPPRESSION_TURNS = 3
+
+# ── self-calibration ────────────────────────────────────────────────
+#
+# The baseline is a rolling record of window means, so the bands are
+# read off the same quantity they are compared against.
+KV_BASELINE = "topic_stagnation.mean_baseline"
+# Enough readings to have a shape worth trusting; below this the
+# configured constants stand. At roughly one measured turn a minute of
+# conversation this is a couple of active days.
+_ADAPTIVE_MIN_SAMPLES = 60
+_BASELINE_CAP = 400
+# Which slice of her own history counts as a lull. Deliberately tight:
+# "we have been circling this" should describe a genuinely quiet
+# stretch, not the calmer half of every conversation.
+_MILD_PERCENTILE = 0.15
+_STRONG_PERCENTILE = 0.05
+# Writing the baseline on every measured turn would put a SQLite write
+# on the prompt-assembly path for no benefit; a lost tail of a few
+# samples changes no percentile.
+_PERSIST_EVERY = 10
+
+
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    """Nearest-rank percentile. No interpolation: the baseline is a
+    sample of real readings and a real reading is the honest bar."""
+    if not sorted_values:
+        raise ValueError("empty baseline")
+    index = int(len(sorted_values) * fraction)
+    return float(sorted_values[min(index, len(sorted_values) - 1)])
 
 
 BAND_MILD_LULL = "mild_lull"
@@ -99,6 +137,8 @@ class TopicStagnationDetector:
         self,
         *,
         memory_settings: Any | None = None,
+        kv_get: "Callable[[str], str | None] | None" = None,
+        kv_set: "Callable[[str, str], None] | None" = None,
     ) -> None:
         self._memory_settings = memory_settings
         window = max(2, int(self._setting("stagnation_window", _DEFAULT_WINDOW)))
@@ -113,6 +153,106 @@ class TopicStagnationDetector:
         # that's exactly the turn K54 needs the standing lull reading
         # for. ``None`` until the window first fills.
         self.last_mean: float | None = None
+        # The bands actually in force. Consumers that gate on "is this a
+        # lull" (K67's dormant-interest re-opener) must read these rather
+        # than the configured constant, or they are testing against a bar
+        # the detector itself has stopped using.
+        self.mild_threshold: float = float(
+            self._setting("stagnation_mild_threshold", _DEFAULT_MILD_THRESHOLD)
+        )
+        self.strong_threshold: float = float(
+            self._setting(
+                "stagnation_strong_threshold", _DEFAULT_STRONG_THRESHOLD,
+            )
+        )
+        self.adaptive: bool = False
+        self._kv_get = kv_get
+        self._kv_set = kv_set
+        self._baseline: collections.deque[float] = collections.deque(
+            maxlen=_BASELINE_CAP,
+        )
+        self._unpersisted = 0
+        self._load_baseline()
+        self._refresh_thresholds()
+
+    # ── self-calibration ─────────────────────────────────────────────
+
+    def _load_baseline(self) -> None:
+        if self._kv_get is None:
+            return
+        try:
+            raw = self._kv_get(KV_BASELINE)
+            values = json.loads(raw) if raw else []
+        except Exception:
+            log.debug("topic-stagnation baseline read failed", exc_info=True)
+            return
+        if not isinstance(values, list):
+            return
+        for value in values:
+            try:
+                self._baseline.append(float(value))
+            except (TypeError, ValueError):
+                continue
+
+    def _persist_baseline(self, *, force: bool = False) -> None:
+        if self._kv_set is None or not self._baseline:
+            return
+        self._unpersisted += 1
+        if not force and self._unpersisted < _PERSIST_EVERY:
+            return
+        self._unpersisted = 0
+        try:
+            self._kv_set(
+                KV_BASELINE,
+                json.dumps([round(v, 4) for v in self._baseline]),
+            )
+        except Exception:
+            log.debug("topic-stagnation baseline write failed", exc_info=True)
+
+    def _refresh_thresholds(self) -> None:
+        """Recompute the bands from the baseline, or fall back to config.
+
+        Percentiles of her own history rather than absolute distances:
+        the shipped constants encode one embedding model's scale, and on
+        a model whose distances run higher they silence the detector
+        completely instead of merely making it strict.
+        """
+        configured_mild = float(
+            self._setting("stagnation_mild_threshold", _DEFAULT_MILD_THRESHOLD)
+        )
+        configured_strong = float(
+            self._setting(
+                "stagnation_strong_threshold", _DEFAULT_STRONG_THRESHOLD,
+            )
+        )
+        if len(self._baseline) < _ADAPTIVE_MIN_SAMPLES:
+            self.adaptive = False
+            self.mild_threshold = configured_mild
+            self.strong_threshold = min(configured_strong, configured_mild)
+            return
+        ordered = sorted(self._baseline)
+        self.adaptive = True
+        self.mild_threshold = _percentile(ordered, _MILD_PERCENTILE)
+        self.strong_threshold = min(
+            _percentile(ordered, _STRONG_PERCENTILE), self.mild_threshold
+        )
+
+    def baseline_snapshot(self) -> dict[str, Any]:
+        """What the detector is currently calibrated against (for MCP /
+        debugging). Cheap, read-only."""
+        ordered = sorted(self._baseline)
+        return {
+            "samples": len(ordered),
+            "adaptive": self.adaptive,
+            "min_samples_needed": _ADAPTIVE_MIN_SAMPLES,
+            "mild_threshold": round(self.mild_threshold, 4),
+            "strong_threshold": round(self.strong_threshold, 4),
+            "observed_min": round(ordered[0], 4) if ordered else None,
+            "observed_median": (
+                round(statistics.median(ordered), 4) if ordered else None
+            ),
+            "observed_max": round(ordered[-1], 4) if ordered else None,
+        }
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -172,6 +312,14 @@ class TopicStagnationDetector:
             self.last_mean = float(
                 statistics.fmean(self._distance_history)
             )
+            # Feed the same reading to the baseline the bands are drawn
+            # from, and do it here rather than after the gates below:
+            # cooldown and suppression decide whether this turn may
+            # *fire*, not whether it happened. Excluding suppressed turns
+            # would bias the distribution toward the noisy ones.
+            self._baseline.append(self.last_mean)
+            self._refresh_thresholds()
+            self._persist_baseline()
         if self._post_novelty_suppression > 0:
             self._post_novelty_suppression -= 1
             log.debug(
@@ -201,21 +349,11 @@ class TopicStagnationDetector:
         mean_distance = float(statistics.fmean(self._distance_history))
         window_size = len(self._distance_history)
 
-        mild = float(
-            self._setting("stagnation_mild_threshold", _DEFAULT_MILD_THRESHOLD)
-        )
-        strong = float(
-            self._setting(
-                "stagnation_strong_threshold", _DEFAULT_STRONG_THRESHOLD,
-            )
-        )
-        # Defensive ordering: stagnation thresholds are *upper* bounds
-        # (lower mean = more stagnant), so ``strong`` should be <=
-        # ``mild``. If a misconfigured strong>mild slipped through,
-        # collapse to a single-threshold behaviour using the tighter
-        # value so we don't over-fire.
-        if strong > mild:
-            strong = mild
+        # Both are kept as *upper* bounds (lower mean = more stagnant)
+        # with strong <= mild; ``_refresh_thresholds`` already enforces
+        # the ordering for both the adaptive and the configured path.
+        mild = self.mild_threshold
+        strong = self.strong_threshold
 
         band: str | None
         if mean_distance < strong:
@@ -226,10 +364,15 @@ class TopicStagnationDetector:
             band = None
 
         log.info(
-            "topic-stagnation: mean=%.3f band=%s window=%d",
+            "topic-stagnation: mean=%.3f band=%s window=%d "
+            "mild=%.3f strong=%.3f adaptive=%s samples=%d",
             mean_distance,
             band or "silent",
             window_size,
+            mild,
+            strong,
+            self.adaptive,
+            len(self._baseline),
         )
 
         if band is None:

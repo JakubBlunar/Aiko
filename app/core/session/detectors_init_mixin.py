@@ -495,8 +495,11 @@ class DetectorsInitMixin:
                     TopicStagnationDetector,
                 )
 
+                chat_db = getattr(self, "_chat_db", None)
                 self._topic_stagnation_detector = TopicStagnationDetector(
                     memory_settings=self._memory_settings,
+                    kv_get=getattr(chat_db, "kv_get", None),
+                    kv_set=getattr(chat_db, "kv_set", None),
                 )
             except Exception:
                 log.warning(
