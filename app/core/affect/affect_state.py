@@ -40,17 +40,42 @@ log = logging.getLogger("app.affect")
 # (valence_delta, arousal_delta) impulse. Calibrated so an "excited"
 # turn moves valence by +0.15, never enough to flip the mood label all on
 # its own — needs sustained reactions to drift the baseline.
+#
+# **Every name in ``reactions.REACTIONS`` must appear here.** The lookup
+# below falls back to ``(0.0, 0.0)``, so a canonical reaction that is
+# missing from this table doesn't error — it just silently contributes
+# nothing to her mood, forever. That is exactly what happened to the
+# eight names added in the health pass: ``gentle`` and ``embarrassed``
+# were her two most-emitted tags and together with the other six they
+# covered 49% of all turns, every one of them a no-op. The affect state
+# looked "stable" because half its input was being dropped on the floor.
+# ``tests/test_reaction_table_coverage.py`` locks the invariant.
 _REACTION_IMPULSE: dict[str, tuple[float, float]] = {
     "excited":      (+0.15, +0.20),
     "enthusiastic": (+0.13, +0.18),
     "cheerful":     (+0.12, +0.10),
+    "playful":      (+0.11, +0.12),
     "amused":       (+0.10, +0.05),
     "warm":         (+0.10, -0.05),
+    "gentle":       (+0.09, -0.08),
     "tender":       (+0.08, -0.10),
     "friendly":     (+0.06, +0.02),
+    # ``embarrassed`` is the flustered-but-pleased shade (it degrades to
+    # ``warm`` -> ``tender`` on rigs without a blush axis), not shame —
+    # so mildly positive valence with the arousal of being caught out.
+    "embarrassed":  (+0.05, +0.12),
+    "curious":      (+0.05, +0.10),
     "calm":         (+0.04, -0.10),
     "neutral":      ( 0.00,  0.00),
     "thoughtful":   (+0.02, -0.05),
+    # ``defiant`` is the playful "hmph, no" refusal, deliberately much
+    # milder in valence than ``angry`` and mostly an arousal event.
+    "defiant":      (-0.03, +0.12),
+    "confused":     (-0.04, +0.08),
+    # ``tired`` is the one reaction that is primarily a *de*-activation:
+    # barely negative, strongly down-regulating.
+    "tired":        (-0.05, -0.18),
+    "nervous":      (-0.07, +0.14),
     "serious":      (-0.04, +0.02),
     "concerned":    (-0.08, +0.04),
     "sad":          (-0.15, -0.10),

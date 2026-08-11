@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.core.affect.mood_inertia import reaction_affect_target
 from app.core.concepts import cluster_affect as ca
 from app.core.concepts.concept_kinds import (
     get_kind,
@@ -183,6 +184,12 @@ class _Embedder:
         return np.ones(4, dtype=np.float32)
 
 
+def _state(valence: float = 0.25, arousal: float = 0.45):
+    """The global mood scalar. Present at the call site, deliberately
+    ignored by her half of the sampler — see the method docstring."""
+    return types.SimpleNamespace(valence=valence, arousal=arousal)
+
+
 def _sampler_obj(graph, chat_db, *, enabled=True):
     from app.core.session.post_turn_helpers_mixin import (
         PostTurnHelpersMixin,
@@ -211,27 +218,49 @@ class SamplerTests(unittest.TestCase):
     def test_updates_both_maps_when_user_affect_present(self) -> None:
         graph = _GraphStub([(42, "debugging", 0.9)])
         obj = _sampler_obj(graph, self.db)
-        state = types.SimpleNamespace(valence=0.6, arousal=0.7)
         obj._sample_cluster_affect(
             user_text="the debugging is driving me nuts",
             user_affect=(-0.5, 0.8),
-            state=state,
+            state=_state(),
+            reaction="concerned",
         )
         umap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_USER)
         amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertIn("42", umap)
         self.assertIn("42", amap)
         self.assertAlmostEqual(umap["42"].valence, -0.5, places=4)
-        self.assertAlmostEqual(amap["42"].valence, 0.6, places=4)
+        expected = reaction_affect_target("concerned")
+        assert expected is not None
+        self.assertAlmostEqual(amap["42"].valence, expected[0], places=4)
+
+    def test_her_map_follows_the_reaction_not_the_global_scalar(self) -> None:
+        # The regression this whole change exists for: two clusters sampled
+        # under the *same* mood scalar but different reactions must end up
+        # in different places. Under the old code both would land on the
+        # scalar and the map would carry no topic information at all.
+        graph_a = _GraphStub([(1, "his deadlines", 0.9)])
+        graph_b = _GraphStub([(2, "our evenings", 0.9)])
+        state = _state(valence=0.35, arousal=0.5)
+        _sampler_obj(graph_a, self.db)._sample_cluster_affect(
+            user_text="the deadline slipped again and it is bad",
+            user_affect=None, state=state, reaction="concerned",
+        )
+        _sampler_obj(graph_b, self.db)._sample_cluster_affect(
+            user_text="tell me about our evenings together",
+            user_affect=None, state=state, reaction="excited",
+        )
+        amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
+        self.assertLess(amap["1"].valence, 0.0)
+        self.assertGreater(amap["2"].valence, 0.5)
 
     def test_aiko_only_when_user_affect_none(self) -> None:
         graph = _GraphStub([(7, "love", 0.95)])
         obj = _sampler_obj(graph, self.db)
-        state = types.SimpleNamespace(valence=0.2, arousal=0.9)
         obj._sample_cluster_affect(
             user_text="tell me about romance and love please",
             user_affect=None,
-            state=state,
+            state=_state(),
+            reaction="tender",
         )
         self.assertEqual(
             ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_USER), {}
@@ -239,13 +268,45 @@ class SamplerTests(unittest.TestCase):
         amap = ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertIn("7", amap)
 
+    def test_user_only_when_the_reaction_points_nowhere(self) -> None:
+        # ``neutral`` implies no direction, so there is nothing to record
+        # about how she felt — but the user's half of the turn still counts.
+        graph = _GraphStub([(9, "logistics", 0.9)])
+        obj = _sampler_obj(graph, self.db)
+        obj._sample_cluster_affect(
+            user_text="what time does the appointment start tomorrow",
+            user_affect=(0.2, 0.3),
+            state=_state(),
+            reaction="neutral",
+        )
+        self.assertEqual(
+            ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO), {}
+        )
+        self.assertIn(
+            "9", ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_USER)
+        )
+
+    def test_missing_reaction_leaves_her_map_alone(self) -> None:
+        graph = _GraphStub([(9, "logistics", 0.9)])
+        obj = _sampler_obj(graph, self.db)
+        obj._sample_cluster_affect(
+            user_text="what time does the appointment start tomorrow",
+            user_affect=(0.2, 0.3),
+            state=_state(),
+            reaction=None,
+        )
+        self.assertEqual(
+            ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO), {}
+        )
+
     def test_disabled_is_noop(self) -> None:
         graph = _GraphStub([(1, "x", 0.9)])
         obj = _sampler_obj(graph, self.db, enabled=False)
         obj._sample_cluster_affect(
             user_text="a long enough message here",
             user_affect=(0.1, 0.1),
-            state=types.SimpleNamespace(valence=0.1, arousal=0.1),
+            state=_state(),
+            reaction="cheerful",
         )
         self.assertEqual(
             ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO), {}
@@ -257,7 +318,8 @@ class SamplerTests(unittest.TestCase):
         obj._sample_cluster_affect(
             user_text="a long enough message here",
             user_affect=(0.1, 0.1),
-            state=types.SimpleNamespace(valence=0.1, arousal=0.1),
+            state=_state(),
+            reaction="cheerful",
         )
         self.assertEqual(
             ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO), {}
@@ -269,7 +331,8 @@ class SamplerTests(unittest.TestCase):
         obj._sample_cluster_affect(
             user_text="hi",
             user_affect=(0.1, 0.1),
-            state=types.SimpleNamespace(valence=0.1, arousal=0.1),
+            state=_state(),
+            reaction="cheerful",
         )
         self.assertEqual(
             ca.load_map(self.db.kv_get, ca.KV_CLUSTER_AFFECT_AIKO), {}

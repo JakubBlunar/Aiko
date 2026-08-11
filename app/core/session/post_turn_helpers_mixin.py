@@ -908,6 +908,7 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         user_text: str,
         user_affect: "tuple[float, float] | None",
         state: Any,
+        reaction: str | None = None,
     ) -> None:
         """L13 per-cluster affect sampler (post-turn, cheap).
 
@@ -916,8 +917,23 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
 
         * **user** map — the K37 ``user_affect`` estimate (skipped when the
           turn carried no readable user-affect signal, i.e. ``None``).
-        * **aiko** map — Aiko's post-turn ``AffectState`` ``(valence,
-          arousal)`` (always available), so "topics that move her" accrue.
+        * **aiko** map — the *implied target of this turn's*
+          ``[[reaction:...]]`` tag (skipped when the tag is missing or too
+          weak to point anywhere: ``neutral`` / ``thoughtful`` /
+          ``serious``), so "topics that move her" accrue.
+
+        **Her half must be the per-turn tag, not ``AffectState``.** It used
+        to read ``state.valence`` / ``state.arousal``, which is the single
+        smoothed global mood — one slowly-drifting number shared by every
+        topic. Folding a near-constant into every cluster's EWMA can only
+        yield that constant back, so every cluster converged on the same
+        mild reading and the map carried no topic-dependent information at
+        all: 36 of 36 clusters sat in one bucket while the user map, fed the
+        per-turn estimate, spread across four. K45 names the distinction
+        already — instant face, lagging heart — and this sampler wants the
+        instant face. The lagging heart is still right for the mood *block*;
+        it is wrong for "which topics move her", which is a question about
+        differences between topics.
 
         Keyed by ``cluster_id`` (the cheap hot-path key K75 uses); the L2
         ``_run_affect_pass`` joins ``cluster_id -> representative_id`` at
@@ -941,6 +957,7 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             return
 
 
+        from app.core.affect.mood_inertia import reaction_affect_target
         from app.core.concepts import cluster_affect as _ca
 
         mem = getattr(self, "_memory_settings", None)
@@ -956,23 +973,24 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             return
         now_iso = timephrase.utcnow().isoformat(timespec="seconds")
 
-        # Aiko map — always (her scalar is always defined).
-        try:
-            a_val = float(getattr(state, "valence", 0.0))
-            a_ar = float(getattr(state, "arousal", 0.4))
-            key = _ca.KV_CLUSTER_AFFECT_AIKO
-            amap = _ca.load_map(chat_db.kv_get, key)
-            for cid, _label, _sim in matches:
-                ck = str(int(cid))
-                amap[ck] = _ca.update_state(
-                    amap.get(ck), a_val, a_ar,
-                    learning_rate=lr, now_iso=now_iso,
+        # Aiko map — only when this turn's reaction tag points somewhere.
+        aiko_affect = reaction_affect_target(reaction or "")
+        if aiko_affect is not None:
+            try:
+                a_val, a_ar = float(aiko_affect[0]), float(aiko_affect[1])
+                key = _ca.KV_CLUSTER_AFFECT_AIKO
+                amap = _ca.load_map(chat_db.kv_get, key)
+                for cid, _label, _sim in matches:
+                    ck = str(int(cid))
+                    amap[ck] = _ca.update_state(
+                        amap.get(ck), a_val, a_ar,
+                        learning_rate=lr, now_iso=now_iso,
+                    )
+                _ca.save_map(
+                    chat_db.kv_set, key, amap, cap=cap, max_age_days=max_age
                 )
-            _ca.save_map(
-                chat_db.kv_set, key, amap, cap=cap, max_age_days=max_age
-            )
-        except Exception:
-            log.debug("cluster-affect aiko update failed", exc_info=True)
+            except Exception:
+                log.debug("cluster-affect aiko update failed", exc_info=True)
 
         # User map — only when the turn carried a readable user-affect signal.
         if user_affect is None:
