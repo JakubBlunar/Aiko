@@ -149,6 +149,31 @@ Tests: `tests/test_web_server_audio_owner.py` (`AudioOwnerElectionTests`
 - `web/src/audio/AudioOutputManager.ts` — single shared
   `AudioContext` with a chained `AudioBufferSourceNode` scheduler.
   Honours `setSinkId` so the user-picked speaker is respected.
+
+  **Backgrounding on iOS, and why the clock is checked.** `onBackground()`
+  releases the inaudible keep-alive loop and the lipsync RAF, which are
+  otherwise a permanently awake audio endpoint plus a 60 Hz wakeup for as
+  long as the tab exists. That leaves the graph producing nothing, and iOS
+  reclaims the audio unit of a backgrounded PWA that is idle. What comes
+  back is a **context that reports `"running"` and plays silence**: the
+  `_needsResume` check (which covers iOS's non-standard `"interrupted"`
+  state) is satisfied, `_enqueuePcm` schedules every frame instead of
+  dropping it, and restarting the keep-alive relights the phone's media
+  indicator — so the device looks like it is playing and the only cure the
+  user can find is force-quitting. `currentTime` is the only thing that
+  gives it away: a live context advances it every render quantum, a dead
+  one is frozen. `onForeground()` therefore probes the clock once
+  (`LIVENESS_PROBE_MS`) and rebuilds the context when it has not moved.
+
+  Two invariants to preserve if you touch this:
+  - **Only rebuild the zombie.** A context that honestly reports
+    `suspended` / `interrupted` must be left to the gesture path; replacing
+    it just yields another suspended context.
+  - **Timestamps do not survive a context swap.** `nextStartTime` is
+    absolute on the context's own clock and a fresh context restarts at 0,
+    so `_ensureContext` resets the per-stream schedules. Carrying one over
+    schedules every chunk a session-length into the future, which trades a
+    dead context for a silent one.
 - `web/src/audio/DeviceManager.ts` — `enumerateDevices`,
   permission queries, and the localStorage persistence for the
   input/output device ids plus the three DSP toggles.

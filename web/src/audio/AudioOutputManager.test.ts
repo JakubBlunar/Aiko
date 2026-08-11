@@ -149,6 +149,38 @@ class InterruptedAudioContext extends FakeAudioContext {
   }
 }
 
+/**
+ * A context the OS tore down while the app was backgrounded: ``resume()``
+ * resolves and ``state`` reads ``"running"``, but no samples are produced
+ * and the clock stays frozen wherever it stopped. This is what an iOS PWA
+ * hands back after a screen lock, and it defeats every other check the
+ * manager has — hence the liveness probe. The clock is parked at a large
+ * value on purpose: a real session has been running for a while, and a
+ * stale timestamp carried onto a fresh context is its own failure.
+ */
+class DeadClockAudioContext extends FakeAudioContext {
+  constructor() {
+    super();
+    this.currentTime = 1200;
+  }
+  async resume() {
+    this.state = "running";
+    // Deliberately does NOT advance: the audio unit is gone.
+  }
+}
+
+/** A healthy context whose clock advances in real time, like the real one. */
+class LiveClockAudioContext extends FakeAudioContext {
+  constructor() {
+    super();
+    const t0 = Date.now();
+    Object.defineProperty(this, "currentTime", {
+      get: () => (Date.now() - t0) / 1000,
+      configurable: true,
+    });
+  }
+}
+
 /** Drain the manager's internal async chains (audio_start -> pcm). */
 async function flush(rounds = 12): Promise<void> {
   for (let i = 0; i < rounds; i++) {
@@ -514,6 +546,11 @@ describe("AudioOutputManager — idle cost", () => {
   it("brings the keep-alive back when the page returns", async () => {
     // The warm-endpoint behaviour has to return with the user, or the
     // first sentence after every app switch comes out cold.
+    // Uses a live clock so the foreground liveness probe is satisfied and
+    // the context survives — the rebuild path has its own tests below.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: LiveClockAudioContext,
+    };
     const mgr = new AudioOutputManager();
     await mgr.resume();
     const ctx = createdContexts[0];
@@ -521,6 +558,7 @@ describe("AudioOutputManager — idle cost", () => {
     mgr.onBackground();
     await mgr.onForeground();
 
+    expect(createdContexts.length).toBe(1);
     const live = ctx.activeSources.filter((s) => s.loop && !s.stopped);
     expect(live.length).toBe(1);
   });
@@ -532,6 +570,105 @@ describe("AudioOutputManager — idle cost", () => {
       mgr.onBackground();
       mgr.onBackground();
     }).not.toThrow();
+  });
+});
+
+/**
+ * Recovering the context iOS killed while we were away.
+ *
+ * Releasing the keep-alive on background leaves the graph idle, and iOS
+ * reclaims the audio unit of a backgrounded PWA that is not producing
+ * samples. What comes back is a context that reports ``"running"`` and
+ * plays nothing: ``_needsResume`` is satisfied, ``_enqueuePcm`` schedules
+ * every frame instead of dropping it, and the keep-alive relights the
+ * phone's media indicator. Every signal the manager had said healthy,
+ * which is why the only user-visible cure was force-quitting the app.
+ * The clock is the one thing that tells the truth.
+ */
+describe("AudioOutputManager — dead context recovery", () => {
+  it("replaces a context that reports running but whose clock is frozen", async () => {
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: DeadClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    expect(createdContexts.length).toBe(1);
+
+    mgr.onBackground();
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(2);
+    expect(createdContexts[0].state).toBe("closed");
+  });
+
+  it("leaves a healthy context alone", async () => {
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: LiveClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+
+    mgr.onBackground();
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(1);
+  });
+
+  it("leaves a context that honestly reports suspended alone", async () => {
+    // Not the same failure. A suspended context drops frames rather than
+    // swallowing them, the state listener says so, and a gesture fixes
+    // it — replacing it would only produce another suspended context.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: StuckSuspendedAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+
+    mgr.onBackground();
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(1);
+  });
+
+  it("does not probe without a preceding background", async () => {
+    // A foreground event with no background before it (initial mount,
+    // a duplicate event) must not cost a 250 ms probe or a rebuild.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: DeadClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(1);
+  });
+
+  it("drops the old schedule when the context is replaced", async () => {
+    // The regression that makes the rebuild worth testing rather than
+    // just performing. ``nextStartTime`` is an absolute time on the
+    // context's own clock; a fresh context restarts at 0, so a carried-
+    // over stamp sits a full session-length in the future and every
+    // subsequent chunk is scheduled past the end of the conversation --
+    // trading a dead context for a silent one.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: DeadClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    mgr.handleFrame(ttsStartFrame(16000));
+    mgr.handleFrame(ttsPcmFrame(16000));
+    await flush();
+
+    const readSchedule = () =>
+      (mgr as unknown as { _streams: { tts: { nextStartTime: number } } })
+        ._streams.tts.nextStartTime;
+    expect(readSchedule()).toBeGreaterThan(1000);
+
+    mgr.onBackground();
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(2);
+    expect(readSchedule()).toBe(0);
   });
 });
 

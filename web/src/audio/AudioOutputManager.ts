@@ -58,6 +58,15 @@ const LIP_TARGET = 0.9; // loudest recent speech maps to ~0.9 open
 // than freezing mid-syllable. ~half a second at 60 Hz.
 const LIP_IDLE_FRAMES = 30;
 
+/**
+ * How long to watch ``currentTime`` before declaring a ``"running"``
+ * context dead (see ``_rebuildIfDead``). A live context advances its
+ * clock every render quantum — ~2.7 ms at 48 kHz — so this is three
+ * orders of magnitude more slack than a healthy context needs, and it
+ * only ever runs once per return-to-foreground.
+ */
+const LIVENESS_PROBE_MS = 250;
+
 interface PerStream {
   sampleRate: number;
   channels: number;
@@ -129,6 +138,10 @@ export class AudioOutputManager {
   // can silently suspend the context behind our back).
   private _stateListener: ((state: AudioContextState) => void) | null = null;
   private _lastEmittedState: AudioContextState | null = null;
+  // Set by ``onBackground`` so the next foreground pass runs the
+  // liveness probe. Backgrounding is the only thing that gets the audio
+  // unit reclaimed, so there is nothing to check without it.
+  private _wasBackgrounded = false;
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
@@ -233,6 +246,51 @@ export class AudioOutputManager {
   async onForeground(): Promise<void> {
     this.flush();
     await this.resume();
+    // Only after a real background stint, which is the only time the OS
+    // reclaims the audio unit out from under us.
+    if (this._wasBackgrounded) {
+      this._wasBackgrounded = false;
+      await this._rebuildIfDead();
+    }
+  }
+
+  /**
+   * Replace a context the OS killed while we were backgrounded.
+   *
+   * iOS reclaims the audio unit of a backgrounded PWA whose graph has
+   * gone idle, and then hands back a context that reports ``"running"``
+   * once ``resume()`` resolves. Nothing plays, but every check we have
+   * says healthy: ``_needsResume`` is false, ``_enqueuePcm`` schedules
+   * every frame instead of dropping it, and ``_startKeepAlive`` relights
+   * the OS media indicator — "the phone shows audio playing but there is
+   * no voice, and only force-quitting fixes it". The clock is the one
+   * thing that gives it away: a live context advances ``currentTime``,
+   * a dead one is frozen.
+   *
+   * Deliberately narrow. A context that honestly reports ``suspended``
+   * or ``interrupted`` is left alone for the gesture path to resume —
+   * replacing it would only produce another suspended context. The
+   * replacement may itself start suspended when no gesture is available,
+   * and that is the correct outcome: ``_enqueuePcm`` drops frames, the
+   * state listener fires, and Settings offers "Enable sound". Honest
+   * silence beats a context that swallows every frame forever.
+   */
+  private async _rebuildIfDead(): Promise<void> {
+    const ctx = this._ctx;
+    if (!ctx) return;
+    if ((ctx.state as string) !== "running") return;
+    const before = ctx.currentTime;
+    await new Promise((resolve) => setTimeout(resolve, LIVENESS_PROBE_MS));
+    // Raced with a dispose() or another rebuild while we waited.
+    if (this._ctx !== ctx) return;
+    if (ctx.currentTime > before) return;
+    debugLog.log({
+      source: "audio",
+      kind: "contextDead",
+      payload: { state: ctx.state, currentTime: before },
+    });
+    await this.dispose();
+    await this.resume();
   }
 
   /**
@@ -249,6 +307,11 @@ export class AudioOutputManager {
    * the way back in, so the warm-turn behaviour returns with the user.
    */
   onBackground(): void {
+    // Stopping the keep-alive is what leaves the graph idle, which is
+    // what invites iOS to reclaim the audio unit — so the foreground
+    // liveness check in ``_rebuildIfDead`` is load-bearing, not a
+    // belt-and-braces extra.
+    this._wasBackgrounded = true;
     this._stopKeepAlive();
     this._stopLipLoop();
   }
@@ -400,6 +463,14 @@ export class AudioOutputManager {
       this._analyser = null;
       this._outputNode = null;
       this._lipBuf = null;
+      // A fresh context restarts ``currentTime`` at 0, so any schedule
+      // carried over from the previous one points however long that
+      // context lived into the future — ``_onAudioStart`` would take the
+      // non-idle branch and every chunk would be scheduled past the heat
+      // death of the session. Timestamps do not survive a context swap.
+      for (const tag of ["tts", "earcon"] as StreamTag[]) {
+        this._streams[tag] = this._emptyState();
+      }
       this._ctx = new AC();
       this._ctx.onstatechange = () => this._emitState();
       this._setupAnalyser(this._ctx);
