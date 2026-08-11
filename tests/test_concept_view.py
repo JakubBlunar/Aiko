@@ -289,6 +289,73 @@ class CoreLaneTests(unittest.TestCase):
 
         self.assertIn("identity", [k.name for k in core_lane_kinds()])
 
+    def test_a_two_subject_kind_does_not_take_twice_the_room(self) -> None:
+        """The lane balances between *kinds*, not between (kind, subject)
+        buckets. Sharing per bucket quietly hands a kind one share for each
+        subject it happens to be mined in, so the kind populated on both
+        sides takes double the room of one populated on a single side --
+        which is not a difference a reader of the prompt would recognise.
+        """
+        register_kind(
+            ConceptKind(
+                name="_clv_guide", core_always_on=True, core_min_confidence=0.5,
+            )
+        )
+        try:
+            store = _FakeStore([
+                # One kind mined for both subjects, deep on each side.
+                _c(1, kind="_clv_guide", subject="user", confidence=0.90),
+                _c(2, kind="_clv_guide", subject="user", confidence=0.89),
+                _c(3, kind="_clv_guide", subject="user", confidence=0.88),
+                _c(4, kind="_clv_guide", subject="aiko", confidence=0.87),
+                _c(5, kind="_clv_guide", subject="aiko", confidence=0.86),
+                _c(6, kind="_clv_guide", subject="aiko", confidence=0.85),
+                # One kind mined for a single subject, equally deep.
+                _c(7, kind="identity", subject="user", confidence=0.84),
+                _c(8, kind="identity", subject="user", confidence=0.83),
+                _c(9, kind="identity", subject="user", confidence=0.82),
+            ])
+            out = ConceptView(store).core_lane(
+                limit=6, default_min_confidence=0.5,
+            )
+            kinds = [c.kind for c in out]
+            self.assertEqual(kinds.count("_clv_guide"), 3)
+            self.assertEqual(kinds.count("identity"), 3)
+            # And the two-subject kind still alternates inside its share.
+            guide_subjects = [
+                c.subject for c in out if c.kind == "_clv_guide"
+            ]
+            self.assertEqual(len(set(guide_subjects)), 2)
+        finally:
+            from app.core.concepts.concept_kinds import CONCEPT_KINDS
+
+            CONCEPT_KINDS.pop("_clv_guide", None)
+
+    def test_a_kind_with_room_to_spare_still_fills_the_lane(self) -> None:
+        """Balance is a ceiling on crowding, not a quota that wastes slots:
+        when one kind runs out the others take the remainder.
+        """
+        register_kind(
+            ConceptKind(
+                name="_clv_thin", core_always_on=True, core_min_confidence=0.5,
+            )
+        )
+        try:
+            store = _FakeStore([
+                _c(1, kind="identity", subject="user", confidence=0.90),
+                _c(2, kind="identity", subject="user", confidence=0.89),
+                _c(3, kind="identity", subject="aiko", confidence=0.88),
+                _c(4, kind="_clv_thin", subject="user", confidence=0.87),
+            ])
+            out = ConceptView(store).core_lane(
+                limit=4, default_min_confidence=0.5,
+            )
+            self.assertEqual(len(out), 4)
+        finally:
+            from app.core.concepts.concept_kinds import CONCEPT_KINDS
+
+            CONCEPT_KINDS.pop("_clv_thin", None)
+
 
 class RelevantTests(unittest.TestCase):
     def test_wraps_nearest_active_and_applies_min_sim(self) -> None:
