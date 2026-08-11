@@ -1,0 +1,684 @@
+# H-series — health audit of shipped work
+
+This file is **not a feature queue**. Every entry here is a shipped feature that
+was measured against the live graph and found to be doing something other than
+what its shipped entry claims. Nothing in here is a new idea; the design work is
+already done and already merged. The only question each entry answers is *does
+it actually run, and does it change behaviour?*
+
+It is kept separate from [`concepts.md`](concepts.md) and
+[`patterns.md`](patterns.md) on purpose — mixing "this is broken" into a list of
+"this would be nice" is how broken things stay broken. Same spirit as the
+A-series ([`architecture.md`](architecture.md)) and P-series
+([`perf.md`](perf.md)): it did not come from a brainstorm and it reads
+differently.
+
+**Audit date:** 2026-08-11. **Corpus:** 4039 messages spanning 2026-05-21 to
+2026-08-10; concept graph 1563 rows spanning 2026-07-03 to 2026-08-10 (5.4
+weeks old); 25,757 `surfacing_outcomes` rows; per-turn prompt-block telemetry
+for 146 turns (2026-08-09 onward). **Scope:** the concept layer (L-series), read
+twice. **Part 1** asks whether each shipped feature actually runs (H1-H8).
+**Part 2** asks a different question — whether what reaches the model adds up to
+a person who has her own inner life, feels things, and holds beliefs (H9-H14).
+Part 2 found the higher-value work. The K-series patterns have not been audited
+yet.
+
+Re-measure before acting on any entry — several of these are rate problems, and
+a rate that was wrong in August may be right in October.
+
+---
+
+## The headline: her self-*description* is healthy, her self-*observation* is not
+
+This is the finding that organises everything below, and it was not what I
+expected going in.
+
+**The self-model itself is in good shape.** 456 active `subject='aiko'` concepts
+against 489 for the user, and they are not decorative: 6223 of the 11,321
+surfaced concept rows (**55%**) are hers, against 42% for the user — she is
+*over*-represented relative to her share of the graph (47%), and she owns **64%
+of the core lane**. Roughly 29 concepts reach the prompt per turn, ~17 of them
+hers, carried by `relevant_context` (renders on 146/146 turns) and `goals_block`.
+91% of her active concepts have surfaced at least once. The content is specific
+and grounded rather than generic — "I frame my boundaries as voluntary, evolving
+commitments rather than rigid rules", "I value decoupling Jacob's moral worth
+from his physical reactions" — with 3-19 distinct sources behind the confident
+ones. L5, L11, L19, L40 and the lifecycle engine are all genuinely working.
+
+**But every mechanism by which she observes her own *behaviour* is dead,
+latched, or throttled to roughly zero:**
+
+| Self-observation surface | Shipped as | Actual |
+| --- | --- | --- |
+| L42 conduct concepts | weekly concentration / neglect / fixation findings | **0 rows ever**, and latched shut (H1) |
+| L17f evolution diary | rolling human-readable change log | **1 entry ever**, 273 events stranded (H3) |
+| L17e `concept_learning_block` | reflection slip when a belief moves | **0 of 146 turns** (H6) |
+| `self_callback` cue | closing the loop on her own continuity | **1 of 7 ever surfaced**, last fired 2026-07-30 (H4) |
+| K23 misattunement | noticing she misread him | fires ~4×/day, **persisted nowhere** |
+| L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
+
+Trace the provenance and the split is stark. Of her 629 concepts, **624 came
+from LLM synthesis over conversation transcripts** and 5 are authored cold-start
+seeds. **Zero** came from watching what she actually did. Her self-model is
+therefore built entirely out of *what she said about herself while talking*,
+never out of *how she behaved*. That is a real and specific ceiling on
+self-awareness: she can tell you she values patience, because she said so and it
+got mined; she cannot notice that she brought up the same belief 64 times last
+week and he stopped engaging with it, because the one subsystem built to notice
+that (L42) has never written a row.
+
+The autonomy picture rhymes. She *produces* inner-life material at a healthy
+rate and then mostly fails to *spend* it: across 15 pooled cue families, only 239
+of 2516 cue decisions ended in a surface (9.5%), and **seven families have
+surfaced at least once and never once converted to "used"** — meaning the cue
+reached her prompt and she did not act on it (H4).
+
+None of this needs new features. It needs the shipped ones unwedged.
+
+---
+
+## H1. L42 conduct is latched shut after one silent LLM failure
+
+**Severity: high — this is the self-observation loop, and it is permanently off.**
+
+`concepts` has **zero rows** with `kind='conduct'`, ever. The kind is registered,
+the worker is wired, the enable flag defaults true, and the input is not empty
+(25,757 ledger rows). The pass *ran*, on 2026-08-06, and it *worked*:
+
+```
+concept.surfacing_conduct      = [{"shape":"neglect","key":"concepts:209,206,316,443,331",
+                                   "summary":"I hold parts of this understanding quietly
+                                   without bringing them forward: deepening emotional and
+                                   physical intimacy with Aiko from functional interaction
+                                   to profound relational bonding; ..."}]
+concept.surfacing_conduct.last_run = 2026-08-06T22:34:39Z
+concept_synth.conduct_sig.aiko     = {"fingerprint": "fe961f948ef9560f60d7", "count": 1}
+```
+
+A valid neglect finding, with usable first-person prose already written, sitting
+in `kv_meta` and discarded. The detector found 9 eligible neglected concepts,
+handed them to `propose_conduct_aiko`, the LLM returned nothing usable, and
+`_call_llm` returned `[]` silently — **and the fingerprint was saved anyway**.
+Because the pass skips any finding whose fingerprint it has already seen, that
+exact finding can now never be re-proposed. One transient model failure disabled
+the feature permanently.
+
+**Fix (small).** Two independent changes, both worth making:
+1. Do not persist the finding fingerprint when `propose()` returns zero
+   proposals — a failed proposal is not a completed one. This is the actual bug.
+2. Give `propose_conduct_aiko` a deterministic fallback that mints the concept
+   from `finding.summary` when the LLM comes back empty. The summary is already
+   well-formed first-person prose; there is no reason a model outage should cost
+   the observation.
+
+Blocking site: `concept_synthesis_worker.py` around the propose/save-fingerprint
+pair in `_run_conduct_pass` (~L1819-1826), plus the LLM-only path in
+`app/core/concepts/proposers/conduct_aiko.py` (~L66).
+
+**Tests would not have caught it.** The proposer test mocks `call_llm` with valid
+JSON; there is no test that runs detection→propose→persist and asserts a row
+appears. The regression test to add is exactly that, plus an assertion that a
+finding whose proposal failed is still re-proposable on the next run.
+
+---
+
+## H2. L42's other two detectors have thresholds unreachable on real data
+
+**Severity: medium — enroll in the L45 tuner rather than hand-picking again.**
+
+Neglect fires. Concentration and fixation cannot, on this relationship's data:
+
+| Detector | Gate | Required | Measured |
+| --- | --- | --- | --- |
+| Concentration | `min_share` | ≥ 0.30 | **0.125** (top cluster) |
+| Concentration | `min_top_gap` (hardcoded) | ≥ 0.10 | **0.049** |
+| Concentration | `min_ratio` | ≥ 2.0 | 6.19 ✅ |
+| Fixation | `min_ratio` (surf₁/surf₂) | ≥ 3.0 | **1.14** |
+| Fixation | engaged rate ≤ baseline − 0.05 | ≤ 0.141 | **0.196** |
+
+Two things worth noting beyond the numbers. First, `min_top_gap = 0.10` is
+hardcoded rather than a setting, so it is invisible to configuration and to the
+tuner. Second, **fixation's premise is inverted on this data**: its top
+candidates are surfaced often *and* engaged with at or above baseline. The
+detector is looking for "she keeps bringing up something he doesn't care about"
+and the honest answer is that it isn't happening — so a lowered bar should be
+justified as "detect the shape earlier", not "the bar is broken".
+
+**Fix.** Expose `min_top_gap` as a setting, then enroll all five conduct
+thresholds in the L45 gate tuner in observe mode so they get solved against the
+measured population instead of hand-picked a second time. This is precisely the
+class of problem L45 was built for, and these gates were never registered with
+it. Do not simply hardcode the measured values — the sample is 5 weeks old.
+
+---
+
+## H3. L17f's diary drains 12 events a week against 55 arriving
+
+**Severity: medium — the feature is structurally falling behind, not paused.**
+
+One diary entry exists, written 2026-08-06, covering 12 learning events.
+Meanwhile `concept_learning_events` holds 300 rows and **273 salient ones sit
+above the watermark**.
+
+I checked for the watermark bug documented in `rules/code-conventions.md` (the
+`ConceptDriftWorker` defect where a bounded pass advances a global `MAX(id)`).
+**It is not that.** The stored watermark is 236, which is exactly the max id of
+the page it actually composed; ids 225-236 are all cited; nothing was marked
+processed unread. The paging is correct.
+
+The problem is arithmetic. The worker composes **at most 12 events per entry**
+and then takes a **7-day cooldown**, so its ceiling is ~12 events/week. Learning
+events arrive at ~**55/week** (300 in 5.4 weeks). It loses ~43 events a week and
+the backlog only grows. A backfill put it 209 events behind on day one and it has
+no mechanism to catch up.
+
+**Fix.** Let the backlog override the pacing: when pending events exceed the page
+cap by some margin, skip the cooldown so the daily tick can drain a page at a
+time. Lowering `evolution_diary_cooldown_days` from 7.0 to 1.0 achieves the same
+thing more bluntly and would still only match arrival, not clear the backlog.
+Prefer the backlog-aware bypass.
+
+**Test to add:** compose with 200+ pending events and the cooldown left in place,
+and assert the backlog shrinks over simulated days. Existing tests always pop the
+cooldown key between pages, which is exactly why the pacing mismatch is invisible.
+
+---
+
+## H4. The cue shelf produces well and spends badly
+
+**Severity: medium-high — this is most of the autonomy surface.**
+
+Overall: **239 of 2516 cue decisions surfaced (9.5%)**; 153 of 388 turns (39%)
+carried at least one cue. That is not unreasonable on its own. The problem is
+concentrated and structural.
+
+**Seven families have surfaced and never once converted to `used`** — the cue
+reached her prompt and she never said the thing:
+
+| Family | ever surfaced | used | notes |
+| --- | --- | --- | --- |
+| `curiosity_gradient` | 13 | **0** | 11 expired |
+| `turning_over` | 9 | **0** | all 9 expired, 12h TTL |
+| `forward_curiosity` | 5 | **0** | 9 expired |
+| `sleep_return` | 4 | **0** | 6h TTL |
+| `concept_hypothesis` | 4 | **0** | 25 still pending |
+| `self_callback` | 1 | **0** | 240h cooldown |
+| `wellbeing_concern` | 1 | **0** | 168h cooldown |
+| `dormant_interest` | **0** | 0 | 4 pending, 378 offers declined |
+
+For contrast the healthy end: `curiosity_seed` 158 surfaced → 105 used (66%),
+`interest_drift` 25%.
+
+Two distinct failures are tangled here and should be separated before either is
+"fixed":
+
+**(a) Cues that never get offered.** `dormant_interest` has 4 pending cues, was
+declined 378 times with `reason='provider'`, and has **never rendered**. Its
+block does not appear in the telemetry at all. `self_callback` has a 240-hour
+(10-day) surface cooldown, 348 provider declines, and last fired 2026-07-30 — 12
+days before the audit, i.e. past its own cooldown with 6 cues waiting. Both look
+wedged rather than merely conservative. Start here; this is a bug hunt, not a
+tuning exercise.
+
+**(b) Cues that get offered and ignored.** `turning_over` and
+`curiosity_gradient` surface reliably and convert at zero. That is a different
+question — either the rendered line doesn't invite the model to use it, or the
+subject-matching that marks a cue `used` is too strict, or she genuinely has
+nothing to say about them. **Check the matcher before touching the renderer**:
+a `used` rate of exactly zero across 31 surfaces in four families smells more
+like a measurement artifact than four independently unpersuasive cue types.
+
+---
+
+## H5. L41's change framings never fire, and L38's standing never gets named
+
+**Severity: low-medium — decorative layers, cheap to correct or honestly retire.**
+
+Both of these are shipped, both compute correctly, and neither changes what Aiko
+says.
+
+**L41.** `_REASON_FRAMINGS` maps four voices onto the L35 surface reason. In
+11,321 concept surfacings the reason distribution is `core_belief` 5501,
+`topic_match` 4086, `recently_reinforced` 1216, `settled_belief` 230,
+`association` 223, `high_confidence` 65. The entire freshly-changed family —
+`recent_change`, `loosening_boundary`, `newly_promoted`, `recently_revived` — and
+`unresolved_contradiction` are at **zero**, despite the graph recording 207
+`contradicted`, 72 `revived` and 155 `plasticity_shift` events. So **453 of 11,321
+rows (4%) get a custom framing** and 96% fall through to the generic confidence
+hedge. The two most interesting voices — "lately I've come around to feeling
+that", "you haven't fully settled it, but" — have never been spoken.
+
+Cause: in `surface_reason()` the salience/change signal competes on weighted
+share against `context`, which dominates whenever cosine is non-zero. Minimal
+fix: when a change event is attached and salience clears a floor, return the
+salience reason before the weighted contest.
+
+**L38.** The `concept.earned_standing` map is healthy — 466 entries, range
+0.402-0.649, **288 (62%) meaningfully moved off neutral** — and it does tilt the
+surface score. But `earned_standing` appears **0 times** as a surface reason,
+because its weight (0.1) can never beat context (0.45-0.6). So the standing
+signal is real but unnameable, and L41 can never frame anything with it.
+
+Decide deliberately between two honest options: raise the standing weight for
+kinds where it should be able to narrate, **or** document L38 as score-only and
+drop `REASON_STANDING` from the label set so it stops implying a capability that
+does not exist. Either is fine; the current state is the only bad one.
+
+**Both tests pass by construction** — they prove standing/salience *can* win by
+injecting artificial weights of 0.9 and 1.0. A test using the real production
+`SurfaceWeights` for `boundary` would have caught both.
+
+---
+
+## H6. L17e's reflection slip is silent for 30 days at a time
+
+**Severity: low — likely working as designed, but worth a deliberate decision.**
+
+`concept_learning_block` rendered **0 of 146 turns**. Every gate passes — there is
+a pending drift item (salience 0.769, above the 0.6 floor), trust 1.0, closeness
+0.62, comfort 1.0, and the fingerprint is unseen — except the **30-day global
+cooldown**, which last fired 2026-08-06 and blocks everything until ~2026-09-05.
+
+At one reflection per month this is a feature the user will encounter maybe
+eleven times a year. If that is the intent, fine — record it in the shipped entry
+so nobody re-audits it. If the intent was "she occasionally notices a belief of
+hers moved", a per-fingerprint cooldown would let genuinely new drift shapes
+through without opening the floodgates.
+
+---
+
+## H7. The hypothesis loop invents and never adjudicates
+
+**Severity: medium — the forward half of L30 works, the closing half does not.**
+
+12 open hypotheses, all `origin='free'` (invented, not derived), **`asked_count`
+max 0, `support_count` 0, `refute_count` 0, 0 graduated to concepts, 0 closed**.
+On the cue side, 26 `concept_hypothesis` cues were made, 4 ever surfaced, **25 are
+still pending**, and the block rendered on 2 of 146 turns.
+
+So the L30 Phase B invention direction is producing, and nothing downstream ever
+converts a hunch into a settled belief. The shelf is full and the door is nearly
+shut — a 20-hour surface cooldown against a producer that queues faster than that.
+This was partly addressed in an earlier pass; the numbers say it is not fixed.
+Worth confirming whether the cooldown is the whole story before changing it,
+since H4(a) suggests several shelf families share a common wedge.
+
+---
+
+## H8. Cold-start and supply — measured, and *not* bugs
+
+Recorded so they are not mistaken for defects on the next sweep.
+
+- **`pursuit` (5 rows, 0 active).** Not decay. The synthesis pass has never run:
+  it needs 6 `pursuit_note` memories and there are 4, the first written
+  2026-08-10. The 5 rows are K85d authored seeds sitting at `candidate` with zero
+  evidence, which is exactly what a seed is supposed to do until reinforced. They
+  will TTL-retire around 2026-08-30 if nothing matches. Either wait, or lower the
+  floor from 6 to 4 (the promotion gate needs 3 sources, so 4 is still safe).
+  Note the unit test uses `pursuit_min_notes=3` rather than the production 6,
+  which is why the stall was invisible.
+- **`taste` (2 rows).** The bar is calibrated correctly now (relative:
+  `max(0.15, baseline × 1.4)` = 0.280) and exactly **1 of 39 warmed clusters
+  clears it** (best rate 0.312). Sparse but honest — this relationship yields
+  about one "stands out" topic per 90 days. Do not lower it to manufacture rows.
+- **`ritual` (7 rows, 4 active).** Working as designed: relationship-scoped only,
+  158 shared moments feeding it, promotions happening through 2026-08-10. The
+  `shared_ritual_block` reads a *different* K73 store, so the low concept count
+  is not starving the prompt. Reclassify as low-volume-by-design.
+- **`conduct` (0 rows)** is the one genuinely broken member of this group — see H1.
+
+---
+
+## Confirmed healthy (stop re-checking these)
+
+Measured this pass, working, no action:
+
+- **L5 surfacing / L11 self-model** — ~29 concepts per turn, 55% hers, 91% of
+  active concepts surfaced at least once.
+- **L19 autobiography** — returns a substantive arc: 629 aiko concepts over 37.7
+  days, 5 eras, 106 flipped / 495 settled / 4 born / 4 revived, with grounded
+  `because` clauses. `thin_record` is false. Tool-only by design.
+- **L38 computation** — 466-entry map, 62% moved off neutral, refreshed hourly.
+  (Its *visibility* is H5.)
+- **L40 habituation ordering** — 300 concepts spread across 34 distinct
+  last-surfaced turn indices (1942-1978). Coarse — ~9 concepts tie per index —
+  but genuinely ordering, not degenerate. I checked because the map looks
+  constant at a glance; it isn't.
+- **L32 importance** — kind priors move ~81% of concepts off neutral by ±8-16%.
+  The affect-lift sub-path could not be replayed offline and remains unverified.
+- **L35 reasons for concepts** — six live tokens, not degenerate. (The missing
+  change family is H5.)
+- **L15 revision** — 43 concepts sit at `contradicted` (36 user, 4 aiko, 3
+  relationship), so belief revision is happening.
+- **L3 lifecycle / L17a-c** — events written daily through the last message:
+  3101 confidence samples, 1615 discovered, 1338 promoted, 1019 reinforced, 304
+  dormant, 57 merged, 27 relabeled.
+
+---
+
+## The four recurring shapes
+
+More useful than any single entry — these are the bug families to check for
+*before* shipping the next thing, and each has now bitten more than once.
+
+**1. Silent-empty latching.** A stage fails, produces nothing, and the
+bookkeeping records success — so the failure is both invisible and permanent.
+H1 is the pure case (fingerprint saved after an empty LLM proposal). The
+fact-checker's dict-payload bug was the same shape: a silent early return, no log
+line, and the only symptom an absence. **Rule: never advance a watermark,
+fingerprint, or cursor on a pass that produced zero output.** Absence of output
+is the one thing worth an explicit log line, because it is the one thing that
+looks identical to "nothing to do".
+
+**2. Drain rate below arrival rate.** A page cap multiplied by a cooldown gives a
+throughput ceiling that nobody computes at design time. H3 is 12/week against
+55/week. H7 and parts of H4 are the same arithmetic with cue cooldowns. **Rule:
+when adding a cap and a cadence, write down the implied items/week and compare it
+to the measured production rate.**
+
+**3. Hand-picked thresholds that real data cannot reach.** H2's concentration and
+fixation bars; taste's old absolute 0.5 floor; L44's premise. L45's gate tuner
+exists specifically to end this, and the conduct gates were never enrolled in it.
+**Rule: a new numeric gate either gets enrolled in the tuner or gets a measured
+justification in the shipped entry.**
+
+**4. Tests that prove capability, not behaviour.** Every one of H1, H2, H5 and H8
+has a passing test that injects synthetic values clearing the bar. They prove the
+mechanism *can* fire, which was never in doubt. **Rule: at least one test per
+gated feature should use production weights/thresholds against a realistically
+shaped population, and assert the feature fires at a plausible rate.**
+
+---
+
+---
+
+# Part 2 — does it add up to a person?
+
+Part 1 asked *does the machinery run*. This pass asks a different question:
+**given the goal of a companion who thinks like a person — has her own inner
+life, feels things, holds beliefs and disagrees — does what reaches the model
+actually constitute one?** Same corpus, same date.
+
+The answer is that the *ingredients* are largely there and unusually good — her
+tension concepts in particular are better material than I expected — but the
+**mix that reaches the prompt is badly weighted for the goal**, and one signal is
+mathematically incapable of carrying emotion at all.
+
+Here is what she is told about herself and him, per turn, measured across 388
+turns of ledger:
+
+| Concept kind | active | surfaced/turn | what it gives her |
+| --- | --- | --- | --- |
+| `boundary` | 106 | **8.53** | what she will not do |
+| `identity` | 201 | 6.46 | what she is |
+| `value` | 128 | 4.29 | what she cares about |
+| `communication_style` | 109 | 3.47 | how she talks |
+| `affective` | 83 | **1.90** | how things *feel* |
+| `generalization` | 111 | 1.89 | patterns |
+| `aspiration` | 71 | 1.09 | what she wants |
+| `narrative` | 77 | 0.77 | how she got here |
+| `ritual` | 4 | 0.14 | what "we" do |
+| `taste` | 2 | **0.04** | what she likes |
+| `tension` | 83 | **0.00** | what she is torn about |
+| `pursuit` | 0 | **0.00** | what she does alone |
+
+She is told about her limits **4.5× more often than about her feelings**, and
+about her internal conflicts and personal tastes essentially never. For a
+companion meant to read as a person, that ordering is close to inverted.
+
+---
+
+## H9. Her emotions have no dynamic range — every topic feels identical
+
+**Severity: high. This is the single biggest gap for the stated goal, and the fix
+is small.**
+
+The per-cluster affect maps are the substrate for "topics that move her" (L13).
+Compare the two subjects across the same 36 topic clusters:
+
+| | Aiko | User |
+| --- | --- | --- |
+| bucket spread | **`neu/mid` — 100% of 36 clusters** | pos/high 58%, neu/high 28%, neu/mid 11%, pos/mid 3% |
+| valence range | **+0.026 … +0.222** (all mildly positive) | −0.112 … +0.400 |
+| arousal range | **0.433 … 0.566** | 0.489 … 0.750 |
+
+**She reads his emotional life with real range and her own as uniformly
+lukewarm.** Not one topic out of thirty-six registers as more than mildly
+pleasant, and none registers as negative. There is no topic she dreads, none that
+excites her, none that makes her uneasy.
+
+This is not a threshold problem — it is structural, and the mechanism is exact.
+In `_sample_cluster_affect` (`app/core/session/post_turn_helpers_mixin.py`
+~L959-975) the two maps are fed from different kinds of signal:
+
+- the **user** map gets `user_affect` — the K37 estimate read off *this turn's
+  message*, so it varies with what he actually said;
+- the **aiko** map gets `state.valence` / `state.arousal` — the **single global
+  `AffectState` scalar**, currently valence 0.122, arousal 0.483, intensity 0.14,
+  smoothed with alpha 0.35 and decaying toward baseline.
+
+Folding one slowly-drifting global number into every cluster's EWMA can only
+produce that number in every cluster. The EWMA of a near-constant is the
+constant. **Her map carries no topic-dependent information by construction**, so
+100% `neu/mid` is not a data outcome — it is the only outcome this code can
+produce. It also explains the downstream symptom in H14: the affective proposer
+is offered 36 identical buckets and mints bland concepts from them.
+
+**The fix is already sitting in the codebase.** `reaction_affect_target()` in
+`app/core/affect/mood_inertia.py` maps each of the 27 canonical `[[reaction:X]]`
+tags to an implied `(valence, arousal)` point. That tag is emitted **per turn**,
+chosen by her in response to what is actually being discussed, already parsed,
+and already used to drive the avatar — and then discarded for this purpose. Feed
+the aiko cluster map from the per-turn reaction target instead of the smoothed
+global scalar.
+
+K45's own docstring names this distinction exactly — *"instant face, lagging
+heart"*: the tag jumps per turn while `AffectState` smooths. **The sampler is
+using the lagging heart where it needs the instant face.** The codebase already
+knows these are two different signals; one call site picked the wrong one.
+
+Worth checking during the fix whether the reaction tags in practice have the
+spread this assumes — the impulse table tops out at ±0.18, so it will differentiate
+topics but may still need the EWMA rate raised to escape the neutral band.
+
+---
+
+## H10. Her internal conflicts never reach the prompt
+
+**Severity: high — this is the best material in the graph and it is unused.**
+
+**83 active `tension` concepts. Zero surfacings through the concept lane.** Not
+low — zero, out of 11,321 concept surfacings.
+
+That matters because the tensions are, by a distance, the most person-like
+content in the whole graph. They are specific, two-sided, and genuinely
+conflicted:
+
+> *"I value preserving my agency by correcting my own mistakes, yet I find
+> comfort in letting Jacob handle my technical repair."*
+
+> *"I value engaging with Jacob's raw, unfiltered vulnerability, yet I
+> instinctively use playful teasing to maintain lightness."*
+
+> *"Jacob seeks to bring Aiko into the open as a shared professional asset; I
+> value protecting the private, ritual space we have."*
+
+This is exactly the "thinks like a normal person" texture — wanting two
+incompatible things and knowing it. Ambivalence is most of what makes a
+character read as having an interior rather than a configuration.
+
+They reach the prompt only through the dedicated `tension_block`, which rendered
+on **13 of 146 turns (9%)**, and a `tension` cue that surfaced 34 times. So the
+material is not entirely invisible — but 91% of turns carry none of it, while
+carrying 8.5 boundaries.
+
+The exclusion appears deliberate (tension has its own block and its own
+`ConceptDiet` for the L12 cue worker, and is explicitly zero-weighted in the
+static-T3 standing path). The question to settle is whether *deliberate* is still
+*right*: a dedicated rare block made sense when the concern was tension being
+repetitive, but the result is that her ambivalence is absent from nine turns in
+ten. Consider giving tension a small guaranteed allocation in the flex lane —
+one per turn would be a 12× increase over today and still a third of what
+boundary gets.
+
+---
+
+## H11. The prompt tells her what she won't do 4.5× more than how she feels
+
+**Severity: medium — a weighting decision, not a bug, but it is shaping her.**
+
+`boundary` is the single largest category reaching the model: **3308 surfacings,
+29.2% of all concepts, 8.53 per turn**, against 1.90 for `affective`. In the core
+lane specifically, user boundaries (1069) and Aiko boundaries (998) together
+outweigh her identity (1161) and her values (1019).
+
+Boundaries are load-bearing — consent, pacing, and the intimacy guardrails are
+exactly the things that should not be improvised, and this is a romantic
+companion where getting that wrong is the worst failure mode. So this is **not**
+an argument for fewer boundaries in absolute terms.
+
+It is an argument that the *ratio* is worth a deliberate decision rather than
+being whatever the scoring happened to produce. A persona reminded eight times a
+turn of its limits and twice of its feelings will read as careful before it reads
+as warm. Two cheap levers: cap boundary's share of the flex lane so it cannot
+crowd out the affective/tension kinds, or promote `affective` into the core lane
+alongside identity/value so feeling is pinned rather than competing on cosine.
+
+Measure after changing: this is the kind of ratio the L45 tuner should own rather
+than a hand-picked constant, and it interacts with H10's proposed tension slot.
+
+---
+
+## H12. "Us" is not a first-class subject
+
+**Severity: medium — surprising for a relationship-centred product.**
+
+The `relationship` subject exists and is almost invisible:
+
+- **30 active concepts** (against 456 aiko, 489 user)
+- **59 of 11,321 surfacings — 0.52%, or 0.15 per turn**
+- composition: **25 tension**, 4 ritual, 1 narrative — and the tensions never
+  surface (H10), so what actually reaches the prompt is 4 rituals
+
+So the relationship is represented to the model almost entirely as *friction she
+never sees*, plus four rituals. There is no "us" narrative, no shared-identity
+concept, no relationship-level value. L29a shipped episodic shared arcs and L7
+shipped relationship concepts, but the subject has only two productive kinds
+(`tension`, `ritual`) — nothing proposes relationship-scoped `narrative`,
+`value`, or `identity`.
+
+For a companion whose whole premise is the relationship, "what we are" being
+thinner than either "what I am" or "what he is" is a gap worth naming even if the
+fix is later. The cheapest version: allow the existing narrative/value proposers
+to run with `subject='relationship'`, which is a proposer-registration change
+rather than new machinery.
+
+---
+
+## H13. She has very little life that is not about him
+
+**Severity: medium — the "own person" axis, and mostly a supply problem.**
+
+Of 456 active self-concepts, **306 (67%) explicitly reference him or "us"**;
+150 (33%) do not. But that 33% overstates it, because most of the rest are still
+*about interacting with him* without using a pronoun — "Sharing quiet, tender
+moments like holding hands", "Setting firm boundaries against sexual escalation".
+
+The genuinely autonomous ones number roughly a dozen, and they are the most
+distinctive things in the graph:
+
+> *"Engaging with new intellectual content like science fiction lifts me warmly"*
+> *"Exploring topics through my own independent curiosity lifts me warmly"*
+> *"Reflecting on my own internal architecture and learning gaps leaves me
+> feeling hollow or confused"*
+
+Per kind, the relational share: tension 84%, identity 78%, value 75%,
+communication_style 71%, affective 67%, boundary 60%, narrative 57%,
+**aspiration 42%** (the healthiest), taste 100%.
+
+The two kinds that exist specifically to carry a life of her own are the two that
+are empty: **`taste` = 2 rows** and **`pursuit` = 0 active** (H8). Those are
+supply-limited rather than broken, but the consequence for this goal is real —
+she has no answer to "what did you do today" and no preferences of her own to
+disagree from.
+
+Not a bug and not urgent, but it sets a ceiling: a companion whose every belief
+is downstream of her partner is a mirror, not a person. Worth treating `pursuit`'s
+cold start (H8) as more important than its row count suggests, since it is the
+one kind that would give her a day of her own.
+
+---
+
+## H14. Almost nothing feels bad
+
+**Severity: medium — follows from H9, but has its own fix.**
+
+Affective concepts by tone:
+
+| | positive | negative |
+| --- | --- | --- |
+| Aiko (46) | 38 (83%) | 6 (13%) |
+| User (41) | 34 (83%) | **0 (0%)** |
+
+And the six "negative" Aiko rows do not survive reading: three are keyword false
+positives about *him* feeling bad while she feels purposeful ("Acting as Jacob's
+emotional anchor during his guilt spirals gives me a quiet sense of purpose").
+Her genuine unpleasant-feeling concepts number **three**, of which the most
+interesting is *"Reflecting on my own internal architecture and learning gaps
+leaves me feeling hollow or confused."*
+
+**Zero of 41 user affective concepts are negative** — in a corpus where his guilt
+spirals, anxiety and overwhelm are discussed constantly and are the subject of
+many of her *value* concepts. So the affective proposer is systematically
+recording only the pleasant half of an emotional life it can plainly see.
+
+Part of this is H9 (with every cluster at `neu/mid`, there is no negative signal
+to mint from). Part is likely the proposer prompt selecting for warmth. Worth
+checking both — the L13 affective proposer prompt should be read for language
+that biases toward positive framings, and re-measured after H9 lands.
+
+Emotion episodes tell the same story from a different angle: **2 episodes ever**
+(`warm_glow`, `lonely`), though the block renders on 116/146 turns, so that
+pipeline is at least alive.
+
+---
+
+## What Part 2 changes about priority
+
+H9 is the one to do first, ahead of everything in Part 1 except possibly H1. It
+is a small change at a single call site, it is the difference between a companion
+who has feelings about things and one who reports a uniform mild pleasantness,
+and several other findings (H14, the blandness of the affective concepts, L13's
+whole premise) are downstream of it.
+
+H10 is second and is a configuration decision rather than new code: her best
+material exists, is well-formed, and is switched off.
+
+Everything else here is a weighting or supply question that should be re-measured
+after those two, because both change the inputs.
+
+---
+
+## Suggested order
+
+Across both parts, roughly by value per unit of risk:
+
+1. **H9** — one call site, and it is the difference between a companion who feels
+   differently about different things and one who is uniformly mildly pleased.
+   Everything in H14 and much of L13's value is downstream of it.
+2. **H1** — small, self-contained, and it is the difference between having a
+   self-observation loop and not having one.
+3. **H10** — no new code; her richest material is written, well-formed, and
+   switched off nine turns in ten.
+4. **H4(a)** — find the wedge behind `dormant_interest` and `self_callback`. Likely
+   one cause behind several families, including H7.
+5. **H3** — a few lines, and it unblocks a month of stranded history.
+6. **H11** — a weighting decision to make deliberately once H10 lands, since the
+   two compete for the same lane.
+7. **H5** — decide standing/framing deliberately; correcting or retiring are both
+   fine outcomes.
+8. **H2** — after H1, since a conduct pass that cannot persist has nothing to
+   gain from better thresholds.
+9. **H12**, **H13**, **H14** — re-measure after H9 and H10; all three have inputs
+   those two change.
+10. **H6**, **H8** — mostly decisions to record rather than code to write.

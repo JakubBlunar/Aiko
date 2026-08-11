@@ -10,6 +10,7 @@ is the filter chain between them and the write.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 import unittest
 from datetime import datetime, timezone
@@ -29,15 +30,26 @@ from app.core.proactive.curiosity_seed_worker import CuriositySeedWorker
 
 
 class _StubEmbedder:
-    """Deterministic embedder: hash text into a 4-D unit vector."""
+    """Deterministic embedder: hash text into a 4-D unit vector.
+
+    Uses md5 rather than ``hash()``: Python randomizes string hashing per
+    process, so the previous version drew a different vector for the same
+    text on every run. With only four dimensions the two seeds in
+    ``_MIXED_PAYLOAD`` occasionally landed close enough for the novelty
+    filter to drop one, which made ``SubjectQuotaTests`` fail on roughly
+    one process in forty (``PYTHONHASHSEED=14`` is a reproducer). A stub
+    that is only *usually* deterministic is worse than a random one,
+    because the failure looks like a real regression.
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
 
     def embed(self, text: str) -> np.ndarray:
         self.calls.append(text)
-        h = abs(hash(text)) % 1000
-        rng = np.random.default_rng(h)
+        digest = hashlib.md5(text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:4], "little")
+        rng = np.random.default_rng(seed)
         v = rng.standard_normal(4).astype(np.float32)
         n = float(np.linalg.norm(v))
         return v / n if n > 0 else v

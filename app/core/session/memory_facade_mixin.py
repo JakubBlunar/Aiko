@@ -23,6 +23,23 @@ from app.core.infra import timephrase
 def _now_iso_for_conflict() -> str:
     return timephrase.utcnow().isoformat()
 
+
+def _memory_field(memory: Any, name: str, default: Any = None) -> Any:
+    """Read ``name`` off a memory that may be a ``Memory`` or its dict form.
+
+    ``_notify_memory_added`` is called with both shapes: the turn path and
+    the REST facade pass the object, while the knowledge / topic-digest /
+    pre-thought / K1-goal workers pass ``mem.to_dict()``. The WS listener in
+    ``app.web.server`` already accepts either, so the ambiguity is part of
+    the contract rather than a caller bug -- consumers have to cope.
+    """
+    if isinstance(memory, dict):
+        value = memory.get(name, default)
+    else:
+        value = getattr(memory, name, default)
+    return default if value is None else value
+
+
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.memory.memory_extractor import MemoryExtractor
     from app.core.memory.memory_store import MemoryStore
@@ -387,7 +404,7 @@ class MemoryFacadeMixin:
         queue = getattr(self, "_fact_check_queue", None)
         if queue is None or memory is None:
             return
-        memory_id = getattr(memory, "id", None)
+        memory_id = _memory_field(memory, "id")
         if memory_id is None:
             return
 
@@ -398,16 +415,16 @@ class MemoryFacadeMixin:
 
         user_names = self._fact_check_user_names()
         assistant_name = self._fact_check_assistant_name()
-        kind = (getattr(memory, "kind", "") or "").lower()
+        kind = str(_memory_field(memory, "kind", "")).lower()
         if kind == "knowledge_gap":
-            meta = getattr(memory, "metadata", None) or {}
+            meta = _memory_field(memory, "metadata", None) or {}
             question = (
                 str(meta.get("question") or "").strip()
                 if isinstance(meta, dict)
                 else ""
             )
             if not question:
-                question = (getattr(memory, "content", "") or "").strip()
+                question = str(_memory_field(memory, "content", "")).strip()
             if not question:
                 return
             # Knowledge gaps run through the *claim* scrubber (not the
@@ -441,7 +458,7 @@ class MemoryFacadeMixin:
             )
             return
 
-        content = (getattr(memory, "content", "") or "").strip()
+        content = str(_memory_field(memory, "content", "")).strip()
         if not content:
             return
 

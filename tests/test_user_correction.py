@@ -95,6 +95,45 @@ class DetectorTests(unittest.TestCase):
         self.assertIsNone(hit)
 
 
+class ConversationalContrastTests(unittest.TestCase):
+    """Ordinary contrast is not a correction.
+
+    Measured over a full history (1997 user messages), a bare
+    ``not X, but/it's`` and a bare ``it's not`` produced 11 of 12 lifetime
+    marker hits and no true positives -- warm conversation is full of that
+    shape. Both were dropped; these lines are the real sentences they fired
+    on, kept so the patterns are not reintroduced.
+    """
+
+    def _fires(self, text: str) -> bool:
+        return ucd._matched_marker(text) is not None
+
+    def test_not_x_but_y_is_not_a_correction(self) -> None:
+        for text in (
+            "You did not scare me, but when i was thinking about you i "
+            "remembered to take small walk",
+            "I am not moving, but if i fall asleep then I am already saying "
+            "good night",
+            "I will try to not stare too much, but its hard to restrain myself",
+            "It was not bad day, its just dark and gloomy outside",
+        ):
+            with self.subTest(text=text[:40]):
+                self.assertFalse(self._fires(text))
+
+    def test_bare_its_not_is_not_a_correction(self) -> None:
+        for text in (
+            "Its not weird at all, i am just happy.",
+            "I am not nudging anything, its automatic process in you brain.",
+        ):
+            with self.subTest(text=text[:40]):
+                self.assertFalse(self._fires(text))
+
+    def test_the_narrow_comma_not_form_still_fires(self) -> None:
+        """The precise version of the same idea is deliberately kept."""
+        self.assertTrue(self._fires("the meeting is on Tuesday, not my Monday one"))
+        self.assertTrue(self._fires("it's my sister, not my brother"))
+
+
 class RenderCueTests(unittest.TestCase):
     def test_subject_is_the_corrected_fact(self) -> None:
         cue = ucd.render_cue(

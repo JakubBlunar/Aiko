@@ -35,6 +35,7 @@ from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 from app.core.memory.idle_fact_checker import IdleFactChecker
 from app.core.memory.knowledge_gap_extractor import KnowledgeGapStore
 from app.core.memory.memory_store import MemoryStore
+from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 
 
 # ── classify_memory_for_fact_check ─────────────────────────────────────
@@ -484,6 +485,100 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
             m for m in chat_calls[0]["messages"] if m["role"] == "user"
         )
         self.assertNotIn("Jacob", user_msg["content"])
+
+
+# ── enqueue payload shape ──────────────────────────────────────────────
+
+
+class _EnqueueHarness(MemoryFacadeMixin):
+    """Just enough of ``SessionController`` to drive ``_maybe_enqueue_claims``."""
+
+    def __init__(self, queue: FactCheckQueue) -> None:
+        self._fact_check_queue = queue
+
+    def _fact_check_user_names(self) -> list[str]:
+        return ["Jacob"]
+
+    def _fact_check_assistant_name(self) -> str | None:
+        return "Aiko"
+
+
+@dataclass
+class _MemoryRow:
+    """The object shape the turn path and REST facade pass to the hook."""
+
+    id: int
+    kind: str
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "content": self.content,
+            "metadata": dict(self.metadata),
+        }
+
+
+class TestEnqueueAcceptsBothPayloadShapes(unittest.TestCase):
+    """``_notify_memory_added`` is called with a ``Memory`` *and* with its
+    dict form -- the knowledge, topic-digest, pre-thought and K1-goal
+    workers all pass ``mem.to_dict()``. Reading the payload with
+    ``getattr`` alone silently dropped every dict caller, which is why the
+    fact-checker never queued a single knowledge claim."""
+
+    def setUp(self) -> None:
+        d = tempfile.mkdtemp()
+        self.chat_db = ChatDatabase(Path(d) / "mem.db")
+        self.queue = FactCheckQueue(self.chat_db)
+        self.harness = _EnqueueHarness(self.queue)
+
+    def _row(self) -> _MemoryRow:
+        return _MemoryRow(
+            id=42,
+            kind="knowledge",
+            content="Trine 2 was developed by Frozen Byte and published in 2011.",
+        )
+
+    def test_object_payload_enqueues(self) -> None:
+        self.harness._maybe_enqueue_claims(self._row())
+        self.assertGreater(len(self.queue.peek_all()), 0)
+
+    def test_dict_payload_enqueues_the_same_claims(self) -> None:
+        self.harness._maybe_enqueue_claims(self._row())
+        from_object = [c.claim_text for c in self.queue.peek_all()]
+
+        queue2 = FactCheckQueue(ChatDatabase(Path(tempfile.mkdtemp()) / "m.db"))
+        _EnqueueHarness(queue2)._maybe_enqueue_claims(self._row().to_dict())
+        from_dict = [c.claim_text for c in queue2.peek_all()]
+
+        self.assertGreater(len(from_dict), 0)
+        self.assertEqual(from_object, from_dict)
+
+    def test_dict_payload_still_honours_the_privacy_gate(self) -> None:
+        personal = _MemoryRow(
+            id=7, kind="self", content="I felt calm in 2024",
+        ).to_dict()
+        self.harness._maybe_enqueue_claims(personal)
+        self.assertEqual(len(self.queue.peek_all()), 0)
+
+    def test_dict_knowledge_gap_reads_the_question_from_metadata(self) -> None:
+        gap = _MemoryRow(
+            id=9,
+            kind="knowledge_gap",
+            content="fallback text",
+            metadata={"question": "when was the Voyager 1 probe launched"},
+        ).to_dict()
+        self.harness._maybe_enqueue_claims(gap)
+        items = self.queue.peek_all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].claim_kind, "knowledge_gap")
+        self.assertIn("Voyager", items[0].claim_text)
+
+    def test_a_payload_without_an_id_is_ignored(self) -> None:
+        self.harness._maybe_enqueue_claims({"kind": "knowledge", "content": "x 2011"})
+        self.assertEqual(len(self.queue.peek_all()), 0)
 
 
 # ── audit logging ──────────────────────────────────────────────────────

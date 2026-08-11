@@ -413,7 +413,10 @@ candor needs **calibration** to be anything but presumptuous — L44 (per-domain
 self-calibration) is the missing precondition, because being blunt in a domain
 where her judgement is demonstrably unreliable is not courage. Gate the candor
 permission on the reliability of the specific judgement she wants to voice, not
-just on trust and tenure. Second, the most valuable target for earned bluntness
+just on trust and tenure. **Note that L44 is now blocked on supply** — there is no
+measured error record to gate on and no near-term prospect of one — so a candor
+gate shipped before that changes has to rest on trust and tenure alone, and should
+be scoped narrowly enough that being wrong is cheap. Second, the most valuable target for earned bluntness
 is probably **the relationship itself** rather than a topic: "I don't think you
 actually tell me much about yourself" is a harder and more meaningful thing to
 say than any stance disagreement, and L43 (her model of how he sees her) is where
