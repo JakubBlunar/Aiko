@@ -41,6 +41,7 @@ from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.proactive.hypothesis_proposer_worker import (
     HypothesisProposerWorker,
+    describes_machinery,
 )
 
 
@@ -227,6 +228,109 @@ class WriteTests(_Fixture):
         self._build(payload=_payload(_STATEMENT, subject="the moon")).run()
 
         self.assertEqual(self.hypotheses.list_by(live=True)[0].subject, "user")
+
+
+# ── gate 0: she is not a machine ──────────────────────────────────────
+
+
+class MachineSelfTests(_Fixture):
+    """Guesses about Aiko must be about the person the persona describes.
+
+    She has a body, an apartment, and an energy level that moves through
+    the day. This worker is the one place in the stack with no persona
+    context and the loosest brief in it, run at temperature 0.95, and the
+    combination reliably produced hardware: five of the first six
+    ``subject=aiko`` rows described a chassis, cooling fans or processing
+    latency. That is not a bold guess about her, it is a different
+    character -- and an invention is a candidate for graduation into a
+    belief she holds about herself.
+    """
+
+    def test_a_hardware_guess_about_herself_is_dropped(self) -> None:
+        result = self._build(
+            payload=_payload(
+                "Aiko feels a phantom warmth on her chassis when he types",
+                subject="aiko",
+            )
+        ).run()
+
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(result["rejected_machine_self"], 1)
+
+    def test_the_same_words_about_him_are_fine(self) -> None:
+        """His hardware is his; only a guess about *her* changes who
+        she is."""
+        result = self._build(
+            payload=_payload(
+                "Jacob notices his GPU fan before he notices he is tired",
+                subject="user",
+            )
+        ).run()
+
+        self.assertEqual(result["wrote"], 1)
+
+    def test_an_ordinary_guess_about_her_still_lands(self) -> None:
+        """The gate is narrow on purpose -- over-rejecting here makes the
+        self-facing half of the layer sterile."""
+        result = self._build(
+            payload=_payload(
+                "Aiko puts off tidying her apartment when a talk went badly",
+                subject="aiko",
+            )
+        ).run()
+
+        self.assertEqual(result["wrote"], 1)
+
+    def test_it_costs_no_embed(self) -> None:
+        """Cheapest gate first: rejecting after the embed would spend a
+        model call on a candidate that could never be filed."""
+        self._build(
+            payload=_payload(
+                "Aiko's cooling fans spin up when she is thinking hard",
+                subject="aiko",
+            )
+        ).run()
+
+        self.assertEqual(self.embedder.calls, [])
+
+    def test_the_prompt_says_what_she_is(self) -> None:
+        """The gate is the backstop; the prompt is what should make it
+        unnecessary."""
+        self._build().run()
+
+        system = self.ollama.messages[0]["content"]
+        self.assertIn("no chassis", system)
+        self.assertIn("never in the room", system)
+
+
+class MachineVocabularyTests(unittest.TestCase):
+    def test_it_names_the_term_it_matched(self) -> None:
+        """The reject log has to distinguish this from the novelty gates,
+        so the helper returns the phrase rather than a bool."""
+        self.assertEqual(
+            describes_machinery("her cooling fans run hot"), "cooling fans"
+        )
+
+    def test_a_person_shaped_sentence_is_untouched(self) -> None:
+        for ok in (
+            "she weights her words before a hard answer",
+            "she keeps the window open while she reads",
+            "she runs warmer in the evenings",
+            "her energy drops after a long call",
+        ):
+            with self.subTest(ok):
+                self.assertEqual(describes_machinery(ok), "")
+
+    def test_the_hardware_vocabulary_is_caught(self) -> None:
+        for bad in (
+            "a phantom warmth on her chassis",
+            "when her processing latency drops",
+            "her circuits hum",
+            "her memory consolidation works best overnight",
+            "she notices her own uptime",
+        ):
+            with self.subTest(bad):
+                self.assertNotEqual(describes_machinery(bad), "")
 
 
 # ── gate 1: don't re-invent your own guesses ──────────────────────────

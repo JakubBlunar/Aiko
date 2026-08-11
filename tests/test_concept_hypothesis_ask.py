@@ -313,6 +313,37 @@ class InventedPoolTests(_WorkerFixture):
 
         self.assertIn("made it up", self._pool()[0].text)
 
+    def test_the_cue_carries_the_importance_it_was_ranked_on(self) -> None:
+        """The gap path reads ``importance`` and treats a missing key as
+        0.0, so omitting it made every invented cue unreachable out of a
+        lull -- the one branch that exists to raise a hunch that matters.
+        All 13 live rows sat at ``importance=None`` while all 13 grounded
+        ones carried a real number."""
+        from app.core.concepts.concept_kinds import get_kind
+
+        self._invented(kind="conduct")
+
+        self._worker().run()
+
+        payload = self._pool()[0].payload
+        self.assertAlmostEqual(
+            payload["importance"],
+            float(get_kind("conduct").importance),
+            places=3,
+        )
+
+    def test_the_ranked_importance_is_the_published_one(self) -> None:
+        """Recomputing it at publish time would let the two drift; the
+        ordering and the gate must agree on one number."""
+        self._invented(kind="ritual", statement="Jacob rinses his mug")
+
+        result = self._worker().run()
+
+        drafted = result["invented"][0]
+        self.assertEqual(
+            drafted["importance"], self._pool()[0].payload["importance"],
+        )
+
     def test_both_pools_can_queue_in_one_run(self) -> None:
         """They are separate shelves, not competitors for one slot."""
         self._invented()

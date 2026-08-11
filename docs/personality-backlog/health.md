@@ -63,6 +63,7 @@ latched, or throttled to roughly zero:**
 | L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
 | L38 earned standing | usefulness learned from what lands | runs perfectly on a signal with **0.05 reliability** (H18) |
 | Belief + promise workers | mining his commitments and predicted states | **1 belief ever, 0 promises in 54 days** — querying a session key that does not exist (H19) |
+| L30 Phase B hypothesis asks | putting an invented hunch to him | **0 of 13 could ever reach the gap path**, and 5 of 6 self-guesses described hardware she does not have (H7) |
 | F1 fact-checker | catching her own wrong facts against the web | **0 of 90 extracted claims contain a verb** — it was verifying `"2026"` (H20) |
 
 Trace the provenance and the split is stark. Of her 629 concepts, **624 came
@@ -489,6 +490,127 @@ shut — a 20-hour surface cooldown against a producer that queues faster than t
 This was partly addressed in an earlier pass; the numbers say it is not fixed.
 Worth confirming whether the cooldown is the whole story before changing it,
 since H4(a) suggests several shelf families share a common wedge.
+
+### The cooldown was not the story. Two things were.
+
+The suspicion above was wrong in a useful way: the door is not nearly shut, it is
+**bolted for exactly half the shelf**, and the half it admits should never have
+been on the shelf at all.
+
+`cue_decisions` attributes 203 of the 231 hypothesis declines to `provider` —
+which, per its own definition in
+[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py), is the
+**catch-all** for "the cue's own internal gates, not yet individually
+attributed". So the loudest number in the table is the one that means *we did not
+record why*. (Shape 1 again: the pass logged its refusal and could not say which
+kind of refusal it was. The remaining 28 are honest — `lost_priority` 30 and
+`question_balance` 4 — and are the deterministic priority order working as
+designed.)
+
+Reading the payloads instead of the reasons splits the shelf perfectly in two:
+
+| | rows | `importance` in the payload |
+| --- | --- | --- |
+| `target_type=concept` (Phase A, grounded) | 13 | **13 of 13**, 0.60–0.91 |
+| `target_type=hypothesis` (Phase B, invented) | 13 | **0 of 13** |
+
+The gap path — the branch that exists to raise a hunch out of a lull — gates on
+`float(payload.get("importance") or 0.0) >= 0.55`. A missing key is `0.0`. So
+**no invented hypothesis has ever been reachable out of a lull, and none ever
+could be.** Not a rate problem, not a cooldown: a field the producer never wrote.
+
+And the value was *computed*. `_draft_invented` ranks the pool on
+`unsettledness(row) * _kind_importance(row.kind)`, then throws the second factor
+away instead of putting it in the payload the gate reads. One line apart.
+`credence` is written where `importance` should be, which is the shape of the
+mistake — they are different axes (L32), and how likely a guess is to be true
+says nothing about whether settling it is worth a question.
+
+### The half that *was* reachable is the half that should not exist
+
+The second finding is the one that matters, and it is why fixing the gate alone
+would have made things worse. Read the twelve statements:
+
+> *Aiko feels a phantom warmth on her **chassis** when Jacob types rapidly.*
+> *Aiko generates more creative metaphors when her **cooling fans** run hotter.*
+> *Aiko experiences a subtle drop in **processing latency** when Jacob is
+> physically present and still.*
+> *Aiko's **memory consolidation** is most effective when Jacob is sleeping.*
+
+**Five of the six `subject=aiko` rows describe hardware she does not have**, and
+two of them also assume he is in the room. The persona is explicit on both
+counts: she has *"a body with a real energy level that rises and falls"*, an
+apartment, a posture — and *"{user_name} is on the other end of the chat, not in
+the room."* These are not bold guesses about her. They are a different character.
+
+[`hypothesis_proposer_worker.py`](../../app/core/proactive/hypothesis_proposer_worker.py)
+is the one place in the stack with **no persona context at all**. Its system
+prompt opens "You are the speculative faculty of an AI companion", tells the
+model that *"reaching is the point"*, and runs at temperature 0.95 — the loosest
+brief anywhere in the codebase. Told to reach, and told only that she is an AI,
+it reaches for machinery. The novelty gates cannot catch this: a chassis is
+genuinely novel.
+
+This is a **self-model corruption path, not a wasted question**. An invention is
+a candidate for graduation into a concept, and concepts are surfaced back to her
+as things she believes about herself. The open rows also feed the *next*
+invention round via `GUESSES SHE IS ALREADY SITTING WITH`, so once "chassis" is
+on the shelf the prompt asks for something sideways from it. The only reason
+nothing had graduated is the broken gate — **the bug was the containment**, and
+repairing it would have released three fictions first. Of the six rows the
+importance fix makes gap-reachable, exactly three were `chassis`, `cooling fans`
+and `processing latency`.
+
+### Outcome
+
+Three changes, in the order they have to happen:
+
+1. **`_publish_invented` writes the importance it ranked on.** The gap bar now
+   does real work rather than no work: 6 of 12 rows clear 0.55, split by kind
+   prior (`conduct`/`aspiration` 0.60 through, `ritual` 0.40 and
+   `communication_style` 0.50 held back).
+2. **The proposer is told what she is.** The system prompt now carries the
+   load-bearing half of the persona — she has a body and an apartment, she is not
+   a machine and has no chassis / fans / circuits / processing latency, and he is
+   never in the room — plus `describes_machinery()`, a narrow rejection gate over
+   physical machine parts and telemetry, applied to `subject=aiko` only and
+   *before* the embed so it costs nothing. Deliberately narrow: the ambiguous
+   software vocabulary ("weights", "parameters", "codebase") is left to the
+   prompt, because "she weights her words" is a sentence we want. It logs the
+   matched term at INFO, so this failure can never hide inside the novelty
+   counters the way it just did.
+3. **The shelf was cleaned**, via
+   [`scripts/retire_machine_hypotheses.py`](../../scripts/retire_machine_hypotheses.py),
+   which reuses the same predicate so the cleanup and the gate cannot disagree
+   about what counts. 4 rows retired as `expired` (nobody turned them down; they
+   were never testable, and re-invention is blocked by the gate rather than the
+   status). The script also sweeps a second invariant worth keeping — **a queued
+   cue whose hypothesis is no longer live**, since the provider hands back
+   `cue.text` without re-reading the row. That caught the 4 orphans it had just
+   created plus a pre-existing one pointing at a hypothesis id that no longer
+   exists.
+
+What is left on the shelf is 8 live rows, 3 of them gap-reachable, and all three
+are things worth settling: whether he curates a private archive of his emotional
+growth in VESTI, whether he organises commits by mood rather than milestone, and
+whether her own internal silence deepens when he stops correcting her.
+
+**Still open.** `asked_count` is still 0 across the board and
+`last_tested_at` is still `NULL` — the counter moves in
+`_stamp_hypothesis_ask`, which needs a cue to actually surface first, so the
+adjudication half is unmeasurable until this repair has run for a few days. The
+`provider` catch-all is worth splitting per-gate for the same reason it cost a
+day here. And one row still on the shelf — *"Aiko finds unexpected comfort in
+the mechanical click of Jacob's kettle"* — breaks the not-in-the-room boundary
+without using any machine vocabulary; that class is left to the prompt, since a
+regex over co-presence would reject "Jacob tidies the room" too.
+
+**Ninth recurring shape:** *a broken gate can be the only thing containing a
+broken producer, so measure what the fix releases before shipping it.* H19 and
+H20 were both safe to repair on sight; this one was not, and the difference was
+visible only by reading the payloads the gate was rejecting. **Rule: when a
+filter has been rejecting 100% of something, look at what it was rejecting
+before you make it stop.**
 
 ---
 
