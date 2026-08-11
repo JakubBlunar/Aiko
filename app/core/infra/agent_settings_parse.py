@@ -227,6 +227,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ritual_synthesis_enabled=bool(
                 agent_raw.get("ritual_synthesis_enabled", True),
             ),
+            shared_value_synthesis_enabled=bool(
+                agent_raw.get("shared_value_synthesis_enabled", True),
+            ),
             narrative_synthesis_enabled=bool(
                 agent_raw.get("narrative_synthesis_enabled", True),
             ),

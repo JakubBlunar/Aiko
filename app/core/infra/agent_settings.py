@@ -519,6 +519,11 @@ class AgentSettings:
     # skips that one pass; the rest of synthesis is unaffected. Thresholds
     # live under MemorySettings (``concept_synthesis_ritual_*``).
     ritual_synthesis_enabled: bool = True
+    # H12 shared-value synthesis. Reads the same ``shared_moment`` groups as
+    # the ritual pass and asks what the pair treats as *mattering* rather
+    # than what they repeatedly do. Separate flag because it is the more
+    # interpretive of the two and its own switch should turn it off.
+    shared_value_synthesis_enabled: bool = True
     # L8 narrative-arc synthesis. When enabled (and the two switches above are
     # on), the synthesis worker's narrative pass mines each subject's
     # topic clusters for closed causal arcs (the first ordered/``sequence``
