@@ -884,6 +884,7 @@ class IdleWorkersInitMixin:
                     journal_max=mem.associative_wander_journal_max,
                     min_size=mem.associative_wander_min_size,
                     max_pair_cosine=mem.associative_wander_max_pair_cosine,
+                    pair_quantile=mem.associative_wander_pair_quantile,
                     pair_cooldown_hours=(
                         mem.associative_wander_pair_cooldown_hours
                     ),

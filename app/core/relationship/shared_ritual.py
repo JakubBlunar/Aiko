@@ -51,8 +51,22 @@ SHARED_RITUALS_KEY = "aiko.shared_rituals"
 # as a genuine ritual, plus the proportional floor over the window.
 DEFAULT_MIN_WEEKS = 3
 DEFAULT_MIN_SHARE = 0.34
-# Most rituals to keep in the store (acknowledged ones are sticky).
+#: How many *un-acknowledged* rituals may wait for an offer at once.
+#:
+#: This used to cap the whole store, acknowledged rows included, which
+#: made the feature self-terminating: acknowledged rituals are permanent
+#: by design, so once six of them existed the pending budget was
+#: ``max(0, 6 - 6) = 0`` and no newly-formed ritual could ever be kept,
+#: let alone named. That is the state the live store reached -- 6 of 6
+#: acknowledged, one cue ever published, ``drafted=0`` on every sweep
+#: since. See health.md H22.
 DEFAULT_MAX_ACTIVE = 6
+#: How many *acknowledged* rituals the permanent record keeps, oldest
+#: dropped first. Separate from the pending budget so the record cannot
+#: starve the pipeline, but still bounded so a multi-year relationship
+#: does not grow the blob without limit. Rituals qualify in a trickle
+#: (weeks apart), so this is years of headroom.
+DEFAULT_MAX_ACKNOWLEDGED = 18
 
 
 _WEEKDAY_DISPLAY: dict[str, str] = {
@@ -202,6 +216,7 @@ def merge_rituals(
     *,
     now_date: str,
     max_active: int = DEFAULT_MAX_ACTIVE,
+    max_acknowledged: int = DEFAULT_MAX_ACKNOWLEDGED,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fold ``candidates`` into the persisted ritual list.
 
@@ -211,11 +226,18 @@ def merge_rituals(
       (``weeks_seen`` / ``label`` refreshed) but keeps its
       ``acknowledged`` flag + ``first_seen``.
     * An existing **acknowledged** ritual that's no longer a candidate is
-      **kept** (it became a real thing — permanent record).
+      **kept** (it became a real thing — permanent record), subject to
+      ``max_acknowledged`` with the oldest ``first_seen`` dropped first.
     * An existing **un-acknowledged** ritual that's no longer a candidate
       is **dropped** (never announced, so no harm).
     * A brand-new candidate is added with ``acknowledged=False`` and
       ``first_seen=now_date`` and reported in ``new_keys``.
+
+    **The two budgets are independent.** A single shared cap let the
+    permanent record consume the pending budget until nothing new could
+    be kept — and because ``new_keys`` was collected *before* the trim,
+    the log then reported the same doomed key as "new" on every sweep
+    forever. ``new_keys`` now names only rows that actually survived.
     """
     by_key = {str(r.get("key")): dict(r) for r in existing if r.get("key")}
     cand_keys = {c.key for c in candidates}
@@ -255,7 +277,24 @@ def merge_rituals(
         if bool(row.get("acknowledged")):
             merged.setdefault(key, row)
 
-    out = list(merged.values())
+    ack = [r for r in merged.values() if r.get("acknowledged")]
+    pending = [r for r in merged.values() if not r.get("acknowledged")]
+
+    # The permanent record is trimmed against its own budget, newest
+    # kept -- never against the pending one, which is what made the
+    # feature terminal.
+    if max_acknowledged > 0 and len(ack) > max_acknowledged:
+        ack.sort(key=lambda r: (str(r.get("first_seen") or ""), str(r.get("key", ""))))
+        ack = ack[-max_acknowledged:]
+    if max_active > 0:
+        pending.sort(
+            key=lambda r: (
+                -int(r.get("weeks_seen", 0)), str(r.get("key", "")),
+            )
+        )
+        pending = pending[:max_active]
+
+    out = ack + pending
     # Stable order: acknowledged first (permanent), then by recurrence.
     out.sort(
         key=lambda r: (
@@ -264,13 +303,8 @@ def merge_rituals(
             str(r.get("key", "")),
         )
     )
-    if max_active > 0 and len(out) > max_active:
-        # Trim un-acknowledged tail first; never drop an acknowledged one.
-        ack = [r for r in out if r.get("acknowledged")]
-        pending = [r for r in out if not r.get("acknowledged")]
-        keep_pending = max(0, max_active - len(ack))
-        out = ack + pending[:keep_pending]
-    return out, new_keys
+    kept = {str(r.get("key")) for r in out}
+    return out, [k for k in new_keys if k in kept]
 
 
 def pick_unacknowledged(

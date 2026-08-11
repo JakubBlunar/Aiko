@@ -157,15 +157,21 @@ class SharedRitualWorker:
             slot_weeks.setdefault((weekday, bucket, shape), set()).add(week)
 
         total_weeks = max(1, (self._window_days + 6) // 7)
+        existing = _sr.load_rituals(self._chat_db.kv_get)
+        # Already-named rituals usually still qualify, so they occupy
+        # candidate slots every sweep. Ask for enough room to re-detect
+        # all of them *and* ``max_active`` genuinely new ones, or the
+        # permanent record crowds new patterns out one stage earlier
+        # than the store cap did.
+        acknowledged = sum(1 for r in existing if r.get("acknowledged"))
         candidates = _sr.detect_rituals(
             slot_weeks,
             total_weeks=total_weeks,
             min_weeks=self._min_weeks,
             min_share=self._min_share,
-            max_rituals=self._max_active,
+            max_rituals=self._max_active + acknowledged,
         )
 
-        existing = _sr.load_rituals(self._chat_db.kv_get)
         now_date = now.astimezone().strftime("%Y-%m-%d")
         merged, new_keys = _sr.merge_rituals(
             existing, candidates, now_date=now_date,

@@ -1326,25 +1326,31 @@ class AgentSettings:
     tease_rhythm_cooldown_turns: int = 3
 
     # ── K13: stylometric mirror (Jacob-side stylometry) ───────────────
-    # Tracks Jacob's writing style across recent user turns and emits
-    # a one-line "How Jacob writes lately: terse, casual, asks back
-    # often" directive so Aiko's register stays calibrated even when
-    # the recent history window doesn't cover yesterday. Five axes:
-    # terseness / formality / emoji / slang / question rate. Pure
-    # rolling-window analyzer (no embedder, no LLM); persisted via a
-    # tiny ``user_style_signal`` JSON-blob table so the window
-    # survives restart. Unlike the K6/K18/anti-rut cues this block is
-    # ALWAYS rendered (including aggressive mode) because it shapes
-    # register, which is the first thing aggressive mode wants to
-    # preserve. See [`app/core/persona/style_signal.py`](style_signal.py).
+    # Emits a one-line "How Jacob is writing today: terser than usual,
+    # drier than usual" directive so Aiko's register follows his. Five
+    # axes: terseness / punctuation / playfulness / slang / question.
+    # Pure rolling-window analyzer (no embedder, no LLM); persisted via
+    # a tiny ``user_style_signal`` JSON-blob table so the window and
+    # baseline survive restart. Unlike the K6/K18/anti-rut cues this
+    # block is eligible on every turn (including aggressive mode)
+    # because it shapes register, which is the first thing aggressive
+    # mode wants to preserve -- but it only *renders* when an axis has
+    # actually moved.
+    #
+    # There is deliberately one knob and not five. Each axis used to
+    # have its own absolute bar, which on a stable writer can only
+    # produce a constant: measured over 2018 turns the block rendered
+    # on 99.7% of them and changed what it said four times in twelve
+    # weeks. Scoring against the user's own rolling baseline instead
+    # self-calibrates, so ``sensitivity`` means the same thing for a
+    # terse writer and a verbose one. Raise it for a quieter block,
+    # lower it for a chattier one; 3.0 lands near 28% of turns on that
+    # corpus. See [`app/core/persona/style_signal.py`](style_signal.py)
+    # and health.md H21.
     style_signal_enabled: bool = True
     style_signal_window: int = 30
     style_signal_warmup_min: int = 8
-    style_signal_terse_threshold: float = 0.55
-    style_signal_formal_threshold: float = 0.55
-    style_signal_emoji_threshold: float = 0.05
-    style_signal_slang_threshold: float = 0.15
-    style_signal_question_threshold: float = 0.40
+    style_signal_sensitivity: float = 3.0
 
     # ── K14: implicit engagement signals (latency + length) ──────────
     # Per-turn detector that scores Jacob's reply latency + message

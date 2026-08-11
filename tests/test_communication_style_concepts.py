@@ -258,13 +258,25 @@ class _FakeStyleStore:
 
 
 def _warmed_blob():
-    # Extreme axis values so labels_for_signal fires under default thresholds.
+    # K13 labels on *deviation* from the user's own baseline, so the
+    # digest needs both halves: a window sitting at one extreme and a
+    # baseline sitting at the other, with enough recorded turns to clear
+    # the baseline minimum.
     row = {
-        "terseness": 0.95, "formality": 0.95, "emoji_density": 0.95,
-        "slang_density": 0.95, "is_question": 0.95, "word_count": 3,
+        "terseness": 0.95, "punctuation": 0.95, "playfulness": 0.95,
+        "slang": 0.95, "question": 0.95, "word_count": 3,
     }
-    # >= style_signal_warmup_min (default 8) entries so current_signal() warms.
-    return {"warmed": True, "window": [dict(row) for _ in range(10)]}
+    return {
+        "version": 2,
+        "warmed": True,
+        "baseline_turns": 200,
+        "baselines": {
+            axis: {"mean": 0.0, "var": 0.0}
+            for axis in ("terseness", "punctuation", "playfulness", "slang", "question")
+        },
+        # >= style_signal_warmup_min (default 8) entries so current_signal() warms.
+        "window": [dict(row) for _ in range(10)],
+    }
 
 
 class StyleDigestTests(unittest.TestCase):

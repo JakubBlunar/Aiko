@@ -1074,8 +1074,10 @@ extract / fact-check / consolidate workers. The
 [`AssociativeWanderWorker`](../../../app/core/proactive/associative_wander_worker.py)
 is an `IdleWorker` (cue producer, not a verbatim nudge) that, during a quiet
 window: reads the K9 topic graph's labelled clusters, forms candidate pairs
-whose **centroid cosine ≤ `memory.associative_wander_max_pair_cosine`**
-(default `0.25` — genuinely *distant* topics, not neighbours) via the pure
+from the **most distant `memory.associative_wander_pair_quantile`** (default
+`0.10`) of everything the corpus contains, capped by
+`memory.associative_wander_max_pair_cosine` (default `0.60`, a *ceiling* so a
+single-topic corpus yields nothing) via the pure
 `find_distant_pairs`, skips any pair on its per-pair cooldown, pulls a few
 member snippets from each cluster as substance, and asks the **worker LLM**
 for ONE honest connection (`{"connects": bool, "connection": "..."}` — it
@@ -1102,8 +1104,15 @@ surfaced keys / dry-run of the distant-pair picker), `force_associative_wander`
 (run once bypassing all cooldowns — picks the single most-distant pair),
 `force_associative_wander_surface` (arm the provider one-shot). Grep
 `tail_logs(module_contains="associative_wander")` for `associative-wander
-drafted:` / `no-connection:` / `fire:`. Settings: `agent.associative_wander_enabled`
-+ the eight `memory.associative_wander_*` knobs. Tests:
+drafted:` / `no-connection:` / `fire:`. **Why the pair selection is a quantile
+and not a threshold:** it was `cos <= 0.25`, and the minimum cosine across all
+561 eligible pairs in the live graph was `0.2648` — the bar sat below the floor
+of the distribution and the worker returned `no_pair` on 107 consecutive runs.
+Sentence encoders put unrelated text at 0.3–0.5, so any fixed cosine here is a
+guess about the embedding model that breaks on a model swap; a rank cannot be
+placed out of reach. See health.md H23. Settings:
+`agent.associative_wander_enabled` + the nine `memory.associative_wander_*`
+knobs. Tests:
 [`tests/test_associative_wander.py`](../../../tests/test_associative_wander.py)
 (pure helpers + worker gates + provider plumbing). **Remaining K64 family:**
 K64c curiosity gradient, K64d knowledge-map self-reflection (open in

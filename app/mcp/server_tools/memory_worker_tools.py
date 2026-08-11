@@ -164,11 +164,19 @@ def register(mcp, session: "SessionController") -> None:
                 labels = []
             signal_payload = {
                 "terseness": round(float(signal.terseness), 3),
-                "formality": round(float(signal.formality), 3),
-                "emoji_density": round(float(signal.emoji_density), 3),
-                "slang_density": round(float(signal.slang_density), 3),
-                "question_rate": round(float(signal.question_rate), 3),
+                "punctuation": round(float(signal.punctuation), 3),
+                "playfulness": round(float(signal.playfulness), 3),
+                "slang": round(float(signal.slang), 3),
+                "question": round(float(signal.question), 3),
                 "window_size": int(signal.window_size),
+                "baseline_turns": int(signal.baseline_turns),
+                # Signed standard errors from his own baseline -- this is
+                # what decides the labels, so it is what you want when
+                # the block is silent and you expected it not to be.
+                "deviations": {
+                    k: round(float(v), 2)
+                    for k, v in signal.deviations.items()
+                },
             }
             try:
                 from app.core.persona.style_signal import render_inner_life_block
@@ -1543,6 +1551,7 @@ def register(mcp, session: "SessionController") -> None:
                         graph.topic_clusters(),
                         max_cosine=worker._max_pair_cosine,
                         min_size=worker._min_size,
+                        quantile=worker._pair_quantile,
                     )
                     out["candidate_pairs"] = [
                         {
