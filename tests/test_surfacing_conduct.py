@@ -113,6 +113,98 @@ def test_fixation_is_flex_only_outlier_below_relationship_baseline() -> None:
     ) is None
 
 
+def test_the_top_gap_bar_is_tunable() -> None:
+    # Two clusters that both run hot: the leader clears every other bar, and
+    # only the gap to the runner-up decides. On live data this was the gate
+    # that declined, and it was the one nobody could move.
+    stats = {
+        1: ClusterTaste(1, surfaced=40, settled=30, engaged=20),
+        2: ClusterTaste(2, surfaced=36, settled=26, engaged=16),
+        3: ClusterTaste(3, surfaced=6, settled=4, engaged=2),
+    }
+    reps = {1: (101, "servers"), 2: (102, "music"), 3: (103, "books")}
+    counts = {1: 2, 2: 30, 3: 8}
+    assert detect_concentration(stats, counts, reps, min_top_gap=0.10) is None
+    assert detect_concentration(stats, counts, reps, min_top_gap=0.05) is not None
+
+
+def test_a_declining_detector_says_which_bar_it_missed() -> None:
+    stats = {
+        1: ClusterTaste(1, surfaced=40, settled=30, engaged=20),
+        2: ClusterTaste(2, surfaced=36, settled=26, engaged=16),
+        3: ClusterTaste(3, surfaced=6, settled=4, engaged=2),
+    }
+    reps = {1: (101, "servers"), 2: (102, "music"), 3: (103, "books")}
+    reading: dict[str, object] = {}
+    assert detect_concentration(
+        stats, {1: 2, 2: 30, 3: 8}, reps, reading=reading,
+    ) is None
+    assert reading["outcome"] == "declined"
+    assert reading["declined_on"] == "top_gap"
+    # The bar and the measurement sit side by side, so the distance is a
+    # read rather than a re-derivation.
+    assert reading["min_top_gap"] == 0.10
+    assert 0.0 < float(reading["top_gap"]) < 0.10
+
+
+def test_a_reading_records_the_best_the_data_offered_even_when_short() -> None:
+    stats = {1: ClusterTaste(1, surfaced=70, settled=60, engaged=20)}
+    reading: dict[str, object] = {}
+    assert detect_concentration(
+        stats, {1: 40}, {1: (101, "servers")}, reading=reading,
+    ) is None
+    assert reading["declined_on"] == "no_cluster_clears_the_bars"
+    assert reading["best_share"] == 1.0
+    assert float(reading["best_excess"]) <= 0.0
+
+
+def test_fixation_reports_how_far_off_baseline_the_top_concept_ran() -> None:
+    concepts = [
+        Concept(
+            concept_id=i,
+            label=f"reading {i}",
+            kind="affective",
+            subject="aiko",
+            status="active",
+        )
+        for i in range(1, 4)
+    ]
+    stats = {
+        1: ItemStats(surfaced=18, settled=12, engaged=10),
+        2: ItemStats(surfaced=5, settled=5, engaged=4),
+        3: ItemStats(surfaced=3, settled=3, engaged=2),
+    }
+    reading: dict[str, object] = {}
+    assert detect_fixation(
+        concepts,
+        stats,
+        engaged_baseline=0.6,
+        core_kinds=frozenset(),
+        reading=reading,
+    ) is None
+    assert reading["declined_on"] == "gates"
+    # Engaged with more than usual, not less: the shape is genuinely absent
+    # rather than the bars being wrong, and the reading shows which.
+    assert float(reading["top_engaged_rate"]) > float(
+        reading["engaged_rate_ceiling"]
+    )
+
+
+def test_a_firing_detector_says_so() -> None:
+    stats = {
+        1: ClusterTaste(1, surfaced=42, settled=40, engaged=25),
+        2: ClusterTaste(2, surfaced=12, settled=10, engaged=7),
+        3: ClusterTaste(3, surfaced=4, settled=3, engaged=2),
+    }
+    reps = {1: (101, "servers"), 2: (102, "music"), 3: (103, "books")}
+    reading: dict[str, object] = {}
+    assert detect_concentration(
+        stats, {1: 3, 2: 12, 3: 5}, reps, reading=reading,
+    ) is not None
+    assert reading["outcome"] == "fired"
+    assert "declined_on" not in reading
+
+
 def test_snapshot_is_bounded_and_rejects_malformed_rows() -> None:
     kv: dict[str, str] = {}
     findings = [
