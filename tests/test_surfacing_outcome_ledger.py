@@ -399,10 +399,31 @@ class StoreReadTests(unittest.TestCase):
                 ITEM_KIND_CONCEPT, [1], window_days=None,
             )[1]
             self.assertEqual(
-                stats, ItemStats(surfaced=2, settled=2, engaged=1, echoed=1),
+                stats,
+                ItemStats(
+                    surfaced=2, settled=2, engaged=1, echoed=1, judged=2,
+                ),
             )
             self.assertAlmostEqual(stats.engaged_rate, 0.5)
             self.assertAlmostEqual(stats.echo_rate, 0.5)
+        finally:
+            f.close()
+
+    def test_an_unjudged_item_reports_no_echo_rate_rather_than_zero(self) -> None:
+        """Clusters never get an echo test. Dividing echoes by surfacings
+        would report a confident 0.0 for a population nobody measured --
+        and L38 reads exactly this denominator.
+        """
+        f = _Fixture()
+        try:
+            f.store.add_many(1, _concepts(1))
+            f.store.settle(1, "engaged")
+            stats = f.store.stats_for(
+                ITEM_KIND_CONCEPT, [1], window_days=None,
+            )[1]
+            self.assertEqual(stats.surfaced, 1)
+            self.assertEqual(stats.judged, 0)
+            self.assertIsNone(stats.echo_rate)
         finally:
             f.close()
 

@@ -22,7 +22,10 @@ twice. **Part 1** asks whether each shipped feature actually runs (H1-H8).
 a person who has her own inner life, feels things, and holds beliefs (H9-H14).
 Part 2 found the higher-value work. H15-H17 were found while fixing the earlier
 entries and are filed rather than folded in, since each is a decision in its own
-right. The K-series patterns have not been audited yet.
+right. **Part 3** (H18 onward) asks the question the first two passes skipped —
+not whether a signal is *produced* but whether it carries any *information* —
+and the first thing it looked at turned out not to. The K-series patterns have
+not been audited yet.
 
 Re-measure before acting on any entry — several of these are rate problems, and
 a rate that was wrong in August may be right in October.
@@ -58,6 +61,7 @@ latched, or throttled to roughly zero:**
 | `self_callback` cue | closing the loop on her own continuity | **1 of 7 ever surfaced**, last fired 2026-07-30 (H4) |
 | K23 misattunement | noticing she misread him | fires ~4×/day, **persisted nowhere** |
 | L41 change framings | "lately I've come around to…" | **0 rows**; 96% falls back to a generic hedge (H5) |
+| L38 earned standing | usefulness learned from what lands | runs perfectly on a signal with **0.05 reliability** (H18) |
 
 Trace the provenance and the split is stark. Of her 629 concepts, **624 came
 from LLM synthesis over conversation transcripts** and 5 are authored cold-start
@@ -646,7 +650,9 @@ Measured this pass, working, no action:
   days, 5 eras, 106 flipped / 495 settled / 4 born / 4 revived, with grounded
   `because` clauses. `thin_record` is false. Tool-only by design.
 - **L38 computation** — 466-entry map, 62% moved off neutral, refreshed hourly.
-  (Its *visibility* is H5.)
+  (Its *visibility* is H5.) **Superseded by H18**: the map computes, but this
+  entry checked that it *runs*, not that its input carries any information.
+  It did not.
 - **L40 habituation ordering** — 300 concepts spread across 34 distinct
   last-surfaced turn indices (1942-1978). Coarse — ~9 concepts tie per index —
   but genuinely ordering, not degenerate. I checked because the map looks
@@ -663,7 +669,99 @@ Measured this pass, working, no action:
 
 ---
 
-## The six recurring shapes
+## H18. L38 spent three months learning from a coin flip
+
+**Severity: high — a live ranking input, measured and found to contain no
+information.**
+
+The first entry in this file found by measuring a signal's *quality* rather
+than its *presence*. Every earlier audit question was "does this run"; L38 was
+filed under "working, no action" precisely because it does run, hourly, on
+schedule, over 466 concepts.
+
+`earned_standing` shrinks a concept's observed engaged rate toward the
+relationship-local baseline and hands the result to `surface_score` as a
+ranking term. The observed rate was `engaged / settled`, where `engaged`
+counted the L37 turns labelled engaged that this concept happened to be
+present for. But the label belongs to the **turn**, and the median turn
+surfaces **67 items**. Every concept present on a good turn was credited
+equally, including the 66 that had nothing to do with it.
+
+That is a credit-assignment failure, and the corpus is now large enough to
+prove it rather than argue it. Three tests, all on 358 labelled turns and
+23,540 rows:
+
+| test | engaged label | echo verdict |
+| --- | --- | --- |
+| split-half reliability, concepts | **0.05** | **0.61** |
+| split-half reliability, memories | 0.09 | 0.57 |
+| between-item variance vs. permuted null | inside the null band (p=0.07) | 2.5× the null (p=0.003) |
+
+Split-half is the decisive one: split each item's surfacings in half at random
+and correlate the rate in one half against the other. Real item-level signal
+reproduces across halves. The engaged label scores 0.05 — for clusters,
+**−0.01**. The permutation test confirms it from the other side: keep every
+turn's item set and every turn's label and shuffle only which label goes with
+which turn, and the between-item spread you get by chance is indistinguishable
+from the spread L38 was reading as evidence.
+
+So 82% of 466 concepts had been moved off neutral, and their ordering was
+noise.
+
+### Outcome: standing now reads the echo verdict
+
+The fix is small because **the right signal was already being recorded on the
+same rows.** `echoed` is per-item by construction — it asks whether *this*
+item's content turned up in the reply — and it measures 12× more reliable. L38
+now reads `echoed / judged` instead of `engaged / settled`; the estimator,
+shrinkage, floor, ceiling and `protect_downward` carry over untouched, since
+the shape was never the problem.
+
+Replayed over the live 90-day window this roughly **doubles the map's
+discrimination** — interquartile spread 0.035 → 0.081, range 0.402-0.633 →
+0.378-0.721 — and the movers show what was being lost. A boundary Aiko draws on
+in 12 of 15 surfacings sat at exactly neutral because it happened to appear on
+no engaged turns; a narrative she has quoted once in twelve sat near the top of
+the map at 0.632 because the turns it rode along on went well.
+
+Three notes on the decision, since it is a judgement and not just a bug fix:
+
+- **The trade is real.** Engagement is the user's verdict; echo is only Aiko's,
+  so rewarding echo does risk favouring what she already reaches for. It is
+  still the right call, because a reliable measure of a near-enough quantity
+  beats an unbiased measure of the right quantity that carries no information —
+  and the honest alternative was not "keep it", it was "retire standing".
+- **The obvious hybrid is worse.** Crediting only echoes that land on engaged
+  turns *sounds* like the best of both and measures 0.12 against echo's 0.48:
+  the AND inherits the label's noise and thins the positive class to 5%, which
+  destroys per-item resolution. Measured, not assumed.
+- **`echo_rate`'s denominator was also wrong** — echoes over *surfaced* rows
+  rather than over rows an echo test actually ran on. Clusters get no echo test
+  at all, so they reported a confident 0.0 for something nobody had measured.
+  `ItemStats.judged` now separates "no evidence" from "evidence of nothing".
+
+**Not changed, and worth its own look.** K81 taste affinity and L42 neglect
+still read cluster-level engaged rates, because clusters have no echo verdict
+to switch to. The same test on clusters is underpowered (38 items clear the
+floor, p=0.27) so this is *not yet* a finding — but the point estimate is
+−0.01, and taste's "1 of 39 clusters clears the bar" (H8) reads differently if
+the bar is being applied to noise. Either give clusters an echo test or accept
+that cluster affinity is a much weaker instrument than concept standing.
+
+**Seventh recurring shape, and the one with the most reach:** *a signal that is
+recorded, aggregated and consumed can still be empty.* Nothing here was
+broken — the worker ran, the map was populated and bounded, the estimator was
+careful, the shrinkage was correct, the tests passed. The whole apparatus was
+in good order around a number that meant nothing. **Rule: before a signal is
+allowed to rank anything, measure its split-half reliability against the null
+of shuffling it. A signal with reliability under ~0.2 is a constant with extra
+steps.** Worth running against every other learned rate in the system:
+habituation, cue `used_evidence`, importance's affect lift, the K-series
+gates.
+
+---
+
+## The seven recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -709,6 +807,16 @@ wrong, and no test could catch any of them because each stub chose the input
 that made its own assertion pass — including the sign. **Rule: a shared signal
 gets one shared predicate next to the thing that produces it, and callers do not
 re-derive the comparison.**
+
+**7. A signal that is recorded, aggregated and consumed, and is empty.** The
+hardest of the seven to see, because nothing about it looks wrong: in H18 the
+worker ran hourly, the map was bounded and persisted, the estimator shrank
+carefully toward an empirical baseline, and the tests passed. The number it was
+all built around had a split-half reliability of 0.05. Every other shape here
+is found by asking "did this run?"; this one is only found by asking "does this
+mean anything?" **Rule: any learned rate that ranks, gates or weights something
+must have its reliability measured against the null of shuffling it, and the
+figure recorded in the shipped entry.**
 
 ---
 

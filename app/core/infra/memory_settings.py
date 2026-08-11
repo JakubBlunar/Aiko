@@ -1090,6 +1090,11 @@ class MemorySettings:
     # cached in kv_meta; cold/missing evidence remains neutral.
     concept_surfacing_standing_enabled: bool = True
     concept_surfacing_standing_window_days: int = 90
+    # Counts rows an *echo test ran on*, despite the historical name. It used
+    # to count settled rows -- i.e. turns that got an engagement label -- but
+    # that label belongs to the turn, and 67 items share each one, so the
+    # per-item rate it produced was indistinguishable from noise (split-half
+    # reliability 0.05). The key is kept for config compatibility.
     concept_surfacing_standing_min_settled: int = 4
     concept_surfacing_standing_prior_strength: float = 10.0
     concept_surfacing_standing_floor: float = 0.35
