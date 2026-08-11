@@ -115,7 +115,10 @@ class _Host(InnerLifePart3Mixin):
         )
         self._user_id = "jacob"
         self._chat_db = None
-        self._topic_stagnation_detector = SimpleNamespace(last_mean=0.9)
+        # A lull is a *low* mean distance -- the conversation circling.
+        self._topic_stagnation_detector = SimpleNamespace(
+            last_mean=0.10, mild_threshold=0.20,
+        )
         self._relationship_axes_store = SimpleNamespace(
             get=lambda _uid: SimpleNamespace(closeness=0.8, comfort=0.8),
         )

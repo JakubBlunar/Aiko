@@ -1743,14 +1743,16 @@ def register(mcp, session: "SessionController") -> None:
                 session.debug_overrides.peek("dormant_interest_force_next", False)
             ),
         }
-        detector = getattr(session, "_topic_stagnation_detector", None)
-        out["lull_mean"] = getattr(detector, "last_mean", None)
-        out["lull_threshold"] = float(
-            getattr(detector, "mild_threshold", None)
-            or getattr(
-                session._memory_settings, "stagnation_mild_threshold", 0.18,
-            )
+        from app.core.conversation.topic_stagnation import (
+            in_standing_lull,
+            lull_band,
         )
+
+        detector = getattr(session, "_topic_stagnation_detector", None)
+        memory_settings = session._memory_settings
+        out["lull_mean"] = getattr(detector, "last_mean", None)
+        out["lull_threshold"] = lull_band(detector, memory_settings)
+        out["in_lull"] = in_standing_lull(detector, memory_settings)
         # What the band is calibrated against. A ``lull_threshold`` far
         # below ``observed_min`` is the signature of the gate being
         # unreachable rather than merely strict.

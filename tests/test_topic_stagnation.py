@@ -15,6 +15,8 @@ from app.core.conversation.topic_stagnation import (
     BAND_STRONG_LULL,
     StagnationResult,
     TopicStagnationDetector,
+    in_standing_lull,
+    lull_band,
     render_inner_life_block,
 )
 
@@ -302,6 +304,50 @@ class SelfCalibrationTests(unittest.TestCase):
         )
         self.assertFalse(det.adaptive)
         self.assertAlmostEqual(det.mild_threshold, 0.18)
+
+
+class StandingLullTests(unittest.TestCase):
+    """The shared predicate five prompt blocks gate on.
+
+    It exists because each of them used to spell the test out inline and
+    most spelled it wrong: two inverted the comparison, and all but one
+    read the configured constant instead of the band the detector had
+    calibrated to.
+    """
+
+    def _det(self, mean: float | None, band: float = 0.20) -> SimpleNamespace:
+        return SimpleNamespace(last_mean=mean, mild_threshold=band)
+
+    def test_a_quiet_reading_is_a_lull(self) -> None:
+        self.assertTrue(in_standing_lull(self._det(0.05)))
+
+    def test_a_moving_conversation_is_not(self) -> None:
+        # The direction that was backwards in the wild: a *high* mean is
+        # divergence, which is the opposite of circling.
+        self.assertFalse(in_standing_lull(self._det(0.9)))
+
+    def test_an_unfilled_window_reads_as_no_lull(self) -> None:
+        self.assertFalse(in_standing_lull(self._det(None)))
+
+    def test_a_missing_detector_reads_as_no_lull(self) -> None:
+        self.assertFalse(in_standing_lull(None, _settings()))
+
+    def test_the_bar_is_the_calibrated_band_not_the_constant(self) -> None:
+        settings = _settings(stagnation_mild_threshold=0.18)
+        det = self._det(0.30, band=0.35)
+        self.assertAlmostEqual(lull_band(det, settings), 0.35)
+        self.assertTrue(in_standing_lull(det, settings))
+
+    def test_the_constant_stands_in_before_a_detector_exists(self) -> None:
+        self.assertAlmostEqual(
+            lull_band(None, _settings(stagnation_mild_threshold=0.42)), 0.42
+        )
+
+    def test_a_live_detector_agrees_with_its_own_band(self) -> None:
+        det = _build()
+        for _ in range(4):
+            det.detect(0.05)
+        self.assertTrue(in_standing_lull(det))
 
 
 class RenderTests(unittest.TestCase):

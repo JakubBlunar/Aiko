@@ -395,6 +395,55 @@ class TopicStagnationDetector:
         return getattr(self._memory_settings, name, default)
 
 
+def lull_band(
+    detector: "TopicStagnationDetector | None",
+    memory_settings: Any | None = None,
+) -> float:
+    """The bar a standing-lull consumer must test ``last_mean`` against.
+
+    The detector's *effective* mild band, not the configured constant.
+    Since self-calibration the two are usually different numbers, and
+    the constant is the one that cannot fire: it encodes one embedding
+    model's distance scale and on this install sits below every reading
+    ever taken.
+    """
+    band = getattr(detector, "mild_threshold", None)
+    if band is not None:
+        return float(band)
+    return float(
+        getattr(
+            memory_settings,
+            "stagnation_mild_threshold",
+            _DEFAULT_MILD_THRESHOLD,
+        )
+    )
+
+
+def in_standing_lull(
+    detector: "TopicStagnationDetector | None",
+    memory_settings: Any | None = None,
+) -> bool:
+    """Is the conversation currently circling? The one definition.
+
+    Five prompt blocks wait for "a natural lull" and each used to spell
+    the test out itself. Four spelled it wrong -- two inverted the
+    comparison outright, and all four read the raw constant -- so
+    K54 topic-appetite could never fire and the K81/K85e lean gate and
+    the L17e reflection gate were open on exactly the turns they meant
+    to sit out. The polarity is the easy thing to get backwards:
+    ``last_mean`` is a *distance*, so a lull is a low reading, not a
+    high one.
+
+    ``None`` (the window has not filled) reads as "not a lull". Every
+    consumer wants a positive reading before speaking up, so a cold
+    signal must block rather than pass.
+    """
+    mean = getattr(detector, "last_mean", None)
+    if mean is None:
+        return False
+    return float(mean) <= lull_band(detector, memory_settings)
+
+
 # F10k: cap on how long a cluster label we'll splice into the cue
 # (mirrors ``novelty_detector._MAX_TOPIC_LABEL_CHARS``).
 _MAX_TOPIC_LABEL_CHARS = 48
@@ -455,5 +504,7 @@ __all__ = [
     "BAND_STRONG_LULL",
     "StagnationResult",
     "TopicStagnationDetector",
+    "in_standing_lull",
+    "lull_band",
     "render_inner_life_block",
 ]
