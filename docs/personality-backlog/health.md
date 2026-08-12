@@ -1467,6 +1467,120 @@ time from message timestamps and never reading it out of the note prose.
 
 ---
 
+## H25. The crash was in a language that has no stack trace
+
+**Severity: high — an unexplained process death, plus a diagnostic gap that
+guaranteed the investigation would start in the wrong place.**
+
+Reported: *"Aiko crashed, even during night on same error. It is weird, my
+system should be stable. I run benchmarks and occt for stability and no
+issues."* `data/crashlog.txt` held a `faulthandler` dump headed **`Windows
+fatal exception: access violation`**, with the faulting thread stopped here:
+
+```
+File "app/core/conversation/topic_graph.py", line 1808 in _live_to_topic_clusters_locked
+File "app/core/session/speaking_workers_init_mixin.py", line 2348 in _consolidation_graph_mature
+File "app/core/proactive/idle_worker_scheduler.py", line 611 in _probe
+```
+
+**Line 1808 is a dataclass construction.** Two tuple comprehensions and a
+`TopicCluster(...)`. Pure Python cannot dereference a bad pointer, so that
+frame is not the cause — it is where an already-corrupted heap was next
+touched, and an allocation-heavy loop on the every-15-second idle probe is
+the most likely place in the process for that to happen. The log settled
+it: the same path had run cleanly at 11:21:29 and again at 11:23:00, three
+minutes before the fault. Auditing it anyway cost a pass over the lock
+discipline (correct — every `_live` access is guarded) and the centroid
+decode (correct — it copies out of the SQLite blob rather than aliasing
+it). Both were innocent, as the timestamps had already implied.
+
+**A hardware theory was never on the table, and this is worth stating
+plainly because the user's instinct was to distrust their machine.** An
+access violation is a pointer bug inside a native library. OCCT and memtest
+load the CPU, RAM and GPU looking for physical faults; they cannot observe
+a library writing outside its allocation. A clean stability run and this
+crash are answers to different questions.
+
+### What was actually wrong with the process
+
+Enumerating the loaded modules in the app's own venv, staged by import:
+
+| After importing | OpenMP runtimes now mapped |
+| --- | --- |
+| `numpy`, `lancedb`, rag store, topic graph | *(none)* |
+| `app.stt.realtime_stt_service` | `torch\lib\libiomp5md.dll`, **`ctranslate2\libiomp5md.dll`**, `sklearn\.libs\vcomp140.dll` |
+
+Two separate copies of Intel's OpenMP runtime, plus Microsoft's, in one
+process. Each copy keeps its own global state and thread pool; Intel and
+PyTorch both document the combination as undefined behaviour, and the
+documented symptom is a random native fault after long uptime — precisely
+this crash's profile, and precisely the profile that survives a stress
+test. Nothing in the repo set `KMP_DUPLICATE_LIB_OK`, and no `OMP: Error
+#15` was ever logged, so this had been loading silently on every boot.
+
+It was also being paid for nothing. `session_controller` imports
+`RealtimeSttService` at module scope, and that module did
+`from RealtimeSTT import AudioToTextRecorder` at import time, which drags
+in torch and CTranslate2 whether or not voice is ever used. P27 had already
+deferred the *recorder* (the ~0.9 GB subprocess); the *import* was still
+eager. `realtimesst.log` was last written on **July 12**, a month before
+the crash: no model had started in any recent run, and the process was
+carrying the hazardous configuration regardless.
+
+**Honest limit: this is a mechanism, not a proven cause.** `faulthandler`
+prints Python frames only, so nothing in the dump names the faulting DLL.
+The duplicate-runtime finding fits the symptoms and is independently worth
+fixing, but attributing *this* fault to it would be exactly the
+plausible-looking non-fix this document exists to discourage.
+
+### Outcome: make the next one self-explaining
+
+Since the cause could not be proven, the deliverable is the diagnostic.
+[`app/core/infra/native_crash.py`](../../app/core/infra/native_crash.py)
+installs an unhandled-exception filter that records the exception code, the
+faulting address, **the DLL containing that address** (via
+`GetModuleHandleEx` — normally the whole answer on its own), whether the
+process held duplicate OpenMP runtimes at the moment it died, and a
+minidump for native stack walking. It returns `EXCEPTION_CONTINUE_SEARCH`,
+so the process still dies exactly as before; this only leaves evidence.
+Read it with `get_native_crashes()`.
+
+Verified against a deliberately triggered access violation, which is
+fiddlier than it sounds: a ctypes *foreign call* is wrapped in ctypes' own
+SEH and surfaces as `OSError` without ever reaching the filter, so the test
+has to dereference a pointer object instead. Two real bugs fell out of
+running it rather than assuming it worked — `MiniDumpWriteDump` silently
+wrote a zero-byte file until every signature had explicit `argtypes`
+(ctypes narrows pointer-sized arguments to `int` otherwise), and it then
+refused the exception-pointers struct from inside the filter with
+`ERROR_NOACCESS`, so the dump is now written without it and every thread's
+native stack is still captured. The handler correctly named
+`_ctypes.pyd` as the faulting module in the test.
+
+Alongside it: `log_native_runtime_inventory()` logs the runtime tally once
+per boot (WARNING when unsupported), and the `RealtimeSTT` import is now
+deferred behind `_recorder_class()` with availability answered by
+`find_spec`, so a text-only session loads no OpenMP at all. Confirmed
+empirically — importing and constructing the service maps zero OpenMP
+runtimes while `is_available` stays `True`; forcing the import reproduces
+`DUPLICATE: libiomp5md.dll loaded from 2 paths`.
+
+**Twelfth recurring shape — the top frame is not the bug when the fault is
+native.** Every other entry in this document was found by reading a Python
+stack or a table of telemetry, where the top frame *is* the lead. A native
+memory fault inverts that: the reported location is a function of
+allocation pressure, not of causality, and the honest first question is
+"was this process in a supported configuration at all?" rather than "what
+is wrong with the function named in the dump". **Rule: for an access
+violation, read the faulting DLL and the loaded-runtime inventory before
+reading any Python frame — and never let a stress-test pass talk you out
+of looking for a pointer bug.** The corollary that cost real time here:
+duplicate native runtimes are invisible until something enumerates loaded
+modules, so that enumeration belongs in the boot log rather than in an
+investigator's head.
+
+---
+
 ## The eight recurring shapes
 
 More useful than any single entry — these are the bug families to check for

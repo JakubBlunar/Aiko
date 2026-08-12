@@ -179,6 +179,54 @@ class FailedLoadTests(_Base):
             self.assertFalse(svc.prewarm())
 
 
+class DeferredImportTests(unittest.TestCase):
+    """P27 deferred the recorder; this pins the deferral of the *import*.
+
+    ``import RealtimeSTT`` pulls in torch and CTranslate2, which map close
+    to a gigabyte of native libraries and, on Windows, two separate copies
+    of the Intel OpenMP runtime -- a configuration that produces random
+    access violations. A text-only session must not load any of it, and
+    the availability gates run before any audio exists, so they have to
+    answer without importing.
+    """
+
+    def test_availability_does_not_need_the_import(self) -> None:
+        # Sentinel state = "never imported". Availability must still
+        # resolve, via find_spec rather than execution.
+        with mock.patch.object(
+            stt_mod, "AudioToTextRecorder", stt_mod._NOT_IMPORTED,
+        ):
+            answered = stt_mod._engine_installed()
+            # Whatever the answer, the attribute must remain untouched:
+            # answering the question must not have triggered the import.
+            self.assertIs(stt_mod.AudioToTextRecorder, stt_mod._NOT_IMPORTED)
+        self.assertIsInstance(answered, bool)
+
+    def test_a_patched_class_is_reported_installed(self) -> None:
+        with mock.patch.object(stt_mod, "AudioToTextRecorder", _FakeRecorder):
+            self.assertTrue(stt_mod._engine_installed())
+            self.assertIs(stt_mod._recorder_class(), _FakeRecorder)
+
+    def test_an_explicit_none_still_means_unavailable(self) -> None:
+        # ``None`` is distinct from the sentinel: it means we looked and
+        # the engine is not usable.
+        with mock.patch.object(stt_mod, "AudioToTextRecorder", None):
+            self.assertFalse(stt_mod._engine_installed())
+
+    def test_constructing_the_service_imports_nothing(self) -> None:
+        with mock.patch.object(
+            stt_mod, "AudioToTextRecorder", stt_mod._NOT_IMPORTED,
+        ):
+            RealtimeSttService(_stt_settings(), _audio())
+            self.assertIs(stt_mod.AudioToTextRecorder, stt_mod._NOT_IMPORTED)
+
+    def test_a_failed_import_surfaces_as_an_error_not_a_crash(self) -> None:
+        with mock.patch.object(stt_mod, "AudioToTextRecorder", None):
+            svc = RealtimeSttService(_stt_settings(), _audio())
+            with self.assertRaises(RuntimeError):
+                svc._create_recorder()
+
+
 class ShutdownTests(_Base):
     def test_shutdown_stops_a_loaded_recorder(self) -> None:
         svc = self.service()

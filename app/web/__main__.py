@@ -16,6 +16,7 @@ import time
 from app.core.infra.crash_logging import (
     configure_logging_full,
     install_global_exception_hooks,
+    log_native_runtime_inventory,
 )
 from app.core.session.session_controller import SessionController
 from app.core.infra.settings import load_settings
@@ -128,6 +129,10 @@ def main() -> int:
         session.prewarm_runtime(on_status=lambda msg: log.info("[startup] %s", msg))
     except Exception as exc:
         log.warning("Prewarm failed: %s", exc)
+
+    # After the STT / torch imports, so the inventory reflects what the
+    # process actually runs with.
+    log_native_runtime_inventory()
 
     web_settings = getattr(settings, "web_server", None)
     web_port = int(getattr(web_settings, "port", 6275)) if web_settings is not None else 6275

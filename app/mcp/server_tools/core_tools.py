@@ -1141,6 +1141,57 @@ def register(mcp, session: "SessionController") -> None:
         return json.dumps({"crashes": entries}, indent=2, default=str)
 
     @mcp.tool()
+    def get_native_crashes(limit: int = 5) -> str:
+        """Return recent **native** (process-fatal) crashes, newest first.
+
+        First stop for "Aiko just vanished" / "Windows fatal exception:
+        access violation" in ``data/crashlog.txt``. These are memory
+        faults in a C/C++/Rust extension, and they are a different animal
+        from the Python tracebacks the rest of the log stream carries.
+
+        **Do not trust the Python frame at the top of the faulthandler
+        dump.** A pure-Python statement cannot dereference a bad pointer,
+        so that frame is only where the fault surfaced -- in practice the
+        busiest allocation site in the process, which is usually innocent.
+        The fields here are what actually identify the culprit:
+
+        - ``module`` — the DLL containing the faulting address. This is
+          normally the answer on its own.
+        - ``address`` / ``exception`` — the faulting pointer and the
+          Windows exception code.
+        - ``duplicate_openmp`` / ``openmp_runtimes`` — whether the process
+          held more than one OpenMP runtime when it died. Two copies of
+          ``libiomp5md.dll`` (torch and ctranslate2 each ship one) or a
+          mix with ``vcomp140.dll`` is undefined behaviour and produces
+          exactly this failure mode: a random fault after hours of
+          uptime that looks like failing hardware and that CPU/RAM
+          stress tests will never reproduce.
+        - ``minidump`` — path to a ``.dmp`` for native stack walking.
+
+        Empty result with a fatal dump present in the file means the
+        crash predates this handler; restart to arm it.
+        """
+        from app.core.infra.crash_logging import read_native_crashes
+        try:
+            entries = read_native_crashes(limit=max(1, min(50, int(limit))))
+        except Exception as exc:
+            return f"get_native_crashes failed: {exc}"
+        if not entries:
+            return json.dumps(
+                {
+                    "crashes": [],
+                    "note": (
+                        "no native crashes recorded since the handler was "
+                        "installed. Raw faulthandler output (the 'Windows "
+                        "fatal exception' text block) may still be present "
+                        "in crashlog.txt from an earlier build."
+                    ),
+                },
+                indent=2,
+            )
+        return json.dumps({"crashes": entries}, indent=2, default=str)
+
+    @mcp.tool()
     def set_log_level(module: str, level: str) -> str:
         """Bump a single logger to ``level`` at runtime (until app restart).
 
