@@ -1201,9 +1201,13 @@ def _parse_vision_settings(value: Any) -> VisionSettings:
     """Build a :class:`VisionSettings` from the raw ``vision`` block.
 
     Missing / non-dict input yields the defaults (disabled). ``max_bytes``
-    is clamped to ``[1 KiB, 64 MiB]``; ``timeout_seconds`` floors at 5s;
+    is clamped to ``[1 KiB, 64 MiB]``; ``max_edge`` to ``[256, 4096]``
+    (below 256 the shrink costs detail without buying speed, above 4096
+    nothing is gained because the model resamples anyway);
+    ``timeout_seconds`` floors at 5s; ``in_turn_max_images`` to
+    ``[1, 8]`` to match the per-message attachment cap;
     ``allowed_extensions`` reuses :func:`_parse_extension_list` (empty =
-    allow all); ``model`` / ``default_prompt`` are trimmed strings.
+    allow all); ``model`` / prompts are trimmed strings.
     """
     raw = value if isinstance(value, dict) else {}
     defaults = VisionSettings()
@@ -1217,21 +1221,55 @@ def _parse_vision_settings(value: Any) -> VisionSettings:
         max_bytes = defaults.max_bytes
     max_bytes = max(1024, min(64 * 1024 * 1024, max_bytes))
     try:
+        max_edge = int(raw.get("max_edge", defaults.max_edge))
+    except (TypeError, ValueError):
+        max_edge = defaults.max_edge
+    max_edge = max(256, min(4096, max_edge))
+    try:
         timeout_seconds = int(raw.get("timeout_seconds", defaults.timeout_seconds))
     except (TypeError, ValueError):
         timeout_seconds = defaults.timeout_seconds
     timeout_seconds = max(5, timeout_seconds)
+    try:
+        in_turn_max_images = int(
+            raw.get("in_turn_max_images", defaults.in_turn_max_images)
+        )
+    except (TypeError, ValueError):
+        in_turn_max_images = defaults.in_turn_max_images
+    in_turn_max_images = max(1, min(8, in_turn_max_images))
+    try:
+        in_turn_timeout_seconds = int(
+            raw.get(
+                "in_turn_timeout_seconds", defaults.in_turn_timeout_seconds,
+            )
+        )
+    except (TypeError, ValueError):
+        in_turn_timeout_seconds = defaults.in_turn_timeout_seconds
+    # Floor at 5s (below that a warm call can't finish, so the feature is
+    # just off); ceiling at 120s (a turn that hangs longer is broken
+    # regardless of what the config asked for).
+    in_turn_timeout_seconds = max(5, min(120, in_turn_timeout_seconds))
     model = str(raw.get("model", defaults.model) or "").strip()
     default_prompt = str(
         raw.get("default_prompt", defaults.default_prompt) or ""
     ).strip() or defaults.default_prompt
+    in_turn_prompt = str(
+        raw.get("in_turn_prompt", defaults.in_turn_prompt) or ""
+    ).strip() or defaults.in_turn_prompt
     return VisionSettings(
         enabled=bool(raw.get("enabled", defaults.enabled)),
         model=model,
         max_bytes=max_bytes,
+        max_edge=max_edge,
         timeout_seconds=timeout_seconds,
         allowed_extensions=extensions,
         default_prompt=default_prompt,
+        in_turn_enabled=bool(
+            raw.get("in_turn_enabled", defaults.in_turn_enabled)
+        ),
+        in_turn_max_images=in_turn_max_images,
+        in_turn_timeout_seconds=in_turn_timeout_seconds,
+        in_turn_prompt=in_turn_prompt,
     )
 
 

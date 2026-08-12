@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.core.world import day_intention
+from app.core.world import day_intention, in_progress_beat
 from app.core.world.idle_activity_worker import (
     AWAY_ACTIVITIES_JOURNAL_KEY,
     EFFECT_POUR_TEA,
@@ -199,6 +199,7 @@ def _make_worker(
     day_intention: bool = False,
     hobby: str | None = None,
     pursuit_notes: Any = None,
+    in_progress_ratio: float = 0.0,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
         world_store=world,
@@ -222,6 +223,7 @@ def _make_worker(
         ),
         episode_ratio=episode_ratio,
         episode_min_gap_seconds=episode_min_gap_seconds,
+        in_progress_ratio=in_progress_ratio,
         day_intention_enabled=day_intention,
         hobby_provider=(lambda: hobby) if hobby is not None else None,
         pursuit_notes=pursuit_notes,
@@ -297,6 +299,177 @@ class ActivitySelectionTests(unittest.TestCase):
         worker.force_activity("doodle")
         worker.run()
         self.assertTrue(any("state" in p for p in patches))
+
+
+class InProgressBeatTests(unittest.TestCase):
+    """H26: a beat left running, and how the worker settles it.
+
+    The invariant worth stating: an open beat has *not* been journalled.
+    Journalling is what the K36 return cue reads to say "while you were
+    away, you did X", and saying that about something she is still in
+    the middle of is the exact confusion H26 exists to remove.
+    """
+
+    def test_an_open_beat_mutates_the_room_but_does_not_journal(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+        )
+        worker.force_activity("doodle")
+
+        result = worker.run()
+
+        self.assertEqual(result["fired"], 1)
+        self.assertTrue(result["in_progress"])
+        self.assertTrue(world.set_state_calls, "the room should show her at it")
+        self.assertEqual(load_journal(kv.get), [], "nothing to report yet")
+        self.assertIsNotNone(in_progress_beat.load(kv.get))
+
+    def test_ratio_zero_keeps_the_old_finish_and_journal_behaviour(
+        self,
+    ) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=0.0,
+        )
+        worker.force_activity("doodle")
+
+        result = worker.run()
+
+        self.assertNotIn("in_progress", result)
+        self.assertEqual(len(load_journal(kv.get)), 1)
+        self.assertIsNone(in_progress_beat.load(kv.get))
+
+    def test_an_open_beat_blocks_the_next_one(self) -> None:
+        # Starting something new on top would contradict the room and
+        # lose the thread the return cue is waiting on.
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+        )
+        worker.force_activity("doodle")
+        worker.run()
+        before = len(world.set_state_calls)
+
+        second = worker.run()
+
+        self.assertEqual(second["fired"], 0)
+        self.assertTrue(second["skipped_in_progress"])
+        self.assertEqual(len(world.set_state_calls), before)
+
+    def test_an_elapsed_beat_finishes_and_journals(self) -> None:
+        # Nobody came back during the window, so it simply completed —
+        # and the ordinary K36 cue reports it, exactly as before H26.
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+        )
+        worker.force_activity("doodle")
+        worker.run()
+
+        beat = in_progress_beat.load(kv.get)
+        assert beat is not None
+        beat.expected_end_at = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat(timespec="seconds")
+        in_progress_beat.save(kv.set, beat)
+
+        result = worker.run()
+
+        self.assertEqual(result["fired"], 1)
+        self.assertTrue(result["completed_in_progress"])
+        self.assertFalse(result["resumed"])
+        self.assertEqual(len(load_journal(kv.get)), 1)
+        self.assertIsNone(in_progress_beat.load(kv.get))
+
+    def test_an_interrupted_beat_is_resumed_and_reads_as_a_thread(
+        self,
+    ) -> None:
+        # The half that makes this more than a different opening line:
+        # she gets to go back to it, so the afternoon has continuity.
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+        )
+        worker.force_activity("doodle")
+        worker.run()
+
+        beat = in_progress_beat.load(kv.get)
+        assert beat is not None
+        in_progress_beat.mark_interrupted(
+            kv.set, beat, datetime.now(timezone.utc),
+        )
+
+        result = worker.run()
+
+        self.assertTrue(result["resumed"])
+        journal = load_journal(kv.get)
+        self.assertEqual(len(journal), 1)
+        self.assertTrue(journal[0]["resumed"])
+        self.assertIn("went back to", journal[0]["summary"])
+
+    def test_the_debug_force_opens_a_beat_even_at_ratio_zero(self) -> None:
+        # Catching this state by hand is otherwise mostly waiting: a
+        # minority outcome whose window must still be open at assembly.
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=0.0,
+        )
+        worker.force_activity("doodle")
+        worker.force_in_progress()
+
+        result = worker.run()
+
+        self.assertTrue(result["in_progress"])
+        self.assertIsNotNone(in_progress_beat.load(kv.get))
+
+    def test_the_debug_force_is_one_shot(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=0.0,
+        )
+        worker.force_activity("doodle")
+        worker.force_in_progress()
+        worker.run()
+        in_progress_beat.clear(kv.set)
+
+        worker.force_activity("doodle")
+        second = worker.run()
+
+        self.assertNotIn("in_progress", second)
+
+    def test_an_outing_is_never_left_open(self) -> None:
+        # "Caught mid-walk" would have to explain why she is answering
+        # from a street.
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(), kv=kv, cooldown=0.0,
+            in_progress_ratio=1.0, period="afternoon",
+        )
+        worker.force_activity("outing")
+        result = worker.run()
+
+        self.assertNotIn("in_progress", result)
+        self.assertIsNone(in_progress_beat.load(kv.get))
+
+    def test_an_episode_is_never_left_open(self) -> None:
+        # An episode's whole point is a completed sequence.
+        kv = _FakeKV()
+        worker = _make_worker(
+            world=_FakeWorldStore(
+                items=[_FakeItem(7, "cookies", kind="food", consumable=True,
+                                 quantity=3)],
+            ),
+            kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+            episode_ratio=1.0, episode_min_gap_seconds=0.0, seed=3,
+        )
+        result = worker.run()
+
+        if "episode" in result:
+            self.assertNotIn("in_progress", result)
+            self.assertIsNone(in_progress_beat.load(kv.get))
 
 
 class JournalTests(unittest.TestCase):

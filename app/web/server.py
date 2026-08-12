@@ -1176,7 +1176,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
                 if msg_type == "chat":
                     text = str(msg.get("text") or "").strip()
-                    if not text:
+                    # H25: a bare attachment is a complete message — the
+                    # caption is optional, so only an empty message with
+                    # nothing attached is a no-op.
+                    if not text and not msg.get("attachments"):
                         continue
                     if active_turn is not None and not active_turn.is_set():
                         await ws.send_text(json.dumps({

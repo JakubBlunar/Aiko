@@ -1,8 +1,8 @@
 # Immersion polish
 
 Small additions that compound. The world / idle-life / co-presence
-items that have shipped (**H0, H1, H9, H11, H13–H22** + the SSML
-prosody minor item) have been moved to
+items that have shipped (**H0, H1, H9, H11, H13–H22, H25, H26** + the
+SSML prosody minor item) have been moved to
 [`shipped/immersion.md`](shipped/immersion.md) (and `H1` /
 SSML live in [`shipped/features.md`](shipped/features.md)). This file
 now holds **only the open work**.
@@ -27,8 +27,8 @@ now holds **only the open work**.
 | H13–H22 | Idle-life / world batch                   | ✅ shipped — [immersion.md](shipped/immersion.md) |
 | H23 | Avatar shared-moment snapshot ("selfie")      | ❌ open (rig-dependent) |
 | H24 | Occasion- / season-aware outfits              | ❌ open (rig-dependent) |
-| H25 | Show-and-tell — share an image, she reacts    | ❌ open |
-| H26 | Caught mid-something — busy when you arrive   | ❌ open |
+| H25 | Show-and-tell — share an image, she reacts    | ✅ shipped — [immersion.md](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers) |
+| H26 | Caught mid-something — busy when you arrive   | ✅ shipped — [immersion.md](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app) |
 | H27 | Co-presence mode — in the room, not talking   | ❌ open (depends on H10) |
 
 ---
@@ -221,75 +221,6 @@ capability map in
 [`avatar_profile.py`](../../app/core/persona/avatar_profile.py), persona
 acknowledgment so she can mention it once when natural,
 `agent.occasion_outfit_enabled`.
-
----
-
-## H25. Show-and-tell — share an image, she reacts and remembers
-
-**Motivation.** Vision settings exist, but the relationship is one-directional on
-images: Aiko can't be *shown* things. Letting the user drop a photo into chat
-("look at my new desk", "this is my dog") and having Aiko genuinely react to it —
-and then **remember it** as a shared moment with the image attached — is one of
-the strongest "she's actually here with me" beats available, and a huge chunk of
-the path (a multimodal-capable provider via the LLM router, the chat image-bubble
-type) is reachable. The reaction should route through the normal turn (so affect,
-reactions, and a possible K57 episode all fire naturally off what she saw), and
-the moment should land in the shared-moments timeline with a thumbnail so it can
-be anniversaried and called back later. The hard parts: gating on a
-vision-capable route, privacy posture (the image is the user's — store locally,
-never auto-upload), and graceful degradation when the active model is text-only.
-Pairs with the shared-moments / Together tab and H23 (her side of the camera).
-Key files: an image-attachment path in
-[`ChatView.tsx`](../../web/src/features/chat/ChatView.tsx) /
-[`store.ts`](../../web/src/store.ts), a multimodal turn path through the
-[`ChatClient`](../../app/llm/chat_client.py) router, a `shared_moment` write
-carrying the local image ref, `agent.image_share_enabled` + a vision-capability
-gate.
-
----
-
-## H26. Caught mid-something — she was busy when you opened the app
-
-**Motivation.** The away-activity machinery (H22 light outings, the away
-journal, the garden-visit and hobby workers) answers "what did she do while you
-were gone" as a *report* — a completed activity, narrated in past tense on the
-first turn back. What it never does is catch her **in the middle of one**. The
-difference is small in implementation and large in effect: "I re-potted the
-basil this afternoon" is a status line, whereas "oh — hang on, let me put this
-down" is a person with her own present tense, briefly interrupted by you
-arriving. The second one implies a life that was running before you got here,
-which is exactly what the whole world-simulation layer exists to establish and
-currently undersells by only ever speaking in the perfect tense. The pieces are
-all present: the world store knows her location and state, the activity workers
-already model duration, and the reconnection / session-clock blocks already fire
-on return — this is a framing change plus a notion of *in-progress* rather than
-*completed* activity.
-
-**Correction (12 Aug, read against the code).** "The activity workers already
-model duration" is not true, and it is the part that decides the size of this
-entry. `world_state` carries `location_id` / `posture` / `activity` /
-`updated_at` and nothing else — there is no `started_at`, no expected end, no
-way to ask "is she in the middle of this". K91's `beat_episode.py` chains beats
-into an episode but the chain has no wall-clock span either; it is a planner
-over beat *keys*. So the in-progress notion has to be **built**, not read: the
-smallest honest version is a `started_at` + expected-duration pair written when
-a beat begins, which is also exactly what the resume hook needs later. That
-makes this a small feature rather than the pure re-framing the paragraph above
-implies — still cheap, but not free. Best beats come from the interruption being slightly
-inconvenient (hands full, something on the stove, halfway through a chapter) and
-from her coming *back* to it later in the session or the next one, which is what
-turns it from a greeting flourish into continuity. The risk is it becoming a
-verbal tic on every single session start — it should be occasional, and it must
-never delay her actually attending to him, since a companion who makes you wait
-while she tidies up is worse than one who was simply pleased to see you. Pairs
-with H10 (autonomous idle-life on the avatar), which would let the interruption
-be *visible* rather than narrated. Key files: an in-progress activity state in
-[`app/core/world/`](../../app/core/world/) alongside the existing away-activity
-journal, the away-activity worker in
-[`app/core/world/idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py),
-the reconnection cue path in
-[`inner_life_part2.py`](../../app/core/session/inner_life_part2.py), plus a
-resume hook so an interrupted activity can be picked up later.
 
 ---
 

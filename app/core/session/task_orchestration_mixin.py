@@ -474,6 +474,7 @@ class TaskOrchestrationMixin:
                         max_bytes=int(
                             getattr(vision_cfg, "max_bytes", 8 * 1024 * 1024)
                         ),
+                        max_edge=int(getattr(vision_cfg, "max_edge", 1024)),
                         allowed_extensions=tuple(
                             getattr(vision_cfg, "allowed_extensions", ()) or ()
                         ),

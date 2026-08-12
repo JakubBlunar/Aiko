@@ -2638,6 +2638,19 @@ Left alone: `taste` at 2 rows, which H8 measured and found honestly gated (~one
 companion who mostly thinks about her partner is not by itself a defect; having
 *no* channel for anything else was.
 
+**Adjacent, 12 Aug.** The immersion backlog's
+[H26](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
+shipped the other half of "a day of her own": an away beat
+can now be left *running*, so a return catches her mid-something instead of
+hearing a completed errand. That does not move any number in this entry —
+concepts are still 67% relational — but it is worth recording here because the
+two problems get confused. This entry is about what she *believes* having no
+independent subject; H26 is about what she *does* having no present tense. A
+life she is in the middle of is a cheaper source of "what did you do today"
+than waiting for `pursuit` to clear its evidence gate, and the two compound:
+an interrupted beat she returns to is exactly the kind of repeated own-material
+note that eventually feeds a pursuit.
+
 ---
 
 ## H14. Almost nothing feels bad
@@ -2811,7 +2824,10 @@ anything else, since three of them alter the inputs to everything below:
    before theorising.
 3. **H7 remainder** — `concept_hypothesis`'s last place in `GAP_CUE_ORDER` and
    its K47 asymmetry. Deliberately deferred: both are defensible, and the split
-   reasons will say whether they matter.
+   reasons will say whether they matter. Note the order gained a member on
+   12 Aug (immersion H26's `caught_mid_activity`, ahead of `away_activities`),
+   so the queue behind it is one deep — read the decline reasons against the
+   post-12-Aug window only.
 4. **H3** — a few lines, and it unblocks a month of stranded history.
 5. **H5** — decide standing/framing deliberately; correcting or retiring are
    both fine outcomes.

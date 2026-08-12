@@ -17,6 +17,12 @@ from app.core.session.inner_life_shared import (
 
 log = logging.getLogger("app.session")
 
+# H25: per-image ceiling on the vision description rendered into the
+# prompt. Generous enough to keep the specifics that make a reaction feel
+# real, bounded so a verbose local model can't turn one shared photo into
+# the largest block of the turn.
+_SEEN_IMAGE_MAX_CHARS = 1200
+
 
 class InnerLifePart4Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 4 of 4)."""
@@ -208,12 +214,23 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
         to ``describe_image``, text to ``read_file`` — rather than
         guessing at the contents. The files live in Aiko's read-only
         ``Attachments`` file root so the workflow can resolve the path.
+
+        H25: images the in-turn vision pass already looked at are listed
+        but *not* routed to a workflow — ``seen_image_block`` carries what
+        she saw. Leaving them in the routing instruction made her both
+        react to the picture and file a job to look at it, which reads as
+        her forgetting she had already seen it.
         """
         attachments = getattr(self, "_active_turn_attachments", None)
         if not attachments:
             return ""
+        already_seen = {
+            s.rel_path
+            for s in (getattr(self, "_turn_vision_seen", None) or [])
+            if getattr(s, "rel_path", "")
+        }
         lines: list[str] = []
-        has_image = False
+        has_unseen_image = False
         has_text = False
         for att in attachments:
             if not isinstance(att, dict):
@@ -223,32 +240,96 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             filename = str(att.get("filename") or "").strip()
             if not rel:
                 continue
-            if kind == "image":
-                has_image = True
+            seen = rel in already_seen
+            if kind == "image" and not seen:
+                has_unseen_image = True
             elif kind == "text":
                 has_text = True
             label = f"{rel} ({kind or 'file'})"
             if filename:
                 label += f" — \"{filename}\""
+            if seen:
+                label += " — you have already looked at this one"
             lines.append(f"  - {label}")
         if not lines:
             return ""
         name = self.user_display_name
         verb_bits: list[str] = []
-        if has_image:
+        if has_unseen_image:
             verb_bits.append("describe_image for the picture(s)")
         if has_text:
             verb_bits.append("read_file for the text file(s)")
-        route = " and ".join(verb_bits) or "the right file workflow"
+        if not verb_bits:
+            # Everything on the turn has already been looked at.
+            return (
+                f"{name} attached the following file(s) to this message:\n"
+                + "\n".join(lines)
+            )
+        route = " and ".join(verb_bits)
         return (
             f"{name} attached the following file(s) to this message:\n"
             + "\n".join(lines)
             + (
                 f"\nThey live in your read-only Attachments file root. "
-                f"When {name} asks you to look at / read / describe them, "
-                f"hand the path to start_workflow ({route}) and act on what "
-                "comes back — never guess the contents from the filename. "
-                "If you can't see images yet, say so plainly."
+                f"When {name} asks you to look at / read / describe the "
+                f"ones you haven't seen yet, hand the path to "
+                f"start_workflow ({route}) and act on what comes back — "
+                "never guess the contents from the filename."
+            )
+        )
+
+    def _render_seen_image_block(self) -> str:
+        """H25: what Aiko's own eyes made of an image shared this turn.
+
+        The local vision model has already run (synchronously, before
+        assembly), so this is not a task result to narrate — it is her
+        looking. The framing matters: given a bare description the chat
+        model tends to *recite* it back, which sounds like a photo
+        caption service rather than someone you showed a picture to. So
+        the block says what the text is, then asks for a reaction to it.
+
+        Silent when nothing was shared or the pass didn't run, which is
+        also the graceful-degradation path: if vision is off or the local
+        model is unreachable, the turn proceeds with the old attachment
+        hint and she can still be asked to look properly.
+        """
+        seen = getattr(self, "_turn_vision_seen", None) or []
+        if not seen:
+            return ""
+        name = self.user_display_name
+        parts: list[str] = []
+        for item in seen:
+            filename = getattr(item, "filename", "") or "the image"
+            description = (getattr(item, "description", "") or "").strip()
+            if not description:
+                continue
+            # A local vision model asked for detail can run long (1600
+            # chars measured on a landscape photo, and nothing bounds it).
+            # The memory write-back still gets the full text; the prompt
+            # gets a version that can't quietly become the biggest block
+            # in the turn.
+            if len(description) > _SEEN_IMAGE_MAX_CHARS:
+                description = (
+                    description[:_SEEN_IMAGE_MAX_CHARS].rsplit(" ", 1)[0]
+                    .rstrip(",;: ") + "…"
+                )
+            parts.append(f"  \"{filename}\": {description}")
+        if not parts:
+            return ""
+        plural = "images" if len(parts) > 1 else "an image"
+        return (
+            f"{name} shared {plural} with you just now, and you looked at "
+            f"{'them' if len(parts) > 1 else 'it'}. This is what you can "
+            "see:\n"
+            + "\n".join(parts)
+            + (
+                "\nThat description is your own eyes, not a report someone "
+                "handed you — so respond to what is in the picture the way "
+                "you would if he had held it up in front of you. React "
+                "first, to the thing that actually stands out. Do not "
+                "recite the description back or list its contents, and "
+                "don't say you'll look at it later — you are looking at it "
+                "now. If something in it is unclear, just ask."
             )
         )
 

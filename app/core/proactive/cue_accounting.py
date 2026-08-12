@@ -178,9 +178,16 @@ class CueSpec:
 # every lighter beat. It is also the only dual-mode entry -- it can reach
 # the prompt on topic *without* the gap slot -- which is why its spec
 # carries no ``slot_attr``; see the note there.
+# ``caught_mid_activity`` sits above ``away_activities`` because the two
+# make contradictory claims -- one that a beat finished, one that it is
+# still running -- and only the first is checkable: an open beat is a
+# live fact about the world state, not a journal entry about the past.
+# It also fires far less often (only when a return lands inside a beat's
+# window), so giving it precedence costs the lighter cues very little.
 GAP_CUE_ORDER: tuple[str, ...] = (
     "turning_over",
     "sleep_return",
+    "caught_mid_activity",
     "away_activities",
     "forward_curiosity",
     "concept_hypothesis",
@@ -208,6 +215,16 @@ CUE_SPECS: dict[str, CueSpec] = {
             "away_activities",
             journal_key="aiko.away_activities",
             watermark_key="away_activity.last_surfaced_at",
+            slot_attr="_pending_away_activities_seconds",
+            gap_cue=True,
+        ),
+        # H26. Shares ``away_activities``' slot rather than owning one:
+        # both answer "what was she doing while he was gone", and a beat
+        # is either finished (that cue) or still running (this one), so
+        # arming two slots for one question would double-count the
+        # opportunity in the ledger.
+        CueSpec(
+            "caught_mid_activity",
             slot_attr="_pending_away_activities_seconds",
             gap_cue=True,
         ),
@@ -628,6 +645,20 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Things I did while you were away:",
             block="away_activities_block",
+        ),
+        CuePolicy(
+            "caught_mid_activity",
+            # The open beat's activity clause: "reading on the sofa".
+            # Short TTL: "I'm in the middle of this" stops being true
+            # quickly, so an unused row should expire rather than come
+            # back as a retry claiming she is still at it.
+            inventory_target=0,
+            ttl_hours=2.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            handling_section="What I was in the middle of:",
+            block="caught_mid_activity_block",
         ),
         CuePolicy(
             "long_arc_callback",

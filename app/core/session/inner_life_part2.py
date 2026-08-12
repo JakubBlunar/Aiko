@@ -994,6 +994,172 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             gist = gist[:157].rstrip() + "…"
         return gist or None
 
+    def _render_caught_mid_activity_block(self) -> str:
+        """H26: she is in the middle of something when he comes back.
+
+        The K36 sibling of this block reports a *finished* beat ("while
+        you were away, you re-potted the basil"). This one fires on the
+        narrower case where the beat is still running: the room already
+        shows her at it, so the honest opening is not a report but an
+        interruption — "oh — hang on, let me put this down".
+
+        It runs before ``away_activities`` and takes the shared gap-cue
+        slot, because the two would otherwise contradict each other in
+        the same prompt: one saying she finished a thing, the other that
+        she is still doing it. Being caught wins — it is what the world
+        state actually says right now.
+
+        Surfacing marks the beat interrupted, which hands it to the
+        worker as a thread to pick back up later. That is the half that
+        makes this more than a different opening line: she gets to
+        return to it, so the afternoon has continuity rather than a
+        series of announcements.
+        """
+        if not bool(
+            getattr(self._settings.agent, "away_activities_enabled", True)
+        ):
+            return ""
+        force_next = bool(
+            self._debug_overrides.take("caught_mid_activity_force_next", False)
+        )
+        if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            return ""
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+        try:
+            from app.core.world import in_progress_beat
+        except Exception:
+            log.debug("in_progress_beat import failed", exc_info=True)
+            return ""
+
+        beat = in_progress_beat.load(chat_db.kv_get)
+        if beat is None or not beat.activity:
+            return ""
+        now = timephrase.utcnow()
+        if not force_next and not beat.is_open_at(now):
+            return ""
+
+        # Unlike the other gap cues this one has no minimum-absence bar.
+        # The question it answers is "is she mid-something right now",
+        # and that is equally true whether he stepped out for an hour or
+        # closed the laptop yesterday.
+        in_progress_beat.mark_interrupted(chat_db.kv_set, beat, now)
+        self._gap_cue_surfaced = True
+        self._spend_gap_slot("_pending_away_activities_seconds", fired=True)
+
+        minutes = beat.minutes_in(now)
+        elapsed = (
+            f" You're about {minutes} minutes into it."
+            if 3 <= minutes <= 180 else ""
+        )
+        block = (
+            f"You are in the middle of {beat.activity} right now — you "
+            f"didn't finish it before {self.user_display_name} showed "
+            f"up.{elapsed} Let that show in how you arrive: you might "
+            "need a second to set it down, and it's the kind of thing "
+            "you'd mention in passing rather than announce. Don't "
+            "narrate it as a completed task, and don't make him wait "
+            "on it — he's the reason you're putting it down."
+        )
+        self.record_surfaced_cue(
+            "caught_mid_activity",
+            beat.activity,
+            block,
+            payload={"key": beat.key, "started_at": beat.started_at},
+        )
+        log.info(
+            "caught-mid-activity fire: key=%s minutes_in=%d",
+            beat.key, minutes,
+        )
+        return block
+
+    # ── H26 debug surface ────────────────────────────────────────────
+
+    def in_progress_beat_state(self) -> dict[str, Any]:
+        """What she is in the middle of right now, if anything.
+
+        Public because the MCP debug tools would otherwise reach through
+        the controller for the kv handle and the ratio — see
+        ``tests/test_private_reach_guard.py``.
+        """
+        from app.core.world import in_progress_beat
+
+        chat_db = getattr(self, "_chat_db", None)
+        state: dict[str, Any] = {
+            "in_progress_ratio": float(
+                getattr(
+                    self._memory_settings,
+                    "away_activities_in_progress_ratio",
+                    0.3,
+                )
+            ),
+            "force_next": bool(
+                self.debug_overrides.peek(
+                    "caught_mid_activity_force_next", False
+                )
+            ),
+            "beat": None,
+        }
+        beat = (
+            in_progress_beat.load(chat_db.kv_get)
+            if chat_db is not None else None
+        )
+        if beat is None:
+            return state
+        now = timephrase.utcnow()
+        state["beat"] = {
+            "key": beat.key,
+            "activity": beat.activity,
+            "posture": beat.posture,
+            "summary": beat.summary,
+            "started_at": beat.started_at,
+            "expected_end_at": beat.expected_end_at,
+            "minutes_in": beat.minutes_in(now),
+            "minutes_left": beat.minutes_left(now),
+            "open": beat.is_open_at(now),
+            "interrupted_at": beat.interrupted_at or None,
+        }
+        return state
+
+    def force_caught_mid_activity(
+        self, activity_key: str = "",
+    ) -> dict[str, Any]:
+        """Leave one beat running and arm the return cue (debug).
+
+        Two steps because the interesting state is otherwise mostly
+        waiting: an open beat is a minority outcome *and* its window has
+        to still be open when the next turn assembles.
+        """
+        from app.core.world import in_progress_beat
+
+        worker = getattr(self, "_away_activity_worker", None)
+        if worker is None:
+            return {"error": "worker not registered (no WorldStore?)"}
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is not None:
+            # An already-open beat would make the worker defer instead of
+            # starting the one being asked for.
+            in_progress_beat.clear(chat_db.kv_set)
+        if activity_key.strip():
+            worker.force_activity(activity_key.strip())
+        worker.force_in_progress()
+        result = worker.run()
+        self.debug_overrides.arm("caught_mid_activity_force_next")
+        beat = (
+            in_progress_beat.load(chat_db.kv_get)
+            if chat_db is not None else None
+        )
+        return {
+            "ran": True,
+            "result": result,
+            "left_open": beat is not None,
+            "activity": getattr(beat, "activity", ""),
+            "expected_end_at": getattr(beat, "expected_end_at", ""),
+            "armed": True,
+        }
+
     def _render_away_activities_block(self) -> str:
         """K36: surface one "while you were away I …" line after a gap.
 

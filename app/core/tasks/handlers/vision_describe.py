@@ -35,7 +35,6 @@ Safety caps (read live off ``agent.vision`` via constructor kwargs):
 """
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -43,6 +42,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.tasks.handler_names import HANDLER_VISION_DESCRIBE
+from app.core.vision.image_describe import (
+    MIN_USEFUL_EDGE,
+    VisionUnavailable,
+    describe_image_bytes,
+)
 from app.core.tasks.sandbox import (
     FileTaskRoot,
     PathResolutionError,
@@ -64,6 +68,7 @@ log = logging.getLogger("app.tasks.vision_describe")
 
 
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024
+DEFAULT_MAX_EDGE = 1024
 DEFAULT_PROMPT = (
     "Look at this image and describe what you see in a few natural "
     "sentences."
@@ -156,6 +161,7 @@ class VisionDescribeHandler:
         client_provider: ClientProvider | None = None,
         model_provider: ModelProvider | None = None,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        max_edge: int = DEFAULT_MAX_EDGE,
         allowed_extensions: tuple[str, ...] = (),
         default_prompt: str = DEFAULT_PROMPT,
     ) -> None:
@@ -165,6 +171,7 @@ class VisionDescribeHandler:
         self._client_provider = client_provider
         self._model_provider = model_provider
         self._max_bytes = max(1024, int(max_bytes))
+        self._max_edge = max(MIN_USEFUL_EDGE, int(max_edge))
         self._allowed_extensions: tuple[str, ...] = tuple(
             (ext if ext.startswith(".") else "." + ext).lower()
             for ext in allowed_extensions
@@ -308,31 +315,6 @@ class VisionDescribeHandler:
         emit: TaskEmitFn,
     ) -> TaskState:
         """Read the image, run the vision call, emit Completed / Failed."""
-        # Client + model resolution. A missing provider / non-Ollama
-        # client / empty model are all "vision is not actually available"
-        # — fail with a clear, user-actionable reason.
-        client = self._client_provider() if self._client_provider else None
-        if client is None:
-            emit(TaskFailed(error="vision is unavailable (no worker model)"))
-            return {"args": args, "phase": "rejected"}
-        # Ollama-shaped image passthrough only. A remote OpenAI-compatible
-        # worker client would need a different image envelope; rather than
-        # silently send nothing, fail clearly.
-        try:
-            from app.llm.ollama_client import OllamaClient
-        except Exception:  # pragma: no cover - import guard
-            OllamaClient = None  # type: ignore[assignment]
-        if OllamaClient is not None and not isinstance(client, OllamaClient):
-            emit(
-                TaskFailed(
-                    error=(
-                        "the current worker client can't accept images; set "
-                        "a local multimodal Ollama worker model (e.g. "
-                        "qwen3.5:27b) and keep workers on local Ollama"
-                    )
-                )
-            )
-            return {"args": args, "phase": "rejected"}
         model = ""
         if self._model_provider:
             try:
@@ -356,19 +338,18 @@ class VisionDescribeHandler:
                 "label": resolved.label,
                 "relative_path": resolved.relative_path,
             }
-        b64, size_bytes = read
-        prompt = (question or "").strip() or self._default_prompt
-        messages = [
-            {"role": "user", "content": prompt, "images": [b64]}
-        ]
+        raw, size_bytes = read
+        client = self._client_provider() if self._client_provider else None
         try:
-            description = client.chat(
-                messages, model=model or None, think=False,
-                surface="vision_describe",
+            seen = describe_image_bytes(
+                raw,
+                client=client,
+                model=model,
+                prompt=(question or "").strip() or self._default_prompt,
+                max_edge=self._max_edge,
             )
-        except Exception as exc:  # noqa: BLE001 - mapped to a friendly reason
-            reason = self._friendly_call_error(exc, model)
-            emit(TaskFailed(error=reason))
+        except VisionUnavailable as exc:
+            emit(TaskFailed(error=str(exc)))
             log.warning(
                 "vision_describe: call failed: label=%s rel=%s model=%s exc=%r",
                 resolved.label,
@@ -382,22 +363,7 @@ class VisionDescribeHandler:
                 "label": resolved.label,
                 "relative_path": resolved.relative_path,
             }
-        description = (description or "").strip()
-        if not description:
-            emit(
-                TaskFailed(
-                    error=(
-                        "vision model returned an empty description (is the "
-                        "worker model multimodal?)"
-                    )
-                )
-            )
-            return {
-                "args": args,
-                "phase": "rejected",
-                "label": resolved.label,
-                "relative_path": resolved.relative_path,
-            }
+        description = seen.description
         result = {
             "label": resolved.label,
             "relative_path": resolved.relative_path,
@@ -427,8 +393,13 @@ class VisionDescribeHandler:
             "relative_path": resolved.relative_path,
         }
 
-    def _read_image(self, resolved: ResolvedPath) -> tuple[str, int] | str:
-        """Read + base64-encode the image. Returns ``(b64, size)`` or error."""
+    def _read_image(self, resolved: ResolvedPath) -> tuple[bytes, int] | str:
+        """Read the image off disk. Returns ``(raw, size)`` or an error string.
+
+        Encoding (and the downscale) belongs to
+        :func:`~app.core.vision.image_describe.describe_image_bytes`, so
+        this stays a pure filesystem read with the sandbox caps applied.
+        """
         abs_path = resolved.abs_path
         if not _extension_allowed(abs_path, self._allowed_extensions):
             return (
@@ -459,7 +430,7 @@ class VisionDescribeHandler:
                 f"image too large: >{self._max_bytes} bytes "
                 "(refusing to truncate)"
             )
-        return base64.b64encode(raw).decode("ascii"), len(raw)
+        return raw, len(raw)
 
     @staticmethod
     def _friendly_call_error(exc: Exception, model: str) -> str:

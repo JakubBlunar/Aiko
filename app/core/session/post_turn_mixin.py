@@ -1115,6 +1115,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
             self._maybe_schedule_search_distill_job()
         except Exception:
             log.debug("search distill schedule failed", exc_info=True)
+        # H25: keep what she saw (no-op unless an image was shared).
+        try:
+            self._maybe_schedule_image_memory_job()
+        except Exception:
+            log.debug("image memory schedule failed", exc_info=True)
 
         # Schema v7: shared moments + relationship axes. Order matters —
         # extract inline tags first so the axes updater sees their vibes.

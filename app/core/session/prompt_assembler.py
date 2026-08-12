@@ -215,6 +215,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "absence_curiosity_block",
         "turning_over_block",
         "sleep_return_block",
+        # H26: "caught mid-something". Before away_activities — the two
+        # disagree about whether the beat is finished, and this one is
+        # the reading the room agrees with.
+        "caught_mid_activity_block",
         "away_activities_block",
         "forward_curiosity_block",
         # L30b: last of the gap-cue family, matching GAP_CUE_ORDER — a
@@ -276,6 +280,12 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # D2 Part B — in-chat attachment turn hint (per-turn; what the
         # user attached to THIS message). NOT dropped under aggressive.
         "attachments_block",
+        # H25 — what the local vision model saw in an image shared on
+        # THIS turn. Sits immediately after the attachment list it
+        # annotates. Never dropped under aggressive: the user is looking
+        # at the picture they just sent, and a reply that ignores it is
+        # the exact failure this block exists to fix.
+        "seen_image_block",
         # Brain orchestration chunk 6 — running-tasks state block.
         # Sibling of ``task_cues_block``: this block announces what's
         # *still working*, the cue block announces *deltas*
@@ -775,6 +785,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # turning_over via the shared _gap_cue_surfaced flag so only one
         # gap cue fires per return.
         self._away_activities_provider: Callable[[], str] | None = None
+        self._caught_mid_activity_provider: Callable[[], str] | None = None
         # K34 "forward curiosity" one-shot. Consumer of the
         # ForwardCuriosityWorker question ring; runs LAST of the three
         # gap-return cues so it defers to turning_over + away_activities
@@ -973,6 +984,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # suppressed under ``aggressive`` — a fresh attachment is
         # exactly what the user wants acted on.
         self._attachments_provider: Callable[[], str] | None = None
+        self._seen_image_provider: Callable[[], str] | None = None
         # Brain-orchestration chunk 6 — running-tasks state block.
         # Sibling of ``_task_cues_provider`` below: this provider
         # renders what's *still working* (state), the other renders
@@ -1963,6 +1975,26 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     sleep_return_block = ""
 
+        # H26 "caught mid-something" one-shot. Runs BEFORE away_activities
+        # because the two contradict each other: that one says she
+        # finished a beat, this one that she is still in it. When a beat
+        # is genuinely open the world state agrees with this block, so it
+        # takes the slot.
+        caught_mid_activity_block = ""
+        if (
+            getattr(self, "_caught_mid_activity_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "caught_mid_activity"):
+                try:
+                    caught_mid_activity_block = (
+                        self._caught_mid_activity_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "caught_mid_activity provider raised", exc_info=True,
+                    )
+                    caught_mid_activity_block = ""
+
         # K36 "things I did while you were away" one-shot. Runs AFTER
         # turning_over + sleep_return so it can read the just-set
         # _gap_cue_surfaced flag and defer (only one gap cue per return).
@@ -2417,6 +2449,20 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "attachments provider raised", exc_info=True,
                     )
                     attachments_block = ""
+
+        # H25 — what she saw in an image shared this turn. The vision
+        # pass has already run synchronously by the time assembly starts,
+        # so this provider is a pure read of the stashed result.
+        seen_image_block = ""
+        if self._seen_image_provider is not None:
+            with _timed_phase(provider_ms, "seen_image"):
+                try:
+                    seen_image_block = self._seen_image_provider() or ""
+                except Exception:
+                    log.debug(
+                        "seen_image provider raised", exc_info=True,
+                    )
+                    seen_image_block = ""
 
         # K13: stylometric mirror. One short "How Jacob writes lately"
         # line that shapes Aiko's register across days. Unlike the
@@ -3137,6 +3183,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # The provider's _gap_cue_surfaced guard makes this win the
             # one-of slot on an overnight return. One-shot.
             system_parts.append(sleep_return_block)
+        if caught_mid_activity_block:
+            # H26: "you're in the middle of X right now" — the same gap
+            # family, placed before K36 because it is the live reading of
+            # the world state rather than a report about it. One-shot.
+            system_parts.append(caught_mid_activity_block)
         if away_activities_block:
             # K36: "While you were away you ..." sits right after the H21
             # sleep_return block — all gap-return cues, but the provider's
@@ -3294,6 +3345,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # beat reads adjacent to the task machinery it triggers.
             # Per-turn (reflects only what was attached to THIS message).
             system_parts.append(attachments_block)
+        if seen_image_block:
+            # H25: what she saw in an image on this turn. Directly after
+            # the attachment list so the prompt reads "he sent you this
+            # file -> and here is what it looks like", which is the
+            # order she needs to react rather than promise to look.
+            system_parts.append(seen_image_block)
         if running_tasks_block:
             # Brain-orchestration chunk 6: running-tasks state
             # block. Lands BEFORE task_cues_block so the prompt

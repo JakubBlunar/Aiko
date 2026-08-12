@@ -5,10 +5,11 @@ emit its first streaming delta, we route a short filler phrase through
 the TTS callback so Aiko makes a sound — "Hmm,", "Let me think," — while
 the model is still warming up.
 
-:func:`pick_lookup_filler` serves the same TTS callback for a different
-wait: a slow brain tool (D3's synchronous web search) that the turn is
-blocked on for a couple of seconds. That one is spoken deliberately
-rather than on a watchdog, since the wait is known before it starts.
+:func:`pick_lookup_filler` and :func:`pick_looking_filler` serve the same
+TTS callback for a different kind of wait: a few seconds of real work the
+turn is blocked on — D3's synchronous web search, or H25's local vision
+pass over a shared image. Both are spoken deliberately rather than on a
+watchdog, since the wait is known before it starts.
 
 Filler is intentionally short and conversational; it's queued ahead of
 the real reply so the user hears overlap-free continuity. Once the first
@@ -120,6 +121,39 @@ _LOOKUP_FILLERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# H25: spoken while the local vision model is looking at an image the
+# user just shared. Distinct from the lookup fillers because the beat is
+# social rather than clerical — someone has held something up, and the
+# natural noise is leaning in, not filing a query. Kept eager (no "let me
+# check whether") so the pause reads as interest rather than doubt.
+_LOOKING_FILLERS: dict[str, tuple[str, ...]] = {
+    "playful": (
+        "Ooh, let me look!",
+        "Oh, hang on — I want to see this properly.",
+    ),
+    "warm": (
+        "Oh, let me look at this.",
+        "Mm, hang on — looking now.",
+    ),
+    "thoughtful": (
+        "Let me have a proper look.",
+        "Hang on, I'm looking.",
+    ),
+    "concerned": (
+        "Let me look at it properly.",
+        "Hang on — I want to see this.",
+    ),
+    "curious": (
+        "Ooh, let me see.",
+        "Oh — hang on, let me look.",
+    ),
+    "neutral": (
+        "Hang on, let me look.",
+        "One sec — looking at it now.",
+    ),
+}
+
+
 def pick_filler(reaction: str | None) -> tuple[str, str]:
     """Return ``(phrase, reaction_for_tts)`` for the given carry-over tone."""
     tone = _REACTION_TO_TONE.get((reaction or "").lower(), "neutral")
@@ -132,6 +166,13 @@ def pick_lookup_filler(reaction: str | None) -> tuple[str, str]:
     tone = _REACTION_TO_TONE.get((reaction or "").lower(), "neutral")
     candidates = _LOOKUP_FILLERS.get(tone) or _LOOKUP_FILLERS["neutral"]
     return random.choice(candidates), reaction or "thoughtful"
+
+
+def pick_looking_filler(reaction: str | None) -> tuple[str, str]:
+    """Return ``(phrase, reaction_for_tts)`` for the H25 vision pause."""
+    tone = _REACTION_TO_TONE.get((reaction or "").lower(), "neutral")
+    candidates = _LOOKING_FILLERS.get(tone) or _LOOKING_FILLERS["neutral"]
+    return random.choice(candidates), reaction or "curious"
 
 
 class FillerInjector:
@@ -214,4 +255,9 @@ class FillerInjector:
             return self._fired
 
 
-__all__ = ["FillerInjector", "pick_filler", "pick_lookup_filler"]
+__all__ = [
+    "FillerInjector",
+    "pick_filler",
+    "pick_looking_filler",
+    "pick_lookup_filler",
+]

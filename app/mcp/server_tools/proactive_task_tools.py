@@ -670,6 +670,56 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_sleep_return_surface raised: {exc}"
 
     @mcp.tool()
+    def get_in_progress_beat() -> str:
+        """H26 — is she in the middle of an away activity right now?
+
+        An away beat is normally finished and journalled before he comes
+        back. A minority (``memory.away_activities_in_progress_ratio``)
+        are left *running* instead, with a wall-clock span, so a return
+        inside that window catches her mid-something. This shows the open
+        beat (if any), how far into it she is, how long is left, and
+        whether a return already interrupted it — plus the ratio and the
+        force flag.
+
+        ``open`` false with a beat present means the window elapsed or a
+        return interrupted it; either way the worker's next tick closes
+        it out into the journal.
+        """
+        try:
+            return json.dumps(
+                session.in_progress_beat_state(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_in_progress_beat raised: {exc}"
+
+    @mcp.tool()
+    def force_caught_mid_activity(activity_key: str = "") -> str:
+        """H26 — leave a beat running and arm the return cue.
+
+        Two steps in one, because the interesting state is hard to catch
+        by hand: forces one away beat to be left *open* (rather than
+        finished and journalled), then arms
+        ``caught_mid_activity_force_next`` so the next assembly surfaces
+        it regardless of the one-of gap-cue guard and the open-window
+        check.
+
+        Repro: ``force_caught_mid_activity("read_book")`` ->
+        ``send_message(skip_tts=true)`` -> confirm the "You are in the
+        middle of ..." line in ``get_last_response_detail.system_prompt``,
+        then ``get_in_progress_beat()`` to see it marked interrupted, and
+        ``force_away_beat()`` to watch the worker close it out with a
+        "went back to it" journal entry.
+        """
+        try:
+            return json.dumps(
+                session.force_caught_mid_activity(activity_key),
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"force_caught_mid_activity raised: {exc}"
+
+    @mcp.tool()
     def get_hobby_state() -> str:
         """H19 — dump Aiko's current hobby / ongoing-project state.
 

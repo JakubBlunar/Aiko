@@ -60,7 +60,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail, beat_episode, day_intention
+from app.core.world import (
+    beat_detail,
+    beat_episode,
+    day_intention,
+    in_progress_beat,
+)
 from app.core.world.activity_selection import weighted_pick
 from app.core.world.idle_activity_candidates_mixin import (
     ActivityCandidatesMixin,
@@ -250,6 +255,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         episode_ratio: float = 0.0,
         episode_max_beats: int = 3,
         episode_min_gap_seconds: float = 10800.0,
+        in_progress_ratio: float = 0.0,
         day_intention_enabled: bool = False,
         hobby_provider: Callable[[], str | None] | None = None,
         pursuit_notes: "PursuitNoteWriter | None" = None,
@@ -281,6 +287,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._episode_ratio = min(1.0, max(0.0, float(episode_ratio)))
         self._episode_max_beats = max(1, int(episode_max_beats))
         self._episode_min_gap_seconds = max(0.0, float(episode_min_gap_seconds))
+        self._in_progress_ratio = min(1.0, max(0.0, float(in_progress_ratio)))
         self._day_intention_enabled = bool(day_intention_enabled)
         self._hobby_provider = hobby_provider
         self._pursuit_notes = pursuit_notes
@@ -290,6 +297,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._rng = rng or random.Random()
         # MCP debug: arm a specific activity key for the next run().
         self._forced_activity_key: str | None = None
+        # MCP debug: leave the next beat running (H26).
+        self._forced_in_progress = False
 
     # ── IdleWorker protocol ──────────────────────────────────────────
 
@@ -377,6 +386,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         # in the future) defer entirely.
         if self._garden_visit_outstanding(now):
             return {"fired": 0, "skipped_garden_visit": True}
+        # H26 — an open beat owns the room until its window elapses.
+        # Starting something new on top of it would both contradict the
+        # world state and lose the thread the return cue is waiting on.
+        settled = self._settle_in_progress(now)
+        if settled is not None:
+            return settled
         if not self._cooldown_elapsed(now):
             return {"fired": 0, "skipped_cooldown": True}
         if not self._under_daily_cap(now):
@@ -407,6 +422,41 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         summary, closed_intention = self._maybe_close_intention(
             intention, chain, summary, now,
         )
+
+        # H26 — sometimes leave the last beat running. Nothing is
+        # journalled yet: there is no "while you were away I…" to tell
+        # while she is still in the middle of it, and writing the
+        # past-tense line now is exactly how the away-life ended up
+        # reading as a list of completed errands.
+        if self._should_leave_open(chain, now):
+            open_beat = in_progress_beat.build(
+                key=chain[-1].key,
+                activity=chain[-1].activity,
+                posture=chain[-1].posture,
+                summary=summary,
+                now=now,
+                rng=self._rng,
+            )
+            in_progress_beat.save(self._kv_set, open_beat)
+            self._mark_fired(now)
+            log.info(
+                "away_activity started (in progress): key=%s until=%s",
+                open_beat.key, open_beat.expected_end_at,
+            )
+            result_open: dict[str, Any] = {
+                "fired": 1,
+                "key": chain[0].key,
+                "activity": chain[-1].activity,
+                "summary": summary,
+                "in_progress": True,
+                "expected_end_at": open_beat.expected_end_at,
+            }
+            if effects:
+                result_open["item_effect"] = (
+                    effects[0] if len(effects) == 1 else effects
+                )
+            return result_open
+
         entry: dict[str, Any] = {
             "at": now.isoformat(timespec="seconds"),
             "activity": chain[-1].activity,
@@ -446,6 +496,96 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         if seed:
             result["seed"] = seed
         return result
+
+    # ── H26: beats with a span ───────────────────────────────────────
+
+    def _should_leave_open(
+        self, chain: list[ActivityPlan], now: datetime,
+    ) -> bool:
+        """Whether this beat should be left running rather than finished.
+
+        Never for an outing (she is out; "caught mid-walk" would have to
+        explain why she is answering from a street) and never for an
+        episode chain, whose whole point is a completed sequence.
+        """
+        if len(chain) > 1:
+            return False
+        if chain[-1].key == "outing":
+            return False
+        if self._forced_in_progress:
+            self._forced_in_progress = False
+            return True
+        if self._in_progress_ratio <= 0.0:
+            return False
+        return self._rng.random() < self._in_progress_ratio
+
+    def _settle_in_progress(self, now: datetime) -> dict[str, Any] | None:
+        """Advance whatever beat is already open.
+
+        Returns a run-result when this tick belongs to the open beat, or
+        ``None`` when there is nothing open and the caller should pick
+        something new. Three outcomes:
+
+        * **still going** — defer; the room already shows her at it.
+        * **elapsed unseen** — nobody came back during the window, so it
+          simply finished. Journal it and the ordinary K36 return cue
+          reports it, exactly as before H26.
+        * **interrupted** — a return caught her and she put it down. It
+          finishes here too, but the journal line says she got back to
+          it, which is what turns the interruption into a thread that
+          closes rather than a loose end.
+        """
+        beat = in_progress_beat.load(self._kv_get)
+        if beat is None:
+            return None
+        if beat.is_open_at(now):
+            return {
+                "fired": 0,
+                "skipped_in_progress": True,
+                "key": beat.key,
+                "minutes_left": beat.minutes_left(now),
+            }
+
+        summary = beat.summary
+        if beat.interrupted:
+            summary = self._resumed_summary(beat)
+        entry: dict[str, Any] = {
+            "at": now.isoformat(timespec="seconds"),
+            "activity": beat.activity,
+            "key": beat.key,
+            "summary": summary,
+        }
+        if beat.interrupted:
+            entry["resumed"] = True
+        append_journal(
+            self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
+        )
+        in_progress_beat.clear(self._kv_set)
+        log.info(
+            "away_activity completed: key=%s resumed=%s",
+            beat.key, beat.interrupted,
+        )
+        return {
+            "fired": 1,
+            "key": beat.key,
+            "activity": beat.activity,
+            "summary": summary,
+            "completed_in_progress": True,
+            "resumed": beat.interrupted,
+        }
+
+    @staticmethod
+    def _resumed_summary(beat: "in_progress_beat.InProgressBeat") -> str:
+        """The journal line for a beat she came back to after a pause.
+
+        Kept as a light prefix rather than a rewrite: the original
+        summary is already in her voice (possibly LLM-composed), and
+        re-generating it would cost a call to say the same thing.
+        """
+        summary = (beat.summary or "").strip()
+        if not summary:
+            return f"got back to {beat.activity}".strip()
+        return f"went back to what you'd started and {summary}"
 
     def _episode_summary(
         self, user_name: str, chain: list[ActivityPlan],
@@ -1340,6 +1480,16 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
     def force_activity(self, key: str | None) -> None:
         """Arm a specific activity key for the next ``run()`` (MCP debug)."""
         self._forced_activity_key = key
+
+    def force_in_progress(self) -> None:
+        """H26 — leave the next beat running instead of finishing it.
+
+        The ratio makes an open beat a minority outcome, and its window
+        then has to still be open when the next turn assembles, so
+        catching this state by hand is mostly waiting. Ignored for the
+        two kinds that are never left open (outings, episodes).
+        """
+        self._forced_in_progress = True
 
     def _broadcast(self, patch: dict[str, Any]) -> None:
         if self._notify is None:

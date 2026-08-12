@@ -215,6 +215,7 @@ class PromptAssemblerHelpersMixin:
         turning_over: Callable[[], str] | None = None,
         sleep_return: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
+        caught_mid_activity: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
         # L30b takes ``user_text`` because it is dual-mode: the topic path
         # needs the live message, the gap path does not.
@@ -253,6 +254,7 @@ class PromptAssemblerHelpersMixin:
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
         attachments: Callable[[], str] | None = None,
+        seen_image: Callable[[], str] | None = None,
         task_cues: Callable[[], str] | None = None,
         running_tasks: Callable[[], str] | None = None,
     ) -> None:
@@ -392,6 +394,8 @@ class PromptAssemblerHelpersMixin:
             self._sleep_return_provider = sleep_return
         if away_activities is not None:
             self._away_activities_provider = away_activities
+        if caught_mid_activity is not None:
+            self._caught_mid_activity_provider = caught_mid_activity
         if forward_curiosity is not None:
             self._forward_curiosity_provider = forward_curiosity
         if concept_hypothesis is not None:
@@ -464,6 +468,8 @@ class PromptAssemblerHelpersMixin:
             self._touch_state_provider = touch_state
         if attachments is not None:
             self._attachments_provider = attachments
+        if seen_image is not None:
+            self._seen_image_provider = seen_image
         if task_cues is not None:
             self._task_cues_provider = task_cues
         if running_tasks is not None:

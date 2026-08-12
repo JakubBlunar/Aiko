@@ -359,9 +359,11 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
 
   const handleSend = () => {
     const text = draft.trim();
-    if (!text || turnInProgress || connectionStatus !== "connected") {
-      return;
-    }
+    // H25: an attachment is a message. Holding a photo up without saying
+    // anything is a normal thing to do, and requiring a caption forced
+    // people to type "look" before they could share one.
+    if (!text && pendingAttachments.length === 0) return;
+    if (turnInProgress || connectionStatus !== "connected") return;
     send(
       pendingAttachments.length > 0
         ? { type: "chat", text, attachments: pendingAttachments }
@@ -652,7 +654,10 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!draft.trim() || connectionStatus !== "connected"}
+                disabled={
+                  (!draft.trim() && pendingAttachments.length === 0) ||
+                  connectionStatus !== "connected"
+                }
                 className="flex h-10 shrink-0 items-center justify-center rounded-lg bg-ink-500 px-3 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40 md:h-12 md:min-w-[3rem] md:rounded-xl md:px-5"
                 title="Send message (Enter)"
                 aria-label="Send message"
