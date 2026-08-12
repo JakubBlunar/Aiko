@@ -152,3 +152,61 @@ describe("debugLog — clear()", () => {
     expect(debugLog.snapshot()).toEqual([]);
   });
 });
+
+describe("debugLog — logBurst()", () => {
+  /**
+   * The problem this exists for: lipsync amplitude arrives at 30 Hz with
+   * its payload already stripped, so every line was byte-identical apart
+   * from the timestamp. On one real session that was 2342 lines — a
+   * third of the whole log file, and squarely in front of everything
+   * worth reading.
+   */
+  beforeEach(() => {
+    debugLog.setEnabled(true);
+  });
+
+  it("a run of hits is one entry carrying its count", () => {
+    for (let i = 0; i < 300; i += 1) {
+      debugLog.logBurst("ws", "audio_amplitude");
+    }
+    // Nothing yet — the run is still open.
+    expect(debugLog.size()).toBe(0);
+
+    debugLog.flushBursts();
+
+    expect(debugLog.size()).toBe(1);
+    const [entry] = debugLog.snapshot();
+    expect(entry.source).toBe("ws");
+    expect(entry.kind).toBe("audio_amplitude");
+    expect((entry.payload as { burst: number }).burst).toBe(300);
+  });
+
+  it("different kinds keep their own runs", () => {
+    debugLog.logBurst("ws", "audio_amplitude");
+    debugLog.logBurst("ws", "token");
+    debugLog.logBurst("ws", "audio_amplitude");
+    debugLog.flushBursts();
+
+    const kinds = debugLog.snapshot().map((e) => e.kind).sort();
+    expect(kinds).toEqual(["audio_amplitude", "token"]);
+    const amp = debugLog
+      .snapshot()
+      .find((e) => e.kind === "audio_amplitude");
+    expect((amp?.payload as { burst: number }).burst).toBe(2);
+  });
+
+  it("an open run still lands when logging is switched off", () => {
+    // Otherwise the last stream before someone hits the toggle — often
+    // the one they were trying to capture — disappears.
+    debugLog.logBurst("ws", "audio_amplitude");
+    debugLog.setEnabled(false);
+    expect(debugLog.size()).toBe(1);
+  });
+
+  it("is a no-op while disabled", () => {
+    debugLog.setEnabled(false);
+    debugLog.logBurst("ws", "audio_amplitude");
+    debugLog.flushBursts();
+    expect(debugLog.size()).toBe(0);
+  });
+});

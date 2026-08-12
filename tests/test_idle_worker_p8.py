@@ -267,7 +267,7 @@ class IdleWorkerSchedulerLoggingTests(unittest.TestCase):
         sched = IdleWorkerScheduler(tick_budget_ms=2000)
         sched.register(_SizedWorker("a", sleep_ms=1))
         sched.register(_SizedWorker("b", sleep_ms=1))
-        with self.assertLogs("app.idle_worker_scheduler", level="INFO") as cap:
+        with self.assertLogs("app.idle_worker_scheduler", level="DEBUG") as cap:
             sched._tick()  # type: ignore[attr-defined]
         joined = "\n".join(cap.output)
         self.assertIn("idle_workers tick:", joined)
@@ -278,6 +278,34 @@ class IdleWorkerSchedulerLoggingTests(unittest.TestCase):
         self.assertIn("llm_ms=2000", joined)
         self.assertIn("contention=", joined)
         self.assertIn("depth=just_left", joined)
+
+    def test_an_uneventful_tick_is_debug_and_a_starved_one_is_not(
+        self,
+    ) -> None:
+        """A tick a minute forever, saying it did what it meant to, is
+        not news — and at INFO it was 39% of a real log file. The line
+        stays at INFO for the state it exists to diagnose: the budget
+        turning work away."""
+        healthy = IdleWorkerScheduler(tick_budget_ms=2000)
+        healthy.register(_SizedWorker("a", sleep_ms=1))
+        with self.assertLogs("app.idle_worker_scheduler", level="DEBUG") as cap:
+            healthy._tick()  # type: ignore[attr-defined]
+        self.assertFalse(
+            [ln for ln in cap.output
+             if "idle_workers tick:" in ln and ln.startswith("INFO")],
+            "a clean tick should not be INFO",
+        )
+
+        starved = IdleWorkerScheduler(tick_budget_ms=1)
+        starved.register(_SizedWorker("slow", sleep_ms=200))
+        starved.force_run("slow")  # teach the EMA it does not fit
+        starved.register(_SizedWorker("other", sleep_ms=200))
+        with self.assertLogs("app.idle_worker_scheduler", level="INFO") as cap:
+            starved._tick()  # type: ignore[attr-defined]
+        self.assertTrue(
+            [ln for ln in cap.output if "idle_workers tick:" in ln],
+            "a tick that skipped work must still report at INFO",
+        )
 
     def test_no_summary_when_nothing_due(self) -> None:
         sched = IdleWorkerScheduler(tick_budget_ms=2000)

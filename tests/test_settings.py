@@ -9,6 +9,7 @@ slider introduced for the continuous-expressiveness pass.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import unittest
@@ -19,6 +20,7 @@ from unittest import mock
 
 from app.core.infra import settings as settings_mod
 from app.core.infra.settings import AvatarSettings, McpServerSettings, load_settings
+from app.core.memory.memory_extractor import MemoryExtractor
 
 
 class AvatarExpressivenessLoaderTests(unittest.TestCase):
@@ -4434,6 +4436,36 @@ class VisionSettingsTests(unittest.TestCase):
         )
         v = load_settings(config_path=path).agent.vision
         self.assertTrue(v.default_prompt.strip())
+
+    def test_the_queue_budget_clears_the_longest_worker_in_front_of_it(
+        self,
+    ) -> None:
+        """The default is a calibration, not a preference.
+
+        The in-turn vision pass queues behind whatever background worker
+        holds the one GPU, and the longest bounded one is the memory
+        extractor — 120s by its own timeout, measured at 106s on a real
+        run. A queue budget under that gives up on a perfectly normal
+        wait and tells the user she can see an attachment arrived but
+        not what is in it, which is the failure this budget exists to
+        prevent. If the extractor's ceiling moves, this moves with it.
+        """
+        extractor_ceiling = inspect.signature(
+            MemoryExtractor.__init__
+        ).parameters["timeout_seconds"].default
+        path = self._write_config(strip_keys=("vision",))
+        v = load_settings(config_path=path).agent.vision
+        self.assertGreater(v.in_turn_wait_seconds, extractor_ceiling)
+
+    def test_the_call_budget_stays_tight_while_the_queue_budget_is_long(
+        self,
+    ) -> None:
+        # The two clocks measure different things: a long queue is
+        # normal, a long call means the model is sick. Collapsing them
+        # back into one number is the regression to catch.
+        path = self._write_config(strip_keys=("vision",))
+        v = load_settings(config_path=path).agent.vision
+        self.assertLess(v.in_turn_timeout_seconds, v.in_turn_wait_seconds)
 
 
 class ExternalMcpSettingsTests(unittest.TestCase):

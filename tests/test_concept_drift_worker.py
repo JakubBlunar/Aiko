@@ -40,7 +40,7 @@ class Settings:
     concept_drift_max_concepts: int = 120
     concept_drift_trace_anchor: int = 20
     concept_drift_trace_recent: int = 60
-    concept_drift_min_salience: float = 0.35
+    concept_drift_min_evidence: float = 0.36
     concept_drift_min_age_days: float = 3.0
     concept_drift_min_confidence_delta: float = 0.15
     concept_drift_max_findings: int = 12

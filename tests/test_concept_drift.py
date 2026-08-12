@@ -736,7 +736,7 @@ class DetectDriftTests(unittest.TestCase):
             sorted((f.salience for f in findings), reverse=True),
         )
 
-    def test_low_salience_is_dropped(self) -> None:
+    def test_weak_evidence_is_dropped(self) -> None:
         trace = _trace(
             500,
             status="retired",
@@ -749,10 +749,43 @@ class DetectDriftTests(unittest.TestCase):
         self.assertEqual(
             detect_drift(
                 [trace], [], now=NOW,
-                thresholds=DriftThresholds(min_salience=0.99),
+                thresholds=DriftThresholds(min_evidence=0.99),
             ),
             [],
         )
+
+    def test_the_detection_gate_ignores_the_shape_prior(self) -> None:
+        """A formation must survive on the same evidence as a rewording.
+
+        This is the H15 regression. The gate used to run on `salience`,
+        which carries a per-shape narrative weight, so `emergence` — the
+        shape scored lowest because it was thought least interesting —
+        was held to a bar roughly twice as high as `succession` and was
+        discarded outright on any fluid belief. What a change *is* must
+        not depend on how interesting its kind is.
+        """
+        from app.core.concepts.concept_drift import _SHAPE_BASE, score
+
+        span = 0.75  # the weakest span term either classifier can emit
+        for plasticity in (0.2, 0.5, 1.0):
+            evidences = {
+                shape: score(shape, plasticity=plasticity, span=span)[0]
+                for shape in _SHAPE_BASE
+            }
+            self.assertEqual(
+                len(set(round(e, 9) for e in evidences.values())),
+                1,
+                f"evidence varied by shape at plasticity={plasticity}:"
+                f" {evidences}",
+            )
+
+    def test_a_formation_outranks_a_rewording_for_telling(self) -> None:
+        # The prior still exists — it just decides narration order now.
+        from app.core.concepts.concept_drift import score
+
+        _, emergence = score("emergence", plasticity=0.5, span=1.0)
+        _, succession = score("succession", plasticity=0.5, span=1.0)
+        self.assertGreaterEqual(emergence, succession)
 
     def test_empty_input_is_empty_output(self) -> None:
         self.assertEqual(detect_drift([], [], now=NOW), [])
@@ -838,12 +871,23 @@ class ThresholdSettingsTests(unittest.TestCase):
 
     def test_settings_override_defaults(self) -> None:
         class Settings:
-            concept_drift_min_salience = 0.8
+            concept_drift_min_evidence = 0.8
             concept_drift_max_findings = 3
 
         limits = DriftThresholds.from_settings(Settings())
-        self.assertEqual(limits.min_salience, 0.8)
+        self.assertEqual(limits.min_evidence, 0.8)
         self.assertEqual(limits.max_findings, 3)
+
+    def test_the_default_gate_matches_the_old_succession_bar(self) -> None:
+        """0.36 is a translation, not a new opinion.
+
+        Under the old salience gate a succession was dropped below
+        0.35 / 0.70 = 0.5 of the evidence product, i.e. 0.357 once
+        normalised. Keeping the default there means the dominant shape's
+        behaviour is unchanged and only the shape-biased part is gone —
+        which is what makes the before/after readable.
+        """
+        self.assertAlmostEqual(DriftThresholds().min_evidence, 0.36, places=2)
 
 
 class BuildTracesTests(unittest.TestCase):

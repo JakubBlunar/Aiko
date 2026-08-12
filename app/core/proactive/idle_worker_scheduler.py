@@ -557,7 +557,8 @@ class IdleWorkerScheduler:
         if due_total > 0:
             tick_elapsed_ms = (time.monotonic() * 1000.0) - tick_started_ms
             queue_after = max(0, due_total - ran)
-            log.info(
+            emit = log.info if (skipped_budget > 0 or queue_after > 0) else log.debug
+            emit(
                 "idle_workers tick: ran=%d due=%d skipped_budget=%d "
                 "queue_after=%d tick_ms=%.0f budget_ms=%d names=%s",
                 ran, due_total, skipped_budget, queue_after,
@@ -803,7 +804,18 @@ class IdleWorkerScheduler:
 
         if due_total > 0 or ran > 0:
             tick_elapsed_ms = (time.monotonic() * 1000.0) - tick_started_ms
-            log.info(
+            # A tick that ran nothing, or ran what it was supposed to, is
+            # not news once a minute forever. It stays INFO when the
+            # budget actually turned work away, which is the state
+            # `rules/debugging.md` sends you here to diagnose; otherwise
+            # DEBUG, matching that page's "raise the level to watch the
+            # drain" instruction.
+            emit = (
+                log.info
+                if (skipped_budget > 0 or stopped_early)
+                else log.debug
+            )
+            emit(
                 "idle_workers tick: ran=%d due=%d admitted=%d "
                 "skipped_budget=%d tick_ms=%.0f depth=%s(%.0fs) "
                 "contention=%s compute_ms=%.0f llm_ms=%.0f%s names=%s",
@@ -825,7 +837,12 @@ class IdleWorkerScheduler:
         # There is deliberately no injectable ``now`` -- an earlier one only
         # ever fed a start timestamp that nothing read.
         started_ms = time.monotonic() * 1000.0
-        log.info("idle_worker run start: %s", worker.name)
+        # DEBUG, not INFO: this line carries nothing the matching `run
+        # done` does not, and paying one line per worker per tick for it
+        # made the scheduler 39% of a real log file. `run done` is the
+        # documented read (see rules/debugging.md) because it is the one
+        # with the result payload.
+        log.debug("idle_worker run start: %s", worker.name)
         try:
             result = worker.run()
         except Exception as exc:

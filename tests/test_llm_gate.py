@@ -10,6 +10,7 @@ from app.llm.llm_gate import (
     CONVERSATION_WORKER,
     MAINTENANCE_WORKER,
     TASK,
+    USER_BLOCKING,
     GatedChatClient,
     LlmPriorityGate,
     tier_from_name,
@@ -105,6 +106,76 @@ class GateOrderingTests(unittest.TestCase):
         t1.join(timeout=2.0)
         t2.join(timeout=2.0)
         self.assertEqual(order, ["conversation", "task"])
+
+    def test_user_blocking_outranks_every_worker(self) -> None:
+        # H25's in-turn vision: he is watching a spinner while a
+        # maintenance worker holds the one GPU. It has to be next.
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+        order: list[str] = []
+        lock = threading.Lock()
+
+        def waiter(tier: int, label: str) -> None:
+            gate.acquire(tier)
+            with lock:
+                order.append(label)
+            gate.release(tier)
+
+        threads = []
+        for tier, label in (
+            (CONVERSATION_WORKER, "conversation"),
+            (TASK, "task"),
+        ):
+            t = threading.Thread(target=waiter, args=(tier, label))
+            t.start()
+            threads.append(t)
+            time.sleep(0.05)
+        late = threading.Thread(
+            target=waiter, args=(USER_BLOCKING, "user_blocking"),
+        )
+        late.start()
+        threads.append(late)
+        time.sleep(0.05)
+
+        gate.release(MAINTENANCE_WORKER)
+        for t in threads:
+            t.join(timeout=2.0)
+        self.assertEqual(order[0], "user_blocking")
+
+    def test_a_bounded_wait_gives_up_and_leaves_the_queue(self) -> None:
+        """Timing out must also *dequeue*.
+
+        A waiter that gave up but stayed in the heap becomes a phantom
+        head every later waiter has to outrank — a deadlock dressed as a
+        slow path, and worse than the wait it was avoiding.
+        """
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+
+        started = time.monotonic()
+        self.assertIsNone(gate.acquire(USER_BLOCKING, timeout=0.2))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(gate.stats()["queued"], 0)
+
+        # The slot still works for the next caller.
+        gate.release(MAINTENANCE_WORKER)
+        self.assertIsNotNone(gate.acquire(CONVERSATION_WORKER, timeout=1.0))
+        gate.release(CONVERSATION_WORKER)
+
+    def test_a_bounded_wait_that_succeeds_reports_the_wait(self) -> None:
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+        threading.Timer(0.1, gate.release, args=(MAINTENANCE_WORKER,)).start()
+
+        waited = gate.acquire(USER_BLOCKING, timeout=5.0)
+
+        self.assertIsNotNone(waited)
+        assert waited is not None
+        self.assertGreater(waited, 0.05)
+        gate.release(USER_BLOCKING)
+        self.assertEqual(
+            gate.stats()["tiers"]["user_blocking"]["timeouts"], 0
+        )
 
     def test_fifo_within_tier(self) -> None:
         gate = LlmPriorityGate(max_concurrency=1)

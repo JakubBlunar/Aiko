@@ -114,11 +114,12 @@ export function useAssistantSocket(): {
     // Tap every WS event into the debug log so the entire dispatch
     // stream is recoverable from ``app.log``. ``debugLog.log`` is a
     // no-op when the toggle is off, so this is essentially free in
-    // the normal case. We strip the payload for noisy event types
-    // (audio amplitude, partials, streamed tokens) to keep the log
-    // bounded — only the ``kind`` is interesting for those.
+    // the normal case. The noisy types (amplitude at 30 Hz, one frame
+    // per streamed token, mic level) are recorded as a *run* rather
+    // than a line each: stripping their payload was not enough, since
+    // what made them unreadable was their count, not their size.
     if (NOISY_WS_EVENTS.has(evt.type)) {
-      debugLog.log({ source: "ws", kind: evt.type });
+      debugLog.logBurst("ws", evt.type);
     } else {
       debugLog.log({ source: "ws", kind: evt.type, payload: evt });
     }

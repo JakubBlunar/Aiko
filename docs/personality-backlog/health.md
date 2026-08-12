@@ -784,6 +784,71 @@ gate at all.
 (currently one entry, 12 events, all `succession`), and whether emergence
 salience correlates with anything a reader would call significance.
 
+### Outcome: one number was answering two questions
+
+The measurement held on four times the data. 467 learning events and, thanks to
+H3, **23 real diary entries** instead of one — so what she actually narrated
+could be counted rather than predicted:
+
+| shape | n | clears 0.45 | **cited in a diary entry** |
+| --- | --- | --- | --- |
+| `succession` | 370 | 100% | 210 |
+| `revival` | 78 | 100% | 65 |
+| `emergence` | 17 | **6%** | **1** |
+| `loss` | 2 | 50% | 0 |
+
+Twenty-three entries about how her understanding changed, and one of them
+mentions an understanding *forming*.
+
+Both candidate reads in the entry above were half right, and neither named the
+actual defect: **`salience` was answering two different questions at once.**
+`_SHAPE_BASE` is a prior about which kinds of change are interesting, baked
+into the same number that decides which changes are real — so the diary's floor
+was enforcing an opinion about narrative worth, and the *detector's* floor was
+enforcing it too, at roughly twice the bar for a formation as for a rewording.
+
+So the number was split. `evidence` is shape-neutral — inertia overcome times
+how decisively the evidence moved — and is the only thing that gates detection,
+at a floor of `0.36` chosen to be exactly the bar `succession` already faced
+(0.35 / its 0.70 base), so the dominant shape's behaviour is unchanged and the
+before/after stays readable. `salience` keeps the prior, and now only orders
+narration. The bases were rebalanced to say what a "how I've changed" diary is
+for: `emergence` 0.40 → **0.72** and `loss` 0.50 → **0.68**, so a belief coming
+into existence outranks it being reworded. `succession` stays at 0.70 — the
+flood is a page-selection problem, not a scoring one.
+
+On the diary side the floor turned out to be vestigial once selection was fixed
+(no value in the plausible range is selective: 0.45 admits 96%, 0.40 admits
+99%), so it drops to `0.30` as a junk backstop and `select_page` does the
+selecting: the dominant shape may take at most half of a *contested* page. It
+backfills rather than truncating, so a quiet period is still narrated in full
+rather than leaving the page two-thirds empty and the backlog growing.
+
+**Replayed against the real 142-event backlog:** both pending formations and the
+one loss now reach a page, where under the old rules neither would have appeared
+in any of the twelve pages that backlog composes. 12 rewordings are passed over
+to buy it.
+
+**One claim in the analysis above was wrong, and the measurement caught it.**
+"Formations are being discarded at detection on fluid beliefs" is true of the
+arithmetic and false of this corpus: the evidence products she actually produces
+run 0.94–1.26, comfortably above even emergence's harsher old bar of 0.875, and
+**zero** of 371 successions fall in the band where the two gates disagreed. The
+detection half of this fix is insurance against a shape bias that was real but
+not yet biting — it would bite first on the high-plasticity kinds (`taste`,
+`conduct`), which have produced few formations so far.
+
+**The unlooked-for win was elsewhere.** L17e's reflection shelf gates on
+`concept_reflection_min_salience` at 0.6, which is a narrative-worth question
+and therefore the right consumer of this number. Under the old bases a formation
+topped out at 0.459, so **0 of 20** formations and losses could ever reach it:
+she could say "I'd been calling it X, it's really Y" and was structurally unable
+to say "I think I've started believing X". All 20 clear it now. That is the same
+starvation H6 documented from the other end.
+
+Stored rows keep the salience they were written with; the rebalance applies to
+findings from here on.
+
 ---
 
 ## H16. Her relationship tensions are five things said twenty-five times
@@ -2828,15 +2893,15 @@ anything else, since three of them alter the inputs to everything below:
    12 Aug (immersion H26's `caught_mid_activity`, ahead of `away_activities`),
    so the queue behind it is one deep — read the decline reasons against the
    post-12-Aug window only.
-4. **H3** — a few lines, and it unblocks a month of stranded history.
-5. **H5** — decide standing/framing deliberately; correcting or retiring are
-   both fine outcomes.
-6. **H2** — after H1 mints its first row, since a conduct pass with no output
-   has nothing to gain from better thresholds.
-7. **H12**, **H13**, **H14** — re-measure after the four above settle; all three
-   have inputs H9, H10 and H16 change. H14 in particular: only 9 of 38 clusters
-   yet carry the valence samples the diary annotation needs.
-8. **H6**, **H8** — mostly decisions to record rather than code to write.
-9. **H15** — needs a measurement before it needs a patch. Now that the diary
-   drains, wrong content matters more than it did when there was one entry in
-   total.
+4. **H12**, **H13**, **H14** — re-measure after the above settle; all three have
+   inputs H9, H10 and H16 change. H14 in particular: only 9 of 38 clusters yet
+   carry the valence samples the diary annotation needs.
+5. **H8** — mostly decisions to record rather than code to write.
+
+Shipped since this list was written: **H3**, **H5**, **H6**, **H15** (12 Aug —
+its measurement is in the entry, and it turned out to be a fix rather than the
+judgement call it was filed as), and immersion's **H25**/**H26**. **H2** is
+still waiting on H1 minting its first row, since a conduct pass with no output
+has nothing to gain from better thresholds. **H17** is the one open entry
+deliberately *not* being touched: it changes what `topic_appetite_block` counts
+as a lull, which is the block H28's measurement is watching.

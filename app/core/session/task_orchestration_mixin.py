@@ -457,6 +457,12 @@ class TaskOrchestrationMixin:
         # Only registered when ``agent.vision.enabled`` is on AND at least
         # one active root exists. The providers re-read the live worker
         # client / model so a reconfigure that rebuilds them is picked up.
+        #
+        # ``_workflow_client``, not ``_worker_client_inner``: this runs on
+        # the task pool, which is eight threads wide, so an ungated
+        # handler could put several 30-second vision calls on one GPU at
+        # once and stall everything behind them — including the in-turn
+        # pass, where somebody is waiting.
         vision_cfg = getattr(agent, "vision", None)
         vision_enabled = bool(getattr(vision_cfg, "enabled", False))
         if vision_enabled and active:
@@ -464,8 +470,9 @@ class TaskOrchestrationMixin:
                 self._task_orchestrator.register_handler(
                     VisionDescribeHandler(
                         roots=roots,
-                        client_provider=lambda: getattr(
-                            self, "_worker_client_inner", None
+                        client_provider=lambda: (
+                            getattr(self, "_workflow_client", None)
+                            or getattr(self, "_worker_client_inner", None)
                         ),
                         model_provider=lambda cfg=vision_cfg: (
                             (str(getattr(cfg, "model", "") or "").strip())

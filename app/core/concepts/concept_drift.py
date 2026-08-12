@@ -74,15 +74,32 @@ STRUCTURAL_EVENTS = frozenset(
 # Statuses that mean the belief is no longer carried.
 _FADED_STATUSES = frozenset({"dormant", "retired"})
 
-# Per-shape starting salience, before the plasticity weight and the
-# per-shape modifiers below.
+# How much each shape is worth *telling*, before the evidence weight.
+#
+# This is a narrative prior, not a detection confidence, and the two used
+# to be the same number — which is what made the diary structurally
+# unable to report a belief forming. `emergence` sat at 0.40 against
+# `succession`'s 0.70, so on 467 real events the diary's floor passed
+# 100% of relabelings and 6% of formations, and the shape multiplied
+# below the *detector's* own floor on any fluid belief, discarding
+# formations before they were ever stored.
+#
+# The ordering now reflects what a "how I've changed" diary is for: a
+# belief coming into existence or going out of it is at least as notable
+# as one being reworded. Existence is only gated by `evidence` (see
+# `DriftFinding.evidence`), so raising a shape here can no longer create
+# or destroy findings — it only decides what gets narrated first.
 _SHAPE_BASE: dict[str, float] = {
+    "emergence": 0.72,
     "succession": 0.70,
+    "loss": 0.68,
     "revival": 0.55,
     "relabel": 0.50,
-    "loss": 0.50,
-    "emergence": 0.40,
 }
+
+# The largest value `plasticity_weight * <span term>` can take (1.4 * 1.0),
+# used to normalise that product into the shape-neutral `evidence` score.
+_MAX_EVIDENCE_PRODUCT = 1.4
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
@@ -194,6 +211,28 @@ def plasticity_weight(plasticity: float) -> float:
     return 0.6 + 0.8 * (1.0 - band)
 
 
+def score(
+    shape: str, *, plasticity: float, span: float,
+) -> tuple[float, float]:
+    """Score one finding as ``(evidence, salience)``.
+
+    ``span`` is the per-classifier term saying how decisively this change
+    moved — already scaled into its own band by the caller, since a
+    succession measures it as cosine/overlap strength and a trajectory as
+    a confidence span.
+
+    The two numbers are deliberately separate. ``evidence`` is
+    shape-neutral and answers *did something change*; ``salience``
+    multiplies it by the shape's narrative prior and answers *is it worth
+    telling*. Collapsing them is what let a prior about interestingness
+    delete formations before they were recorded.
+    """
+    product = plasticity_weight(plasticity) * float(span)
+    evidence = _clamp01(product / _MAX_EVIDENCE_PRODUCT)
+    salience = _clamp01(_SHAPE_BASE.get(shape, 0.5) * product)
+    return evidence, salience
+
+
 # ── input structures (plain data; the caller owns all I/O) ────────────
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +338,14 @@ class DriftFinding:
     new_label: str
     old_label: str = ""
     prior_concept_id: int | None = None
+    # How much of a change this is, independent of what kind of change it
+    # is: inertia overcome (plasticity) times how decisively the evidence
+    # moved. This is the one that decides whether a finding *exists*.
+    evidence: float = 0.0
+    # How much it is worth telling: `evidence` weighted by the shape's
+    # narrative prior. This is the one the diary reads, and it must never
+    # gate detection — a prior about which kinds of change are
+    # interesting has no business deciding which changes happened.
     salience: float = 0.0
     plasticity: float = 0.5
     kind: str = "identity"
@@ -342,7 +389,12 @@ class DriftFinding:
 class DriftThresholds:
     """Tunables, defaulted so a bare call still behaves sensibly."""
 
-    min_salience: float = 0.35
+    # Shape-neutral floor on how much of a change a finding has to be to
+    # be recorded at all. 0.36 is not a fresh guess: it is exactly the
+    # bar `succession` faced under the old salience gate (0.35 / its 0.70
+    # base), now applied to every shape equally instead of being softened
+    # or hardened by how interesting the shape was thought to be.
+    min_evidence: float = 0.36
     min_age_days: float = 3.0
     min_confidence_delta: float = 0.15
     succession_min_cosine: float = 0.55
@@ -360,9 +412,9 @@ class DriftThresholds:
         if settings is None:
             return base
         return cls(
-            min_salience=float(
-                getattr(settings, "concept_drift_min_salience",
-                        base.min_salience)
+            min_evidence=float(
+                getattr(settings, "concept_drift_min_evidence",
+                        base.min_evidence)
             ),
             min_age_days=float(
                 getattr(settings, "concept_drift_min_age_days",
@@ -481,10 +533,10 @@ def classify_succession(
             )
         ),
     )
-    salience = _clamp01(
-        _SHAPE_BASE["succession"]
-        * plasticity_weight(old.plasticity)
-        * (0.7 + 0.3 * strength)
+    evidence, salience = score(
+        "succession",
+        plasticity=old.plasticity,
+        span=0.7 + 0.3 * strength,
     )
     refs = tuple(sorted(set(old.evidence_refs) | set(new.evidence_refs)))
     return DriftFinding(
@@ -493,6 +545,7 @@ def classify_succession(
         prior_concept_id=old.concept_id,
         old_label=old.label,
         new_label=new.label,
+        evidence=evidence,
         salience=salience,
         plasticity=old.plasticity,
         kind=new.kind,
@@ -568,10 +621,10 @@ def classify_trajectory(
     ):
         return None
 
-    salience = _clamp01(
-        _SHAPE_BASE[shape]
-        * plasticity_weight(trace.plasticity)
-        * (0.75 + 0.25 * _clamp01(span / 0.5))
+    evidence, salience = score(
+        shape,
+        plasticity=trace.plasticity,
+        span=0.75 + 0.25 * _clamp01(span / 0.5),
     )
     first_conf = float(trace.points[0].confidence)
     return DriftFinding(
@@ -579,6 +632,7 @@ def classify_trajectory(
         concept_id=trace.concept_id,
         old_label=old_label,
         new_label=new_label,
+        evidence=evidence,
         salience=salience,
         plasticity=trace.plasticity,
         kind=trace.kind,
@@ -671,13 +725,15 @@ def detect_drift(
             thresholds=limits,
             since_event_id=since_event_id,
         )
-        if finding is None or finding.salience < limits.min_salience:
+        if finding is None or finding.evidence < limits.min_evidence:
             continue
         prior = int(finding.prior_concept_id or 0)
         # A faded belief can look near several risers; keep the strongest
         # single account rather than emitting a fan-out of near-duplicates.
+        # Compared on evidence: all candidates here are successions, so
+        # the shape prior is constant and would only add noise.
         existing = best_by_old.get(prior)
-        if existing is None or finding.salience > existing.salience:
+        if existing is None or finding.evidence > existing.evidence:
             best_by_old[prior] = finding
     for finding in best_by_old.values():
         findings.append(finding)
@@ -691,7 +747,7 @@ def detect_drift(
             thresholds=limits,
             since_event_id=since_event_id,
         )
-        if finding is None or finding.salience < limits.min_salience:
+        if finding is None or finding.evidence < limits.min_evidence:
             continue
         if finding.shape == "loss" and finding.concept_id in superseded:
             continue

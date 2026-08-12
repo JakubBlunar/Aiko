@@ -421,6 +421,88 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(sorted(entries[0].learning_event_ids), sorted(later))
         self.assertEqual(sorted(entries[1].learning_event_ids), sorted(first))
 
+    def test_a_flood_of_rewordings_cannot_take_the_whole_page(self) -> None:
+        """The H15 regression, at the page level.
+
+        `succession` — a belief reworded into a near-identical one — is
+        79% of everything the classifier produces. Without a cap the
+        diary is structurally a log of relabelings, and the two shapes
+        worth reading about (a belief forming, a belief lost) never
+        appear even when they are sitting right there in the same run.
+        """
+        for n in range(20):
+            _event(self.h, n, shape="succession")
+        _event(self.h, 20, shape="emergence")
+        _event(self.h, 21, shape="loss")
+
+        _worker(self.h).run()
+
+        [entry] = self.h.diary.list()
+        # Both rare shapes reach the page even though twenty rewordings
+        # queued ahead of them; before the cap the page was simply the
+        # first twelve by id and neither ever appeared.
+        self.assertEqual(entry.shape_counts.get("emergence"), 1)
+        self.assertEqual(entry.shape_counts.get("loss"), 1)
+        # Backfill still fills the page — the cap decides who gets in,
+        # not how full the page is.
+        self.assertEqual(sum(entry.shape_counts.values()), 12)
+
+    def test_the_cap_does_not_starve_a_page_of_only_rewordings(self) -> None:
+        # Nothing else arrived, so the cap must not leave the page
+        # two-thirds empty and the backlog growing: it bounds one shape's
+        # share of a *contested* page, not the page itself.
+        for n in range(20):
+            _event(self.h, n, shape="succession")
+
+        _worker(self.h).run()
+
+        [entry] = self.h.diary.list()
+        self.assertEqual(entry.shape_counts, {"succession": 12})
+
+    def test_an_uncontested_page_consumes_nothing_it_did_not_narrate(
+        self,
+    ) -> None:
+        """The watermark may only advance over what the page accounted for.
+
+        Advancing past rows a bounded pass never used is the "global
+        MAX(id)" defect this codebase has already been bitten by; here it
+        would silently delete a fortnight of history.
+        """
+        ids = [_event(self.h, n, shape="succession") for n in range(20)]
+
+        worker = _worker(self.h)
+        worker.run()
+        [entry] = self.h.diary.list()
+        self.assertEqual(entry.event_watermark, ids[11])
+
+        # The remaining eight are still waiting, not skipped.
+        self.h.kv.pop(KV_LAST_FIRED_AT, None)
+        worker.run()
+        second = self.h.diary.list()[0]
+        self.assertEqual(
+            sorted(second.learning_event_ids), sorted(ids[12:])
+        )
+
+    def test_a_contested_page_drops_the_rewordings_it_passed_over(
+        self,
+    ) -> None:
+        # The deliberate loss the cap buys, and the reason it is bounded
+        # to the page's own span: rewordings that lost a contested page
+        # are gone rather than queued forever behind the shapes that beat
+        # them.
+        for n in range(11):
+            _event(self.h, n, shape="succession")
+        last = _event(self.h, 11, shape="emergence")
+
+        worker = _worker(self.h)
+        worker.run()
+
+        [entry] = self.h.diary.list()
+        self.assertEqual(entry.event_watermark, last)
+        self.assertIn(last, entry.learning_event_ids)
+        self.h.kv.pop(KV_LAST_FIRED_AT, None)
+        self.assertEqual(worker.run()["reason"], "nothing_to_report")
+
     def test_an_empty_compose_spends_the_period_but_keeps_the_changes(
         self,
     ) -> None:
