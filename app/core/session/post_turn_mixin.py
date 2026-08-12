@@ -1974,11 +1974,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     state = _wl.deserialize(
                         chat_db.kv_get(_wl.KV_WANTS_LEDGER)
                     )
+                    charged = getattr(self, "_pending_want_imperative", None)
+                    self._pending_want_imperative = None
                     if state.wants:
                         turn_text = " ".join(
                             t for t in (user_text, assistant_text) if t
                         )
                         hits = _wl.detect_acted(state, turn_text)
+                        changed = bool(hits)
                         if hits:
                             now = timephrase.utcnow()
                             for want_id in hits:
@@ -1997,6 +2000,28 @@ class PostTurnMixin(PostTurnHelpersMixin):
                                         want.id, want.source,
                                         want.pressure, want.text[:80],
                                     )
+                        # K52 — she was handed the imperative and the
+                        # topic still didn't come up. Charge it, so the
+                        # next turn's strongest want is a different one.
+                        still_open = any(w.id == charged for w in state.wants)
+                        if charged and still_open and charged not in hits:
+                            state, dropped = _wl.brush_off(
+                                state, charged,
+                                decay=float(getattr(
+                                    agent_settings,
+                                    "wants_brush_off_decay", 0.6,
+                                )),
+                                floor=float(getattr(
+                                    agent_settings,
+                                    "wants_brush_off_floor", 0.2,
+                                )),
+                            )
+                            log.info(
+                                "wants-ledger brushed off: id=%s dropped=%s",
+                                charged, dropped,
+                            )
+                            changed = True
+                        if changed:
                             chat_db.kv_set(
                                 _wl.KV_WANTS_LEDGER, _wl.serialize(state),
                             )

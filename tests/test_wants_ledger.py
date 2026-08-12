@@ -266,6 +266,58 @@ class ActedTests(unittest.TestCase):
         )
 
 
+class BrushOffTests(unittest.TestCase):
+    """An imperative she was handed and didn't take costs the want.
+
+    Without the charge the imperative band is a ratchet: the strongest
+    want crosses the threshold, renders "bring it up THIS
+    conversation", grows overnight and renders again — the same
+    directive every turn for a topic she has now declined repeatedly.
+    """
+
+    def test_charge_lowers_pressure_and_keeps_the_want(self) -> None:
+        want = _want(pressure=0.9)
+        after, dropped = wl.brush_off(
+            _state_with(want), want.id, decay=0.6, floor=0.2,
+        )
+        self.assertFalse(dropped)
+        self.assertAlmostEqual(after.wants[0].pressure, 0.3)
+
+    def test_a_rival_want_takes_the_next_slot(self) -> None:
+        loud = _want("ask about the kiln firing", pressure=0.9,
+                     source_ref="m:1")
+        quiet = _want("ask about the bread starter", pressure=0.75,
+                      source_ref="m:2")
+        after, _ = wl.brush_off(
+            _state_with(loud, quiet), loud.id, decay=0.6, floor=0.2,
+        )
+        strongest = max(after.wants, key=lambda w: w.pressure)
+        self.assertEqual(strongest.id, quiet.id)
+
+    def test_a_thoroughly_ignored_want_leaves_the_ledger(self) -> None:
+        want = _want(pressure=0.7)
+        after, dropped = wl.brush_off(
+            _state_with(want), want.id, decay=0.6, floor=0.2,
+        )
+        self.assertTrue(dropped)
+        self.assertEqual(after.wants, ())
+
+    def test_charge_never_arms_a_reentry_cooldown(self) -> None:
+        # She didn't act on it, so there is nothing to cool down
+        # against -- the feeder is free to re-offer the topic later.
+        want = _want(pressure=0.7, source_ref="cue:3")
+        after, _ = wl.brush_off(
+            _state_with(want), want.id, decay=0.6, floor=0.2,
+        )
+        self.assertEqual(after.acted_map(), {})
+
+    def test_unknown_id_noop(self) -> None:
+        state = _state_with(_want(pressure=0.9))
+        after, dropped = wl.brush_off(state, "nope", decay=0.6, floor=0.2)
+        self.assertFalse(dropped)
+        self.assertEqual(after.wants[0].pressure, 0.9)
+
+
 class DropSourceRefsTests(unittest.TestCase):
     def test_drops_matching_refs_no_cooldown(self) -> None:
         state = _state_with(
@@ -354,17 +406,23 @@ class _KvStore:
 
 
 class _FakeCues:
-    """Duck-typed cue pool holding only the pending seeds.
+    """Duck-typed cue pool, modelling both reads the worker makes.
 
-    A spent seed is simply absent, which is the pool's whole contract:
-    ``pending`` is the shelf, and the states the old fake modelled with
-    ``consumed_at`` / ``tier`` no longer appear in a read.
+    The two are not the same shelf and the difference is the whole of
+    the K52 pressure bug: ``pending`` answers "may I surface this now",
+    which a seed stops satisfying the moment it renders (and while it
+    cools off after being released), while ``live`` answers "does this
+    seed still exist". A row carries a state so a test can put a seed
+    in the gap between them.
     """
 
     class Row:
-        def __init__(self, id: int, subject: str) -> None:
+        def __init__(
+            self, id: int, subject: str, state: str = "pending",
+        ) -> None:
             self.id = id
             self.subject = subject
+            self.state = state
             self.payload: dict = {}
 
     def __init__(self, rows: list["Row"] | None = None) -> None:
@@ -375,7 +433,14 @@ class _FakeCues:
         assert cue_type == "curiosity_seed"
         if self.raises:
             raise RuntimeError("pool unavailable")
-        return list(self._rows)[:limit]
+        return [r for r in self._rows if r.state == "pending"][:limit]
+
+    def live(self, cue_type: str, *, limit: int = 20) -> list["Row"]:
+        assert cue_type == "curiosity_seed"
+        if self.raises:
+            raise RuntimeError("pool unavailable")
+        alive = {"pending", "surfaced", "awaiting"}
+        return [r for r in self._rows if r.state in alive][:limit]
 
 
 class _FakeGoals:
@@ -722,6 +787,83 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(stats["pruned"], 0)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertIn("cue:1", {w.source_ref for w in state.wants})
+
+    def test_surfacing_a_seed_does_not_kill_its_want(self) -> None:
+        """The bug that drained the whole pressure mechanic.
+
+        K9's block surfaces two seeds a turn, which moves them out of
+        ``pending`` — so a pruner reading the pending shelf retired
+        every curiosity want within a couple of hours of birth, and no
+        want ever lived the 19 hours that ``growth_per_day`` needs to
+        clear K54's appetite bar, let alone the 53 for the imperative.
+        Being shown a topic and not biting is the state that most
+        deserves to keep wanting.
+        """
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "still curious topic", state="surfaced"),
+            ]),
+        )
+        stats = worker.run()
+        self.assertEqual(stats["pruned"], 0)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertIn("cue:1", {w.source_ref for w in state.wants})
+
+    def test_a_terminal_seed_still_kills_its_want(self) -> None:
+        # The half of the old behaviour that was right: once the topic
+        # has actually come up, the want must go with it.
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "answered topic", state="used"),
+            ]),
+        )
+        self.assertEqual(worker.run()["pruned"], 1)
+
+    def test_a_full_live_page_prunes_nothing(self) -> None:
+        # Absence from a truncated list is not evidence of a dead seed,
+        # and a wrong prune here is the failure being fixed.
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(999))))
+        rows = [_FakeCues.Row(i, f"topic {i}") for i in range(64)]
+        worker = self._worker(kv, cue_store_provider=lambda: _FakeCues(rows))
+        self.assertEqual(worker.run()["pruned"], 0)
+
+    def test_a_surviving_want_reaches_the_bars_that_gate_it(self) -> None:
+        """The point of the fix, stated as the numbers it unblocks.
+
+        K54's appetite slip needs 0.35 and the K52 imperative needs
+        0.7; both were unreachable while wants died at two hours old.
+        """
+        kv = _KvStore()
+        born = datetime.now(timezone.utc) - timedelta(days=3)
+        want = wl.Want(
+            id="sw1",
+            text="bring up what you've been curious about: the kiln",
+            kind="ask",
+            source="curiosity_seed",
+            source_ref="cue:1",
+            created_at=born.isoformat(),
+            pressure=0.15,
+            last_growth_at=born.isoformat(),
+        )
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(want)))
+        worker = self._worker(
+            kv,
+            growth_per_day=0.25,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "the kiln", state="surfaced"),
+            ]),
+        )
+        worker.run()
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(len(state.wants), 1)
+        self.assertGreaterEqual(state.wants[0].pressure, 0.7)
 
     def test_an_unreadable_pool_prunes_nothing(self) -> None:
         """A failed read must not look like an empty shelf.

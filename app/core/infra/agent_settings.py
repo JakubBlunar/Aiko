@@ -891,6 +891,15 @@ class AgentSettings:
     # re-entry for this many days so the feeder doesn't immediately
     # re-add the same topic.
     wants_reentry_cooldown_days: float = 5.0
+    # What an imperative costs when Aiko is handed it and the topic
+    # still doesn't come up. Sized against growth: at the 0.25/day
+    # default this is a little over two days of pressure, so an
+    # ignored want yields the imperative slot to a rival for days
+    # rather than re-issuing the same directive next turn.
+    wants_brush_off_decay: float = 0.6
+    # Below this a brushed-off want leaves the ledger entirely. She
+    # was told to raise it, repeatedly, and didn't; that is an answer.
+    wants_brush_off_floor: float = 0.2
     # Feeder worker cadence (idle scheduler). Hourly matches the
     # other kv-backed maintenance workers.
     wants_worker_interval_seconds: float = 3600.0

@@ -1051,6 +1051,22 @@ A rare, lull-gated permission slip to put something of Aiko's own on the table. 
 
 L42's concentration / fixation findings suppress the whole block, so a learned lean can't deepen a rut.
 
+### K52 — the wants ledger (desire with pressure)
+
+A small kv-backed store of things Aiko wants *from the conversation*, fed from producers that already exist (K9 curiosity seeds, K34 forward-curiosity entries, K1 goals, K85 pursuits). The ingredient over those is **pressure**: a want grows a little each day until it is acted on, and past a threshold its cue stops being a soft "spend one when a lull lands" list and becomes a directive to raise it this conversation.
+
+- `agent.wants_ledger_enabled` *(bool, `true`)* — master switch for the ledger, its feeder worker and the T6 block.
+- `agent.wants_growth_per_day` *(float, `0.25`)* — how fast pressure accrues. A fresh want starts at 0.15, so this rate puts it 19 hours from K54's appetite bar and 53 hours from the imperative. Higher → she pushes her own topics sooner; lower → the imperative band effectively stops existing.
+- `agent.wants_imperative_threshold` *(float, `0.7`)* — where the cue flips from a soft list to the one-want directive ("this has been on your mind for days — bring it up THIS conversation"). This also arms a K55 thread, so lowering it makes her both pushier and more persistent.
+- `agent.wants_cap` *(int, `8`, min `1`)* — ledger size. At the cap new wants are refused rather than evicting old ones, so pressure ordering stays honest.
+- `agent.wants_max_age_days` *(float, `14.0`, min `1.0`)* — a want never acted on expires. An itch that old has faded, and dropping it keeps the ledger from reading as a guilt list.
+- `agent.wants_reentry_cooldown_days` *(float, `5.0`, min `0.0`)* — after a want is acted on, its source is blocked from re-entry this long so the feeder doesn't immediately re-add the same topic.
+- `agent.wants_brush_off_decay` *(float, `0.6`, min `0.0`)* — what an imperative costs when Aiko is handed it and the topic still doesn't come up. Without a charge the band is a ratchet: the strongest want crosses the threshold, renders its directive, grows overnight and renders it again, every turn, on a topic she has by now declined repeatedly. At the default growth rate this is a little over two days, so a brushed-off want yields the slot to a rival for days. Higher → she takes a hint faster; lower → she keeps pressing.
+- `agent.wants_brush_off_floor` *(float, `0.2`, min `0.0`)* — below this a brushed-off want leaves the ledger entirely. She was told to raise it, repeatedly, and didn't; that is an answer.
+- `agent.wants_worker_interval_seconds` *(float, `3600.0`, min `30.0`)* — feeder cadence on the idle scheduler.
+
+A want built on a curiosity seed retires when that seed reaches a **terminal** state (its topic came up, or it expired) — not when the seed merely leaves the pending shelf. The two are one query apart and conflating them drained the whole mechanic for months; see [H28](personality-backlog/health.md#h28-a-different-block-spent-k52s-fuel-and-three-features-starved).
+
 ### K85 — pursuits (the third subject)
 
 What Aiko keeps returning to **on her own**, with the user out of the picture entirely. Taste is bond-scoped by definition ("topics she enjoys getting into with him"), value and identity are how she reasons, and three quarters of her stored self-concepts name him outright — so when the room went quiet she had nothing of her own to open with. Mined from the `pursuit_note` memories her hobby milestones and substantive away beats now leave behind.

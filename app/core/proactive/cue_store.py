@@ -676,6 +676,37 @@ class CueStore:
             with_embedding=with_embedding,
         )
 
+    def live(
+        self,
+        cue_type: str | None = None,
+        *,
+        limit: int = 50,
+        with_embedding: bool = False,
+    ) -> list[CueRow]:
+        """Every cue that has not reached a terminal state yet.
+
+        The distinction from :meth:`pending` is the one a caller almost
+        always means when it asks "is this cue still a thing": pending
+        answers "may I surface it *now*", which a cue stops satisfying
+        the moment it renders into a prompt. A reader that treats the
+        second question as the first retires anything Aiko has been
+        shown once -- see the K52 wants ledger, where it drained the
+        pressure mechanic for months.
+        """
+        placeholders = ", ".join("?" for _ in LIVE_STATES)
+        where = f"user_id = ? AND state IN ({placeholders})"
+        params: list[Any] = [self._user_id, *sorted(LIVE_STATES)]
+        if cue_type:
+            where += " AND cue_type = ?"
+            params.append(str(cue_type))
+        return self._select(
+            where,
+            params,
+            order="id ASC",
+            limit=limit,
+            with_embedding=with_embedding,
+        )
+
     def recent_subjects(
         self,
         cue_type: str | None = None,

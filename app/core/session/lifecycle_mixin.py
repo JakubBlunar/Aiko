@@ -225,6 +225,8 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K55 — an opened thread doesn't survive a session switch.
         self._owned_thread = None
         self._pending_thread_open = None
+        # K52 — an unresolved imperative charge doesn't cross sessions.
+        self._pending_want_imperative = None
         # K54 — the once-per-conversation appetite slip re-arms.
         self._topic_appetite_fired = False
         # K81 — the once-per-conversation taste-lean slip re-arms.
@@ -379,6 +381,8 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # K55 — drop any opened thread with the history it lived in.
         self._owned_thread = None
         self._pending_thread_open = None
+        # K52 — an unresolved imperative charge goes with the history.
+        self._pending_want_imperative = None
         # K54 — a wiped history re-arms the appetite slip.
         self._topic_appetite_fired = False
         # K81 — a wiped history re-arms the taste-lean slip.

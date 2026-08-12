@@ -170,6 +170,8 @@
     "wants_cap": 8,
     "wants_max_age_days": 14.0,
     "wants_reentry_cooldown_days": 5.0,
+    "wants_brush_off_decay": 0.6,
+    "wants_brush_off_floor": 0.2,
     "wants_worker_interval_seconds": 3600.0,
     "initiative_turns_enabled": true,
     "initiative_base_period": 8,

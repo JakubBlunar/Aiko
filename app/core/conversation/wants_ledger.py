@@ -324,6 +324,46 @@ def mark_acted(state: LedgerState, want_id: str, now: datetime) -> LedgerState:
     )
 
 
+def brush_off(
+    state: LedgerState,
+    want_id: str,
+    *,
+    decay: float,
+    floor: float,
+) -> tuple[LedgerState, bool]:
+    """Charge a want for an imperative Aiko was given and did not take.
+
+    Returns ``(new_state, dropped)``. Pressure is what makes the
+    imperative band fire, so without a cost the band is a ratchet: the
+    strongest want crosses the threshold, renders its "bring it up THIS
+    conversation" directive, grows again overnight, and renders it
+    again — every turn, forever, for a topic she has now declined
+    several times. Charging the surfaced want moves the next turn's
+    strongest to a different want and lets a thoroughly-ignored one
+    fall out of the ledger below ``floor``.
+
+    Mirrors K89's thread stake, which had the same problem and the same
+    answer: one polite attempt is not a stake, and an unlimited number
+    of attempts is not one either.
+    """
+    target = next((w for w in state.wants if w.id == want_id), None)
+    if target is None:
+        return state, False
+    lowered = max(0.0, target.pressure - max(0.0, float(decay)))
+    if lowered < float(floor):
+        return LedgerState(
+            wants=tuple(w for w in state.wants if w.id != want_id),
+            recently_acted=state.recently_acted,
+        ), True
+    return LedgerState(
+        wants=tuple(
+            replace(w, pressure=lowered) if w.id == want_id else w
+            for w in state.wants
+        ),
+        recently_acted=state.recently_acted,
+    ), False
+
+
 def drop_source_refs(
     state: LedgerState, refs: set[str],
 ) -> tuple[LedgerState, list[str]]:
