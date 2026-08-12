@@ -5,6 +5,11 @@ emit its first streaming delta, we route a short filler phrase through
 the TTS callback so Aiko makes a sound — "Hmm,", "Let me think," — while
 the model is still warming up.
 
+:func:`pick_lookup_filler` serves the same TTS callback for a different
+wait: a slow brain tool (D3's synchronous web search) that the turn is
+blocked on for a couple of seconds. That one is spoken deliberately
+rather than on a watchdog, since the wait is known before it starts.
+
 Filler is intentionally short and conversational; it's queued ahead of
 the real reply so the user hears overlap-free continuity. Once the first
 real token lands the watchdog is cancelled. If the filler fired, the
@@ -81,10 +86,51 @@ _REACTION_TO_TONE: dict[str, str] = {
 }
 
 
+# D3: spoken while a slow brain tool (the synchronous web search) is
+# mid-flight. Different job from the generic filler above — that one
+# covers a model that is merely warming up, this one covers a few seconds
+# of real work — so it says what she is doing rather than just making a
+# sound, and ends closed rather than trailing off, because the reply that
+# follows it starts a fresh sentence.
+_LOOKUP_FILLERS: dict[str, tuple[str, ...]] = {
+    "playful": (
+        "Ooh, hang on — let me look that up.",
+        "One sec, checking.",
+    ),
+    "warm": (
+        "Mm, let me check that for you.",
+        "Hang on, I'll look it up.",
+    ),
+    "thoughtful": (
+        "Hang on, let me look that up.",
+        "Let me check rather than guess.",
+    ),
+    "concerned": (
+        "Let me check that properly.",
+        "Hang on, I want to get this right.",
+    ),
+    "curious": (
+        "Ooh, let me look that up.",
+        "Hang on, I want to check.",
+    ),
+    "neutral": (
+        "Hang on, let me check.",
+        "One sec, let me look that up.",
+    ),
+}
+
+
 def pick_filler(reaction: str | None) -> tuple[str, str]:
     """Return ``(phrase, reaction_for_tts)`` for the given carry-over tone."""
     tone = _REACTION_TO_TONE.get((reaction or "").lower(), "neutral")
     candidates = _FILLERS_BY_TONE.get(tone) or _FILLERS_BY_TONE["neutral"]
+    return random.choice(candidates), reaction or "thoughtful"
+
+
+def pick_lookup_filler(reaction: str | None) -> tuple[str, str]:
+    """Return ``(phrase, reaction_for_tts)`` for a slow-tool announcement."""
+    tone = _REACTION_TO_TONE.get((reaction or "").lower(), "neutral")
+    candidates = _LOOKUP_FILLERS.get(tone) or _LOOKUP_FILLERS["neutral"]
     return random.choice(candidates), reaction or "thoughtful"
 
 
@@ -168,4 +214,4 @@ class FillerInjector:
             return self._fired
 
 
-__all__ = ["FillerInjector", "pick_filler"]
+__all__ = ["FillerInjector", "pick_filler", "pick_lookup_filler"]

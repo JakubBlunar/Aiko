@@ -230,4 +230,5 @@ Completed work, split by family so each file stays small (the combined log had g
 
 ## [Shipped — Tools & dev tooling (D / DT-series)](shipped/tools.md)
 
+- [D3. Fast synchronous web-search brain tool (+ knowledge write-back) — SHIPPED](shipped/tools.md#d3-fast-synchronous-web-search-brain-tool--knowledge-write-back--shipped)
 - [DT1. Virtual clock / time-travel for time-gated features — SHIPPED](shipped/tools.md#dt1-virtual-clock--time-travel-for-time-gated-features--shipped)

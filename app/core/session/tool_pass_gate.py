@@ -81,9 +81,9 @@ class GateDecision:
 # (``reason="unknown_tool"``) so a future tool added without a pattern
 # family degrades to the status quo instead of silently never being
 # callable. Tools that run only in the background workflow / MCP lane
-# (``web_search``, the filesystem task tools) are intentionally absent —
-# they are never in the brain ``ToolRegistry`` so the gate never sees
-# them. Plugin fast tools supply their own name→family at runtime via
+# (the filesystem task tools) are intentionally absent — they are never
+# in the brain ``ToolRegistry`` so the gate never sees them. Plugin fast
+# tools supply their own name→family at runtime via
 # ``TurnRunner.set_plugin_tool_gate``.
 _TOOL_FAMILY: dict[str, str] = {
     # builtins
@@ -117,6 +117,8 @@ _TOOL_FAMILY: dict[str, str] = {
     # H11 weather (own family so "weather"/"forecast" route here, not web)
     "get_weather": "weather",
     "get_forecast": "weather",
+    # D3 synchronous web search on the brain lane.
+    "web_search": "web",
 }
 
 
@@ -138,9 +140,34 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"today'?s date", r"what month", r"what year", r"o'?clock",
         r"timezone", r"time zone", r"clock",
     ]),
-    # NB: no "web" family — ``web_search`` runs only in the background
-    # workflow lane, never as a brain tool, so a "search the web" turn is
-    # not a fast-tool signal here.
+    # D3 synchronous web search. Two shapes are worth the decision pass:
+    # an explicit request to go look ("google it", "what's the latest
+    # on…"), and a claim about the *current* state of something outside
+    # her training data — a new season, a release date, an announcement,
+    # a result. The second is the case the tool exists for: the user
+    # rarely asks her to search, they just talk about a show that came
+    # out after her cutoff. Novelty words are kept qualified ("new
+    # season", not a bare "new") because this family is the one that
+    # opens a ~3s pass on an otherwise chatty turn.
+    "web": _compile([
+        r"look (?:it|that|this|them) up", r"look up",
+        r"search (?:for|the web|online|the internet)",
+        r"google(?: it| that)?", r"on the internet",
+        # A title usually sits between the two ("the new Dandadan season").
+        r"new (?:\w+ ){0,2}(?:season|episode|series|anime|show|movie|film|"
+        r"album|game)",
+        r"season \d+", r"episode \d+", r"s\d+e\d+",
+        r"release date", r"new release", r"comes? out", r"came out",
+        r"coming out", r"announce(?:d|ment)?",
+        r"latest", r"newest", r"most recent",
+        r"what'?s new", r"any news", r"up to date", r"currently",
+        r"who won", r"how much (?:is|does|do|are)", r"what'?s the price",
+        r"is it true", r"is that true",
+        r"did (?:they|he|she|it) (?:really|actually)",
+        r"still (?:airing|running|out|available)",
+        r"do you know (?:if|whether)", r"have you heard",
+        r"20[2-9]\d",
+    ]),
     "weather": _compile([
         r"weather", r"forecast", r"temperature", r"how (?:hot|cold|warm)",
         r"rain", r"raining", r"snow", r"snowing", r"sunny", r"cloudy",

@@ -1,16 +1,20 @@
 """Web-search provider plumbing for :class:`SessionController`.
 
-Owns the single shared :class:`app.llm.search.providers.SearchProvider`
-that backs both web-search lanes — the worker-facing ``WebSearchTool``
-(F1 / G3 / F9) and the background ``WebSearchHandler`` (goal workflow).
-The provider is built lazily from ``settings.search`` and cached;
-consumers register themselves so a live ``reconfigure_search`` can
+Owns two :class:`app.llm.search.providers.SearchProvider` instances. The
+shared one backs the background lanes — the worker-facing
+``WebSearchTool`` (F1 / G3 / F9) and the ``WebSearchHandler`` (goal
+workflow). The second backs the D3 brain lane (the synchronous
+``web_search`` tool) and differs deliberately: no DuckDuckGo fallback
+and a shorter timeout, because a user is waiting on it. Both are built
+lazily from ``settings.search`` and cached; consumers register
+themselves — on the matching list — so a live ``reconfigure_search`` can
 re-point them without a restart.
 
 State ownership note: like the other session mixins, this class only
 groups methods. It carries no ``__init__``; the few attributes it uses
-(``_search_provider`` cache, ``_search_consumers`` list) are created
-lazily via ``getattr`` so ``SessionController.__init__`` does not need a
+(the two provider caches, the two consumer lists, and the turn-scoped
+``_turn_search_results`` stash) are created lazily via ``getattr`` so
+``SessionController.__init__`` does not need a
 dedicated assignment. The API key is read from / written to the OS
 keychain (best-effort, inert under pytest) via
 :mod:`app.core.infra.secret_store`, mirroring the provider-catalogue path.
@@ -22,7 +26,7 @@ from typing import Any
 
 from app.core.infra import secret_store
 from app.core.infra.settings import persist_user_overrides
-from app.llm.search import build_search_provider
+from app.llm.search import build_brain_search_provider, build_search_provider
 from app.llm.search.providers import resolve_api_key
 
 
@@ -47,6 +51,26 @@ class SearchProviderMixin:
             )
         return prov
 
+    def _get_brain_search_provider(self) -> Any:
+        """Return the D3 brain-lane provider, building + caching on first use.
+
+        Separate instance from the worker provider: no DuckDuckGo
+        fallback and a shorter timeout, because a user is waiting on this
+        one. See :func:`build_brain_search_provider`.
+        """
+        prov = getattr(self, "_brain_search_provider", None)
+        if prov is None:
+            self._hydrate_search_key()
+            prov = build_brain_search_provider(
+                getattr(self._settings, "search", None)
+            )
+            self._brain_search_provider = prov
+            log.info(
+                "brain search provider ready: %s",
+                getattr(prov, "name", type(prov).__name__),
+            )
+        return prov
+
     def _register_search_consumer(self, consumer: Any) -> Any:
         """Track a ``WebSearchTool`` / ``WebSearchHandler`` for re-pointing.
 
@@ -59,6 +83,23 @@ class SearchProviderMixin:
         consumers.append(consumer)
         return consumer
 
+    def _register_brain_search_consumer(self, consumer: Any) -> Any:
+        """Track a brain-lane tool so a reconfigure re-points it too.
+
+        Kept in its own list because these consumers must receive the
+        brain provider, not the shared worker one. The tool registry is
+        long-lived (rebuilt on settings change, not per turn), so a live
+        ``reconfigure_search`` would otherwise leave a stale provider —
+        or, if they shared the worker list, hand the brain lane the
+        fallback-wrapped provider it deliberately avoids.
+        """
+        consumers = getattr(self, "_brain_search_consumers", None)
+        if consumers is None:
+            consumers = []
+            self._brain_search_consumers = consumers
+        consumers.append(consumer)
+        return consumer
+
     def _rebuild_search_provider(self) -> Any:
         """Rebuild the provider from current settings and re-point consumers."""
         prov = build_search_provider(getattr(self._settings, "search", None))
@@ -68,11 +109,47 @@ class SearchProviderMixin:
                 consumer.set_provider(prov)
             except Exception:
                 log.debug("search consumer set_provider failed", exc_info=True)
+        brain_prov = build_brain_search_provider(
+            getattr(self._settings, "search", None)
+        )
+        self._brain_search_provider = brain_prov
+        for consumer in list(getattr(self, "_brain_search_consumers", []) or []):
+            try:
+                consumer.set_provider(brain_prov)
+            except Exception:
+                log.debug(
+                    "brain search consumer set_provider failed", exc_info=True,
+                )
         log.info(
-            "search provider rebuilt: %s",
+            "search provider rebuilt: %s (brain: %s)",
             getattr(prov, "name", type(prov).__name__),
+            getattr(brain_prov, "name", type(brain_prov).__name__),
         )
         return prov
+
+    # ── D3 turn-scoped result capture ────────────────────────────────
+
+    def _stash_turn_search_results(
+        self, query: str, results: list[dict[str, str]],
+    ) -> None:
+        """Hold this turn's brain-lane hits for the post-turn distill.
+
+        Called by :class:`BrainWebSearchTool` from inside the tool pass.
+        Only the most recent search survives: if she searched twice in one
+        turn, the later query is the one she actually answered from, and
+        the distill is a nice-to-have rather than an audit trail.
+        """
+        if not query or not results:
+            return
+        self._turn_search_results = (query, [dict(r) for r in results])
+
+    def _drain_turn_search_results(
+        self,
+    ) -> "tuple[str, list[dict[str, str]]] | None":
+        """Take and clear the stashed hits (``None`` when she didn't search)."""
+        stashed = getattr(self, "_turn_search_results", None)
+        self._turn_search_results = None
+        return stashed
 
     def _hydrate_search_key(self) -> None:
         """Pull the LangSearch key from the keychain into memory if blank.
@@ -149,6 +226,10 @@ class SearchProviderMixin:
             "query_reformulation_enabled": bool(
                 getattr(s, "query_reformulation_enabled", True)
             ),
+            "brain_tool_enabled": bool(getattr(s, "brain_tool_enabled", True)),
+            "brain_timeout_seconds": float(
+                getattr(s, "brain_timeout_seconds", 6.0)
+            ),
         }
 
     def reconfigure_search(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +274,15 @@ class SearchProviderMixin:
             s.query_reformulation_enabled = bool(
                 patch["query_reformulation_enabled"]
             )
+        if "brain_tool_enabled" in patch:
+            s.brain_tool_enabled = bool(patch["brain_tool_enabled"])
+        if "brain_timeout_seconds" in patch:
+            try:
+                s.brain_timeout_seconds = max(
+                    1.0, float(patch["brain_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                pass
 
         try:
             persist_user_overrides({"search": {
@@ -207,9 +297,19 @@ class SearchProviderMixin:
                 "fallback_to_duckduckgo": s.fallback_to_duckduckgo,
                 "timeout_seconds": s.timeout_seconds,
                 "query_reformulation_enabled": s.query_reformulation_enabled,
+                "brain_tool_enabled": s.brain_tool_enabled,
+                "brain_timeout_seconds": s.brain_timeout_seconds,
             }})
         except Exception:
             log.warning("persist search overrides failed", exc_info=True)
 
         self._rebuild_search_provider()
+        if "brain_tool_enabled" in patch:
+            # The brain tool's *existence* changed, not just its backend:
+            # the registry is long-lived, so it has to be rebuilt for the
+            # switch to take effect before the next restart.
+            try:
+                self.rebuild_tool_registry()
+            except Exception:
+                log.debug("rebuild_tool_registry failed", exc_info=True)
         return self._search_public_snapshot()

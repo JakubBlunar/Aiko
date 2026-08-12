@@ -1110,6 +1110,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
             )
         except Exception:
             log.debug("curiosity worker schedule failed", exc_info=True)
+        # D3: keep what she looked up mid-turn (no-op unless she searched).
+        try:
+            self._maybe_schedule_search_distill_job()
+        except Exception:
+            log.debug("search distill schedule failed", exc_info=True)
 
         # Schema v7: shared moments + relationship axes. Order matters —
         # extract inline tags first so the axes updater sees their vibes.

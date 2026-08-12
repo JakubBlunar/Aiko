@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 from app.core.infra.chat_database import ChatDatabase
-from app.core.voice.filler_injector import FillerInjector
+from app.core.voice.filler_injector import FillerInjector, pick_lookup_filler
 from app.core.infra.log_context import get_turn_id, reset_turn_id, set_turn_id
 from app.core.session.prompt_assembler import (
     PromptAssembler,
@@ -124,6 +124,15 @@ _FINISHED_TASK_SENTINELS = (
     "reply now using the result below. Do NOT start the task again",
     "Tasks that finished since your last message:",
 )
+
+
+# D3: tools whose dispatch is a multi-second network round-trip the turn
+# blocks on. Aiko says what she's doing before one runs, so the pause
+# reads as her looking something up rather than as the app hanging. The
+# line is spoken only — never routed to ``on_token`` — so the transcript
+# and the persisted message stay exactly the model's own words (the same
+# contract ``FillerInjector`` keeps).
+_SLOW_TOOLS = frozenset({"web_search"})
 
 
 def _messages_have_finished_task_block(
@@ -299,6 +308,10 @@ class TurnRunner:
         self._tool_gate_skips = 0
         self._tool_pass_ms_total = 0.0
         self._tool_pass_count = 0
+        # D3: set when this turn already spoke a "let me check" line ahead
+        # of a slow tool, so the slow-first-token filler doesn't stack a
+        # second interjection on top of it.
+        self._spoke_slow_tool_notice = False
         # ── brain-lane skill router (progressive tool disclosure) ──────
         # When enabled, a tool-shaped turn exposes only the matched
         # families' tools plus the always-on core (time / recall / world),
@@ -674,6 +687,10 @@ class TurnRunner:
         # always-run behaviour.
         tool_usage = OllamaUsage()
         self._last_tool_schema_tokens = 0
+        # Per-turn lifetime: cleared here rather than inside the tool pass
+        # so a turn the gate skips can't inherit a stale True and mute the
+        # slow-first-token filler.
+        self._spoke_slow_tool_notice = False
         if self._tool_registry is not None and len(self._tool_registry) > 0:
             gate_decision = self._gate_tool_pass(cleaned_user, messages)
             telemetry.tool_gate_event = gate_decision.as_event()
@@ -693,6 +710,7 @@ class TurnRunner:
                     tool_usage = self._maybe_run_tool_pass(
                         messages, stop_requested=stop_requested, allow=allow,
                         session_key=session_key,
+                        on_tts_chunk=on_tts_chunk,
                     )
                 except Exception:
                     log.exception("tool pre-pass failed; falling back to plain stream")
@@ -750,10 +768,14 @@ class TurnRunner:
         t0 = time.monotonic()
 
         # Phase 1c: arm slow-first-token filler. Disarmed on first delta.
-        self._filler.arm(
-            on_tts_chunk,
-            carry_over_reaction=self._last_reaction,
-        )
+        # Skipped when the tool pass already announced a slow lookup: she
+        # has just said "hang on, let me check", and a "Hmm," on top of it
+        # sounds like two false starts rather than one held beat.
+        if not self._spoke_slow_tool_notice:
+            self._filler.arm(
+                on_tts_chunk,
+                carry_over_reaction=self._last_reaction,
+            )
 
         try:
             stream = self._ollama.chat_stream(
@@ -1372,6 +1394,7 @@ class TurnRunner:
         max_rounds: int = 2,
         allow: "set[str] | None" = None,
         session_key: str = "",
+        on_tts_chunk: TtsChunkCallback | None = None,
     ) -> OllamaUsage:
         """Run up to ``max_rounds`` ``chat_with_tools`` passes and mutate
         ``messages`` in place by appending the assistant's tool_calls and
@@ -1380,6 +1403,9 @@ class TurnRunner:
         Returns the cumulative :class:`OllamaUsage` across all rounds so the
         caller can merge it into the streaming-pass usage (gives the user
         accurate token totals across the whole turn).
+
+        ``on_tts_chunk`` is the turn's speech callback; it is used only to
+        announce a slow tool before dispatching it (see ``_SLOW_TOOLS``).
 
         We bail early if the model returns no tool calls, the stop event is
         set, or anything goes sideways (the streaming pass is the
@@ -1565,6 +1591,7 @@ class TurnRunner:
                         self._on_tool_call(call.name, dict(call.arguments))
                     except Exception:
                         log.exception("on_tool_call listener failed")
+                self._announce_slow_tool(call.name, on_tts_chunk)
                 result = registry.dispatch(
                     call.name,
                     call.arguments,
@@ -1590,6 +1617,30 @@ class TurnRunner:
                 # follow-ups through without a tool-shaped token.
                 self._last_turn_dispatched_tool = True
         return total_usage
+
+    def _announce_slow_tool(
+        self,
+        tool_name: str,
+        on_tts_chunk: TtsChunkCallback | None,
+    ) -> None:
+        """Speak a short "let me check" line before a slow tool dispatch.
+
+        Once per turn at most, spoken-only. The UI already shows the
+        ``tool_event`` activity chip, so a text-mode user still sees what
+        is happening; this is for the voice path, where several seconds of
+        silence is the difference between "she's looking it up" and "it
+        broke".
+        """
+        if on_tts_chunk is None or tool_name not in _SLOW_TOOLS:
+            return
+        if self._spoke_slow_tool_notice:
+            return
+        self._spoke_slow_tool_notice = True
+        try:
+            phrase, reaction = pick_lookup_filler(self._last_reaction)
+            on_tts_chunk(phrase, reaction)
+        except Exception:
+            log.debug("slow-tool notice emit failed", exc_info=True)
 
     @staticmethod
     def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
