@@ -2147,6 +2147,179 @@ class ApiStyleRoutingTests(unittest.TestCase):
         self.assertNotIn("prompt_cache_key", posted.call_args.kwargs["json"])
 
 
+class DataRetentionTests(unittest.TestCase):
+    """``store`` — whether the provider may keep the conversation.
+
+    ``POST /v1/responses`` defaults to ``store=true`` server-side, which
+    retains the whole request for 30 days and renders it in the
+    provider's dashboard. Our requests carry the persona, retrieved
+    memories, chunks of uploaded documents and the recent transcript, so
+    the default is opted out of per provider rather than inherited.
+    """
+
+    def _client(
+        self,
+        *,
+        store: bool = False,
+        base_url: str = "https://api.openai.com/v1",
+        model: str = "gpt-5.6-luna",
+        api_style: str = "auto",
+    ) -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url=base_url,
+            model=model,
+            api_key="sk-test",
+            api_style=api_style,
+            store=store,
+        )
+
+    def _post_responses(self, client: OpenAICompatibleClient, **kwargs) -> dict:
+        fake = _fake_responses_response(text="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 32},
+                **kwargs,
+            )
+        return posted.call_args.kwargs["json"]
+
+    def test_the_default_opts_out_of_retention(self) -> None:
+        body = self._post_responses(self._client())
+        self.assertIs(body["store"], False)
+
+    def test_it_is_sent_explicitly_when_enabled(self) -> None:
+        # Present either way: the retention behaviour should be readable
+        # from the request rather than inferred from an absent field.
+        body = self._post_responses(self._client(store=True))
+        self.assertIs(body["store"], True)
+
+    def test_a_streaming_reply_also_opts_out(self) -> None:
+        # The reply pass carries the same prompt as the tool pass, so it
+        # is exactly as sensitive.
+        client = self._client()
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured.update(kwargs.get("json") or {})
+            return _sse_response([
+                'data: {"type": "response.created"}',
+                'data: {"type": "response.output_text.delta", "delta": "hi"}',
+                'data: {"type": "response.completed"}',
+                "data: [DONE]",
+            ])
+
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", side_effect=fake_post,
+        ):
+            list(
+                client.chat_stream(
+                    [{"role": "user", "content": "hi"}],
+                    options={"num_predict": 32},
+                )
+            )
+        self.assertIs(captured["store"], False)
+
+    def test_stateless_tool_passes_request_encrypted_reasoning(self) -> None:
+        # Reasoning items from the tool pass are replayed verbatim on the
+        # follow-up request. With no stored copy they must come back
+        # encrypted, or the replay refers to state that doesn't exist.
+        tools = [{
+            "type": "function",
+            "function": {"name": "get_time", "description": "d", "parameters": {}},
+        }]
+        body = self._post_responses(self._client(), tools=tools)
+        self.assertEqual(body["include"], ["reasoning.encrypted_content"])
+
+    def test_a_stored_tool_pass_needs_no_encrypted_reasoning(self) -> None:
+        tools = [{
+            "type": "function",
+            "function": {"name": "get_time", "description": "d", "parameters": {}},
+        }]
+        body = self._post_responses(self._client(store=True), tools=tools)
+        self.assertNotIn("include", body)
+
+    def test_no_include_without_tools(self) -> None:
+        # Nothing replays the reply pass's own output, so asking for the
+        # encrypted blob there is payload for payload's sake.
+        body = self._post_responses(self._client())
+        self.assertNotIn("include", body)
+
+    def test_openai_chat_completions_also_opts_out(self) -> None:
+        # OpenAI stores chat completions by default for newer accounts.
+        client = self._client(api_style="chat_completions", model="gpt-5-mini")
+        fake = _fake_chat_response(content="hi")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}], options={"num_predict": 32},
+            )
+        self.assertIs(posted.call_args.kwargs["json"]["store"], False)
+
+    def test_the_flag_never_reaches_a_third_party_chat_endpoint(self) -> None:
+        # ``store`` is an OpenAI field. The compatible clones we route to
+        # (Gemini, Groq, OpenRouter, llama.cpp) don't all define it, and a
+        # strict one 400s on an unknown key — losing the turn to protect
+        # data that endpoint may not retain anyway.
+        for base_url, model in (
+            ("https://generativelanguage.googleapis.com/v1beta/openai",
+             "gemini-2.5-flash"),
+            ("https://api.groq.com/openai/v1", "llama-3.3-70b"),
+            ("https://openrouter.ai/api/v1", "openai/gpt-5-mini"),
+        ):
+            with self.subTest(base_url=base_url):
+                client = self._client(
+                    base_url=base_url, model=model,
+                    api_style="chat_completions",
+                )
+                fake = _fake_chat_response(content="hi")
+                with patch(
+                    "app.llm.openai_compatible_client.requests.post",
+                    return_value=fake,
+                ) as posted:
+                    client.chat_with_tools(
+                        [{"role": "user", "content": "hi"}],
+                        options={"num_predict": 32},
+                    )
+                self.assertNotIn("store", posted.call_args.kwargs["json"])
+
+    def test_a_forced_responses_third_party_still_opts_out(self) -> None:
+        # xAI is the other Responses-surface provider and does define
+        # ``store``; the host guard applies only to chat-completions.
+        client = self._client(
+            base_url="https://api.x.ai/v1", model="grok-4.5",
+            api_style="responses",
+        )
+        body = self._post_responses(client)
+        self.assertIs(body["store"], False)
+
+    def test_no_hosted_tool_types_are_ever_sent(self) -> None:
+        # The Responses API can run provider-side web search, code
+        # interpreter, shell and computer use. They are opt-in via the
+        # tools array; our registry only emits function tools, and our
+        # own ``web_search`` runs locally. This asserts the boundary.
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name, "description": "d", "parameters": {},
+                },
+            }
+            for name in ("get_time", "recall", "web_search")
+        ]
+        body = self._post_responses(self._client(), tools=tools)
+        self.assertEqual(
+            [t["type"] for t in body["tools"]], ["function"] * 3,
+        )
+        self.assertEqual(
+            {t["name"] for t in body["tools"]},
+            {"get_time", "recall", "web_search"},
+        )
+
+
 def _fake_transient_response(
     *, status_code: int = 500, headers: dict | None = None,
 ) -> Mock:

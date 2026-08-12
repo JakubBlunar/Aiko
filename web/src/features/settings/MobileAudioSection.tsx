@@ -38,9 +38,18 @@ export function MobileAudioSection() {
 
   const enable = () => {
     // The click itself is the gesture that satisfies the autoplay policy.
-    // ``onForeground`` flushes any stale scheduled audio before resuming so
-    // a backlog from a previous interruption doesn't burst out.
-    void audioOutput?.onForeground().catch(() => {
+    //
+    // Which recovery to run depends on what the context currently claims.
+    // Locked ("Sound is off"): there is nothing to replace, so
+    // ``onForeground`` flushes any stale scheduled audio and resumes.
+    // Already unlocked ("Restart sound"): the context says it is running,
+    // so ``onForeground`` would do nothing at all — and a context that
+    // reports running while playing silence is the whole reason someone
+    // taps this button. Replace it outright.
+    const recover = audioUnlocked
+      ? audioOutput?.restart()
+      : audioOutput?.onForeground();
+    void recover?.catch(() => {
       /* still locked — another tap will retry */
     });
   };

@@ -1772,7 +1772,7 @@ class ConceptSynthesisWorker:
         for shape, reading in sorted(readings.items()):
             if reading.get("outcome") == "fired":
                 continue
-            logger.info(
+            log.info(
                 "conduct.gate shape=%s declined_on=%s reading=%s",
                 shape,
                 reading.get("declined_on", "unknown"),

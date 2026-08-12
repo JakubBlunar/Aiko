@@ -475,6 +475,20 @@ def _is_responses_api_family(model: str) -> bool:
     return False
 
 
+def _host_is_openai(base_url: str) -> bool:
+    """True when ``base_url`` points at OpenAI's own API host.
+
+    Used only to decide whether a parameter that OpenAI defines but its
+    compatible clones may reject (``store``) is safe to send on
+    ``/v1/chat/completions``. Deliberately a host check rather than a
+    model check: ``gpt-5-mini`` served through OpenRouter is not OpenAI's
+    endpoint and does not take OpenAI's account-level defaults with it.
+    """
+    if not isinstance(base_url, str):
+        return False
+    return "api.openai.com" in base_url.strip().lower()
+
+
 # Versioned GPT-5.x line (gpt-5.1, gpt-5.4-mini, …) that 400s on
 # ``Function tools with reasoning_effort are not supported … in
 # /v1/chat/completions. Please use /v1/responses instead.`` The
@@ -668,6 +682,7 @@ class OpenAICompatibleClient:
         keep_alive: str | None = None,
         reasoning_effort: str | None = None,
         api_style: str | None = None,
+        store: bool = False,
     ) -> None:
         if not (base_url or "").strip():
             raise ValueError("OpenAICompatibleClient requires a base_url")
@@ -710,6 +725,11 @@ class OpenAICompatibleClient:
         self._api_style = (
             style if style in ("auto", "responses", "chat_completions") else "auto"
         )
+        # Whether the provider may keep the request + response as
+        # application state. Only sent on the Responses surface, where
+        # the field exists and its server-side default is ``true``. See
+        # ``_build_responses_payload``.
+        self._store = bool(store)
 
     @property
     def base_url(self) -> str:
@@ -969,6 +989,14 @@ class OpenAICompatibleClient:
             # layer accepts it but enforces it weakly. Providers that
             # don't understand it ignore the field.
             payload["response_format"] = {"type": "json_object"}
+        if not self._store and _host_is_openai(self._base_url):
+            # Only OpenAI's own host: this endpoint is served by a dozen
+            # compatible clones, an unknown field is a 400 on the strict
+            # ones, and OpenAI is the only vendor documented to retain
+            # chat completions by default (for newer accounts). On the
+            # Responses surface the flag is unconditional — see
+            # ``_build_responses_payload``.
+            payload["store"] = False
         return payload
 
     # ── /v1/responses request builder + transport ───────────────────
@@ -1105,6 +1133,21 @@ class OpenAICompatibleClient:
                 payload["tool_choice"] = _tool_choice_to_responses(tool_choice)
         if format_json:
             payload["text"] = {"format": {"type": "json_object"}}
+        # Data retention. This endpoint defaults to ``store=true``, which
+        # keeps the full request — persona, retrieved memories, RAG
+        # chunks, transcript — as application state for 30 days and
+        # renders it in the provider's dashboard. Sent explicitly either
+        # way so the behaviour is a decision rather than a default.
+        payload["store"] = self._store
+        if not self._store and tools:
+            # Going stateless costs the server-side reasoning items that
+            # a tool round has to replay (``_RESPONSES_OUTPUT_KEY``, put
+            # back verbatim by ``_messages_to_responses_input``). Asking
+            # for the encrypted form keeps that contract intact without a
+            # stored copy: the provider decrypts it in memory for the
+            # follow-up request and discards it. Only the tool pass needs
+            # this — the streaming reply's output is never replayed.
+            payload["include"] = ["reasoning.encrypted_content"]
         # Prompt caching: a stable per-conversation key routes a
         # conversation's requests to the same server so the shared prefix
         # actually hits the cache (OpenAI + xAI both honour it on the

@@ -61,6 +61,7 @@ class LlmSettingsMixin:
             "keep_alive": provider.keep_alive,
             "reasoning_effort": getattr(provider, "reasoning_effort", "") or "",
             "api_style": getattr(provider, "api_style", "auto") or "auto",
+            "store": bool(getattr(provider, "store", False)),
         }
 
     def list_providers(self) -> list[dict[str, Any]]:
@@ -180,6 +181,7 @@ class LlmSettingsMixin:
             keep_alive=keep_alive,
             reasoning_effort=reasoning_effort,
             api_style=api_style,
+            store=bool(payload.get("store", False)),
         )
         if self._find_llm_provider(provider_id) is not None:
             raise ValueError(
@@ -240,6 +242,8 @@ class LlmSettingsMixin:
             ).strip().lower()
         if "api_style" in draft:
             provider.api_style = _norm_api_style(draft["api_style"])
+        if "store" in draft:
+            provider.store = bool(draft["store"])
         # Anything changed -> drop the cached client so future
         # ``cache.get`` rebuilds with the new fields.
         self._client_cache.invalidate(provider_id)

@@ -274,6 +274,37 @@ class ParseTests(unittest.TestCase):
     def test_empty_array_returns_empty_list(self) -> None:
         self.assertEqual(PromiseExtractionWorker._parse_promises("[]"), [])
 
+    def test_object_wrapped_array_is_the_shape_we_now_ask_for(self) -> None:
+        # ``format: "json"`` guarantees an object, so this is what the
+        # model actually returns. The old parser required a bare array and
+        # read every one of these as a failure.
+        raw = json.dumps({
+            "promises": [
+                {"who": "user", "what": "book the flight", "deadline": None},
+            ],
+        })
+        out = PromiseExtractionWorker._parse_promises(raw)
+        assert out is not None
+        self.assertEqual(len(out), 1)
+        self.assertIn("book the flight", out[0].text)
+
+    def test_bare_empty_object_means_no_promises_not_a_failure(self) -> None:
+        # Verbatim from qwen3.6:27b on a quiet transcript. This produced
+        # the ``llm-unparseable`` log line that started this whole audit.
+        self.assertEqual(PromiseExtractionWorker._parse_promises("{}"), [])
+
+    def test_a_single_unwrapped_promise_is_recovered(self) -> None:
+        # Observed on a transcript that did contain a commitment: the
+        # model skipped the wrapper. The promise was real and was being
+        # discarded.
+        raw = json.dumps(
+            {"who": "user", "what": "send the staging config", "deadline": None},
+        )
+        out = PromiseExtractionWorker._parse_promises(raw)
+        assert out is not None
+        self.assertEqual(len(out), 1)
+        self.assertIn("send the staging config", out[0].text)
+
 
 class RunTests(unittest.TestCase):
     def test_run_persists_clean_promise(self) -> None:
@@ -351,6 +382,44 @@ class RunTests(unittest.TestCase):
         result = worker.run()
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "llm_unparseable")
+
+    def test_empty_answer_is_a_failure_not_zero_promises(self) -> None:
+        # The bug that hid a permanently broken extractor: when the
+        # reasoning trace consumed the whole num_predict budget the answer
+        # came back empty, and ``if not raw: return []`` reported it as the
+        # cheerful "llm done: promises=0". 32 such runs looked healthy.
+        worker, store, _, _ = _build_world(responses=[""])
+        result = worker.run()
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "llm_empty_answer")
+        self.assertEqual(store.calls, [])
+
+    def test_the_user_prompt_renders_without_a_format_error(self) -> None:
+        # The prompt now contains a literal ``{"promises": [...]}``, which
+        # ``str.format`` reads as a replacement field unless the braces are
+        # doubled. Getting that wrong raises KeyError on every single run,
+        # so pin that the template survives rendering and the JSON shape
+        # instruction actually reaches the model.
+        worker, _, ollama, _ = _build_world(responses=['{"promises": []}'])
+        result = worker.run()
+        self.assertNotIn("reason", result)
+        prompt = ollama.chat_calls[0]["messages"][-1]["content"]
+        self.assertIn('{"promises": [...]}', prompt)
+
+    def test_object_wrapped_response_persists_end_to_end(self) -> None:
+        payload = json.dumps({
+            "promises": [
+                {
+                    "who": "assistant",
+                    "what": "investigate the auth handler",
+                    "deadline": None,
+                },
+            ],
+        })
+        worker, store, _, _ = _build_world(responses=[payload])
+        result = worker.run()
+        self.assertEqual(result["persisted"], 1)
+        self.assertIn("investigate the auth handler", store.calls[-1]["content"])
 
     def test_disabled_skips(self) -> None:
         worker, _, ollama, _ = _build_world(

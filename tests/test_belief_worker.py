@@ -278,6 +278,48 @@ class ExtractionTests(unittest.TestCase):
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "llm_unparseable")
 
+    def test_object_wrapped_array_is_the_shape_we_ask_for(self) -> None:
+        # ``format: "json"`` constrains output to an object, so the prompt
+        # asks for {"beliefs": [...]}. The old parser demanded a bare array
+        # and reported 26 of these as llm-unparseable.
+        payload = json.dumps({
+            "beliefs": [
+                {
+                    "kind": "opinion",
+                    "topic": "rust tooling",
+                    "predicted_state": "worth the learning curve",
+                    "confidence": 0.7,
+                },
+            ],
+        })
+        worker, store, _, _ = _build_world(responses=[payload])
+        result = worker.run()
+        self.assertEqual(result["upserted"], 1)
+        self.assertEqual(len(store.list_active(user_id="u1")), 1)
+
+    def test_bare_empty_object_means_no_beliefs(self) -> None:
+        worker, store, _, _ = _build_world(responses=["{}"])
+        result = worker.run()
+        self.assertEqual(result.get("upserted"), 0)
+        self.assertEqual(len(store.list_active(user_id="u1")), 0)
+
+    def test_empty_answer_is_a_failure_not_zero_beliefs(self) -> None:
+        # An answer with no tokens at all means the reasoning trace ate
+        # the budget, not that the transcript was quiet.
+        worker, store, _, _ = _build_world(responses=[""])
+        result = worker.run()
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "llm_unparseable")
+        self.assertEqual(len(store.list_active(user_id="u1")), 0)
+
+    def test_the_user_prompt_renders_without_a_format_error(self) -> None:
+        # The literal ``{"beliefs": [...]}`` in the template must be
+        # brace-escaped or ``str.format`` raises KeyError on every run.
+        worker, _, ollama, _ = _build_world(responses=['{"beliefs": []}'])
+        worker.run()
+        prompt = ollama.chat_calls[0]["messages"][-1]["content"]
+        self.assertIn('{"beliefs": [...]}', prompt)
+
 
 class RateLimitTests(unittest.TestCase):
     def test_rate_limited_skip(self) -> None:

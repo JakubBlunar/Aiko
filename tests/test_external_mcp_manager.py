@@ -162,8 +162,9 @@ class StderrPumpTests(unittest.TestCase):
             pump.writer.write("server booting\n")
             pump.writer.write("listening on stdio\n")
             pump.writer.flush()
-            time.sleep(0.1)
-            pump.close()  # joins the reader thread
+            # No sleep: close() must drain what is buffered before it
+            # closes the read end, whatever the thread scheduling.
+            pump.close()
         joined = "\n".join(cap.output)
         self.assertIn("server booting", joined)
         self.assertIn("listening on stdio", joined)

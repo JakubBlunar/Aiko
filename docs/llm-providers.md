@@ -531,6 +531,57 @@ chat-completions omit-hack (`_tools_with_reasoning_unsupported`) is kept
 as a fallback for the rare case a dotted model is forced onto
 chat-completions, but the normal path never reaches it.
 
+### Data retention on this surface
+
+`/v1/responses` **stores by default.** Omitting `store` means the
+provider keeps the entire request and response as application state for
+30 days, retrievable by id and rendered in the vendor's dashboard Logs
+tab. That is a bigger deal here than on most APIs that use it, because a
+single Aiko request carries the persona, the retrieved memories, chunks
+of any uploaded document, the K-series blocks and the recent transcript —
+the material the fact-check privacy gate exists to keep out of a *search
+query* is in every prompt in full.
+
+So `llm.providers[].store` defaults to `false` and the flag is sent
+explicitly either way, making retention a decision that is readable from
+the request rather than an inherited default. Three consequences:
+
+- **Reasoning replay needs the encrypted form.** A tool round appends the
+  provider's `response.output` back verbatim, reasoning items included
+  (`_RESPONSES_OUTPUT_KEY`). Those normally reference server-side state,
+  so a stateless request also sends
+  `include: ["reasoning.encrypted_content"]` and the provider decrypts it
+  in memory for the follow-up. Only tool passes ask for it — nothing
+  replays the streaming reply's own output.
+- **Prompt caching is unaffected.** It keys on the prefix plus
+  `prompt_cache_key`, not on stored state, so the ~90 % discount below
+  survives the opt-out.
+- **Abuse-monitoring retention is separate** — also 30 days, and no
+  request parameter turns it off. `store: false` removes the copy you can
+  see in the dashboard, not every copy that exists.
+
+On `/v1/chat/completions` the field is sent only when the host is
+`api.openai.com`: OpenAI documents storing chat completions by default
+for newer accounts, but the compatible clones we route to (Gemini, Groq,
+OpenRouter, llama.cpp) don't all define `store` and a strict one 400s on
+an unknown key — losing a turn to protect data that endpoint may not be
+keeping.
+
+### What we never send
+
+The Responses API can also run tools *on the provider's side* — web
+search, file search, code interpreter, hosted shell, image generation,
+computer use, remote MCP. All of them are opt-in through the same `tools`
+array, and none of them is reachable from this codebase: the array is
+populated only from the per-turn tool registry, whose entries are
+`{"type": "function", …}` schemas that `_tools_to_responses` flattens
+into function tools. Aiko's own `web_search` is one of those — the model
+asks *us* to run it and our DuckDuckGo call happens locally
+([`app/llm/search/providers.py`](../app/llm/search/providers.py)). A
+hosted tool would need someone to add a literal
+`{"type": "web_search"}`-shaped entry, which is worth remembering as the
+one line that would move a search off this machine.
+
 ## OpenAI prompt caching
 
 OpenAI's API automatically applies a ~90 % discount on cached

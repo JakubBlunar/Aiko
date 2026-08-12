@@ -202,6 +202,11 @@ export interface LlmProvider {
    * ``/v1/responses`` (xAI Grok reasoning + caching live there);
    * ``"chat_completions"`` forces the legacy endpoint. */
   api_style: "auto" | "responses" | "chat_completions";
+  /** Whether the provider may keep the request + response for 30 days as
+   * application state (its dashboard "Logs" tab). Defaults to false: our
+   * prompts carry the persona, memories, document chunks and transcript.
+   * Turn it on per provider only while debugging. */
+  store: boolean;
 }
 
 /** One row in the role-assignment table. */

@@ -5,7 +5,7 @@ The fact-checker sends claim text to a **public** search engine
 the policy layer that decides which claims are safe to send out of the
 box.
 
-Two checkpoints are exposed:
+Three checkpoints are exposed:
 
 1. :func:`classify_memory_for_fact_check` — called at enqueue time.
    Inspects the memory's ``kind`` and ``content`` and returns a verdict
@@ -16,7 +16,23 @@ Two checkpoints are exposed:
    belt-and-braces. Returns a redacted, search-safe variant of the
    claim text, or ``None`` when even the redacted version would leak
    personal context (e.g. the only words in the claim are the user's
-   name or first-person pronouns).
+   name or first-person pronouns). Use it when the scrubbed string is
+   actually **consumed** — as an outbound query, or as the opt-in
+   ``belief_worker_scrub_transcript`` prompt transform. It is the only
+   entry point that logs a loud ``REDACT`` audit line.
+
+3. :func:`web_safe_probe` — a yes/no gate for callers that only need to
+   know *whether* text could be published, and never send the scrubbed
+   form anywhere. Several callers want exactly that: the promise and
+   belief workers pass the ORIGINAL transcript to the trusted local
+   model and use the gate purely to refuse hard-PII windows, and the
+   claim enqueue path stores the raw span. Routing them through
+   :func:`scrub_claim_for_search` made every one of those runs emit a
+   ``REDACT in=… out=… dropped=[…]`` line naming ~90 stripped tokens, as
+   if a query had just gone out to a search engine — 268 such lines, none
+   of which corresponded to anything leaving the box. An audit trail that
+   reports events that did not happen is worse than no audit trail, so
+   the gate logs refusals at INFO and passes at DEBUG.
 
 Both helpers are conservative by design. False negatives (claims we
 skip) cost nothing — the memory simply doesn't get fact-checked. False
@@ -137,12 +153,49 @@ _PRIVATE_TIME_TOKENS: frozenset[str] = frozenset(
 _MIN_SAFE_CLAIM_CHARS = 8
 
 
+# How many distinct dropped tokens to name in a log line. The raw list is
+# one entry per *occurrence*, so scrubbing a whole transcript produced a
+# 90-element wall of "i, you, jacob, i, you, …" that pushed the actual
+# in/out preview off the readable part of the line. Distinct tokens plus a
+# total count carries the same diagnostic signal in a fraction of the
+# width.
+_LOG_DROPPED_TOKENS = 12
+
+
 @dataclass(frozen=True)
 class PrivacyDecision:
     """Outcome of :func:`classify_memory_for_fact_check`."""
 
     personal: bool
     reason: str  # ``""`` when ``personal`` is False
+
+
+@dataclass(frozen=True)
+class _ScrubOutcome:
+    """Internal result of the token-stripping pass.
+
+    ``block_reason`` is empty when ``text`` is usable. Split out so the
+    query builder and the yes/no gate share one implementation but keep
+    their own, very different, logging.
+    """
+
+    text: str
+    dropped: list[str]
+    block_reason: str
+
+
+def _dropped_summary(dropped: list[str]) -> str:
+    """Render a dropped-token list compactly for a log line."""
+    if not dropped:
+        return "none"
+    seen: list[str] = []
+    for tok in dropped:
+        if tok not in seen:
+            seen.append(tok)
+    shown = seen[:_LOG_DROPPED_TOKENS]
+    more = len(seen) - len(shown)
+    tail = f" +{more} more" if more > 0 else ""
+    return f"{len(dropped)} occurrences of [{', '.join(shown)}{tail}]"
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
@@ -302,15 +355,97 @@ def scrub_claim_for_search(
       alphabetic word and be ``_MIN_SAFE_CLAIM_CHARS`` characters or
       more.
     """
-    text = (claim_text or "").strip()
-    if not text:
-        log.info("privacy scrub BLOCK reason=empty_claim")
+    outcome = _scrub(
+        claim_text, user_names=user_names, assistant_name=assistant_name,
+    )
+    if outcome.block_reason:
+        # Logged at INFO so the privacy audit shows every refused claim
+        # with its reason; the preview goes alongside so the patterns can
+        # be tightened later without re-running the original write path.
+        log.info(
+            "privacy scrub BLOCK reason=%s preview=%r dropped=%s",
+            outcome.block_reason,
+            _preview(claim_text),
+            _dropped_summary(outcome.dropped),
+        )
         return None
 
-    # Hard rejects — no safe redaction. Logged at INFO so the
-    # privacy audit shows every refused claim with the reason; the
-    # text preview goes alongside so we can tighten patterns later
-    # without re-running the original write path.
+    if outcome.dropped:
+        # Redaction actually fired on text that is about to be sent to a
+        # third-party search engine. This is the one case that warrants a
+        # loud audit line.
+        log.info(
+            "privacy scrub REDACT in=%r out=%r dropped=%s",
+            _preview(claim_text),
+            _preview(outcome.text),
+            _dropped_summary(outcome.dropped),
+        )
+    else:
+        # Pass-through. DEBUG because this is the normal high-volume
+        # path; the audit can opt in by lowering the level.
+        log.debug(
+            "privacy scrub PASS in=%r out=%r",
+            _preview(claim_text),
+            _preview(outcome.text),
+        )
+    return outcome.text
+
+
+def web_safe_probe(
+    text: str,
+    *,
+    user_names: Iterable[str] | None = None,
+    assistant_name: str | None = None,
+) -> bool:
+    """True when ``text`` contains something publishable, without publishing.
+
+    For callers that use the privacy gate as a *detector* and then work
+    with the original text locally — the promise and belief workers hand
+    the untouched transcript to the trusted local model; the claim enqueue
+    path stores the raw span. They only need the refusal signal: hard PII
+    (a URL, an email, an address) or text that collapses to nothing once
+    personal tokens come out.
+
+    Same rules as :func:`scrub_claim_for_search`, deliberately different
+    logging. Nothing here is destined for the network, so a ``REDACT``
+    line would describe an event that never happened; refusals log at
+    INFO (rare and meaningful), passes at DEBUG.
+    """
+    outcome = _scrub(
+        text, user_names=user_names, assistant_name=assistant_name,
+    )
+    if outcome.block_reason:
+        log.info(
+            "privacy probe BLOCK reason=%s preview=%r",
+            outcome.block_reason,
+            _preview(text),
+        )
+        return False
+    log.debug(
+        "privacy probe PASS chars=%d dropped=%s",
+        len(outcome.text),
+        _dropped_summary(outcome.dropped),
+    )
+    return True
+
+
+def _scrub(
+    raw_text: str,
+    *,
+    user_names: Iterable[str] | None,
+    assistant_name: str | None,
+) -> _ScrubOutcome:
+    """Strip personal tokens from ``raw_text``; pure, no logging.
+
+    Shared by :func:`scrub_claim_for_search` and :func:`web_safe_probe`
+    so the two can never drift on what counts as safe while still logging
+    very differently.
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return _ScrubOutcome("", [], "empty_claim")
+
+    # Hard rejects — no safe redaction exists for these.
     for matcher, reason in (
         (_EMAIL_RE, "email"),
         (_PHONE_RE, "phone"),
@@ -320,12 +455,7 @@ def scrub_claim_for_search(
         (_STREET_ADDRESS_RE, "street_address"),
     ):
         if matcher.search(text):
-            log.info(
-                "privacy scrub BLOCK reason=%s preview=%r",
-                reason,
-                _preview(text),
-            )
-            return None
+            return _ScrubOutcome("", [], reason)
 
     # Build the token list of words to strip out: names + private time
     # markers + first-person pronouns. We rebuild the string by
@@ -356,42 +486,14 @@ def scrub_claim_for_search(
     scrubbed = re.sub(r"\s{2,}", " ", scrubbed)
 
     if len(scrubbed) < _MIN_SAFE_CLAIM_CHARS:
-        log.info(
-            "privacy scrub BLOCK reason=too_short_after_redaction "
-            "preview=%r dropped=%s",
-            _preview(text),
-            dropped_tokens,
+        return _ScrubOutcome(
+            "", dropped_tokens, "too_short_after_redaction",
         )
-        return None
 
     # Require at least one alphabetic word survives so a bare year /
     # date doesn't make it through ("2023" on its own is not a
     # checkable claim).
     if not re.search(r"[A-Za-z]{3,}", scrubbed):
-        log.info(
-            "privacy scrub BLOCK reason=no_alpha_word "
-            "preview=%r dropped=%s",
-            _preview(text),
-            dropped_tokens,
-        )
-        return None
+        return _ScrubOutcome("", dropped_tokens, "no_alpha_word")
 
-    if dropped_tokens:
-        # Redaction actually fired — INFO-log so the audit captures
-        # every claim where private tokens were removed before the
-        # claim went out to the search engine.
-        log.info(
-            "privacy scrub REDACT in=%r out=%r dropped=%s",
-            _preview(text),
-            _preview(scrubbed),
-            dropped_tokens,
-        )
-    else:
-        # Pass-through. DEBUG because this is the normal high-volume
-        # path; the audit can opt in by lowering the level.
-        log.debug(
-            "privacy scrub PASS in=%r out=%r",
-            _preview(text),
-            _preview(scrubbed),
-        )
-    return scrubbed
+    return _ScrubOutcome(scrubbed, dropped_tokens, "")

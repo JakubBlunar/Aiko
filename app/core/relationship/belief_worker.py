@@ -20,8 +20,10 @@ Pipeline (one tick = one ``run`` call):
 3. Spend one LLM call through the dedicated
    :class:`FactCheckRateLimiter`
    (``state_key='belief_worker.rate_state'``) asking for a JSON
-   **array** of belief tuples ``{kind, topic, predicted_state,
-   confidence}``.
+   **object** ``{"beliefs": [...]}`` of belief tuples ``{kind, topic,
+   predicted_state, confidence}``. Object, not bare array, because
+   ``format: "json"`` gives no choice -- see
+   :mod:`app.llm.json_answers`.
 4. For each accepted tuple: compute a topic embedding via the
    provided :class:`Embedder`, then call
    :meth:`BeliefStore.upsert`. The store handles its own
@@ -41,7 +43,6 @@ self-tagged active belief already exists for the topic).
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import threading
@@ -61,6 +62,7 @@ from app.core.relationship.belief_store import (
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.llm.json_answers import parse_json_array_answer
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_view import ConceptView
@@ -98,12 +100,16 @@ _MAX_BELIEFS_PER_RUN = 6
 _MAX_CONCEPT_HINTS = 5
 
 
-# Match the F1 / F5 / G3 prompt convention: a JSON array on one line.
+# Ask for an OBJECT wrapping the array, matching the memory extractor.
+# Ollama's ``format: "json"`` constrains generation to a JSON object, so a
+# prompt asking for a bare array cannot be satisfied: the model reasons to
+# the right answer and the grammar then emits ``{}``. See
+# :mod:`app.llm.json_answers`.
 _SYSTEM_PROMPT = (
     "You read a short chat transcript and infer what the user "
-    "believes or feels about specific topics. Return ONE JSON array "
-    "(no prose, no markdown) of zero or more belief objects. Each "
-    "object has these fields:\n"
+    "believes or feels about specific topics. Reply with ONE JSON object "
+    '(no prose, no markdown) shaped {"beliefs": [...]} holding zero or '
+    "more belief objects. Each object in that array has these fields:\n"
     "  - kind: 'mood' (predicts how the user feels about the topic) "
     "or 'opinion' (predicts what the user thinks about the topic).\n"
     "  - topic: 2-60 char short topic phrase, lowercase, no quotes.\n"
@@ -112,18 +118,23 @@ _SYSTEM_PROMPT = (
     "  - confidence: 0.0-1.0 decimal -- how sure you are.\n"
     "Be conservative: skip the turn if the transcript doesn't "
     "actually let you predict anything. Never invent beliefs from "
-    "thin air. Return an empty array `[]` when there's nothing to "
-    "report. Output the JSON array and nothing else."
+    'thin air. Return {"beliefs": []} when there\'s nothing to '
+    "report. Output the JSON object and nothing else."
 )
 
 
+# ``{{`` / ``}}`` because this template goes through ``str.format`` — a
+# literal ``{"beliefs"`` would be read as a replacement field and raise
+# ``KeyError`` on every run.
 _USER_TEMPLATE = (
     "Transcript (most recent user turns):\n{transcript}\n\n"
-    "Return one JSON array of beliefs the user holds."
+    'Return one JSON object shaped {{"beliefs": [...]}}.'
 )
 
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", flags=re.DOTALL)
+# Field names that mark a belief object, so a single unwrapped item is
+# still understood. See :mod:`app.llm.json_answers`.
+_BELIEF_ITEM_KEYS = ("kind", "topic", "predicted_state")
 
 
 def _utcnow() -> datetime:
@@ -874,7 +885,13 @@ class BeliefInferenceWorker:
             return None
         raw = "".join(chunks).strip()
         if not raw:
-            return []
+            # An empty answer is a failed call, not "no beliefs": the
+            # reasoning trace consumed the whole num_predict budget before
+            # the answer began (the client already retried once without
+            # it). Reporting [] would make the failure indistinguishable
+            # from a quiet transcript.
+            log.info("belief-worker llm-empty-answer: no answer tokens at all")
+            return None
         log.debug(
             "belief-worker extract raw: chars=%d preview=%r",
             len(raw),
@@ -884,20 +901,17 @@ class BeliefInferenceWorker:
 
     @staticmethod
     def _parse_tuples(raw: str) -> list[_BeliefTuple] | None:
-        """Parse the LLM's JSON-array response into typed tuples.
+        """Parse the LLM's JSON answer into typed tuples.
 
         Returns ``None`` only when the response is fundamentally
-        un-parseable (no JSON array found at all). An empty array
-        returns ``[]`` -- a perfectly valid "nothing to report" turn.
+        un-parseable. An empty list returns ``[]`` -- a perfectly valid
+        "nothing to report" turn. Shape tolerance lives in
+        :func:`app.llm.json_answers.parse_json_array_answer`.
         """
-        match = _JSON_ARRAY_RE.search(raw or "")
-        if match is None:
-            return None
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(parsed, list):
+        parsed = parse_json_array_answer(
+            raw, key="beliefs", item_hint_keys=_BELIEF_ITEM_KEYS,
+        )
+        if parsed is None:
             return None
         out: list[_BeliefTuple] = []
         for item in parsed:

@@ -1565,6 +1565,52 @@ empirically — importing and constructing the service maps zero OpenMP
 runtimes while `is_available` stays `True`; forcing the import reproduces
 `DUPLICATE: libiomp5md.dll loaded from 2 paths`.
 
+### The duplicate is gone, and the fix was sitting in the lockfile
+
+The hazard did not need a workaround. It needed the venv to match the spec
+the repo already declared. `pyproject.toml` asks for
+`realtimestt>=1.0.2,<2` and `requirements.lock` pins `realtimestt==1.0.2`,
+`torch==2.13.0`, `ctranslate2==4.8.1` — and lists **no** `openwakeword`
+and **no** `scikit-learn`. The installed environment was on
+`realtimestt 0.3.104`, a month-old resolution nobody had synced.
+
+That single version gap explains the whole inventory. 0.3.x imports
+`openwakeword` unconditionally (which is what dragged in scikit-learn and
+therefore `vcomp140.dll`) and reaches `faster_whisper` — and so
+CTranslate2's `libiomp5md.dll` — during a plain module import. 1.0.2 makes
+both optional: transcription engines resolve through a factory that calls
+`import_module("faster_whisper")` inside `FasterWhisperEngine.__init__`,
+and the recorder runs that engine in a **child process**
+(`start_recorder_worker` → `mp.Process` on Windows).
+
+Measured after syncing, in the process that died:
+
+| Process | OpenMP runtimes mapped | Hazardous |
+| --- | --- | --- |
+| main app, STT service imported and constructed | `torch\lib\libiomp5md.dll` | no |
+| transcription child (`faster_whisper` + `soundfile`) | `ctranslate2\libiomp5md.dll`, `torch\lib\libiomp5md.dll` | yes, isolated |
+
+`vcomp140.dll` no longer exists anywhere in the venv. No
+`KMP_DUPLICATE_LIB_OK`, and no symlinking of one copy onto the other —
+which is worth noting because that hack was the obvious move and is now
+clearly the wrong one: the two files were byte-different builds of the same
+Intel version before the upgrade, and are different versions after it
+(20250910 vs 20260213), so forcing one on both would have been an ABI
+gamble taken for a duplicate that process separation had already removed.
+
+Two limits stay on the record. `faster_whisper` pulls torch transitively
+(via `transformers`, which imports torch whenever it is installed), so the
+transcription child does hold both copies; on Windows it is a separate
+process holding only the Whisper model, but `start_recorder_worker` uses a
+*thread* on Linux, so the duplicate would land in the main process in the
+Docker image. And this still does not prove what killed the app in
+August — it removes the unsupported configuration from the process that
+died, and the crash handler now names the DLL if it happens again.
+
+Removing what nothing imported took 654 MB with it, 620 MB of that
+**PySide6** — a Qt install in a repo whose rules say the web UI is the only
+UI, referenced solely by comments claiming independence from it.
+
 **Twelfth recurring shape — the top frame is not the bug when the fault is
 native.** Every other entry in this document was found by reading a Python
 stack or a table of telemetry, where the top frame *is* the lead. A native
@@ -1578,6 +1624,270 @@ of looking for a pointer bug.** The corollary that cost real time here:
 duplicate native runtimes are invisible until something enumerates loaded
 modules, so that enumeration belongs in the boot log rather than in an
 investigator's head.
+
+**Corollary, and the cheapest step skipped here: diff the installed
+versions against the lockfile before theorising about the code.** The
+audit of `topic_graph.py`, the staged import experiment and the
+duplicate-runtime analysis were all downstream of an environment that was
+simply a month behind its own `requirements.lock`. `pip check` and one
+comparison against the lock would have surfaced it in seconds, and the
+hazardous configuration would have read as a symptom of drift rather than
+as a property of the dependency set. An unexplained native crash makes
+"is this the environment we claim to run?" a first question, not a
+last one.
+
+---
+
+## H26. Every signal said healthy, and the recovery button was a no-op
+
+**Severity: high — the third recurrence of one iOS failure, kept alive by a
+detector that could not see it and diagnostics that could not be read.**
+
+Reported: *"only one thing is again with the sound on mobile when i minimise
+and open app again. I can see aiko live 2d avatar talking so server is
+sending audio to the pwa, but no audio is playing until i kill and open the
+app again."* The avatar was honest and misleading at once: talk motion and
+the "speaking" aura are driven by the server's `tts_state`, so they animate
+whether or not a single sample is audible. Only `ParamMouthOpenY` follows
+real playback, via the analyser tap.
+
+Three things were wrong, and only the first is a bug in the usual sense.
+
+**1. "Restart sound" could not restart anything.** It called
+`onForeground()`, which resumes only when `_needsResume(ctx)` is true — and
+that is false for a context reporting `"running"`, which is precisely the
+context someone taps the button about. The automatic foreground pass had
+already cleared `_wasBackgrounded` on the way back into the app, so the
+rebuild path was closed too. The one user-facing recovery in the product
+was structurally incapable of running in the case it existed for, which is
+why force-quitting really was the only cure.
+
+**2. The liveness probe was built from the only signal available, not from
+the signal that mattered.** The previous fix assumed a reclaimed audio unit
+leaves `currentTime` frozen. iOS also hands back contexts whose clock
+advances normally while the output no longer reaches the speaker. A live
+clock proves the graph is *rendering*; it says nothing about *audibility*,
+and there is nothing downstream of the render that a page can read — the
+`AnalyserNode` sits before `destination` and will cheerfully report the
+samples it is feeding into a void. So the probe was removed rather than
+tuned, and the context is now replaced after **any** background stint
+(`_replaceContext`). The cost is stated rather than hidden: a replacement
+needs a gesture to start unlocked on iOS, so returning to the app can land
+on "Sound is off" until the first tap. Honest silence with a readout and a
+one-tap fix beats a context that swallows every frame for a session.
+
+**3. The diagnostics for all of this were unreachable, and had always
+been.** `rules/debugging.md` told the reader to grep `[ui] audio
+contextDead`. That line could never appear: `config/default.json` pinned
+`ui_log_categories` to `["ws","channel","settings","voice"]`, the JSON
+value overrides the code default (which *does* include `"audio"`), and the
+endpoint drops out-of-list sources **silently** while returning success.
+Three generations of `app.log` contained zero `[ui]` lines. The instruction
+and the implementation had disagreed since the audio diagnostics were
+written, and nothing anywhere said so.
+
+**Thirteenth recurring shape — a detector built from the signal you can
+read is not a detector for the thing you care about.** H21 and H23 were
+thresholds set against distributions nobody measured; this is the same
+error one level up, in the *choice of observable*. The clock was picked
+because it was the only thing that moved, and it does distinguish one real
+failure mode, which is exactly what made it convincing. **Rule: before
+shipping a liveness check, say out loud what it would fail to notice.** If
+the answer is "the case the user actually reported", the check is not a
+fix — it is a narrower fix wearing the name of the general one, and the
+next recurrence will look like a regression rather than a gap.
+
+The corollary belongs with §3 above and is cheap: **an allow-list that
+drops silently is indistinguishable from a client that never spoke.** Any
+filter that discards input must either log the discard or be asserted
+against the documentation that tells people to rely on it.
+
+---
+
+## H27. Two workers burned an hour of GPU to write nothing, in a log that said so
+
+**Severity: high — the promise and belief extractors have persisted zero rows
+since the day each shipped, and every stage reported success.**
+
+Found by reading the log, not by querying it. Three consecutive lines:
+
+```
+privacy scrub REDACT in="[today 13:27] Jacob: That should not be problem…" dropped=['today','jacob','me','i','i','today','aiko',… 91 more]
+promise-worker start: session=default:c00f5098 lookback_turns=12 raw_chars=3825
+promise-worker llm-unparseable elapsed_ms=23630
+```
+
+The question asked of them was the right one — *why is a redaction event
+being logged for something that isn't going anywhere, and why can't the
+worker parse its own model's output?* Behind those two lines were four
+independent bugs, plus one design gap. They are worth reading in order,
+because **the first bug destroys the evidence for the second**, which is
+why this survived two previous attempts at it.
+
+### What it cost
+
+| | promise worker | belief worker |
+| --- | --- | --- |
+| shipped | 2026-06-19 (`5980acb`) | 2026-05-31 (`9dab8cd`) |
+| runs with material, 10 days of log | 63 | 36 |
+| `llm-unparseable` | 27 | 8 |
+| "success" with zero items | 34 | 27 (`upserted: 0` every time) |
+| median run | 34.4 s | 33.4 s |
+| GPU wall time in those runs | 33.2 min | 20.9 min |
+| rows in the store | 59, **none newer than 2026-06-18** | **0** |
+
+The promise table's last write is the day *before* the dedicated worker
+shipped: the 59 rows are its predecessor's, and the worker that replaced it
+has never added one. Over the same eight weeks total memory production
+tripled (45 rows in week 24, 385 in week 31), so nothing about the
+environment suggests a quiet period. `beliefs` has been empty for ten
+weeks. 54 minutes of 27B inference, one row written, and not a single
+`WARNING` in the workers' own logger.
+
+### Bug 1 — the answer never had tokens left, and the log said so 98 times
+
+`ollama answer truncated … answer_tokens~=0 thinking_tokens~=2364
+answer='<empty>'`, **98 times across 10 worker surfaces** (`promise_worker`
+34, `belief_worker` 27, `goal_worker_reflection` 18, `dream_worker` 6,
+`memory_consolidator`/`memory_conflict_worker` 3 each, and four more).
+
+The tell is that `completion_tokens` is *constant to the token* within each
+surface — promise 2448, belief 2398, goal reflection 2228, dream 2148,
+consolidator 2128. Each is that surface's own `num_predict` plus the
+`think_num_predict_headroom` of 2048. This was never variance or a hard
+prompt; every call walked into the same wall, and the reasoning trace
+(estimated 1.65k–5.1k tokens, median 2.4k) had consumed all of it before
+the model emitted its first answer token.
+
+Two things make this worse than a mis-tuned constant:
+
+- **The warning printed the remedy** — *"raise num_predict for this surface
+  if frequent"* — 98 times. The diagnosis was correct, sitting in the log,
+  addressed to nobody.
+- **It had already been fixed once, at the wrong layer.** `3373465`
+  (2026-06-26) is titled *"forward think:false so reasoning workers stop
+  returning empty"*, and it touched exactly two files: `dream_worker.py`
+  and `pre_thought_worker.py`. Both surfaces appear in the starvation list
+  above, six weeks later. A client-level failure was patched at two of ten
+  call sites, by hand, and the two that were patched did not stay fixed.
+
+So the fix is at the client this time, in two parts. `think_num_predict_
+headroom` goes 2048 → **8192** (60% above the worst trace measured, and
+it is a ceiling, not a spend), and `OllamaClient` now treats *empty answer
++ `done_reason="length"` + `think=True`* as a distinct condition and
+**retries once with thinking off** — in `chat`, `chat_json`,
+`chat_with_tools` and `chat_stream` alike, so no surface has to opt in.
+Measured on `qwen3.6:27b`, the trace costs ~35 s and reached the same
+verdict a 2.5 s no-think call did, which is the number to remember the next
+time a worker is given `think=True` for a routine extraction.
+
+### Bug 2 — the prompt asked for a shape the JSON mode will not return
+
+Both workers ran with `format_json=True` and both prompts said *reply with
+a JSON array*; both parsers accepted only a bare `[…]`. `format: "json"`
+yields an object, so the model has to wrap the array under some key, and
+which key it picks is up to it. Now the prompts ask for
+`{"promises": […]}` / `{"beliefs": […]}`, and both go through one shared
+reader — [`app/llm/json_answers.py`](../../app/llm/json_answers.py) — that
+accepts the object, a bare array, `{}` as "nothing found", a drifted key
+whose value is the only list present, a single unwrapped item, and an array
+embedded in prose.
+
+**This is the bug the first one hid.** A starved call returns an empty
+string, an empty string never reaches the parser, and the parser is where
+the schema mismatch lives. Neither log line carried the payload, so from
+the outside "the model can't produce JSON" and "the model produced nothing"
+were the same event. `unparseable` now logs a bounded preview of what it
+choked on.
+
+### Bug 3 — "no answer" was reported as "nothing to report"
+
+`_extract_with_llm` returned `[]` when the answer was empty, and the caller
+logged `llm done: promises=0`. That accounts for 34 of the 63 promise runs
+and 27 of the 36 belief runs: **shape 1 (silent-empty latching) in its
+purest form**, since a quiet evening produces exactly the same line.
+`llm_empty_answer` is now its own failure reason, separate from
+`llm_unparseable` and `llm_error`, because the three have different causes
+and different fixes.
+
+### Bug 4 — the redaction audit described searches that never happened
+
+284 `privacy scrub REDACT` lines in the corpus. **62 of them dropped
+between 50 and 196 tokens** (median 107) and their `in=` is a whole
+transcript — those come from the promise worker's privacy pre-check, which
+calls `scrub_claim_for_search()` as a *detector*, reads whether it returned
+something, and throws the scrubbed text away. Not one of the 62 preceded a
+network request. The remaining 221 drop a median of **1** token and are the
+real thing.
+
+An audit line that fires when nothing is audited does more than waste
+space: it makes the 221 real ones unfindable, and it trains the reader to
+skip the category. So the one implementation now has two entry points —
+`web_safe_probe()` for callers that keep the original text (yes/no; `BLOCK`
+at INFO because a refusal is rare and interesting, `PASS` at DEBUG) and
+`scrub_claim_for_search()` for callers that actually send the result
+(`REDACT` at INFO). Both delegate to the same private `_scrub`, so the two
+can never disagree about what is safe — there is a test asserting exactly
+that, since a split gate is how a leak would get in. `dropped=` now
+de-duplicates and counts (`6 occurrences: i, you, jacob`) instead of
+printing one entry per occurrence.
+
+### The design gap — stripping a query is not the same as leaving it checkable
+
+This was the user's actual question, and it is the more valuable half:
+*"stripping private informations are important but not enough, that could
+remove the context."* The corpus agrees. `'playful moments with Jacob'`
+scrubs to `'playful moments with'` — safe, and not a query anyone would
+type.
+
+H20 fixed the *local* side of this by threading each claim's enclosing
+sentence to the verifier, and left the outbound query as the bare span.
+F6's LLM reformulator was therefore still being handed spans that, measured
+in H20, contain a verb 0 times out of 90. It did what you would expect with
+nothing to work from: **27 of 34 reformulations came back byte-identical**,
+and of the 7 that changed, six were casing or word order. The seventh is
+the instructive one — `Back Camp` → `Back Camp TV series`, a model padding a
+fragment with a guess about what kind of thing it is.
+
+Two changes, neither of which touches the leak guard:
+
+- **The reformulator gets the enclosing sentence as `CONTEXT`, with the
+  span still as the `CLAIM`.** The sentence says what is being asserted,
+  which is what a search has to be able to confirm or refute. It never goes
+  to the network — it shapes the rewrite, and the rewrite still passes
+  through the deterministic scrubber before any request, which matters
+  *more* here, not less: giving the model private context gives it more to
+  echo back. There is a test for that specific case.
+- **F9's planner queries skip the F6 pass** (`already_neutral=True`). They
+  were written by an LLM to be impersonal in the first place, and they are
+  where most of those 27 no-ops came from — a second 27B generation per
+  search to produce the same string. The deterministic scrub still runs.
+
+### Fourteenth recurring shape: a diagnostic that names a symptom but carries no evidence
+
+`llm-unparseable` and `privacy scrub REDACT` are the same authoring mistake
+pointing opposite ways. One announced a parse failure and withheld the
+input, so it could be emitted 35 times without anyone learning what the
+model actually said. The other announced a redaction and printed 196 tokens
+of it, for an event that never occurred. In both cases the line named a
+*stage* rather than reporting an *observation*, and a reader who trusted it
+would draw a wrong conclusion — that the model is bad at JSON, that queries
+are going out.
+
+**Rule, in three parts.** A line about malformed input carries a bounded
+preview of the input. A line about *absent* input names which stage
+produced the absence — "the model returned nothing" and "there was nothing
+to do" are different lines. And a line describing an outbound action is
+emitted only by the code path that performs it; if a predicate is shared
+with a detector, the logging is not.
+
+The corollary is H26's lesson relocated from detectors to fixes: **when the
+same symptom appears at N call sites, the fix belongs where the symptom is
+produced, not where it is noticed.** `3373465` patched two workers by hand
+and the same failure was still live at ten surfaces six weeks later,
+including the two that were patched. **If a fix has to be repeated per call
+site, that is evidence about the layer, not about the call sites** — and it
+is worth one grep for the other N-2 before shipping it.
 
 ---
 

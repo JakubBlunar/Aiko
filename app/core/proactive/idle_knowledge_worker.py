@@ -355,7 +355,7 @@ class IdleKnowledgeWorker:
         if not candidates:
             return {"skipped": True, "reason": "no_cluster"}
 
-        pick, raw_query, extra_queries, from_queue = self._choose_research(
+        pick, raw_query, extra_queries, llm_authored = self._choose_research(
             candidates, now=now,
         )
         if pick is None or raw_query is None:
@@ -379,12 +379,12 @@ class IdleKnowledgeWorker:
 
         log.info(
             "knowledge start: cluster=%s size=%d query=%r queued=%d "
-            "from_queue=%s",
+            "llm_authored=%s",
             pick.cluster_key, pick.size, _preview(raw_query),
-            len(extra_queries), from_queue,
+            len(extra_queries), llm_authored,
         )
 
-        safe_query = self._scrub(raw_query)
+        safe_query = self._scrub(raw_query, already_neutral=llm_authored)
         if safe_query is None:
             log.info(
                 "knowledge skip: privacy gate dropped query cluster=%s",
@@ -479,7 +479,7 @@ class IdleKnowledgeWorker:
     ) -> tuple[_ClusterPick | None, str | None, list[str], bool]:
         """Walk ranked candidates until one yields a query to research.
 
-        Returns ``(pick, query, extra_queries, from_queue)``. For each
+        Returns ``(pick, query, extra_queries, llm_authored)``. For each
         candidate (up to ``knowledge_enrichment_max_clusters_per_run``):
 
         1. Drain a previously-queued subtopic if the cluster has one
@@ -489,6 +489,14 @@ class IdleKnowledgeWorker:
            (explicitly unresearchable) puts the cluster on a long cooldown
            and advances to the next candidate; a non-empty list researches
            the first query now and returns the rest to be queued.
+
+        ``llm_authored`` is True when the query was written by the planner
+        (now or on an earlier run, via the queue) and is therefore already
+        an impersonal search query. It tells :meth:`_scrub` to skip the F6
+        rewrite — asking a second model to neutralise an already-neutral
+        query was a no-op in 28 of 34 observed cases. It is False for the
+        legacy path, where the raw cluster summary genuinely needs the
+        rewrite.
         """
         extraction_enabled = self._topic_extraction_enabled()
         max_try = max(
@@ -531,7 +539,7 @@ class IdleKnowledgeWorker:
                     pick.cluster_key, _preview(pick.topic),
                 )
                 continue
-            return pick, queries[0], queries[1:], False
+            return pick, queries[0], queries[1:], True
         return None, None, [], False
 
     # ── cluster selection ────────────────────────────────────────────
@@ -905,12 +913,17 @@ class IdleKnowledgeWorker:
 
     # ── pieces ───────────────────────────────────────────────────────
 
-    def _scrub(self, topic_text: str) -> str | None:
+    def _scrub(
+        self, topic_text: str, *, already_neutral: bool = False,
+    ) -> str | None:
         """Privacy-scrub the topic into a safe search query.
 
         Uses the F6 local-LLM reformulation when a reformulator is wired
         (rewrite -> deterministic post-filter); otherwise falls back to
         the deterministic scrub directly.
+
+        ``already_neutral`` marks a query the research planner already
+        wrote to be impersonal, so only the deterministic leak guard runs.
         """
         from app.core.memory.fact_check_privacy import scrub_claim_for_search
 
@@ -936,6 +949,7 @@ class IdleKnowledgeWorker:
             return reformulate_query_for_search(
                 topic_text,
                 reformulate_fn=self._query_reformulator,
+                already_neutral=already_neutral,
                 user_names=user_names,
                 assistant_name=assistant_name,
             )
