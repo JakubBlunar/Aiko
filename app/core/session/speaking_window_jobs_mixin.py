@@ -140,6 +140,75 @@ class SpeakingWindowJobsMixin:
         except Exception:
             log.debug("search distill submit failed", exc_info=True)
 
+    def _maybe_schedule_image_memory_job(self) -> None:
+        """H25: remember what was in an image shared this turn.
+
+        The vision pass already ran during the turn, so the description
+        is free; this only pays for the distil call that turns it into
+        one memory line. Off the critical path for the same reason as
+        the search distill above — the reply has already gone out.
+        """
+        seen = self._drain_turn_vision()
+        if not seen:
+            return
+        embedder = getattr(self, "_embedder", None)
+        memory_store = getattr(self, "_memory_store", None)
+        client = getattr(self, "_maintenance_client", None)
+        if embedder is None or memory_store is None or client is None:
+            return
+        model = str(getattr(self, "_effective_worker_model", "") or "")
+        user_text = str(getattr(self, "_active_turn_user_text", "") or "")
+        user_name = self.user_display_name
+
+        def _chat(messages: list[dict[str, Any]], **kwargs: Any) -> str:
+            return client.chat(messages, model=model or None, **kwargs)
+
+        def _job(_stop_flag: Any) -> None:
+            from app.core.vision.image_memory import (
+                distil_image_memory,
+                write_image_memory,
+            )
+
+            for item in seen:
+                if _stop_flag is not None and _stop_flag.is_set():
+                    return
+                try:
+                    line = distil_image_memory(
+                        description=item.description,
+                        user_text=user_text,
+                        user_name=user_name,
+                        chat=_chat,
+                    )
+                    if not line:
+                        continue
+                    write_image_memory(
+                        line=line,
+                        filename=item.filename,
+                        rel_path=item.rel_path,
+                        source_message_id=None,
+                        now=timephrase.utcnow(),
+                        embedder=embedder,
+                        memory_store=memory_store,
+                        notify_memory_added=getattr(
+                            self, "_notify_memory_added", None,
+                        ),
+                    )
+                except Exception:
+                    log.debug("image memory job raised", exc_info=True)
+
+        try:
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="image_memory_distill",
+                priority=60,  # same band as the search distill
+                estimated_seconds=3.0,
+                callable=_job,
+                dedupe_key="image_memory_distill",
+            ))
+        except Exception:
+            log.debug("image memory submit failed", exc_info=True)
+
     def _maybe_schedule_agenda_groom_job(self) -> None:
         """Phase 4a: enqueue AgendaWorker grooming pass on the speaking window."""
         worker = getattr(self, "_agenda_worker", None)

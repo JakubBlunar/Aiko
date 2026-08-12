@@ -63,6 +63,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "SpeakingWorkersInitMixin": "speaking_workers_init_mixin",
     "TaskOrchestrationMixin": "task_orchestration_mixin",
     "ToolsRegistryMixin": "tools_registry_mixin",
+    "VisionTurnMixin": "vision_turn_mixin",
     "VoiceCaptureMixin": "voice_capture_mixin",
     "KNOWN_OVERRIDES": "debug_overrides",
     "DebugOverrides": "debug_overrides",
@@ -114,6 +115,7 @@ if TYPE_CHECKING:  # import-time cost only for type checkers
     from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
     from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
     from app.core.session.tools_registry_mixin import ToolsRegistryMixin
+    from app.core.session.vision_turn_mixin import VisionTurnMixin
     from app.core.session.voice_capture_mixin import VoiceCaptureMixin
     from app.core.session.voice_mixin import VoiceMixin
     from app.core.session.weather_mixin import WeatherMixin
@@ -150,6 +152,7 @@ __all__ = [
     "TaskOrchestrationMixin",
     "ToolsRegistryMixin",
     "UnknownOverride",
+    "VisionTurnMixin",
     "VoiceCaptureMixin",
     "VoiceMixin",
     "WebFacadeMixin",

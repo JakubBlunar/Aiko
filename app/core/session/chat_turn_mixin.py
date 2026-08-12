@@ -40,6 +40,11 @@ _POST_TURN_SLOW_MS = 400.0
 _MIN_BREAKDOWN_SCALE = 0.5
 _MAX_BREAKDOWN_SCALE = 2.0
 
+# H25: stands in for the user's words when they share a file and say
+# nothing. Deliberately reads as a note about what happened rather than
+# as speech, because they didn't speak.
+ATTACHMENT_ONLY_TEXT = "(shared this without a caption)"
+
 
 def _estimate_scale(*, estimate: int, actual: int) -> float:
     """Factor mapping estimated prompt tokens onto the provider's count.
@@ -77,13 +82,22 @@ class ChatTurnMixin:
     ) -> str:
         _ = user_vocal_tone  # not used in v1; reserved for prosody hints
         cleaned = sanitize_user_text(user_text or "")
-        if not cleaned:
-            return ""
         # D2 Part B — normalise the turn's attachments and stash them so
         # the ``attachments`` inner-life provider can render the turn
         # hint during prompt assembly. Reset every turn (empty list) so
         # a previous turn's attachments never leak forward.
         self._active_turn_attachments = list(attachments or [])
+        if not cleaned:
+            # H25: holding a photo up without a caption is a real message,
+            # so an attachment alone is enough to run a turn. It still
+            # needs *some* user text: an empty content row would read as
+            # a blank turn in every downstream consumer (history, RAG,
+            # the summariser). A short stand-in keeps the transcript
+            # honest a month later, when the thumbnail is the only other
+            # clue about what happened here.
+            if not self._active_turn_attachments:
+                return ""
+            cleaned = ATTACHMENT_ONLY_TEXT
         # K14: stash the turn's mode so ``_post_turn_inner_life`` can
         # route the engagement signal correctly (voice: latency feeds
         # closeness drift; typed: latency feeds absence-curiosity).
@@ -215,6 +229,15 @@ class ChatTurnMixin:
             # streamed reply lands so a previous turn's gesture can
             # never leak onto this turn's bubble.
             self._current_turn_gestures.clear()
+
+            # H25: if the user shared an image, look at it *now* — before
+            # the prompt is assembled — so the description can go into
+            # this turn's prompt and she reacts to the picture instead of
+            # promising to. Blocks for a few seconds, which is why the
+            # spoken filler goes out first. Pixels reach the local worker
+            # only; the chat route sees her words about the image.
+            self._maybe_describe_turn_images(on_tts_chunk=wrapped_tts_cb)
+
             result = self._turn_runner.run(
                 session_key,
                 cleaned,

@@ -187,6 +187,8 @@ Completed work, split by family so each file stays small (the combined log had g
 - [H20. A room that evolves — depleting + accruing micro-state](shipped/immersion.md#h20-a-room-that-evolves--depleting--accruing-micro-state)
 - [H21. Sleep & overnight rhythm — and dreams that surface](shipped/immersion.md#h21-sleep--overnight-rhythm--and-dreams-that-surface)
 - [H22. Light outings — "I stepped out for a bit"](shipped/immersion.md#h22-light-outings--i-stepped-out-for-a-bit)
+- [H25. Show-and-tell — share an image, she reacts and remembers](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers)
+- [H26. Caught mid-something — she was busy when you opened the app](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
 
 ## [Shipped — Standalone features](shipped/features.md)
 

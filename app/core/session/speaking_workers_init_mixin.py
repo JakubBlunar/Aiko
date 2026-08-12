@@ -647,6 +647,7 @@ class SpeakingWorkersInitMixin:
             turning_over=self._render_turning_over_block,
             sleep_return=self._render_sleep_return_block,
             away_activities=self._render_away_activities_block,
+            caught_mid_activity=self._render_caught_mid_activity_block,
             forward_curiosity=self._render_forward_curiosity_block,
             concept_hypothesis=self._render_concept_hypothesis_block,
             follow_up=self._render_follow_up_block,
@@ -683,6 +684,7 @@ class SpeakingWorkersInitMixin:
             # B7: the touch budget cue (``touch_state``) was retired —
             # gating is gone, so there's no physical budget to surface.
             attachments=self._render_attachments_block,
+            seen_image=self._render_seen_image_block,
         )
         # Unified context budget: wire the T3 relevant_context region builder
         # + its sizing knobs. The builder gathers turn-relevance-scored

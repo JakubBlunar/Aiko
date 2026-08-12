@@ -444,6 +444,11 @@ class IdleWorkersInitMixin:
                     episode_min_gap_seconds=getattr(
                         mem, "away_activities_episode_min_gap_seconds", 10800,
                     ),
+                    # H26 — sometimes leave the beat running so a return
+                    # catches her mid-something.
+                    in_progress_ratio=getattr(
+                        mem, "away_activities_in_progress_ratio", 0.3,
+                    ),
                     # K91 — one intention per day, drawn from her world's
                     # needs and her current hobby.
                     day_intention_enabled=bool(

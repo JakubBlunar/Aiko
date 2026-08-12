@@ -1779,6 +1779,13 @@ class MemorySettings:
     away_activities_episode_ratio: float = 0.35
     away_activities_episode_max_beats: int = 3
     away_activities_episode_min_gap_seconds: int = 10800
+    # H26 — the chance a single beat is left *running* rather than
+    # finished, so a return inside its window catches her mid-something
+    # instead of hearing another completed errand. Kept a minority of
+    # beats on purpose: being interrupted is only meaningful if it isn't
+    # the default, and an open beat also blocks the next one until its
+    # window closes. Episodes and outings are never left open.
+    away_activities_in_progress_ratio: float = 0.3
     # H17 — idle beats feed the idea machine. ``ratio`` is the fraction of
     # beats that also produce a conversational seed (LLM-composed; needs a
     # worker model). ``daily_cap`` bounds seeds/day; ``max_ring`` bounds the
@@ -4755,6 +4762,17 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     0.0,
                     float(
                         memory_raw.get("away_activities_episode_ratio", 0.35)
+                    ),
+                ),
+            ),
+            away_activities_in_progress_ratio=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "away_activities_in_progress_ratio", 0.3
+                        )
                     ),
                 ),
             ),

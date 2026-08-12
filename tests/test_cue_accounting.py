@@ -973,6 +973,7 @@ class CuePolicyTests(unittest.TestCase):
                 "turning_over",
                 "sleep_return",
                 "away_activities",
+                "caught_mid_activity",
                 "self_correction",
                 "user_correction",
                 "fact_reversal",

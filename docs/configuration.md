@@ -1636,11 +1636,25 @@ The `describe_image` workflow skill lets Aiko *look at* an image inside a config
 - `agent.vision.enabled` *(bool, `false`)* — master switch for the `describe_image` workflow skill + handler. Off → the skill is never offered to the planner. Requires at least one **active** root (`agent.task_file_allowed_roots`).
 - `agent.vision.model` *(str, `""`)* — optional model override. Empty (recommended) reuses the effective worker model so there is genuinely one model in VRAM; a non-empty value points the vision call at a different local Ollama model (accepting a load/reload).
 - `agent.vision.max_bytes` *(int, `8388608` = 8 MiB, clamped `[1 KiB, 64 MiB]`)* — cap on the image file size that gets base64-encoded and sent to Ollama (refused, never truncated).
-- `agent.vision.timeout_seconds` *(int, `180`, floor `5`)* — per-call ceiling hint (a cold model load + a vision pass can be slow).
+- `agent.vision.max_edge` *(int, `1024`, clamped `[256, 4096]`)* — longest edge the image is downscaled to before the call. Vision latency is prefill-bound and prefill scales with resolution, so this is the main speed knob: a 12 MP phone photo measured **6.7 s** warm at full size and **3.3 s** at 1024 px, with no loss of anything a reaction depends on. Images already inside the budget are passed through untouched.
+- `agent.vision.timeout_seconds` *(int, `180`, floor `5`)* — per-call ceiling hint for the **background** path (a cold model load + a vision pass can be slow).
 - `agent.vision.allowed_extensions` *(list, `.png .jpg .jpeg .webp .gif .bmp`)* — case-insensitive image extension allow-list (empty = allow all).
 - `agent.vision.default_prompt` *(str)* — instruction sent alongside the image when the caller doesn't supply a question.
 
 MCP debug: `get_vision_state()` (enabled / effective model / worker-client type / active roots / skill registered) and `describe_image_now(path, question="")` (one-shot, bypasses the planner).
+
+### H25 show-and-tell — looking during the turn
+
+Attaching an image to a chat message takes a **different path** from the `describe_image` skill above. Before the prompt is assembled, the local vision model looks at the image and the description is rendered into that same turn as `seen_image_block` — so she reacts to the picture in the reply you are waiting for, rather than filing a job and telling you about it a minute later. The block is framed as *her own eyes*, and images that were seen this way are dropped from the `attachments_block` routing hint so she doesn't also schedule a workflow to look at what she has already seen.
+
+The wait is real (3–5 s warm), so a spoken filler goes out first — "oh — hang on, let me look" — the same trick D3 uses for web search. Pixels reach the local worker only; the cloud chat model sees her words about the image, never the image.
+
+After the reply, a background job distils the description into one `event` memory tagged with `source: shared_image` and the attachment path, which is what makes a photo something she can bring up next week instead of something that scrolled away.
+
+- `agent.vision.in_turn_enabled` *(bool, `true`)* — look during the turn. Off → attachments fall back to the pre-H25 behaviour (a routing hint and a background workflow). Still gated by `agent.vision.enabled`.
+- `agent.vision.in_turn_max_images` *(int, `2`, clamped `[1, 8]`)* — how many images from one message get a pass. Each is a separate call, so this bounds the worst-case wait.
+- `agent.vision.in_turn_timeout_seconds` *(int, `25`, clamped `[5, 120]`)* — total budget for the whole in-turn pass. Much tighter than `timeout_seconds` because someone is watching: on expiry the pass is abandoned and the attachment falls back to the background workflow. The abandoned call is left to finish (Ollama has no cancel) so the model is warm for the next share.
+- `agent.vision.in_turn_prompt` *(str)* — the instruction for the in-turn pass. Deliberately different from `default_prompt`: it asks for the things a person reacts to rather than a caption.
 
 ### In-chat attachments (D2 Part B)
 
@@ -1649,7 +1663,8 @@ The chat composer accepts **image + text** attachments (paperclip button, drag-a
 - Upload: `POST /api/chat/attachments` (multipart `file`) → `{attachment: {id, filename, kind, rel_path, bytes}}`. The image allow-list mirrors `agent.vision.allowed_extensions`; the byte cap rides `agent.vision.max_bytes` (default 8 MiB). Text extensions are a fixed set (`.txt .md .json .csv .py …`).
 - Drop an unsent attachment: `DELETE /api/chat/attachments/{stored_name}`.
 - Static serving (image thumbnails): `GET /attachment-files/<uuid><ext>`.
-- The `chat` WS command carries an optional `attachments: [{rel_path, kind, …}]` array (server-side allow-listed to the `Attachments` root only). The files are persisted onto the user message (`messages.attachments`, schema v18) and surfaced to Aiko as a **per-turn hint** that tells her to route images to `describe_image` and text to `read_file` via `start_workflow` — she acts on the workflow result, never guesses from the filename. No image bytes ever reach the cloud chat model; the **local** worker model reads them.
+- The `chat` WS command carries an optional `attachments: [{rel_path, kind, …}]` array (server-side allow-listed to the `Attachments` root only). The files are persisted onto the user message (`messages.attachments`, schema v18) and surfaced to Aiko as a **per-turn hint** that tells her to route text to `read_file` via `start_workflow` — she acts on the workflow result, never guesses from the filename. Images are handled by the H25 in-turn pass above and are omitted from that hint; only if the in-turn pass is disabled or times out do they fall back to `describe_image`. No image bytes ever reach the cloud chat model; the **local** worker model reads them.
+- A message with attachments and **no text** is a complete message (holding a photo up without a caption is a normal thing to do). It is stored with a short placeholder body so the transcript still reads honestly a month later.
 
 ---
 
