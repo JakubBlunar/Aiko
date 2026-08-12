@@ -41,7 +41,11 @@ from app.core.proactive.cue_accounting import (
     FULFILMENT_EITHER,
     MATCH_LEXICAL_OR_COSINE,
     MATCH_SCOPE_TURN,
+    REASON_CADENCE_BLOCK,
+    REASON_NO_STOCK,
+    REASON_TOPIC_MISS,
     CuePolicy,
+    note_decline,
     policy_for,
 )
 from app.core.proactive.cue_producer import pick_pool_cue
@@ -112,22 +116,51 @@ class CuePoolMixin:
         *,
         relevant: Callable[[dict[str, Any]], bool] | None = None,
         force: bool = False,
+        note_as: str | None = REASON_TOPIC_MISS,
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
 
         Marks the row ``surfaced`` and remembers it for the post-turn
         verdict. Callers render ``row.text``; the handling instructions for
         the type ride along separately, appended in T6 by the assembler.
+
+        An empty pick is classified and recorded for G4 accounting right
+        here, because this is where the three causes are distinguishable:
+        the cadence gate, an empty shelf, and the caller's own predicate
+        refusing everything on it. Doing it per-provider is what left nine
+        cue types sharing one unreadable ``provider`` reason. ``note_as``
+        names the predicate-rejection case -- almost always a topic gate,
+        hence the default -- and ``None`` means the caller is doing its own
+        accounting and this should stay quiet.
         """
         store = self._cue_pool_store()
+        rejected = 0
+        gate = relevant
+        if relevant is not None:
+            def gate(payload: dict[str, Any]) -> bool:
+                nonlocal rejected
+                ok = bool(relevant(payload))
+                if not ok:
+                    rejected += 1
+                return ok
+
+        blocked = self._cadence_blocked(cue_type)
         row = pick_pool_cue(
             store,
             cue_type,
-            relevant=relevant,
+            relevant=gate,
             force=force,
-            allow_first_claim=force or not self._cadence_blocked(cue_type),
+            allow_first_claim=force or not blocked,
         )
         if row is None or store is None:
+            if note_as is not None:
+                if rejected:
+                    reason = note_as
+                elif blocked and not force:
+                    reason = REASON_CADENCE_BLOCK
+                else:
+                    reason = REASON_NO_STOCK
+                note_decline(self, cue_type, reason)
             return None
         try:
             store.mark_surfaced(row.id)

@@ -229,14 +229,24 @@ class ConceptKind:
     core_always_on: bool = False
     # Whether a concept of this kind may be *rendered* into the static T3
     # relevant-context block at all. Off means the kind speaks only through
-    # its own dedicated surface: a ``tension`` reaches the prompt through the
-    # strictly-cooldowned T6 cue and nowhere else, so a standing friction can
-    # never nag. Declarative because three separate selection paths have to
-    # agree with the renderer -- the flex lane, the hypothesis lane and (since
-    # the L28 openness reserve) the pinned core lane, where a cue-only kind
-    # winning a slot would either waste the pin or defeat the cooldown the
-    # carve-out exists for.
+    # a dedicated surface of its own. No kind sets it today -- ``tension``
+    # did until H10, and that exclusion cost it every one of 13,800 concept
+    # surfacings -- but the hook stays declarative because three separate
+    # selection paths have to agree with the renderer: the flex lane, the
+    # hypothesis lane, and the L28 openness reserve.
     static_render: bool = True
+    # H10: whether this kind may hold a *pinned* slot -- one it occupies
+    # regardless of cosine to the live turn, via the L28 openness reserve.
+    # Distinct from ``static_render`` (may it render at all) and from
+    # ``core_always_on`` (does it opt into the ordinary core lane), because
+    # rendering and pinning are different promises and ``tension`` wants
+    # opposite answers. A friction should be raised when the turn is
+    # actually about it and left alone otherwise: pinning one into every
+    # turn is precisely the nagging L12's cooldown was built to prevent,
+    # and the openness reserve's own notes flagged it as the failure to
+    # avoid if the render carve-out were ever relaxed. It was, so this is
+    # the half that stays.
+    pinnable: bool = True
     # L27: the per-kind confidence bar for the core lane. Behaviour-loaded
     # kinds (value, boundary) should sit *higher* than tastes; this is the
     # natural companion to the L16 ``plasticity_default`` band (sticky kinds
@@ -906,11 +916,22 @@ register_kind(
 # relationship lives). ``evidence_model="meta"`` -- its two ``("concept", id)``
 # evidence edges are what light up the (previously dormant) ``dependents_of``
 # activation path and the L3 cascade. Delivered "with the most care of any kind":
-# it is intentionally NOT on the core lane and is filtered OUT of the static T3
-# render (so it can never nag); the only visible surface is a strictly-cooldowned
-# T6 cue. The store-dependent meta rules (both bases must stay ``active``;
-# confidence bounded by ``min`` of the base confidences) are enforced in the L3
-# worker, not the pure gate.
+# it is never pinned to the core lane, and it reaches the static T3 render only
+# through the flex lane's single generative slot. The store-dependent meta rules
+# (both bases must stay ``active``; confidence bounded by ``min`` of the base
+# confidences) are enforced in the L3 worker, not the pure gate.
+#
+# H10: it used to be filtered out of T3 entirely, on the reasoning that a
+# standing friction with a rendering surface would nag. What the exclusion
+# actually bought was silence: 99 active tensions against **zero** of 13,800
+# concept-lane surfacings, with the T6 cue reaching 25 turns in 231 and 89% of
+# turns carrying eight boundaries and no ambivalence at all. Ambivalence -- 
+# wanting two incompatible things and knowing it -- is most of what makes a
+# character read as having an interior, and it was the one register she never
+# got to use. The nag guards are the ones every kind has: the flex lane's
+# generative floor admits at most one per turn, L40 habituation rotates which,
+# and the T6 cue keeps its own six-day per-tension cooldown and steps aside
+# when this lane has already claimed the same row.
 register_kind(
     ConceptKind(
         name="tension",
@@ -923,27 +944,28 @@ register_kind(
         # once is a considered observation, not a mood.
         plasticity_default=0.35,
         # L32: an unresolved friction is weighty -- it is the kind delivered
-        # "with the most care of any kind". Read only by the T6 cue producer's
-        # ripeness signal, since a tension never renders in the T3 block.
+        # "with the most care of any kind". Read by the T6 cue producer's
+        # ripeness signal and, since H10, by the flex lane's scoring too.
         importance=0.7,
         # An unresolved friction is the most generative thing in the
         # registry: it is the one kind that exists *because* something has
-        # not settled yet. But it renders nowhere in the static block, so
-        # neither the flex-lane floor nor the openness reserve can draw on
-        # it -- the **diets** are where a tension counts, and its own T6
-        # cue is where it speaks.
+        # not settled yet. Which is what earns it the flex lane's generative
+        # floor -- the turn whose whole selection came out as rails is
+        # exactly the turn a tension should be in.
         role=ROLE_GENERATIVE,
-        static_render=False,
+        # It renders, but it is never pinned: a friction earns its place by
+        # being live in the turn, never by standing there every turn.
+        pinnable=False,
         # L3: the meta gate -- floors the source count at 2 (both sides of the
         # friction), with a higher age + confidence bar than the fluid kinds
         # because a tension asserts with care.
         promotion_gate=tension_evidence_gate,
-        # L12: never pinned every turn (``core_always_on=False``) and never
-        # rendered in the static T3 block -- see the tension exclusion in
-        # ``build_relevant_context`` and the T6 ``tension_block`` cue. These
-        # weights only matter for the internal spreading-activation ripeness
-        # signal the cue producer reads (activation-heavy: a tension is worth
-        # revisiting exactly when its base concepts are live this turn).
+        # L12: never *pinned* every turn (``core_always_on=False``) -- it has
+        # to earn its slot against the live turn, which is the difference
+        # between raising something and harping on it. Activation-heavy: a
+        # tension is worth revisiting exactly when its base concepts are live
+        # this turn. The same weights drive the T6 cue producer's ripeness
+        # signal, which reads them through spreading activation.
         surface_weights=SurfaceWeights(
             context=0.5, confidence=0.1, stability=0.2, recency=0.1,
             activation=0.3,

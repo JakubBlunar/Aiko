@@ -79,10 +79,76 @@ OUTCOME_DECLINED = "declined"
 # which is exactly the class of decision that was invisible.
 REASON_LOST_PRIORITY = "lost_priority"
 REASON_QUESTION_BALANCE = "question_balance"
-# The provider declined for its own reasons (topic gate, cooldown, no
-# candidate cleared the picker). A catch-all until the per-provider sweep
-# lands, so an armed-but-unsurfaced cue is never silently unaccounted.
+# The provider declined for its own reasons and did not say which. Still
+# the fallback, so an armed-but-unsurfaced cue is never unaccounted -- but
+# a provider that reaches for it is one nobody can debug. It was 86% of
+# `concept_hypothesis`'s 342 declines, which is how a cue type ran at a
+# 1.5% spend rate for months with no readable cause (H7).
 REASON_PROVIDER = "provider"
+
+# ── provider-set reasons ──────────────────────────────────────────────
+# What the provider itself knows and the assembler cannot see. Set at the
+# bail point via :func:`note_decline`; the first one recorded wins, since
+# that is the gate that actually decided.
+#
+# Deliberately a small closed vocabulary rather than free text. These are
+# counted and compared across cue types -- "which of the seven providers
+# is losing its cues to a cadence knob" is the question the split exists
+# to answer, and it only stays answerable if the buckets are shared.
+
+# Nothing in stock cleared the *topical* gate: the cue had material, but
+# not about anything the live message is about.
+REASON_TOPIC_MISS = "topic_miss"
+# Stock existed and was topical enough, but nothing cleared the weight
+# bar the provider applies before spending a slot.
+REASON_IMPORTANCE_FLOOR = "importance_floor"
+# A cooldown, watermark or minimum-gap said not yet. About the clock
+# rather than the content.
+REASON_CADENCE_BLOCK = "cadence_block"
+# The pool or ring came back empty at the moment of asking. Distinct from
+# unarmed: the snapshot saw stock and it was gone or unusable by
+# assembly, which is a supply-timing finding rather than a gate.
+REASON_NO_STOCK = "no_stock"
+# Another lane already claimed this material in the same assembly, so the
+# cue stood down to avoid saying the same thing twice.
+REASON_CROSS_LANE = "cross_lane"
+
+_PROVIDER_REASONS = "_cue_provider_reasons"
+
+
+def note_decline(session: Any, cue: str, reason: str) -> None:
+    """Record *why* a provider stood down, for this turn's accounting.
+
+    Called from the bail points inside a T6 provider, whose reasons are
+    invisible to the block-chars attribution that derives everything
+    else. First writer wins: a provider walks its gates in order, so the
+    first one to refuse is the one that decided, and a later gate the cue
+    would also have failed is not what happened to it.
+
+    Best-effort by construction -- accounting must never be able to break
+    an assembly.
+    """
+    try:
+        notes = getattr(session, _PROVIDER_REASONS, None)
+        if notes is None:
+            notes = {}
+            setattr(session, _PROVIDER_REASONS, notes)
+        notes.setdefault(str(cue), str(reason))
+    except Exception:
+        log.debug("cue decline note failed", exc_info=True)
+
+
+def take_decline_notes(session: Any) -> dict[str, str]:
+    """Drain the turn's provider reasons. Clearing is the point: a note
+    left behind would be attributed to the next assembly, where the cue
+    may well have surfaced."""
+    try:
+        notes = dict(getattr(session, _PROVIDER_REASONS, None) or {})
+        setattr(session, _PROVIDER_REASONS, {})
+        return notes
+    except Exception:
+        log.debug("cue decline drain failed", exc_info=True)
+        return {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -923,6 +989,7 @@ def decisions_from_block_chars(
     block_chars: dict[str, int] | None,
     *,
     question_balance_suppressed: bool = False,
+    provider_reasons: dict[str, str] | None = None,
 ) -> CueTurnDecisions:
     """Turn an armed set plus rendered sizes into a decision record.
 
@@ -941,9 +1008,15 @@ def decisions_from_block_chars(
       is the difference between a shrug and a decision to make.
     - **question_balance** -- the share-first countdown was active, which
       vetoes the question-shaped cues wholesale.
-    - **provider** -- everything else, pending the per-provider sweep.
+    - **the provider's own reason** -- ``topic_miss`` / ``importance_floor``
+      / ``cadence_block`` / ``no_stock`` / ``cross_lane``, as reported by
+      :func:`note_decline` from inside the provider. Ranked below the two
+      structural reasons above, which is the right order: a cue that lost
+      the gap mutex never reached the gate it would have reported.
+    - **provider** -- a provider that declined without saying why.
     """
     chars = block_chars or {}
+    notes = provider_reasons or {}
 
     def _rendered(cue: str) -> bool:
         # Registered under either the bare name or the ``_block`` suffix,
@@ -966,7 +1039,7 @@ def decisions_from_block_chars(
         elif question_balance_suppressed:
             declined[cue] = REASON_QUESTION_BALANCE
         else:
-            declined[cue] = REASON_PROVIDER
+            declined[cue] = notes.get(cue) or REASON_PROVIDER
 
     return CueTurnDecisions(
         # A cue that surfaced without being detected as armed is a gap in
@@ -995,13 +1068,20 @@ __all__ = [
     "OUTCOME_DECLINED",
     "OUTCOME_SURFACED",
     "POOLED_CUES",
+    "REASON_CADENCE_BLOCK",
+    "REASON_CROSS_LANE",
+    "REASON_IMPORTANCE_FLOOR",
     "REASON_LOST_PRIORITY",
+    "REASON_NO_STOCK",
     "REASON_PROVIDER",
     "REASON_QUESTION_BALANCE",
+    "REASON_TOPIC_MISS",
     "CuePolicy",
     "CueSpec",
     "CueTurnDecisions",
     "armed_cues",
     "decisions_from_block_chars",
+    "note_decline",
     "policy_for",
+    "take_decline_notes",
 ]

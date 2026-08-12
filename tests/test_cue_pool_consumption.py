@@ -20,6 +20,13 @@ import numpy as np
 
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_accounting import (
+    REASON_CADENCE_BLOCK,
+    REASON_IMPORTANCE_FLOOR,
+    REASON_NO_STOCK,
+    REASON_TOPIC_MISS,
+    take_decline_notes,
+)
 from app.core.proactive.cue_store import (
     STATE_AWAITING,
     STATE_EXPIRED,
@@ -102,6 +109,65 @@ class SurfacingTests(_Fixture):
             "interest_drift", relevant=lambda payload: False, force=True,
         )
         self.assertEqual(row.id, cue_id)
+
+
+class DeclineReasonTests(_Fixture):
+    """H7: an empty pick is classified where the causes are actually
+    distinguishable, rather than nine providers each reporting the same
+    unreadable ``provider``."""
+
+    def _reason(self, cue_type: str) -> str | None:
+        return take_decline_notes(self.host).get(cue_type)
+
+    def test_an_empty_shelf_reads_as_no_stock(self) -> None:
+        self.assertIsNone(self.host.take_pool_cue("interest_drift"))
+        self.assertEqual(self._reason("interest_drift"), REASON_NO_STOCK)
+
+    def test_a_refused_predicate_reads_as_a_topic_miss(self) -> None:
+        self.store.add("interest_drift", "film photography", "cue")
+        self.assertIsNone(
+            self.host.take_pool_cue(
+                "interest_drift", relevant=lambda payload: False,
+            )
+        )
+        self.assertEqual(self._reason("interest_drift"), REASON_TOPIC_MISS)
+
+    def test_the_predicate_reason_is_the_caller_s_to_name(self) -> None:
+        self.store.add("concept_hypothesis", "walking", "cue")
+        self.assertIsNone(
+            self.host.take_pool_cue(
+                "concept_hypothesis",
+                relevant=lambda payload: False,
+                note_as=REASON_IMPORTANCE_FLOOR,
+            )
+        )
+        self.assertEqual(
+            self._reason("concept_hypothesis"), REASON_IMPORTANCE_FLOOR,
+        )
+
+    def test_the_cadence_gate_is_named_apart_from_an_empty_shelf(self) -> None:
+        # ``self_callback`` carries a surfacing cooldown, so a second cue
+        # queued right behind a fresh surfacing is blocked rather than
+        # missing -- a distinction the catch-all could not make.
+        self.store.add("self_callback", "a", "cue a")
+        self.assertIsNotNone(self.host.take_pool_cue("self_callback"))
+        take_decline_notes(self.host)
+        self.store.add("self_callback", "b", "cue b")
+        self.assertIsNone(self.host.take_pool_cue("self_callback"))
+        self.assertEqual(self._reason("self_callback"), REASON_CADENCE_BLOCK)
+
+    def test_none_means_the_caller_owns_the_accounting(self) -> None:
+        """The dual-mode providers fall through rather than deciding, so
+        a note from here would beat the reason that actually applied."""
+        self.assertIsNone(
+            self.host.take_pool_cue("interest_drift", note_as=None)
+        )
+        self.assertEqual(take_decline_notes(self.host), {})
+
+    def test_a_successful_pick_notes_nothing(self) -> None:
+        self.store.add("interest_drift", "film photography", "cue")
+        self.assertIsNotNone(self.host.take_pool_cue("interest_drift"))
+        self.assertEqual(take_decline_notes(self.host), {})
 
 
 # ── stage A: fulfilment=spoken ───────────────────────────────────────────

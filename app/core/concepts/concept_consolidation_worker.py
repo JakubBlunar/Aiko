@@ -58,6 +58,29 @@ graph as it stood at proposal time, and labels move afterwards, so eighteen
 pairs had drifted to or past 0.86 -- above the creation bar -- and no path
 existed to notice. Those merge with no adjudication now, which is also what
 frees the budget for the ambiguous band the LLM is actually needed for.
+
+H16: one bar cannot fit every kind
+----------------------------------
+The bar had a second hole, under it. 0.84 turns out to sit above the 99th
+percentile of in-block cosine for 17 of the graph's 19 ``(subject, kind)``
+blocks, and for ``tension/relationship`` it admits **zero** of 406 pairs --
+against 28 rows a reader sees as roughly five frictions restated. The
+adjudicator was never saying no to those; it was never being asked.
+
+Label shape is why. A tension is two clauses ("X seeks A, yet I value B")
+and the longest label in the register, so restating one clause moves only
+half the vector: two rows opening with an identical sentence reach 0.851
+while two unrelated frictions reach 0.846. No absolute number separates
+those, and one tuned on single-topic labels is far stricter than intended
+for a kind like this.
+
+So ``merge_cosine`` became the ceiling and each block now also nominates
+its own top few pairs from the band beneath it -- the same H23 move of
+ranking within the corpus instead of trusting an absolute bar to be sited
+right for every distribution. Within the band, metas that **share a base
+concept** rank first: two tensions standing on the same underlying belief
+are the same friction whatever words they wear, which is the one judgement
+cosine reliably cannot make here.
 """
 from __future__ import annotations
 
@@ -265,6 +288,7 @@ class ConceptConsolidationWorker:
         stats: dict[str, Any] = {
             "scanned": 0,
             "pairs_considered": 0,
+            "banded": 0,
             "auto_merged": 0,
             "adjudicated": 0,
             "merged": 0,
@@ -312,10 +336,12 @@ class ConceptConsolidationWorker:
         self._flush_verdicts()
         stats["duration_ms"] = int((time.monotonic() - started) * 1000)
         log.info(
-            "concept_consolidation run: scanned=%s pairs=%s auto_merged=%s "
-            "adjudicated=%s merged=%s rate_limited=%s duration_ms=%s",
+            "concept_consolidation run: scanned=%s pairs=%s (banded=%s) "
+            "auto_merged=%s adjudicated=%s merged=%s rate_limited=%s "
+            "duration_ms=%s",
             stats["scanned"],
             stats["pairs_considered"],
+            stats["banded"],
             stats["auto_merged"],
             stats["adjudicated"],
             stats["merged"],
@@ -344,7 +370,8 @@ class ConceptConsolidationWorker:
     def _collect_pairs(
         self, merge_cos: float, stats: dict[str, Any]
     ) -> list[tuple[float, "Concept", "Concept"]]:
-        """Every active same-``(subject, kind)`` pair at or above the bar.
+        """Candidate pairs: everything above the bar, plus each block's own
+        worst offenders in the band beneath it.
 
         One :meth:`ConceptStore.matrix_snapshot` for the whole active set,
         then a matmul per ``(subject, kind)`` block over row slices of that
@@ -354,6 +381,19 @@ class ConceptConsolidationWorker:
         ``(subject, kind)`` is what keeps the cost near ``sum(n_block^2)``
         instead of ``n_total^2``, which at 975 actives is ~19k pair
         comparisons rather than 475k.
+
+        **The band (H16).** ``merge_cos`` alone assumes every kind's
+        similarity distribution sits in the same place. It does not: 0.84
+        is above the 99th percentile for 17 of 19 blocks in the live graph,
+        and admits zero of ``tension/relationship``'s 406 pairs even though
+        those 28 rows are about five frictions restated. So each block also
+        nominates its top ``block_top_n`` pairs above a looser floor, which
+        lets a compressed distribution contribute without dragging the bar
+        down for kinds that don't need it. Ranking inside the band prefers
+        metas that **share a base concept**: two tensions built on the same
+        underlying belief are the same friction however differently they
+        are worded, and that is exactly the judgement cosine cannot make
+        here.
         """
         actives = self._store.list_by(status="active")
         ids, mat = self._store.matrix_snapshot(
@@ -372,7 +412,14 @@ class ConceptConsolidationWorker:
                 (concept.subject, concept.kind), []
             ).append(concept)
 
+        top_n = max(0, self._i("concept_consolidation_block_top_n", 3))
+        floor = min(
+            merge_cos, self._fl("concept_consolidation_candidate_floor", 0.78)
+        )
+        bases = self._base_map(actives) if top_n else {}
+
         pairs: list[tuple[float, "Concept", "Concept"]] = []
+        banded = 0
         for (subject, kind), members in by_block.items():
             if len(members) < 2:
                 continue
@@ -391,14 +438,65 @@ class ConceptConsolidationWorker:
             # Upper triangle only: the matrix is symmetric and the diagonal
             # is each concept against itself.
             hi, lo = np.triu_indices(len(members), k=1)
-            hits = np.nonzero(sims[hi, lo] >= merge_cos)[0]
-            for h in hits:
+            vals = sims[hi, lo]
+            for h in np.nonzero(vals >= merge_cos)[0]:
                 i, j = int(hi[h]), int(lo[h])
                 pairs.append(
                     (float(sims[i, j]), members[i], members[j])
                 )
+            if not top_n:
+                continue
+            band = np.nonzero((vals >= floor) & (vals < merge_cos))[0]
+            if band.size == 0:
+                continue
+            # Shared-base pairs first, then by cosine. Both keys descend,
+            # so the block's most-likely twins are what the budget buys.
+            ranked = sorted(
+                (int(h) for h in band),
+                key=lambda h: (
+                    self._shares_base(
+                        bases, members[int(hi[h])], members[int(lo[h])]
+                    ),
+                    float(vals[h]),
+                ),
+                reverse=True,
+            )
+            for h in ranked[:top_n]:
+                i, j = int(hi[h]), int(lo[h])
+                pairs.append(
+                    (float(sims[i, j]), members[i], members[j])
+                )
+                banded += 1
         stats["pairs_considered"] = len(pairs)
+        stats["banded"] = banded
         return pairs
+
+    def _base_map(
+        self, actives: list["Concept"]
+    ) -> dict[int, frozenset[int]]:
+        """``{concept id: base ids}`` for the meta rows among ``actives``.
+
+        One query, and skipped entirely on a graph with no metas, because
+        this runs on the ``demand()`` probe as well as the run.
+        """
+        metas = [
+            c.concept_id for c in actives if c.evidence_model == "meta"
+        ]
+        if not metas:
+            return {}
+        try:
+            return self._store.concept_base_map(metas)
+        except Exception:
+            log.debug("concept_consolidation: base map failed", exc_info=True)
+            return {}
+
+    @staticmethod
+    def _shares_base(
+        bases: dict[int, frozenset[int]], a: "Concept", b: "Concept"
+    ) -> bool:
+        left = bases.get(int(a.concept_id))
+        right = bases.get(int(b.concept_id))
+        return bool(left and right and (left & right))
 
     # ── remembered verdicts ────────────────────────────────────────────
 

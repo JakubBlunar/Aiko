@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 from app.core.infra import timephrase
+from app.core.proactive.cue_accounting import (
+    REASON_CADENCE_BLOCK,
+    REASON_TOPIC_MISS,
+    note_decline,
+)
 from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 
@@ -785,6 +790,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             "long_arc_callback",
             relevant=lambda payload: lac.still_relevant(payload, user_text),
             force=force_next,
+            # An empty retry pool is a fallthrough, not a decision: fresh
+            # generation below is the main path. The bails after it are
+            # what actually decide the turn.
+            note_as=None,
         )
         if retry is not None:
             log.info(
@@ -798,13 +807,16 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 0, int(getattr(mem, "long_arc_callback_per_session_cap", 1))
             )
             if int(getattr(self, "_long_arc_callback_session_count", 0)) >= cap:
+                note_decline(self, "long_arc_callback", REASON_CADENCE_BLOCK)
                 return ""
             if self._cadence_blocked("long_arc_callback"):
+                note_decline(self, "long_arc_callback", REASON_CADENCE_BLOCK)
                 return ""
             min_words = max(
                 0, int(getattr(mem, "long_arc_callback_min_user_words", 5))
             )
             if len((user_text or "").split()) < min_words:
+                note_decline(self, "long_arc_callback", REASON_TOPIC_MISS)
                 return ""
 
         try:
@@ -823,11 +835,14 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             log.debug("long-arc-callback aged search raised", exc_info=True)
             return ""
         if not candidates:
+            note_decline(self, "long_arc_callback", REASON_TOPIC_MISS)
             return ""
 
         recent_ids = lac.load_recent_ids(kv_get)
         pick = lac.select(candidates, exclude_ids=recent_ids)
         if pick is None:
+            # Everything topical was called back recently.
+            note_decline(self, "long_arc_callback", REASON_CADENCE_BLOCK)
             return ""
 
         try:

@@ -447,13 +447,15 @@ class ConceptView:
         Three things the first cut got wrong, all measured on the live
         graph (L28m) rather than reasoned about:
 
-        **A cue-only kind cannot hold a pin.** ``tension`` is the most
-        generative kind in the registry and is filtered out of the static
-        T3 render, so a tension winning a slot either wastes it or --
-        worse, if the renderer's carve-out is ever relaxed -- pins a
-        standing friction into every turn, which is exactly what L12's
-        cooldown exists to prevent. Read off ``static_render`` so this
-        cannot drift from the renderer.
+        **Not every generative kind can hold a pin.** ``tension`` is the
+        most generative kind in the registry, and a tension pinned into
+        every turn is exactly the nagging L12's cooldown exists to
+        prevent. That used to be handled by reading ``static_render``,
+        since a tension rendered nowhere; H10 gave it the flex lane, so
+        the two questions came apart and the kind now answers them
+        separately -- it renders when the turn is about it (``static_render``)
+        and is never pinned regardless of the turn (``pinnable``). Both are
+        read off the registry so neither can drift from the renderer.
 
         **The draw is one kind at a time, not one bucket at a time.** With
         two slots and flat ``(kind, subject)`` buckets ordered by
@@ -486,6 +488,8 @@ class ConceptView:
         by_kind: dict[str, dict[str, list[Concept]]] = {}
         for kind in kinds_by_role(ROLE_GENERATIVE):
             if kind.name in already or not renders_in_static_block(kind.name):
+                continue
+            if not bool(getattr(kind, "pinnable", True)):
                 continue
             rows = self.core(
                 kind=kind.name, min_confidence=float(min_confidence),

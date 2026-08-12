@@ -55,6 +55,7 @@ def _add(
     confidence: float = 0.8,
     distinct_source_count: int = 2,
     evidence_count: int = 2,
+    evidence_model: str = "set",
     embedding: np.ndarray | None = None,
 ) -> Concept:
     c = Concept(
@@ -62,6 +63,7 @@ def _add(
         kind=kind,
         subject=subject,
         status=status,
+        evidence_model=evidence_model,
         confidence=confidence,
         plasticity=0.5,
         evidence_count=evidence_count,
@@ -732,6 +734,244 @@ class GlobalDiscoveryTests(unittest.TestCase):
         out = worker.run()
         self.assertEqual(out["scanned"], 3)
         self.assertEqual(out["pairs_considered"], 0)
+
+
+class CandidateBandTests(unittest.TestCase):
+    """H16: each block nominates its own worst offenders below the bar.
+
+    A flat ``merge_cosine`` assumes every kind's similarity distribution
+    sits in the same place. In the live graph 0.84 is above the 99th
+    percentile for 17 of 19 blocks and admits *zero* of
+    ``tension/relationship``'s 406 pairs, so the twins there were never
+    reaching the adjudicator that exists to judge them.
+    """
+
+    def _band_settings(self, **over):
+        base = dict(
+            concept_consolidation_merge_cosine=0.90,
+            concept_consolidation_candidate_floor=0.78,
+            concept_consolidation_block_top_n=1,
+        )
+        base.update(over)
+        return _settings(**base)
+
+    def test_a_block_under_the_bar_still_contributes(self) -> None:
+        _db, store, ev = _new_store()
+        # cos ~0.85: under the 0.90 bar, over the 0.78 floor. The old flat
+        # rule saw nothing here.
+        _add(store, label="A", embedding=_vec(1.0, 0.0))
+        _add(store, label="B", embedding=_vec(0.85, 0.527))
+        worker, _o = _worker(
+            store, ev, _db, responder={"same": False, "reason": "n"},
+            settings=self._band_settings(),
+        )
+        out = worker.run()
+        self.assertEqual(out["pairs_considered"], 1)
+        self.assertEqual(out["banded"], 1)
+        self.assertEqual(out["adjudicated"], 1)
+
+    def test_the_floor_still_holds(self) -> None:
+        """The band widens the bar; it does not remove it. Below the floor
+        the pairs stop being restatements and start being different
+        subjects sharing a sentence template."""
+        _db, store, ev = _new_store()
+        _add(store, label="A", embedding=_vec(1.0, 0.0))
+        _add(store, label="B", embedding=_vec(0.7, 0.714))  # cos ~0.7
+        worker, ollama = _worker(
+            store, ev, _db, responder={"same": True, "reason": "x"},
+            settings=self._band_settings(),
+        )
+        out = worker.run()
+        self.assertEqual(out["pairs_considered"], 0)
+        self.assertEqual(ollama.calls, 0)
+
+    def test_top_n_bounds_what_one_block_can_spend(self) -> None:
+        """The band is what keeps a wide floor affordable: without a cap,
+        one templated kind would eat the whole day's budget."""
+        _db, store, ev = _new_store()
+        # Equiangular trio: every pair sits at cos 0.85, inside the band.
+        for i in range(3):
+            xs = [0.9220, 0.0, 0.0, 0.0]
+            xs[i + 1] = 0.3873
+            _add(store, label=f"c{i}", embedding=_vec(*xs))
+        worker, _o = _worker(
+            store, ev, _db, responder={"same": False, "reason": "n"},
+            settings=self._band_settings(concept_consolidation_block_top_n=2),
+            per_hour_cap=50, per_day_cap=50,
+        )
+        out = worker.run()
+        # Three pairs are in the band; only two are bought.
+        self.assertEqual(out["banded"], 2)
+        self.assertEqual(out["pairs_considered"], 2)
+
+    def test_zero_top_n_restores_the_flat_bar(self) -> None:
+        _db, store, ev = _new_store()
+        _add(store, label="A", embedding=_vec(1.0, 0.0))
+        _add(store, label="B", embedding=_vec(0.85, 0.527))
+        worker, ollama = _worker(
+            store, ev, _db, responder={"same": True, "reason": "x"},
+            settings=self._band_settings(
+                concept_consolidation_block_top_n=0
+            ),
+        )
+        out = worker.run()
+        self.assertEqual(out["pairs_considered"], 0)
+        self.assertEqual(ollama.calls, 0)
+
+    def test_each_block_gets_its_own_allowance(self) -> None:
+        """The point of ranking *within* a block: a compressed kind is not
+        crowded out by a kind whose labels happen to score higher."""
+        _db, store, ev = _new_store()
+        _add(store, label="i-a", kind="identity",
+             embedding=_vec(1.0, 0.0, 0.0, 0.0))
+        _add(store, label="i-b", kind="identity",
+             embedding=_vec(0.89, 0.456, 0.0, 0.0))
+        _add(store, label="v-a", kind="value",
+             embedding=_vec(0.0, 0.0, 1.0, 0.0))
+        _add(store, label="v-b", kind="value",
+             embedding=_vec(0.0, 0.0, 0.80, 0.6))
+        worker, _o = _worker(
+            store, ev, _db, responder={"same": False, "reason": "n"},
+            settings=self._band_settings(),
+            per_hour_cap=50, per_day_cap=50,
+        )
+        out = worker.run()
+        self.assertEqual(out["banded"], 2)
+
+    def test_a_shared_base_outranks_a_higher_cosine(self) -> None:
+        """Two tensions standing on the same belief are the same friction
+        however differently they are worded -- the judgement cosine cannot
+        make on labels this templated."""
+        _db, store, ev = _new_store()
+        base = _add(store, label="shared base", kind="value",
+                    embedding=_vec(0.0, 1.0, 0.0, 0.0))
+        # The pair that shares a base scores *lower* than the pair that
+        # does not, so cosine alone would spend the single slot elsewhere.
+        near_a = _add(store, label="t-near-a", kind="tension",
+                      evidence_model="meta",
+                      embedding=_vec(1.0, 0.0, 0.0, 0.0))
+        near_b = _add(store, label="t-near-b", kind="tension",
+                      evidence_model="meta",
+                      embedding=_vec(0.89, 0.456, 0.0, 0.0))
+        far_a = _add(store, label="t-far-a", kind="tension",
+                     evidence_model="meta",
+                     embedding=_vec(0.0, 0.0, 1.0, 0.0))
+        far_b = _add(store, label="t-far-b", kind="tension",
+                     evidence_model="meta",
+                     embedding=_vec(0.0, 0.0, 0.80, 0.6))
+        for meta in (far_a, far_b):
+            store.add_edge(
+                ConceptEdge(
+                    src_type="concept", src_id=str(base.concept_id),
+                    dst_type="concept", dst_id=str(meta.concept_id),
+                    relation="evidence",
+                )
+            )
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=self._band_settings(),
+            per_hour_cap=50, per_day_cap=50,
+        )
+        worker.run()
+        self.assertEqual(len(seen), 1)
+        self.assertIn("t-far-", seen[0])
+        self.assertNotIn("t-near-", seen[0])
+        del near_a, near_b
+
+
+class MetaMergeTests(unittest.TestCase):
+    """A meta's base set has an arity that means something.
+
+    ``tension`` declares ``meta_min_active_bases=None`` -- lose any one
+    base and the row is moot. Importing an absorbed twin's bases would
+    leave the survivor standing on three or four, so consolidation would
+    quietly retire the frictions it had just decided were worth keeping.
+    """
+
+    def _tension_on(self, store, label: str, bases: list[Concept]) -> Concept:
+        meta = _add(
+            store, label=label, kind="tension", evidence_model="meta"
+        )
+        for base in bases:
+            store.add_edge(
+                ConceptEdge(
+                    src_type="concept", src_id=str(base.concept_id),
+                    dst_type="concept", dst_id=str(meta.concept_id),
+                    relation="evidence",
+                )
+            )
+        return meta
+
+    def test_merging_two_tensions_does_not_widen_the_base_set(self) -> None:
+        _db, store, _ev = _new_store()
+        shared = _add(store, label="shared", kind="value")
+        only_canonical = _add(store, label="his side", kind="value")
+        only_absorbed = _add(store, label="her side", kind="value")
+        canonical = self._tension_on(
+            store, "friction A", [shared, only_canonical]
+        )
+        absorbed = self._tension_on(
+            store, "friction A restated", [shared, only_absorbed]
+        )
+        self.assertTrue(
+            store.merge_into(
+                canonical_id=canonical.concept_id,
+                absorbed_id=absorbed.concept_id,
+            )
+        )
+        bases = {
+            int(e.src_id)
+            for e in store.evidence_of(canonical.concept_id)
+            if e.src_type == "concept"
+        }
+        self.assertEqual(
+            bases, {shared.concept_id, only_canonical.concept_id}
+        )
+        self.assertIsNone(store.get(absorbed.concept_id))
+        # The orphaned base is a belief in its own right; it survives.
+        self.assertIsNotNone(store.get(only_absorbed.concept_id))
+
+    def test_a_base_kind_still_absorbs_everything(self) -> None:
+        """The guard is about meta arity, so ordinary rows are unaffected."""
+        _db, store, _ev = _new_store()
+        canonical = _add(store, label="A", confidence=0.9)
+        absorbed = _add(store, label="B", confidence=0.7)
+        _evidence(store, "memory", "11", absorbed.concept_id)
+        _evidence(store, "cluster", "5", absorbed.concept_id)
+        store.merge_into(
+            canonical_id=canonical.concept_id,
+            absorbed_id=absorbed.concept_id,
+        )
+        srcs = {
+            (e.src_type, e.src_id)
+            for e in store.evidence_of(canonical.concept_id)
+        }
+        self.assertEqual(srcs, {("memory", "11"), ("cluster", "5")})
+
+    def test_a_meta_still_takes_non_concept_evidence(self) -> None:
+        _db, store, _ev = _new_store()
+        base = _add(store, label="base", kind="value")
+        canonical = self._tension_on(store, "friction", [base])
+        absorbed = _add(
+            store, label="twin", kind="tension", evidence_model="meta"
+        )
+        _evidence(store, "memory", "42", absorbed.concept_id)
+        store.merge_into(
+            canonical_id=canonical.concept_id,
+            absorbed_id=absorbed.concept_id,
+        )
+        srcs = {
+            (e.src_type, e.src_id)
+            for e in store.evidence_of(canonical.concept_id)
+        }
+        self.assertIn(("memory", "42"), srcs)
+        self.assertIn(("concept", str(base.concept_id)), srcs)
 
 
 class DemandTests(unittest.TestCase):

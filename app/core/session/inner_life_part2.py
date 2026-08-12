@@ -5,6 +5,14 @@ import logging
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.proactive.cue_accounting import (
+    REASON_CADENCE_BLOCK,
+    REASON_CROSS_LANE,
+    REASON_IMPORTANCE_FLOOR,
+    REASON_NO_STOCK,
+    REASON_TOPIC_MISS,
+    note_decline,
+)
 from app.core.session.debug_overrides import DebugOverridesHostMixin
 
 
@@ -1316,6 +1324,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         pool = getattr(self, "_cue_store", None)
         if pool is None:
+            note_decline(self, "concept_hypothesis", REASON_NO_STOCK)
             return ""
 
         force_next = bool(
@@ -1330,6 +1339,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         self._pending_concept_hypothesis_seconds = None
 
         try:
+            from app.core.proactive.concept_hypothesis_worker import (
+                cue_importance,
+            )
             from app.core.proactive.knowledge_gap_notice_worker import (
                 topic_relevant,
             )
@@ -1359,12 +1371,17 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             return target_id not in claimed.get(target_type, set())
 
         text = (user_text or "").strip()
+        topic_missed = False
         if text or force_next:
             row = self.take_pool_cue(
                 "concept_hypothesis",
                 relevant=lambda payload: _unclaimed(payload)
                 and topic_relevant(str(payload.get("label") or ""), text),
                 force=force_next,
+                # This provider does its own accounting: it is the only
+                # dual-mode cue, so a topic miss here is a fallthrough to
+                # the gap path rather than the turn's decision.
+                note_as=None,
             )
             if row is not None:
                 log.info(
@@ -1373,17 +1390,18 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                     str(row.payload.get("label") or "")[:80],
                 )
                 return row.text
+            # Not noted yet: the gap path below is a real second chance,
+            # and a fallthrough is not a decision. Carried so that if the
+            # gap path turns out to be unavailable, the turn is reported
+            # as what it was -- nothing on the shelf about what he said.
+            topic_missed = bool(text)
 
         # ── gap path ──────────────────────────────────────────────────
         if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            # No note: the attribution reads the gap mutex itself and
+            # reports which cue won, which is strictly more than we know.
             return ""
         if not force_next:
-            if seconds is None:
-                return ""
-            try:
-                seconds_f = float(seconds)
-            except (TypeError, ValueError):
-                return ""
             min_gap_s = (
                 float(
                     getattr(
@@ -1394,7 +1412,16 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 )
                 * 3600.0
             )
+            try:
+                seconds_f = float(seconds) if seconds is not None else -1.0
+            except (TypeError, ValueError):
+                seconds_f = -1.0
             if seconds_f < min_gap_s:
+                note_decline(
+                    self, "concept_hypothesis",
+                    REASON_TOPIC_MISS if topic_missed
+                    else REASON_CADENCE_BLOCK,
+                )
                 return ""
 
         min_importance = float(
@@ -1404,22 +1431,54 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 0.55,
             )
         )
+        # Which bar each rejected candidate failed, so a dry gap path can
+        # say whether the shelf was too light or already spoken for. H7
+        # spent months unable to tell those apart.
+        saw_light = False
+        saw_claimed = False
+        saw_unreadable = 0
 
         def _weighty(payload: dict[str, Any]) -> bool:
+            nonlocal saw_light, saw_claimed, saw_unreadable
             if not _unclaimed(payload):
+                saw_claimed = True
                 return False
-            try:
-                return float(payload.get("importance") or 0.0) >= min_importance
-            except (TypeError, ValueError):
+            weight = cue_importance(payload)
+            if weight is None:
+                # Not silently zero: "no stakes recorded" and "the least
+                # important thing on the shelf" are different facts, and
+                # collapsing them is what hid H7 for months.
+                saw_unreadable += 1
                 return False
+            if weight >= min_importance:
+                return True
+            saw_light = True
+            return False
 
         row = self.take_pool_cue(
             "concept_hypothesis",
             relevant=None if force_next else _weighty,
             force=force_next,
+            note_as=None,
         )
         if row is None:
-            log.debug("concept_hypothesis silent: nothing weighty enough")
+            if saw_unreadable:
+                log.warning(
+                    "concept_hypothesis: %d queued cue(s) carry neither an "
+                    "importance nor a resolvable kind and can never clear "
+                    "the gap bar",
+                    saw_unreadable,
+                )
+            if saw_light:
+                reason = REASON_IMPORTANCE_FLOOR
+            elif saw_claimed:
+                reason = REASON_CROSS_LANE
+            elif self._cadence_blocked("concept_hypothesis"):
+                reason = REASON_CADENCE_BLOCK
+            else:
+                reason = REASON_NO_STOCK
+            note_decline(self, "concept_hypothesis", reason)
+            log.debug("concept_hypothesis silent: %s", reason)
             return ""
         self._gap_cue_surfaced = True
         log.info(
@@ -1826,9 +1885,16 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         drafts a cue (a confident, off-cooldown active tension concept) into the
         ``aiko.tension_cue`` kv ring; this provider folds the newest unseen cue
         into the prompt as one optional, private observation Aiko phrases
-        herself -- NEVER spoken verbatim, never a confrontation. Tension
-        concepts are deliberately kept out of the relevant-context block, so
-        this strictly-cooldowned cue is their ONLY surface.
+        herself -- NEVER spoken verbatim, never a confrontation.
+
+        Since H10 this is no longer a tension's only surface: the T3 flex lane
+        renders one when the turn calls for it. So the cue steps aside for a
+        tension that lane has already claimed this turn -- the point of the
+        cue is that a friction gets raised *once*, carefully, and raising the
+        same one twice in a single assembly is the nagging the whole design
+        is built to avoid. The two surfaces are complements: T3 answers "this
+        friction is live in what he just said", the cue answers "this one has
+        been sitting unsaid for a while".
 
         Watermark-only (``tension_cue.last_surfaced_at``), sibling of the
         aspiration_momentum / self_callback cue family. MCP debug:
@@ -1865,6 +1931,23 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not label:
             return ""
 
+        try:
+            concept_id = int(newest.get("concept_id") or 0)
+        except (TypeError, ValueError):
+            concept_id = 0
+
+        # H10: the T3 concept lane assembles first and may already be
+        # carrying this exact friction. Left standing rather than consumed:
+        # the cue keeps its place in the ring and its watermark, so it gets
+        # said on a turn where it is the only voice raising it.
+        claimed = getattr(self, "_last_context_concept_ids", None) or ()
+        if concept_id > 0 and concept_id in claimed:
+            log.debug(
+                "tension-cue yield: concept=%d already in relevant_context",
+                concept_id,
+            )
+            return ""
+
         watermark_key = _tc.KV_LAST_SURFACED_AT
         if not force_next:
             try:
@@ -1891,10 +1974,6 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         # it paces how often she raises a given friction *out loud*, and a
         # cue that never rendered was never raised. Stamping it in the
         # producer silenced tensions she had not actually mentioned.
-        try:
-            concept_id = int(newest.get("concept_id") or 0)
-        except (TypeError, ValueError):
-            concept_id = 0
         if concept_id > 0:
             try:
                 chat_db.kv_set(
@@ -2517,6 +2596,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 getattr(self, "_topic_stagnation_detector", None),
                 self._memory_settings,
             ):
+                note_decline(self, "dormant_interest", REASON_CADENCE_BLOCK)
                 return ""
 
         try:
@@ -2552,6 +2632,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                         timephrase.utcnow() - last
                     ).total_seconds() / 3600.0
                     if elapsed_h < cooldown_h:
+                        note_decline(
+                            self, "dormant_interest", REASON_CADENCE_BLOCK
+                        )
                         return ""
 
         if pool is not None:
