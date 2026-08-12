@@ -1249,6 +1249,18 @@ def _parse_vision_settings(value: Any) -> VisionSettings:
     # just off); ceiling at 120s (a turn that hangs longer is broken
     # regardless of what the config asked for).
     in_turn_timeout_seconds = max(5, min(120, in_turn_timeout_seconds))
+    try:
+        in_turn_wait_seconds = int(
+            raw.get("in_turn_wait_seconds", defaults.in_turn_wait_seconds)
+        )
+    except (TypeError, ValueError):
+        in_turn_wait_seconds = defaults.in_turn_wait_seconds
+    # Floor at 0 (queue-jump only, never wait) and ceiling at 180s. The
+    # generous ceiling is deliberate: the thing being waited for is a
+    # background worker holding the one GPU, whose median run is tens of
+    # seconds, and giving up on that wait is how a share turns into "I
+    # can see you attached something".
+    in_turn_wait_seconds = max(0, min(180, in_turn_wait_seconds))
     model = str(raw.get("model", defaults.model) or "").strip()
     default_prompt = str(
         raw.get("default_prompt", defaults.default_prompt) or ""
@@ -1269,6 +1281,7 @@ def _parse_vision_settings(value: Any) -> VisionSettings:
         ),
         in_turn_max_images=in_turn_max_images,
         in_turn_timeout_seconds=in_turn_timeout_seconds,
+        in_turn_wait_seconds=in_turn_wait_seconds,
         in_turn_prompt=in_turn_prompt,
     )
 

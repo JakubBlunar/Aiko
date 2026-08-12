@@ -61,6 +61,11 @@ const MAX_BATCH = 50;
 const FLUSH_INTERVAL_MS = 500;
 const MAX_BACKOFF_MS = 60_000;
 const CONSOLE_MIRROR_KEY = "alexiaConsoleMirror";
+/** A burst is over once this long passes with no further hits. */
+const BURST_QUIET_MS = 2_000;
+/** ...or once it has run this long, so a continuous stream still
+ * reports periodically instead of only at the end. */
+const BURST_MAX_MS = 30_000;
 
 let enabled = false;
 const ring: UiLogEntry[] = [];
@@ -69,6 +74,16 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let backoffMs = FLUSH_INTERVAL_MS;
 let lastFlushAt = 0;
 let inFlight = false;
+
+interface Burst {
+  source: string;
+  kind: string;
+  count: number;
+  startedAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const bursts = new Map<string, Burst>();
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -158,6 +173,35 @@ async function flushNow(): Promise<void> {
   }
 }
 
+function accept(entry: UiLogEntry): void {
+  pushToRing(entry);
+  queue.push(entry);
+  if (consoleMirrorEnabled() && typeof console !== "undefined") {
+    console.debug("[ui]", entry.source, entry.kind, entry.payload ?? "");
+  }
+  scheduleFlush();
+}
+
+function emitBurst(key: string): void {
+  const burst = bursts.get(key);
+  if (burst === undefined) return;
+  bursts.delete(key);
+  if (burst.timer !== null) clearTimeout(burst.timer);
+  accept({
+    ts: isoNow(),
+    source: burst.source,
+    kind: burst.kind,
+    payload: {
+      burst: burst.count,
+      seconds: Math.round((Date.now() - burst.startedAt) / 100) / 10,
+    },
+  });
+}
+
+function flushBursts(): void {
+  for (const key of Array.from(bursts.keys())) emitBurst(key);
+}
+
 export const debugLog = {
   /** Append a structured event. No-op while disabled (very cheap).
    *
@@ -168,18 +212,45 @@ export const debugLog = {
   log(entry: Omit<UiLogEntry, "ts"> & { ts?: string }): void {
     addBreadcrumb(entry.source, entry.kind, entry.payload);
     if (!enabled) return;
-    const full: UiLogEntry = {
+    accept({
       ts: entry.ts ?? isoNow(),
       source: entry.source,
       kind: entry.kind,
       payload: entry.payload,
-    };
-    pushToRing(full);
-    queue.push(full);
-    if (consoleMirrorEnabled() && typeof console !== "undefined") {
-      console.debug("[ui]", full.source, full.kind, full.payload ?? "");
+    });
+  },
+
+  /** Record one hit of a high-frequency event, as part of a run.
+   *
+   * For streams where the *shape* is the information and each individual
+   * hit is not: lipsync amplitude at 30 Hz, one frame per streamed
+   * token, mic level. These were already logged without their payload,
+   * which made every line byte-identical apart from its timestamp — and
+   * on one real session `ws audio_amplitude` alone was 2342 lines, a
+   * third of the whole log, none of it readable and all of it in the way
+   * of the lines that mattered.
+   *
+   * A run collapses into a single entry carrying its count and duration,
+   * emitted once the stream goes quiet (or every {@link BURST_MAX_MS}
+   * while it keeps going, so a long stream still shows progress). That
+   * keeps the fact that the stream ran — useful for "the mouth never
+   * moved" — without keeping 2342 copies of it. */
+  logBurst(source: string, kind: string): void {
+    addBreadcrumb(source, kind);
+    if (!enabled) return;
+    const key = `${source}\u0000${kind}`;
+    let burst = bursts.get(key);
+    if (burst === undefined) {
+      burst = { source, kind, count: 0, startedAt: Date.now(), timer: null };
+      bursts.set(key, burst);
     }
-    scheduleFlush();
+    burst.count += 1;
+    if (burst.timer !== null) clearTimeout(burst.timer);
+    if (Date.now() - burst.startedAt >= BURST_MAX_MS) {
+      emitBurst(key);
+      return;
+    }
+    burst.timer = setTimeout(() => emitBurst(key), BURST_QUIET_MS);
   },
 
   /** Flip the master switch. Driven by the store subscriber that
@@ -189,6 +260,11 @@ export const debugLog = {
   setEnabled(on: boolean): void {
     const next = Boolean(on);
     if (next === enabled) return;
+    if (!next) {
+      // Land any run in progress before the switch closes, or the last
+      // stream before someone turned logging off vanishes entirely.
+      flushBursts();
+    }
     enabled = next;
     if (!enabled) {
       queue.length = 0;
@@ -229,8 +305,18 @@ export const debugLog = {
   /** Drop everything from the ring + queue. Used by the "Clear"
    * button in the drawer. */
   clear(): void {
+    for (const burst of bursts.values()) {
+      if (burst.timer !== null) clearTimeout(burst.timer);
+    }
+    bursts.clear();
     ring.length = 0;
     queue.length = 0;
+  },
+
+  /** Land every run in progress right now. Called before a download so
+   * an active stream is represented, and available to tests. */
+  flushBursts(): void {
+    flushBursts();
   },
 
   /** Serialise the current buffer to a downloadable JSON file. The
@@ -240,6 +326,7 @@ export const debugLog = {
    * last. Safe to call in a non-browser context (e.g. unit tests);
    * the dom-touching parts are gated by typeof checks. */
   download(): void {
+    flushBursts();
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const blob =
       typeof Blob !== "undefined"
@@ -267,6 +354,10 @@ export const debugLog = {
   /** Test hook. Reset every piece of internal state. */
   __resetForTests(): void {
     enabled = false;
+    for (const burst of bursts.values()) {
+      if (burst.timer !== null) clearTimeout(burst.timer);
+    }
+    bursts.clear();
     ring.length = 0;
     queue.length = 0;
     if (flushTimer !== null) {

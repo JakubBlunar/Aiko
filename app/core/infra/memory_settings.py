@@ -1619,12 +1619,17 @@ class MemorySettings:
     concept_drift_sweep_enabled: bool = True
     concept_drift_sweep_page: int = 60
     concept_drift_sweep_max_findings: int = 24
-    # L17b classifier thresholds. ``min_salience`` is the bar a change
-    # must clear to be worth remembering at all; ``min_age_days`` refuses
-    # to call anything about a belief younger than this "evolution";
-    # ``min_confidence_delta`` is the noise floor for movement that did
-    # not change the wording or the status.
-    concept_drift_min_salience: float = 0.35
+    # L17b classifier thresholds. ``min_evidence`` is the bar a change
+    # must clear to be recorded at all -- deliberately **shape-neutral**,
+    # because it decides what happened rather than what is interesting.
+    # It replaced a floor on `salience`, which carried a per-shape
+    # narrative prior and therefore discarded a belief *forming* on any
+    # fluid concept while passing every rewording. 0.36 reproduces the
+    # bar `succession` already faced (see `concept_drift._SHAPE_BASE`).
+    # ``min_age_days`` refuses to call anything about a belief younger
+    # than this "evolution"; ``min_confidence_delta`` is the noise floor
+    # for movement that did not change the wording or the status.
+    concept_drift_min_evidence: float = 0.36
     concept_drift_min_age_days: float = 3.0
     concept_drift_min_confidence_delta: float = 0.15
     concept_drift_max_findings: int = 12
@@ -1687,7 +1692,16 @@ class MemorySettings:
     # behind every week it ran.
     evolution_diary_interval_seconds: int = 86400
     evolution_diary_min_events: int = 3
-    evolution_diary_min_salience: float = 0.45
+    # A junk backstop, not the selector. It reads like a significance
+    # filter and never was one -- on 467 real events 0.45 admitted 96%
+    # of everything and no value in the plausible range was selective.
+    # What it actually did was filter by *shape*, passing 100% of
+    # rewordings and 6% of the formations that score lower by prior, so
+    # a diary about how she changed could only ever narrate one of the
+    # four ways she changes. Selection now happens per shape in
+    # `evolution_diary_worker.select_page`, and this sits low enough to
+    # let the historical formations through.
+    evolution_diary_min_salience: float = 0.30
     evolution_diary_cooldown_days: float = 7.0
     evolution_diary_backlog_pages: int = 3
     # ── L17d: self-correction meta-concepts ───────────────────────────
@@ -4472,11 +4486,11 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 1,
                 int(memory_raw.get("concept_drift_sweep_max_findings", 24)),
             ),
-            concept_drift_min_salience=min(
+            concept_drift_min_evidence=min(
                 1.0,
                 max(
                     0.0,
-                    float(memory_raw.get("concept_drift_min_salience", 0.35)),
+                    float(memory_raw.get("concept_drift_min_evidence", 0.36)),
                 ),
             ),
             concept_drift_min_age_days=max(
@@ -4608,7 +4622,7 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 max(
                     0.0,
                     float(
-                        memory_raw.get("evolution_diary_min_salience", 0.45)
+                        memory_raw.get("evolution_diary_min_salience", 0.30)
                     ),
                 ),
             ),

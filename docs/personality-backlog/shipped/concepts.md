@@ -956,8 +956,13 @@ inflections folded away) as a free gate, then a bounded LLM adjudication only
 for what survives it. (2) *Supersession robustness* — **evidence overlap plus a
   cosine band plus temporal anti-correlation**, all three, which is what
   separates it from a coincidental new concept. (3) *Salience bars* — **one
-  global bar** (`concept_drift_min_salience`), with per-shape behaviour expressed
-  through the salience arithmetic rather than a bar per shape.
+  global bar**, with per-shape behaviour expressed through the salience
+  arithmetic rather than a bar per shape. *(Reversed by H15: expressing the
+  per-shape opinion inside the number the bar reads meant the bar enforced that
+  opinion, and a belief forming was scored — and therefore discarded — as the
+  least interesting thing that can happen. The gate is now `min_evidence`,
+  which is shape-neutral; the per-shape opinion survives in `salience`, which
+  only decides narration.)*
 
 **Effort.** Medium — as estimated.
 

@@ -21,8 +21,12 @@ Two pieces:
   priority-inversion deadlock) and delegates everything else straight
   through.
 
-Three tiers (lower int wins, matching ``BrainEventQueue``):
+Four tiers (lower int wins, matching ``BrainEventQueue``):
 
+* ``USER_BLOCKING`` (0) — the user is sitting there watching a spinner
+  while this runs. Currently just H25's in-turn vision pass: he shared a
+  photo and the reply cannot be written until she has looked at it.
+  Nothing that merely *feeds* a later reply belongs here.
 * ``CONVERSATION_WORKER`` (10) — per-turn / speaking-window workers
   that feed the next reply (memory extraction, dialogue-act, …).
 * ``MAINTENANCE_WORKER`` (50) — idle-scheduler workers (decay,
@@ -53,12 +57,15 @@ log = logging.getLogger("app.llm_gate")
 
 
 # ── priority tiers ────────────────────────────────────────────────────
+USER_BLOCKING = 0
 CONVERSATION_WORKER = 10
 MAINTENANCE_WORKER = 50
 TASK = 100
 
 # Stable name -> tier mapping for config overrides + stats readability.
 TIER_NAMES: dict[str, int] = {
+    "user_blocking": USER_BLOCKING,
+    "blocking": USER_BLOCKING,
     "conversation": CONVERSATION_WORKER,
     "conversation_worker": CONVERSATION_WORKER,
     "maintenance": MAINTENANCE_WORKER,
@@ -74,6 +81,8 @@ def tier_from_name(name: str, default: int = MAINTENANCE_WORKER) -> int:
 
 def tier_label(priority: int) -> str:
     """Reverse-map an int tier to a readable label (best-effort)."""
+    if priority <= USER_BLOCKING:
+        return "user_blocking"
     if priority <= CONVERSATION_WORKER:
         return "conversation"
     if priority <= MAINTENANCE_WORKER:
@@ -103,13 +112,28 @@ class LlmPriorityGate:
         self._grants: dict[int, int] = {}
         self._wait_ms_total: dict[int, float] = {}
         self._wait_ms_max: dict[int, float] = {}
+        self._timeouts: dict[int, int] = {}
 
     # ── acquire / release ────────────────────────────────────────────
 
-    def acquire(self, priority: int) -> float:
-        """Block until granted. Returns the wait time in seconds."""
+    def acquire(self, priority: int, timeout: float | None = None) -> float | None:
+        """Block until granted. Returns the wait in seconds.
+
+        With ``timeout`` set, returns ``None`` if the slot did not come
+        free in time — and, importantly, takes the caller back out of the
+        heap on the way. A waiter that gave up but stayed queued would
+        become a phantom head that every later waiter has to outrank,
+        which is a deadlock rather than a slow path.
+
+        The wait is unavoidably at the mercy of whatever is in flight:
+        the gate is non-preemptive, so a caller can be next in line and
+        still wait out a 30-second worker call. Anything with a person
+        attached to it should pass a ``timeout`` and have somewhere to
+        degrade to.
+        """
         prio = int(priority)
         wait_start = time.monotonic()
+        deadline = None if timeout is None else wait_start + max(0.0, timeout)
         with self._cond:
             seq = next(self._seq)
             me = (prio, seq)
@@ -122,6 +146,31 @@ class LlmPriorityGate:
                     heapq.heappop(self._heap)
                     self._inflight += 1
                     break
+                if deadline is not None:
+                    left = deadline - time.monotonic()
+                    if left <= 0.0:
+                        try:
+                            self._heap.remove(me)
+                            heapq.heapify(self._heap)
+                        except ValueError:
+                            pass
+                        self._timeouts[prio] = self._timeouts.get(prio, 0) + 1
+                        # We may have been the head others were waiting
+                        # behind; hand the position on.
+                        self._cond.notify_all()
+                        queued = len(self._heap)
+                        log.info(
+                            "llm-gate timeout: tier=%d name=%s waited_ms=%.0f "
+                            "inflight=%d queued=%d",
+                            prio,
+                            self._name,
+                            (time.monotonic() - wait_start) * 1000.0,
+                            self._inflight,
+                            queued,
+                        )
+                        return None
+                    self._cond.wait(timeout=left)
+                    continue
                 self._cond.wait()
             waited = time.monotonic() - wait_start
             waited_ms = waited * 1000.0
@@ -168,7 +217,17 @@ class LlmPriorityGate:
                     "grants": count,
                     "avg_wait_ms": round(total / count, 2) if count else 0.0,
                     "max_wait_ms": round(self._wait_ms_max.get(prio, 0.0), 2),
+                    "timeouts": self._timeouts.get(prio, 0),
                 }
+            for prio, count in self._timeouts.items():
+                # A tier that only ever timed out has no grants row.
+                per_tier.setdefault(tier_label(prio), {
+                    "priority": prio,
+                    "grants": 0,
+                    "avg_wait_ms": 0.0,
+                    "max_wait_ms": 0.0,
+                    "timeouts": count,
+                })
             return {
                 "name": self._name,
                 "max_concurrency": self._max,

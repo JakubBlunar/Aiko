@@ -74,6 +74,72 @@ _MAX_EVENTS_PER_ENTRY = 12
 # of what the calendar says". Two, so the release needs a genuine backlog
 # rather than one busy afternoon, and the ordinary weekly rhythm survives.
 _BACKLOG_RELEASE_PAGES = 2
+# How much of one page a single shape may occupy. `succession` — one
+# belief being reworded into a near-identical one — is 79% of everything
+# the classifier produces, so without a cap a page is simply the last
+# twelve rewordings and the diary can only ever tell that one story.
+# Half leaves room for the rarer shapes while keeping the dominant one
+# genuinely represented rather than tokenised.
+_SHAPE_PAGE_SHARE = 0.5
+# Shapes the cap applies to. Only the flooding one: capping a shape that
+# arrives twice a month would strand it for no benefit.
+_CAPPED_SHAPES = ("succession",)
+# How far past a full page the scan may look for under-represented
+# shapes. Bounded because everything scanned is consumed (see
+# `select_page`), so a wide window trades rewordings for reach.
+_SCAN_MULTIPLE = 2
+
+
+def page_shape_cap(limit: int) -> int:
+    """How many events of one capped shape may share a page."""
+    return max(1, int(round(max(1, int(limit)) * _SHAPE_PAGE_SHARE)))
+
+
+def select_page(
+    events: "list[LearningEvent]", *, limit: int,
+) -> "list[LearningEvent]":
+    """Choose one page from the oldest-first run after the watermark.
+
+    The dominant shape is capped so a flood of rewordings cannot crowd
+    out the rarer ones — a belief forming or being lost is the most
+    interesting thing this diary can report and the least common thing
+    in its input.
+
+    The cap **backfills** rather than truncating: it bounds one shape's
+    share of a page that other shapes are competing for, and a period in
+    which nothing else happened should still be narrated rather than
+    leaving the page two-thirds empty and the backlog growing.
+
+    Two invariants make the watermark honest, and both matter because
+    the caller resumes from the page's highest id:
+
+    * the page is drawn from a *contiguous* run, so nothing above it is
+      skipped — an over-quota rewording that did not make this page is
+      simply read again next time;
+    * a decline *below* the page's high-water mark is consumed on
+      purpose. That is the deliberate loss the cap buys, and it is
+      bounded by the page's own span rather than by how much material
+      happened to be waiting.
+    """
+    cap = page_shape_cap(limit)
+    page: list[LearningEvent] = []
+    spare: list[LearningEvent] = []
+    used: Counter[str] = Counter()
+    for event in events:
+        if len(page) >= limit:
+            break
+        shape = str(event.shape or "")
+        if shape in _CAPPED_SHAPES and used[shape] >= cap:
+            spare.append(event)
+            continue
+        page.append(event)
+        used[shape] += 1
+    for event in spare:
+        if len(page) >= limit:
+            break
+        page.append(event)
+    page.sort(key=lambda e: int(e.event_id))
+    return page
 
 
 def _utcnow() -> datetime:
@@ -404,23 +470,29 @@ class EvolutionDiaryWorker:
             return False
 
     def _gather(self) -> "list[LearningEvent]":
-        """The salient events since the last entry, oldest-first.
+        """One page of events since the last entry, oldest-first.
 
         ``page_since`` rather than a newest-first read: the watermark
         advances past exactly this page, so taking the newest events would
         strand the older ones behind a watermark that had moved past them.
         A period with more change than fits simply spills into the next
         entry, in order.
+
+        The read is wider than one page because :func:`select_page` caps
+        the dominant shape and needs somewhere to find the others; how
+        much wider is what a rarer shape's reach costs in rewordings the
+        page passes over.
         """
         try:
-            return self._learning.page_since(
+            candidates = self._learning.page_since(
                 self._watermark(),
-                limit=_MAX_EVENTS_PER_ENTRY,
+                limit=_MAX_EVENTS_PER_ENTRY * _SCAN_MULTIPLE,
                 min_salience=self._fl("evolution_diary_min_salience", 0.45),
             )
         except Exception:
             log.debug("diary event read failed", exc_info=True)
             return []
+        return select_page(candidates, limit=_MAX_EVENTS_PER_ENTRY)
 
     def _build_entry(
         self,
@@ -441,6 +513,9 @@ class EvolutionDiaryWorker:
             entry=body,
             period_start=stamps[0] if stamps else "",
             period_end=stamps[-1] if stamps else "",
+            # Anything the shape cap declined *below* this id is consumed
+            # along with the page — see `select_page` for why that is the
+            # honest resume point rather than a stranding.
             event_watermark=max(int(e.event_id) for e in events),
             learning_event_ids=tuple(int(e.event_id) for e in events),
             concept_ids=tuple(concept_ids),

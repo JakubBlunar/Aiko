@@ -12,6 +12,7 @@ planning to, and what she saw survives the turn.
 from __future__ import annotations
 
 import io
+import threading
 import time
 import unittest
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from app.core.vision.image_memory import (
     distil_image_memory,
     write_image_memory,
 )
+from app.llm.llm_gate import MAINTENANCE_WORKER, LlmPriorityGate
 from app.llm.ollama_client import OllamaClient
 
 
@@ -78,6 +80,7 @@ class _VisionCfg:
     in_turn_enabled: bool = True
     in_turn_max_images: int = 2
     in_turn_timeout_seconds: int = 25
+    in_turn_wait_seconds: int = 45
     in_turn_prompt: str = "Describe this image."
 
 
@@ -301,6 +304,170 @@ class InTurnVisionPassTests(unittest.TestCase):
         session._maybe_describe_turn_images()
         # Three images at a 2s each would be 6s; the shared budget caps it.
         self.assertLess(time.perf_counter() - started, 5.0)
+
+    def test_she_waits_for_a_worker_that_holds_the_gpu(self) -> None:
+        """The bug from the first real share.
+
+        A background worker held the one GPU, the vision call queued
+        invisibly inside Ollama, the budget ran out before the model ever
+        started, and she said she could tell an image was attached but
+        not what was in it. Queueing is now explicit and has its own
+        clock, so waiting out a worker is a wait rather than a failure.
+        """
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+        threading.Timer(0.4, gate.release, args=(MAINTENANCE_WORKER,)).start()
+
+        session = _Session(
+            _VisionCfg(in_turn_timeout_seconds=5, in_turn_wait_seconds=10),
+            _FakeVisionClient(),
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [self._write("a.png")]
+
+        seen = session._maybe_describe_turn_images()
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(gate.stats()["inflight"], 0, "slot must be given back")
+
+    def test_the_queue_wait_does_not_eat_the_call_budget(self) -> None:
+        # The whole point of two clocks: a 3s queue plus a 1s call must
+        # succeed under a 2s *call* budget, where one combined budget
+        # would have expired before the model was even reached.
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+        threading.Timer(3.0, gate.release, args=(MAINTENANCE_WORKER,)).start()
+
+        class _Slowish(_FakeVisionClient):
+            def chat(self, *a: Any, **k: Any) -> str:
+                time.sleep(1.0)
+                return "a quiet room, late afternoon light"
+
+        session = _Session(
+            _VisionCfg(in_turn_timeout_seconds=2, in_turn_wait_seconds=10),
+            _Slowish(),
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [self._write("a.png")]
+
+        seen = session._maybe_describe_turn_images()
+
+        self.assertEqual(len(seen), 1)
+
+    def test_queueing_for_the_first_image_does_not_cancel_the_second(
+        self,
+    ) -> None:
+        """Waiting is not looking, and must not be billed as if it were.
+
+        The call budget is shared across a message's images so the turn
+        cannot hang, but it was measured from before the *queue* wait.
+        One slow worker in front of the first photo therefore consumed
+        the whole budget without a single call having been made, and the
+        second photo was dropped as "budget spent" — an invisible loss
+        that only appears when someone shares two pictures at once.
+        """
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)
+        threading.Timer(2.0, gate.release, args=(MAINTENANCE_WORKER,)).start()
+
+        client = _FakeVisionClient()
+        session = _Session(
+            _VisionCfg(
+                in_turn_timeout_seconds=3,
+                in_turn_wait_seconds=10,
+                in_turn_max_images=2,
+            ),
+            client,
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [
+            self._write("a.png"), self._write("b.png"),
+        ]
+
+        seen = session._maybe_describe_turn_images()
+
+        self.assertEqual(len(seen), 2, "the second image was dropped")
+        self.assertEqual(len(client.calls), 2)
+
+    def test_the_shared_queue_budget_is_not_per_image(self) -> None:
+        # The other half of the same accounting: queue time *is* shared,
+        # so two images behind a wedged worker cost one wait, not two.
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)  # never released
+
+        session = _Session(
+            _VisionCfg(
+                in_turn_timeout_seconds=5,
+                in_turn_wait_seconds=1,
+                in_turn_max_images=2,
+            ),
+            _FakeVisionClient(),
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [
+            self._write("a.png"), self._write("b.png"),
+        ]
+
+        started = time.perf_counter()
+        self.assertEqual(session._maybe_describe_turn_images(), [])
+        self.assertLess(time.perf_counter() - started, 3.0)
+
+    def test_giving_up_on_the_queue_is_survivable(self) -> None:
+        gate = LlmPriorityGate(max_concurrency=1)
+        gate.acquire(MAINTENANCE_WORKER)  # never released
+
+        session = _Session(
+            _VisionCfg(in_turn_timeout_seconds=5, in_turn_wait_seconds=1),
+            _FakeVisionClient(),
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [self._write("a.png")]
+
+        started = time.perf_counter()
+        self.assertEqual(session._maybe_describe_turn_images(), [])
+        self.assertLess(time.perf_counter() - started, 4.0)
+        self.assertEqual(gate.stats()["queued"], 0, "must not linger in the heap")
+
+    def test_an_abandoned_call_keeps_its_slot_until_it_really_ends(
+        self,
+    ) -> None:
+        """Releasing when we stop *waiting* would release a busy GPU.
+
+        The abandoned call is still running — Ollama has no cancel — so
+        handing the slot on at that moment invites a worker to start
+        against a card that is still occupied, which is exactly the
+        contention the gate exists to prevent.
+        """
+        gate = LlmPriorityGate(max_concurrency=1)
+
+        class _Slow(_FakeVisionClient):
+            def chat(self, *a: Any, **k: Any) -> str:
+                time.sleep(3.0)
+                return "too late"
+
+        session = _Session(
+            _VisionCfg(in_turn_timeout_seconds=2, in_turn_wait_seconds=5),
+            _Slow(),
+        )
+        session._worker_llm_gate = gate
+        session._active_turn_attachments = [self._write("a.png")]
+
+        self.assertEqual(session._maybe_describe_turn_images(), [])
+        # Given up on, but still holding — the model is still running.
+        self.assertEqual(gate.stats()["inflight"], 1)
+        # ...and released once it genuinely finishes.
+        deadline = time.perf_counter() + 4.0
+        while time.perf_counter() < deadline:
+            if gate.stats()["inflight"] == 0:
+                break
+            time.sleep(0.05)
+        self.assertEqual(gate.stats()["inflight"], 0)
+
+    def test_no_gate_configured_still_works(self) -> None:
+        session = _Session(_VisionCfg(), _FakeVisionClient())
+        session._worker_llm_gate = None
+        session._active_turn_attachments = [self._write("a.png")]
+        self.assertEqual(len(session._maybe_describe_turn_images()), 1)
 
     def test_paths_outside_the_attachments_root_are_refused(self) -> None:
         client = _FakeVisionClient()
