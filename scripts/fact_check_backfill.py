@@ -15,7 +15,7 @@ Read-only by default::
 
 Nothing here bypasses a gate. Each row goes through the same
 :func:`classify_memory_for_fact_check` privacy classifier and the same
-:func:`scrub_claim_for_search` per-span scrub the live path uses, so a memory
+:func:`web_safe_probe` per-span gate the live path uses, so a memory
 that would be refused on write is refused here too. Enqueueing is free -- the
 queue is a JSON list in ``kv_meta`` -- and ``IdleFactChecker`` drains it one
 claim per tick under its own rate limiter, so a large backfill costs nothing up
@@ -41,7 +41,7 @@ from app.core.infra.settings import load_settings  # noqa: E402
 from app.core.memory.claim_extractor import find_claims  # noqa: E402
 from app.core.memory.fact_check_privacy import (  # noqa: E402
     classify_memory_for_fact_check,
-    scrub_claim_for_search,
+    web_safe_probe,
 )
 from app.core.memory.fact_check_queue import FactCheckQueue  # noqa: E402
 
@@ -115,12 +115,13 @@ def collect(
 
         kept = []
         for claim in claims:
-            safe = scrub_claim_for_search(
+            # Gate only — the raw span is what gets queued, so this needs
+            # the yes/no answer rather than a scrubbed rewrite.
+            if not web_safe_probe(
                 claim.text,
                 user_names=user_names,
                 assistant_name=assistant_name,
-            )
-            if safe is None:
+            ):
                 skips["scrub_refused_span"] += 1
                 continue
             kept.append(

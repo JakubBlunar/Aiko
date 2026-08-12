@@ -11,7 +11,7 @@ This worker replaces both. It runs on the :class:`IdleWorkerScheduler`
 during quiet windows (so it never blocks the brain), reads the last
 few turns of conversation for *context*, and asks the worker LLM to
 extract **self-contained** promises -- pronouns and vague objects
-resolved against the transcript -- as a JSON array. Output is gated
+resolved against the transcript -- as JSON. Output is gated
 (idiom stop-list + min content words), deduped against existing open
 promises, and written as ``kind="promise"`` memories with the same
 lifecycle contract consumed by :mod:`app.core.memory.promise_lifecycle`
@@ -23,25 +23,26 @@ Pipeline (one ``run`` call):
    user and assistant lines) via :meth:`ChatDatabase.get_messages`,
    capped by ``promise_worker_max_msg_chars`` /
    ``promise_worker_max_transcript_chars``.
-2. Privacy-scrub via :func:`fact_check_privacy.scrub_claim_for_search`.
+2. Refuse hard-PII windows via :func:`fact_check_privacy.web_safe_probe`
+   (a gate only -- the original transcript is what reaches the model).
 3. Spend one LLM call through the dedicated
    :class:`FactCheckRateLimiter` (``state_key='promise_worker.rate_state'``)
-   asking for a JSON array of ``{who, what, deadline}`` objects.
+   asking for a JSON object ``{"promises": [{who, what, deadline}, ...]}``.
+   Object, not bare array, because ``format: "json"`` gives the model no
+   choice -- see :mod:`app.llm.json_answers`.
 4. Quality-gate + dedupe each promise, then persist via
    :meth:`MemoryStore.add`.
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
 import threading
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.memory.conflict_heuristics import _content_words, _tokenize
-from app.core.memory.fact_check_privacy import scrub_claim_for_search
+from app.core.memory.fact_check_privacy import web_safe_probe
 from app.core.memory.promise_extractor import Promise
 from app.core.memory.promise_lifecycle import (
     ACTIVE_STATUSES,
@@ -50,6 +51,7 @@ from app.core.memory.promise_lifecycle import (
 )
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.llm.json_answers import parse_json_array_answer
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -126,8 +128,9 @@ _IDIOM_WHOLE_PHRASES: frozenset[str] = frozenset(
 _SYSTEM_PROMPT = (
     "You read a short chat transcript between a user and the assistant "
     "(Aiko) and extract concrete promises or commitments either party "
-    "made. Return ONE JSON array (no prose, no markdown) of zero or more "
-    "promise objects. Each object has these fields:\n"
+    "made. Reply with ONE JSON object (no prose, no markdown) shaped "
+    '{"promises": [...]} holding zero or more promise objects. Each '
+    "object in that array has these fields:\n"
     "  - who: 'user' (the human committed) or 'assistant' (Aiko "
     "committed).\n"
     "  - what: a SELF-CONTAINED action phrase, 4-160 chars, that names "
@@ -143,18 +146,24 @@ _SYSTEM_PROMPT = (
     "- Skip vague feelings with no action, and skip anything you cannot "
     "make self-contained from the transcript.\n"
     "- Paraphrase to the action; do not echo the literal sentence.\n"
-    "- 0-5 items max. Return an empty array [] when nothing qualifies.\n"
-    "- Output the JSON array and nothing else."
+    '- 0-5 items max. Return {"promises": []} when nothing qualifies.\n'
+    "- Output the JSON object and nothing else."
 )
 
 
+# ``{{`` / ``}}`` because this template goes through ``str.format`` — a
+# literal ``{"promises"`` would be read as a replacement field and raise
+# ``KeyError`` on every run.
 _USER_TEMPLATE = (
     "Transcript (most recent turns):\n{transcript}\n\n"
-    "Return one JSON array of promises."
+    'Return one JSON object shaped {{"promises": [...]}}.'
 )
 
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", flags=re.DOTALL)
+# Field names that identify a promise object, so a model that skips the
+# wrapper and returns a single bare ``{"who": ..., "what": ...}`` is still
+# understood. See :mod:`app.llm.json_answers`.
+_PROMISE_ITEM_KEYS = ("who", "what", "deadline")
 
 
 def _utcnow() -> datetime:
@@ -369,10 +378,13 @@ class PromiseExtractionWorker:
         # Privacy gate. Unlike the belief worker (which mines coarse
         # topics), the promise worker needs names + pronouns intact so
         # the LLM can resolve "bring you some" -> "bring Jacob some tea".
-        # So we use the scrubber only as a *detector*: if it bails (the
-        # transcript is hard-PII like a URL/email/address, or collapses
-        # to nothing once personal tokens are removed) we skip the run;
-        # otherwise the ORIGINAL transcript goes to the local worker LLM.
+        # So we only ask the *question* "could this be published?": if the
+        # answer is no (hard PII like a URL/email/address, or the window
+        # collapses to nothing once personal tokens come out) we skip the
+        # run; otherwise the ORIGINAL transcript goes to the local worker
+        # LLM. Nothing scrubbed is used, which is why this calls the probe
+        # rather than the query builder — the latter logs a REDACT audit
+        # line describing an outbound search that never happens here.
         user_names = (
             self._user_names_provider() if self._user_names_provider else None
         )
@@ -381,12 +393,12 @@ class PromiseExtractionWorker:
             if self._assistant_name_provider
             else None
         )
-        safe_probe = scrub_claim_for_search(
+        publishable = web_safe_probe(
             transcript,
             user_names=user_names,
             assistant_name=assistant_name,
         )
-        if not safe_probe:
+        if not publishable:
             log.info(
                 "promise-worker skip: privacy-blocked transcript session=%s "
                 "raw_chars=%d",
@@ -405,17 +417,18 @@ class PromiseExtractionWorker:
         )
 
         t0 = time.monotonic()
-        promises = self._extract_with_llm(transcript)
+        promises, failure = self._extract_with_llm(transcript)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         if promises is None:
             log.info(
-                "promise-worker llm-unparseable elapsed_ms=%.0f session=%s",
+                "promise-worker %s elapsed_ms=%.0f session=%s",
+                failure.replace("llm_", "llm-").replace("_", "-"),
                 elapsed_ms,
                 session_key,
             )
             return {
                 "skipped": True,
-                "reason": "llm_unparseable",
+                "reason": failure,
                 "llm_ms": round(elapsed_ms, 1),
             }
 
@@ -546,8 +559,18 @@ class PromiseExtractionWorker:
 
     # ?? LLM extractor ????????????????????????????????????????????????
 
-    def _extract_with_llm(self, scrubbed_transcript: str) -> list[Promise] | None:
-        user_content = _USER_TEMPLATE.format(transcript=scrubbed_transcript)
+    def _extract_with_llm(
+        self, transcript: str,
+    ) -> tuple[list[Promise] | None, str]:
+        """Run one extraction call: ``(promises, failure_reason)``.
+
+        ``promises`` is ``None`` exactly when the call failed, and the
+        second element then names *how* — the three failures have
+        different causes and different fixes, and collapsing them into a
+        bare ``None`` (or worse, into ``[]``) is what hid a permanently
+        broken extractor.
+        """
+        user_content = _USER_TEMPLATE.format(transcript=transcript)
         # K-time8: anchor the extractor in wall-clock time so a stated
         # deadline like "tomorrow" / "next Monday" can be resolved to a
         # concrete date instead of left as a stale relative word.
@@ -583,7 +606,12 @@ class PromiseExtractionWorker:
                 format_json=True,
                 # Distinguishing a real commitment ("I'll look into X")
                 # from idle phrasing is a judgement call reasoning helps.
-                # Headroom for the trace is added client-side.
+                # Headroom for the trace is added client-side, and the
+                # client retries once with the trace off if it starves the
+                # answer anyway. Measured on qwen3.6:27b: the trace costs
+                # ~35s and reached the same verdict a 2.5s no-think call
+                # did, so if latency ever matters more than the judgement,
+                # this is the flag to flip.
                 think=True,
                 surface="promise_worker",
             )
@@ -591,35 +619,47 @@ class PromiseExtractionWorker:
                 chunks.append(chunk)
         except Exception:
             log.warning("promise-worker extract call raised", exc_info=True)
-            return None
+            return None, "llm_error"
         if self._cancel_event.is_set():
-            return None
+            return None, "cancelled_mid_extract"
         raw = "".join(chunks).strip()
         if not raw:
-            return []
+            # NOT "no promises found". The model produced no answer at
+            # all -- historically because the reasoning trace ate the
+            # whole num_predict budget. Returning [] here is what let an
+            # extractor that had never once worked report success on
+            # every run for its entire life.
+            return None, "llm_empty_answer"
         log.debug(
             "promise-worker extract raw: chars=%d preview=%r",
             len(raw),
             _preview(raw),
         )
-        return self._parse_promises(raw)
+        parsed = self._parse_promises(raw)
+        if parsed is None:
+            log.info(
+                "promise-worker unparseable answer: chars=%d preview=%r",
+                len(raw),
+                _preview(raw),
+            )
+            return None, "llm_unparseable"
+        return parsed, ""
 
     @staticmethod
     def _parse_promises(raw: str) -> list[Promise] | None:
-        """Parse the LLM JSON-array response into typed promises.
+        """Parse the LLM's JSON answer into typed promises.
 
         Returns ``None`` only when the response is fundamentally
-        un-parseable (no JSON array at all). An empty array returns
-        ``[]`` -- a valid "nothing to report" turn.
+        un-parseable. An empty list returns ``[]`` -- a valid "nothing to
+        report" turn. Shape tolerance lives in
+        :func:`app.llm.json_answers.parse_json_array_answer`, because
+        ``format: "json"`` guarantees an object and models vary in how
+        they wrap the array.
         """
-        match = _JSON_ARRAY_RE.search(raw or "")
-        if match is None:
-            return None
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(parsed, list):
+        parsed = parse_json_array_answer(
+            raw, key="promises", item_hint_keys=_PROMISE_ITEM_KEYS,
+        )
+        if parsed is None:
             return None
         out: list[Promise] = []
         for item in parsed:

@@ -487,6 +487,41 @@ instant it becomes due. Saturation must be a bound the backlog can sit
 *below*: a capacity (`max_active`), a per-run drain (`max_per_run`), or
 a multiple of the trigger.
 
+## The answer budget when a worker thinks
+
+A worker that passes `think=True` to `OllamaClient` is asking for two
+completions out of one budget: the reasoning trace and the answer. They
+share `num_predict`, and the trace comes first, so a `num_predict` sized
+for the answer produces **no answer at all** — Ollama returns
+`done_reason="length"` with empty content, which most callers cannot tell
+apart from "the model had nothing to say". Measured on `qwen3.6:27b`, a
+routine extraction thinks for 1.6k–5.1k tokens (median 2.4k) before it
+writes anything.
+
+Two mechanisms handle this, both in the client, so a worker only chooses
+`think` and its own answer budget:
+
+- **`think_num_predict_headroom`** (default `8192`) is added to
+  `num_predict` on any `think=True` call. It is a ceiling, not a spend —
+  raising it costs nothing on calls that finish early.
+- **The no-think retry.** An empty answer at the length cap with thinking
+  on is re-issued once with `think=False`, in `chat`, `chat_json`,
+  `chat_with_tools` and `chat_stream`. Same model, same `format`, same
+  options.
+
+Both fire with a `WARNING` naming the surface, so `rg "thinking starved"
+data/app.log` tells you which workers are relying on the backstop. A
+surface that appears there regularly should either get a bigger
+`num_predict` or stop thinking: the trace costs ~35 s against ~2.5 s
+without, and for extraction work it has been measured reaching the same
+verdict either way. **`think=True` is worth it for judgement calls, not
+for reformatting.**
+
+Before this was handled at the client, 98 calls across 10 surfaces had
+returned empty answers, and the two workers most affected wrote nothing at
+all for eight and ten weeks respectively (H27 in
+[`health.md`](personality-backlog/health.md)).
+
 ## Observability
 
 Every tick that had due workers logs one line:

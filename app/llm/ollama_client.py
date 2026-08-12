@@ -149,6 +149,55 @@ def _warn_if_truncated(
     )
 
 
+def _usage_from_body(body: object) -> "OllamaUsage":
+    """Build an :class:`OllamaUsage` from a non-streaming ``/api/chat`` body."""
+    data = body if isinstance(body, dict) else {}
+    return OllamaUsage(
+        prompt_tokens=int(data.get("prompt_eval_count", 0) or 0),
+        completion_tokens=int(data.get("eval_count", 0) or 0),
+        total_duration_ms=float(data.get("total_duration", 0) or 0) / 1e6,
+        eval_duration_ms=float(data.get("eval_duration", 0) or 0) / 1e6,
+        prompt_eval_duration_ms=float(data.get("prompt_eval_duration", 0) or 0) / 1e6,
+        done_reason=_extract_done_reason(data),
+    )
+
+
+def _thinking_starved(*, think: bool, content: str, usage: "OllamaUsage") -> bool:
+    """True when the reasoning trace consumed the entire answer budget.
+
+    The signature is exact: thinking was on, generation stopped because it
+    hit ``num_predict`` (``done_reason == "length"``), and
+    ``message.content`` — the only part any caller parses — is empty. The
+    model spent every token it was given on the trace and never started
+    the answer.
+
+    Worth detecting explicitly because the failure is invisible
+    downstream: an empty answer looks like a well-formed "nothing to
+    report" to most parsers (no memories, no promises, no beliefs), so the
+    feature reports success and does nothing, indefinitely. Measured at 96
+    occurrences across 10 worker surfaces, including a promise extractor
+    that had never once produced a promise. ``think_num_predict_headroom``
+    is the primary defence; this is the backstop for the call that blows
+    even the raised ceiling.
+    """
+    if not think:
+        return False
+    if usage.done_reason != "length":
+        return False
+    return not content.strip()
+
+
+def _warn_thinking_starved(*, surface: str, model: str) -> None:
+    """Log the one-line "trace ate the answer, retrying" warning."""
+    log.warning(
+        "ollama thinking starved the answer: surface=%s model=%s — the trace "
+        "hit num_predict before any answer token; retrying once with "
+        "think=false (raise llm.providers[].think_num_predict_headroom if "
+        "this repeats)",
+        surface, model,
+    )
+
+
 def _truncation_split(
     *, content: str, thinking: str, think: bool, completion_tokens: int,
 ) -> tuple[int, int | None]:
@@ -206,7 +255,7 @@ class OllamaClient:
         # reasoning trace doesn't eat the answer budget the caller asked
         # for. See ``OllamaSettings.think_num_predict_headroom``.
         self._think_headroom: int = max(
-            0, int(getattr(settings, "think_num_predict_headroom", 2048)),
+            0, int(getattr(settings, "think_num_predict_headroom", 8192)),
         )
 
     @property
@@ -239,6 +288,57 @@ class OllamaClient:
             "think headroom: surface=%s num_predict %d -> %d (+%d for trace)",
             surface, current, bumped, self._think_headroom,
         )
+
+    def _retry_body_without_think(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+        model: str,
+        surface: str,
+        label: str,
+    ) -> dict[str, Any] | None:
+        """Re-issue a non-streaming call with ``think`` off; body or ``None``.
+
+        Only called when :func:`_thinking_starved` says the first attempt
+        produced no answer at all, so there is nothing to lose by spending
+        a second call — and measurement says the retry is both far cheaper
+        and no worse: the same extraction that took 40 s with the trace and
+        returned nothing took 2.5 s without it and returned the right
+        answer. Failures here are swallowed on purpose; the caller keeps
+        the (empty) first result and its existing error path.
+        """
+        retry = dict(payload)
+        retry["think"] = False
+        _warn_thinking_starved(surface=surface, model=model)
+        try:
+            response = requests.post(
+                f"{self._base_url}/api/chat",
+                json=retry,
+                timeout=timeout,
+                headers=self._request_headers(),
+            )
+        except requests.RequestException as exc:
+            log.warning(
+                "ollama %s no-think retry transport error: model=%s exc=%r",
+                label, model, exc,
+            )
+            return None
+        if not response.ok:
+            log.warning(
+                "ollama %s no-think retry failed: model=%s status=%s",
+                label, model, response.status_code,
+            )
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            log.warning(
+                "ollama %s no-think retry returned non-JSON: model=%s",
+                label, model,
+            )
+            return None
+        return body if isinstance(body, dict) else None
 
     def _default_options(self, default_temperature: float) -> dict[str, object]:
         """Assemble the default ``options`` dict for an Ollama call.
@@ -395,15 +495,24 @@ class OllamaClient:
         had_thinking = False
         if not think:
             content, had_thinking = _strip_thinking_blocks_with_signal(content)
-        done_reason = _extract_done_reason(body)
-        self.last_usage = OllamaUsage(
-            prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
-            completion_tokens=int(body.get("eval_count", 0) or 0),
-            total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
-            eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
-            prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
-            done_reason=done_reason,
-        )
+        self.last_usage = _usage_from_body(body)
+        if _thinking_starved(think=think, content=content, usage=self.last_usage):
+            retry_body = self._retry_body_without_think(
+                payload,
+                timeout=self._timeout_seconds,
+                model=use_model,
+                surface=surface,
+                label="chat",
+            )
+            if retry_body is not None:
+                body = retry_body
+                message = body.get("message", {})
+                if not isinstance(message, dict):
+                    message = {}
+                content = str(message.get("content", "") or "")
+                thinking = ""
+                had_thinking = False
+                self.last_usage = _usage_from_body(body)
         # Judge truncation on the ANSWER we parse, not the thinking+answer
         # total: with think on, a complete answer followed by a long trace
         # legitimately hits the cap and is benign. Estimate the split only
@@ -465,6 +574,12 @@ class OllamaClient:
         gpt-oss…) skip their internal chain-of-thought and stream the actual
         answer immediately. Pass ``think=True`` if you want the reasoning trace
         in ``message.thinking`` (we still only yield ``message.content`` here).
+
+        When ``think=True`` and the trace burns the whole ``num_predict``
+        budget without producing a single answer token, the stream is
+        retried once with thinking off. Retrying is only safe because
+        *nothing was yielded* on the starved attempt, so no consumer has
+        seen a partial answer.
         """
         merged_options = self._default_options(self._settings.temperature)
         if options:
@@ -489,13 +604,68 @@ class OllamaClient:
             payload["keep_alive"] = effective_keep_alive
         if format_json:
             payload["format"] = "json"
+        answer_parts: list[str] = []
+        yield from self._stream_once(
+            payload,
+            model=use_model,
+            surface=surface,
+            stop_event=stop_event,
+            sink=answer_parts,
+        )
+        stopped = stop_event is not None and stop_event.is_set()
+        starved = (
+            not stopped
+            # Nothing was yielded, so no consumer has seen a partial answer
+            # and a second attempt cannot duplicate output.
+            and not answer_parts
+            and _thinking_starved(
+                think=think,
+                content="".join(answer_parts),
+                usage=self.last_usage,
+            )
+        )
+        if starved:
+            _warn_thinking_starved(surface=surface, model=use_model)
+            retry_payload = dict(payload)
+            retry_payload["think"] = False
+            retry_parts: list[str] = []
+            yield from self._stream_once(
+                retry_payload,
+                model=use_model,
+                surface=surface,
+                stop_event=stop_event,
+                sink=retry_parts,
+            )
+            answer_parts = retry_parts
+        _warn_if_truncated(
+            self.last_usage,
+            model=use_model,
+            surface=surface,
+            answer_preview="".join(answer_parts),
+        )
+
+    def _stream_once(
+        self,
+        payload: dict[str, Any],
+        *,
+        model: str,
+        surface: str,
+        stop_event: threading.Event | None,
+        sink: list[str],
+    ) -> Generator[str, None, None]:
+        """Run one streaming ``/api/chat`` request, yielding content tokens.
+
+        Sets :attr:`last_usage` from the final chunk and appends every
+        yielded token to ``sink`` so the caller can tell an empty answer
+        from a real one (and preview it in a truncation log). Split out of
+        :meth:`chat_stream` purely so the no-think retry can re-run the
+        request without duplicating the parse loop; the truncation warning
+        deliberately stays with the caller, which knows whether a retry is
+        about to happen.
+        """
         usage = OllamaUsage()
         t0 = time.monotonic()
         first_token_ms: float | None = None
-        # Accumulate the streamed answer so a truncation log can preview
-        # what was actually generated. Only ``message.content`` is yielded
-        # (the thinking trace stays server-side), so this is answer-only.
-        answer_parts: list[str] = []
         try:
             with requests.post(
                 f"{self._base_url}/api/chat",
@@ -533,31 +703,26 @@ class OllamaClient:
                     if token:
                         if first_token_ms is None:
                             first_token_ms = (time.monotonic() - t0) * 1000.0
-                        answer_parts.append(token)
+                        sink.append(token)
                         yield token
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             log.error(
                 "ollama chat_stream transport error: model=%s elapsed_ms=%.0f exc=%r",
-                use_model, elapsed_ms, exc,
+                model, elapsed_ms, exc,
             )
             raise
         self.last_usage = usage
-        _warn_if_truncated(
-            usage,
-            model=use_model,
-            surface=surface,
-            answer_preview="".join(answer_parts),
-        )
-        self._announce_connection(use_model)
+        self._announce_connection(model)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
-            "ollama chat_stream done: model=%s msgs=%d elapsed_ms=%.0f "
+            "ollama chat_stream done: model=%s elapsed_ms=%.0f "
             "first_token_ms=%s prompt_tokens=%d completion_tokens=%d "
-            "stopped=%s",
-            use_model, len(messages), elapsed_ms,
+            "think=%s stopped=%s",
+            model, elapsed_ms,
             f"{first_token_ms:.0f}" if first_token_ms is not None else "-",
             usage.prompt_tokens, usage.completion_tokens,
+            "1" if payload.get("think") else "0",
             "1" if (stop_event is not None and stop_event.is_set()) else "0",
         )
 
@@ -630,14 +795,28 @@ class OllamaClient:
         had_thinking = False
         if not think:
             content, had_thinking = _strip_thinking_blocks_with_signal(content)
-        usage = OllamaUsage(
-            prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
-            completion_tokens=int(body.get("eval_count", 0) or 0),
-            total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
-            eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
-            prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
-            done_reason=_extract_done_reason(body),
-        )
+        usage = _usage_from_body(body)
+        if _thinking_starved(think=think, content=content, usage=usage):
+            retry_body = self._retry_body_without_think(
+                payload,
+                timeout=(
+                    timeout_seconds
+                    if timeout_seconds is not None
+                    else self._timeout_seconds
+                ),
+                model=use_model,
+                surface=surface,
+                label="chat_json",
+            )
+            if retry_body is not None:
+                body = retry_body
+                message = body.get("message", {})
+                if not isinstance(message, dict):
+                    message = {}
+                content = str(message.get("content", "") or "")
+                thinking = ""
+                had_thinking = False
+                usage = _usage_from_body(body)
         # Truncation is judged on the parsed answer, not the combined
         # thinking+answer token total (see ``_warn_if_truncated``).
         ans_tok = think_tok = None

@@ -409,6 +409,13 @@ class IdleFactChecker:
         This is the **outbound** search query. The actual scrubbing
         logic lives in
         :func:`app.core.memory.fact_check_privacy.scrub_claim_for_search`.
+
+        The enclosing sentence is passed to the F6 reformulator as
+        context. Without it the reformulator sees only the span, which by
+        construction has no predicate (``claim_extractor`` measured 0 of 90
+        spans containing a verb), so "Fullmetal Alchemist" had to become a
+        query on its own. The sentence stays local either way — the query
+        that comes back still goes through the deterministic scrubber.
         """
         from app.core.memory.fact_check_privacy import scrub_claim_for_search
 
@@ -421,6 +428,7 @@ class IdleFactChecker:
             return reformulate_query_for_search(
                 claim.claim_text,
                 reformulate_fn=self._query_reformulator,
+                context=(getattr(claim, "claim_sentence", "") or "").strip(),
                 user_names=user_names,
                 assistant_name=assistant_name,
             )

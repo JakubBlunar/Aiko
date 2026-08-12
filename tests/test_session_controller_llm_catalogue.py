@@ -449,6 +449,93 @@ class ApiStyleRoundTripTests(unittest.TestCase):
         self.assertEqual(entry["api_style"], "auto")
 
 
+class ProviderStoreRoundTripTests(unittest.TestCase):
+    """``store`` — the data-retention opt-out survives the catalogue.
+
+    A flag that silently reverts is worse than no flag, and this one has
+    two ways to revert: a provider added without it, and the settings
+    drawer patching a provider with a partial draft that omits it.
+    """
+
+    def test_it_defaults_to_opted_out(self) -> None:
+        controller = _make_controller()
+        row = next(
+            r for r in controller.list_providers() if r["id"] == "openai"
+        )
+        self.assertIs(row.get("store"), False)
+
+    def test_a_new_provider_is_opted_out(self) -> None:
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            entry = controller.add_provider(
+                template_id="xai", draft={"name": "Grok"},
+            )
+        self.assertIs(entry["store"], False)
+
+    def test_it_can_be_turned_on_per_provider(self) -> None:
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            entry = controller.update_provider("openai", {"store": True})
+        self.assertIs(entry["store"], True)
+        self.assertIs(controller._settings.llm.providers[1].store, True)
+
+    def test_an_unrelated_patch_does_not_revert_it(self) -> None:
+        # The settings drawer sends name / base_url / timeout / api_style
+        # and nothing else. An opt-in must not be collateral damage.
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ):
+            controller.update_provider("openai", {"store": True})
+            entry = controller.update_provider(
+                "openai", {"name": "OpenAI (edited)", "timeout_seconds": 120},
+            )
+        self.assertIs(entry["store"], True)
+
+    def test_changing_it_rebuilds_the_client(self) -> None:
+        # The flag is baked into the client at construction, so a stale
+        # cached client would keep storing after the user opted out.
+        controller = _make_controller()
+        with patch(
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
+        ), patch.object(
+            controller._client_cache, "invalidate",
+        ) as invalidated:
+            controller.update_provider("openai", {"store": True})
+        invalidated.assert_called_with("openai")
+
+    def test_it_survives_a_config_round_trip(self) -> None:
+        from app.core.infra.settings import (
+            _parse_llm_provider,
+            llm_provider_to_dict,
+        )
+
+        controller = _make_controller()
+        provider = controller._settings.llm.providers[1]
+        provider.store = True
+        reparsed = _parse_llm_provider(llm_provider_to_dict(provider))
+        self.assertIsNotNone(reparsed)
+        assert reparsed is not None
+        self.assertIs(reparsed.store, True)
+
+    def test_a_config_written_before_the_flag_existed_opts_out(self) -> None:
+        from app.core.infra.settings import _parse_llm_provider
+
+        reparsed = _parse_llm_provider({
+            "id": "openai",
+            "name": "OpenAI",
+            "kind": "openai_compatible",
+            "base_url": "https://api.openai.com/v1",
+        })
+        self.assertIsNotNone(reparsed)
+        assert reparsed is not None
+        self.assertIs(reparsed.store, False)
+
+
 class RequiredModelsTests(unittest.TestCase):
     """``required_models`` backs the first-run model step: it has to
     report what's actually downloaded, not what's configured."""

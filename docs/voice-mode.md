@@ -150,25 +150,43 @@ Tests: `tests/test_web_server_audio_owner.py` (`AudioOwnerElectionTests`
   `AudioContext` with a chained `AudioBufferSourceNode` scheduler.
   Honours `setSinkId` so the user-picked speaker is respected.
 
-  **Backgrounding on iOS, and why the clock is checked.** `onBackground()`
-  releases the inaudible keep-alive loop and the lipsync RAF, which are
-  otherwise a permanently awake audio endpoint plus a 60 Hz wakeup for as
-  long as the tab exists. That leaves the graph producing nothing, and iOS
-  reclaims the audio unit of a backgrounded PWA that is idle. What comes
-  back is a **context that reports `"running"` and plays silence**: the
-  `_needsResume` check (which covers iOS's non-standard `"interrupted"`
-  state) is satisfied, `_enqueuePcm` schedules every frame instead of
-  dropping it, and restarting the keep-alive relights the phone's media
-  indicator — so the device looks like it is playing and the only cure the
-  user can find is force-quitting. `currentTime` is the only thing that
-  gives it away: a live context advances it every render quantum, a dead
-  one is frozen. `onForeground()` therefore probes the clock once
-  (`LIVENESS_PROBE_MS`) and rebuilds the context when it has not moved.
+  **Backgrounding on iOS, and why the context is replaced unasked.**
+  `onBackground()` releases the inaudible keep-alive loop and the lipsync
+  RAF, which are otherwise a permanently awake audio endpoint plus a 60 Hz
+  wakeup for as long as the tab exists. That leaves the graph producing
+  nothing, and iOS reclaims the audio unit of a backgrounded PWA that is
+  idle. What comes back is a **context that reports `"running"` and plays
+  silence**: the `_needsResume` check (which covers iOS's non-standard
+  `"interrupted"` state) is satisfied, `_enqueuePcm` schedules every frame
+  instead of dropping it, and restarting the keep-alive relights the
+  phone's media indicator — so the device looks like it is playing and the
+  only cure the user can find is force-quitting.
+
+  This was first addressed with a liveness probe: a dead context was
+  assumed to have a frozen `currentTime`, so `onForeground()` watched the
+  clock for 250 ms and rebuilt when it had not moved. **That is not
+  sufficient, and the reason is worth keeping.** iOS also returns contexts
+  whose clock advances normally while the output no longer reaches the
+  speaker. A live clock proves the graph is *rendering*, not that anything
+  is *audible*, and Web Audio exposes nothing downstream of the render
+  that a page can read — the analyser sits before `destination` and
+  happily reports the samples being fed into a void. So the probe was
+  removed in favour of replacing the context after **any** background
+  stint, via `_replaceContext("foreground")`. `restart()` is the same
+  operation on an explicit "Restart sound" tap.
+
+  The cost is stated rather than hidden: a replacement context needs a
+  gesture to start unlocked on iOS, so returning to the app can land on
+  "Sound is off" until the first tap (the persistent gesture unlock in
+  `useAssistantSocket` then resumes it, so any tap will do). Honest
+  silence with a readout and a one-tap fix beats a context that swallows
+  every frame for the rest of the session.
 
   Two invariants to preserve if you touch this:
-  - **Only rebuild the zombie.** A context that honestly reports
-    `suspended` / `interrupted` must be left to the gesture path; replacing
-    it just yields another suspended context.
+  - **Do not reintroduce a health check as the gate.** Every signal a
+    page can read says "healthy" in the failure this exists for. If a
+    future WebKit exposes a real output-liveness signal, gate on that —
+    not on the clock.
   - **Timestamps do not survive a context swap.** `nextStartTime` is
     absolute on the context's own clock and a fresh context restarts at 0,
     so `_ensureContext` resets the per-stream schedules. Carrying one over

@@ -122,17 +122,21 @@ class _StderrPump:
             pass
 
     def close(self) -> None:
-        # Close the write end so the reader hits EOF, then the read end.
+        # Close the write end so the reader hits EOF, let it drain, and
+        # only then close the read end. Closing the read end first yanks
+        # the file out from under ``_drain`` mid-iteration, so the child's
+        # final stderr lines — the ones worth having when a server dies —
+        # are lost to the bare ``except`` there.
         try:
             self.writer.close()
         except Exception:
             pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
         try:
             self._reader.close()
         except Exception:
             pass
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
 
 
 def resolve_env(env: dict[str, str]) -> dict[str, str]:

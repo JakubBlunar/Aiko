@@ -58,14 +58,6 @@ const LIP_TARGET = 0.9; // loudest recent speech maps to ~0.9 open
 // than freezing mid-syllable. ~half a second at 60 Hz.
 const LIP_IDLE_FRAMES = 30;
 
-/**
- * How long to watch ``currentTime`` before declaring a ``"running"``
- * context dead (see ``_rebuildIfDead``). A live context advances its
- * clock every render quantum — ~2.7 ms at 48 kHz — so this is three
- * orders of magnitude more slack than a healthy context needs, and it
- * only ever runs once per return-to-foreground.
- */
-const LIVENESS_PROBE_MS = 250;
 
 interface PerStream {
   sampleRate: number;
@@ -138,9 +130,9 @@ export class AudioOutputManager {
   // can silently suspend the context behind our back).
   private _stateListener: ((state: AudioContextState) => void) | null = null;
   private _lastEmittedState: AudioContextState | null = null;
-  // Set by ``onBackground`` so the next foreground pass runs the
-  // liveness probe. Backgrounding is the only thing that gets the audio
-  // unit reclaimed, so there is nothing to check without it.
+  // Set by ``onBackground`` so the next foreground pass rebuilds the
+  // context. Backgrounding is the only thing that gets the audio unit
+  // reclaimed, so there is nothing to replace without it.
   private _wasBackgrounded = false;
 
   constructor(options: AudioOutputOptions = {}) {
@@ -242,53 +234,67 @@ export class AudioOutputManager {
    * backgrounded; any sources scheduled before we left would otherwise
    * burst out the moment the context resumes. Drop that residue first,
    * then re-unlock so subsequent live audio plays cleanly.
+   *
+   * After a real background stint the context is **replaced outright**
+   * rather than inspected. See :meth:`_replaceContext` for why no
+   * inspection can be trusted.
    */
   async onForeground(): Promise<void> {
     this.flush();
-    await this.resume();
-    // Only after a real background stint, which is the only time the OS
-    // reclaims the audio unit out from under us.
     if (this._wasBackgrounded) {
-      this._wasBackgrounded = false;
-      await this._rebuildIfDead();
+      await this._replaceContext("foreground");
+      return;
     }
+    await this.resume();
   }
 
   /**
-   * Replace a context the OS killed while we were backgrounded.
+   * Rebuild the context on an explicit user request ("Restart sound").
    *
-   * iOS reclaims the audio unit of a backgrounded PWA whose graph has
-   * gone idle, and then hands back a context that reports ``"running"``
-   * once ``resume()`` resolves. Nothing plays, but every check we have
-   * says healthy: ``_needsResume`` is false, ``_enqueuePcm`` schedules
-   * every frame instead of dropping it, and ``_startKeepAlive`` relights
-   * the OS media indicator — "the phone shows audio playing but there is
-   * no voice, and only force-quitting fixes it". The clock is the one
-   * thing that gives it away: a live context advances ``currentTime``,
-   * a dead one is frozen.
-   *
-   * Deliberately narrow. A context that honestly reports ``suspended``
-   * or ``interrupted`` is left alone for the gesture path to resume —
-   * replacing it would only produce another suspended context. The
-   * replacement may itself start suspended when no gesture is available,
-   * and that is the correct outcome: ``_enqueuePcm`` drops frames, the
-   * state listener fires, and Settings offers "Enable sound". Honest
-   * silence beats a context that swallows every frame forever.
+   * Distinct from the automatic path only in what it logs and in not
+   * needing a preceding background stint: someone tapping this has
+   * already decided the audio is wrong, whatever the context claims.
    */
-  private async _rebuildIfDead(): Promise<void> {
-    const ctx = this._ctx;
-    if (!ctx) return;
-    if ((ctx.state as string) !== "running") return;
-    const before = ctx.currentTime;
-    await new Promise((resolve) => setTimeout(resolve, LIVENESS_PROBE_MS));
-    // Raced with a dispose() or another rebuild while we waited.
-    if (this._ctx !== ctx) return;
-    if (ctx.currentTime > before) return;
+  async restart(): Promise<void> {
+    await this._replaceContext("restart");
+  }
+
+  /**
+   * Throw the AudioContext away and build a fresh one.
+   *
+   * **Why nothing is inspected first.** A backgrounded PWA whose graph
+   * has gone idle can have its audio unit reclaimed by iOS, and there
+   * are three ways the OS hands one back. Honestly ``suspended`` or
+   * ``interrupted`` — a gesture fixes it. ``"running"`` with a frozen
+   * ``currentTime`` — detectable, and what the previous liveness probe
+   * looked for. And ``"running"`` with a clock that keeps advancing
+   * while the output no longer reaches the speaker: the state is
+   * ``"running"``, ``_needsResume`` is false, ``_enqueuePcm`` schedules
+   * every frame instead of dropping it, the analyser still sees the
+   * samples being rendered, and ``_startKeepAlive`` relights the phone's
+   * media indicator. Every signal reads healthy while nothing is
+   * audible, which is why force-quitting the app used to be the only
+   * cure. Web Audio exposes nothing that separates that third case from
+   * a working context, so a probe cannot be made to cover it — the only
+   * reliable answer is to stop asking and rebuild.
+   *
+   * **What it costs.** The replacement needs a user gesture to start
+   * unlocked on iOS, so returning to the app can land on "Sound is off"
+   * until the first tap (the persistent gesture unlock in
+   * ``useAssistantSocket`` then resumes it, so any tap anywhere will
+   * do). That is a deliberate trade: honest silence with a readout and a
+   * one-tap fix, instead of a context that silently swallows every frame
+   * for the rest of the session. On desktop the gesture requirement is
+   * already satisfied, and ``onForeground`` flushes queued audio
+   * regardless, so the extra cost there is one context swap.
+   */
+  private async _replaceContext(reason: "foreground" | "restart"): Promise<void> {
     debugLog.log({
       source: "audio",
-      kind: "contextDead",
-      payload: { state: ctx.state, currentTime: before },
+      kind: "contextReplaced",
+      payload: { reason, state: this.getState() },
     });
+    this._wasBackgrounded = false;
     await this.dispose();
     await this.resume();
   }
@@ -309,7 +315,7 @@ export class AudioOutputManager {
   onBackground(): void {
     // Stopping the keep-alive is what leaves the graph idle, which is
     // what invites iOS to reclaim the audio unit — so the foreground
-    // liveness check in ``_rebuildIfDead`` is load-bearing, not a
+    // rebuild in ``_replaceContext`` is load-bearing, not a
     // belt-and-braces extra.
     this._wasBackgrounded = true;
     this._stopKeepAlive();

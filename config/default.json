@@ -14,7 +14,7 @@
         "base_url": "http://127.0.0.1:11434",
         "timeout_seconds": 300,
         "keep_alive": "30m",
-        "think_num_predict_headroom": 2048
+        "think_num_predict_headroom": 8192
       }
     ],
     "routes": {
@@ -341,7 +341,8 @@
       "ws",
       "channel",
       "settings",
-      "voice"
+      "voice",
+      "audio"
     ],
     "ui_log_max_batch": 50,
     "ui_log_max_payload_bytes": 2048

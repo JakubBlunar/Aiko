@@ -410,7 +410,7 @@ class MemoryFacadeMixin:
 
         from app.core.memory.fact_check_privacy import (
             classify_memory_for_fact_check,
-            scrub_claim_for_search,
+            web_safe_probe,
         )
 
         user_names = self._fact_check_user_names()
@@ -427,23 +427,23 @@ class MemoryFacadeMixin:
                 question = str(_memory_field(memory, "content", "")).strip()
             if not question:
                 return
-            # Knowledge gaps run through the *claim* scrubber (not the
-            # memory classifier) because the kind itself isn't
-            # personal — the question is. If the scrubbed version
-            # would lose meaning the gap simply doesn't get a queue
-            # entry; the user can still resolve it manually.
-            safe = scrub_claim_for_search(
+            # Knowledge gaps run through the *claim* gate (not the memory
+            # classifier) because the kind itself isn't personal — the
+            # question is. If the question can't be published the gap
+            # simply doesn't get a queue entry; the user can still resolve
+            # it manually. The raw question is what gets stored, so this
+            # is a gate, not a rewrite.
+            if not web_safe_probe(
                 question,
                 user_names=user_names,
                 assistant_name=assistant_name,
-            )
-            if safe is None:
+            ):
                 # The privacy module already logged the reason at INFO;
                 # we add the enqueue-side context so the audit trail
-                # threads from "memory written" -> "scrub blocked".
+                # threads from "memory written" -> "privacy refused".
                 log.info(
                     "fact-check enqueue skip: knowledge_gap memory_id=%s "
-                    "scrub returned None",
+                    "refused by privacy gate",
                     memory_id,
                 )
                 return
@@ -487,14 +487,15 @@ class MemoryFacadeMixin:
         for claim in find_claims(content):
             # Belt-and-braces: even after the memory cleared the
             # classifier, individual claim spans (especially
-            # proper_noun) can still be personal. Scrub once more and
-            # drop the ones that come back ``None``.
-            safe = scrub_claim_for_search(
+            # proper_noun) can still be personal. Re-check each span and
+            # drop the ones the gate refuses. The span is queued verbatim
+            # (the search-time path does its own scrubbing), so this only
+            # needs the yes/no answer.
+            if not web_safe_probe(
                 claim.text,
                 user_names=user_names,
                 assistant_name=assistant_name,
-            )
-            if safe is None:
+            ):
                 skipped += 1
                 continue
             queue.enqueue(

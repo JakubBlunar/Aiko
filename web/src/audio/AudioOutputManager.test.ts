@@ -545,20 +545,20 @@ describe("AudioOutputManager — idle cost", () => {
 
   it("brings the keep-alive back when the page returns", async () => {
     // The warm-endpoint behaviour has to return with the user, or the
-    // first sentence after every app switch comes out cold.
-    // Uses a live clock so the foreground liveness probe is satisfied and
-    // the context survives — the rebuild path has its own tests below.
+    // first sentence after every app switch comes out cold. Returning
+    // from the background replaces the context (see the recovery tests
+    // below), so the loop has to come back on the *new* one — the check
+    // is that it is running somewhere, not that the old context kept it.
     (globalThis as unknown as { window: object }).window = {
       AudioContext: LiveClockAudioContext,
     };
     const mgr = new AudioOutputManager();
     await mgr.resume();
-    const ctx = createdContexts[0];
 
     mgr.onBackground();
     await mgr.onForeground();
 
-    expect(createdContexts.length).toBe(1);
+    const ctx = createdContexts[createdContexts.length - 1];
     const live = ctx.activeSources.filter((s) => s.loop && !s.stopped);
     expect(live.length).toBe(1);
   });
@@ -583,7 +583,12 @@ describe("AudioOutputManager — idle cost", () => {
  * every frame instead of dropping it, and the keep-alive relights the
  * phone's media indicator. Every signal the manager had said healthy,
  * which is why the only user-visible cure was force-quitting the app.
- * The clock is the one thing that tells the truth.
+ *
+ * A liveness probe used to look for a frozen clock here. It was dropped
+ * because it cannot see the variant where the clock advances and the
+ * output still goes nowhere, so the context is now replaced after any
+ * background stint without being asked how it feels. These tests pin
+ * that: the replacement happens whatever the old context claimed.
  */
 describe("AudioOutputManager — dead context recovery", () => {
   it("replaces a context that reports running but whose clock is frozen", async () => {
@@ -601,7 +606,9 @@ describe("AudioOutputManager — dead context recovery", () => {
     expect(createdContexts[0].state).toBe("closed");
   });
 
-  it("leaves a healthy context alone", async () => {
+  it("replaces a context that looks perfectly healthy", async () => {
+    // The case no probe can catch: a live clock proves the graph is
+    // rendering, not that anything reaches the speaker.
     (globalThis as unknown as { window: object }).window = {
       AudioContext: LiveClockAudioContext,
     };
@@ -611,13 +618,16 @@ describe("AudioOutputManager — dead context recovery", () => {
     mgr.onBackground();
     await mgr.onForeground();
 
-    expect(createdContexts.length).toBe(1);
+    expect(createdContexts.length).toBe(2);
+    expect(createdContexts[0].state).toBe("closed");
   });
 
-  it("leaves a context that honestly reports suspended alone", async () => {
-    // Not the same failure. A suspended context drops frames rather than
-    // swallowing them, the state listener says so, and a gesture fixes
-    // it — replacing it would only produce another suspended context.
+  it("replaces a context that stays suspended, and stays honest about it", async () => {
+    // A replacement with no gesture behind it comes up suspended too.
+    // That is the accepted cost: ``_enqueuePcm`` drops frames, the state
+    // listener fires, and Settings offers "Enable sound" — silence the
+    // user can see and fix with one tap, rather than a context that
+    // swallows every frame until the app is force-quit.
     (globalThis as unknown as { window: object }).window = {
       AudioContext: StuckSuspendedAudioContext,
     };
@@ -627,12 +637,13 @@ describe("AudioOutputManager — dead context recovery", () => {
     mgr.onBackground();
     await mgr.onForeground();
 
-    expect(createdContexts.length).toBe(1);
+    expect(createdContexts.length).toBe(2);
+    expect(mgr.getState()).toBe("suspended");
   });
 
-  it("does not probe without a preceding background", async () => {
-    // A foreground event with no background before it (initial mount,
-    // a duplicate event) must not cost a 250 ms probe or a rebuild.
+  it("does not replace without a preceding background", async () => {
+    // A foreground event with no background before it (initial mount, a
+    // duplicate event) must not churn a working context.
     (globalThis as unknown as { window: object }).window = {
       AudioContext: DeadClockAudioContext,
     };
@@ -642,6 +653,22 @@ describe("AudioOutputManager — dead context recovery", () => {
     await mgr.onForeground();
 
     expect(createdContexts.length).toBe(1);
+  });
+
+  it("only replaces once per background stint", async () => {
+    // Duplicate ``visible`` events are common on iOS; each one must not
+    // cost another context.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: LiveClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+
+    mgr.onBackground();
+    await mgr.onForeground();
+    await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(2);
   });
 
   it("drops the old schedule when the context is replaced", async () => {
@@ -666,6 +693,57 @@ describe("AudioOutputManager — dead context recovery", () => {
 
     mgr.onBackground();
     await mgr.onForeground();
+
+    expect(createdContexts.length).toBe(2);
+    expect(readSchedule()).toBe(0);
+  });
+
+});
+
+/**
+ * The manual escape hatch.
+ *
+ * ``_rebuildIfDead`` can only recognise a context whose clock has frozen.
+ * iOS also hands back contexts whose clock advances while the output no
+ * longer reaches the speaker, and from inside Web Audio that is
+ * indistinguishable from health — the state is ``"running"``, frames
+ * schedule, the analyser sees the rendered samples. So "Restart sound"
+ * must replace the context outright rather than ask it how it feels.
+ */
+describe("AudioOutputManager — restart()", () => {
+  it("replaces a context that reports running with a live clock", async () => {
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: LiveClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    expect(createdContexts.length).toBe(1);
+
+    await mgr.restart();
+
+    expect(createdContexts.length).toBe(2);
+    expect(createdContexts[0].state).toBe("closed");
+  });
+
+  it("drops the old schedule, like the automatic rebuild", async () => {
+    // Same trap as the automatic path: ``nextStartTime`` is absolute on
+    // the old context's clock, so carrying it into a fresh context that
+    // restarts at 0 would schedule every chunk past the end of the
+    // session — trading a dead context for a silent one.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: LiveClockAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+    mgr.handleFrame(ttsStartFrame(16000));
+    mgr.handleFrame(ttsPcmFrame(16000));
+    await flush();
+
+    const readSchedule = () =>
+      (mgr as unknown as { _streams: { tts: { nextStartTime: number } } })
+        ._streams.tts.nextStartTime;
+    expect(readSchedule()).toBeGreaterThan(0);
+
+    await mgr.restart();
 
     expect(createdContexts.length).toBe(2);
     expect(readSchedule()).toBe(0);

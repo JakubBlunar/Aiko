@@ -44,11 +44,20 @@ class OllamaSettings:
     # (the text/JSON we parse) — with a reasoning model the trace shares
     # that same budget and would starve the answer. Rather than re-tune
     # every worker's cap, the client treats ``num_predict`` as the answer
-    # budget and adds this headroom on top for the hidden trace. A 27B
-    # model typically reasons within ~1-2k tokens; 2048 is a safe default.
-    # Set to 0 to disable the auto-bump (then ``num_predict`` is the hard
-    # total again, thinking included).
-    think_num_predict_headroom: int = 2048
+    # budget and adds this headroom on top for the hidden trace.
+    #
+    # 2048 was measured to be far too small. qwen3.6:27b reasons for
+    # ~9.5k chars (~2.4k tokens) on a routine extraction over a 4k-char
+    # transcript, so the trace consumed the entire cap and the answer was
+    # never emitted at all: 96 worker calls across 10 surfaces came back
+    # with `done_reason="length"` and an *empty* ``message.content``. When
+    # the caller's parser reads an empty answer as "found nothing" (the
+    # promise worker did), the whole feature silently reports success
+    # forever. 8192 clears the observed traces with room to spare; the
+    # cost is a ceiling, not a spend, since generation stops at the stop
+    # token. Set to 0 to disable the auto-bump (then ``num_predict`` is
+    # the hard total again, thinking included).
+    think_num_predict_headroom: int = 8192
 
 
 @dataclass(slots=True)
@@ -116,7 +125,7 @@ class LlmProvider:
     # See ``OllamaSettings.think_num_predict_headroom``. Lives on the
     # provider because it is a property of the model host, not of a
     # single role.
-    think_num_predict_headroom: int = 2048
+    think_num_predict_headroom: int = 8192
     # Which OpenAI-compatible surface to speak (openai_compatible only).
     # ``"auto"`` (default) keeps the historical behaviour: the client
     # decides per-model by name (OpenAI GPT-5.x / o-series -> Responses
@@ -126,6 +135,19 @@ class LlmProvider:
     # surface). ``"chat_completions"`` forces the legacy endpoint.
     # Ignored by the Ollama kind.
     api_style: str = "auto"
+    # Whether the provider may retain the request + response as
+    # application state. Sent on ``POST /v1/responses`` only, where the
+    # field is known-supported and OpenAI's own default is ``true``.
+    # We default to **false**: our prompts carry the persona, retrieved
+    # memories, RAG chunks from uploaded documents and the recent
+    # transcript, and a 30-day server-side copy browsable from a
+    # dashboard is not a default worth inheriting silently. Set it
+    # ``true`` per provider when you want the Logs tab for debugging.
+    # Independent of abuse-monitoring retention, which no request flag
+    # controls. Note two provider rows that share a client-cache slot
+    # (same kind + base_url + resolved key) also share this value — the
+    # first one built wins, as with ``api_style``.
+    store: bool = False
 
 
 @dataclass(slots=True)
@@ -245,7 +267,7 @@ def transport_for_provider(
         context_window=(route.context_window if route else None),
         timeout=max(1, int(provider.timeout_seconds or 300)),
         think_num_predict_headroom=max(
-            0, int(getattr(provider, "think_num_predict_headroom", 2048)),
+            0, int(getattr(provider, "think_num_predict_headroom", 8192)),
         ),
     )
 
@@ -1279,8 +1301,9 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
             payload.get("reasoning_effort")
         ),
         api_style=_norm_api_style(payload.get("api_style")),
+        store=bool(payload.get("store", False)),
         think_num_predict_headroom=_opt_int(
-            payload.get("think_num_predict_headroom"), default=2048, minimum=0,
+            payload.get("think_num_predict_headroom"), default=8192, minimum=0,
         )
         or 0,
     )
@@ -1630,7 +1653,7 @@ def _migrate_legacy_llm(
         timeout_seconds=timeout,
         keep_alive=str(chat_llm.get("keep_alive", "30m") or "30m").strip(),
         think_num_predict_headroom=_opt_int(
-            ollama.get("think_num_predict_headroom"), default=2048, minimum=0,
+            ollama.get("think_num_predict_headroom"), default=8192, minimum=0,
         )
         or 0,
     )
@@ -1758,6 +1781,7 @@ def llm_provider_to_dict(
         "keep_alive": provider.keep_alive,
         "reasoning_effort": provider.reasoning_effort,
         "api_style": provider.api_style,
+        "store": bool(provider.store),
         "think_num_predict_headroom": int(
             provider.think_num_predict_headroom or 0
         ),

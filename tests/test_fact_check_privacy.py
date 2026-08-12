@@ -9,6 +9,10 @@ Two layers are exercised:
    the redacted query string we actually hand to DuckDuckGo, or
    refuses the claim outright when no safe variant exists.
 
+3. :func:`web_safe_probe` — the same rules used as a yes/no gate by
+   callers that keep the original text, so a local-only check no longer
+   leaves a ``REDACT`` audit line behind.
+
 Plus an end-to-end check that :class:`IdleFactChecker` honours the
 search-time gate (a name-leaking claim never hits the stub web tool).
 """
@@ -27,8 +31,10 @@ import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.fact_check_privacy import (
+    _dropped_summary,
     classify_memory_for_fact_check,
     scrub_claim_for_search,
+    web_safe_probe,
 )
 from app.core.memory.fact_check_queue import FactCheckQueue
 from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
@@ -246,6 +252,136 @@ class TestScrubClaim(unittest.TestCase):
     def test_rejects_empty_claim(self) -> None:
         self.assertIsNone(scrub_claim_for_search(""))
         self.assertIsNone(scrub_claim_for_search("   "))
+
+
+class WebSafeProbeTests(unittest.TestCase):
+    """The yes/no gate for callers that never publish the scrubbed text.
+
+    The promise worker, the belief worker and the claim enqueue path all
+    keep the *original* text and only need the refusal signal. Routing
+    them through ``scrub_claim_for_search`` made each run emit a ``REDACT
+    in=… out=… dropped=[…]`` audit line naming ~90 stripped tokens, as if
+    a search had just gone out — 268 lines describing events that never
+    happened.
+    """
+
+    def test_a_normal_transcript_passes(self) -> None:
+        self.assertTrue(
+            web_safe_probe(
+                "Jacob: I can eat a lot and not have a stomachache",
+                user_names=["Jacob"],
+            ),
+        )
+
+    def test_hard_pii_is_refused(self) -> None:
+        self.assertFalse(web_safe_probe("see https://intranet.example.org/x"))
+        self.assertFalse(web_safe_probe("mail me at jacob@example.com"))
+        self.assertFalse(web_safe_probe("call +1 415 555 0123 now"))
+
+    def test_text_that_collapses_to_nothing_is_refused(self) -> None:
+        self.assertFalse(
+            web_safe_probe("Jacob me my I you", user_names=["Jacob"]),
+        )
+
+    def test_it_agrees_with_the_query_builder(self) -> None:
+        # One implementation, two log policies: the gate must never accept
+        # something the query builder would refuse, or the two could drift
+        # into a real leak.
+        samples = [
+            ("Python 3.12 was released in 2023", None),
+            ("Jacob practices violin since 2010", ["Jacob"]),
+            ("contact me@example.com", None),
+            ("Jacob Smith", ["Jacob", "Smith"]),
+            ("", None),
+            ("the cabin is at 47.6062, -122.3321", None),
+        ]
+        for text, names in samples:
+            with self.subTest(text=text):
+                built = scrub_claim_for_search(text, user_names=names)
+                self.assertEqual(
+                    web_safe_probe(text, user_names=names),
+                    built is not None,
+                )
+
+    def test_a_passing_probe_logs_no_redact_line(self) -> None:
+        # The whole point. Nothing is going to a search engine here, so
+        # the audit trail must not claim a query was redacted.
+        with self.assertLogs("app.fact_check_privacy", level="DEBUG") as cap:
+            web_safe_probe(
+                "[today] Jacob: I think you nailed my Tokyo plan",
+                user_names=["Jacob"],
+                assistant_name="Aiko",
+            )
+        messages = [r.getMessage() for r in cap.records]
+        self.assertFalse(
+            any("REDACT" in m for m in messages),
+            f"probe must not log REDACT, got {messages!r}",
+        )
+        self.assertTrue(
+            any("probe PASS" in m for m in messages),
+            f"expected a DEBUG probe PASS line, got {messages!r}",
+        )
+
+    def test_a_passing_probe_is_silent_at_info(self) -> None:
+        with self.assertNoLogs("app.fact_check_privacy", level="INFO"):
+            web_safe_probe("Python 3.12 was released in 2023")
+
+    def test_a_refusal_still_logs_at_info_with_a_reason(self) -> None:
+        # Refusals are rare (3 in the whole corpus) and meaningful, so
+        # they stay visible without opting in to DEBUG.
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cap:
+            web_safe_probe("see https://example.com/secret")
+        self.assertTrue(
+            any(
+                "probe BLOCK" in r.getMessage() and "url" in r.getMessage()
+                for r in cap.records
+            ),
+            f"expected a probe BLOCK url line, got {[r.getMessage() for r in cap.records]}",
+        )
+
+
+class DroppedSummaryTests(unittest.TestCase):
+    """``dropped=`` must stay readable.
+
+    The raw list carried one entry per occurrence, so scrubbing a whole
+    transcript produced a 91-element wall of repeated pronouns that pushed
+    the actual in/out previews out of view.
+    """
+
+    def test_it_dedupes_and_counts(self) -> None:
+        summary = _dropped_summary(["i", "you", "i", "i", "you", "jacob"])
+        self.assertIn("6 occurrences", summary)
+        self.assertIn("i", summary)
+        self.assertIn("jacob", summary)
+        # Six occurrences, three distinct names in the rendering.
+        self.assertEqual(summary.count(","), 2)
+
+    def test_it_caps_the_distinct_list(self) -> None:
+        summary = _dropped_summary([f"tok{n}" for n in range(40)])
+        self.assertIn("40 occurrences", summary)
+        self.assertIn("more", summary)
+        self.assertLess(len(summary), 200)
+
+    def test_empty(self) -> None:
+        self.assertEqual(_dropped_summary([]), "none")
+
+    def test_a_transcript_scrub_log_line_stays_short(self) -> None:
+        # Regression on the actual reported line: a 3.8k-char transcript
+        # with ~90 dropped tokens.
+        transcript = " ".join(
+            ["[today] Jacob: I think you and I should tell me my plan"] * 40
+        )
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cap:
+            scrub_claim_for_search(
+                transcript, user_names=["Jacob"], assistant_name="Aiko",
+            )
+        redacts = [r.getMessage() for r in cap.records if "REDACT" in r.getMessage()]
+        self.assertTrue(redacts, "expected a REDACT line for the query path")
+        self.assertLess(
+            len(redacts[0]),
+            700,
+            f"REDACT line is still a wall of tokens: {redacts[0]!r}",
+        )
 
 
 # ── end-to-end gate behaviour ──────────────────────────────────────────
