@@ -2038,7 +2038,99 @@ is worth one grep for the other N-2 before shipping it.
 
 ---
 
-## The eight recurring shapes
+## H28. A different block spent K52's fuel, and three features starved
+
+**Severity: high — the whole "will" family's output surfaces, dead on one line.**
+
+Picked up while asking a narrower question: the K90 lead/follow report, re-run
+256 turns after its 9 August baseline, said the second pass at leading had moved
+nothing. Own-material ratio **72% → 72%**, anaphoric openers 21% → 20%, echo 20%
+→ 20%. The only number that shifted was ends-on-a-question, 8.3% → 7.1%.
+
+The block telemetry said why. Of the leading family's four output surfaces,
+**three had never rendered a single character in 253 instrumented turns**:
+
+| block | renders / 253 | why |
+| --- | --- | --- |
+| `pursuit_lean_block` | **0** | no supply — all 5 pursuits are 3-day-old K85d seeds against a 7-day gate; *working as designed*, re-check after 16 Aug |
+| `topic_appetite_block` (K54) | **0** | `want_pressure >= 0.35`, never reached |
+| `thread_ownership_block` (K55/K89) | **0** | stamps need K53 initiative *or* a K52 imperative; the imperative never fired |
+| `taste_lean_block` | 7 (2.8%) | working — once per conversation, behind a lull |
+
+`wants_block` itself renders on **77.1%** of turns, always in its soft band. The
+imperative band — the one the module docstring calls *"the sentence no existing
+block ever says, and the piece that turns a permission slip into actual will"* —
+has never rendered at all. All five live wants sat at pressure **0.150–0.159**
+against bars of 0.35 and 0.7.
+
+Pressure grows at `wants_growth_per_day` = 0.25 from an initial 0.15, so the bars
+are 19 hours and 53 hours of survival respectively — easily inside the 14-day
+`wants_max_age_days`. The wants were not failing to grow. They were not living
+long enough to grow, and the reason was one read:
+
+```python
+rows = self._pending_seeds(limit=64)          # store.pending("curiosity_seed")
+active_refs = {f"cue:{row.id}" for row in rows}
+dead = seed_refs - active_refs                # -> drop_source_refs
+```
+
+`pending` means *may I surface this now*. It stops being true the moment a cue
+renders into a prompt (`mark_surfaced` sets `state='surfaced'`) **and** while a
+released cue sits behind its `not_before` cooldown. The pruner read that as *the
+seed is gone, retire its want*. Meanwhile `curiosity_seeds_block` spends two
+seeds a turn at 35 turns per hundred. Measured over all 131 seeds that have ever
+been surfaced:
+
+| | |
+| --- | --- |
+| median age at first surfacing | **1.9 h** |
+| p75 / max | 7.3 h / **22.3 h** |
+| survived the 19 h K54 needs | **4 of 131** |
+| survived the 53 h the imperative needs | **0 of 131** |
+
+So K52's pressure mechanic never ran, K54's appetite slip could not fire, and
+K55/K89's thread ownership lost one of its two arming paths — three features,
+one liveness test, and nothing in any log said so. The cue store's own docstring
+had the distinction right all along: `mark_surfaced` is annotated *"The cue
+reached the prompt. Not the same as it being used."*
+
+### Outcome: liveness is not availability, and an ignored imperative pays
+
+`CueStore.live()` now answers "does this cue still exist" over `LIVE_STATES`,
+separately from `pending`'s "may I show it", and the pruner uses it — a want dies
+when its seed reaches a *terminal* state, not when Aiko has merely been shown it.
+Being offered a topic and not biting is the state that most deserves to keep
+wanting. A full page counts as unreadable rather than empty, since absence from a
+truncated list is not evidence of a dead seed and a false prune is the bug.
+
+The producer read still uses `pending`: only a seed she has never been offered
+should mint a *new* want.
+
+That fix alone would have replaced silence with a ratchet. Pressure is what fires
+the imperative, so with nothing to spend it the strongest want would cross 0.7,
+render "bring it up THIS conversation", grow overnight and render again — the same
+directive every turn for a topic she has by then declined repeatedly. So the band
+now costs what it spends: an imperative that surfaces and whose topic still does
+not come up charges that want `wants_brush_off_decay` (0.6, a little over two days
+of growth), and below `wants_brush_off_floor` (0.2) the want leaves the ledger.
+K89 solved the identical problem for thread stakes the same way — one polite
+attempt is not a stake, and an unlimited number of attempts is not one either.
+
+**Ninth recurring shape — a read that answers a nearby question.** Not H21/H23's
+mis-sited constant: every threshold here was correctly placed and reachable. The
+defect is that `pending` and `live` differ by a few rows almost all the time, so
+the wrong one passes review, passes tests, and works fine until a *second*
+consumer starts spending the same resource on a different schedule. K9's seed
+block and K52's ledger were built a year apart and neither knows the other exists.
+**Rule: when a predicate asks "does X still exist", check what the read actually
+filters on — availability, cooldown and TTL are all different questions from
+existence, and a pool with a state machine will offer you all four under similar
+names. If a resource has two consumers, write down which one is allowed to
+retire it.**
+
+---
+
+## The nine recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2112,6 +2204,16 @@ overwrote a memory. **Rule: for any pipeline that extracts a unit and then
 reasons over it, write the unit down next to the question and check the
 question is answerable. Do this at design time — it costs one line and it is
 invisible in every test that stubs the reasoning step.**
+
+**9. A read that answers a nearby question.** The predicate is right, the
+thresholds are reachable, and the query returns the wrong set — because a pool
+with a state machine offers "available", "not on cooldown", "not expired" and
+"exists" under similar names, and they agree almost always. H28's pruner asked
+`pending` when it meant `live`, which held until a *second* consumer began
+spending the same seeds on its own schedule; K9's block and K52's ledger were
+built a year apart and neither knows the other exists. **Rule: when a predicate
+asks "does X still exist", check what the read filters on, and where a resource
+has two consumers, write down which one is allowed to retire it.**
 
 ---
 
@@ -2649,8 +2751,8 @@ H16's dedupe first — see the current ordering below.*
 
 ## Suggested order
 
-Refreshed after the tension and hypothesis pass. Roughly by value per unit of
-risk, across both parts.
+Refreshed after the wants-ledger pass (H28). Roughly by value per unit of risk,
+across both parts.
 
 **Waiting on measurement, not on work.** These shipped and their verification
 needs days of accumulation rather than another change. Re-check before doing
@@ -2667,6 +2769,21 @@ anything else, since three of them alter the inputs to everything below:
 - **H7** — `provider` should drop below half of `concept_hypothesis` declines
   now the reasons are split, the shelf should stop growing, and the first
   non-zero `hypotheses.asked_count` is the signal the loop closed at all.
+- **H28** — three signals, and they arrive on a clock: a want should cross 0.35
+  in 19 h and 0.7 in 53 h, so `topic_appetite_block` and the `wants_block`
+  imperative band should both leave 0 of 253 within about three days. Watch the
+  brush-off in the same window — if `wants-ledger brushed off` fires every turn
+  the decay is too small, and if the imperative never repeats on a topic she
+  genuinely dodged it is too large.
+- **K85 pursuits** — *not* a defect; the five seeds were filed 9 August with a
+  7-day age floor, and three have already accrued sources. `pursuit_lean_block`
+  should leave zero on its own after 16 Aug. If it has not by then, the seeds
+  are not being reinforced and the away-beat path is the thing to look at.
+- **The K90 lead/follow diff** — own-material 72%, anaphoric 20% as of 12 Aug,
+  unchanged from the 9 Aug baseline. Every fix above feeds this number, and none
+  of them had landed when it was last read. Re-run
+  `scripts/lead_follow_report.py`; it is the only measure of whether the leading
+  family works at all.
 
 **Then, in order:**
 

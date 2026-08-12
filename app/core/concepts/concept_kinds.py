@@ -925,7 +925,7 @@ register_kind(
 # standing friction with a rendering surface would nag. What the exclusion
 # actually bought was silence: 99 active tensions against **zero** of 13,800
 # concept-lane surfacings, with the T6 cue reaching 25 turns in 231 and 89% of
-# turns carrying eight boundaries and no ambivalence at all. Ambivalence -- 
+# turns carrying eight boundaries and no ambivalence at all. Ambivalence --
 # wanting two incompatible things and knowing it -- is most of what makes a
 # character read as having an interior, and it was the one register she never
 # got to use. The nag guards are the ones every kind has: the flex lane's

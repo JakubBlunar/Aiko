@@ -484,6 +484,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 0.0,
                 float(agent_raw.get("wants_reentry_cooldown_days", 5.0)),
             ),
+            wants_brush_off_decay=max(
+                0.0, float(agent_raw.get("wants_brush_off_decay", 0.6)),
+            ),
+            wants_brush_off_floor=max(
+                0.0, float(agent_raw.get("wants_brush_off_floor", 0.2)),
+            ),
             wants_worker_interval_seconds=max(
                 30.0,
                 float(agent_raw.get("wants_worker_interval_seconds", 3600.0)),

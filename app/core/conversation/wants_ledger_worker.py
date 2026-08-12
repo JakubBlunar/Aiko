@@ -271,12 +271,23 @@ class WantsLedgerWorker:
     ) -> tuple["wants_ledger.LedgerState", list[str], list[str]]:
         """Drop ``curiosity_seed`` wants whose backing seed is gone.
 
-        A seed's want is fed only while the seed is still pending in the
-        cue pool. Once the seed retires (its topic came up) or expires,
-        its want must retire with it — otherwise it lingers, grows
-        pressure, and re-asks an answered question. Returns the pruned
-        state, the dropped want ids, and the dead ``source_ref``s
-        (best-effort; a store hiccup leaves the ledger untouched).
+        Once a seed retires (its topic came up) or expires, its want
+        must retire with it — otherwise it lingers, grows pressure, and
+        re-asks an answered question. Returns the pruned state, the
+        dropped want ids, and the dead ``source_ref``s (best-effort; a
+        store hiccup leaves the ledger untouched).
+
+        "Gone" means *terminal*, not *unavailable*. This read used to
+        ask the pool for pending seeds, which drops a seed the instant
+        it renders into a prompt — and K9's block surfaces two seeds a
+        turn at 35 turns per hundred, so the median seed left pending
+        1.9 hours after birth. Every curiosity want was therefore
+        pruned within a couple of hours, while ``growth_per_day`` of
+        0.25 needs 19 hours to clear K54's appetite bar and 53 to clear
+        the K52 imperative. The whole pressure mechanic was drained by
+        a liveness test that read "she has been shown this" as "she is
+        done with this" — when being shown it and not biting is the one
+        state that most deserves to keep wanting.
         """
         if not state.wants:
             return state, [], []
@@ -287,7 +298,7 @@ class WantsLedgerWorker:
         }
         if not seed_refs:
             return state, [], []
-        rows = self._pending_seeds(limit=64)
+        rows = self._live_seeds(limit=64)
         if rows is None:
             return state, [], []
         active_refs = {f"cue:{row.id}" for row in rows}
@@ -383,20 +394,51 @@ class WantsLedgerWorker:
     def _pending_seeds(self, *, limit: int) -> list[Any] | None:
         """Unspent curiosity seeds, or ``None`` if the pool can't be read.
 
-        ``None`` and ``[]`` mean different things to the pruner: an
-        empty pool retires every seed want, a failed read must retire
-        none of them.
+        The *producer* read: only a seed Aiko has never been offered
+        should mint a new want. For the liveness question the pruner
+        asks, use :meth:`_live_seeds`.
         """
+        store = self._cue_store()
+        if store is None:
+            return None
+        try:
+            return store.pending("curiosity_seed", limit=max(1, int(limit)))
+        except Exception:
+            log.debug("wants: seed pool pending read failed", exc_info=True)
+            return None
+
+    def _live_seeds(self, *, limit: int) -> list[Any] | None:
+        """Curiosity seeds that have not reached a terminal state.
+
+        The *pruner* read, so ``None`` and ``[]`` mean different
+        things: an empty pool retires every seed want, an unreadable
+        one must retire none of them. A full page counts as unreadable
+        for the same reason — absence from a truncated list is not
+        evidence of a dead seed, and a wrong prune here is precisely
+        the failure this method exists to stop.
+        """
+        store = self._cue_store()
+        if store is None:
+            return None
+        cap = max(1, int(limit))
+        try:
+            rows = store.live("curiosity_seed", limit=cap)
+        except Exception:
+            log.debug("wants: seed pool live read failed", exc_info=True)
+            return None
+        if len(rows) >= cap:
+            log.debug("wants: live seed page full (%d); skipping prune", cap)
+            return None
+        return rows
+
+    def _cue_store(self) -> Any | None:
         provider = self._cue_store_provider
         if provider is None:
             return None
         try:
-            store = provider()
-            if store is None:
-                return None
-            return store.pending("curiosity_seed", limit=max(1, int(limit)))
+            return provider()
         except Exception:
-            log.debug("wants: seed pool read failed", exc_info=True)
+            log.debug("wants: cue store provider raised", exc_info=True)
             return None
 
     # ── candidate producers ──────────────────────────────────────────

@@ -3163,6 +3163,8 @@ class WillFamilySettingsTests(unittest.TestCase):
         "wants_cap",
         "wants_max_age_days",
         "wants_reentry_cooldown_days",
+        "wants_brush_off_decay",
+        "wants_brush_off_floor",
         "wants_worker_interval_seconds",
         "initiative_turns_enabled",
         "initiative_base_period",
@@ -3213,6 +3215,8 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.wants_cap, 8)
         self.assertEqual(agent.wants_max_age_days, 14.0)
         self.assertEqual(agent.wants_reentry_cooldown_days, 5.0)
+        self.assertEqual(agent.wants_brush_off_decay, 0.6)
+        self.assertEqual(agent.wants_brush_off_floor, 0.2)
         self.assertEqual(agent.wants_worker_interval_seconds, 3600.0)
         self.assertTrue(agent.initiative_turns_enabled)
         self.assertEqual(agent.initiative_base_period, 8)
@@ -3234,6 +3238,8 @@ class WillFamilySettingsTests(unittest.TestCase):
             "wants_growth_per_day": 0.5,
             "wants_imperative_threshold": 0.9,
             "wants_cap": 4,
+            "wants_brush_off_decay": 0.4,
+            "wants_brush_off_floor": 0.3,
             "initiative_turns_enabled": False,
             "initiative_base_period": 12,
             "thread_ownership_enabled": False,
@@ -3248,6 +3254,8 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.wants_growth_per_day, 0.5)
         self.assertEqual(agent.wants_imperative_threshold, 0.9)
         self.assertEqual(agent.wants_cap, 4)
+        self.assertEqual(agent.wants_brush_off_decay, 0.4)
+        self.assertEqual(agent.wants_brush_off_floor, 0.3)
         self.assertFalse(agent.initiative_turns_enabled)
         self.assertEqual(agent.initiative_base_period, 12)
         self.assertFalse(agent.thread_ownership_enabled)
@@ -3263,6 +3271,8 @@ class WillFamilySettingsTests(unittest.TestCase):
             "wants_imperative_threshold": 5.0,
             "wants_cap": 0,
             "wants_max_age_days": 0.1,
+            "wants_brush_off_decay": -1.0,
+            "wants_brush_off_floor": -1.0,
             "wants_worker_interval_seconds": 1,
             "initiative_base_period": 1,
             "initiative_warmup_turns": -2,
@@ -3280,6 +3290,8 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.wants_imperative_threshold, 1.0)
         self.assertEqual(agent.wants_cap, 1)
         self.assertEqual(agent.wants_max_age_days, 1.0)
+        self.assertEqual(agent.wants_brush_off_decay, 0.0)
+        self.assertEqual(agent.wants_brush_off_floor, 0.0)
         self.assertEqual(agent.wants_worker_interval_seconds, 30.0)
         self.assertEqual(agent.initiative_base_period, 3)
         self.assertEqual(agent.initiative_warmup_turns, 0)

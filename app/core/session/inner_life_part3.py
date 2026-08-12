@@ -1690,6 +1690,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     "source": "want_imperative",
                     "topic": strongest.text,
                 }
+                # Post-turn charges this want unless the topic actually
+                # came up, so the directive can't repeat every turn.
+                self._pending_want_imperative = strongest.id
             return block
         except Exception:
             log.debug("wants block render failed", exc_info=True)

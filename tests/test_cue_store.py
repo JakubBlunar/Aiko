@@ -232,6 +232,58 @@ class PendingTests(_Base):
         )
 
 
+class LiveTests(_Base):
+    """``live`` answers "does this cue still exist", not "may I show it".
+
+    A reader that conflates the two retires anything Aiko has been
+    shown once — which is what silently drained the K52 wants ledger.
+    """
+
+    def test_live_keeps_what_pending_has_already_let_go(self) -> None:
+        surfaced = self.store.add("curiosity_seed", "a", "line")
+        self.store.mark_surfaced(surfaced)
+        awaiting = self.store.add("curiosity_seed", "b", "line")
+        self.store.mark_asked(awaiting)
+        fresh = self.store.add("curiosity_seed", "c", "line")
+        self.assertEqual(
+            [r.id for r in self.store.pending("curiosity_seed")], [fresh],
+        )
+        self.assertEqual(
+            sorted(r.id for r in self.store.live("curiosity_seed")),
+            sorted([surfaced, awaiting, fresh]),
+        )
+
+    def test_terminal_states_are_not_live(self) -> None:
+        used = self.store.add("curiosity_seed", "a", "line")
+        self.store.mark_used(used)
+        expired = self.store.add("curiosity_seed", "b", "line")
+        self.store.expire(expired)
+        superseded = self.store.add("curiosity_seed", "c", "line")
+        self.store.supersede(superseded)
+        self.assertEqual(self.store.live("curiosity_seed"), [])
+
+    def test_a_released_cue_on_cooldown_is_still_live(self) -> None:
+        # ``release`` returns a cue to pending behind a ``not_before``
+        # gate, so it is absent from ``pending`` while very much alive.
+        cue = self.store.add("curiosity_seed", "a", "line")
+        self.store.mark_surfaced(cue)
+        self.store.release(
+            cue, not_before=timephrase.utcnow() + timedelta(hours=6),
+        )
+        self.assertEqual(self.store.pending("curiosity_seed"), [])
+        self.assertEqual(
+            [r.id for r in self.store.live("curiosity_seed")], [cue],
+        )
+
+    def test_live_is_scoped_by_type(self) -> None:
+        seed = self.store.add("curiosity_seed", "a", "line")
+        self.store.add("interest_drift", "b", "line")
+        self.assertEqual(
+            [r.id for r in self.store.live("curiosity_seed")], [seed],
+        )
+        self.assertEqual(len(self.store.live()), 2)
+
+
 class TtlTests(_Base):
     def test_expired_stock_does_not_count_as_pending(self) -> None:
         now = timephrase.utcnow()
