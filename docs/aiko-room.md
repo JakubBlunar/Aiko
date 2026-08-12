@@ -187,7 +187,7 @@ in `web/src/store.ts` (`applyWorldPatch`) handles each shape:
 ## Frontend
 
 Settings drawer tab id: `"world"`, icon 🏠. The `WorldTab` component
-is in [`web/src/components/SettingsDrawer.tsx`](../web/src/components/SettingsDrawer.tsx)
+is in [`web/src/components/SettingsDrawer.tsx`](../web/src/features/settings/SettingsDrawer.tsx)
 and renders four sections:
 
 1. **Right now** — Aiko's current location / posture / activity, with

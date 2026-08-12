@@ -293,7 +293,7 @@ with an "Answer" affordance:
 
 **Persona window.** Mirrors the chip but via a `PersonaActionBanner`
 matching the K31 touch-banner pattern in
-[`web/src/components/PersonaActionBanner.tsx`](../web/src/components/PersonaActionBanner.tsx).
+[`web/src/components/PersonaActionBanner.tsx`](../web/src/features/persona/PersonaActionBanner.tsx).
 The banner shows the question with clickable options (if any), auto-
 dismisses if the user answers via voice instead.
 
@@ -1106,10 +1106,10 @@ potential phase-3 firehose but not wired in phase 2; subscribe to
   `TaskInput` interfaces matching the REST payload shape.
 - [`web/src/api.ts`](../web/src/api.ts) — `listTaskEvents(id, …)`
   and `listTaskInputs(id)` client wrappers.
-- [`web/src/components/TaskStrip.tsx`](../web/src/components/TaskStrip.tsx)
+- [`web/src/components/TaskStrip.tsx`](../web/src/features/tasks/TaskStrip.tsx)
   — `TaskChip` renders `task.phase` next to the status label when
   present.
-- [`web/src/components/settings/TasksTab.tsx`](../web/src/components/settings/TasksTab.tsx)
+- [`web/src/components/settings/TasksTab.tsx`](../web/src/features/settings/TasksTab.tsx)
   — `TaskRow` shows `phase` and `parent_task_id`; a new
   `EventsExpander` sub-component lazy-loads the event log on click
   so a 10K-task history doesn't materialise 10K event lists.

@@ -70,7 +70,7 @@ typing).
 `_run_typed` (currently bypasses the TTS pipeline),
 [`app/core/infra/settings.py`](../../app/core/infra/settings.py) `AgentSettings`
 (new `proactive_typed_speak: bool = False`),
-[`web/src/components/SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)
+[`web/src/components/SettingsDrawer.tsx`](../../web/src/features/settings/SettingsDrawer.tsx)
 Proactive section.
 
 **Sketched approach.** A boolean switch in settings that, when on,

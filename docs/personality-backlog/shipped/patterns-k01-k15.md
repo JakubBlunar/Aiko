@@ -56,7 +56,7 @@ Name the gap once and gently if it fits, then move on.").
 REST endpoints `/api/beliefs` (GET / POST / PATCH / DELETE) in
 [`app/web/server.py`](../../../app/web/server.py) back a new Beliefs
 sub-tab in
-[`SettingsDrawer.tsx`](../../../web/src/components/SettingsDrawer.tsx),
+[`SettingsDrawer.tsx`](../../../web/src/features/settings/SettingsDrawer.tsx),
 grouped by kind with a per-row gap pulse + filter chips for kind /
 status. WebSocket events `belief_added` / `belief_updated` /
 `belief_deleted` keep the panel live without polling. Persona
@@ -646,7 +646,7 @@ goal store is built later in the boot sequence).
 - `POST /api/goals/run` triggers one `GoalWorker.run()` (cooperative
   with the rate limiter).
 - The Memory tab's new "Long-term goals" sub-panel
-  ([`GoalsPanel.tsx`](../../../web/src/components/settings/memory/GoalsPanel.tsx))
+  ([`GoalsPanel.tsx`](../../../web/src/features/settings/memory/GoalsPanel.tsx))
   lists active goals with their most recent reflection note, exposes a
   "show archived" toggle, and a "reflect now" button hitting the REST
   endpoint.
@@ -1142,11 +1142,11 @@ The cosine-cluster engine ([`TopicGraph`](../../../app/core/conversation/topic_g
 
 **Controller + REST + MCP**. [`memory_facade_mixin.py`](../../../app/core/session/memory_facade_mixin.py) adds `SessionController.topic_graph_snapshot()` (delegates to the helper, try/except -> disabled shape). [`server.py`](../../../app/web/server.py) adds read-only `GET /api/topic-graph` (no body, no WS event — the graph is advisory + lazily rebuilt, the panel fetches on open + manual refresh). [`app/mcp/server.py`](../../../app/mcp/server.py) adds `get_topic_graph()` (dump the snapshot) and `force_topic_graph_rebuild()` (invalidate the cache + return a fresh build — useful after hand-inserting memories). Trace via `tail_logs(module_contains="topic_graph")` (`topic_graph rebuilt:`).
 
-**Frontend** ([`TopicGraphPanel.tsx`](../../../web/src/components/settings/memory/TopicGraphPanel.tsx)). A read-only panel stacked in the Memory drawer tab ([`MemoryTab.tsx`](../../../web/src/components/settings/MemoryTab.tsx)) mirroring `MemoryConflictsPanel`: fetch-on-mount + refresh button, a header readout (`clustered/total` memories, `sim`, `min size`), and expandable cluster rows (summary + kind-count chips, expanding to the member list). `TopicGraphMember` / `TopicGraphCluster` / `TopicGraphSnapshot` types + `api.getTopicGraph()`.
+**Frontend** ([`TopicGraphPanel.tsx`](../../../web/src/features/settings/memory/TopicGraphPanel.tsx)). A read-only panel stacked in the Memory drawer tab ([`MemoryTab.tsx`](../../../web/src/features/settings/MemoryTab.tsx)) mirroring `MemoryConflictsPanel`: fetch-on-mount + refresh button, a header readout (`clustered/total` memories, `sim`, `min size`), and expandable cluster rows (summary + kind-count chips, expanding to the member list). `TopicGraphMember` / `TopicGraphCluster` / `TopicGraphSnapshot` types + `api.getTopicGraph()`.
 
 **Deferred:** the graph-aware multi-hop retrieval half of the original K9 spec (expanding RAG hits along the topic graph) is intentionally NOT built — it changes prompt content and is a separate, riskier project from this inspection browser.
 
-Tests: `SnapshotTests` in [`tests/test_topic_graph.py`](../../../tests/test_topic_graph.py) (disabled paths, shape + member joins, size-desc sort, content trimming), [`tests/test_web_server_topic_graph.py`](../../../tests/test_web_server_topic_graph.py) (`GET 200` + enabled/disabled shapes), and [`web/src/components/TopicGraphPanel.test.tsx`](../../../web/src/components/TopicGraphPanel.test.tsx) (source wiring: fetch + mount + member render).
+Tests: `SnapshotTests` in [`tests/test_topic_graph.py`](../../../tests/test_topic_graph.py) (disabled paths, shape + member joins, size-desc sort, content trimming), [`tests/test_web_server_topic_graph.py`](../../../tests/test_web_server_topic_graph.py) (`GET 200` + enabled/disabled shapes), and [`web/src/components/TopicGraphPanel.test.tsx`](../../../web/src/features/settings/memory/TopicGraphPanel.test.tsx) (source wiring: fetch + mount + member render).
 
 ---
 
