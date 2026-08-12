@@ -1,6 +1,12 @@
-# Shipped — Companion patterns K31–K60
+# Shipped — Companion patterns K31 onward
 
 Part of the [shipped log index](../shipped.md). One paragraph per entry; full detail lives in the linked implementation files.
+
+Despite the filename this file is the home for everything above K30 that isn't
+filed elsewhere: K31–K60, then K63, K65–K76, K80–K81, and the K85–K91 leading
+and away-life families at the bottom. (K61, K64 and the K-time family live in
+[`awareness.md`](awareness.md), which is where their detail belongs.) The name
+is kept because ~90 links point at it.
 
 ---
 
@@ -75,7 +81,7 @@ Six kinds, each carrying a small per-click axis delta (capped at 0.04 per axis p
 - **Pure modules** [`app/core/touch/touch_gestures.py`](../../../app/core/touch/touch_gestures.py) and [`app/core/relationship/user_reactions.py`](../../../app/core/relationship/user_reactions.py) — frozen dataclasses, no I/O. `TouchService` is the only stateful surface and persists `TouchServiceState` (per-kind last-fired monotonic + daily counts + ISO daily date) on `kv_meta` key `aiko.touch_state`. `user_reactions` exposes `compute_deltas` / `apply_daily_cap` / `render_user_reactions_block` / `reactions_metadata` plus the `DailyCapState` carrier persisted on `kv_meta` key `aiko.user_reactions_daily`. Same `aiko.*` namespace as K15 / K27 / K30.
 - **Schema v15** [`app/core/infra/chat_database.py`](../../../app/core/infra/chat_database.py) — bumps `_SCHEMA_VERSION` from 14 to 15 and adds two nullable JSON-encoded TEXT columns on `messages`: `gestures` (`[[touch:KIND]]` list per turn) and `reactions` (`{kind: count}` map). Helpers `update_message_gestures` / `update_message_reactions` write through `json.dumps`; the row readers decode lazily. The migration preserves all existing rows and the new columns default to `NULL` — no rebuild path required.
 - **Tag parser + streaming guard** [`app/core/services/response_text_service.py`](../../../app/core/services/response_text_service.py) — new `_TOUCH_TAG_PATTERN` (closed) + `_TOUCH_OPEN_TAIL_PATTERN` (held-back open) wired into `extract_touch_commands`, `strip_all_meta_tags`, and `safe_visible_prefix`. The streaming dispatcher (`TurnRunner._dispatch_chunk_with_earcons`) parses closed tags as they land, fires `on_touch(kind)` once per tag, and strips them from the visible / TTS streams; half-open `[[touch` at the end of a chunk is held back until the next delta so the user never sees `[[touch...` in the transcript.
-- **TurnRunner hook** [`app/core/llm/turn_runner.py`](../../../app/core/llm/turn_runner.py) — `run` accepts an optional `on_touch` callback parameter; defaults to a no-op so non-K31 callers stay unaffected. The dispatcher invokes it inline alongside the existing `on_reaction` / `on_earcon` callbacks.
+- **TurnRunner hook** [`app/core/llm/turn_runner.py`](../../../app/core/session/turn_runner.py) — `run` accepts an optional `on_touch` callback parameter; defaults to a no-op so non-K31 callers stay unaffected. The dispatcher invokes it inline alongside the existing `on_reaction` / `on_earcon` callbacks.
 - **Avatar mixin glue** [`app/core/session/avatar_mixin.py`](../../../app/core/session/avatar_mixin.py) — `_touch_service` lazy-init, `_avatar_touch_listeners` listener list with `add_avatar_touch_listener` (REST + WS), `_emit_avatar_touch(kind)` (calls `TouchService.try_dispatch`, broadcasts the WS frame on pass, logs gated-drop reasons), `_persist_turn_gestures(message_id, gestures)` (writes the JSON-encoded list to the new column post-turn).
 - **Controller wiring** [`app/core/session/session_controller.py`](../../../app/core/session/session_controller.py) — `TouchService` instantiation, `_pending_user_reactions: deque` (fed by `apply_user_reaction`, drained by the inner-life provider), the `add_message_reaction_listener` plumbing for the `message_reaction_updated` WS broadcast, the `apply_user_reaction(message_id, kind)` and `remove_user_reaction(message_id, kind)` public methods, and provider registrations: `user_reactions=self._render_user_reactions_block` and `touch_state=self._render_touch_state_block`.
 - **Axes updater** [`app/core/relationship/relationship_axes.py`](../../../app/core/relationship/relationship_axes.py) — new `apply_user_reaction(user_id, *, kind, daily_cap=0.15)` method threads through `user_reactions.compute_deltas` → `apply_daily_cap` → state mutate → `_MAX_DELTA` clamp → save. The daily-cap state advances even on a fully-capped click so the rollover at midnight UTC lands cleanly on the first reaction of the new day.
@@ -87,8 +93,8 @@ Six kinds, each carrying a small per-click axis delta (capped at 0.04 per axis p
 - **Engine fan-out** [`web/src/live2d/AvatarEngine.ts`](../../../web/src/live2d/AvatarEngine.ts) — `dispatchTouch(payload)` converts the wall-clock `duration_ms` from the WS frame into a monotonic `until` and fires `channel.onTouch?.(event)` on every registered channel. Same wall-to-mono pattern as `dispatchOverlay`.
 - **StoreBridge** [`web/src/live2d/StoreBridge.ts`](../../../web/src/live2d/StoreBridge.ts) — subscribes to `avatarTouchAt` (the dedup counter) and dispatches the latest `avatarTouch` payload to the engine on every bump. Symmetric with the overlay bridge.
 - **Zustand store** [`web/src/store.ts`](../../../web/src/store.ts) — three new pieces: `avatarTouch: AvatarTouchPayload | null` + `avatarTouchAt: number` for K31 (`pushAvatarTouch` reducer increments the counter); `appendGestureToCurrentTurn(kind)` adds to the streaming assistant bubble's `gestures` array; `applyMessageReactions(messageId, reactions)` is the optimistic + WS-reconcile reducer for K32.
-- **ChatView** [`web/src/components/ChatView.tsx`](../../../web/src/components/ChatView.tsx) — `MessageBubbleImpl` grows a gesture-badge strip below assistant bubbles when `gestures.length > 0`, a persistent reaction counter strip when `reactionEntries.length > 0`, and a hover-tray of the six reaction emojis gated on `canReact` (`!isUser && !streaming && backendId != null`). The hover tray hides kinds already in the persistent strip; clicking either fires `api.addReaction` / `api.removeReaction` with optimistic store updates and toast-on-fail.
-- **PersonaActionBanner** [`web/src/components/PersonaActionBanner.tsx`](../../../web/src/components/PersonaActionBanner.tsx) — the persona overlay window has no chat bubbles, so K31's badge has no home there. This banner is the canonical persona-mode equivalent: a transient pill at `inset-x-2 top-12` showing the gesture label + the six K32 reaction buttons. Auto-dismisses after `agent.persona_touch_banner_duration_seconds` (default 20s), replaces (not stacks) on a fresh gesture, and rolls back optimistic reaction writes on REST failure. Gated on `agent.persona_touch_banner_enabled`.
+- **ChatView** [`web/src/components/ChatView.tsx`](../../../web/src/features/chat/ChatView.tsx) — `MessageBubbleImpl` grows a gesture-badge strip below assistant bubbles when `gestures.length > 0`, a persistent reaction counter strip when `reactionEntries.length > 0`, and a hover-tray of the six reaction emojis gated on `canReact` (`!isUser && !streaming && backendId != null`). The hover tray hides kinds already in the persistent strip; clicking either fires `api.addReaction` / `api.removeReaction` with optimistic store updates and toast-on-fail.
+- **PersonaActionBanner** [`web/src/components/PersonaActionBanner.tsx`](../../../web/src/features/persona/PersonaActionBanner.tsx) — the persona overlay window has no chat bubbles, so K31's badge has no home there. This banner is the canonical persona-mode equivalent: a transient pill at `inset-x-2 top-12` showing the gesture label + the six K32 reaction buttons. Auto-dismisses after `agent.persona_touch_banner_duration_seconds` (default 20s), replaces (not stacks) on a fresh gesture, and rolls back optimistic reaction writes on REST failure. Gated on `agent.persona_touch_banner_enabled`.
 - **Persona** [`data/persona/aiko_companion.txt`](../../../data/persona/aiko_companion.txt) — new "Reaching out" block after the K15 "Sharing yourself" section. Preamble + eight `use when` lines + the physical budget paragraph + the reciprocity paragraph (teaches Aiko to treat a 💛 click as a quiet "yes, that landed", not a call for a callback).
 - **Settings** (9 new `AgentSettings` fields, all parsed with documented clamps):
   - `touch_enabled: bool = True`, `touch_per_kind_overrides: dict = {}` (cooldown / daily cap overrides keyed by kind),
@@ -119,7 +125,7 @@ End-to-end repro:
 - [`app/core/infra/settings.py`](../../../app/core/infra/settings.py) — 9 new `AgentSettings` fields with inline context; matching parser entries with floor clamps in `_parse_agent`.
 - [`config/default.json`](../../../config/default.json) — 9 new keys under `agent`.
 - [`app/core/services/response_text_service.py`](../../../app/core/services/response_text_service.py) — `_TOUCH_TAG_PATTERN`, `_TOUCH_OPEN_TAIL_PATTERN`, `extract_touch_commands`, updates to `strip_all_meta_tags` + `safe_visible_prefix`.
-- [`app/core/llm/turn_runner.py`](../../../app/core/llm/turn_runner.py) — `on_touch` callback param threaded through `run` + `_dispatch_chunk_with_earcons`.
+- [`app/core/llm/turn_runner.py`](../../../app/core/session/turn_runner.py) — `on_touch` callback param threaded through `run` + `_dispatch_chunk_with_earcons`.
 - [`app/core/session/avatar_mixin.py`](../../../app/core/session/avatar_mixin.py) — `_touch_service`, `_avatar_touch_listeners`, `_emit_avatar_touch`, `_persist_turn_gestures`, `add_avatar_touch_listener`, `add_message_reaction_listener`.
 - [`app/core/session/session_controller.py`](../../../app/core/session/session_controller.py) — `TouchService` boot, `_pending_user_reactions` deque, `apply_user_reaction` / `remove_user_reaction` public methods, provider registrations.
 - [`app/core/relationship/relationship_axes.py`](../../../app/core/relationship/relationship_axes.py) — `apply_user_reaction(user_id, *, kind, daily_cap)` method (~80 LOC).
@@ -133,14 +139,14 @@ End-to-end repro:
 - [`web/src/live2d/AvatarEngine.ts`](../../../web/src/live2d/AvatarEngine.ts) — `dispatchTouch` method.
 - [`web/src/live2d/StoreBridge.ts`](../../../web/src/live2d/StoreBridge.ts) — `avatarTouchAt` subscription.
 - [`web/src/live2d/index.ts`](../../../web/src/live2d/index.ts) — exports `AvatarTouchPayload` + `ResolvedTouchEvent`.
-- [`web/src/components/Live2DAvatar.tsx`](../../../web/src/components/Live2DAvatar.tsx) — registers `ReachChannel`.
+- [`web/src/components/Live2DAvatar.tsx`](../../../web/src/features/avatar/Live2DAvatar.tsx) — registers `ReachChannel`.
 - [`web/src/types.ts`](../../../web/src/types.ts) — `ChatMessage.gestures` + `ChatMessage.reactions`, `AvatarTouchPayload`, `USER_REACTION_KINDS`, `TOUCH_GESTURE_LABELS`, two new `AssistantWsEvent` variants.
 - [`web/src/store.ts`](../../../web/src/store.ts) — `avatarTouch` / `avatarTouchAt`, `pushAvatarTouch`, `appendGestureToCurrentTurn`, `applyMessageReactions` reducers.
 - [`web/src/hooks/useAssistantSocket.ts`](../../../web/src/hooks/useAssistantSocket.ts) — `avatar_touch` + `message_reaction_updated` cases.
 - [`web/src/api.ts`](../../../web/src/api.ts) — `addReaction` / `removeReaction` client functions.
-- [`web/src/components/ChatView.tsx`](../../../web/src/components/ChatView.tsx) — gesture badge strip + reactions strip + hover tray on `MessageBubbleImpl`.
-- [`web/src/components/PersonaActionBanner.tsx`](../../../web/src/components/PersonaActionBanner.tsx) — new component (~250 LOC).
-- [`web/src/components/PersonaWindow.tsx`](../../../web/src/components/PersonaWindow.tsx) — mounts the banner over the Live2D zone.
+- [`web/src/components/ChatView.tsx`](../../../web/src/features/chat/ChatView.tsx) — gesture badge strip + reactions strip + hover tray on `MessageBubbleImpl`.
+- [`web/src/components/PersonaActionBanner.tsx`](../../../web/src/features/persona/PersonaActionBanner.tsx) — new component (~250 LOC).
+- [`web/src/components/PersonaWindow.tsx`](../../../web/src/features/persona/PersonaWindow.tsx) — mounts the banner over the Live2D zone.
 - [`data/persona/aiko_companion.txt`](../../../data/persona/aiko_companion.txt) — new "Reaching out" section.
 - [`tests/test_touch_gestures.py`](../../../tests/test_touch_gestures.py) — 29 tests: taxonomy completeness + ordering + per-kind axes floors, `TouchServiceState` serde, `try_dispatch` happy path / cooldown / daily cap / midnight rollover, axes-gate behaviour (under / equal / above threshold), `bypass_gates` shortcut, per-kind overrides for cooldown + daily cap, `render_touch_state_block` cue bands.
 - [`tests/test_user_reactions.py`](../../../tests/test_user_reactions.py) — 22 tests: taxonomy completeness, `compute_deltas` per-kind + soft-cap, `surprise` is signal-only, `DailyCapState` serde + kv round-trip, `apply_daily_cap` arithmetic + rollover + trim-and-block, `render_user_reactions_block` (single / multi-same / mixed), `reactions_metadata` snapshot shape.
@@ -150,7 +156,7 @@ End-to-end repro:
 - [`tests/test_web_server_reactions.py`](../../../tests/test_web_server_reactions.py) — 12 tests: POST happy path + counter increment, POST 400 on unknown / missing kind, POST 404 on unknown message, POST 403 when feature disabled, DELETE happy path + counter decrement + key-removal at zero, DELETE error parity, WS listener wiring through `apply_user_reaction`.
 - [`tests/test_relationship_axes_user_reaction.py`](../../../tests/test_relationship_axes_user_reaction.py) — 5 tests: `heart` lands closeness only, `hug` lands closeness + trust + comfort, `surprise` no-ops, daily cap state persists through `kv_meta`, cap blocks further movement once exhausted.
 - [`web/src/live2d/channels/ReachChannel.test.ts`](../../../web/src/live2d/channels/ReachChannel.test.ts) — 11 tests: lean-in writes body + head deltas during the pulse, peaks at midpoint, composes additively on top of an AmbientBody baseline, releases cleanly at expiry, restart-on-fresh-touch resets the timeline, capability gates (body-only rig / no-angle rig / expired event).
-- [`web/src/components/PersonaActionBanner.test.tsx`](../../../web/src/components/PersonaActionBanner.test.tsx) — 16 source-level wiring tests: store subscriptions, latest-assistant-id lookup, 20s default + 1s floor + replace-not-stack timer, `enabled` gate (off + flip-mid-life), `api.addReaction` / `removeReaction` round-trip, optimistic-write rollback on error, per-button disable while busy, taxonomy fallback paths.
+- [`web/src/components/PersonaActionBanner.test.tsx`](../../../web/src/features/persona/PersonaActionBanner.test.tsx) — 16 source-level wiring tests: store subscriptions, latest-assistant-id lookup, 20s default + 1s floor + replace-not-stack timer, `enabled` gate (off + flip-mid-life), `api.addReaction` / `removeReaction` round-trip, optimistic-write rollback on error, per-button disable while busy, taxonomy fallback paths.
 - [`web/src/components/ChatView.reactions.test.tsx`](../../../web/src/components/ChatView.reactions.test.tsx) — 12 source-level wiring tests: K31 badge strip wiring + fallback emoji, K32 reaction strip + hover tray gating on `canReact`, `onToggleReaction` dispatch, taxonomy contract assertion against the shared `types.ts` exports.
 - [`docs/personality-backlog/patterns.md`](../patterns.md) — K31 + K32 section bodies replaced with `**Shipped**` pointers.
 - [`AGENTS.md`](../../../AGENTS.md) — new "Soft physicality" Code Conventions bullet + new debugging-table row.
@@ -791,7 +797,7 @@ The foundation of the directed-emotions family. `AffectState` is an objectless v
 
 ## K58. Emotion speech weighting — moods that actually land in the voice
 
-The user-facing half: a K57 episode is worthless if the reply sounds identical. Three layers. **(a) Vocabulary**: minted four reactions end-to-end — `smug`, `pouty`, `sulky`, `mischievous` (plus wired the pre-existing `wistful` into the impulse table) — across [`reactions.py`](../../../app/core/affect/reactions.py) (canonical list + synonyms + semantic-neighbour fallback chains), [`affect_state.py`](../../../app/core/affect/affect_state.py) (impulse table), [`avatar_profile.py`](../../../app/core/persona/avatar_profile.py) (`smug`/`mischievous` → the Alexia `lzx` grin; `pouty`/`sulky` deliberately unmapped so the neighbour chain falls through `defiant` → `mj`), [`ExpressionChannel.ts`](../../../web/src/live2d/channels/ExpressionChannel.ts) (JS neighbour mirror + parity test), [`ChatView.tsx`](../../../web/src/components/ChatView.tsx) (emoji pips), [`cadence.py`](../../../app/core/voice/cadence.py) (`mischievous` quickens, `sulky`/`smug` slow down). **(b) Register recipes**: the persona's "Register recipes" block gives per-emotion bad/good pairs (miffed = shorter + drier, never lectures; smug = one earned "mm. say it. I was right." then drops it; lonely = one honest beat, no guilt). **(c) Weight scaling**: `render_block`'s high band appends a `_REGISTER_HINTS` line — the concrete `[[reaction:X]]` + `[[prosody:Y]]` recipe for that emotion (lonely → `wistful` + `soft`, miffed → `pouty`/`sulky` + `firm`) — so high-intensity episodes prescribe the delivery, not just the mood. Tests: extensions to `tests/test_emotion_episodes.py` (hint appears at high band only, hint-free emotions stay clean) + the reaction/avatar/cadence suites + the TS parity test.
+The user-facing half: a K57 episode is worthless if the reply sounds identical. Three layers. **(a) Vocabulary**: minted four reactions end-to-end — `smug`, `pouty`, `sulky`, `mischievous` (plus wired the pre-existing `wistful` into the impulse table) — across [`reactions.py`](../../../app/core/affect/reactions.py) (canonical list + synonyms + semantic-neighbour fallback chains), [`affect_state.py`](../../../app/core/affect/affect_state.py) (impulse table), [`avatar_profile.py`](../../../app/core/persona/avatar_profile.py) (`smug`/`mischievous` → the Alexia `lzx` grin; `pouty`/`sulky` deliberately unmapped so the neighbour chain falls through `defiant` → `mj`), [`ExpressionChannel.ts`](../../../web/src/live2d/channels/ExpressionChannel.ts) (JS neighbour mirror + parity test), [`ChatView.tsx`](../../../web/src/features/chat/ChatView.tsx) (emoji pips), [`cadence.py`](../../../app/core/voice/cadence.py) (`mischievous` quickens, `sulky`/`smug` slow down). **(b) Register recipes**: the persona's "Register recipes" block gives per-emotion bad/good pairs (miffed = shorter + drier, never lectures; smug = one earned "mm. say it. I was right." then drops it; lonely = one honest beat, no guilt). **(c) Weight scaling**: `render_block`'s high band appends a `_REGISTER_HINTS` line — the concrete `[[reaction:X]]` + `[[prosody:Y]]` recipe for that emotion (lonely → `wistful` + `soft`, miffed → `pouty`/`sulky` + `firm`) — so high-intensity episodes prescribe the delivery, not just the mood. Tests: extensions to `tests/test_emotion_episodes.py` (hint appears at high band only, hint-free emotions stay clean) + the reaction/avatar/cadence suites + the TS parity test.
 
 ---
 
@@ -1174,3 +1180,392 @@ is read against her pooled rate rather than against 1.0 — the v1 decision to
 skip a baseline is what made the bar unreachable. Below `taste_min_settled` a
 cluster produces no taste, so a cold ledger simply yields nothing rather than
 noise.
+
+## The second pass at leading (K85–K90) — why the family exists
+
+The **will family (K52–K56)** shipped the *permission* to lead and it works:
+over a sampled day `initiative-turn fire` appears on schedule and K55 stamps
+the thread it opened. What the sample also shows is that permission was never
+the binding constraint. Measured over the last 400 turn pairs in
+`data/chat_sessions.db`:
+
+| Measure | Value | Reading |
+|---|---|---|
+| Replies ending on `?` | **9%** | Not interviewing — she is *under*-asking, far below the persona's 1-in-3 target for non-question endings |
+| Median reply length | **26 words** | Not verbose-summarising either; there is no room in 26 words for "answer, then lead" |
+| Opener content-word echo | **16%** | Literal parroting is *not* the mechanism |
+| `kind='taste'` concepts | **2 rows** | K81's steer reads this kind and this kind alone |
+| `open_question` memories naming the user | **10/10** | Her entire curiosity inventory is interview questions about him |
+
+So the "she just summarises" complaint is real but misnamed. She is not
+recapping; she is producing short, terminal, *affirming* replies whose first
+sentence is grammatically parasitic on his last one — "Then those pokes are
+reserved for you", "Exactly, every crooked line earns one poke", "You're right,
+we did". Every one of those sentences is well-written and none of them could
+exist without the sentence before it.
+
+The cause is inventory, not instruction. A conversation needs a third subject,
+and she has two: *him*, and *them*. Her self-model is genuinely rich — 113
+identity, 73 value, 22 aspiration concepts with `subject='aiko'` at 0.7–0.79
+confidence — but read what they say: "I value revisiting my past reasoning as
+evidence of personal growth", "I value Jacob's explicit consent as the
+foundation for intimacy". They are all either about the relationship or about
+her own cognition. Not one is about a thing in the world she could bring up.
+Hand a system like that the floor and the only move available is another
+question about him, which is following wearing a leading costume.
+
+K85–K87 build the missing inventory, K88–K89 shape the turn once she has
+something to say, and K90 makes the whole family measurable so the next pass
+is not judged by vibes. **K85 is the root; the rest are much cheaper and
+several are near-worthless without it.**
+
+Two known counter-pressures to weigh while doing any of this. K69's `witness`
+steer says, in as many words, "reflect it back, name the feeling, sit with it"
+([`implicit_need.py`](../../../app/core/conversation/implicit_need.py)) — correct
+for genuine distress and a literal instruction to summarise everywhere else, so
+its firing rate by arc is worth auditing before adding anything new. And the
+speech addendum's "soften and shorten your reply" register rule
+([`prompt_support.py`](../../../app/core/session/prompt_support.py)) pushes toward
+the 26-word replies that leave no room for a second move.
+
+## K85. The third subject — interests that aren't him
+
+**✅ Shipped**, in five passes. The root of the family, and the expensive one:
+nothing in the system had ever produced a durable opinion about a subject that
+wasn't Jacob or the two of them, so there was no third subject for a
+conversation to be *about*.
+
+**Naming.** The kind is `pursuit`, not `interest`. T6 already carries
+`interest_drift_block` (K64b) and `dormant_interest_block` (K67), and both mean
+"a *shared* topic cluster's mass changed over time". A third `interest_*` block
+meaning "a subject of her own" would read as their sibling and isn't one.
+
+**(a) Widen the read, and measure the starvation.** `_render_taste_lean_block`
+now falls back past `kind="taste"` to `aspiration` / `value` / `identity` with
+`subject="aiko"`, filtered by
+[`own_subject.py`](../../../app/core/concepts/own_subject.py) to labels that aren't
+bond-scoped — three quarters of her stored self-concepts name him outright, and
+those are useless for breaking a lull with something of her own. The copy
+differs by kind, because a value is a position to state rather than a topic to
+steer onto. An hour's work, and it answered the question the rest of the phase
+depended on: the block was starved, not broken.
+
+**(b) Stop discarding the material.** Nothing durable existed to mine — the away
+journal is an 8-entry ring, `_rotate_hobby` wrote a fresh blob with `progress=0`
+and dropped the old one, and taste had two rows. A `pursuit_note` memory kind
+now records hobby milestones and wrap-ups, substantive away beats, and tended
+garden visits, through one `PursuitNoteWriter`
+([`pursuit_notes.py`](../../../app/core/memory/pursuit_notes.py)) so provenance is
+consistent. This also closes the gap K91 left open deliberately.
+
+**(c) The kind.** `pursuit` is registered with `subject="aiko"`, a `set`
+evidence model, and the strictest promotion gate of the aiko kinds: **three
+distinct notes and a week of age**, against taste's two and half a day. A
+pursuit is something she opens with, so a wrong one is a woman announcing an
+interest she doesn't have — and the thing that separates a pursuit from an
+afternoon is that she came back to it. Its proposer
+([`pursuit_aiko.py`](../../../app/core/concepts/proposers/pursuit_aiko.py)) reuses
+`propose_aiko_hybrid` over memories only and asks for **recurrence over
+vividness**; the synthesis pass batches notes **chronologically rather than by
+salience**, since a salience sort hides exactly the dull repetition that proves
+a pursuit.
+
+**(d) Hybrid cold start.** Authored starter pursuits are filed once per install
+as `candidate` rows with **zero evidence**, through the same path a grown one
+takes. They cannot steer anything — only `active` concepts surface — and must
+clear the same gate on the same lived notes; a seed that never comes up accrues
+no sources and is retired by the L3 candidate TTL. This was the design point to
+hold the line on: seeds enter as candidates or the whole thing becomes the
+canned hobby this entry warned about.
+
+**(e) The outlets.** A `pursuit_lean_block` in T6, sharing the K81 taste lean's
+pacing gate *and* its once-per-conversation latch — one permission slip with two
+sources, running pursuit-first because taste is bond-scoped and a pursuit isn't.
+And active pursuits reach the wants ledger as `share` wants, one per tick at a
+lower starting pressure than the time-sensitive ones, retiring with their
+concept when L3 demotes it. The hobbyhorse risk this entry named is handled by
+the L42 concentration/fixation check the taste block already used: a pursuit
+cannot surface while she is already fixating.
+
+## K86. Immortal future plans — asking about things that already happened
+
+**✅ Shipped.** Originally filed as wants-ledger hygiene on a misreading of the
+ledger; the ledger turned out to be healthy and the real defect was two layers
+upstream.
+
+**What was wrong.** Aiko kept asking about past things as though they were
+still ahead — the visible instance was "did we ever manage to reschedule that
+evening date?", asked eight days *after* the date happened and recorded. The
+question came from a K34 forward-curiosity draft off `future_plan` memory 955,
+"Jacob will schedule another date with Aiko when he has free time in the
+evening", written 39 days earlier and expired for 38 of them.
+
+Two independent bugs stacked. `_derive_relevance_until` correctly stamps every
+`future_plan` with an expiry (`event_time + 1 day`, falling back to
+`created_at + 1 day`), and all 11 rows in the live database carried one — but
+`MemoryDecayWorker._reclassify_temporal` swept for retirement using
+`event_time_before` only, and `list_by_temporal_type` skips rows where that
+column is missing. The extractor can only set an `event_time` when the user
+named a time, so "next week" / "soon" / "in the near future" produce a plan
+with no clock and **those rows were unreachable by the sweep forever**: 9 of 11
+live rows, the oldest 61 days past its expiry, all still presenting as pending
+futures. Then `ForwardCuriosityWorker._pick_candidate` drew from that pool
+without checking expiry at all, so the graveyard was also the question supply.
+Worth noting what was *not* wrong: K-time10 already handles the *phrasing* of
+an aged note ("ask retrospectively about something long past"), which is why
+the bad question came out fluent and retrospective while still being about a
+resolved plan. Fluency hid the staleness.
+
+**Fix.** The decay worker now retires a `future_plan` on either signal:
+`event_time` past the existing one-hour buffer, or `relevance_until` past a
+fortnight's grace for the clockless majority. The grace matters — for a
+clockless plan `relevance_until` is only `created_at + 1 day`, a *retrieval*
+window meant to keep a vague "next week" out of RAG, not an assertion that the
+plan is over. Retiring on it directly would make "did the cookies ever happen?"
+unaskable a day after he mentioned it, which is the opposite failure. The
+retrospective window is anchored on whichever signal is available, so a plan
+that died weeks ago falls straight through pass 2 into the archive instead of
+returning as a freshly-relevant past event.
+
+Deliberately kept in one place: consumers read `list_by_temporal_type
+("future_plan")` and trust the temporal type, rather than each re-deriving
+"is this still pending" from `relevance_until` with their own idea of the
+window. An earlier draft duplicated the check into forward curiosity and the
+two definitions immediately disagreed. Against the live database the sweep
+retires 8 of 11 rows — including the one behind the date question — and keeps
+the three that are genuinely still ahead. Key files:
+[`memory_decay_worker.py`](../../../app/core/memory/memory_decay_worker.py)
+(`_reclassify_temporal`, `_overdue_future_plans`,
+`_CLOCKLESS_PLAN_GRACE`), tests in
+[`test_memory_temporal.py`](../../../tests/test_memory_temporal.py).
+
+**Still open, smaller.** A want is retired when `detect_acted` sees its topic
+surface, which fires on *any* mention — including the user saying the thing
+already happened. That is the right outcome by accident. Retiring on
+contradiction explicitly, and propagating "this is done" back to the source
+memory rather than only to the ledger row, would stop the next producer
+re-minting the same question from the same still-live source. The 59 dangling
+`promise` memories (newest 51 days old, none ever resolved) are the same shape
+of problem in a different store and have no closure pass at all.
+
+## K87. Curiosity that isn't about him
+
+**✅ Shipped.** A shared quota rather than three rewrites. Pure
+[`curiosity_subject.py`](../../../app/core/proactive/curiosity_subject.py) gives all
+three generators the same definition of "about a subject"
+(`is_person_directed`, `subject_share`, `wants_subject`, `deficit`) and
+`agent.curiosity_subject_quota` splits their output. The quota is a **running
+deficit, not a coin flip** — these workers fire a handful of times a day, so
+`p=0.4` in expectation buys a plausible week of pure interviewing.
+
+Each generator enforces it where it can actually be *checked*, not only in the
+prompt: the curiosity worker discards a draft that drifts back into second
+person, the seed worker labels each seed and reorders the batch against the
+standing pool (a prompt-only quota is satisfied by relabelling), and the forward
+worker gained a third candidate pool of her own notes, drafting a statement from
+it rather than a question.
+
+Two consumers had to learn the difference. The narrative block frames a subject
+note as hers to offer instead of as something to ask, and K47's share-first gate
+no longer mutes it — that gate is asking her to lead with her own material, and
+a subject note is exactly that. The wants ledger files it as the first `share`
+want anything has ever produced; the kind had sat in `WANT_KINDS` since K52 with
+no producer.
+
+**K47 audited and cleared.** Over this month's 177 rolling windows on the real
+log the question-balance suppressor armed zero times. The all-time 14.7% belongs
+to the older, more interview-y era.
+
+## K88. Anaphoric-opener detector — the measurable tell for following
+
+**✅ Shipped.** A fourth band in the style tracker, following the fixed pattern
+of the other three: a `BAND_*` constant, a cooldown entry, an `_evaluate_*`
+returning `StyleRutResult | None`, a priority slot in `detect()`, a branch in
+`render_inner_life_block`, `agent.style_tracker_*` settings, and a bullet in the
+"Style patterns I'm in:" section of
+[`conditional_handling.txt`](../../../data/persona/conditional_handling.txt).
+
+**A rate, never a ban** — N of the last M openers, exactly as designed. Persona
+line 30's standing DON'T PARROT fails precisely because a standing rule cannot
+see a rate, and the occasional "Then those pokes are reserved for you" is warm.
+The detector is deliberately narrow about what counts: a particle in front of
+her own clause is *not* following ("But I finished the book" leads), `it` and
+`they` are excluded as anaphoric subjects because expletive "it" introduces her
+own observation, and leading interjections are skipped across sentence
+boundaries as well as commas — "Mm. I will. Sleep well" and "Mm, I will" are the
+same move, and a detector that called one of them following would spend its
+firing budget telling her to stop making warm noises.
+
+The detector itself lives in [`anaphora.py`](../../../app/core/persona/anaphora.py)
+and is shared with the K90 report, so the cue she sees and the number the report
+tracks can never drift apart.
+
+## K89. Sustained thread — leading past one turn
+
+**✅ Shipped**, last of the family, after K85 gave a thread something worth
+opening.
+
+**What was wrong.** `OwnedThread` consumed its single evaluation before running
+it — "one evaluation max" — so a thread was a polite attempt: one nudge, then
+gone whatever happened. Giving up wasn't a decision, it was running out of
+slots.
+
+**The stake.** A thread now carries a `stake` that starts full and loses
+`thread_stake_decay` on each reply that doesn't answer it. A return is granted
+only while what remains after paying stays above `thread_min_stake`, so the
+defaults buy exactly two; `thread_max_returns` is a guard rail on that
+arithmetic rather than the thing that normally decides, and the parser clamps it
+at 2 so no config can buy a third.
+
+**The five ways it stops are the design**, since the failure mode is nagging and
+persistence is the easy half. *Satisfied* — he answered it. *Moved on* — a new
+verdict for a **substantial** reply that is topically elsewhere: he isn't
+brushing her off, he's talking, and circling back over a real answer is the
+nagging version of having a stake. The one-shot design couldn't make that
+distinction because it never looked at length once a cosine was available.
+*Too old* — past `thread_max_age_minutes` a return is a resurrection.
+*Stake spent* — the ordinary end. *Not biting* — the only one that reads the
+conversation: if a second unanswered reply is **further** from the thread than
+the first was, the drift is away from her and the remaining return is retired
+rather than spent, which is what stops "two returns" meaning "two nudges,
+always".
+
+Two smaller consequences of surviving a turn: the second return renders quieter
+than the first (half a sentence, easy to walk past, and never a word about
+having asked already), and only the *first* brush-off queues a K57 `miffed`
+trigger — stacking a second sulk under a gentler nudge is the opposite of
+gentler.
+
+## K90. Lead/follow metrics — make the whole family measurable
+
+**✅ Shipped**, first of the family, because nothing after it could be judged
+otherwise.
+
+**The instrument.** Pure
+[`lead_follow_metrics.py`](../../../app/core/persona/lead_follow_metrics.py) scores
+one turn: question-ending and word count reused from the style tracker's
+`_extract_features`, opener echo from the wants ledger's `content_words`, and
+two genuinely new numbers — `is_anaphoric_opener` and `own_material_ratio`
+(content words absent from his message *and* the recent window). The detector
+lives in leaf module [`anaphora.py`](../../../app/core/persona/anaphora.py) with no
+first-party imports, because the K88 band and this report both need it and
+already depend on each other in the other direction. Sharing it is not just an
+import-graph convenience: two copies would drift, and we would end up "fixing" a
+rate nothing was reacting to.
+
+**The corpus** ([`lead_follow_corpus.py`](../../../app/core/persona/lead_follow_corpus.py))
+is shared between the CLI and the REST endpoint for the same reason — a second
+implementation behind the panel would eventually disagree with the one the
+baseline was diffed against.
+
+**Per-turn block firing.** Schema v35's `turn_prompt_blocks`, modelled on
+`cue_decisions`, records which prompt blocks rendered non-empty each turn. No
+new instrumentation was needed: `telemetry.block_chars` was already in scope
+beside `_record_cue_decisions` and already reports every block in
+`_PROMPT_BLOCK_TIERS`.
+
+**Surfaces.** [`scripts/lead_follow_report.py`](../../../scripts/lead_follow_report.py)
+and `GET /api/lead-follow` behind a Diagnostics panel. The two halves have
+different histories and the report says so: the text metrics run retroactively
+over the whole message log, so they were real from day one, while block firing
+rates only accrue from v35 onward.
+
+**The baseline** is committed at
+[`data/diagnostics/lead_follow_baseline.json`](../../../data/diagnostics/lead_follow_baseline.json).
+Over 1894 turns: 18% of her replies opened on a sentence that could not stand
+without his, 19% of her opening content words came straight out of his message,
+77% of her content was her own. Note the provenance — the first capture read 28%
+anaphoric, and the detector was refined during the K88 split (leading
+interjections are now skipped across sentence boundaries, so "Mm. I will." is
+judged on "I will"). The file was retaken on the *same* unchanged 1894 turns so
+the numbers are comparable; the original is in the commit history.
+
+**What the baseline cannot yet tell us.** Every turn in that log predates
+K85/K87/K88/K89, so re-running the report today reproduces it exactly. The
+family's effect is only visible after the app has run for a while — the honest
+verification is a diff a few hundred turns from now, watching `anaph` fall and
+`own` rise.
+
+## K91. Lived-in away life — a day she had, not a day she narrated
+
+**✅ Shipped**, in four phases.
+
+**What was wrong.** The world model was already rich — `Item.state` tracked the
+paperback's chapter, the tea pot's fullness and flavour, every plant's stage and
+`last_watered_at` — and the away-beat narrator read none of it. `_pick_activity`
+templated from item *names*, so she could "curl up with The Glasshouse Letters"
+twice in a day while it sat at chapter 3 of 16, water a garden where both plants
+had just come into flower without mentioning either, and "steep a soothing cup
+of tea" that left the pot as full as it started. Nothing a beat said had any
+consequence, and nothing the room recorded reached what she said. Worse, beats
+were atomic: an afternoon read back as unrelated postcards (11:44 tea in the
+garden, 11:51 indoors dusting a keyboard, tea abandoned), and no day added up to
+anything because each beat was drawn independently of every other.
+
+**Phase 1 — beats read and write state.** Pure
+[`beat_detail.py`](../../../app/core/world/beat_detail.py) composes each clause from
+the row the beat touched, and the H14 whole-beat prompt now sees state hints
+(`The Glasshouse Letters (reading, chapter 3 of 16; two botanists and a war)`)
+instead of a bare name list. An optional `ItemEffect` on `ActivityPlan` writes
+the change back through transitions the room *already owned* — H20's
+`advance_book` / `next_tea`, the store's `water_plant` — rather than inventing
+new state math, so reading actually moves the book and finishing one seeds an H17
+cue. Effects are a closed set and the model's `changed_item` is resolved against
+live inventory with the action **derived from the item's kind**, so it cannot
+request a transition an item doesn't support. The garden round measures dryness
+*before* the can goes round, which is the only reason it can name the pot that
+needed it — watering is what destroys that evidence.
+
+**Phase 2 — episodes.** Pure
+[`beat_episode.py`](../../../app/core/world/beat_episode.py) holds a successor table
+encoding *continuation*, not variety: tea leads to settling down with it, a nap
+closes an episode because waking up is a new one. After a long quiet stretch a
+firing plays out 2–3 chained beats. An episode journals **one** entry carrying
+its `keys`, which means the surfacing provider renders the arc as one sentence
+with no changes on its side, the 8-entry ring keeps its history, and H18
+anti-repetition still sees every beat via the expanded key list. It is rephrased
+once rather than per beat, so an episode costs one generation and one unit
+against the daily cap — the same as a single beat. Candidate building moved to
+[`idle_activity_candidates_mixin.py`](../../../app/core/world/idle_activity_candidates_mixin.py)
+because a chain must see the whole candidate set, with the plan types in
+[`idle_activity_plan.py`](../../../app/core/world/idle_activity_plan.py) to break the
+import cycle and keep the worker under the size limit.
+
+**Phase 3 — the day's intention.** Pure
+[`day_intention.py`](../../../app/core/world/day_intention.py) picks one intention
+per local day from what the world is asking for, in priority order — ripe produce
+spoils, a thirsty pot suffers, a nearly-finished book nags — then her H19 hobby,
+then a small self-directed pool so the spine exists in a becalmed room. It tilts
+the H18 draw (`intent_key` / `intent_boost`, a nudge with a floor, never a gate)
+and feeds the H14 prompt. The payoff is the close-out: the beat that satisfies it
+says so, which is what makes a day read as authored rather than sampled.
+Garden-keyed intentions are closed by `GardenVisitWorker`, since watering is its
+job — that's the other half of the loop. Yesterday's is discarded rather than
+carried over; an intention that survives the night stops being "today" and starts
+being a grudge. Switch `agent.day_intention_enabled`.
+
+**Phase 4 — the small things that made it repetitive.** Eating had one shape at
+every hour, so breakfast, lunch and a 2 a.m. raid on the biscuits were the same
+beat; `pick_food` now reaches for garden produce at mealtimes and the biscuit tin
+late at night, and phrases each accordingly. The species catalogue went from four
+plants to twelve (lettuce, mint, strawberry, chili, rosemary, spring onion,
+radish, peas), so a harvest is no longer one of four lines. And months of gifts
+had accreted four `cookies` rows in four rooms — correct at gift time, since a bag
+on the desk isn't the jar in the kitchenette, but it meant beats ate from an
+arbitrary one; `WorldStore.consolidate_consumables` folds same-slug food stacks
+into the largest, run as one more H20 slow-drift transition ("tidied the
+kitchen").
+
+Debug: `force_away_beat` reports the chain, the state each beat wrote back, and
+the day's intention — none of which was observable from outside before. Tests:
+[`test_beat_detail.py`](../../../tests/test_beat_detail.py),
+[`test_beat_episode.py`](../../../tests/test_beat_episode.py),
+[`test_day_intention.py`](../../../tests/test_day_intention.py), plus the
+`ItemEffectTests` / `EpisodeTests` / `DayIntentionTests` / `MealRhythmTests`
+classes in the worker, garden and store suites.
+
+**Closed by K85b.** Substantive away beats — the ones that changed room state,
+chained into an episode, or closed the day's intention — now write a
+`pursuit_note` memory, so an afternoon is referable weeks later and can promote
+a `pursuit` concept. The note is deliberately not written for every beat; a day
+of small drifting is a day, not an interest.

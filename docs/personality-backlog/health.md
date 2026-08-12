@@ -2758,6 +2758,22 @@ across both parts.
 needs days of accumulation rather than another change. Re-check before doing
 anything else, since three of them alter the inputs to everything below:
 
+> **First reading, 12 Aug 20:00** (253 recorded turns, latest message 16:05).
+> Two of the five have already moved: `tension_block` fires on **25 of 253**
+> turns and the `tension` cue surfaced **27 times in three days**, both from a
+> standing zero, so H10 is confirmed and H16's dedupe did not starve it.
+> `concept_hypothesis_block` reached **4 of 253** — off zero, but
+> `hypotheses.asked_count` is still 0 across all 16 rows, so the cue is
+> rendering without yet converting into an ask; that is the H7 signal to keep
+> watching. The other three are simply too young to read: `kind='conduct'` is
+> still 0 rows (H1), and the wants ledger's strongest want sits at **0.167**
+> against the 0.35 soft bar, so `topic_appetite_block`,
+> `thread_ownership_block` and `pursuit_lean_block` remain at 0 exactly as H28
+> predicts for this point on the clock. **Nothing here is a defect yet.** The
+> corollary matters more than the numbers: the concept and cue lanes are
+> mid-experiment, and changing their inputs before ~15 Aug destroys the
+> attribution these five entries were designed to produce.
+
 - **H1** — the latch is open; `kind='conduct'` should go non-zero on the next
   weekly pass. If it does not, look at the detector.
 - **H16** — tension candidates per pass went 0/3/6 → 3/6/9 by block. Re-run the

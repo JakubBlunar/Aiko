@@ -19,7 +19,7 @@ attach an MCP client.
 
 **Key files.** [`app/web/server.py`](../../../app/web/server.py) (new
 `/api/agenda` GET + complete/drop), a new sub-panel under
-[`web/src/components/settings/`](../../../web/src/components/settings/),
+[`web/src/components/settings/`](../../../web/src/features/settings/),
 the agenda store + WS event for live updates.
 
 **Effort.** Medium.
@@ -55,7 +55,7 @@ the agenda store + WS event for live updates.
 > `applyAgendaUpdated` reducer; status filtering is client-side so a
 > status flip never needs a refetch), the `agenda_updated` socket case,
 > and a new **Agenda** sub-tab in the Memory drawer
-> ([`AgendaPanel.tsx`](../../../web/src/components/settings/memory/AgendaPanel.tsx))
+> ([`AgendaPanel.tsx`](../../../web/src/features/settings/memory/AgendaPanel.tsx))
 > with status filter, inline add, and complete / drop / reopen actions.
 > Tests: [`tests/test_agenda.py`](../../../tests/test_agenda.py)
 > (`AgendaOnChangeTests`),
@@ -75,7 +75,7 @@ data is all there.
 **Key files.** [`app/web/server.py`](../../../app/web/server.py) (add
 `offset` to the messages endpoint),
 [`web/src/api.ts`](../../../web/src/api.ts) `loadMessages`,
-[`web/src/components/ChatView.tsx`](../../../web/src/components/ChatView.tsx)
+[`web/src/components/ChatView.tsx`](../../../web/src/features/chat/ChatView.tsx)
 ("load older" affordance at the top of the scroll).
 
 **Effort.** Medium.
@@ -94,12 +94,12 @@ data is all there.
 >
 > Frontend: [`api.getMessages`](../../../web/src/api.ts) gained a `beforeId`
 > arg; a shared `mapRawMessages` helper now backs both the initial load
-> ([`SessionSidebar`](../../../web/src/components/SessionSidebar.tsx)) and
+> ([`SessionSidebar`](../../../web/src/features/sessions/SessionSidebar.tsx)) and
 > the older-page load. New store state `historyHasMore` /
 > `setHistoryHasMore` (set true when the initial page comes back full,
 > narrowed to false on a short older-page) and a `prependMessages`
 > reducer (dedupes by `backendId`, leaves `streamingDraft` untouched).
-> [`ChatView`](../../../web/src/components/ChatView.tsx) renders a "Load
+> [`ChatView`](../../../web/src/features/chat/ChatView.tsx) renders a "Load
 > older messages" button in Virtuoso's `Header` and uses Virtuoso's
 > `firstItemIndex` prepend pattern (a large baseline decremented by the
 > prepended count, derived per-`sessionKey` so a session switch reads
@@ -262,7 +262,7 @@ mirror-write + reconfigure paths),
 the `chat_llm` parse + the `workers_use_local` home),
 [`sessions_settings_routes.py`](../../../app/web/rest/sessions_settings_routes.py)
 + the `chat_llm` REST/WS surface,
-[`ChatProviderSection.tsx`](../../../web/src/components/settings/ChatProviderSection.tsx)
+[`ChatProviderSection.tsx`](../../../web/src/features/settings/ChatProviderSection.tsx)
 (decide whether the single-provider preset UX stays or folds into the
 routes table). Tests: `test_session_controller_provider_switch.py`,
 `test_web_server_chat_llm.py`, `test_settings_llm_migration.py`,

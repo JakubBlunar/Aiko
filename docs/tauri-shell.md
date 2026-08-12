@@ -87,7 +87,7 @@ npm --prefix web run tauri:dev
   window via its X button hides it instead of destroying it, so the next
   open is instant and the WebSocket stays connected.
 
-The persona window renders [`PersonaWindow.tsx`](../web/src/components/PersonaWindow.tsx)
+The persona window renders [`PersonaWindow.tsx`](../web/src/features/persona/PersonaWindow.tsx)
 when `window.location.hash === "#/persona"` — see the hash-router in
 [`App.tsx`](../web/src/App.tsx). All other hashes fall through to the
 full chat layout. We intentionally avoided `react-router-dom` because
@@ -124,7 +124,7 @@ The persona overlay window never renders chat bubbles, so any feature
 whose primary chat-mode surface is a bubble badge / hover tray / inline
 strip needs a *persona-mode equivalent* if the user should see it in
 overlay mode. The canonical pattern is
-[`PersonaActionBanner.tsx`](../web/src/components/PersonaActionBanner.tsx),
+[`PersonaActionBanner.tsx`](../web/src/features/persona/PersonaActionBanner.tsx),
 which shipped with K31 + K32 (soft physicality round-trip):
 
 * Subscribes to the same Zustand store slice as the chat-mode renderer
@@ -146,7 +146,7 @@ When adding a new feature that needs user-visible feedback in overlay
 mode, follow the same template: a thin presentational component
 subscribing to the same store slice as the chat-mode renderer, gated
 on a `persona_*_enabled` setting, mounted in
-[`PersonaWindow.tsx`](../web/src/components/PersonaWindow.tsx) as an
+[`PersonaWindow.tsx`](../web/src/features/persona/PersonaWindow.tsx) as an
 absolutely-positioned child of the Live2D zone.
 
 ## The `backendBase()` resolver convention
@@ -179,7 +179,7 @@ Existing call-sites that thread through `backendBase()`:
   all root-relative paths.
 * [`web/src/hooks/useAssistantSocket.ts`](../web/src/hooks/useAssistantSocket.ts)
   — `resolveWsUrl()`.
-* [`web/src/components/Live2DAvatar.tsx`](../web/src/components/Live2DAvatar.tsx)
+* [`web/src/components/Live2DAvatar.tsx`](../web/src/features/avatar/Live2DAvatar.tsx)
   — `/avatar/${entry_filename}`.
 
 If you add a new backend URL, route it through `backendBase()` too.
@@ -217,7 +217,7 @@ basis (not via the Python config):
   persona-open transition (see `usePersonaVisibilitySync` in
   [`web/src/App.tsx`](../web/src/App.tsx)).
 * The settings drawer's "Persona window (desktop)" section in
-  [`SettingsDrawer.tsx`](../web/src/components/SettingsDrawer.tsx)
+  [`SettingsDrawer.tsx`](../web/src/features/settings/SettingsDrawer.tsx)
   is intentionally minimal: an always-on-top checkbox, an "Open
   persona window" button, and a "Reset window position" button
   (calls `reset_persona_window_position` to recover from "I dragged
@@ -245,7 +245,7 @@ How the pieces fit:
   only when Tauri reports `tauri://move` or `tauri://scale-change`.
   Per-frame work is one IPC for the cursor + one subtraction; the
   geometry cache makes the hot path allocation-free.
-* [`web/src/components/Live2DAvatar.tsx`](../web/src/components/Live2DAvatar.tsx)
+* [`web/src/components/Live2DAvatar.tsx`](../web/src/features/avatar/Live2DAvatar.tsx)
   — branches on `isTauri()` to construct `GlobalMouseSource` vs
   `WindowMouseSource`. Both feed `AvatarEngine` via the existing
   `deps.mouseSource` plumbing, so `GazeChannel` is unchanged.

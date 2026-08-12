@@ -212,7 +212,7 @@ angle, gaze focus, and breath amplitude already owned by existing channels.
 **Key files.** A new channel under
 [`web/src/live2d/channels/`](../../../web/src/live2d/) hooking `tickPreModel`, a
 `composing` flag plumbed from the composer in
-[`ChatView.tsx`](../../../web/src/components/ChatView.tsx) into the avatar engine
+[`ChatView.tsx`](../../../web/src/features/chat/ChatView.tsx) into the avatar engine
 (via the store), capability-gated on head-angle / gaze params. Backend: none, or
 at most reuse the typed-prefetch frame. Scale every amplitude by
 `avatar.expressiveness`.

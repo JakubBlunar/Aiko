@@ -252,10 +252,10 @@ whole **K-time** family shipped; see
 
 ### G. Background workers — [`workers.md`](workers.md)
 
-- **G4.** Cue outcome accounting — 50-odd workers and no way to tell which
-  ones earn their keep. Record *armed* / *surfaced* / *settled* per cue plus
-  the reason a provider declined to render, so silently-unreachable topic
-  gates and hand-picked cooldowns stop being guesses.
+- **G5.** Self-tuning cue cooldowns — G4 now measures what the hand-picked
+  constants produce, so tuning them stops being a guess.
+- **G6.** Per-provider decline attribution — the `provider` decline bucket is
+  still coarse for everything outside the concept lane.
 - **G7.** Worker prompts have no input-token accounting — the chat prompt is
   budgeted to the token, a worker prompt is a string. `SummaryWorker` reads its
   window with no limit, so the size is whatever accumulated; the failure is a
@@ -264,8 +264,11 @@ whole **K-time** family shipped; see
 - *Cleanup* — drop or wire the unused
   `consolidator_state.last_cluster_index` column.
 
-New worker ideas show up in [`patterns.md`](patterns.md) until they
-earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
+G1–G4 have shipped; G4's write-up is in
+[`shipped/awareness.md`](shipped/awareness.md#g4-cue-outcome-accounting--which-of-the-50-odd-workers-earn-their-keep),
+with its pre-build sketch archived there for G5/G6. New worker ideas show up in
+[`patterns.md`](patterns.md) until they earn a G-letter; several (K1, K8, K10,
+K14, K21) are worker-shaped.
 
 ### I. Integration / wiring gaps — [`integration.md`](integration.md)
 
@@ -313,11 +316,10 @@ H0, H1, H3, H4, H8, H9, H11 and H13-H22 have shipped — see
 - **J2.** Exportable timeline (markdown / PDF).
 - **J3.** Axes-aware proactive nudges.
 - **J7.** Moment-detection tuning (+ gift/promise ordering bug).
-- **J8.** Milestone celebration beats.
 - **J12.** Intimacy pacing & boundary calibration.
 - **J13.** Pet-name reciprocity & evolution.
 
-J4 (relationship-stage register), J5, J6, J9, J10 and J11 have shipped —
+J4 (relationship-stage register), J5, J6, J8, J9, J10 and J11 have shipped —
 see [`shipped/moments.md`](shipped/moments.md).
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
@@ -344,7 +346,7 @@ satisfies it admits to. Plus the repetition fixes: a meal rhythm instead of one
 kitchen pass that folds the duplicate food stacks months of gifts left in four
 rooms. The gap it left — beats were not memories — was closed by K85b's
 `pursuit_note`. See
-[`patterns.md`](patterns.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated).
+[`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated).
 
 **K85–K90, the second pass at leading, shipped as a family.** The will family
 (K52–K56) shipped the *permission* to lead and it fires on schedule, but
@@ -359,7 +361,7 @@ concept kind, the `pursuit_note` memories that feed it, and two outlets for it �
 and K89 turned a thread from one polite attempt into a decaying stake worth two
 returns. The verification is a diff a few hundred turns from now; every turn in
 the baseline predates all of it. See
-[`patterns.md`](patterns.md#the-second-pass-at-leading-k85k90).
+[`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#the-second-pass-at-leading-k85k90--why-the-family-exists).
 
 **K83 and K84 are the deliberately risky pair** — both about giving her a
 stake rather than uniform availability, and both easy to get badly wrong.

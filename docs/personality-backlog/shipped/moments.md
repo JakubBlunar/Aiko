@@ -126,6 +126,13 @@ one for me, honestly"). Key files:
 this must never read as manipulation or guilt — it's an offer of
 closeness, withdrawn instantly if the user doesn't pick it up.
 
+> **STATUS: SHIPPED.** `_render_reciprocal_vulnerability_block` (T6 user_text
+> provider). Gates: master switch, stage >= familiar (J4), trust floor, K15
+> budget not exhausted (read-only check), user's live message not low-mood
+> (estimator + `vent` dialogue act), long cooldown. MCP force-next bypass.
+> Settings `agent.reciprocal_vulnerability_{enabled,min_trust,cooldown_hours}`.
+> Tests: `tests/test_reciprocal_vulnerability_provider.py`.
+
 ---
 
 > **STATUS: SHIPPED.** `_render_appreciation_block` (T6). Anchored to the most
@@ -205,3 +212,29 @@ read in the K31/K48/J10 gates. **Tonal guard:** bias, don't collapse —
 keep variety so she never feels like a single-note affection machine, and
 never announce the finding ("I've noticed you like it when I…"). Pairs
 with J12. **Effort.** Medium.
+
+## J8. Milestone celebration beats
+
+> **STATUS: SHIPPED.** `_render_milestone_block` (T6), armed post-turn via
+> `_pending_milestone_celebration` when `RelationshipTracker.record_turn()`
+> reports a crossing, and consumed once. Stage (J4) sets the register, so a
+> `new`-stage milestone reads understated and a `close`-stage one lands
+> warmer. Setting `agent.milestone_celebration_enabled`.
+
+**Motivation.** `RelationshipTracker.record_turn()` already detects
+milestone crossings (100 turns, 7/30/100/180/365 days —
+[`relationship.py`](../../../app/core/relationship/relationship.py)
+`_MILESTONES`), but today they only *maybe* seed a silent moment. A
+relationship feels alive when those are *actively acknowledged* — "hey,
+it's been a month since we started talking, that's kind of nice." Surface
+the crossing as a one-shot inner-life cue on the next turn (warm, never
+forced, skippable), distinct from the anniversary surfacing which is
+moment-anchored. Gate by stage (J4) so a `new`-stage milestone is
+understated and a `close`-stage one lands warmer. Key files:
+[`relationship.py`](../../../app/core/relationship/relationship.py)
+(milestone signal already exists),
+[`prompt_assembler.py`](../../../app/core/session/prompt_assembler.py)
+(one-shot milestone cue), the anniversary provider as the pattern to
+mirror. Tone guard: acknowledge, don't perform — no confetti.
+
+---

@@ -31,12 +31,12 @@ document upload), persist the source URL or document id in
 cites naturally ("according to a thing I read last week..."). The
 Memory tab grows a "from web" badge that links out. Key files:
 [`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py),
-[`app/llm/tools/web_search.py`](../../app/llm/tools/web_search.py),
+[`app/core/tasks/handlers/web_search.py`](../../app/core/tasks/handlers/web_search.py),
 [`app/core/proactive/idle_curiosity_worker.py`](../../app/core/proactive/idle_curiosity_worker.py)
 (stamps the winning result URL onto each `curiosity_finding`),
 [`app/core/memory/idle_fact_checker.py`](../../app/core/memory/idle_fact_checker.py)
 (stamps the citation source onto fact-check rewrites),
-Memory tab in [`web/src/components/SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx).
+Memory tab in [`web/src/components/SettingsDrawer.tsx`](../../web/src/features/settings/SettingsDrawer.tsx).
 Pairs naturally with F1, which would stamp its own `source_url` on
 fact-check rewrites, and with G3's `curiosity_finding` memories which
 already know the search query but don't yet record the winning URL.

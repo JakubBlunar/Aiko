@@ -68,7 +68,7 @@ validation pass, not new protocol.
 **Key files.** [`web/src/App.tsx`](../../web/src/App.tsx) (responsive
 row→stack), [`web/index.html`](../../web/index.html) + a new
 `web/public/manifest.webmanifest` + service worker (Vite PWA plugin),
-[`web/src/components/SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)
+[`web/src/components/SettingsDrawer.tsx`](../../web/src/features/settings/SettingsDrawer.tsx)
 and the `settings/` panels (reflow), `backendBase()` for the
 split-origin case.
 

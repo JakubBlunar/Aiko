@@ -53,7 +53,7 @@ The tiering is actually consumed, not just declared: the six **idle-scheduler-re
 ### Observability
 
 - **MCP**: `get_worker_llm_gate_stats` (in-flight + per-tier queued + grant counts + wait-time stats — first stop when a workflow seems to be starving conversation workers), `get_workflow_state(task_id)` (parent row + every child with status/result — "the workflow finished but the answer looks wrong"), `list_capability_gaps` (the bounded ring of things a workflow couldn't do).
-- **TasksTab** ([`web/src/components/settings/TasksTab.tsx`](../../../web/src/components/settings/TasksTab.tsx)) already showed `parent #N` + the phase badge; it grew a `can't do yet` badge (with a `needs: X` tooltip) for any task whose `result.missing_capability` is set.
+- **TasksTab** ([`web/src/components/settings/TasksTab.tsx`](../../../web/src/features/settings/TasksTab.tsx)) already showed `parent #N` + the phase badge; it grew a `can't do yet` badge (with a `needs: X` tooltip) for any task whose `result.missing_capability` is set.
 - **Logs**: `workflow started:` / `workflow capability gap:` (handler), `worker-llm gate: enabled=… conv=… maint=… task=…` (install), grep-friendly via `tail_logs`.
 
 ### Settings
@@ -62,7 +62,7 @@ New `AgentSettings` knobs: `workflow_enabled` (owns the handler), `workflow_max_
 
 ### Tests
 
-[`tests/test_goal_workflow_handler.py`](../../../tests/test_goal_workflow_handler.py) (happy path, empty goal, missing capability, repeat / child / iteration guards, cooperative cancel), [`tests/test_workflow_skill_registry.py`](../../../tests/test_workflow_skill_registry.py), [`tests/test_workflow_planner.py`](../../../tests/test_workflow_planner.py), [`tests/test_web_search_handler.py`](../../../tests/test_web_search_handler.py), [`tests/test_workflow_tools.py`](../../../tests/test_workflow_tools.py) (schema + glue for the three brain tools), extensions to [`tests/test_session_controller_provider_switch.py`](../../../tests/test_session_controller_provider_switch.py) (route precedence + gated-proxy install), and the `can't do yet` badge case in [`web/src/components/settings/TasksTab.test.tsx`](../../../web/src/components/settings/TasksTab.test.tsx).
+[`tests/test_goal_workflow_handler.py`](../../../tests/test_goal_workflow_handler.py) (happy path, empty goal, missing capability, repeat / child / iteration guards, cooperative cancel), [`tests/test_workflow_skill_registry.py`](../../../tests/test_workflow_skill_registry.py), [`tests/test_workflow_planner.py`](../../../tests/test_workflow_planner.py), [`tests/test_web_search_handler.py`](../../../tests/test_web_search_handler.py), [`tests/test_workflow_tools.py`](../../../tests/test_workflow_tools.py) (schema + glue for the three brain tools), extensions to [`tests/test_session_controller_provider_switch.py`](../../../tests/test_session_controller_provider_switch.py) (route precedence + gated-proxy install), and the `can't do yet` badge case in [`web/src/components/settings/TasksTab.test.tsx`](../../../web/src/features/settings/TasksTab.test.tsx).
 
 ## Task capabilities + approvals + file_write + calculate
 

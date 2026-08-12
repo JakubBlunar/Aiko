@@ -25,9 +25,11 @@ now holds **only the open work**.
 | H11 | Real-world co-location — weather + season     | ✅ shipped — [immersion.md](shipped/immersion.md#h11-real-world-co-location--weather--season-sync) |
 | H12 | Aiko-initiated intentional gifts              | ❌ open |
 | H13–H22 | Idle-life / world batch                   | ✅ shipped — [immersion.md](shipped/immersion.md) |
-| H23 | Avatar shared-moment snapshot ("selfie")      | ❌ open |
-| H24 | Occasion- / season-aware outfits              | ❌ open |
+| H23 | Avatar shared-moment snapshot ("selfie")      | ❌ open (rig-dependent) |
+| H24 | Occasion- / season-aware outfits              | ❌ open (rig-dependent) |
 | H25 | Show-and-tell — share an image, she reacts    | ❌ open |
+| H26 | Caught mid-something — busy when you arrive   | ❌ open |
+| H27 | Co-presence mode — in the room, not talking   | ❌ open (depends on H10) |
 
 ---
 
@@ -139,7 +141,7 @@ stretches that dominate a companion app.
 **Key files.** New `web/src/live2d/channels/IdleLifeChannel.ts` (consumes the
 `world_updated` patch + clock, writes posture/gaze/breath overrides via the
 `tickPreModel` hook like `AmbientBodyChannel`), wired in
-[`web/src/components/Live2DAvatar.tsx`](../../web/src/components/Live2DAvatar.tsx);
+[`web/src/components/Live2DAvatar.tsx`](../../web/src/features/avatar/Live2DAvatar.tsx);
 read the existing `world_updated` WS frame in
 [`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
 / [`web/src/store.ts`](../../web/src/store.ts). Capability-gate every override
@@ -171,7 +173,7 @@ ring), a `_render_aiko_gift_block` one-shot provider mirroring
 [`idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py) +
 its K36 surfacing, `agent.aiko_gifts_enabled`. The `world_updated` patch
 already lights up the World tab; the persona side can reuse
-[`PersonaActionBanner.tsx`](../../web/src/components/PersonaActionBanner.tsx).
+[`PersonaActionBanner.tsx`](../../web/src/features/persona/PersonaActionBanner.tsx).
 
 ---
 
@@ -190,7 +192,7 @@ so a minimal rig degrades to nothing. Pairs with K57 (a smug grin after winning
 a tease) and the outfit / expression channels. The hard parts are choosing the
 moment and not letting it become a gimmick. **Key files.** A capture util over
 the Pixi app in
-[`web/src/components/Live2DAvatar.tsx`](../../web/src/components/Live2DAvatar.tsx)
+[`web/src/components/Live2DAvatar.tsx`](../../web/src/features/avatar/Live2DAvatar.tsx)
 / the live2d engine, a `[[snapshot]]`-style cue parsed in
 [`response_text_service.py`](../../app/core/services/response_text_service.py)
 and dispatched like the K31 touch path, an image-message type in
@@ -238,7 +240,7 @@ vision-capable route, privacy posture (the image is the user's — store locally
 never auto-upload), and graceful degradation when the active model is text-only.
 Pairs with the shared-moments / Together tab and H23 (her side of the camera).
 Key files: an image-attachment path in
-[`ChatView.tsx`](../../web/src/components/ChatView.tsx) /
+[`ChatView.tsx`](../../web/src/features/chat/ChatView.tsx) /
 [`store.ts`](../../web/src/store.ts), a multimodal turn path through the
 [`ChatClient`](../../app/llm/chat_client.py) router, a `shared_moment` write
 carrying the local image ref, `agent.image_share_enabled` + a vision-capability
@@ -261,7 +263,19 @@ currently undersells by only ever speaking in the perfect tense. The pieces are
 all present: the world store knows her location and state, the activity workers
 already model duration, and the reconnection / session-clock blocks already fire
 on return — this is a framing change plus a notion of *in-progress* rather than
-*completed* activity. Best beats come from the interruption being slightly
+*completed* activity.
+
+**Correction (12 Aug, read against the code).** "The activity workers already
+model duration" is not true, and it is the part that decides the size of this
+entry. `world_state` carries `location_id` / `posture` / `activity` /
+`updated_at` and nothing else — there is no `started_at`, no expected end, no
+way to ask "is she in the middle of this". K91's `beat_episode.py` chains beats
+into an episode but the chain has no wall-clock span either; it is a planner
+over beat *keys*. So the in-progress notion has to be **built**, not read: the
+smallest honest version is a `started_at` + expected-duration pair written when
+a beat begins, which is also exactly what the resume hook needs later. That
+makes this a small feature rather than the pure re-framing the paragraph above
+implies — still cheap, but not free. Best beats come from the interruption being slightly
 inconvenient (hands full, something on the stove, halfway through a chapter) and
 from her coming *back* to it later in the session or the next one, which is what
 turns it from a greeting flourish into continuity. The risk is it becoming a

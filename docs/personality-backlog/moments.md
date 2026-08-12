@@ -69,35 +69,6 @@ not a code read. **Effort.** Small (bug) / Medium (broadening).
 
 ---
 
-## J8. Milestone celebration beats
-
-**Motivation.** `RelationshipTracker.record_turn()` already detects
-milestone crossings (100 turns, 7/30/100/180/365 days —
-[`relationship.py`](../../app/core/relationship/relationship.py)
-`_MILESTONES`), but today they only *maybe* seed a silent moment. A
-relationship feels alive when those are *actively acknowledged* — "hey,
-it's been a month since we started talking, that's kind of nice." Surface
-the crossing as a one-shot inner-life cue on the next turn (warm, never
-forced, skippable), distinct from the anniversary surfacing which is
-moment-anchored. Gate by stage (J4) so a `new`-stage milestone is
-understated and a `close`-stage one lands warmer. Key files:
-[`relationship.py`](../../app/core/relationship/relationship.py)
-(milestone signal already exists),
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(one-shot milestone cue), the anniversary provider as the pattern to
-mirror. Tone guard: acknowledge, don't perform — no confetti.
-
----
-
-> **STATUS: SHIPPED.** `_render_reciprocal_vulnerability_block` (T6 user_text
-> provider). Gates: master switch, stage >= familiar (J4), trust floor, K15
-> budget not exhausted (read-only check), user's live message not low-mood
-> (estimator + `vent` dialogue act), long cooldown. MCP force-next bypass.
-> Settings `agent.reciprocal_vulnerability_{enabled,min_trust,cooldown_hours}`.
-> Tests: `tests/test_reciprocal_vulnerability_provider.py`.
-
----
-
 ## J12. Intimacy pacing & boundary calibration
 
 **Motivation.** A companion that escalates intimacy *faster* than the user

@@ -100,17 +100,6 @@ diary entry.
 
 ---
 
-## P9. Frontend streaming append: O(n) per token
-
-**Status: SHIPPED** — moved to
-[`shipped/perf.md`](shipped/perf.md#p9-streaming-tokens-no-longer-clone-the-message-array).
-Option (a) from the sketch: mid-stream text lives in a separate
-`streamingDraft` and commits into `messages` once at stream end, so the
-array is identity-stable for the whole turn. The residual per-token cost
-that survived the rework — `ChatView` re-rendering to re-pin scroll — is
-tracked as [P37](#p37-residual-per-token-and-per-mic-frame-react-re-renders).
-
----
 
 ## P11. Reclaim background-worker `num_predict` from reasoning leakage
 
@@ -862,7 +851,7 @@ old interval behaviour byte-for-byte, and
 
 The mechanism itself is documented in
 [`docs/idle-workers.md`](../idle-workers.md); follow-ups are
-[P44](#p44-migrate-the-remaining-idle-workers-to-demand),
+[P44](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand),
 [P45](#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
 and [P46](#p46-parallel-compute-lane-drain).
 
@@ -979,7 +968,7 @@ should be explicit rather than implicit in snapshot timing.
 
 **Status: still open, but no longer the thing that hurts.** Both callers
 are now bounded rather than batched —
-[P47](shipped/perf.md#p47-getapiconcepts-returned-the-whole-graph-untruncated)
+[P47](shipped/perf.md#p47-get-apiconcepts-returned-the-whole-graph-untruncated)
 pages the snapshot so evidence resolves for ~50 rows instead of all 822,
 and the quality report loads on request rather than on every visit to the
 tab. The N+1 is unchanged; N is. `evidence_for_many` is still the right
@@ -1016,28 +1005,6 @@ path the topic graph already uses.
 
 ---
 
-## P40. Engine swaps leak the previous model
-
-**Status: SHIPPED, and the entry was half wrong.** The STT half was
-already fixed when this entry was written — `set_stt_model` has called
-`old.shutdown()` on a daemon thread for a while, precisely to avoid the
-orphaned-child failure the `shutdown()` docstring warns about. Both
-setters also already early-returned on a no-op swap, so the "pays a full
-reload" claim didn't hold either. What *was* real: `set_tts_provider`
-dropped the outgoing `PocketTtsService` without releasing its weights,
-because there was nothing to call — the release path is P28(b).
-
-With that in place, the TTS swap moved into a shared
-`_rebuild_tts_engine` (also used by the enable/disable toggle) which
-releases the outgoing engine after rewiring the PCM listener, queue, and
-prosody dispatcher to the new one. See
-[`shipped/perf.md`](shipped/perf.md#p28-tts-respects-ttsenabled-and-the-runtime-toggle-frees-the-weights).
-
-Lesson for the next audit: this entry asserted two behaviours from
-reading the *sketch* of the code rather than the code, and both were
-stale. Worth re-checking claims of the form "nothing calls X".
-
----
 
 ## P42. The retrieval budget is the residual of everything else
 
@@ -1204,114 +1171,6 @@ Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
 
 ---
 
-## P44. Migrate the remaining idle workers to `demand()`
-
-**Status: shipped, pending a log read-back.** All fifty-five workers
-report demand. The batch before last was the sixteen **pure-compute**
-ones —
-`day_color`, `vitality`, `affection_style_decay`, `humor_style_decay`,
-`weather`, `task_cleanup`, `gap_resolver`, `topic_graph_rebuild`,
-`concept_edge_integrity`, `memory_promotion`, `schedule_learner`,
-`wants_ledger`, `voice_adoption`, `growth_witness`,
-`aspiration_momentum`, `tension_cue` — which were the ones the lane
-split was actually about: none of them touches a model, and all sixteen
-were being charged to the LLM lane anyway. They now rank and drain in
-the compute lane, where the budget scales with idle depth alone.
-
-Cadence was deliberately held flat. Each probe reports zero pressure
-until there is real work, so the heartbeat still sets the rhythm and no
-worker started running more often than it used to. What changed is that
-a worker with a genuine backlog can now jump the queue, and a worker
-with nothing to do no longer spends a slot to find that out.
-
-Two probe-cost lessons from that batch carried over: prefer a cheap
-upstream gate to a full dry-run (`voice_adoption.promotion_blocked`
-settles a ten-day question with one kv read), and bound anything that
-walks a store (`memory_promotion` stops counting at saturation).
-Measured on a 3.3k-message install the slowest probe in the batch runs
-in ~0.5 ms against a 50 ms budget.
-
-**The cadence lesson.** Probe *cost* turned out to be the easy half;
-probe *calibration* is the hard one, and the suite cannot see it —
-every one of these passed its tests. Reading a single 35-minute log
-found four workers admitted far faster than their interval:
-`gap_resolver` (30 s, 59 no-op runs), `vitality` and
-`promise_followthrough` (both on the 91 s anti-thrash floor against a
-900 s interval), and `weather` (10 min against 30 min, on a network
-call). The four underlying mistakes — pressure meaning "not blocked",
-a discrete pressure floor on a continuous quantity, staleness returned
-as pressure, and a hard veto demoted to zero pressure — are written up
-in
-[`docs/idle-workers.md`](../idle-workers.md#five-ways-a-probe-goes-wrong).
-
-All four are fixed: `gap_resolver` restored its empty-store veto,
-`promise_followthrough` moved both kv gates into `is_ready` and counts
-askable promises through a read-only twin of its scan, `vitality`
-reports the size of the pending correction instead of flooring at 0.5,
-and `weather` measures age *past* its interval rather than scaled by
-it. Each carries a regression test that feeds the probe's own pressure
-plus the staleness at the anti-thrash floor through `compute_urgency`
-and asserts the result stays under the threshold — the assertion the
-original tests were missing. **Verify against a log anyway**, not only
-against the suite.
-
-**The final batch: eighteen LLM workers.** These were already in the
-right lane — every one calls a model — so this pass was about ranking,
-not re-laning. Their probes split four ways: real queues
-(`idle_fact_checker`, `idle_curiosity`, `follow_up`, `topic_label`,
-`topic_digest`, `idle_knowledge`), new-material watermarks against a
-last-run timestamp (`belief`, `promise_extraction`,
-`memory_consolidation`, `memory_conflict`, `thread_resummary`), binary
-"a run is owed" (`diary`, `hobby`, `world_notice`,
-`knowledge_map_reflection`, `goal`), and one pure heartbeat
-(`persona_regression`, which has no backlog and now says so). A shared
-`ChatDatabase.count_messages_since` serves the transcript miners.
-
-Two things were specific to this batch. The cooldown-gated workers kept
-their gates as early returns *inside* `run()`, so moving the interval
-out of `is_ready()` would have left them waking every heartbeat to
-no-op — failure mode (4). Each grew a read-only helper that both
-`is_ready()` and `run()` call. And several hold a force flag that
-`run()` consumes, so every probe has a test asserting it peeks rather
-than clears. Writing those tests also surfaced failure mode (5), a
-saturation that pins the probe at 1.0: `goal` divided by its own
-numerator and `thread_resummary` saturated at the value that triggers
-the redraft. Both were fixed before shipping.
-
-**Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
-shipped the mechanism and migrated nine workers. Workers that schedule
-on `interval_seconds` alone spend a slot to discover they have nothing
-to do, and — because the scheduler cannot know whether they are cheap —
-are charged to the LLM lane whether or not they touch a model. A
-pure-arithmetic worker sitting in the LLM lane is exactly the contention
-the split was meant to remove.
-
-**What to do per worker.** Split `is_ready()` in two. The hard vetoes
-(feature flags, cold-start guards, rate limiters) stay; the
-`default_is_ready(self.interval_seconds, …)` timing check moves into a
-`demand()` probe. Leaving the timing check in `is_ready()` vetoes the
-worker before its pressure is ever consulted, which silently disables
-the mechanism for it. Then hoist the early-returns at the top of `run()`
-into the probe — those are the dirty checks that were already there,
-just on the wrong side of the slot. Full recipe in
-[`docs/idle-workers.md`](../idle-workers.md#writing-or-migrating-a-worker).
-
-Set `needs_llm` per *run*, not per worker: `ConceptSynthesisWorker` only
-calls a model when its signature diff found dirty clusters, and
-`IdleAwayActivityWorker` rolls a ratio per beat. A static per-worker flag
-would be wrong for both.
-
-**Config this unlocks.** Each migrated worker's
-`*_interval_seconds` key becomes a heartbeat backstop rather than a
-cadence, and most can then leave `config/default.json` (the parser keeps
-honouring them as overrides). `decay_worker_interval_seconds` already
-has. The governing rule: **a deleted config key must be replaced by the
-worker knowing something, not by a hardcoded constant.**
-
-**Effort.** Small per worker, Medium in aggregate. Independent — they
-can go in batches.
-
----
 
 ## P45. Retire the per-hour / per-day caps in favour of satisfaction
 
@@ -1346,7 +1205,7 @@ allowed; one whose cues keep landing should be free to keep going. That
 turns "at most 5/hour" into "produce until the user stops biting", which
 is both closer to the intent and self-tuning per user.
 
-**Prerequisite.** [P44](#p44-migrate-the-remaining-idle-workers-to-demand)
+**Prerequisite.** [P44](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand)
 for the workers concerned — the satisfaction signal has to live
 somewhere, and `demand()` is that somewhere.
 
