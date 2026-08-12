@@ -1,6 +1,7 @@
 """Real-time STT using RealtimeSTT (Whisper large-v1 + Silero VAD)."""
 from __future__ import annotations
 
+import importlib.util
 import logging
 import threading
 import time
@@ -26,10 +27,45 @@ except ImportError:
 if TYPE_CHECKING:
     from app.audio.client_mic_source import ClientMicSource
 
-try:
-    from RealtimeSTT import AudioToTextRecorder
-except Exception:
-    AudioToTextRecorder = None
+# Importing RealtimeSTT drags in torch and CTranslate2, which map close to
+# a gigabyte of native libraries -- and on Windows two separate copies of
+# the Intel OpenMP runtime (torch ships one, CTranslate2 ships another),
+# a combination documented as undefined behaviour. P27 already deferred
+# the *recorder* (the ~0.9 GB subprocess); this defers the *import*, so a
+# session that never turns voice on never loads those DLLs at all.
+#
+# Distinct from ``None``, which means "looked, and it isn't usable" --
+# tests patch this attribute to both a fake class and ``None``.
+_NOT_IMPORTED: object = object()
+AudioToTextRecorder: object = _NOT_IMPORTED
+
+
+def _engine_installed() -> bool:
+    """Whether RealtimeSTT could load, *without* importing it.
+
+    The availability gates run before any audio exists, so answering them
+    must stay free; ``find_spec`` locates the package without executing
+    it. Once the real import has happened (or a test has patched the
+    attribute) that answer wins.
+    """
+    if AudioToTextRecorder is not _NOT_IMPORTED:
+        return AudioToTextRecorder is not None
+    try:
+        return importlib.util.find_spec("RealtimeSTT") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _recorder_class() -> object:
+    """Import and memoise ``AudioToTextRecorder`` on first real use."""
+    global AudioToTextRecorder
+    if AudioToTextRecorder is _NOT_IMPORTED:
+        try:
+            from RealtimeSTT import AudioToTextRecorder as resolved
+        except Exception:
+            resolved = None  # type: ignore[assignment]
+        AudioToTextRecorder = resolved
+    return AudioToTextRecorder
 
 
 class RealtimeSttService:
@@ -62,7 +98,7 @@ class RealtimeSttService:
         # on first *use* -- see :meth:`_ensure_recorder` -- or eagerly via
         # :meth:`prewarm` when voice is turned on.
         self._shut_down: bool = False
-        if AudioToTextRecorder is None:
+        if not _engine_installed():
             self._last_error = "RealtimeSTT (AudioToTextRecorder) not installed"
             log.warning(
                 "STT engine unavailable: RealtimeSTT (AudioToTextRecorder) not installed"
@@ -90,7 +126,7 @@ class RealtimeSttService:
         rec = self._recorder
         if rec is not None:
             return rec
-        if AudioToTextRecorder is None or self._last_error or self._shut_down:
+        if not _engine_installed() or self._last_error or self._shut_down:
             return None
         if not self.enabled:
             return None
@@ -161,7 +197,10 @@ class RealtimeSttService:
         self._loaded_model = model
         self._loaded_language = language
         self._loaded_device = device
-        return AudioToTextRecorder(
+        recorder_cls = _recorder_class()
+        if recorder_cls is None:
+            raise RuntimeError("RealtimeSTT (AudioToTextRecorder) import failed")
+        return recorder_cls(
             model=model,
             language=language,
             device=device,
@@ -193,7 +232,7 @@ class RealtimeSttService:
         ``voice_capture_mixin`` ask this *before* any audio exists, so the
         old meaning would refuse every voice turn forever.
         """
-        if AudioToTextRecorder is None or not self.enabled or self._shut_down:
+        if not _engine_installed() or not self.enabled or self._shut_down:
             return False
         # A latched load failure is permanent for this process; a recorder
         # that loaded and then errored mid-stream is still usable.

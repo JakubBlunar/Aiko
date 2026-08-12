@@ -15,6 +15,8 @@ Aiko writes a single, level-disciplined log stream that lands in three places at
 
 **Frontend crashes are not in this stream.** They arrive over HTTP from the browser and are recorded separately — start at `get_ui_crashes()`, see §g.
 
+**Nor are native crashes.** If the process *vanished* rather than logged an error, nothing in this stream will explain it — start at `get_native_crashes()`, see §h, and do not trust the Python frame in the `faulthandler` dump.
+
 **One stream, one exception.** The P44 prompt-cache telemetry writes JSONL to `data/prompt-cache.jsonl` instead, through an `app.promptcache` logger with `propagate = False` — a per-turn record would bloat `app.log`, and its only consumer is a script. It is **off by default** (`logging.prompt_cache_log_enabled`); turn it on for a measuring session and read it back with `python scripts/prefix_break_report.py`. See [`docs/prompt-caching.md`](../docs/prompt-caching.md#measuring-where-the-prefix-breaks-p44).
 
 ### b. Standard line shape
@@ -40,6 +42,7 @@ Every record is formatted as:
 | Symptom | First check |
 |---|---|
 | **Aiko silent / no reply** | `tail_logs(level="DEBUG", module_contains="turn_runner")` → find the failed `turn=…`, look at `first_token_ms=` and surrounding ERROR lines. Then `read_log_file(grep="turn=<id>")` to grab everything correlated. |
+| **The whole process died / "Aiko crashed" with nothing in the log** | `get_native_crashes()` — a native memory fault, not a Python error. Read `module` (the DLL owning the faulting address) and `duplicate_openmp`, **not** the Python frame in the `faulthandler` dump, which is an innocent bystander. §h. Rule out a hardware theory early: an access violation is a pointer bug, and memtest/OCCT passing tells you nothing about it. |
 | **Voice mode never picks up** | `set_log_level("app.stt.realtime_stt_service", "DEBUG")`, then `tail_logs(module_contains="stt")`. Look for missing `STT engine ready:` INFO or repeated capture errors. |
 | **TTS stutters / drops** | `tail_logs(module_contains="tts")`. Cross-reference `TTS enqueue:` / `TTS play done:` DEBUG with `tts state:` transitions in `app.tts_queue`. |
 | **Wrong context retrieved** | `set_log_level("app.core.session.prompt_assembler", "DEBUG")`, replay the turn, then read the `prompt built:` line for `rag_tokens` / `providers` / `slowest_provider` / `history_msgs_in/out`. |
@@ -182,3 +185,60 @@ recorded, and why a missing `stack_mapped` means "rebuild happened", not
 [`web/src/crashBreadcrumbs.ts`](../web/src/crashBreadcrumbs.ts) over a
 bare `console.log` for anything you'd want to see in a post-mortem. It
 is in-memory only and costs nothing until a crash reads it.
+
+### h. Native crashes (the process just vanished)
+
+`Windows fatal exception: access violation` in `crashlog.txt` is a
+different animal from everything above: a memory fault inside a
+C/C++/Rust extension, which kills the process outright. Read these with
+**`get_native_crashes()`**.
+
+**Do not debug the Python frame at the top of the `faulthandler` dump.**
+A pure-Python statement cannot dereference a bad pointer, so that frame
+is not the cause — it is wherever the already-corrupted heap happened to
+be touched next, which in practice means the busiest allocation site in
+the process. The first such crash we investigated pointed at
+`topic_graph._live_to_topic_clusters_locked`, a function that had run
+cleanly a hundred times that same hour and turned out to be entirely
+innocent; the tell was that the "suspect" code path had succeeded twice
+in the three minutes before the fault.
+
+What to read instead, in order:
+
+| Field | What it answers |
+|---|---|
+| `module` | *Which DLL held the bad pointer.* Resolved from the faulting address via `GetModuleHandleEx`. Usually the whole answer. |
+| `exception` / `address` | The Windows exception code and faulting pointer. An address like `0x0000000000000010` means a null-ish struct deref; a wild address means corruption. |
+| `duplicate_openmp` / `openmp_runtimes` | Whether the process was in a **supported configuration at all** — see below. Check this before believing any other theory. |
+| `minidump` | A `.dmp` under `data/` for native stack walking in WinDbg / Visual Studio. Written without the exception record (dbghelp refuses it from inside a filter with `ERROR_NOACCESS`), so every thread's native stack is there but the debugger won't jump to the fault automatically — the `address` field above is your anchor. |
+
+**Multiple OpenMP runtimes is the first thing to rule out.** Two copies
+of one runtime, or two different ones, in a single process is documented
+undefined behaviour: each keeps its own global state and thread pool. The
+result is a random native fault after hours of uptime — which looks
+exactly like failing hardware, and which CPU/RAM stress tests will never
+reproduce, so it survives a clean bill of health from memtest or OCCT.
+This project is exposed by construction: torch and CTranslate2 each ship
+their own `libiomp5md.dll`, and sklearn (pulled in transitively by the
+STT chain) adds `vcomp140.dll`. `log_native_runtime_inventory()` logs the
+tally once at boot through the `app.native_runtimes` logger, at WARNING
+when the combination is unsupported, so grep `native runtimes:` to see
+what a given run was carrying. The classification lives in
+[`app/core/infra/native_runtimes.py`](../app/core/infra/native_runtimes.py)
+— note that it matches curated DLL names rather than substrings, because
+`_decomp_lu_cython.pyd` and `_compute.pyd` contain "omp" and make a naive
+scan report a pile of runtimes that don't exist.
+
+Those DLLs load on the first *real* STT use, not at import: the
+`RealtimeSTT` import in
+[`app/stt/realtime_stt_service.py`](../app/stt/realtime_stt_service.py)
+is deferred behind `_recorder_class()`, and availability is answered with
+`find_spec` so the voice gates don't trigger it. A text-only session
+therefore loads no OpenMP at all — which also means the inventory line
+differs between a voice run and a text run, and that is expected.
+
+Two caveats when reading the file itself. It is **append-mode**, so dumps
+accumulate across runs and the newest is at the bottom; a single header
+means a single native crash, no matter how many times the app has died.
+And a fatal dump with no matching `native_crash` record predates this
+handler — restart to arm it.

@@ -13,6 +13,7 @@ import traceback
 from types import TracebackType
 from typing import Any
 
+from app.core.infra import native_crash
 from app.core.infra.log_context import get_task_id, get_turn_id
 
 
@@ -341,6 +342,80 @@ def _write_line(entry: dict[str, object]) -> None:
             handle.write(line + "\n")
 
 
+def _write_native_crash(report: dict[str, Any]) -> None:
+    """Persist a native-fault report. Called from a crashing process, so
+    it stays minimal and swallows everything."""
+    try:
+        _write_line(report)
+    except Exception:
+        return
+    try:
+        if _logger is not None:
+            _logger.error(
+                "native crash: %s at %s in %s (thread %s) dump=%s",
+                report.get("exception"),
+                report.get("address"),
+                report.get("module"),
+                report.get("thread_id"),
+                report.get("minidump") or "(none)",
+            )
+    except Exception:
+        pass
+
+
+def read_native_crashes(limit: int = 10) -> list[dict[str, Any]]:
+    """Return the most recent ``native_crash`` records, newest first.
+
+    Companion to :func:`read_ui_crashes`; backs the ``get_native_crashes``
+    MCP tool so a fatal fault can be inspected without opening the file.
+    """
+    if limit <= 0:
+        return []
+    try:
+        with CRASH_LOG_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        text = line.strip()
+        if not text or not text.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "native_crash":
+            out.append(parsed)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def log_native_runtime_inventory() -> None:
+    """Log which OpenMP / BLAS runtimes this process ended up with.
+
+    Call once boot is complete (after the STT/torch imports), so any
+    future fatal fault can be read against a known-good or known-bad
+    runtime configuration. Duplicate OpenMP runtimes are logged as a
+    warning because the combination is undefined behaviour, not merely
+    untidy: it produces random native faults that look like bad hardware.
+    """
+    try:
+        from app.core.infra import native_runtimes
+
+        found = native_runtimes.inventory()
+    except Exception:
+        return
+    if not found.openmp and not found.blas:
+        return
+    target = logging.getLogger("app.native_runtimes")
+    if found.hazardous:
+        target.warning("%s -- unsupported: expect random native faults", found.describe())
+    else:
+        target.info("%s", found.describe())
+
+
 def _stage_to_level(stage: str) -> int:
     if "error" in (stage or "").lower():
         return logging.ERROR
@@ -651,6 +726,14 @@ def install_global_exception_hooks() -> None:
             faulthandler.enable(file=_fault_file, all_threads=True)
         except Exception:
             pass
+
+    # faulthandler gives the Python stack, which for a native fault is
+    # only where the crash surfaced. This adds the faulting address, the
+    # DLL it lives in, and a minidump.
+    try:
+        native_crash.install(dump_dir=DATA_DIR, record=_write_native_crash)
+    except Exception:
+        pass
 
     previous_sys_hook = sys.excepthook
 
