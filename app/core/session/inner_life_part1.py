@@ -1539,6 +1539,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # never leave the previous turn's surfaced set behind to be credited a
         # second time against this turn's reply.
         self._last_surfaced_items = []
+        # H10: same reasoning for the concept claim the T6 tension cue reads
+        # -- a stale claim would silence the cue on a turn this lane never
+        # even ran.
+        self._last_context_concept_ids = frozenset()
 
         ms = self._memory_settings
         if not bool(getattr(ms, "context_budget_enabled", True)):
@@ -1886,13 +1890,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             if cid in claimed_ids:
                 claimed_skips.add(cid)
                 return False
-            # L12: a tension concept never renders in the static T3 block -- it
-            # surfaces only through the strictly-cooldowned T6 tension cue, so a
-            # standing friction can never nag. Its evidence edges still power the
-            # spreading-activation + cascade machinery upstream; this only drops
-            # it from the rendered relevant-context lane. Read off the kind
-            # registry (``static_render``) rather than the name, so the three
-            # lanes and the openness reserve share one source of truth.
+            # A kind can opt out of the static T3 block entirely and speak
+            # only through a dedicated surface of its own. Read off the kind
+            # registry (``static_render``) rather than any kind name, so the
+            # three lanes and the openness reserve share one source of truth.
+            # No kind opts out today -- ``tension`` did until H10 -- but the
+            # hook stays, because the next kind delivered "with care" will
+            # want to make that choice too.
             if not renders_in_static_block(getattr(concept, "kind", "") or ""):
                 return False
             kind = get_kind(getattr(concept, "kind", "") or "")
@@ -2141,8 +2145,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 label = (getattr(concept, "label", "") or "").strip()
                 if not label or cid in claimed_ids or cid in seen_concept_ids:
                     continue
-                # Same L12 carve-out as the confident lane: a tension only
-                # ever speaks through its cooldowned T6 cue.
+                # Same registry carve-out as the confident lane: a kind that
+                # opts out of the static block opts out of this one too.
                 if not renders_in_static_block(
                     getattr(concept, "kind", "") or ""
                 ):
@@ -2284,6 +2288,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         concept_pairs = [c.payload for c in sorted(
             selection.source("concept").chosen, key=lambda c: c.order,
         )]
+        # H10: the same cross-block claim L39 makes from T0, one tier down.
+        # T3 assembles before T6, so a tension that won a slot here is
+        # already in the prompt by the time the ``tension_block`` cue looks
+        # for one -- and the cue's whole reason to exist is that a friction
+        # gets raised once, carefully. Stashed as ids rather than checked
+        # inline because the two blocks are assembled by different code
+        # paths and only share the controller.
+        self._last_context_concept_ids = frozenset(
+            int(getattr(c, "concept_id", 0)) for c in concept_pairs
+            if int(getattr(c, "concept_id", 0)) != 0
+        )
         concept_block, concept_trace = self._render_relevant_concepts(
             concept_pairs, pinned_ids=pinned_ids,
             score_components=score_components,

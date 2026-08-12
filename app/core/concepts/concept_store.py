@@ -731,6 +731,17 @@ class ConceptStore:
                 return False
 
         can_s = str(can_id)
+        # A meta's base set has an arity that means something, so the
+        # absorbed twin's bases are dropped rather than imported. A
+        # tension is exactly two concepts in friction and its kind sets
+        # ``meta_min_active_bases=None`` -- lose any one base and the row
+        # is moot. Folding a twin's bases in would leave the survivor
+        # standing on three or four, and it would go moot on the first of
+        # them to fall dormant: consolidation would be quietly retiring
+        # the frictions it had just decided were worth keeping. The
+        # canonical already states the friction in its own terms, and the
+        # alias record below preserves where the other one went.
+        keep_own_bases = canonical.evidence_model == "meta"
         # Re-point edges whose *source* is the absorbed concept (things
         # that depend on it: metas / generalizations), skipping any edge
         # that would become a self-loop on the canonical.
@@ -744,6 +755,12 @@ class ConceptStore:
         # supporting evidence / bases).
         for e in self.edges_into("concept", abs_id):
             if e.src_type == "concept" and str(e.src_id) == can_s:
+                continue
+            if (
+                keep_own_bases
+                and e.src_type == "concept"
+                and e.relation == "evidence"
+            ):
                 continue
             e.dst_id = can_s
             e.edge_id = 0
@@ -908,6 +925,36 @@ class ConceptStore:
                 except (TypeError, ValueError):
                     continue
         return {cid: tuple(v) for cid, v in out.items()}
+
+    def concept_base_map(
+        self, concept_ids: Iterable[int]
+    ) -> dict[int, frozenset[int]]:
+        """``{meta id: {base concept id, ...}}`` for many metas, one query.
+
+        The concept->concept half of :meth:`evidence_of`, in bulk, for the
+        same reason :meth:`cluster_evidence_for` exists: L2 consolidation
+        wants the bases of every meta in the graph to decide which pairs
+        are worth an adjudication, and a point query each would be a
+        couple of hundred round-trips on every scheduler probe. Ids with
+        no concept-typed evidence are absent rather than empty.
+        """
+        ids = {int(c) for c in concept_ids}
+        if not ids:
+            return {}
+        out: dict[int, set[int]] = {}
+        for edge in self._edge_rows(
+            "src_type = 'concept' AND dst_type = 'concept' "
+            "AND relation = 'evidence'",
+            (),
+        ):
+            try:
+                meta_id = int(edge.dst_id)
+                base_id = int(edge.src_id)
+            except (TypeError, ValueError):
+                continue
+            if meta_id in ids:
+                out.setdefault(meta_id, set()).add(base_id)
+        return {cid: frozenset(v) for cid, v in out.items()}
 
     def dependents_of(self, concept_id: int) -> list[int]:
         """Concept ids that *depend on* this concept -- i.e. metas that

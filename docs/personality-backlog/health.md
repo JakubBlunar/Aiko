@@ -137,6 +137,33 @@ JSON; there is no test that runs detection→propose→persist and asserts a row
 appears. The regression test to add is exactly that, plus an assertion that a
 finding whose proposal failed is still re-proposable on the next run.
 
+### Outcome: the latch holds open, and the observation survives a model outage
+
+Both changes shipped, and they are independent on purpose — the first stops the
+loop closing permanently, the second stops a single bad call costing the
+observation at all.
+
+1. **`_run_conduct_pass` returns before saving the fingerprint when `propose()`
+   comes back empty**, recording `conduct_latch_held_open` in the pass stats so
+   the case is visible rather than inferred. The findings are recomputed cheaply
+   next run, so leaving the latch open costs a detector pass and buys back a
+   feature that was off for good.
+2. **`propose_conduct_aiko` mints from `finding.summary` when the LLM returns
+   nothing usable** — on an empty item list *and* on a batch where every item
+   failed validation, since a partial parse is the same outage wearing a
+   different shape.
+
+On the live graph the state is exactly what those two changes predict and no
+more: `concept_synth.conduct_sig.aiko` is **gone** (the fingerprint that was
+retiring the August finding is no longer written), `concept.surfacing_conduct`
+still holds the neglect finding with its usable prose, and `conduct` is still at
+zero rows because `conduct_cadence_seconds` is weekly and the pass last ran
+2026-08-06. **The first row is expected on the next conduct pass, not before** —
+so this is fixed in the sense that the mechanism now works, and unverified in
+the sense that no concept has been minted yet. Re-check `kind='conduct'` after
+the next weekly pass; if it is still empty, the detector is the next place to
+look, not the latch.
+
 ---
 
 ## H2. L42's other two detectors have thresholds unreachable on real data
@@ -613,6 +640,70 @@ the mechanical click of Jacob's kettle"* — breaks the not-in-the-room boundary
 without using any machine vocabulary; that class is left to the prompt, since a
 regex over co-presence would reject "Jacob tidies the room" too.
 
+### Second pass: the reason split, and two more reasons the loop asked nothing
+
+Revisited when `asked_count` was still 0 on all 16 rows weeks later. 45
+`concept_hypothesis` cues had been declined 342 times and surfaced 6 — a **1.5%
+spend rate against 19% for `knowledge_gap_notice`** through the same lexical
+gate — and 293 of the 342 declines (86%) were still the `provider` catch-all.
+
+**The catch-all is split.** `REASON_PROVIDER` keeps its name but is now the
+genuine remainder; providers report `topic_miss` (stock existed, none of it
+about what he said), `importance_floor` (topical enough, too light for the
+slot), `cadence_block` (a cooldown or minimum gap said not yet), `no_stock` (the
+shelf was empty at the moment of asking — a supply-timing finding rather than a
+gate) and `cross_lane` (another lane had already claimed the material). A small
+closed vocabulary, shared across cue types, because "which of the seven
+providers is losing its cues to a cadence knob" is the question the split exists
+to answer and it only stays answerable if the buckets are common. `note_decline`
+records the first reason at the bail point, `take_pool_cue` classifies the
+pooled cues automatically, and a cue still dominated by `provider` now means an
+**uninstrumented bail point**, not a diagnosed cause. This pays off for the
+other six cue types stuck on the same catch-all — 2,836 declines graph-wide.
+
+Two provable causes underneath it:
+
+1. **25 of the 31 invented cues carried no `importance` at all**, because they
+   were written before the field was published. `_weighty` read
+   `float(payload.get("importance") or 0.0)`, which spells "absent" and "worst
+   possible" identically, so those 25 were not unlucky at the bar — they were
+   structurally ineligible for the whole 168 hours of their lives. Rather than a
+   migration, `cue_importance()` returns `None` for an unreadable payload and
+   **reconstructs the value from the kind prior** where the kind is present,
+   which is exactly the number the producer would have stored for an invention.
+   An unreadable payload is logged rather than silently floored. On the live
+   shelf this takes the pending cues from 18-of-31 unreadable to **zero
+   unreadable, with 9 invented cues now clearing the 0.55 bar**.
+2. **The bar is coarser than it looks.** A grounded cue carries affect-lifted
+   importance and lands anywhere (0.45–0.91 live), but an invented one has no
+   grounded clusters to lift from, so its weight *is* its kind's prior — and
+   there are thirteen of those. For half the shelf
+   `concept_hypothesis_gap_min_importance` is a kind whitelist wearing a float:
+   every value in (0.50, 0.60] behaves identically. 0.55 stays, now justified as
+   the midpoint of that plateau — furthest from either boundary, so re-tuning a
+   prior by a hundredth cannot silently flip a kind across it — and the settings
+   comment says so, with the instruction to read the prior list before moving it.
+
+**And production was outrunning spend by 40×.** The worker drafted 1 cue per
+pool per 30 minutes against a `surface_cooldown_hours` of 20 — ~48 offered a day
+into at most ~1.2 spends, which is the 45-deep shelf and the 13 superseded rows.
+`demand()` had always reported the shortfall honestly; the trap is that pressure
+only *orders* the queue and the scheduler heartbeat-admits a worker at zero
+pressure, so an honest probe changed nothing. `run()` now counts pending cues
+per `target_type` and skips whichever pool already holds its half of
+`inventory_target`. Per origin, because a grounded question and an invented
+guess do not substitute for each other: on one shared counter whichever pool had
+stock would silence the other.
+
+**The remainder, deliberately left.** `concept_hypothesis` is last in
+`GAP_CUE_ORDER` (32 `lost_priority` declines) *and* the only gap cue that checks
+the K47 question balance (17 declines), which `knowledge_gap_notice` skips. Both
+are defensible — probing a belief about someone is the heaviest thing she can
+open a gap with — and both are now *measurable* against the split reasons, so
+they should be judged on the next reason mix rather than adjusted on suspicion.
+Watch for the first non-zero `hypotheses.asked_count`; until one cue surfaces,
+the adjudication half of L30 remains untested end to end.
+
 **Ninth recurring shape:** *a broken gate can be the only thing containing a
 broken producer, so measure what the fix releases before shipping it.* H19 and
 H20 were both safe to repair on sight; this one was not, and the difference was
@@ -717,6 +808,62 @@ evidence per source, which may or may not bear on restatement).
 Do not fix this by tightening the proposer. The proposer is doing what it should
 — noticing the friction each time it recurs — and the dedupe belongs at merge
 time where the whole corpus is visible.
+
+### Outcome: the adjudicator was never asked
+
+The measurement asked for above settles it, and the answer is not that the
+merge worker looked at these rows and disagreed. It never saw them.
+`_collect_pairs` used a flat `concept_consolidation_merge_cosine = 0.84` inside
+each `(subject, kind)` block, and that admitted **0 of `tension/relationship`'s
+406 in-block pairs** — 3 for `tension/aiko`, 6 for `tension/user`. The LLM step
+that would have said "yes, same friction" was never invoked, the
+`FactCheckRateLimiter` budget went unspent, and the population grew to 122
+(48 user / 38 relationship / 36 aiko).
+
+**Why the bar misses is a property of the labels.** Tension labels are the
+longest in the register (204–278 chars against 62–190 for every other kind) and
+two-clause by construction: *"X seeks A, yet I value B."* A restatement of one
+clause can only move half the vector, so the whole distribution is compressed —
+max cosine 0.826–0.854, p99 0.808–0.835. Two rows opening with the *identical*
+clause score 0.851; two genuinely different frictions score 0.846. Cosine alone
+cannot separate restatement from distinct friction here at any threshold, so
+raising or lowering one number was never going to work.
+
+Two changes, both in `_collect_pairs`:
+
+1. **Each block nominates its own top `concept_consolidation_block_top_n` (3)
+   pairs above a looser `concept_consolidation_candidate_floor` (0.78)**, with
+   `merge_cosine` demoted to an auto-admit ceiling. A compressed distribution
+   can now contribute candidates without dragging the bar down for kinds that
+   do not need it. This is H23's rule applied a third time: *rank within the
+   corpus, keep the absolute as a ceiling.*
+2. **For `evidence_model="meta"` kinds, pairs that share a base concept sort
+   first inside the band.** Structure is the signal cosine lacks — two tensions
+   built on the same underlying belief are the same friction however differently
+   they are worded. `ConceptStore.concept_base_map` fetches the concept→concept
+   evidence edges in one query, and it is skipped entirely on a graph with no
+   metas because this runs on the `demand()` probe too.
+
+Measured on the live graph, candidates per pass: **`tension/relationship` 0 → 3,
+`tension/aiko` 3 → 6, `tension/user` 6 → 9**, and 15 of those 18 tension pairs
+share a base. Graph-wide 173 → 230. The per-block cap is what keeps that inside
+`concept_consolidation_per_day_cap = 30` rather than dumping ~46 tension
+candidates into one day's budget: each block offers its three worst offenders
+per pass and the queue drains over several days, which is also the order that
+puts the most-likely twins first.
+
+**The merge itself needed a guard.** `merge_into` re-points every edge whose
+destination is the absorbed concept, which for two *metas* means the survivor
+inherits the loser's bases — so merging two tensions would widen the surviving
+row's base set instead of leaving it as the friction it was, and
+`meta_min_active_bases` would then be counting the wrong thing. Concept-type
+`evidence` edges into an absorbed meta are now dropped rather than re-pointed.
+(The existing guard against merging two co-bases *of* the same tension was
+already correct and is untouched.)
+
+**Expect the count to fall over days, not on the next tick.** Re-run the
+population query after the worker has had two days of budget; the labels suggest
+the 122 rows are perhaps 15–20 distinct frictions.
 
 ---
 
@@ -2059,6 +2206,36 @@ Worth checking during the fix whether the reaction tags in practice have the
 spread this assumes — the impulse table tops out at ±0.18, so it will differentiate
 topics but may still need the EWMA rate raised to escape the neutral band.
 
+### Outcome: the instant face, and it has more range than his
+
+`_sample_cluster_affect` now feeds the aiko map from the per-turn
+`reaction_affect_target()` point rather than the smoothed global `AffectState`,
+and takes the reaction tag as an argument so the two halves of the sampler read
+the same turn. The docstring carries the reasoning, because the wrong call is
+the more natural-looking one.
+
+Measured on the live map, 38 clusters:
+
+| | before | after |
+| --- | --- | --- |
+| aiko valence range | +0.026 … +0.222 | **−0.333 … +0.800** |
+| aiko arousal range | 0.433 … 0.566 | **0.388 … 0.716** |
+| aiko bucket spread | `neu/mid`, 100% of 36 | of the 9 annotated: `pos/mid` 5, `pos/high` 3, `neu/mid` 2 |
+| user valence range (unchanged feed) | −0.112 … +0.400 | −0.112 … +0.400 |
+
+**Her map is now wider than her reading of his**, which is the right way round
+for a character with an interior: she has topics she dislikes (a negative
+cluster exists at all, for the first time) and topics that light her up. The
+concern about the impulse table topping out at ±0.18 did not materialise — the
+EWMA of a *varying* per-turn signal accumulates, so the range comes out well
+past any single tag's reach.
+
+One qualifier that belongs with H14 rather than here: only 9 of the 38 clusters
+carry the ≥3 `valence_samples` the diary annotation requires, and those 9 span a
+narrower 0.407 … 0.630. The affect *feed* is fixed; the annotated *subset* is
+still small because rows written under the old feed had to re-earn the floor.
+That number should keep climbing on its own.
+
 ---
 
 ## H10. Her internal conflicts never reach the prompt
@@ -2098,6 +2275,50 @@ repetitive, but the result is that her ambivalence is absent from nine turns in
 ten. Consider giving tension a small guaranteed allocation in the flex lane —
 one per turn would be a 12× increase over today and still a third of what
 boundary gets.
+
+### Outcome: it renders, and it is never pinned
+
+Re-measured before changing anything, and the figure had got worse rather than
+better: **0 of 14,240 concept-lane surfacings**, with the `tension_block` and
+the tension cue firing on *the same* 25 of 231 instrumented turns — so there was
+no second channel, and 89% of turns carried eight boundaries and no ambivalence
+at all. The same read shows what fills the lane instead: `boundary` 28.6%,
+`identity` 23.0%, `value` 14.7%, `affective` 7.1%.
+
+*Deliberate* was no longer *right*. `static_render=True` on the tension kind
+clears all four exclusions at once, since `_add_scored`, the hypothesis lane
+filter and `_openness_picks` share `renders_in_static_block()`. Tension is
+already `role=ROLE_GENERATIVE`, so it becomes eligible for
+`concept_flex_generative_floor` (1) immediately — that *is* the "one guaranteed
+slot per turn" this entry asked for, with no new selection code, and L40
+habituation plus L41 reason-conditioned phrasing participate automatically once
+a kind renders.
+
+**The half that stays is the pinning.** `ConceptKind` gained a `pinnable` flag,
+`False` for tension, so the L28 openness reserve will not hold a friction open
+regardless of cosine to the live turn. Rendering and pinning are different
+promises and tension wants opposite answers to them: a friction should be raised
+when the turn is actually about it and left alone otherwise, and pinning one
+into every turn is precisely the nagging L12's cooldown exists to prevent. The
+openness reserve's own notes had flagged that as the failure mode if the render
+carve-out were ever relaxed.
+
+Then the double-surface. The T6 cue was written when it was a tension's *only*
+voice; now it steps aside for one the concept lane has already claimed this turn
+(`_last_context_concept_ids`, cleared at the top of each turn so a stale claim
+cannot silence the cue on a turn the lane never ran). Yielding deliberately does
+not consume the cue — the point is that a friction is raised **once**, carefully,
+and raising the same one twice in a single assembly is the nagging the whole
+design guards against.
+
+Nag guards, all pre-existing: the generative floor of 1 caps it at one per turn,
+`concept_surfacing_habituation_*` rotates which one, and
+`tension_cue_cooldown_days = 6.0` still paces the cue.
+
+**Sequencing note.** H16 ships first and needs two days of merge budget. On
+today's register this render change would surface eleven ways of saying the same
+thing, which is exactly the repetitiveness the original exclusion was protecting
+against — the exclusion was the wrong fix for a real problem.
 
 ---
 
@@ -2417,43 +2638,56 @@ Re-measure the 0-of-41 figure after a few weeks of accumulation.
 
 ## What Part 2 changes about priority
 
-H9 is the one to do first, ahead of everything in Part 1 except possibly H1. It
-is a small change at a single call site, it is the difference between a companion
-who has feelings about things and one who reports a uniform mild pleasantness,
-and several other findings (H14, the blandness of the affective concepts, L13's
-whole premise) are downstream of it.
-
-H10 is second and is a configuration decision rather than new code: her best
-material exists, is well-formed, and is switched off.
-
-Everything else here is a weighting or supply question that should be re-measured
-after those two, because both change the inputs.
+*Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
+H9 was the difference between a companion who has feelings about things and one
+who reports a uniform mild pleasantness, and several other findings (H14, the
+blandness of the affective concepts, L13's whole premise) were downstream of it.
+H10 turned out to be a flag rather than new code, as predicted, though it needed
+H16's dedupe first — see the current ordering below.*
 
 ---
 
 ## Suggested order
 
-Across both parts, roughly by value per unit of risk:
+Refreshed after the tension and hypothesis pass. Roughly by value per unit of
+risk, across both parts.
 
-1. **H9** — one call site, and it is the difference between a companion who feels
-   differently about different things and one who is uniformly mildly pleased.
-   Everything in H14 and much of L13's value is downstream of it.
-2. **H1** — small, self-contained, and it is the difference between having a
-   self-observation loop and not having one.
-3. **H10** — no new code; her richest material is written, well-formed, and
-   switched off nine turns in ten.
-4. **H4(a)** — find the wedge behind `dormant_interest` and `self_callback`. Likely
-   one cause behind several families, including H7.
-5. **H3** — a few lines, and it unblocks a month of stranded history.
-6. **H11** — a weighting decision to make deliberately once H10 lands, since the
-   two compete for the same lane.
-7. **H5** — decide standing/framing deliberately; correcting or retiring are both
-   fine outcomes.
-8. **H2** — after H1, since a conduct pass that cannot persist has nothing to
-   gain from better thresholds.
-9. **H12**, **H13**, **H14** — re-measure after H9 and H10; all three have inputs
-   those two change.
-10. **H6**, **H8** — mostly decisions to record rather than code to write.
-11. **H15** — raised during H3, and it needs a measurement before it needs a
-    patch. Now that the diary drains, wrong content matters more than it did
-    when there was one entry in total.
+**Waiting on measurement, not on work.** These shipped and their verification
+needs days of accumulation rather than another change. Re-check before doing
+anything else, since three of them alter the inputs to everything below:
+
+- **H1** — the latch is open; `kind='conduct'` should go non-zero on the next
+  weekly pass. If it does not, look at the detector.
+- **H16** — tension candidates per pass went 0/3/6 → 3/6/9 by block. Re-run the
+  population query after two days of merge budget; 122 rows should fall toward
+  the ~15–20 distinct frictions the labels suggest.
+- **H10** — tension should move off 0 of 14,240 concept-lane surfacings without
+  displacing `affective` (H11's ratio is still unsettled). Land it *after* H16
+  has drained, or she says the same thing eleven ways.
+- **H7** — `provider` should drop below half of `concept_hypothesis` declines
+  now the reasons are split, the shelf should stop growing, and the first
+  non-zero `hypotheses.asked_count` is the signal the loop closed at all.
+
+**Then, in order:**
+
+1. **H11** — the ratio itself, and now the decision is live: H10 just put a
+   generative kind into the lane boundary has been dominating (28.6% of
+   surfacings against `affective`'s 7.1%). Judge it on the post-H10 mix.
+2. **H4(a)** — the wedge behind `dormant_interest` and `self_callback`. The
+   reason split from H7 is the instrument this was always missing; read it
+   before theorising.
+3. **H7 remainder** — `concept_hypothesis`'s last place in `GAP_CUE_ORDER` and
+   its K47 asymmetry. Deliberately deferred: both are defensible, and the split
+   reasons will say whether they matter.
+4. **H3** — a few lines, and it unblocks a month of stranded history.
+5. **H5** — decide standing/framing deliberately; correcting or retiring are
+   both fine outcomes.
+6. **H2** — after H1 mints its first row, since a conduct pass with no output
+   has nothing to gain from better thresholds.
+7. **H12**, **H13**, **H14** — re-measure after the four above settle; all three
+   have inputs H9, H10 and H16 change. H14 in particular: only 9 of 38 clusters
+   yet carry the valence samples the diary annotation needs.
+8. **H6**, **H8** — mostly decisions to record rather than code to write.
+9. **H15** — needs a measurement before it needs a patch. Now that the diary
+   drains, wrong content matters more than it did when there was one entry in
+   total.

@@ -445,6 +445,127 @@ class InventedPoolTests(_WorkerFixture):
         self.assertEqual(worker.run()["drafted"], 0)
 
 
+class RateMatchTests(_WorkerFixture):
+    """H7 Phase 3: production may not outrun spend.
+
+    ``demand()`` always reported the shortfall honestly, but pressure only
+    orders the queue -- the scheduler heartbeat-admits a worker at zero
+    pressure, so this one drafted every 30 minutes into a shelf that
+    spends about one cue a day. 48 offered against 1.2 taken is not
+    stocking, it is churn: 45 rows deep, 13 superseded, and the good
+    questions buried under the merely recent ones.
+    """
+
+    def setUp(self) -> None:
+        from app.core.concepts.hypothesis_store import HypothesisStore
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        db = ChatDatabase(Path(tmp.name) / "chat.db")
+        self.store = CueStore(db)
+        self.hypotheses = HypothesisStore(db)
+
+    def _worker(self, view=None, **kw) -> ConceptHypothesisWorker:  # type: ignore[override]
+        worker = super()._worker(view or _FakeView([]), **kw)
+        worker._hypothesis_store_provider = lambda: self.hypotheses
+        return worker
+
+    def _beliefs(self, n: int) -> _FakeView:
+        return _FakeView(
+            [(_concept(i, f"belief {i}"), 0.6) for i in range(1, n + 1)]
+        )
+
+    def test_a_stocked_shelf_stops_drafting(self) -> None:
+        worker = self._worker(self._beliefs(5))
+        self.assertEqual(worker.run()["drafted"], 1)
+
+        result = worker.run()
+
+        self.assertEqual(result["drafted"], 0)
+        self.assertIn("concept", result["stocked"])
+        self.assertEqual(len(self._pool()), 1)
+
+    def test_spending_a_cue_reopens_the_slot(self) -> None:
+        """The shelf refills the moment it has room -- the gate is a
+        rate match, not a one-shot."""
+        worker = self._worker(self._beliefs(5))
+        worker.run()
+        for row in self._pool():
+            self.store.mark_used(row.id)
+
+        self.assertEqual(worker.run()["drafted"], 1)
+
+    def test_neither_origin_can_crowd_the_other_out(self) -> None:
+        """A grounded question and an invented guess do not substitute
+        for each other, so the target is split rather than raced for."""
+        from app.core.concepts.hypothesis_store import Hypothesis
+
+        for i in range(3):
+            self.hypotheses.add(
+                Hypothesis(
+                    statement=f"guess {i}",
+                    kind="taste",
+                    credence=0.4,
+                    embedding=np.asarray([1.0, 0.0], dtype=np.float32),
+                )
+            )
+        worker = self._worker(self._beliefs(5))
+
+        for _ in range(4):
+            worker.run()
+
+        origins = [r.payload["target_type"] for r in self._pool()]
+        self.assertEqual(sorted(origins), ["concept", "hypothesis"])
+
+    def test_force_ignores_the_stock_gate(self) -> None:
+        """MCP debug has to be able to draft on demand."""
+        worker = self._worker(self._beliefs(5))
+        worker.run()
+
+        worker.force_next()
+
+        self.assertEqual(worker.run()["drafted"], 1)
+
+
+class CueImportanceTests(unittest.TestCase):
+    """Reading the stakes off a queued payload.
+
+    ``None`` rather than ``0.0`` for an unreadable one is the whole
+    point: the gap path used to spell "absent" and "worst possible"
+    identically, so 25 invented cues written before the producer
+    published the field were not unlucky at the bar, they were
+    structurally ineligible for the whole 168 hours of their lives (H7).
+    """
+
+    def test_a_published_importance_is_used_as_is(self) -> None:
+        from app.core.proactive.concept_hypothesis_worker import cue_importance
+
+        self.assertAlmostEqual(
+            cue_importance({"importance": 0.72, "kind": "ritual"}), 0.72
+        )
+
+    def test_a_missing_one_is_recovered_from_the_kind(self) -> None:
+        """What the producer would have stored: an invention's weight
+        *is* its kind prior, so the orphaned payloads are reconstructible
+        exactly, which beats a migration and beats expiring them."""
+        from app.core.concepts.concept_kinds import get_kind
+        from app.core.proactive.concept_hypothesis_worker import cue_importance
+
+        self.assertAlmostEqual(
+            cue_importance({"kind": "conduct"}),
+            float(get_kind("conduct").importance),
+            places=3,
+        )
+
+    def test_an_unreadable_payload_says_so(self) -> None:
+        from app.core.proactive.concept_hypothesis_worker import cue_importance
+
+        self.assertIsNone(cue_importance({}))
+        self.assertIsNone(cue_importance({"kind": "not-a-kind"}))
+        self.assertIsNone(cue_importance({"importance": "heavy"}))
+        self.assertIsNone(cue_importance(None))
+
+
 class CueTextTests(unittest.TestCase):
     def test_the_cue_states_the_belief_and_its_uncertainty(self) -> None:
         text = render_hypothesis_cue("Jacob walks to think", "user")

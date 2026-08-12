@@ -196,12 +196,16 @@ graph (see **L28m** in [`concepts.md`](personality-backlog/concepts.md)):
   (`user` + `aiko`), so `taste` and `pursuit` were unreachable no matter how
   much supply they grew. The reserve now takes one kind at a time and balances
   subjects *within* a kind, which is what makes the slot count buy breadth.
-- **A cue-only kind is never eligible.** `ConceptKind.static_render` (false
-  only for `tension`) says whether a kind may render in this block at all, and
-  the reserve reads it — so the flex lane, the hypothesis lane, the reserve and
-  the renderer share one source of truth instead of three copies of
-  `kind == "tension"`. A tension in the reserve would either waste the pin or
-  nail a standing friction into every turn, defeating the L12 cooldown.
+- **Not every generative kind may hold a pin.** Two registry flags, read by
+  the reserve, the flex lane, the hypothesis lane and the renderer alike, so
+  they share one source of truth instead of three copies of
+  `kind == "tension"`. `ConceptKind.static_render` says whether a kind may
+  render in this block at all (no kind sets it false today).
+  `ConceptKind.pinnable` says whether it may occupy a slot *regardless of the
+  turn* — false only for `tension`, because a standing friction nailed into
+  every turn defeats the L12 cooldown. Since H10 a tension does reach this
+  block, through the flex lane's generative floor, where it has to earn the
+  slot against what was actually just said.
 - **The reserve rotates.** `openness_rest` carries the caller's habituation
   read into the draw (the view owns no clock), so the pick prefers rested
   concepts and cannot pin the single strongest aspiration forever. The

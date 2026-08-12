@@ -1344,10 +1344,29 @@ class MemorySettings:
     concept_hypothesis_min_gap_hours: float = 4.0
     # ...and the extra bar the gap path alone must clear. Raising a belief
     # about someone out of a *lull* is much heavier than raising it while
-    # already on the subject, so only hunches that matter earn that. 0.55
-    # sits just above the neutral 0.5 an unaffected concept scores, so the
-    # gap path needs a positive importance signal rather than merely the
-    # absence of a negative one.
+    # already on the subject, so only hunches that matter earn that.
+    #
+    # H7 re-sited this against the distribution it actually selects from,
+    # and the useful finding is that the knob is coarser than it looks. A
+    # grounded cue carries affect-lifted importance and lands anywhere
+    # (0.45-0.91 on the live shelf), but an *invented* cue has no grounded
+    # clusters to lift from, so its weight is exactly its kind's prior --
+    # and there are only thirteen of those. For half the shelf this
+    # setting is therefore a kind whitelist wearing a float, with the
+    # priors sitting at 0.30 / 0.40 / 0.45 / 0.50 / 0.60 / 0.65 / 0.70 /
+    # 0.75 / 0.85 / 0.90. Every value in (0.50, 0.60] behaves identically:
+    # ritual, taste, pursuit, narrative and communication_style hunches
+    # wait for a topical moment, and conduct upward may open a lull.
+    #
+    # 0.55 is the midpoint of that plateau, which is the point of it --
+    # furthest from either boundary, so neither a prior being re-tuned by
+    # a hundredth nor a rounding difference can silently flip a kind
+    # across. It also sits just above the neutral 0.5 an unaffected
+    # grounded concept scores, so that half of the shelf still needs a
+    # positive importance signal rather than the absence of a negative
+    # one. Move it to change *which kinds* may open a lull, and read the
+    # prior list in ``concept_kinds.py`` first: any move smaller than one
+    # gap between priors does nothing at all.
     concept_hypothesis_gap_min_importance: float = 0.55
     # L30c: how hard a denial hits. Deliberately the same 0.25 the L9
     # detector uses rather than something harsher -- "not really" is very
@@ -1497,6 +1516,33 @@ class MemorySettings:
     # less templated could reasonably enable it. Raise it deliberately, and
     # dry-run before trusting it.
     concept_consolidation_auto_merge_cosine: float = 1.0
+    # H16: the band below ``merge_cosine`` from which each ``(subject,
+    # kind)`` block still contributes its own worst offenders.
+    #
+    # A single absolute bar assumes every kind's similarity distribution
+    # sits in the same place, and measurement says they do not. 0.84 is
+    # above the 99th percentile of in-block cosine for 17 of 19 blocks in
+    # the live graph, and for ``tension/relationship`` it admits **zero**
+    # pairs out of 406 -- while a human reading those 28 rows sees about
+    # five frictions restated. The cause is label shape: a tension is two
+    # clauses ("X seeks A, yet I value B") and the longest label in the
+    # register at 204-278 characters against 62-190 elsewhere, so
+    # restating one clause can only move half the vector. Two rows opening
+    # with an identical sentence score 0.851; two unrelated frictions
+    # score 0.846. An absolute bar tuned on single-topic labels is
+    # effectively far stricter for a kind like that, and no single number
+    # is right for all of them.
+    #
+    # So the bar becomes a *ceiling* and each block also nominates its own
+    # top ``block_top_n`` pairs above this looser floor. Which is safe for
+    # exactly the reason widening was safe at 0.84: the LLM adjudicates,
+    # so a bad candidate costs one bounded call and a cached rejection.
+    # The floor still matters -- below ~0.75 the band is mostly template
+    # collisions -- and the top-N is what bounds the spend, at most
+    # ``19 blocks x N`` extra candidates per tick against a 30/day budget.
+    concept_consolidation_candidate_floor: float = 0.78
+    # 0 disables the band entirely and restores the flat-bar behaviour.
+    concept_consolidation_block_top_n: int = 3
     # ── L31: what a concept may accept as evidence ────────────────────
     # Creation is gated (a new concept must clear its kind's min_sources /
     # min_chain / directional bars) but *reinforcement* was not gated at
@@ -4331,6 +4377,36 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                             "concept_consolidation_auto_merge_cosine", 1.0
                         )
                     ),
+                ),
+            ),
+            # Capped at the merge cosine: a band floor above the bar it
+            # sits under would be an empty band, and reads as a config
+            # that quietly does nothing.
+            concept_consolidation_candidate_floor=min(
+                min(
+                    1.0,
+                    max(
+                        0.0,
+                        float(
+                            memory_raw.get(
+                                "concept_consolidation_merge_cosine", 0.84
+                            )
+                        ),
+                    ),
+                ),
+                max(
+                    0.0,
+                    float(
+                        memory_raw.get(
+                            "concept_consolidation_candidate_floor", 0.78
+                        )
+                    ),
+                ),
+            ),
+            concept_consolidation_block_top_n=max(
+                0,
+                int(
+                    memory_raw.get("concept_consolidation_block_top_n", 3)
                 ),
             ),
             concept_evidence_admission_cosine=min(

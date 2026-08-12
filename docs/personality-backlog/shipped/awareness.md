@@ -1611,6 +1611,30 @@ the *same* cue loses every time both are armed. That is a systematic bias
 and a far more actionable finding than noise, which is why the decline
 reason names the winner: `lost_priority:turning_over`.
 
+**The catch-all was later split (H7).** `provider` — "the provider
+declined for its own reasons" — shipped as a placeholder for the
+per-provider sweep and became 86% of `concept_hypothesis`'s 342 declines,
+which is how that cue type ran at a 1.5% spend rate for months with no
+readable cause. Nine of the sixteen cue types were on it. Providers now
+report through `note_decline(session, cue, reason)` from their bail
+points, into a small closed vocabulary: `topic_miss`, `importance_floor`,
+`cadence_block`, `no_stock`, `cross_lane`. Closed rather than free text
+because the buckets are compared *across* cue types — "which provider is
+losing its cues to a cadence knob" only stays answerable if everyone
+spells it the same way.
+
+Most of it lands in one place: `take_pool_cue` knows the cadence gate,
+the shelf, and whether the caller's predicate refused everything, so it
+classifies its own empty pick and every pooled provider is instrumented
+at once. `note_as` names the predicate case (defaulting to `topic_miss`,
+which is what that predicate almost always is), and `note_as=None` says
+the caller is doing its own accounting — used by the two dual-mode
+providers, where an empty first pick is a fallthrough to a second path
+rather than the turn's decision. First writer wins, since a provider
+returns at the first gate that refuses it. The two structural reasons
+still outrank anything a provider says: a cue that lost the gap mutex
+never reached the gate it would have reported.
+
 **Two ordering traps, both of which would have produced plausible numbers.**
 Arming is snapshotted at the top of `chat_once_streaming`, not during
 assembly, because the providers *consume* the state it reads — a later

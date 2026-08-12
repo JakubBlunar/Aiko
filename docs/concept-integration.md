@@ -140,11 +140,17 @@ concept moves.
 Measuring the reserve on a real graph (L28m) corrected three things about
 *how* it draws, none of which showed up in the unit tests: it rotates kinds
 before subjects (two `aspiration` subject buckets were taking every slot, so
-no other generative kind was reachable), it skips kinds that declare
-`static_render = False` (a `tension` cannot render in this block, so a slot
-spent on one is spent on nothing), and it takes the caller's habituation read
-through `openness_rest` so the pinned generative concept rests and rotates
-like everything else on the lane.
+no other generative kind was reachable), it skips kinds that cannot hold a
+pin, and it takes the caller's habituation read through `openness_rest` so
+the pinned generative concept rests and rotates like everything else on the
+lane.
+
+Two registry flags decide eligibility, and they answer different questions.
+`static_render = False` means the kind cannot render in this block at all, so
+a slot spent on it is spent on nothing; no kind sets it today.
+`pinnable = False` means the kind renders but must earn its place against the
+live turn — `tension` is the case, since a friction pinned into every turn is
+the nagging L12's cooldown exists to prevent (H10).
 
 **The per-turn flex lane was tilted, not closed.** Generative kinds can
 reach it, but `surface_score` ends in `boosted * habituation *

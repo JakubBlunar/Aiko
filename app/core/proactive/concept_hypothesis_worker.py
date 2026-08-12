@@ -67,6 +67,11 @@ log = logging.getLogger("app.concept_hypothesis_worker")
 #: sort happened to put on top rather than the ones that matter.
 _OVERFETCH = 12
 
+#: Ceiling on the per-origin stock count. The shelf should hold single
+#: digits; this is what stops a pathological pool turning a per-tick
+#: probe into a table scan.
+_STOCK_SCAN = 60
+
 
 def render_hypothesis_cue(label: str, subject: str) -> str:
     """The prompt line for one untested hunch.
@@ -183,12 +188,66 @@ class ConceptHypothesisWorker:
         if not self._enabled():
             return {"drafted": 0, "disabled": True}
 
-        grounded = self._draft_grounded(force)
-        invented = self._draft_invented(force)
+        share = self._shelf_share()
+        stock = (
+            {"concept": 0, "hypothesis": 0} if force else self._origin_stock()
+        )
+        full: list[str] = []
+
+        if stock["concept"] >= share:
+            grounded: dict[str, Any] = {"drafted": 0}
+            full.append("concept")
+        else:
+            grounded = self._draft_grounded(force)
+        if stock["hypothesis"] >= share:
+            invented: list[dict[str, Any]] = []
+            full.append("hypothesis")
+        else:
+            invented = self._draft_invented(force)
+
         out = dict(grounded)
         out["drafted"] = int(grounded.get("drafted", 0)) + len(invented)
         if invented:
             out["invented"] = invented
+        if full:
+            out["stocked"] = full
+        return out
+
+    # ── rate matching ─────────────────────────────────────────────────
+
+    def _shelf_share(self) -> int:
+        """How many pending cues *one origin* may hold.
+
+        The producer's ``inventory_target`` is for the shelf as a whole,
+        and this worker fills it from two pools that cannot substitute
+        for each other: a grounded question is about a belief with
+        evidence behind it, an invented one is a guess she made up, and
+        the renderer picks between them on merit. Letting either fill the
+        whole target would let the cheaper pool crowd the other out
+        entirely, so each gets half, floored at one.
+        """
+        return max(1, self._cues.inventory_target // 2)
+
+    def _origin_stock(self) -> dict[str, int]:
+        """Pending cues per origin.
+
+        The rate match H7 was missing. ``demand()`` has always reported
+        the shortfall honestly, but pressure only orders the queue -- the
+        scheduler heartbeat-admits a worker at zero pressure, so this ran
+        every 30 minutes and drafted regardless. Against a
+        ``surface_cooldown_hours`` of 20 that is ~48 cues offered a day
+        into at most ~1.2 spends, which is how the shelf reached 45 deep
+        with 13 rows superseded before anyone could ask them. Production
+        that outruns spend by 40x is not stocking, it is churn: it buries
+        the good questions under the merely recent ones and expires them
+        unasked.
+        """
+        out = {"concept": 0, "hypothesis": 0}
+        for row in self._cues.stock_rows(limit=_STOCK_SCAN):
+            payload = getattr(row, "payload", None) or {}
+            target = str(payload.get("target_type") or "concept")
+            if target in out:
+                out[target] += 1
         return out
 
     # ── the grounded pool (Phase A) ───────────────────────────────────
@@ -497,8 +556,46 @@ def _kind_importance(kind: str) -> float:
     return float(getattr(spec, "importance", IMPORTANCE_NEUTRAL))
 
 
+def cue_importance(payload: Any) -> float | None:
+    """The stakes weight for one queued cue, or ``None`` if unknowable.
+
+    ``None`` rather than ``0.0`` is the whole point. The gap path used to
+    read ``float(payload.get("importance") or 0.0)``, which spells
+    "absent" and "worst possible" identically -- so twenty-five invented
+    cues written before the producer published the field were not merely
+    unlucky at the bar, they could never clear it, and would have expired
+    at 168 hours having been structurally ineligible their whole lives
+    (H7).
+
+    Recovers what it can rather than writing them off. The producer's own
+    value for an invention *is* the kind prior, so a payload carrying a
+    kind carries enough: this reconstructs exactly the number that would
+    have been stored, which beats a migration and beats letting real
+    questions expire. Only a payload with neither field is genuinely
+    unreadable, and that is what ``None`` is for.
+    """
+    try:
+        raw = payload.get("importance")
+    except AttributeError:
+        return None
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    kind = str(payload.get("kind") or "").strip()
+    if not kind:
+        return None
+    from app.core.concepts.concept_kinds import get_kind
+
+    if get_kind(kind) is None:
+        return None
+    return _kind_importance(kind)
+
+
 __all__ = [
     "ConceptHypothesisWorker",
+    "cue_importance",
     "render_hypothesis_cue",
     "render_invented_cue",
 ]

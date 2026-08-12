@@ -115,13 +115,30 @@ class GateAndRegistryTests(unittest.TestCase):
         self.assertNotIn("tension", {k.name for k in core_lane_kinds()})
         self.assertFalse(get_kind("tension").core_always_on)
 
-    def test_it_declares_itself_out_of_the_static_render(self) -> None:
-        # The T3 carve-out is declarative, so the flex lane, the hypothesis
-        # lane and the L28 openness reserve all agree with the renderer
-        # without any of them naming the kind.
-        self.assertFalse(get_kind("tension").static_render)
-        self.assertFalse(renders_in_static_block("tension"))
-        self.assertTrue(renders_in_static_block("aspiration"))
+    def test_it_renders_but_is_never_pinned(self) -> None:
+        # H10: it used to be filtered out of T3 entirely, which cost it all
+        # 13,800 concept surfacings. Rendering and *pinning* are separate
+        # promises, and a tension wants opposite answers: raised when the
+        # turn is about it, never standing there regardless of the turn.
+        # Both declarative, so the flex lane, the hypothesis lane and the
+        # L28 openness reserve agree without any of them naming the kind.
+        self.assertTrue(get_kind("tension").static_render)
+        self.assertTrue(renders_in_static_block("tension"))
+        self.assertFalse(get_kind("tension").pinnable)
+
+    def test_the_openness_reserve_will_not_pin_it(self) -> None:
+        from app.core.concepts.concept_kinds import (
+            ROLE_GENERATIVE,
+            kinds_by_role,
+        )
+
+        eligible = {
+            k.name for k in kinds_by_role(ROLE_GENERATIVE)
+            if renders_in_static_block(k.name) and k.pinnable
+        }
+        self.assertNotIn("tension", eligible)
+        # The reserve is not thereby empty -- the kinds it exists for stay.
+        self.assertTrue(eligible)
 
     def test_surface_weights_opt_in(self) -> None:
         w = get_kind("tension").surface_weights
@@ -927,6 +944,33 @@ class CueConsumerTests(unittest.TestCase):
         out = host._render_tension_block()
         self.assertIn("He values rest", out)
         self.assertFalse(host.debug_overrides.peek("tension_force_next"))
+
+    def test_it_yields_to_the_concept_lane(self) -> None:
+        """H10: T3 renders first and may already carry this friction.
+        Raising the same one twice in one assembly is the nagging the
+        cooldown exists to prevent."""
+        host = _Host(cues=[_cue()])
+        host._last_context_concept_ids = frozenset({1})
+        self.assertEqual(host._render_tension_block(), "")
+
+    def test_yielding_costs_the_cue_nothing(self) -> None:
+        """Left standing, not consumed -- it gets said on a turn where it
+        is the only voice raising it."""
+        host = _Host(cues=[_cue()])
+        host._last_context_concept_ids = frozenset({1})
+        host._render_tension_block()
+        self.assertNotIn(_tc.KV_LAST_SURFACED_AT, host._chat_db.store)
+        self.assertNotIn(
+            _tc.per_concept_cooldown_key(1), host._chat_db.store
+        )
+        # A later turn where T3 picked something else still fires it.
+        host._last_context_concept_ids = frozenset({99})
+        self.assertIn("He values rest", host._render_tension_block())
+
+    def test_a_different_tension_in_the_lane_does_not_silence_it(self) -> None:
+        host = _Host(cues=[_cue()])
+        host._last_context_concept_ids = frozenset({2, 3})
+        self.assertIn("He values rest", host._render_tension_block())
 
 
 if __name__ == "__main__":

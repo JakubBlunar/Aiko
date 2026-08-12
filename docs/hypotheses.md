@@ -304,6 +304,16 @@ unanswered hunch retires instead of being released.
   `asked_count` had been doing by accident. Expiry exempts *answered* rows
   rather than asked ones, so a question put a fortnight ago that never got
   a reply can still age out instead of holding a slot for good.
+- **Production is rate-matched to spend, per origin.** `ConceptHypothesisWorker.run`
+  counts the pending cues of each `target_type` and skips the pool that
+  already holds its share of `inventory_target` (2, so one each). The
+  interval is a heartbeat, not a licence: the scheduler admits a worker
+  even at zero pressure, so before H7 this drafted every 30 minutes into
+  a shelf that spends about 1.2 cues a day — 45 rows deep with 13
+  superseded, the good questions buried under the merely recent ones and
+  expiring unasked at 168h. The split is per origin because a grounded
+  question and an invented guess do not substitute for each other; on one
+  shared counter whichever pool had stock would silence the other.
 - **A terminal row is kept, not deleted.** A `refuted` row is what stops
   re-invention — but an `expired` one is not. Expiry means she never got
   round to asking, so nothing was learned about the guess and the row can
@@ -350,10 +360,10 @@ two master switches; full prose for each is in
 | `context_budget_hypothesis_min_relevance` | `0.35` | how on-topic a musing must be |
 | `hypothesis_min_unsettled` | `0.22` | how far from settling a belief must be to count as open |
 | `hypothesis_min_sources` | `1` | minimum evidence for a *grounded* open question |
-| `concept_hypothesis_interval_seconds` | `1800` | ask-worker cadence (no LLM) |
+| `concept_hypothesis_interval_seconds` | `1800` | ask-worker heartbeat (no LLM); actual drafting is gated on per-origin stock |
 | `concept_hypothesis_max_per_run` | `1` | cues queued per run, per pool |
 | `concept_hypothesis_min_gap_hours` | `4.0` | typed gap that arms the fallback ask path |
-| `concept_hypothesis_gap_min_importance` | `0.55` | importance floor for the gap path only |
+| `concept_hypothesis_gap_min_importance` | `0.55` | importance floor for the gap path only — for an invented cue this is a kind whitelist, not a dial (H7; see [`configuration.md`](configuration.md)) |
 | `concept_hypothesis_answer_threshold` | `0.45` | echo-gate cosine |
 | `concept_hypothesis_deny_penalty` | `0.25` | confidence penalty on a denied *concept* |
 | `hypothesis_invention_interval_seconds` | `5400` | proposer cadence (one LLM call) |

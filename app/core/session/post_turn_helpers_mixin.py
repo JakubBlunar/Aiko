@@ -2092,6 +2092,10 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         self._cue_armed_snapshot = set()
         self._cue_question_balance_snapshot = False
         self._last_cue_decisions = None
+        # Cleared here as well as when drained: post-turn returns early on
+        # a banter / aborted turn, and a note left from one of those would
+        # be attributed to the next assembly's declines.
+        self._cue_provider_reasons = {}
         if getattr(self, "_cue_decision_store", None) is None:
             return
         try:
@@ -2158,12 +2162,14 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         try:
             from app.core.proactive.cue_accounting import (
                 decisions_from_block_chars,
+                take_decline_notes,
             )
 
             decisions = decisions_from_block_chars(
                 armed,
                 block_chars,
                 question_balance_suppressed=suppressed,
+                provider_reasons=take_decline_notes(self),
             )
         except Exception:
             log.debug("cue decision derivation failed", exc_info=True)

@@ -44,11 +44,16 @@ from app.core.proactive.cue_accounting import (
     GAP_CUE_ORDER,
     OUTCOME_DECLINED,
     OUTCOME_SURFACED,
+    REASON_IMPORTANCE_FLOOR,
     REASON_LOST_PRIORITY,
+    REASON_NO_STOCK,
     REASON_PROVIDER,
     REASON_QUESTION_BALANCE,
+    REASON_TOPIC_MISS,
     armed_cues,
     decisions_from_block_chars,
+    note_decline,
+    take_decline_notes,
 )
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
@@ -378,6 +383,78 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(
             d.rows(), [("tension", OUTCOME_DECLINED, REASON_PROVIDER)],
         )
+
+
+class ProviderReasonTests(unittest.TestCase):
+    """H7: the catch-all made 86% of one cue type's declines unreadable.
+
+    A provider knows things the block-chars attribution cannot see -- that
+    nothing on the shelf was topical, that a cooldown was still running,
+    that another lane had already claimed the material. It reports them
+    through :func:`note_decline`, and they land here.
+    """
+
+    def test_a_provider_reason_replaces_the_catch_all(self) -> None:
+        d = decisions_from_block_chars(
+            {"knowledge_gap_notice"},
+            {"knowledge_gap_notice_block": 0},
+            provider_reasons={"knowledge_gap_notice": REASON_TOPIC_MISS},
+        )
+        self.assertEqual(
+            d.declined["knowledge_gap_notice"], REASON_TOPIC_MISS,
+        )
+
+    def test_an_unreported_provider_still_gets_the_catch_all(self) -> None:
+        """The fallback stays: an unaccounted cue is worse than a vague one."""
+        d = decisions_from_block_chars(
+            {"self_callback"},
+            {"self_callback_block": 0},
+            provider_reasons={"knowledge_gap_notice": REASON_TOPIC_MISS},
+        )
+        self.assertEqual(d.declined["self_callback"], REASON_PROVIDER)
+
+    def test_the_structural_reasons_still_outrank_it(self) -> None:
+        """A cue that lost the gap mutex never reached the gate it
+        reported, so naming that gate would send the reader to the wrong
+        mechanism."""
+        d = decisions_from_block_chars(
+            {"turning_over", "concept_hypothesis"},
+            {"turning_over_block": 90, "concept_hypothesis_block": 0},
+            provider_reasons={"concept_hypothesis": REASON_IMPORTANCE_FLOOR},
+        )
+        self.assertEqual(
+            d.declined["concept_hypothesis"],
+            f"{REASON_LOST_PRIORITY}:turning_over",
+        )
+        d2 = decisions_from_block_chars(
+            {"concept_hypothesis"},
+            {"concept_hypothesis_block": 0},
+            question_balance_suppressed=True,
+            provider_reasons={"concept_hypothesis": REASON_IMPORTANCE_FLOOR},
+        )
+        self.assertEqual(
+            d2.declined["concept_hypothesis"], REASON_QUESTION_BALANCE,
+        )
+
+    def test_note_decline_keeps_the_first_gate(self) -> None:
+        """A provider walks its gates in order and returns at the first
+        refusal, so a later gate it would also have failed is not what
+        happened to it."""
+        host = SimpleNamespace()
+        note_decline(host, "concept_hypothesis", REASON_TOPIC_MISS)
+        note_decline(host, "concept_hypothesis", REASON_IMPORTANCE_FLOOR)
+        self.assertEqual(
+            take_decline_notes(host),
+            {"concept_hypothesis": REASON_TOPIC_MISS},
+        )
+
+    def test_draining_clears_the_turn(self) -> None:
+        """A note left behind would be attributed to the next assembly,
+        where the cue may well have surfaced."""
+        host = SimpleNamespace()
+        note_decline(host, "self_callback", REASON_NO_STOCK)
+        self.assertTrue(take_decline_notes(host))
+        self.assertEqual(take_decline_notes(host), {})
 
 
 # ── 4. the store ──────────────────────────────────────────────────────
