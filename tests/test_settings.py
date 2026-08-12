@@ -4930,6 +4930,28 @@ class SearchSettingsTests(unittest.TestCase):
         self.assertEqual(s.langsearch_count, 10)
         self.assertGreaterEqual(s.timeout_seconds, 1.0)
 
+    def test_brain_lane_defaults(self) -> None:
+        # D3: the synchronous tool is on, with a timeout well under the
+        # worker one (a user is waiting on this lane).
+        s = load_settings(config_path=self._write_config()).search
+        self.assertTrue(s.brain_tool_enabled)
+        self.assertEqual(s.brain_timeout_seconds, 6.0)
+        self.assertLess(s.brain_timeout_seconds, s.timeout_seconds)
+
+    def test_brain_lane_overrides_round_trip(self) -> None:
+        path = self._write_config({
+            "brain_tool_enabled": False,
+            "brain_timeout_seconds": 3.5,
+        })
+        s = load_settings(config_path=path).search
+        self.assertFalse(s.brain_tool_enabled)
+        self.assertEqual(s.brain_timeout_seconds, 3.5)
+
+    def test_brain_timeout_clamped(self) -> None:
+        path = self._write_config({"brain_timeout_seconds": 0.05})
+        s = load_settings(config_path=path).search
+        self.assertGreaterEqual(s.brain_timeout_seconds, 1.0)
+
 
 class WeatherSettingsTests(unittest.TestCase):
     """H11 weather block + agent/tools flags parsing + clamps."""

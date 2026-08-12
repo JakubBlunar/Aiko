@@ -29,16 +29,17 @@ from app.core.session.tool_pass_gate import (
 )
 
 
-# Only brain-lane tools that actually register in the ToolRegistry.
-# ``web_search`` and the filesystem task tools run in the background
-# workflow / MCP lane and are intentionally NOT gate-mapped.
+# Only brain-lane tools that actually register in the ToolRegistry. The
+# filesystem task tools run in the background workflow / MCP lane and are
+# intentionally NOT gate-mapped; ``web_search`` is on this lane again
+# since D3.
 _ALL_TOOLS = [
     "get_time", "recall", "recall_topic",
     "look_around", "move_to", "change_posture", "inspect_item",
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
-    "get_weather", "get_forecast",
+    "get_weather", "get_forecast", "web_search",
 ]
 
 _NO_CONTEXT = GateContext()
@@ -112,14 +113,19 @@ class UnknownToolTests(unittest.TestCase):
         self.assertEqual(unknown, {"mystery"})
 
     def test_background_lane_tools_are_unknown(self) -> None:
-        # ``web_search`` + filesystem task tools are background-only, so the
-        # gate does not map them (they never register on the brain lane).
+        # The filesystem task tools are background-only, so the gate does
+        # not map them (they never register on the brain lane).
         _, unknown = families_for_tools(
-            ["web_search", "list_file_roots", "start_file_read"],
+            ["list_file_roots", "start_file_read"],
         )
-        self.assertEqual(
-            unknown, {"web_search", "list_file_roots", "start_file_read"}
-        )
+        self.assertEqual(unknown, {"list_file_roots", "start_file_read"})
+
+    def test_web_search_maps_to_the_web_family(self) -> None:
+        # D3 put ``web_search`` back on the brain lane, so it must be
+        # mapped -- an unmapped tool forces the pass on every turn.
+        families, unknown = families_for_tools(["web_search"])
+        self.assertEqual(families, {"web"})
+        self.assertEqual(unknown, set())
 
 
 class SignalFamilyTests(unittest.TestCase):
@@ -170,6 +176,30 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_tasks_signal(self) -> None:
         self._assert_runs("cancel that workflow", "tasks")
+
+    def test_web_new_season_signal(self) -> None:
+        # D3's motivating case: the user doesn't ask her to search, they
+        # just bring up a show that aired after her training cutoff.
+        self._assert_runs("have you seen the new Dandadan season?", "web")
+
+    def test_web_release_date_signal(self) -> None:
+        self._assert_runs("do you know the release date?", "web")
+
+    def test_web_explicit_lookup_signal(self) -> None:
+        self._assert_runs("can you look that up for me?", "web")
+
+    def test_web_announcement_signal(self) -> None:
+        self._assert_runs("did they announce a second season yet?", "web")
+
+    def test_web_phrase_skips_when_brain_search_disabled(self) -> None:
+        # With ``search.brain_tool_enabled`` off the tool never registers,
+        # so the web patterns aren't consulted and a search-shaped turn
+        # costs nothing.
+        decision = _decide(
+            "is there a season 3 of Frieren?", tools=["get_time", "recall"],
+        )
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, "no_signal")
 
     def test_multiple_families_join_in_reason(self) -> None:
         decision = _decide("what time is it, and how's the weather?")

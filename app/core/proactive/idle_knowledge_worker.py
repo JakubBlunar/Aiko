@@ -1063,6 +1063,60 @@ class IdleKnowledgeWorker:
                 break
         return out
 
+    # ── D3 post-turn entry point ─────────────────────────────────────
+
+    def distil_and_store(
+        self,
+        query: str,
+        snippets: list[dict[str, str]],
+        *,
+        source: str = "brain_tool",
+    ) -> int:
+        """Distil already-fetched search hits and store what survives.
+
+        The public seam for D3's post-turn write-back: the brain-lane
+        ``web_search`` tool has already paid for the network round-trip
+        during the turn, so this skips the whole idle cycle (cluster
+        scoring, rate limits, the search itself) and reuses only the two
+        steps that matter — the impersonal-fact distillation and the
+        deduped, source-cited ``knowledge`` write.
+
+        Returns how many rows were actually written. Zero is an ordinary
+        outcome: the excerpts may have been thin, time-sensitive (the
+        distil prompt rejects news), or already known.
+
+        The query is not re-scrubbed here — it arrives already scrubbed by
+        the tool's privacy boundary, which is what was sent to the search
+        engine in the first place.
+        """
+        if not query or not snippets:
+            return 0
+        facts = self._distil(query, snippets)
+        if not facts:
+            log.debug(
+                "post-turn knowledge: nothing distillable for %r", query[:80],
+            )
+            return 0
+        urls = [s.get("url", "") for s in snippets if s.get("url")]
+        now = timephrase.utcnow()
+        written = 0
+        for fact in facts:
+            memory_id = self._write_knowledge(
+                fact=fact,
+                topic=query,
+                source_url=urls[0] if urls else "",
+                source_urls=urls,
+                cluster_key=f"{source}:{_cluster_key(query)}",
+                now=now,
+            )
+            if memory_id is not None:
+                written += 1
+        log.info(
+            "post-turn knowledge: query=%r facts=%d written=%d",
+            query[:80], len(facts), written,
+        )
+        return written
+
     # ── memory write ─────────────────────────────────────────────────
 
     def _write_knowledge(

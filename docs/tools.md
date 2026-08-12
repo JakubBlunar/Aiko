@@ -24,7 +24,58 @@ For things she can't just know:
 | `recall_concept` | Explains *why* she thinks/believes something — a higher-order concept with its rationale, supporting memories, topic areas, and related concepts. No-op without the concept store wired in. |
 | `recall_self_history` | Walks how a belief *changed* — eras of formed / replaced / faded / revived / held-all-along, each with the reason recorded at the time. Returns `thin_record` rather than improvising when the trail is too sparse. |
 | `recall_hypotheses` | Lists what she is still **unsure** about: open guesses with a credence, and an `origin` marking whether she derived each from something she noticed (`grounded`) or invented it outright (`invented`). See [`hypotheses.md`](hypotheses.md). |
-| `web_search` | Web results. The backend (LangSearch or DuckDuckGo) is configured under the `search` block; LangSearch falls back to DuckDuckGo. |
+| `web_search` | Web results, fetched **synchronously inside the turn** so she can answer from them in the same reply. See [Synchronous web search](#synchronous-web-search-d3) below. |
+
+## Synchronous web search (D3)
+
+`web_search` is the one tool that blocks the turn on a network call, so it
+works differently from the rest.
+
+**When it fires.** The P14 gate has to see a search-shaped signal
+(a release date, a new season, an announcement, "look it up", a year, …
+— see the `web` family in [`tool_pass_gate.py`](../app/core/session/tool_pass_gate.py)),
+*and* the model then has to pick the tool over `respond_directly`. On a
+sample of 800 real user turns the `web` family opened zero additional
+decision passes beyond those already opening for other families, so a
+chatty conversation pays nothing for having it registered.
+
+**What it costs when it does fire.** Measured against LangSearch: ~2.7s
+for the round-trip, on top of the ~3s decision pass, on top of the usual
+~1.5s to first token — so roughly 7s to her first word instead of 1.5s.
+Aiko says a short "hang on, let me check" line through TTS before the
+dispatch so the pause reads as a lookup rather than a hang; the chat UI
+shows the same thing as a tool-activity chip. That line is spoken only —
+it never enters the transcript or the persisted message.
+
+**Context cost.** Three results at 400 characters, about 450 tokens, and
+only on the turn that searched: the tool result lives in that turn's
+message list and is never persisted into history, so it doesn't compound.
+
+**Privacy.** The query is written by the chat model, which composes it
+with the persona, retrieved memories and the transcript in view — so it
+is not trusted. Every outbound query passes through the same scrubber the
+background fact-checker uses: names and first-person tokens are dropped,
+and a query carrying hard identifiers (a URL, an email, an address) is
+refused outright with a `ToolError` telling her to rephrase. A refusal
+never reaches the search engine.
+
+**No fallback on this lane.** The brain lane builds its own provider with
+`search.brain_timeout_seconds` (6s) and *without* the DuckDuckGo
+fallback, so a LangSearch outage surfaces as "I couldn't reach the web"
+rather than silently reinstating the slow HTML scrape that got this tool
+removed from the conversational lane in the first place.
+
+**What she keeps.** After the turn, a speaking-window job hands the hits
+to the F9 knowledge worker's distiller, which writes at most two
+evergreen, impersonal, source-cited `knowledge` memories (deduped
+semantically against what she already knows). Raw snippets are never
+stored. So the second conversation about the same show doesn't need the
+web. Requires `agent.knowledge_enrichment_enabled`; without it the search
+still works, she just doesn't retain it.
+
+Switches: `tools.web_search` (the family, shared with the background
+workflow skill) and `search.brain_tool_enabled` (this lane alone — turn
+it off to get the latency back and keep the background lanes).
 
 ## Weather tools
 

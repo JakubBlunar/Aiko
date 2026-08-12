@@ -96,6 +96,50 @@ class SpeakingWindowJobsMixin:
             except Exception:
                 pass
 
+    def _maybe_schedule_search_distill_job(self) -> None:
+        """D3: distil this turn's web-search hits into a knowledge memory.
+
+        The brain-lane ``web_search`` tool already paid for the network
+        round-trip during the turn; this turns what came back into one or
+        two evergreen, source-cited ``knowledge`` rows so the next
+        conversation about the topic doesn't need the web again.
+
+        Deliberately *after* the reply rather than inside it: distillation
+        is a second LLM call, and the user is not waiting on the answer to
+        "should this be remembered". Reuses the F9 worker's distil + write
+        path, so the impersonal-fact prompt, the confidence floor, the
+        semantic dedupe and the ``source_urls`` provenance all apply
+        unchanged. Raw snippets are never written to memory.
+        """
+        stashed = self._drain_turn_search_results()
+        if not stashed:
+            return
+        worker = getattr(self, "_idle_knowledge", None)
+        if worker is None:
+            return
+        query, snippets = stashed
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                worker.distil_and_store(query, snippets)
+            except Exception:
+                log.debug("search distill job raised", exc_info=True)
+
+        try:
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="search_knowledge_distill",
+                priority=60,  # below reflection, above the grooming passes
+                estimated_seconds=3.0,
+                callable=_job,
+                dedupe_key="search_knowledge_distill",
+            ))
+        except Exception:
+            log.debug("search distill submit failed", exc_info=True)
+
     def _maybe_schedule_agenda_groom_job(self) -> None:
         """Phase 4a: enqueue AgendaWorker grooming pass on the speaking window."""
         worker = getattr(self, "_agenda_worker", None)

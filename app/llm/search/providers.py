@@ -315,6 +315,55 @@ def build_search_provider(settings: "SearchSettings | None") -> SearchProvider:
     return langsearch
 
 
+def build_brain_search_provider(
+    settings: "SearchSettings | None",
+) -> SearchProvider:
+    """Pick a provider for the D3 brain lane (the synchronous tool).
+
+    Same backend choice as :func:`build_search_provider` with two
+    deliberate differences, both because a user is sitting through this
+    round-trip rather than a background worker:
+
+    * **No DuckDuckGo fallback.** A LangSearch outage would otherwise
+      silently swap in the HTML scrape that got the tool removed from the
+      fast lane originally — a slow reply is worse here than a "couldn't
+      reach the web" the model can narrate.
+    * **``brain_timeout_seconds``** instead of the worker
+      ``timeout_seconds``, so a hung request fails while the turn is
+      still salvageable.
+
+    A config that names DuckDuckGo as its provider still gets DuckDuckGo
+    (the user asked for it); it is simply slower on this lane.
+    """
+    if settings is None:
+        return DuckDuckGoProvider()
+    provider = (
+        getattr(settings, "provider", "duckduckgo") or "duckduckgo"
+    ).strip().lower()
+    if provider != "langsearch":
+        return DuckDuckGoProvider()
+    key = resolve_api_key(
+        getattr(settings, "api_key", "") or "",
+        getattr(settings, "api_key_env", "") or "",
+    )
+    if not key:
+        log.warning(
+            "brain search provider=langsearch but no API key resolved; "
+            "using duckduckgo"
+        )
+        return DuckDuckGoProvider()
+    return LangSearchProvider(
+        api_key=key,
+        summary=bool(getattr(settings, "langsearch_summary", True)),
+        freshness=str(getattr(settings, "langsearch_freshness", "noLimit")),
+        count=int(getattr(settings, "langsearch_count", 10)),
+        timeout_seconds=float(getattr(settings, "brain_timeout_seconds", 6.0)),
+        min_interval_seconds=float(
+            getattr(settings, "langsearch_min_interval_seconds", 1.1)
+        ),
+    )
+
+
 __all__ = [
     "SearchResult",
     "SearchProvider",
@@ -322,5 +371,6 @@ __all__ = [
     "LangSearchProvider",
     "FallbackProvider",
     "build_search_provider",
+    "build_brain_search_provider",
     "resolve_api_key",
 ]

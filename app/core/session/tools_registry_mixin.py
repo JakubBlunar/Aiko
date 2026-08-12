@@ -119,14 +119,38 @@ class ToolsRegistryMixin:
                     log.warning(
                         "weather tools failed to register", exc_info=True
                     )
-            # web_search is intentionally NOT a brain builtin anymore.
-            # A DuckDuckGo round-trip is too slow for the fast
-            # conversational lane, so it now lives only as a background
-            # workflow skill (``WorkflowSkillRegistry`` -> ``web_search``
-            # task handler). ``tools.web_search`` still gates whether the
-            # workflow offers the skill to its planner. The fact-checker
-            # and curiosity workers keep their own private WebSearchTool
+            # D3: web_search is a brain tool again. It was pulled from
+            # this lane when the only backend was a DuckDuckGo HTML
+            # scrape; LangSearch answers in ~2.7s, the P14 gate keeps the
+            # decision pass off banter turns, and the brain lane gets its
+            # own fallback-free provider (see
+            # ``build_brain_search_provider``) so a LangSearch outage
+            # can't quietly reinstate the slow scrape. Needs both
+            # ``tools.web_search`` (the family switch, shared with the
+            # background workflow skill) and ``search.brain_tool_enabled``
+            # (the latency switch for this lane alone). The fact-checker
+            # and curiosity workers keep their own WebSearchTool
             # instances — those are background workers, not the brain.
+            search_cfg = getattr(self._settings, "search", None)
+            if (
+                getattr(tools_cfg, "web_search", True)
+                and getattr(search_cfg, "brain_tool_enabled", True)
+            ):
+                try:
+                    from app.llm.tools.web_search_brain import BrainWebSearchTool
+
+                    registry.register(self._register_brain_search_consumer(
+                        BrainWebSearchTool(
+                            self._get_brain_search_provider(),
+                            user_names_provider=self._fact_check_user_names,
+                            assistant_name_provider=self._fact_check_assistant_name,
+                            on_results=self._stash_turn_search_results,
+                        )
+                    ))
+                except Exception:
+                    log.warning(
+                        "brain web_search failed to register", exc_info=True
+                    )
             if (
                 getattr(tools_cfg, "world", True)
                 and getattr(self, "_world_store", None) is not None

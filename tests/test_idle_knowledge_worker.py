@@ -712,5 +712,108 @@ class TestIsReady(unittest.TestCase):
         self.assertTrue(signal.needs_llm)
 
 
+class TestDistilAndStore(unittest.TestCase):
+    """D3 post-turn write-back: the brain lane already did the searching.
+
+    ``distil_and_store`` is the public seam the session calls after a turn
+    in which Aiko used the synchronous ``web_search`` tool. It must reuse
+    the distil + write path (impersonal-fact prompt, confidence floor,
+    dedupe, source citation) and skip everything idle-specific: no
+    clustering, no rate limiter, and above all no second search.
+    """
+
+    _SNIPPETS = [
+        {
+            "title": "Dandadan season 2",
+            "url": "https://en.example.org/dandadan-s2",
+            "snippet": "The second season ran for twelve episodes.",
+        },
+    ]
+
+    def test_writes_a_knowledge_row_without_searching_again(self) -> None:
+        world = _build_world()
+        written = world["worker"].distil_and_store(
+            "Dandadan season 2 episode count", self._SNIPPETS,
+        )
+        self.assertEqual(written, 1)
+        # The turn already paid for the network call.
+        self.assertEqual(world["web_search"].calls, [])
+        self.assertEqual(
+            len(world["memory_store"].iter_by_kind("knowledge")), 1,
+        )
+
+    def test_stores_provenance_from_the_hits(self) -> None:
+        world = _build_world()
+        world["worker"].distil_and_store(
+            "Dandadan season 2 episode count", self._SNIPPETS,
+        )
+        row = world["memory_store"].iter_by_kind("knowledge")[0]
+        meta = row.metadata or {}
+        self.assertEqual(
+            meta.get("source_url"), "https://en.example.org/dandadan-s2",
+        )
+        self.assertEqual(meta.get("source_query"), "Dandadan season 2 episode count")
+        # The cluster key is namespaced so a post-turn write is
+        # distinguishable from an idle one in the metadata.
+        self.assertTrue(str(meta.get("cluster_key", "")).startswith("brain_tool:"))
+
+    def test_row_is_long_term_so_rag_can_find_it_later(self) -> None:
+        world = _build_world()
+        world["worker"].distil_and_store("topic", self._SNIPPETS)
+        row = world["memory_store"].iter_by_kind("knowledge")[0]
+        self.assertEqual(row.tier, "long_term")
+
+    def test_notifies_the_memory_listener(self) -> None:
+        world = _build_world()
+        world["worker"].distil_and_store("topic", self._SNIPPETS)
+        self.assertEqual(len(world["added_calls"]), 1)
+
+    def test_raw_snippets_are_never_stored_verbatim(self) -> None:
+        # The whole point of distilling: raw search text would pollute RAG.
+        world = _build_world()
+        world["worker"].distil_and_store("topic", self._SNIPPETS)
+        contents = [
+            r.content for r in world["memory_store"].iter_by_kind("knowledge")
+        ]
+        self.assertNotIn(self._SNIPPETS[0]["snippet"], contents)
+
+    def test_empty_inputs_are_a_no_op(self) -> None:
+        world = _build_world()
+        self.assertEqual(world["worker"].distil_and_store("", self._SNIPPETS), 0)
+        self.assertEqual(world["worker"].distil_and_store("topic", []), 0)
+        self.assertEqual(world["ollama"].chat_calls, [])
+
+    def test_nothing_distillable_writes_nothing(self) -> None:
+        world = _build_world(facts_json={"facts": []})
+        written = world["worker"].distil_and_store("topic", self._SNIPPETS)
+        self.assertEqual(written, 0)
+        self.assertEqual(world["memory_store"].iter_by_kind("knowledge"), [])
+
+    def test_low_confidence_facts_are_dropped(self) -> None:
+        world = _build_world(
+            facts_json={
+                "facts": [{"text": "A shaky claim.", "confidence": 0.2}],
+            },
+        )
+        self.assertEqual(
+            world["worker"].distil_and_store("topic", self._SNIPPETS), 0,
+        )
+
+    def test_llm_outage_is_swallowed(self) -> None:
+        world = _build_world()
+        world["ollama"].raise_on_call = True
+        self.assertEqual(
+            world["worker"].distil_and_store("topic", self._SNIPPETS), 0,
+        )
+
+    def test_second_identical_search_dedupes(self) -> None:
+        world = _build_world()
+        first = world["worker"].distil_and_store("topic", self._SNIPPETS)
+        second = world["worker"].distil_and_store("topic", self._SNIPPETS)
+        self.assertEqual(first, 1)
+        # Same distilled text -> the store's semantic dedupe absorbs it.
+        self.assertEqual(second, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

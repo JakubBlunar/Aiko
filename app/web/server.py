@@ -111,6 +111,8 @@ def _search_public_snapshot(search: Any) -> dict[str, Any]:
             "timeout_seconds": 12.0,
             "langsearch_min_interval_seconds": 1.1,
             "query_reformulation_enabled": True,
+            "brain_tool_enabled": True,
+            "brain_timeout_seconds": 6.0,
         }
     from app.llm.search.providers import resolve_api_key
 
@@ -134,6 +136,10 @@ def _search_public_snapshot(search: Any) -> dict[str, Any]:
         ),
         "query_reformulation_enabled": bool(
             getattr(search, "query_reformulation_enabled", True)
+        ),
+        "brain_tool_enabled": bool(getattr(search, "brain_tool_enabled", True)),
+        "brain_timeout_seconds": float(
+            getattr(search, "brain_timeout_seconds", 6.0)
         ),
     }
 

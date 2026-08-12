@@ -14,6 +14,7 @@ from app.llm.search.providers import (
     FallbackProvider,
     LangSearchProvider,
     SearchResult,
+    build_brain_search_provider,
     build_search_provider,
     resolve_api_key,
 )
@@ -302,6 +303,60 @@ class BuildSearchProviderTests(unittest.TestCase):
     def test_langsearch_without_key_falls_to_ddg(self) -> None:
         prov = build_search_provider(SearchSettings(provider="langsearch"))
         self.assertIsInstance(prov, DuckDuckGoProvider)
+
+
+class BuildBrainSearchProviderTests(unittest.TestCase):
+    """D3: the brain lane never wraps a fallback and uses its own timeout."""
+
+    def test_langsearch_is_never_fallback_wrapped(self) -> None:
+        # Even with the worker-lane fallback on, the brain lane stays bare:
+        # a LangSearch outage must not silently reinstate the slow scrape
+        # on a turn the user is waiting through.
+        prov = build_brain_search_provider(
+            SearchSettings(
+                provider="langsearch", api_key="k", fallback_to_duckduckgo=True,
+            )
+        )
+        self.assertIsInstance(prov, LangSearchProvider)
+        self.assertNotIsInstance(prov, FallbackProvider)
+
+    def test_uses_brain_timeout_not_worker_timeout(self) -> None:
+        prov = build_brain_search_provider(
+            SearchSettings(
+                provider="langsearch",
+                api_key="k",
+                timeout_seconds=30.0,
+                brain_timeout_seconds=4.0,
+            )
+        )
+        self.assertEqual(prov._timeout, 4.0)
+
+    def test_shares_the_worker_throttle_interval(self) -> None:
+        # The 1/sec LangSearch limit is process-wide, so the brain lane
+        # must honour the same spacing as the workers.
+        prov = build_brain_search_provider(
+            SearchSettings(
+                provider="langsearch",
+                api_key="k",
+                langsearch_min_interval_seconds=1.1,
+            )
+        )
+        self.assertEqual(prov._min_interval, 1.1)
+
+    def test_duckduckgo_config_still_gets_duckduckgo(self) -> None:
+        prov = build_brain_search_provider(SearchSettings())
+        self.assertIsInstance(prov, DuckDuckGoProvider)
+
+    def test_langsearch_without_key_falls_to_ddg(self) -> None:
+        prov = build_brain_search_provider(
+            SearchSettings(provider="langsearch")
+        )
+        self.assertIsInstance(prov, DuckDuckGoProvider)
+
+    def test_none_settings_is_duckduckgo(self) -> None:
+        self.assertIsInstance(
+            build_brain_search_provider(None), DuckDuckGoProvider,
+        )
 
 
 if __name__ == "__main__":

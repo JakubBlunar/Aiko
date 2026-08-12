@@ -182,8 +182,6 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
 
 - **D-approval.** Spoken / Aiko-voiced task approvals.
 - **D1.** Calendar / reminders tool.
-- **D3.** Fast synchronous web-search brain tool (+ knowledge-DB
-  write-back).
 - **D7.** Anticipatory routine assistance — act on what she's learned.
 
 Dev / debug tooling (DT-series):

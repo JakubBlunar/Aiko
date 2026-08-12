@@ -780,6 +780,17 @@ class SearchSettings:
     # deterministic scrubber). Master switch for the whole reformulation
     # step; when off the workers fall back to the deterministic scrub.
     query_reformulation_enabled: bool = True
+    # D3 brain-lane search: the synchronous ``web_search`` tool on the
+    # conversational turn, as opposed to the background workers above.
+    # It gets its own switch because the trade-off is different -- a user
+    # is waiting through the round-trip -- and its own shorter timeout,
+    # since ``timeout_seconds`` above is sized for a worker nobody is
+    # watching. The brain lane also never falls back to the DuckDuckGo
+    # scrape: that fallback is precisely what made the tool too slow for
+    # the fast lane the first time round. Registration additionally
+    # requires ``tools.web_search``.
+    brain_tool_enabled: bool = True
+    brain_timeout_seconds: float = 6.0
 
 
 @dataclass(slots=True)
@@ -2120,6 +2131,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             query_reformulation_enabled=bool(
                 search_raw.get("query_reformulation_enabled", True)
+            ),
+            brain_tool_enabled=bool(search_raw.get("brain_tool_enabled", True)),
+            brain_timeout_seconds=max(
+                1.0, float(search_raw.get("brain_timeout_seconds", 6.0))
             ),
         ),
         weather=_parse_weather_settings(weather_raw),
