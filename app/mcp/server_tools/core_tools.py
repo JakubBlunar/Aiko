@@ -1167,15 +1167,47 @@ def register(mcp, session: "SessionController") -> None:
           uptime that looks like failing hardware and that CPU/RAM
           stress tests will never reproduce.
         - ``minidump`` — path to a ``.dmp`` for native stack walking.
+        - ``thread_name`` — whose thread faulted. Decisive, and cheaper
+          than any stack: a fault on a dependency's own runtime pool
+          (``tokio-rt-worker``) is not reachable by our locking or calling
+          pattern, whereas one on ``MessageIndexer`` / ``rag-search`` is.
+        - ``dump`` — the minidump parsed in place (no debugger, no
+          symbols): ``fault_module`` resolves the address to
+          ``name.dll+0xOFFSET``, ``thread_census`` counts threads by name
+          against ``processors``, and ``fault_stack_modules`` lists the
+          modules found on the faulting thread's saved stack. That last
+          one is a *scan*, not a stack walk, so read it as "what this
+          thread had touched" and never as a call order;
+          ``fault_stack_handler_frames`` is the part contributed by our
+          own crash handler and should be ignored.
 
         Empty result with a fatal dump present in the file means the
         crash predates this handler; restart to arm it.
         """
         from app.core.infra.crash_logging import read_native_crashes
+        from app.core.infra.minidump import summarize
         try:
             entries = read_native_crashes(limit=max(1, min(50, int(limit))))
         except Exception as exc:
             return f"get_native_crashes failed: {exc}"
+        for entry in entries:
+            path = str(entry.get("minidump") or "").strip()
+            if not path:
+                continue
+            # A dump written from inside an exception filter usually has no
+            # exception record, so hand the reader the address and thread
+            # the report already captured.
+            try:
+                address = int(str(entry.get("address") or "0"), 16)
+            except Exception:
+                address = 0
+            try:
+                tid = int(entry.get("thread_id") or 0)
+            except Exception:
+                tid = 0
+            entry["dump"] = summarize(
+                path, fault_address=address or None, fault_thread_id=tid or None
+            )
         if not entries:
             return json.dumps(
                 {

@@ -351,12 +351,17 @@ def _write_native_crash(report: dict[str, Any]) -> None:
         return
     try:
         if _logger is not None:
+            # The thread *name* belongs on this line: it says whose code
+            # faulted (a dependency's own runtime pool vs one of ours)
+            # without opening the dump.
+            name = str(report.get("thread_name") or "").strip()
             _logger.error(
-                "native crash: %s at %s in %s (thread %s) dump=%s",
+                "native crash: %s at %s in %s (thread %s%s) dump=%s",
                 report.get("exception"),
                 report.get("address"),
                 report.get("module"),
                 report.get("thread_id"),
+                " name=%s" % name if name else "",
                 report.get("minidump") or "(none)",
             )
     except Exception:

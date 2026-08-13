@@ -104,12 +104,78 @@ def module_for_address(address: int) -> str | None:
     return buffer.value or None
 
 
-def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
+def current_thread_name() -> str:
+    """Name of the calling thread, or ``""`` when it has none.
+
+    Worth capturing at fault time because it answers "whose code was this?"
+    before any stack is read. A fault on ``tokio-rt-worker`` is inside a
+    dependency's own async runtime, where our locks do not reach and our
+    calling pattern is not the lever; the same fault on ``MessageIndexer``
+    or ``rag-search`` would be ours to fix. Reading it later from the
+    minidump works too, but only if a dump was written at all.
+
+    Reflects ``SetThreadDescription``, which Rust and Python runtimes both
+    use, so most of the interesting threads in this process are named.
+    """
+    if sys.platform != "win32":
+        try:
+            return threading.current_thread().name
+        except Exception:
+            return ""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentThread.restype = wt.HANDLE
+        kernel32.GetThreadDescription.argtypes = [
+            wt.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)
+        ]
+        kernel32.GetThreadDescription.restype = ctypes.c_long
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    except Exception:
+        # Pre-1607 Windows has no GetThreadDescription; the Python-level
+        # name is still better than nothing.
+        try:
+            return threading.current_thread().name
+        except Exception:
+            return ""
+    buffer = ctypes.c_wchar_p()
+    try:
+        if kernel32.GetThreadDescription(
+            kernel32.GetCurrentThread(), ctypes.byref(buffer)
+        ) < 0:
+            return ""
+        name = buffer.value or ""
+    except Exception:
+        return ""
+    finally:
+        try:
+            if buffer:
+                kernel32.LocalFree(ctypes.cast(buffer, ctypes.c_void_p))
+        except Exception:
+            pass
+    if name:
+        return name
+    # An OS-unnamed thread may still be a named Python thread.
+    try:
+        return threading.current_thread().name
+    except Exception:
+        return ""
+
+
+def _write_minidump(
+    dump_path: Path, exception_pointers, thread_id: int
+) -> tuple[str, str]:
     """Write a minidump for the current fault.
 
-    Returns ``""`` on success, else a short reason. A silent failure here
-    is worse than useless -- it leaves you believing a dump exists -- so
-    the reason travels into the crash record.
+    Returns ``(failure, degraded)``. ``failure`` is ``""`` on success, else
+    a short reason -- a silent failure here is worse than useless, since it
+    leaves you believing a dump exists, so the reason travels into the
+    crash record. ``degraded`` is set when a dump was written but *without*
+    its exception record, which is worth saying out loud: such a dump
+    cannot report where it faulted, and a reader has to be handed the
+    address from the crash record instead.
 
     Every signature is declared explicitly: without ``argtypes`` ctypes
     narrows pointer-sized arguments to C ``int``, and the call fails
@@ -122,7 +188,7 @@ def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         dbghelp = ctypes.WinDLL("dbghelp", use_last_error=True)
     except Exception as exc:
-        return "dbghelp unavailable: %s" % type(exc).__name__
+        return "dbghelp unavailable: %s" % type(exc).__name__, ""
 
     class _MinidumpExceptionInformation(ctypes.Structure):
         _fields_ = [
@@ -152,7 +218,7 @@ def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
         ]
         dbghelp.MiniDumpWriteDump.restype = wt.BOOL
     except Exception as exc:
-        return "signature setup failed: %s" % type(exc).__name__
+        return "signature setup failed: %s" % type(exc).__name__, ""
 
     generic_write = 0x40000000
     create_always = 2
@@ -164,8 +230,9 @@ def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
         file_attribute_normal, None,
     )
     if not handle or handle == invalid_handle:
-        return "CreateFileW failed err=%d" % ctypes.get_last_error()
+        return "CreateFileW failed err=%d" % ctypes.get_last_error(), ""
     reason = ""
+    degraded = ""
     try:
         info = _MinidumpExceptionInformation(
             ThreadId=wt.DWORD(int(thread_id)),
@@ -189,12 +256,19 @@ def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
             first = ctypes.get_last_error()
             # dbghelp routinely refuses the exception-pointers struct from
             # inside a filter (ERROR_NOACCESS). The dump is still worth
-            # having without it: every thread's native stack is present,
-            # which is what names the faulting library. The exception code
-            # and address are already recorded alongside.
+            # having without it: every thread's native stack and name is
+            # present, which is what names the faulting library and whose
+            # thread it was. The exception code and address are already
+            # recorded alongside.
             if not _attempt(None):
                 reason = "MiniDumpWriteDump failed err=%d (and err=%d with " \
                     "exception info)" % (ctypes.get_last_error(), first)
+            else:
+                degraded = (
+                    "written without its exception record (err=%d); the dump "
+                    "cannot self-report the faulting address, use the "
+                    "'address' and 'thread_id' fields here" % first
+                )
     except Exception as exc:
         reason = "MiniDumpWriteDump raised: %s: %s" % (type(exc).__name__, exc)
     finally:
@@ -208,10 +282,12 @@ def _write_minidump(dump_path: Path, exception_pointers, thread_id: int) -> str:
             dump_path.unlink(missing_ok=True)
         except Exception:
             pass
-    return reason
+    return reason, degraded
 
 
-def _build_report(code: int, address: int, thread_id: int) -> dict[str, object]:
+def _build_report(
+    code: int, address: int, thread_id: int, thread_name: str = "",
+) -> dict[str, object]:
     """Assemble the record for a fault. Split out so it is testable."""
     module = module_for_address(address)
     report: dict[str, object] = {
@@ -221,6 +297,7 @@ def _build_report(code: int, address: int, thread_id: int) -> dict[str, object]:
         "address": "0x%016X" % int(address),
         "module": module or "unknown",
         "thread_id": int(thread_id),
+        "thread_name": str(thread_name or ""),
     }
     try:
         from app.core.infra import native_runtimes
@@ -299,17 +376,26 @@ def install(
             try:
                 address = int(record_ptr[0].ExceptionAddress or 0)
                 thread_id = int(kernel32.GetCurrentThreadId())
-                report = _build_report(code, address, thread_id)
+                try:
+                    name = current_thread_name()
+                except Exception:
+                    name = ""
+                report = _build_report(code, address, thread_id, name)
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
                 dump_path = dump_dir / ("crash-%s-%d.dmp" % (stamp, thread_id))
+                degraded = ""
                 try:
                     dump_dir.mkdir(parents=True, exist_ok=True)
-                    failure = _write_minidump(dump_path, pointers, thread_id)
+                    failure, degraded = _write_minidump(
+                        dump_path, pointers, thread_id
+                    )
                 except Exception as exc:
                     failure = "dump attempt raised: %s" % type(exc).__name__
                 report["minidump"] = "" if failure else str(dump_path)
                 if failure:
                     report["minidump_error"] = failure
+                if degraded:
+                    report["minidump_degraded"] = degraded
                 if record is not None:
                     record(report)
             finally:

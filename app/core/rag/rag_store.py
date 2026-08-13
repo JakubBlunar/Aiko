@@ -262,6 +262,16 @@ class _RWLock:
     that complete in milliseconds, so the occasional wait for a gap in
     reads is harmless. Not reentrant -- no store method nests one lock
     acquisition inside another.
+
+    **This lock is not a guard against native faults, and cannot be.**
+    A LanceDB access violation will make the concurrent-read side look
+    guilty; the first one we investigated faulted on a thread named
+    `tokio-rt-worker`, i.e. inside lance's own async runtime (102 of them
+    on a 32-core box), which a single `search()` fans out onto no matter
+    how many callers this lock admits. Serialising reads here would have
+    cost turn latency and prevented nothing. Read `thread_name` in the
+    crash record before touching this class -- see `rules/debugging.md`
+    section h.
     """
 
     __slots__ = ("_cond", "_readers", "_writer")

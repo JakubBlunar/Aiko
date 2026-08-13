@@ -13,6 +13,9 @@ app/config/user.json
 app/config/*.user.json
 data/conversation_memory.jsonl
 data/crashlog.txt
+# Minidumps from the native-crash handler: ~1 MB of process memory each,
+# and process memory is the same personal data as the database.
+data/crash-*.dmp
 # Runtime prompt-cache diagnostics; generated only when cache logging is enabled.
 data/prompt-cache.jsonl
 # Legacy runtime artifact from the removed SelfImageWorker; still ignored so
