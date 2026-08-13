@@ -22,6 +22,15 @@ resolve relative phrases ("yesterday", "tonight at 8", "next Monday") into
 absolute ISO-8601 ``event_time`` and a ``temporal_type`` classification.
 ``relevance_until`` is derived server-side from the type so the LLM only
 needs to think about *what* the memory is, not *how long* it stays fresh.
+
+The extractor keeps a **watermark** per session (H31). It rides on
+:class:`SummaryWorker`, which advances its own watermark and fires once
+every ``summary_min_unsummarized_messages`` new messages; the extractor
+used to read the trailing ``max_window_messages`` regardless, so every turn
+was mined about five times over and each re-read was an independent chance
+to duplicate the claim or mis-assign its owner. Now only messages after the
+watermark are offered for extraction, with the rows before it rendered as
+labelled read-only context so a pronoun at the boundary still resolves.
 """
 from __future__ import annotations
 
@@ -159,6 +168,15 @@ def _build_system_prompt(
         "     made about her own personality that she wants to keep next time. "
         "     One short sentence in FIRST person ('I ...').\n"
         "\n"
+        "WHO A CLAIM BELONGS TO. Half of this transcript is Aiko talking, so "
+        "every claim you extract needs an owner and the owner is whoever the "
+        "claim is *about*, not whoever happens to be nearby. A hobby, plan, "
+        "taste, feeling or intention that Aiko voiced about herself is "
+        "category 2 or nothing at all — never restate it as a fact about "
+        f"{name}. If Aiko says she has started collecting something, "
+        f"{name} has not started collecting anything. When you cannot tell "
+        "from the transcript which of the two it belongs to, drop it.\n"
+        "\n"
         "Each memory ALSO carries a ``temporal_type`` that classifies how "
         "it relates to time:\n"
         "  - 'durable': timeless fact ('Jacob lives in Prague').\n"
@@ -275,6 +293,46 @@ def _salvage_memories(text: str) -> list[dict]:
     return out
 
 
+_FIRST_PERSON_OPENERS: frozenset[str] = frozenset({
+    "i", "i'm", "i've", "i'll", "i'd", "my", "mine", "myself",
+})
+
+
+def _opens_first_person(content: str) -> bool:
+    """Does the sentence start by talking about the speaker herself?"""
+    words = re.findall(r"[A-Za-z']+", content or "")
+    return bool(words) and words[0].lower() in _FIRST_PERSON_OPENERS
+
+
+def _opens_about_user(content: str, user_name: str) -> bool:
+    """Does the sentence start by naming the user?
+
+    Returns ``False`` when the display name is unset and
+    :func:`resolve_user_name` handed back its ``"the user"`` fallback. The
+    first token of that fallback is ``"the"``, which would match the
+    opening of any number of ordinary sentences -- "The garden is my
+    favourite place" is not a claim about anybody's user.
+    """
+    name = (user_name or "").strip().lower()
+    if not name or name == "the user":
+        return False
+    words = re.findall(r"[A-Za-z']+", content or "")
+    return bool(words) and words[0].lower() == name.split()[0]
+
+
+def _fallback_kind(content: str) -> str:
+    """The kind to use when the model's label is missing or unrecognised.
+
+    This used to be a flat ``"fact"``, which is not a neutral default: in
+    this schema ``fact`` means "a fact about the user", so a first-person
+    note from Aiko that lost its label became a claim about the user's life.
+    A dropped field is a plausible way for the bottle-cap failure to happen
+    without the model ever asserting anything wrong, so the fallback reads
+    the sentence instead of assuming a side.
+    """
+    return "self" if _opens_first_person(content) else "fact"
+
+
 # Back-compat constant for callers that imported the module-level prompt
 # directly. New code should call ``_build_system_prompt(name)`` to pick
 # up the configured display name and the current date.
@@ -292,6 +350,7 @@ class MemoryExtractor:
         model: str,
         min_window_messages: int = 4,
         max_window_messages: int = 30,
+        context_messages: int = 10,
         max_new_per_run: int = 5,
         max_tokens: int = 1024,
         think: bool = True,
@@ -303,8 +362,17 @@ class MemoryExtractor:
         self._embedder = embedder
         self._ollama = ollama
         self._model = model
+        # ``_min_window`` now counts *unmined* messages, not the size of the
+        # window read. Below it the run is skipped without advancing, so the
+        # material accumulates rather than being mined two rows at a time
+        # (which is what an overflow squish, whose bar is 2, would cause).
         self._min_window = max(2, int(min_window_messages))
         self._max_window = max(self._min_window, int(max_window_messages))
+        # Rows immediately before the watermark, rendered as labelled
+        # read-only context. Non-zero because a claim's first mention and
+        # the pronoun that carries it often land in different runs: "he
+        # finally finished it" is unextractable without the turn before.
+        self._context_messages = max(0, int(context_messages))
         self._max_new_per_run = max(1, int(max_new_per_run))
         # Output token ceiling for the JSON ANSWER (the array we parse),
         # NOT the reasoning trace. With ``think`` on, the OllamaClient
@@ -355,23 +423,106 @@ class MemoryExtractor:
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _do_extract(self, session_key: str) -> int:
-        rows = self._db.get_messages(session_key, limit=self._max_window)
-        if len(rows) < self._min_window:
-            log.debug(
-                "extract skipped: only %d messages (need %d)",
-                len(rows), self._min_window,
-            )
-            return 0
+    # ── watermark ─────────────────────────────────────────────────────────
 
-        transcript = self._format_transcript(rows)
-        existing = self._format_existing()
-        user_prompt = (
-            (existing + "\n\n" if existing else "")
-            + "Transcript (most recent last):\n"
-            + transcript
-            + "\n\nReturn the JSON now."
+    @staticmethod
+    def _watermark_key(session_key: str) -> str:
+        return f"memory.extractor.watermark:{session_key}"
+
+    def _read_watermark(self, session_key: str) -> int | None:
+        """Highest message id already offered for extraction, or ``None``.
+
+        ``None`` means "never run against this session" and is handled as a
+        seed rather than as zero: treating it as zero would mine a
+        thousand-message history from the beginning on first launch.
+        """
+        try:
+            raw = self._db.kv_get(self._watermark_key(session_key))
+        except Exception:
+            log.debug("extractor watermark read failed", exc_info=True)
+            return None
+        if raw is None:
+            return None
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _write_watermark(self, session_key: str, message_id: int) -> None:
+        try:
+            self._db.kv_set(self._watermark_key(session_key), str(int(message_id)))
+        except Exception:
+            # A lost write costs one duplicate batch on the next run, which
+            # the existing-memories block and the restatement gate absorb.
+            # Never worth failing an otherwise good extraction over.
+            log.warning("extractor watermark write failed", exc_info=True)
+
+    def _select_window(
+        self, session_key: str,
+    ) -> "tuple[list[MessageRow], list[MessageRow]] | None":
+        """Split the session into (already-mined context, new material).
+
+        Returns ``None`` when there is not enough new material to be worth a
+        model call. The first element is context only and must never be
+        offered for extraction.
+        """
+        watermark = self._read_watermark(session_key)
+        if watermark is None:
+            # First run on this session. Seed from the trailing window so an
+            # install with existing history mines its recent past once and
+            # then walks forward, instead of re-mining months of transcript.
+            fresh = self._db.get_messages(session_key, limit=self._max_window)
+            if len(fresh) < self._min_window:
+                log.debug(
+                    "extract skipped: only %d messages (need %d)",
+                    len(fresh), self._min_window,
+                )
+                return None
+            return [], fresh
+        fresh = self._db.get_messages_after(
+            session_key, after_id=watermark, limit=self._max_window,
         )
+        if len(fresh) < self._min_window:
+            log.debug(
+                "extract skipped: %d unmined messages past id %d (need %d)",
+                len(fresh), watermark, self._min_window,
+            )
+            return None
+        context: list[MessageRow] = []
+        if self._context_messages:
+            context = self._db.get_messages_before(
+                session_key,
+                before_id=fresh[0].id,
+                limit=self._context_messages,
+            )
+        return context, fresh
+
+    # ── work ──────────────────────────────────────────────────────────────
+
+    def _do_extract(self, session_key: str) -> int:
+        window = self._select_window(session_key)
+        if window is None:
+            return 0
+        context_rows, rows = window
+
+        existing = self._format_existing()
+        parts: list[str] = []
+        if existing:
+            parts.append(existing)
+        if context_rows:
+            parts.append(
+                "Earlier turns, ALREADY mined on a previous pass. They are "
+                "here only so references in the new turns resolve. Do NOT "
+                "extract memories from these lines:\n"
+                + self._format_transcript(context_rows)
+            )
+        parts.append(
+            "New turns since the last pass (most recent last). Extract ONLY "
+            "from these lines:\n"
+            + self._format_transcript(rows)
+        )
+        parts.append("Return the JSON now.")
+        user_prompt = "\n\n".join(parts)
 
         now = timephrase.utcnow().astimezone()
         messages = [
@@ -398,6 +549,10 @@ class MemoryExtractor:
                 surface="memory_extractor",
             )
         except Exception as exc:
+            # No watermark advance: these turns were never actually read, so
+            # they stay unmined and the next run picks them up again. The
+            # alternative -- advancing on every attempt -- would turn a
+            # transient Ollama timeout into permanently unmined turns.
             log.warning("memory extractor LLM call failed: %s", exc)
             return 0
 
@@ -430,7 +585,13 @@ class MemoryExtractor:
         # with set_log_level("app.memory_extractor", "DEBUG").
         log.debug("extractor raw response: %r", (content or "")[:1000])
 
-        candidates = self._parse_response(content)
+        candidates, understood = self._parse_answer(content)
+        if understood:
+            # The model read these turns and gave an answer we could act on,
+            # so they are mined -- including when the answer was "nothing
+            # here", which is a verdict and not a failure. An unparseable
+            # answer is the one case that leaves the watermark alone.
+            self._write_watermark(session_key, rows[-1].id)
         if not candidates:
             # Distinguish "model returned an empty array" (genuinely nothing
             # durable — common on casual/short transcripts) from "model
@@ -441,10 +602,11 @@ class MemoryExtractor:
             # validation dropped everything (see the DEBUG raw line above).
             stripped_len = len((content or "").strip())
             log.info(
-                "extractor: no new memories (transcript %d msgs, %.0f ms, "
-                "%d/%d tokens, response_chars=%d)",
-                len(rows), (time.monotonic() - t0) * 1000.0,
+                "extractor: no new memories (%d new msgs, %d context, %.0f ms, "
+                "%d/%d tokens, response_chars=%d, parsed=%s)",
+                len(rows), len(context_rows), (time.monotonic() - t0) * 1000.0,
                 usage.prompt_tokens, usage.completion_tokens, stripped_len,
+                understood,
             )
             return 0
 
@@ -513,23 +675,57 @@ class MemoryExtractor:
         )
 
     def _format_existing(self) -> str:
-        # Just enough recent + salient memories to discourage duplicates.
-        recent = self._store.list_top(limit=20)
-        if not recent:
+        """The "do NOT re-emit these" block: salient rows *and* fresh ones.
+
+        This used to be ``list_top(20)`` alone, which is ranked by salience
+        and so systematically excluded the rows most at risk of being
+        re-emitted. Everything the extractor writes lands in ``scratchpad``
+        at whatever salience the model guessed, frequently 0.0; a row
+        written four minutes ago is therefore nowhere near the top twenty,
+        and the model was asked not to duplicate itself while being shown
+        only the memories it was least likely to duplicate. The recent half
+        of the block is what closes that gap, and it is the guard the
+        watermark leans on for claims that straddle a window boundary.
+        """
+        seen: set[int] = set()
+        merged: list = []
+        for mem in list(self._store.list_recent(limit=12)) + list(
+            self._store.list_top(limit=20)
+        ):
+            mem_id = getattr(mem, "id", None)
+            if mem_id is not None:
+                if mem_id in seen:
+                    continue
+                seen.add(mem_id)
+            merged.append(mem)
+        if not merged:
             return ""
         # Age-tagged (K-time10): the dedupe judgement is partly temporal.
         # "Jacob has a headache" from six weeks ago is not the same claim
         # as one from this morning, and an undated list invited the model
         # to treat them as duplicates.
         return timephrase.format_memory_block(
-            recent, header="Existing memories (do NOT re-emit these):",
+            merged, header="Existing memories (do NOT re-emit these):",
         )
 
     def _parse_response(self, raw: str) -> list[dict]:
         """Validate the model's JSON and return a list of candidate dicts."""
+        return self._parse_answer(raw)[0]
+
+    def _parse_answer(self, raw: str) -> tuple[list[dict], bool]:
+        """As :meth:`_parse_response`, plus "did we understand the answer".
+
+        The two are different questions and the watermark needs the second
+        one. An empty candidate list is ambiguous on its own: it is what a
+        transcript of pure chitchat produces, and also what a wrong-shaped
+        or unreadable response produces. Advancing past unmined turns
+        because the model emitted garbage would lose them silently, so the
+        boolean says whether the model actually answered — ``True`` for a
+        well-formed empty array, ``False`` for anything we could not read.
+        """
         text = (raw or "").strip()
         if not text:
-            return []
+            return [], False
         # Handle code-fenced JSON (the model sometimes ignores format=json).
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```\s*$", "", text)
@@ -546,18 +742,22 @@ class MemoryExtractor:
                     "extractor: salvaged %d complete memory object(s) from "
                     "a truncated/invalid response", len(salvaged),
                 )
-                return self._validate_entries(salvaged)
+                # Salvage counts as understood: whatever was cut off was cut
+                # from the *answer*, not from the reading of the transcript,
+                # and re-running would re-answer the same turns.
+                return self._validate_entries(salvaged), True
             log.warning("extractor: response was not valid JSON: %r", text[:200])
-            return []
+            return [], False
         if not isinstance(parsed, dict):
-            return []
+            return [], False
         memories = parsed.get("memories")
         if not isinstance(memories, list):
-            return []
-        return self._validate_entries(memories)
+            return [], False
+        return self._validate_entries(memories), True
 
     def _validate_entries(self, memories: list) -> list[dict]:
         """Normalise + filter a list of raw memory dicts into candidates."""
+        user_name = self._resolve_user_name()
         out: list[dict] = []
         for entry in memories:
             if not isinstance(entry, dict):
@@ -565,8 +765,14 @@ class MemoryExtractor:
             content = str(entry.get("content") or "").strip()
             if not content or len(content) < 6:
                 continue
-            kind = str(entry.get("kind") or "fact").strip().lower()
+            kind = str(entry.get("kind") or "").strip().lower()
             if kind not in VALID_KINDS:
+                kind = _fallback_kind(content)
+            elif kind == "self" and _opens_about_user(content, user_name):
+                # The model chose the self bucket for a sentence about the
+                # user. Reading the sentence is more reliable than reading
+                # the label, and the label is the field that decides whose
+                # life the claim describes.
                 kind = "fact"
             try:
                 salience = float(entry.get("salience", 0.5))

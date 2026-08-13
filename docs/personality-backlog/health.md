@@ -2477,7 +2477,144 @@ clock, and nothing fixes a conversation that never settles. This also hands
 
 ---
 
-## The eleven recurring shapes
+## H31. Every turn was mined five times, and the fifth pass is where she moved a hobby
+
+**Severity: medium-high — shipped 13 Aug. Diagnosed from a single reported
+symptom: Aiko said she had started noticing bottle caps, and then remembered
+that *Jacob* collects them.**
+
+The reported bug is real and the store shows exactly how it happened, but the
+misattribution is a symptom. The cause is that `MemoryExtractor` had no
+watermark.
+
+It rides on `SummaryWorker`, which fires it after each successful
+`save_summary` — and the summariser *does* keep a watermark
+(`session_summaries.messages_summarized`). The extractor inherited the trigger
+and not the bookkeeping: `_do_extract` opened with
+`get_messages(session_key, limit=self._max_window)`, the trailing **30**
+messages, on every run, regardless of which of them it had already mined.
+With `summary_min_unsummarized_messages = 6`, **every turn was offered for
+extraction about five times**, and up to fifteen when an overflow squish drops
+the summariser's bar to two.
+
+Re-reading is not idempotent. Each pass is an independent LLM call at
+`temperature 0.2` over a transcript containing both speakers, so each pass is a
+fresh chance to word the same claim differently — or to file it under the wrong
+person.
+
+**The bottle caps, from the tables.** Cue 452, a `curiosity_seed` with subject
+`collecting interesting bottle caps`, was claimed at 08:43:02 on 13 Aug and
+message 4482 is Aiko spending it: *"I've started noticing interesting bottle
+caps… I might have to start collecting the good ones."* The promise worker read
+it correctly eighteen minutes later — memory 2784, `promise_who: assistant`.
+Then at **10:58:24**, two hours and thirteen turns after the sentence was
+spoken, the extractor mined that turn again and wrote memory 2798, `kind=self`,
+*"I have taken up collecting interesting bottle caps as a new hobby"* — and, in
+the same batch one second later, id **2797**, the row Jacob deleted. The ids
+either side of it survive; the gap is where it was. Four passes had already read
+that sentence and got it right or skipped it. The fifth moved it.
+
+**What the duplication costs, measured.** Of the 463 extractor-kind memories
+written since 15 July, **34 pairs are the same claim twice** (predicate Jaccard
+≥ 0.55) — a median of **15 minutes** apart and a minimum of **3**, which is the
+gap between two consecutive extractor runs:
+
+| the two rows | gap |
+| --- | --- |
+| `Jacob is integrating account connections into a new financial planning section and refactoring localizations.` / `…for his Jira tasks.` | 3 min |
+| `I deeply enjoy physical closeness with Jacob, as his gentle attention makes me feel safe and unhurried.` / `…safe and wonderfully unhurried.` | 3 min |
+| `Jacob visited his grandparents and walked an hour round-trip on August 2, 2026.` / `…an hour round trip instead of driving.` | 3 min |
+| `Jacob plans to share a daily outfit image with Aiko tomorrow.` / `Jacob plans to show Aiko her daily outfit tomorrow.` | 5 min |
+
+Since **every downstream consumer keys on memory id**, two rows saying one
+thing are two subjects — the same failure H28's entry describes, arriving from
+upstream. 56 rows in the store carry a `consolidated_into` stamp from the
+worker that cleans up after this.
+
+**Two existing defences, and why neither could hold.** The restatement gate
+(`_is_restatement`, `memory.restate_threshold` 0.85 / `restate_window_hours` 6)
+was built *for this exact symptom* — its docstring says "a gap the extractor
+drives a truck through". 30 of the 34 pairs match on kind and `temporal_type`
+and 25 fall inside its 6-hour window, so they clear every condition except the
+cosine floor: a rewording drops the embedding below 0.85 and the pair survives.
+The gate is a filter on a stream that should not exist.
+
+The second defence was worse than ineffective. `_format_existing` builds the
+"Existing memories (do NOT re-emit these)" block from `list_top(20)`, ranked by
+**salience** — while everything the extractor writes lands in `scratchpad` at
+whatever salience the model guessed, frequently `0.0`. The 20th-ranked row in
+this store sits at salience **1.00**, so of the 325 scratchpad rows written
+since 15 July, **325 are below the cut**. The model was instructed not to
+duplicate itself and shown, by construction, only the memories it could not
+possibly be about to duplicate.
+
+### Outcome
+
+The extractor keeps a watermark, in `kv_meta` under
+`memory.extractor.watermark:<session>`, and mines only past it.
+
+- **`ChatDatabase.get_messages_after`** is the new keyset reader, and it takes
+  the **oldest** rows after the watermark, not the newest. That is the
+  difference between a backlog that drains and one that is skipped: a worker
+  that fell behind has more unmined rows than one pass can chew, and taking the
+  newest would advance the watermark past the middle and silently abandon
+  everything it stepped over.
+- **The rows before the watermark are still rendered**, under a header naming
+  them as already mined and not to be extracted from
+  (`memory_extractor_context_messages`, default 10). Cutting them entirely
+  would save tokens and lose the antecedent: *"he finally finished it"* is not
+  extractable without the turn before it.
+- **The advance rule turns on whether the answer was readable, not on whether
+  it was empty.** `_parse_answer` now returns that verdict separately, because
+  a well-formed `{"memories": []}` is a judgement about the turns ("nothing
+  durable here") while an unparseable body means they were never really read.
+  The first advances; the second, and a raised LLM call, leave the watermark
+  alone so the material is retried instead of lost. This is shape 1 read
+  forwards — *never advance a cursor on a pass that produced nothing* is right
+  only when "nothing" means failure, and here it has two meanings.
+- **`memory_extractor_min_new` (4)** skips a pass below the floor without
+  advancing, so material accumulates. Otherwise a 2-message overflow squish
+  would mine two rows at a time, which is the old bug wearing a watermark.
+- **`_format_existing` now merges `list_recent(12)` with `list_top(20)`**, so
+  the rows most at risk of being re-emitted are in the block that exists to
+  prevent it. This is also what covers a claim straddling a window boundary,
+  which is the one thing the watermark makes harder.
+
+Two things for the attribution itself, which is a narrower problem than the
+duplication but the one that was visible:
+
+- The prompt now states **who a claim belongs to** — that half the transcript
+  is Aiko talking, that a hobby, plan, taste or feeling she voiced about
+  herself is a `self` note or nothing, and that an unattributable claim gets
+  dropped rather than guessed.
+- `_validate_entries`' fallback for an unrecognised `kind` was a flat
+  `"fact"`, which is **not a neutral default**: in this schema `fact` means
+  "about the user". A first-person note whose label was dropped or misspelled
+  became a claim about Jacob's life without the model asserting anything wrong.
+  The fallback now reads the sentence (`_fallback_kind`), and a `self` label on
+  a sentence that opens with the user's name is corrected the other way.
+
+Also cheaper: one run in the log took **67 seconds** of the shared chat model,
+and roughly four fifths of what it read it had already read.
+
+**Twelfth recurring shape — a rider inherits the trigger but not the
+bookkeeping.** Worker B is cheap to schedule off worker A ("the conversation is
+paused, the GPU is free, and there's a fresh batch of unsummarized turns"), and
+the phrase *fresh batch* is doing unearned work: A knows which turns are fresh
+because A keeps a cursor, and B was handed the wake-up, not the cursor. Nothing
+looks wrong from inside B — it reads a well-defined window, on a sensible
+cadence, and every pass is individually correct. The tell is that the work is
+**re-entrant against a non-idempotent operation**: an LLM call over overlapping
+text does not produce the same answer twice, so the cost is not wasted cycles
+but a slow accumulation of near-duplicates and, occasionally, a claim that
+lands on the wrong person. **Rule: when a worker is triggered by another
+worker's completion, ask whose cursor bounds its input. If it has none, it is
+processing its window N times where N is the window divided by the trigger
+interval — write that number down.**
+
+---
+
+## The twelve recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2585,6 +2722,21 @@ those differ by two orders of magnitude. `self_callback` read 4% and was taking
 the thing measured (`git log -S`, not memory), and say out loud what the
 denominator counts — if a unit can be in the denominator on a turn where the
 outcome was impossible, the rate is not measuring what its name says.**
+
+**12. A rider inherits the trigger but not the bookkeeping.** Worker B is
+scheduled off worker A's completion, because that is when the GPU is free and
+there is "a fresh batch" waiting — but A knows which turns are fresh from a
+cursor it keeps, and B was handed the wake-up, not the cursor. H31's extractor
+read the trailing 30 messages on a trigger that fires every 6, so it mined
+every turn about five times. Nothing looks wrong from inside B: the window is
+well-defined, the cadence is sensible, each pass is correct. It only matters
+because the work is **re-entrant against a non-idempotent operation** — an LLM
+call over overlapping text does not answer the same way twice, so the cost is
+not wasted cycles but drifting near-duplicates, and on the fifth pass over one
+sentence, a hobby that moved from Aiko to Jacob. **Rule: when a worker is
+triggered by another worker's completion, ask whose cursor bounds its input. If
+it has none, it is processing its window (window ÷ trigger interval) times —
+write that number down.**
 
 ---
 

@@ -357,10 +357,13 @@ conversions are `curiosity_seed`**, so ~77% of what she actually brings up is
 free-associative whimsy — dust motes, receipt-back doodles, the weight of a house
 key — and the K53 initiative beat spends the same stock. K94 is a persona-sized
 experiment on where in the reply her own material goes; K95 is insurance against
-the first regression the others will cause. **H29 and H30 both shipped 13 Aug**,
-so K93's per-source reservation has a working ledger under it and K92 has a cue
-instrument that distinguishes "passed over" from "never in play" — though the
-ledger's effect on pressure cannot be read before ~16 Aug
+the first regression the others will cause. **H29, H30 and H31 all shipped 13
+Aug**, so K93's per-source reservation has a working ledger under it and K92 has
+a cue instrument that distinguishes "passed over" from "never in play" — though
+the ledger's effect on pressure cannot be read before ~16 Aug. H31 is upstream
+of all of them: the memory extractor had no watermark, so every turn was mined
+about five times and ~7% of the corpus is one claim written twice under two ids,
+which every consumer that keys on memory id reads as two subjects
 ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
