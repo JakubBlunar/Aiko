@@ -22,6 +22,15 @@ Sidedness rides ``metadata.promise_who`` (stamped by
 participate in follow-through — the user's own commitments are the
 :class:`FollowUpWorker` / proactive-callback territory.
 
+That makes ``promise_who`` load-bearing rather than descriptive, so the
+extractor refuses to guess it: a ``who`` naming neither side is dropped
+by :func:`~app.core.memory.promise_worker.resolve_promise_who` instead of
+defaulting to one, because a wrong side either leaves Aiko owing nothing
+for something she said or has the follow-up worker chase the user over a
+commitment that was hers — and both look correct in every log line. The
+content-prefix fallback below therefore only ever serves rows written
+before the stamp existed.
+
 Everything here is pure (memory-like objects in, verdicts out); the
 post-turn hook and the idle worker own persistence.
 """

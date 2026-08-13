@@ -474,6 +474,35 @@ STORED_TEXT_TIME_RULE: str = (
 )
 
 
+# The other half of the same contract, for a field that is re-read as a
+# claim about *right now* rather than as a record of something that
+# happened. Both rules answer "how does written text stay true as it
+# ages", and they answer it oppositely, so a worker has to know which
+# kind of field it is filling before it pastes one.
+#
+# Having only the stored-text half available is not a hypothetical
+# hazard — it is what produced the belief
+# ``experienced mild evening frustration and low energy on august 12
+# 2026``. The belief worker pasted the rule above, did as it was told
+# ("write the concrete day", "write finished events in the past tense"),
+# and turned a live mood read into a dated past report that no later
+# turn can confirm or contradict. On the store at the time, 8 of 40
+# belief rows carried a date in the topic or the state.
+#
+# The distinction is the field's *lifetime*, not its length: a summary
+# sentence and a state phrase can be the same size and still want
+# opposite rules.
+LIVE_STATE_TIME_RULE: str = (
+    "What you write here is read back as a claim about how things are "
+    "*now*, not as a record of something that happened, so it must "
+    "carry no time reference at all -- no relative word ('today', "
+    "'lately'), and no concrete date either. Write it in the present "
+    "tense. If the observation only makes sense pinned to one "
+    "particular day or occasion, it is an event rather than a current "
+    "state: leave it out."
+)
+
+
 # ── worker memory / transcript renderers (K-time7) ───────────────────────
 def format_memory_line(mem: Any, now_dt: datetime | None = None) -> str:
     """Render one memory as ``- {content} (age)`` for a worker LLM prompt.

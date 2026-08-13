@@ -179,6 +179,47 @@ def _preview(text: str | None) -> str:
     return s[: _LOG_PREVIEW_CHARS - 1] + "\u2026"
 
 
+def resolve_promise_who(
+    who_raw: str,
+    *,
+    user_names: list[str] | None = None,
+    assistant_name: str | None = None,
+) -> str:
+    """Map the model's ``who`` to ``"user"`` / ``"assistant"``, or ``""``.
+
+    ``""`` means *unattributable*, and the caller must drop the promise
+    rather than pick a side. Sidedness is not a cosmetic field: only
+    assistant-side promises enter follow-through
+    (:func:`~app.core.memory.promise_lifecycle.is_assistant_promise`),
+    so guessing wrong either has Aiko silently owing nothing for
+    something she said, or chasing the user over a commitment that was
+    hers. A dropped promise costs one tick — the worker re-reads the same
+    window next run — while a misattributed one is permanent and looks
+    correct in every log line.
+
+    The names are resolved from config rather than hardcoded, because
+    the tolerance for a model that answers with a name instead of a role
+    was written as the literal ``"jacob"`` and therefore stopped working
+    the moment ``assistant.user_display_name`` was set to anything else.
+    """
+    token = (who_raw or "").strip().lower()
+    if not token:
+        return ""
+    if token == "assistant":
+        return "assistant"
+    if token == "user":
+        return "user"
+    assistant = (assistant_name or "").strip().lower()
+    # "aiko" stays accepted alongside the configured name: it is the
+    # persona default and the transcript she appears in uses it.
+    if token == assistant or token == "aiko":
+        return "assistant"
+    for name in user_names or []:
+        if token == (str(name) or "").strip().lower():
+            return "user"
+    return ""
+
+
 def _is_low_quality(what: str) -> bool:
     """True when a promise body is an idiom or too thin to be usable."""
     norm = (what or "").strip().lower().strip(" \"'.,;:!?")
@@ -635,7 +676,17 @@ class PromiseExtractionWorker:
             len(raw),
             _preview(raw),
         )
-        parsed = self._parse_promises(raw)
+        parsed = self._parse_promises(
+            raw,
+            user_names=(
+                self._user_names_provider()
+                if self._user_names_provider else None
+            ),
+            assistant_name=(
+                self._assistant_name_provider()
+                if self._assistant_name_provider else None
+            ),
+        )
         if parsed is None:
             log.info(
                 "promise-worker unparseable answer: chars=%d preview=%r",
@@ -646,7 +697,12 @@ class PromiseExtractionWorker:
         return parsed, ""
 
     @staticmethod
-    def _parse_promises(raw: str) -> list[Promise] | None:
+    def _parse_promises(
+        raw: str,
+        *,
+        user_names: list[str] | None = None,
+        assistant_name: str | None = None,
+    ) -> list[Promise] | None:
         """Parse the LLM's JSON answer into typed promises.
 
         Returns ``None`` only when the response is fundamentally
@@ -655,6 +711,9 @@ class PromiseExtractionWorker:
         :func:`app.llm.json_answers.parse_json_array_answer`, because
         ``format: "json"`` guarantees an object and models vary in how
         they wrap the array.
+
+        An item whose ``who`` names neither side is dropped rather than
+        assigned one; see :func:`resolve_promise_who`.
         """
         parsed = parse_json_array_answer(
             raw, key="promises", item_hint_keys=_PROMISE_ITEM_KEYS,
@@ -666,11 +725,19 @@ class PromiseExtractionWorker:
             if not isinstance(item, dict):
                 continue
             who_raw = str(item.get("who") or "").strip().lower()
-            who = (
-                "assistant"
-                if who_raw in {"assistant", "aiko"}
-                else ("user" if who_raw in {"user", "jacob"} else "user")
+            who = resolve_promise_who(
+                who_raw,
+                user_names=user_names,
+                assistant_name=assistant_name,
             )
+            if not who:
+                log.info(
+                    "promise-worker dropped unattributable promise: who=%r "
+                    "what=%r",
+                    who_raw,
+                    _preview(str(item.get("what") or "")),
+                )
+                continue
             what = str(item.get("what") or "").strip()
             if len(what) < 4:
                 continue
