@@ -2195,7 +2195,196 @@ retire it.**
 
 ---
 
-## The nine recurring shapes
+## H29. A want cannot outlive two showings of its source cue
+
+**Severity: high — it is H28's own follow-up reading, and H28's fix did not land
+the outcome it predicted.**
+
+H28 closed with a falsifiable clock: pressure grows at 0.25/day from 0.15, so a
+want should cross K54's 0.35 bar in **19 hours** and the imperative band's 0.7 in
+**53 hours**, and `topic_appetite_block` plus the `wants_block` imperative should
+therefore both leave zero "within about three days". That was written 12 August.
+Read again on **13 August, 290 instrumented turns**:
+
+| | 12 Aug (H28) | 13 Aug (now) |
+| --- | --- | --- |
+| strongest live want | 0.167 | **0.25** |
+| oldest live want | — | **10.6 h** |
+| `topic_appetite_block` renders | 0 | **0** |
+| `wants_block` imperative renders | 0 | **0** |
+| `wants_block` soft-band renders | 77.1% | **78.3%** |
+
+The ledger holds its full 8 wants and **not one of them is older than 11 hours**.
+The prediction did not fail by a little; nothing in the ledger has ever been
+within a day of the nearer of the two bars. H28's fix was correct and did
+work — the pruner no longer retires a want merely because its seed was
+*shown* — but it moved the drain rather than closing it, and a second, unrelated
+defect keeps the ledger's contents worthless even once they survive.
+
+**Drain 1: the want's lifetime is owned by the cue, and the cue's clock is
+measured in showings.** Every one of the 110 expired `curiosity_seed` rows died
+the same death — `max_surfacings`, at **exactly 2 showings**, a **median 2.9
+hours** after creation (p75 7.2 h, max 22.3 h). `curiosity_seeds_block` spends
+two seeds a turn on 37.6% of turns, so a seed's two allowed showings are gone in
+an afternoon. Expiry is a terminal state, so the (now correct) pruner retires the
+want with it. And the other exit is no kinder: a seed that *is* matched marks the
+want acted and removes it. **Both of the source cue's exits are fatal to the
+want, and both arrive on a clock two orders of magnitude faster than the one the
+pressure mechanic runs on.** The ledger is a conveyor wearing the interface of a
+pressure cooker.
+
+**Drain 2 was proposed, measured, and withdrawn — recorded because the reasoning
+was seductive and wrong.** `render_block` sorts by pressure and renders
+`ranked[:2]` ([`wants_ledger.py`](../../app/core/conversation/wants_ledger.py)),
+so the two wants closest to the imperative bar are exactly the two shown on 78%
+of turns, and a mention marks them acted. That reads like a pressure-release
+valve sited at the top of the distribution, and the mechanism is real. It is also
+not happening: over the logged window the ledger records **14 `pruned dead seed
+want` events against 2 `acted`**. The soft band is barely spending anything, and
+a want that *is* spent was spent by being raised, which is the feature working
+rather than a drain. Fixing the band would have cost throughput to solve a
+problem the data does not show. Left alone.
+
+**Drain 3: a cap that refuses instead of evicting, in front of the fastest
+producer.** `add_want` returns `added=False` when the ledger is at `wants_cap`
+(8) rather than displacing anything, and the `curiosity_seed` feeder refills a
+freed slot within minutes — the log shows `live` going 4 → 5 → 6 → 7 → 8 between
+10:55 and 11:29 on 13 Aug, every one of them `source=curiosity_seed`. So **7 of
+the 8 current slots are curiosity seeds and a goal or pursuit can essentially
+never claim one.** The slowest, most significant sources are starved by the
+fastest, least significant one, purely on arrival order.
+
+**Also measured, and healthy — do not "fix" this one.** H28 listed
+`thread_ownership_block` (K55/K89) at 0 renders as a symptom, on the theory that
+it lost an arming path to the missing imperative. It has its *other* arming path
+and that path works: the log carries `thread-ownership stamp: source=initiative`
+on three separate initiations and then `verdict=engaged cosine=0.434 / 0.446 /
+0.691 outcome=satisfied returns=0` for each. The block is a **defence** cue that
+only renders when he brushes a thread off; zero renders means zero brush-offs,
+which is the outcome the feature wants. Recorded here so the next audit stops
+counting it as a corpse. K53 initiative is likewise firing on schedule (11.7% of
+turns, `period=6` in light arcs).
+
+**Remedy sketch** (not a plan — the pieces are independent and each is small):
+mint a want as a **copy that owns its own clock** rather than a pointer to a cue,
+so its TTL is the ledger's `max_age_days` and not the source's surfacing budget;
+give the soft band a different slice than `ranked[:2]` so the imperative
+candidate is held in reserve rather than spent first; and reserve ledger slots
+by source so whimsy cannot hold seven of eight. The third is the one to do first
+if only one gets done, because it is the cheapest and it is also what **K93**
+needs.
+
+### Outcome: settlement, not availability — and no source owns the ledger
+
+Two of the three sketched pieces shipped; drain 2 stayed withdrawn.
+
+**A want retires only when its subject is settled.** `CueStore.resolved_ids()`
+answers "which of these ids are *done*" over `RESOLVED_STATES` — `used` and
+`superseded` only. `expired` is deliberately excluded: it is the state a seed
+reaches by being offered and refused, which settles nothing. The pruner keeps
+its own copy of the want and ages it on `wants_max_age_days`; the seed's
+two-surfacing budget no longer decides anything.
+
+The population says how much that buys. Of the seeds this install has retired,
+**110 expired — every single one at exactly 2 surfacings** — and 118 are `used`,
+but 75 of those are a `migrated/k9` backfill rather than a real settlement. The
+43 organic ones settle fast: median **6.8 h** from birth to `used`, p90 12.2 h,
+max 20.6 h, **1 of 43 past the 19 h K54 bar and 0 past 53 h**. So a want whose
+topic genuinely comes up still dies inside a day, which is correct — the want
+was satisfied. What changed is the other 72%: refused seeds now leave their want
+behind, and those are the ones with a path to either bar.
+
+**The read is by presence, not absence.** H28's version asked for a page of live
+seeds and pruned whatever was missing from it, which needed a page-full guard to
+stop a truncated list from reading as "all dead". `resolved_ids` takes the ids
+the ledger already holds and returns the settled subset, so an empty result, a
+failed query and a ledger larger than any page all retire *nothing*. The
+page-full defence is gone because the failure it defended against cannot be
+expressed. **Prune on evidence that the subject is done, never on the absence of
+evidence that it is not.**
+
+**`wants_per_source_cap` (default 4, half the ledger).** A total cap filled in
+arrival order belongs to whichever producer is fastest, and the log showed
+exactly that: `live` walking 4 → 5 → 6 → 7 → 8 in 34 minutes, every one a
+curiosity seed. The cap is per *source* rather than a priority order, because
+the failure is monopoly rather than whimsy specifically — whichever producer is
+fastest would otherwise own the ledger, and the slow producers are the ones
+carrying anything durable.
+
+**A test note worth keeping.** Every worker test buys its speed with a fake cue
+pool, and the fake was faithful to the contract — so the first version of
+`resolved_ids` passed all 75 of them while being wrong about the real schema
+(`row["id"]` against a tuple-returning connection). One integration test that
+walks the prune path through actual SQLite caught it immediately. **Where a fake
+stands in for a store, at least one test per query has to touch the store.**
+
+**Watch (re-check ~16 Aug):** `topic_appetite_block` and the `wants_block`
+imperative should both leave zero, on the same clock H28 predicted — 19 h and
+53 h from a want's birth. If they are still at zero with wants visibly older
+than three days, the remaining suspect is the soft band after all and drain 2
+comes back off the shelf. The second thing to watch is the opposite failure:
+four seed wants can now hold their half of the ledger for up to 14 days, so if
+the seed slots fill with high-pressure wants she never acts on, the ledger has
+become the guilt list `max_age_days` exists to prevent.
+
+**Tenth recurring shape — two clocks, and the faster one owns the lifetime.** A
+mechanic is designed around a slow clock (pressure over days) but its unit's
+lifetime is bounded by a resource governed by a fast one (two surfacings, hours).
+Every threshold is reachable in principle, every stage is individually correct,
+and the slow clock simply never gets to run — so the feature looks conservative
+rather than broken, and no log line is wrong. Distinct from shape 9: there the
+*read* was wrong; here every read is right and the *ownership* is wrong. **Rule:
+when a feature accumulates over time, write down what can delete its unit before
+the accumulation completes, and compare the two timescales explicitly. If the
+unit is derived from a shared resource, copy the resource rather than pointing at
+it.**
+
+---
+
+## H30. Half the cue declines still say only "provider", in nine specific cues
+
+**Severity: low-medium — pure measurement, and it is the instrument the rest of
+this file keeps needing.**
+
+H7 split the cue decline reasons and the watch list asked whether the catch-all
+would shrink. It did: `reason='provider'` is **75.2% of all 3770 recorded
+decisions but 48.3% of the 913 since 12 August**, and the reasons that replaced
+it are informative ones (`topic_miss` 17.7%, `cadence_block` 16.0%). The split
+worked and the remaining half is not evenly spread — it sits in **nine cues that
+never got a `note_decline` call**, each of which is armed on all 96 instrumented
+turns:
+
+| cue | armed | surfaced | declines via catch-all |
+| --- | --- | --- | --- |
+| `associative_wander` | 96 | 5 | 49 of 91 (54%) |
+| `concept_hypothesis` | 96 | 1 | 50 of 95 (53%) |
+| `curiosity_gradient` | 96 | 9 | 48 of 87 (55%) |
+| `dormant_interest` | 96 | **1** | 52 of 95 (55%) |
+| `interest_drift` | 96 | 8 | 50 of 88 (57%) |
+| `knowledge_gap_notice` | 96 | 21 | 42 of 75 (56%) |
+| `long_arc_callback` | 96 | 7 | 51 of 89 (57%) |
+| `self_callback` | 96 | 2 | 53 of 94 (56%) |
+| `shared_ritual` | 85 | 2 | 46 of 83 (55%) |
+
+By contrast `tension` surfaced 13 of 13 and `turning_over` 6 of 6 with no
+declines at all, which is independent confirmation that H10 landed. The
+`dormant_interest` line is the one worth a second look on its own terms — 96
+armings and a single surfacing, after H4(a) had already fixed the unreachable
+K18 lull band it was waiting on.
+
+The work is mechanical: walk the nine providers in
+[`inner_life_part2.py`](../../app/core/session/inner_life_part2.py) and
+[`part3`](../../app/core/session/inner_life_part3.py), and replace each silent
+`return ""` with `note_decline(self, cue, REASON_*)` using the reason constants
+that already exist in
+[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py). No new
+concepts, no behaviour change, and it is a prerequisite for judging **K92**:
+an arbiter that ranks candidates cannot be evaluated when half the reasons a
+candidate withdrew are recorded as "the provider said no".
+
+---
+
+## The ten recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2279,6 +2468,17 @@ spending the same seeds on its own schedule; K9's block and K52's ledger were
 built a year apart and neither knows the other exists. **Rule: when a predicate
 asks "does X still exist", check what the read filters on, and where a resource
 has two consumers, write down which one is allowed to retire it.**
+
+**10. Two clocks, and the faster one owns the lifetime.** A mechanic accumulates
+on a slow clock — pressure over days, standing over weeks — while the lifetime of
+the thing accumulating is bounded by a resource on a fast one. H29's wants grow
+at 0.25/day toward a 0.7 bar, and each one dies with the cue it was minted from
+after that cue's two allowed showings, median 2.9 hours. Every threshold is
+reachable in principle and every stage is individually correct, so the feature
+reads as conservative rather than broken and no log line is wrong. **Rule: for
+anything that accumulates, write down what can delete its unit before the
+accumulation completes and compare the two timescales out loud. A unit derived
+from a shared resource should copy it, not point at it.**
 
 ---
 
@@ -2863,21 +3063,34 @@ anything else, since three of them alter the inputs to everything below:
 - **H7** — `provider` should drop below half of `concept_hypothesis` declines
   now the reasons are split, the shelf should stop growing, and the first
   non-zero `hypotheses.asked_count` is the signal the loop closed at all.
-- **H28** — three signals, and they arrive on a clock: a want should cross 0.35
-  in 19 h and 0.7 in 53 h, so `topic_appetite_block` and the `wants_block`
-  imperative band should both leave 0 of 253 within about three days. Watch the
-  brush-off in the same window — if `wants-ledger brushed off` fires every turn
-  the decay is too small, and if the imperative never repeats on a topic she
-  genuinely dodged it is too large.
+- **H28** — ~~three signals, and they arrive on a clock: a want should cross 0.35
+  in 19 h and 0.7 in 53 h~~ **read on 13 Aug and the clock did not run** — the
+  strongest want is 0.25, no live want is older than 11 h, and both blocks are
+  still at 0 of 290. The fix was correct but was one of three drains; the other
+  two became **H29**, now shipped.
+- **H29** — the same clock, third attempt, and the last one that can be blamed
+  on a read: wants no longer die when a seed is refused, and no source holds
+  more than half the ledger. `topic_appetite_block` and the `wants_block`
+  imperative should leave zero by ~16 Aug. If they have not while wants are
+  visibly older than three days, the soft band spending `ranked[:2]` is the
+  remaining suspect (H29's withdrawn drain 2). Watch the opposite failure too —
+  four seed wants that nobody acts on can now hold their half of the ledger for
+  the full 14 days.
 - **K85 pursuits** — *not* a defect; the five seeds were filed 9 August with a
   7-day age floor, and three have already accrued sources. `pursuit_lean_block`
   should leave zero on its own after 16 Aug. If it has not by then, the seeds
   are not being reinforced and the away-beat path is the thing to look at.
-- **The K90 lead/follow diff** — own-material 72%, anaphoric 20% as of 12 Aug,
-  unchanged from the 9 Aug baseline. Every fix above feeds this number, and none
-  of them had landed when it was last read. Re-run
-  `scripts/lead_follow_report.py`; it is the only measure of whether the leading
-  family works at all.
+- **The K90 lead/follow diff** — **read on 13 Aug across 320 post-ship turns and
+  the answer is no.** Splitting the corpus on the 9 Aug ship date: anaphoric
+  openers **18% → 18%** (K88's own target, and the one metric here that reply
+  length cannot distort), own material **77% → 71%**, echo 19% → 20%, median
+  words 23 → 31, ends-on-a-question 18.1% → 6.2%. She writes 35% more, about his
+  subject, and asks about it less. Two families have now shipped against this
+  number without moving it, which is the evidence base for the third pass
+  (**K92–K95** in [`patterns.md`](patterns.md)) starting from a different
+  diagnosis: not permission, not inventory, but that ~10 independent steer blocks
+  totalling 0.7% of a 74,000-character prompt cannot outvote the follow prior, and
+  that neither *following* nor *holding back* has any representation at all.
 
 **Then, in order:**
 
@@ -2886,7 +3099,10 @@ anything else, since three of them alter the inputs to everything below:
    surfacings against `affective`'s 7.1%). Judge it on the post-H10 mix.
 2. **H4(a)** — the wedge behind `dormant_interest` and `self_callback`. The
    reason split from H7 is the instrument this was always missing; read it
-   before theorising.
+   before theorising — but note **H30**: both of those cues are among the nine
+   that still route ~55% of their declines to the catch-all, so H30 is the
+   cheaper prerequisite and `dormant_interest` is now at 1 surfacing in 96
+   armings even after its lull band was fixed.
 3. **H7 remainder** — `concept_hypothesis`'s last place in `GAP_CUE_ORDER` and
    its K47 asymmetry. Deliberately deferred: both are defensible, and the split
    reasons will say whether they matter. Note the order gained a member on
@@ -2904,4 +3120,19 @@ judgement call it was filed as), and immersion's **H25**/**H26**. **H2** is
 still waiting on H1 minting its first row, since a conduct pass with no output
 has nothing to gain from better thresholds. **H17** is the one open entry
 deliberately *not* being touched: it changes what `topic_appetite_block` counts
-as a lull, which is the block H28's measurement is watching.
+as a lull, which is the block H29's measurement is watching.
+
+**Added 13 Aug** while reading the two watch items above: **H29** (the wants
+ledger's pressure mechanic cannot run, because a want dies with the cue it was
+minted from after that cue's two showings) and **H30** (the remaining half of the
+`provider` catch-all, concentrated in nine cues). H29 is the higher-severity of
+the pair and gates K54, the `wants_block` imperative band, and **K93**'s
+substance reservation; H30 is an afternoon and unblocks judging **K92**. Neither
+touches the concept or cue lanes' *inputs*, so both are safe to do before the
+attribution window closes — H29's remedies are all inside the ledger, and H30
+only adds reason strings to declines that already happen.
+
+**H29 shipped the same day** (see its Outcome section): the prune now asks for
+settlement rather than availability, and `wants_per_source_cap=4` stops the seed
+feeder owning the ledger. It is now a measurement item rather than a work item —
+the earliest honest read is 16 Aug. **H30** is the open one.

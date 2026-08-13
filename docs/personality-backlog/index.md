@@ -334,7 +334,33 @@ K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
 K82 the dropped sub-topic (he said three things, she answered one) ·
-K83 the right to decline · K84 calibrated jealousy.
+K83 the right to decline · K84 calibrated jealousy ·
+**K92 conversational stance** · **K93 the substance floor** ·
+**K94 sequencing** · **K95 interruption cost**.
+
+**K92–K95, the third pass at leading, is the newest family and the K90 diff is
+why it exists.** Split on the 9 August ship date, 320 post-ship turns say the
+second pass moved nothing it aimed at: anaphoric openers 18% → 18%, own material
+77% → **71%**, while replies grew 23 → 31 median words and ends-on-a-question
+fell 18.1% → 6.2%. She writes more, about his subject, and asks about it less.
+Two families have now shipped against that number — K52–K56 gave her permission
+to lead, K85–K90 gave her something to lead *with* — so the third starts
+elsewhere: a median turn renders **30 prompt blocks in ~74,000 characters**, of
+which the ones asking her to bring something of her own are two or three
+totalling **~500 characters, 0.7% of the prompt**, with no arbitration between
+them, no representation of *following* as a choice she is making, and no way at
+all to decide to say less. K92 is the load-bearing entry (a stance arbiter that
+must **replace** the blocks it subsumes rather than become the eleventh
+permission slip, phased so it logs its decision before it steers anything).
+K93 is the cheapest and probably the highest-value: **43 of 56 genuine cue
+conversions are `curiosity_seed`**, so ~77% of what she actually brings up is
+free-associative whimsy — dust motes, receipt-back doodles, the weight of a house
+key — and the K53 initiative beat spends the same stock. K94 is a persona-sized
+experiment on where in the reply her own material goes; K95 is insurance against
+the first regression the others will cause. **H29 shipped 13 Aug**, so K93's
+per-source reservation now has a working ledger under it — though its effect on
+pressure cannot be read before ~16 Aug. Still reads better after **H30**
+([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write

@@ -1221,6 +1221,9 @@ class IdleWorkersInitMixin:
                         getattr(agent, "wants_worker_interval_seconds", 3600.0)
                     ),
                     cap=int(getattr(agent, "wants_cap", 8)),
+                    per_source_cap=int(
+                        getattr(agent, "wants_per_source_cap", 4)
+                    ),
                     growth_per_day=float(
                         getattr(agent, "wants_growth_per_day", 0.25)
                     ),
