@@ -112,6 +112,65 @@ REASON_NO_STOCK = "no_stock"
 # Another lane already claimed this material in the same assembly, so the
 # cue stood down to avoid saying the same thing twice.
 REASON_CROSS_LANE = "cross_lane"
+# The cue waits for a conversational condition -- a K18 standing lull --
+# and the conversation was still moving. Named apart from
+# ``cadence_block`` because the two are the same word for opposite
+# findings: a clock resolves itself by waiting, a lull may simply never
+# come. ``dormant_interest`` reported both as a cadence and read as "never
+# in play", which hid the actual question (does the conversation ever go
+# quiet enough?) behind a knob (is the cooldown too long?).
+REASON_NO_OPENING = "no_opening"
+
+# ── which declines were ever a missed chance ───────────────────────────
+# Armed says the cue had something to say. It does not say Aiko could
+# have said it, and for the scarce types those are wildly different
+# numbers: ``self_callback`` carries a ten-day ``surface_cooldown_hours``,
+# so on 96 armed turns it was inside its own cooldown on nearly all of
+# them and its 2% reach rate is the design working exactly as specified.
+# Reading that as a broken cue is how H30's first pass mistook four
+# healthy cues for starving ones.
+#
+# So the reach view needs a second denominator: the turns where the cue
+# was *eligible* and still did not surface. A reason belongs here when it
+# means the cue never had a chance this turn:
+#
+# - ``cadence_block`` -- its own clock said not yet. The rarity is the
+#   feature; counting it as a miss makes every rare cue look broken.
+# - ``question_balance`` -- K47 vetoed the question-shaped cues
+#   wholesale, which is a fact about the turn rather than about this cue.
+# - ``no_opening`` -- the cue waits for a lull and the conversation was
+#   moving. Not the cue's to fix, and not a chance it passed up.
+# - ``no_stock`` -- arming and claiming disagreed. There was nothing to
+#   put in the prompt, so there was nothing to decline.
+#
+# Everything else stays in the eligible denominator, because it is the
+# cue (or its lane) making a judgement it could have made differently:
+# ``topic_miss`` is the gate that a structurally unreachable cue fails
+# forever and is exactly what the ratio exists to find; ``lost_priority``
+# is a real competition it entered and lost; ``importance_floor`` and
+# ``cross_lane`` are judgements on live material. ``provider`` stays too,
+# deliberately -- an undiagnosed decline must never be able to flatter
+# the number by disappearing from the denominator.
+INELIGIBLE_REASONS: frozenset[str] = frozenset({
+    REASON_CADENCE_BLOCK,
+    REASON_NO_OPENING,
+    REASON_NO_STOCK,
+    REASON_QUESTION_BALANCE,
+})
+
+
+def is_eligible_decline(reason: str) -> bool:
+    """Was this decline a turn the cue could have surfaced on?
+
+    Reasons are stored with a suffix in one case (``lost_priority:<cue>``
+    names the winner), so this compares on the part before the colon
+    rather than on equality -- a check that silently stopped matching
+    when the winner's name was appended would quietly move every mutex
+    loss into whichever bucket the default is.
+    """
+    head = str(reason or "").split(":", 1)[0]
+    return head not in INELIGIBLE_REASONS
+
 
 _PROVIDER_REASONS = "_cue_provider_reasons"
 
@@ -1088,6 +1147,7 @@ __all__ = [
     "COARSE_ARMING",
     "CUE_POLICIES",
     "CUE_SPECS",
+    "INELIGIBLE_REASONS",
     "FULFILMENT_ANSWERED",
     "FULFILMENT_EITHER",
     "FULFILMENT_SPOKEN",
@@ -1103,6 +1163,7 @@ __all__ = [
     "REASON_CROSS_LANE",
     "REASON_IMPORTANCE_FLOOR",
     "REASON_LOST_PRIORITY",
+    "REASON_NO_OPENING",
     "REASON_NO_STOCK",
     "REASON_PROVIDER",
     "REASON_QUESTION_BALANCE",
@@ -1112,6 +1173,7 @@ __all__ = [
     "CueTurnDecisions",
     "armed_cues",
     "decisions_from_block_chars",
+    "is_eligible_decline",
     "note_decline",
     "policy_for",
     "take_decline_notes",

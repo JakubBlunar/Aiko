@@ -42,16 +42,21 @@ from app.core.proactive.cue_accounting import (
     COARSE_ARMING,
     CUE_SPECS,
     GAP_CUE_ORDER,
+    INELIGIBLE_REASONS,
     OUTCOME_DECLINED,
     OUTCOME_SURFACED,
+    REASON_CADENCE_BLOCK,
+    REASON_CROSS_LANE,
     REASON_IMPORTANCE_FLOOR,
     REASON_LOST_PRIORITY,
+    REASON_NO_OPENING,
     REASON_NO_STOCK,
     REASON_PROVIDER,
     REASON_QUESTION_BALANCE,
     REASON_TOPIC_MISS,
     armed_cues,
     decisions_from_block_chars,
+    is_eligible_decline,
     note_decline,
     take_decline_notes,
 )
@@ -457,6 +462,58 @@ class ProviderReasonTests(unittest.TestCase):
         self.assertEqual(take_decline_notes(host), {})
 
 
+class EligibilityTests(unittest.TestCase):
+    """Which declines were ever a chance the cue had.
+
+    The split the reach ratio was missing: a cue inside its own cooldown
+    is armed on every turn of it and can surface on none, so counting
+    those turns as misses is what made four correctly-rare cues read as
+    starving ones (H30).
+    """
+
+    def test_the_reasons_that_mean_never_in_play(self) -> None:
+        for reason in (
+            REASON_CADENCE_BLOCK, REASON_NO_OPENING, REASON_QUESTION_BALANCE,
+            REASON_NO_STOCK,
+        ):
+            self.assertFalse(is_eligible_decline(reason), reason)
+
+    def test_a_clock_and_a_missing_lull_are_recorded_apart(self) -> None:
+        """Both mean "not in play", and they resolve differently: waiting
+        fixes a cooldown, and nothing fixes a room that never goes quiet.
+        Sharing one reason is what hid ``dormant_interest``'s real
+        problem."""
+        self.assertNotEqual(REASON_NO_OPENING, REASON_CADENCE_BLOCK)
+        self.assertIn(REASON_NO_OPENING, INELIGIBLE_REASONS)
+
+    def test_the_reasons_that_are_the_cue_s_own_judgement(self) -> None:
+        for reason in (
+            REASON_TOPIC_MISS, REASON_IMPORTANCE_FLOOR, REASON_CROSS_LANE,
+            REASON_PROVIDER,
+        ):
+            self.assertTrue(is_eligible_decline(reason), reason)
+
+    def test_the_winner_s_name_does_not_change_the_verdict(self) -> None:
+        # Compared on the part before the colon: a mutex loss is a chance
+        # the cue had and lost, whichever rival took it.
+        self.assertTrue(is_eligible_decline(REASON_LOST_PRIORITY))
+        self.assertTrue(
+            is_eligible_decline(f"{REASON_LOST_PRIORITY}:turning_over"),
+        )
+
+    def test_every_recorded_reason_is_classified(self) -> None:
+        """The vocabulary is closed, so a new reason must be a deliberate
+        choice on both sides of this line rather than a silent default
+        into the eligible bucket."""
+        known = {
+            REASON_CADENCE_BLOCK, REASON_CROSS_LANE, REASON_IMPORTANCE_FLOOR,
+            REASON_LOST_PRIORITY, REASON_NO_OPENING, REASON_NO_STOCK,
+            REASON_PROVIDER, REASON_QUESTION_BALANCE, REASON_TOPIC_MISS,
+        }
+        self.assertTrue(INELIGIBLE_REASONS <= known)
+        self.assertEqual(len(INELIGIBLE_REASONS), 4)
+
+
 # ── 4. the store ──────────────────────────────────────────────────────
 
 
@@ -479,6 +536,85 @@ class StoreTests(unittest.TestCase):
             ("follow_up", 3, 1, 2),
         )
         self.assertAlmostEqual(row["reach_rate"], 1 / 3, places=4)
+
+    def test_a_cooldown_turn_was_never_a_missed_chance(self) -> None:
+        """The second denominator, and the reason it exists.
+
+        ``self_callback`` carries a ten-day cadence, so it is armed on
+        every turn of that cooldown and can surface on none of them.
+        Dividing by all of them reads as a 33% failure; dividing by the
+        turns it was actually in play reads as the design working.
+        """
+        self.fx.store.add_many(1, [("self_callback", OUTCOME_SURFACED, "")])
+        for msg in (2, 3, 4):
+            self.fx.store.add_many(
+                msg,
+                [("self_callback", OUTCOME_DECLINED, REASON_CADENCE_BLOCK)],
+            )
+        row = self.fx.store.reach()[0]
+        self.assertEqual((row["armed"], row["eligible"]), (4, 1))
+        self.assertAlmostEqual(row["reach_rate"], 0.25, places=4)
+        self.assertAlmostEqual(row["eligible_rate"], 1.0, places=4)
+
+    def test_a_topic_gate_that_never_matches_stays_in_the_denominator(
+        self,
+    ) -> None:
+        # The opposite case, and the one the ratio exists to find: stock
+        # was there, the cue was free to surface, and its gate refused.
+        for msg in (1, 2, 3):
+            self.fx.store.add_many(
+                msg,
+                [("curiosity_gradient", OUTCOME_DECLINED, REASON_TOPIC_MISS)],
+            )
+        row = self.fx.store.reach()[0]
+        self.assertEqual((row["armed"], row["eligible"]), (3, 3))
+        self.assertEqual(row["eligible_rate"], 0.0)
+
+    def test_a_mutex_loss_counts_as_a_chance_it_had(self) -> None:
+        # ``lost_priority`` carries the winner's name, so eligibility has
+        # to test the prefix -- an equality check would silently drop
+        # every mutex loss out of the denominator.
+        self.fx.store.add_many(
+            1,
+            [(
+                "concept_hypothesis",
+                OUTCOME_DECLINED,
+                f"{REASON_LOST_PRIORITY}:turning_over",
+            )],
+        )
+        row = self.fx.store.reach()[0]
+        self.assertEqual((row["armed"], row["eligible"]), (1, 1))
+
+    def test_an_undiagnosed_decline_cannot_flatter_the_rate(self) -> None:
+        # The catch-all stays in the eligible denominator on purpose: a
+        # decline nobody has diagnosed must not improve the number by
+        # being assumed harmless.
+        self.fx.store.add_many(
+            1, [("follow_up", OUTCOME_DECLINED, REASON_PROVIDER)],
+        )
+        row = self.fx.store.reach()[0]
+        self.assertEqual((row["armed"], row["eligible"]), (1, 1))
+
+    def test_never_in_play_reports_no_rate_rather_than_zero(self) -> None:
+        # A cue stocked through a long cooldown and never once free to
+        # surface has no rate to report; zero would read as a failure.
+        for msg in (1, 2):
+            self.fx.store.add_many(
+                msg,
+                [("wellbeing_concern", OUTCOME_DECLINED, REASON_CADENCE_BLOCK)],
+            )
+        row = self.fx.store.reach()[0]
+        self.assertEqual(row["eligible"], 0)
+        self.assertIsNone(row["eligible_rate"])
+        self.assertEqual(row["reach_rate"], 0.0)
+
+    def test_cues_stay_ordered_by_how_often_they_were_armed(self) -> None:
+        for msg in (1, 2, 3):
+            self.fx.store.add_many(msg, [("busy", OUTCOME_SURFACED, "")])
+        self.fx.store.add_many(4, [("quiet", OUTCOME_SURFACED, "")])
+        self.assertEqual(
+            [r["cue"] for r in self.fx.store.reach()], ["busy", "quiet"],
+        )
 
     def test_decline_reasons_exclude_surfaced_rows(self) -> None:
         self.fx.store.add_many(1, [("tension", OUTCOME_SURFACED, "")])

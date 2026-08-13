@@ -679,8 +679,11 @@ Cross-refs: subsumes the arbitration K52–K55 never had; `HOLD` overlaps
 **K40** (comfortable silence) and should absorb it rather than duplicate it;
 depends on **H29** (the wants ledger could not produce a high-pressure candidate
 for the arbiter to weigh; fixed 13 Aug, but whether pressure now accumulates is
-unreadable before ~16 Aug) and reads better with **H30** (half the decline
-reasons are still a catch-all).
+unreadable before ~16 Aug). **H30** shipped 13 Aug, so the prerequisite is met:
+every cue decline now names a mechanism, and `reach()`'s new `eligible`
+denominator separates "the arbiter passed this candidate over" from "the
+candidate was never in play" — which is the distinction phase 1's shadow log
+would otherwise have been unable to make about itself.
 
 ---
 
