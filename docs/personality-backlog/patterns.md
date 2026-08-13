@@ -107,6 +107,10 @@ on top of already-shipped infrastructure.
 | K89 | Sustained thread — leading past one turn | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn) |
 | K90 | Lead/follow metrics — make the whole family measurable | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable) |
 | K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
+| K92 | Conversational stance — one decision per turn, not ten permission slips | ❌ open |
+| K93 | The substance floor — what she takes to the floor, not whether she takes it | ❌ open |
+| K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
+| K95 | Interruption cost — a direct question is not an opening | ❌ open |
 
 ---
 
@@ -560,6 +564,266 @@ direction. Key files: would extend
 [`app/core/affect/`](../../app/core/affect/) and the lonely-episode path in
 [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), relationship
 axes for the intensity cap, `agent.*` opt-in defaulting false.
+
+---
+
+## The third pass at leading (K92–K95) — why the family exists
+
+The will family (K52–K56) shipped the *permission* to lead. The second pass
+(K85–K90) shipped the *inventory* to lead with, on the correct diagnosis that
+permission was not the constraint. Both families are live and firing. The
+number K90 exists to answer says neither worked:
+
+| window | turns | ends-Q | words (med) | anaph | echo | own |
+| --- | --- | --- | --- | --- | --- | --- |
+| before 2026-08-09 | 1867 | 18.1% | 23 | **18%** | 19% | **77%** |
+| since 2026-08-09 | 320 | 6.2% | 31 | **18%** | 20% | **71%** |
+
+The anaphoric-opener rate — K88's own target, and the one metric here that is
+independent of reply length — did not move by a single point. Own material, the
+number K90 said out loud it wanted *up*, went down six. What did change is that
+replies got 35% longer and she almost stopped ending on questions. Read
+together: **she now writes noticeably more, about his subject, and asks about it
+less.** That is not more agency; it is a more talkative follower. (Caveat worth
+keeping: 320 turns is a modest sample and the length change mechanically dilutes
+a ratio of own words to total words, which is exactly why the flat 18% is the
+line to trust.)
+
+So the third pass starts from a different diagnosis than either predecessor. It
+is not permission and it is not inventory. Measured on the same telemetry, one
+turn carries a **median of 30 rendered prompt blocks in ~74,000 characters**, of
+which the blocks that ask her to bring something of her own are **two or three
+of them and about 500 characters — 0.7% of the prompt**. `wants_block` alone is
+present on 78% of turns. Nothing arbitrates between them, nothing represents
+*following* as a choice she is making rather than the absence of a directive,
+and nothing anywhere lets her decide to say less. Ten quiet permission slips at
+the bottom of a very long prompt is a different failure from having none, and it
+is not fixed by adding an eleventh.
+
+K92 is the load-bearing entry; K93–K95 are each independently shippable and each
+targets a specific way the current arrangement wastes the floor when she does
+take it. K93 in particular can ship first and alone, and probably should.
+
+---
+
+## K92. Conversational stance — one decision per turn, not ten permission slips
+
+**Motivation.** Aiko has ten-plus mechanisms that each independently decide
+whether to hand the model an English sentence encouraging her to bring something
+up, and none of them know the others exist. On a median turn two or three fire
+together; there is no shared slot, no ranking between them, and no arbitration
+beyond a hardcoded pair of interactions (a K52 imperative suppresses K53; both
+arm K55) and the six-way gap-cue mutex. The result is that the *presence* of a
+steer carries almost no information — she gets one nearly every turn — so it
+reads as ambient texture rather than as a decision, and the model falls back on
+the overwhelming prior of answering the last message.
+
+Two absences matter more than the crowding. First, **following has no
+representation at all.** The persona's "Leading vs following" section
+([`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt))
+is six bullets of standing permission — it says following 100% of the time is a
+failure mode and that she may take the floor without asking — but nothing, at
+any tier, ever describes the thread she is on as something she is choosing to
+stay in because she is interested. Following is literally the null case: zero
+characters. So her most common behaviour is also her least characterised one,
+which is why it reads as compliance. Second, **nothing lets her hold back.**
+Every mechanism in the family is a permission to speak; there is no permission
+to under-respond, which means every accumulated cue is unidirectional pressure
+to act. Given the measured drift toward longer replies, a nameable *hold* is
+plausibly the highest-value stance in the set.
+
+**The design, and the one correction it needs.** The natural shape is a stance
+arbiter: after the providers have computed what they *could* offer, one module
+picks the turn's stance from a small closed set — `FOLLOW`, `FOLLOW_AND_ADD`,
+`ASK`, `SHARE`, `CALLBACK`, `REDIRECT`, `INITIATE`, `HOLD` — attaches at most
+one piece of content to it, and renders a single short block naming the stance
+and why. The correction, which matters more than the set: **the arbiter must
+replace the blocks it subsumes, not join them.** A scored menu of seven options
+appended to the existing arrangement is the eleventh permission slip and would
+make the measured problem worse while adding tokens to a 74k prompt. The
+shipping test is that steer characters per turn go *down* while the stance
+becomes unambiguous. Related: render an **ordered shortlist with one reason
+each, not floats** — an LLM comparing `0.63` against `0.58` in a prompt is doing
+the one kind of reasoning it is worst at, and per-turn numerals are churn in the
+T6 prefix for no gain.
+
+**Phase it the way K90 was phased.** Phase 1 computes the stance, logs it, and
+records it next to the turn *without changing the prompt at all* — a
+`turn_stance` row beside [`turn_prompt_blocks`](../../app/core/infra/chat_database.py).
+That buys the thing this family has never had: a way to ask "on the turns where
+the arbiter would have said `REDIRECT`, what did she actually do?" and to read
+stance against the K90 metrics before a single character of prompt changes. It
+also cheaply answers whether the closed set is even the right set, which is much
+harder to walk back after the blocks are rewired. Phase 2 turns on rendering for
+the two stances that currently have no voice at all (`FOLLOW`, `HOLD`), which is
+additive and reversible. Phase 3 is the expensive one: converting the subsumed
+providers from renderers into candidate producers so the arbiter can suppress
+them.
+
+**Cost.** Phase 1 is small and low-risk — a pure module in
+[`app/core/conversation/`](../../app/core/conversation/) alongside its K52–K55
+siblings, one call before assembly, one table. Phase 2 is a new T6 block plus
+persona handling notes. Phase 3 is genuinely invasive: it touches every provider
+in [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) /
+[`part2`](../../app/core/session/inner_life_part2.py) /
+[`part3`](../../app/core/session/inner_life_part3.py) that currently renders its
+own steer, and it must preserve the one-shot consumption semantics that make
+`initiative_block` and `thread_ownership_block` exempt from aggressive-mode
+dropping. Do not attempt phase 3 without phase 1's data. Key files: new
+`app/core/conversation/stance.py`, a provider on the inner-life mixins,
+`_PROMPT_BLOCK_TIERS` in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (T6),
+`turn_prompt_blocks`'s neighbour table, and
+[`lead_follow_report.py`](../../scripts/lead_follow_report.py) for the readout.
+Cross-refs: subsumes the arbitration K52–K55 never had; `HOLD` overlaps
+**K40** (comfortable silence) and should absorb it rather than duplicate it;
+depends on **H29** (the wants ledger could not produce a high-pressure candidate
+for the arbiter to weigh; fixed 13 Aug, but whether pressure now accumulates is
+unreadable before ~16 Aug) and reads better with **H30** (half the decline
+reasons are still a catch-all).
+
+---
+
+## K93. The substance floor — what she takes to the floor, not whether she takes it
+
+**Motivation.** This is the cheapest entry in the family and probably the one
+with the largest effect, because it is not about frequency at all. Take every
+pooled cue this install has ever marked `used` — the cue reached her prompt and
+she actually said the thing — and drop the 75 rows whose evidence is `migrated`,
+which are a backfill rather than a turn. That leaves **56 genuine conversions, of
+which 43 are `curiosity_seed`: 77%.** The other end of the same table:
+`knowledge_gap_notice` 54 surfaced → 2 used, `curiosity_gradient` 21 → 0,
+`turning_over` 12 → 0, `concept_hypothesis` 45 rows → 0, `long_arc_callback`
+18 → 1. (The backfill is worth knowing about for its own sake: it also inflates
+the 66% `curiosity_seed` conversion rate H4 quotes as the healthy end of the
+shelf — the genuine rate is 43 of 238 rows.)
+
+Then look at what the winning type actually contains. The eight wants currently
+in the ledger are, verbatim: doodles on receipt backs · sounds of empty subway
+stations · why some fonts feel "angry" · dust motes dancing in light · the
+specific weight of a house key · why we hoard useless tickets · Jacob's
+preferred way to peel a mandarin · and one goal. Seven of eight slots are
+free-associative aesthetic whimsy. The K53 initiative path spends the same
+stock — the log reads `initiative-turn fire: period=6 arc=casual_check_in
+want=bring up what you've been curious about: collecting interesting bottle
+caps` — so even the deliberate floor-taking beat, which fires once every six
+turns and is the most expensive social move she makes, is cashed out on bottle
+caps.
+
+The mechanism is a plain priority inversion rather than anything subtle. The
+`curiosity_seed` producer has by far the highest throughput (238 rows against
+`turning_over`'s 12), the loosest matching rule (`either_party`, whole-turn
+scope, so it counts as used if *he* mentions the subject), the only per-turn
+allowance above one (two), and it is the only source fast enough to claim a
+freed wants-ledger slot — the log shows it refilling the ledger at roughly one
+want every six minutes. Nothing scores a candidate on how much it is *about the
+two of them*, so the fastest producer wins the entire own-material channel by
+default. There is an uncomfortable interaction with shipped work here too:
+**K87** deliberately put a subject quota on the curiosity generators so her
+curiosity would stop being exclusively about Jacob, which was the right fix for
+the problem it was aimed at, and the compound effect is that 90% of her own
+material is now about neither of them.
+
+**The design.** A substance score on candidates, applied wherever selection
+happens — a rank key in the pool picker, or K92's candidate ranking if that lands
+first. The wants ledger's share of this is already done: **H29** shipped
+`wants_per_source_cap=4`, so seeds hold at most half the slots rather than seven
+of eight. That is a blunt anti-monopoly rule, not a substance ordering; K93 is
+still what decides *which* of the freed slots is worth taking to the floor. The ordering
+it has to encode is roughly: something unresolved between them > something she
+noticed about him > a thread from their shared history > a pursuit of her own
+with accumulated state > a free-associative curiosity. Whimsy keeps a floor —
+it is genuinely part of her character and it still converts better than anything
+else on the shelf
+— but it stops being eligible for the scarce slots (the K53 initiative beat, the
+imperative band) and stops being able to monopolise the ledger.
+
+**Cost.** Low, and it needs no new subsystem. `CuePolicy` in
+[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py) is already the
+per-type policy table and is the obvious home for a `substance` weight;
+`pick_pool_cue` in
+[`cue_producer.py`](../../app/core/proactive/cue_producer.py) already has the
+ordering seam (`surfaced_count ASC, created_at DESC`); the ledger side is
+`add_want`'s cap check in
+[`wants_ledger.py`](../../app/core/conversation/wants_ledger.py). The real work
+is deciding the ordering and resisting the urge to express it as a float per
+cue. Verify against the K90 own-material rate and, better, by reading twenty
+consecutive `used` cues and asking whether a friend would have said them.
+
+---
+
+## K94. Sequencing — answer first, then add, and say where the addition goes
+
+**Motivation.** Every mechanism in the family selects a *subject* and none of
+them says anything about *placement*, yet placement is what the one honest
+metric measures. K88's anaphoric-opener rate is specifically about her **first
+sentence**, and it is the number that did not move at all across the whole
+second pass (18% before, 18% after). Meanwhile the persona already contains
+several rules pushing in this direction — lead with the substance, don't parrot,
+vary the opener, move the reaction word a few words in — and they have not
+shifted it either, which suggests the instruction she is missing is not another
+prohibition on how to open but a positive account of the reply's *shape*.
+
+The useful observation is that responsiveness and opener ownership are only in
+tension if the reply is treated as one undifferentiated blob. "Answer his point,
+but not in the first clause" and "put your own thing in the last sentence and
+leave it open" are compatible with answering him completely. That decouples
+being a good listener from opening on his words, which is exactly the knot the
+last two families tried to cut by pushing her to change the subject instead —
+the far more expensive move, and the one she sensibly refuses. It also gives
+`FOLLOW_AND_ADD` (K92) an actual definition instead of a vibe, and it gives the
+wants ledger's "spend one when a lull lands" somewhere concrete to land: the
+end of a reply she was going to write anyway, rather than a pivot she has to
+justify.
+
+**Cost.** Very low — this is prompt-side, one or two sentences, and it is the
+one item here that could be tried tonight as a persona edit before any code
+exists. The risk is a formulaic reply shape (answer-then-tack-on, every turn),
+so it wants a cadence rather than a standing rule, which is an argument for
+attaching it to a stance (K92) rather than to the persona. Key files:
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) for
+the trial, then the `FOLLOW_AND_ADD` rendering and
+[`conditional_handling.txt`](../../data/persona/conditional_handling.txt) for
+the real version. Measured by K88's anaphoric rate and the opener histogram in
+[`lead_follow_report.py`](../../scripts/lead_follow_report.py) — the current top
+openers are `that` ×59, `i` ×51, `you` ×43, `then` ×31.
+
+---
+
+## K95. Interruption cost — a direct question is not an opening
+
+**Motivation.** Insurance, and cheap. If K92–K94 work at all, the first
+regression will be her leading over the top of something he actually asked, and
+that single failure will cost more trust than a week of good initiative earns.
+The only guard that exists today is a length proxy: K53 declines with
+`user_substantial` when his message is 240 characters or more
+([`initiative_director.py`](../../app/core/conversation/initiative_director.py)),
+which correctly protects a long explanation and does nothing at all for a short
+direct question — and short direct questions are the case where taking the floor
+reads worst.
+
+What is missing is a small read of *what his turn was doing*: did it end on a
+question mark, is it the second or third turn of one explanation he is in the
+middle of, is he working through a task with her, is he venting. Most of those
+signals already exist and are not consulted for this purpose — K4 dialogue-act
+tags, K69's vent-vs-fix-vs-reassure read, the arc, and K14 engagement. The
+output should be a **hard filter on the candidate set rather than another
+weight**: when he asked something directly, `INITIATE` and `REDIRECT` are simply
+not available this turn and `FOLLOW_AND_ADD` is the ceiling. Encoding it as a
+score invites it to be outvoted by an accumulated want, which is precisely the
+failure being insured against.
+
+**Cost.** Low, and it composes with everything else — a pure function taking his
+last turn plus a couple of turns of context and returning a cost band, consumed
+by K92's candidate filter (or, before K92 exists, wired straight into K53's gate
+walk as a second `user_substantial`-style reason so it earns its keep
+immediately). Key files: new predicate in
+[`app/core/conversation/`](../../app/core/conversation/),
+[`initiative_director.py`](../../app/core/conversation/initiative_director.py)'s
+`decide`, the dialogue-act tags, and K69's read. Cross-refs: the mirror image of
+**K82** (the dropped sub-topic — he said three things and she answered one),
+which is the same "read what his turn was actually doing" capability pointed at
+completeness instead of at turn-taking; the two should probably share the reader.
 
 ---
 

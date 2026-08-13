@@ -116,6 +116,7 @@ class WantsLedgerWorker:
         enabled_provider: Callable[[], bool] | None = None,
         interval_seconds: float = 3600.0,
         cap: int = 8,
+        per_source_cap: int = 4,
         growth_per_day: float = 0.25,
         max_age_days: float = 14.0,
         reentry_cooldown_days: float = 5.0,
@@ -132,6 +133,7 @@ class WantsLedgerWorker:
         self._enabled_provider = enabled_provider
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cap = max(1, int(cap))
+        self._per_source_cap = max(0, int(per_source_cap))
         self._growth_per_day = max(0.0, float(growth_per_day))
         self._max_age_days = max(1.0, float(max_age_days))
         self._reentry_cooldown_days = max(0.0, float(reentry_cooldown_days))
@@ -197,6 +199,7 @@ class WantsLedgerWorker:
                 now=now,
                 cap=self._cap,
                 initial_pressure=pressure,
+                per_source_cap=self._per_source_cap,
             )
             if ok:
                 added.append((source, ref))
@@ -269,40 +272,55 @@ class WantsLedgerWorker:
     def _prune_dead_seed_wants(
         self, state: "wants_ledger.LedgerState",
     ) -> tuple["wants_ledger.LedgerState", list[str], list[str]]:
-        """Drop ``curiosity_seed`` wants whose backing seed is gone.
+        """Drop ``curiosity_seed`` wants whose subject is settled.
 
-        Once a seed retires (its topic came up) or expires, its want
-        must retire with it — otherwise it lingers, grows pressure, and
-        re-asks an answered question. Returns the pruned state, the
-        dropped want ids, and the dead ``source_ref``s (best-effort; a
-        store hiccup leaves the ledger untouched).
+        A want retires when its seed does — but only for the two exits
+        that mean the subject is *done*: ``used`` (the topic came up) and
+        ``superseded`` (the row was merged away). Returns the pruned
+        state, the dropped want ids, and the retired ``source_ref``s.
 
-        "Gone" means *terminal*, not *unavailable*. This read used to
-        ask the pool for pending seeds, which drops a seed the instant
-        it renders into a prompt — and K9's block surfaces two seeds a
-        turn at 35 turns per hundred, so the median seed left pending
-        1.9 hours after birth. Every curiosity want was therefore
-        pruned within a couple of hours, while ``growth_per_day`` of
-        0.25 needs 19 hours to clear K54's appetite bar and 53 to clear
-        the K52 imperative. The whole pressure mechanic was drained by
-        a liveness test that read "she has been shown this" as "she is
-        done with this" — when being shown it and not biting is the one
-        state that most deserves to keep wanting.
+        The third terminal state is the one this method has twice been
+        wrong about, in opposite directions. It first asked for
+        ``pending`` seeds, which a seed stops being the moment it renders
+        into a prompt (H28) — so wants died 1.9 hours in. H28 moved it to
+        ``live``, which is correct about surfacing and still wrong about
+        ``expired``: a seed expires by being *offered and refused*, and
+        all 110 expired seeds on this install hit ``max_surfacings`` at
+        exactly two showings, median 2.9 hours (H29). Against a pressure
+        mechanic needing 19 hours to reach K54's bar and 53 to reach the
+        imperative, that is the same drain with a longer fuse. Being
+        shown something and not biting is the state that most deserves to
+        keep wanting, so an expired seed now leaves its want behind and
+        the want ages on the ledger's own clock.
+
+        The read is by *presence* rather than absence
+        (:meth:`CueStore.resolved_ids`), so an unreadable pool, an empty
+        result and a huge ledger all retire nothing, and there is no page
+        to overflow.
         """
         if not state.wants:
             return state, [], []
-        seed_refs = {
-            w.source_ref for w in state.wants
-            if w.source == "curiosity_seed"
-            and w.source_ref.startswith("cue:")
-        }
-        if not seed_refs:
+        by_id: dict[int, str] = {}
+        for want in state.wants:
+            if want.source != "curiosity_seed":
+                continue
+            if not want.source_ref.startswith("cue:"):
+                continue
+            try:
+                by_id[int(want.source_ref.split(":", 1)[1])] = want.source_ref
+            except (IndexError, ValueError):
+                continue
+        if not by_id:
             return state, [], []
-        rows = self._live_seeds(limit=64)
-        if rows is None:
+        store = self._cue_store()
+        if store is None:
             return state, [], []
-        active_refs = {f"cue:{row.id}" for row in rows}
-        dead = seed_refs - active_refs
+        try:
+            settled = store.resolved_ids(by_id.keys())
+        except Exception:
+            log.debug("wants: seed resolution read failed", exc_info=True)
+            return state, [], []
+        dead = {by_id[cue_id] for cue_id in settled if cue_id in by_id}
         if not dead:
             return state, [], []
         state, dropped = wants_ledger.drop_source_refs(state, dead)
@@ -395,8 +413,9 @@ class WantsLedgerWorker:
         """Unspent curiosity seeds, or ``None`` if the pool can't be read.
 
         The *producer* read: only a seed Aiko has never been offered
-        should mint a new want. For the liveness question the pruner
-        asks, use :meth:`_live_seeds`.
+        should mint a new want. The pruner asks a different question
+        entirely — see :meth:`_prune_dead_seed_wants`, which reads
+        settlement rather than availability.
         """
         store = self._cue_store()
         if store is None:
@@ -406,30 +425,6 @@ class WantsLedgerWorker:
         except Exception:
             log.debug("wants: seed pool pending read failed", exc_info=True)
             return None
-
-    def _live_seeds(self, *, limit: int) -> list[Any] | None:
-        """Curiosity seeds that have not reached a terminal state.
-
-        The *pruner* read, so ``None`` and ``[]`` mean different
-        things: an empty pool retires every seed want, an unreadable
-        one must retire none of them. A full page counts as unreadable
-        for the same reason — absence from a truncated list is not
-        evidence of a dead seed, and a wrong prune here is precisely
-        the failure this method exists to stop.
-        """
-        store = self._cue_store()
-        if store is None:
-            return None
-        cap = max(1, int(limit))
-        try:
-            rows = store.live("curiosity_seed", limit=cap)
-        except Exception:
-            log.debug("wants: seed pool live read failed", exc_info=True)
-            return None
-        if len(rows) >= cap:
-            log.debug("wants: live seed page full (%d); skipping prune", cap)
-            return None
-        return rows
 
     def _cue_store(self) -> Any | None:
         provider = self._cue_store_provider

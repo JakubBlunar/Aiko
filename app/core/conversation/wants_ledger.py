@@ -25,9 +25,14 @@ Design choices (mirrors K15 ``vulnerability_budget``):
 - **Stale wants decay to nothing.** A want never acted on expires
   after ``max_age_days`` — an itch that old has faded, and silently
   dropping it keeps the ledger from becoming a guilt list.
-- **Capped ledger.** At the cap (default 8) new wants are refused
-  rather than evicting old ones — expiry is the only exit besides
-  acting, so pressure ordering stays honest.
+- **Capped ledger, and capped per source.** At the cap (default 8) new
+  wants are refused rather than evicting old ones — expiry is the only
+  exit besides acting, so pressure ordering stays honest. A second cap
+  limits how many slots any one *source* may hold, because a total cap
+  filled in arrival order belongs to whichever producer is fastest:
+  curiosity seeds are offered first and are never in short supply, so
+  they held 7 of 8 slots and the goals and pursuits worth waiting on
+  could not get in (H29).
 
 The feeder worker lives in
 :mod:`app.core.conversation.wants_ledger_worker`; the provider +
@@ -265,19 +270,36 @@ def add_want(
     now: datetime,
     cap: int = 8,
     initial_pressure: float = 0.15,
+    per_source_cap: int = 0,
 ) -> tuple[LedgerState, bool]:
     """Add a want; returns ``(new_state, added)``.
 
     Refused (``added=False``) when: the body is empty, the ledger is
-    at cap, the ``source_ref`` already exists (live or in re-entry
-    cooldown), or the body's content words substantially overlap an
-    existing want (>= 3 shared, or all of the shorter side's words).
+    at cap, ``source`` already holds ``per_source_cap`` slots, the
+    ``source_ref`` already exists (live or in re-entry cooldown), or the
+    body's content words substantially overlap an existing want (>= 3
+    shared, or all of the shorter side's words).
+
+    ``per_source_cap`` (0 disables) exists because the total cap alone
+    is decided by arrival order, and the sources do not arrive at
+    comparable rates. The feeder offers curiosity seeds first and there
+    are always more of them, so every slot freed anywhere in the ledger
+    was refilled by a seed within minutes -- measured at 7 of 8 slots
+    held by seeds, with goals and pursuits structurally unable to claim
+    one (H29). The cap is per *source*, not a priority order, because
+    the failure is monopoly rather than whimsy specifically: whichever
+    producer is fastest would otherwise own the ledger, and the slow
+    producers are the ones carrying anything durable.
     """
     body = (text or "").strip()
     if not body:
         return state, False
     if len(state.wants) >= max(1, cap):
         return state, False
+    if per_source_cap > 0:
+        held = sum(1 for w in state.wants if w.source == source)
+        if held >= int(per_source_cap):
+            return state, False
     ref = (source_ref or "").strip()
     if ref:
         if any(w.source_ref == ref for w in state.wants):

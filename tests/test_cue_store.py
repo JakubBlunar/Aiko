@@ -284,6 +284,73 @@ class LiveTests(_Base):
         self.assertEqual(len(self.store.live()), 2)
 
 
+class ResolvedIdsTests(_Base):
+    """``resolved_ids`` answers "is this subject settled", by presence.
+
+    The read for a consumer holding something derived from a cue. It
+    parts company with ``live`` over ``expired``: a cue expires by being
+    offered and refused, which settles nothing (H29). And it answers by
+    presence, so every failure mode retires nothing at all.
+    """
+
+    def test_used_and_superseded_are_resolved(self) -> None:
+        used = self.store.add("curiosity_seed", "a", "line")
+        self.store.mark_used(used)
+        superseded = self.store.add("curiosity_seed", "b", "line")
+        self.store.supersede(superseded)
+        self.assertEqual(
+            self.store.resolved_ids([used, superseded]), {used, superseded},
+        )
+
+    def test_an_expired_cue_is_not_resolved(self) -> None:
+        cue = self.store.add("curiosity_seed", "a", "line")
+        self.store.expire(cue)
+        self.assertEqual(self.store.resolved_ids([cue]), set())
+
+    def test_cues_still_in_play_are_not_resolved(self) -> None:
+        pending = self.store.add("curiosity_seed", "a", "line")
+        surfaced = self.store.add("curiosity_seed", "b", "line")
+        self.store.mark_surfaced(surfaced)
+        awaiting = self.store.add("curiosity_seed", "c", "line")
+        self.store.mark_asked(awaiting)
+        self.assertEqual(
+            self.store.resolved_ids([pending, surfaced, awaiting]), set(),
+        )
+
+    def test_an_id_the_pool_never_had_is_not_resolved(self) -> None:
+        # A row deleted out from under a consumer must not retire what
+        # was built on it: absence is not evidence of settlement.
+        self.assertEqual(self.store.resolved_ids([424242]), set())
+
+    def test_empty_and_unusable_input_resolve_nothing(self) -> None:
+        self.assertEqual(self.store.resolved_ids([]), set())
+        self.assertEqual(self.store.resolved_ids(["not-an-id"]), set())
+
+    def test_another_users_settled_cue_is_not_resolved(self) -> None:
+        other = CueStore(self.fx.db, user_id="someone-else")
+        cue = other.add("curiosity_seed", "a", "line")
+        other.mark_used(cue)
+        self.assertEqual(self.store.resolved_ids([cue]), set())
+
+    def test_more_ids_than_one_sql_chunk(self) -> None:
+        # The chunking exists so a large caller cannot outrun SQLite's
+        # variable limit; the answer must not depend on the seam.
+        ids = [
+            self.store.add("curiosity_seed", f"s{i}", "line")
+            for i in range(900)
+        ]
+        for cue_id in ids[::3]:
+            self.store.mark_used(cue_id)
+        self.assertEqual(self.store.resolved_ids(ids), set(ids[::3]))
+
+    def test_is_not_scoped_by_type(self) -> None:
+        seed = self.store.add("curiosity_seed", "a", "line")
+        drift = self.store.add("interest_drift", "b", "line")
+        self.store.mark_used(seed)
+        self.store.mark_used(drift)
+        self.assertEqual(self.store.resolved_ids([seed, drift]), {seed, drift})
+
+
 class TtlTests(_Base):
     def test_expired_stock_does_not_count_as_pending(self) -> None:
         now = timephrase.utcnow()

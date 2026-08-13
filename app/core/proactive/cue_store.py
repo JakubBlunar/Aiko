@@ -88,6 +88,23 @@ TERMINAL_STATES: frozenset[str] = frozenset({
 })
 VALID_STATES: frozenset[str] = LIVE_STATES | TERMINAL_STATES
 
+# Terminal is not one thing, and a consumer that holds a *derived* copy
+# of a cue has to know which kind of terminal it is looking at. Two of
+# the three mean the subject is settled -- ``used`` because it came up,
+# ``superseded`` because the row was merged into another -- so anything
+# built on that cue should retire with it. ``expired`` means the
+# opposite: she was offered it, the offer ran out, and she never bit.
+#
+# H29 is what happens when the difference is ignored. All 110 expired
+# ``curiosity_seed`` rows on this install died at ``max_surfacings``, at
+# exactly two showings, a median 2.9 hours after birth -- so a wants
+# ledger that retired a want whenever its seed left ``LIVE_STATES``
+# retired every want in an afternoon, against a pressure mechanic that
+# needs 19 hours to reach the first bar and 53 to reach the second.
+RESOLVED_STATES: frozenset[str] = frozenset({
+    STATE_USED, STATE_SUPERSEDED,
+})
+
 
 _COLS = (
     "id, user_id, cue_type, subject, text, payload, state, "
@@ -707,6 +724,62 @@ class CueStore:
             with_embedding=with_embedding,
         )
 
+    def resolved_ids(self, ids: Iterable[int]) -> set[int]:
+        """Which of ``ids`` have been *settled* rather than merely spent.
+
+        The read a consumer holding a derived copy of a cue should use
+        when it asks "may I keep this". It differs from :meth:`live` in
+        two ways that both matter.
+
+        The first is semantic: ``live`` treats ``expired`` as gone, and
+        for a cue that is correct -- it will not surface again. For
+        something built *on* that cue it is wrong, because a cue expires
+        by being offered and refused, which is the state that most
+        deserves to keep wanting. Only ``used`` and ``superseded`` say
+        the subject is settled.
+
+        The second is about failure shape, and is the reason this takes
+        ids rather than returning a page. ``live`` answers by *absence*,
+        so a truncated page silently reads as "these are all gone" and
+        the caller has to defend itself with a page-full check. This
+        answers by *presence* over a set the caller already holds: an
+        empty result retires nothing, a read failure retires nothing,
+        and there is no page to overflow. Prune on evidence that the
+        subject is done, never on the absence of evidence that it is
+        not.
+        """
+        try:
+            wanted = sorted({int(cue_id) for cue_id in ids})
+        except (TypeError, ValueError):
+            return set()
+        if not wanted:
+            return set()
+        states = sorted(RESOLVED_STATES)
+        state_slots = ", ".join("?" for _ in states)
+        found: set[int] = set()
+        # Chunked so a large caller cannot outrun SQLite's variable
+        # limit; in practice the ledger holds single digits.
+        for start in range(0, len(wanted), 400):
+            chunk = wanted[start:start + 400]
+            id_slots = ", ".join("?" for _ in chunk)
+            sql = (
+                f"SELECT id FROM cue_pool WHERE user_id = ? "
+                f"AND state IN ({state_slots}) AND id IN ({id_slots})"
+            )
+            try:
+                rows = self._conn().execute(
+                    sql, (self._user_id, *states, *chunk),
+                ).fetchall()
+            except Exception:
+                # Deliberately not re-raised and deliberately not a
+                # partial answer: the contract above is that nothing is
+                # retired without positive evidence, and an empty result
+                # is exactly that.
+                log.warning("cue_pool resolved read failed", exc_info=True)
+                return set()
+            found.update(int(row[0]) for row in rows)
+        return found
+
     def recent_subjects(
         self,
         cue_type: str | None = None,
@@ -879,6 +952,7 @@ class CueStore:
 
 __all__ = [
     "LIVE_STATES",
+    "RESOLVED_STATES",
     "STATE_AWAITING",
     "STATE_EXPIRED",
     "STATE_PENDING",

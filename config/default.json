@@ -168,6 +168,7 @@
     "wants_growth_per_day": 0.25,
     "wants_imperative_threshold": 0.7,
     "wants_cap": 8,
+    "wants_per_source_cap": 4,
     "wants_max_age_days": 14.0,
     "wants_reentry_cooldown_days": 5.0,
     "wants_brush_off_decay": 0.6,

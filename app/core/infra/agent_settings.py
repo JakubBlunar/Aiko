@@ -883,6 +883,14 @@ class AgentSettings:
     # (expiry and acting are the only exits) so pressure ordering
     # stays honest.
     wants_cap: int = 8
+    # Maximum slots any one source may hold (0 disables). The total
+    # cap above is filled in arrival order, and the sources do not
+    # arrive at comparable rates: curiosity seeds are offered first
+    # and never run short, so they held 7 of 8 slots while goals and
+    # pursuits — the sources carrying anything durable — could not
+    # claim one at all (H29). Half the ledger is the default so no
+    # producer can own it outright.
+    wants_per_source_cap: int = 4
     # Wants never acted on expire after this many days — an itch
     # that old has faded, and dropping it keeps the ledger from
     # becoming a guilt list.

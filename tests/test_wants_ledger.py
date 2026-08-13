@@ -178,6 +178,102 @@ class AddWantTests(unittest.TestCase):
         self.assertEqual(state.wants[0].kind, "ask")
 
 
+class PerSourceCapTests(unittest.TestCase):
+    """H29 drain 3 — a total cap belongs to the fastest producer.
+
+    The feeder offers curiosity seeds before anything else and never
+    runs short of them, so on the live install they held 7 of 8 slots
+    and goals and pursuits could not claim one at all. The cap is per
+    source rather than a priority order: the failure is monopoly, and
+    whichever producer happened to be fastest would cause it.
+    """
+
+    def _fill(self, source: str, count: int, *, cap: int = 8,
+              per_source_cap: int = 4) -> wl.LedgerState:
+        state = wl.LedgerState()
+        topics = (
+            "the violin recital downtown",
+            "that meteor shower story",
+            "the jazz chord progression",
+            "sourdough starter troubles",
+            "the kiln at the pottery studio",
+            "rooftop skyline sketching",
+        )
+        for i in range(count):
+            state, _ = wl.add_want(
+                state,
+                text=f"bring up {topics[i % len(topics)]} number {i}",
+                kind="ask", source=source, source_ref=f"{source}:{i}",
+                now=_NOW, cap=cap, per_source_cap=per_source_cap,
+            )
+        return state
+
+    def test_one_source_cannot_take_the_whole_ledger(self) -> None:
+        state = self._fill("curiosity_seed", 6, cap=8, per_source_cap=4)
+        self.assertEqual(len(state.wants), 4)
+
+    def test_the_slots_it_cannot_take_stay_open_for_others(self) -> None:
+        state = self._fill("curiosity_seed", 6, cap=8, per_source_cap=4)
+        state, added = wl.add_want(
+            state,
+            text="steer toward finishing the greenhouse",
+            kind="steer", source="goal", source_ref="goal:1",
+            now=_NOW, cap=8, per_source_cap=4,
+        )
+        self.assertTrue(added)
+        by_source = [w.source for w in state.wants]
+        self.assertEqual(by_source.count("curiosity_seed"), 4)
+        self.assertEqual(by_source.count("goal"), 1)
+
+    def test_zero_disables_the_per_source_cap(self) -> None:
+        state = self._fill("curiosity_seed", 6, cap=8, per_source_cap=0)
+        self.assertEqual(len(state.wants), 6)
+
+    def test_the_total_cap_still_binds(self) -> None:
+        # Two sources, generous per-source cap, small total.
+        state = self._fill("curiosity_seed", 3, cap=4, per_source_cap=4)
+        state, added = wl.add_want(
+            state,
+            text="steer toward finishing the greenhouse",
+            kind="steer", source="goal", source_ref="goal:1",
+            now=_NOW, cap=4, per_source_cap=4,
+        )
+        self.assertTrue(added)
+        _, overflow = wl.add_want(
+            state,
+            text="share the thing about tide pools",
+            kind="share", source="pursuit", source_ref="pursuit:1",
+            now=_NOW, cap=4, per_source_cap=4,
+        )
+        self.assertFalse(overflow)
+
+    def test_a_freed_slot_does_not_go_back_to_the_monopolist(self) -> None:
+        """The live mechanic, played forward.
+
+        A seed want is acted on and the feeder runs minutes later. Under
+        the old rule the freed slot went straight back to a seed because
+        seeds are offered first; the cap means it is still there when a
+        slower producer next has something.
+        """
+        state = self._fill("curiosity_seed", 4, cap=8, per_source_cap=4)
+        state = wl.mark_acted(state, state.wants[0].id, _NOW)
+        self.assertEqual(len(state.wants), 3)
+        state, added = wl.add_want(
+            state,
+            text="bring up the harbour fog thing entirely new",
+            kind="ask", source="curiosity_seed", source_ref="cue:99",
+            now=_NOW, cap=8, per_source_cap=4,
+        )
+        self.assertTrue(added)
+        _, blocked = wl.add_want(
+            state,
+            text="bring up a fifth completely unrelated curiosity",
+            kind="ask", source="curiosity_seed", source_ref="cue:100",
+            now=_NOW, cap=8, per_source_cap=4,
+        )
+        self.assertFalse(blocked)
+
+
 class GrowthTests(unittest.TestCase):
     def test_pressure_grows_with_elapsed_days(self) -> None:
         state = _state_with(_want(pressure=0.15, created_at=_NOW))
@@ -408,12 +504,14 @@ class _KvStore:
 class _FakeCues:
     """Duck-typed cue pool, modelling both reads the worker makes.
 
-    The two are not the same shelf and the difference is the whole of
-    the K52 pressure bug: ``pending`` answers "may I surface this now",
-    which a seed stops satisfying the moment it renders (and while it
-    cools off after being released), while ``live`` answers "does this
-    seed still exist". A row carries a state so a test can put a seed
-    in the gap between them.
+    The two are not the same shelf, and the ledger has been wrong about
+    the difference twice. ``pending`` answers "may I surface this now",
+    which a seed stops satisfying the moment it renders (H28).
+    ``resolved_ids`` answers "is this subject settled", which only
+    ``used`` and ``superseded`` satisfy — an ``expired`` seed was
+    offered and refused, and refusing is the state that most deserves
+    to keep wanting (H29). A row carries a state so a test can put a
+    seed in either gap.
     """
 
     class Row:
@@ -435,12 +533,14 @@ class _FakeCues:
             raise RuntimeError("pool unavailable")
         return [r for r in self._rows if r.state == "pending"][:limit]
 
-    def live(self, cue_type: str, *, limit: int = 20) -> list["Row"]:
-        assert cue_type == "curiosity_seed"
+    def resolved_ids(self, ids) -> set[int]:
         if self.raises:
             raise RuntimeError("pool unavailable")
-        alive = {"pending", "surfaced", "awaiting"}
-        return [r for r in self._rows if r.state in alive][:limit]
+        wanted = {int(i) for i in ids}
+        return {
+            r.id for r in self._rows
+            if r.id in wanted and r.state in {"used", "superseded"}
+        }
 
 
 class _FakeGoals:
@@ -761,18 +861,23 @@ class WorkerTests(unittest.TestCase):
             last_growth_at=iso,
         )
 
-    def test_prunes_want_when_seed_is_spent(self) -> None:
-        # The reported bug: seed retired but its want lingered and kept
-        # growing pressure, re-asking an answered question.
+    def test_a_seed_the_pool_has_never_heard_of_prunes_nothing(self) -> None:
+        """Silence is not evidence that the subject is settled.
+
+        The pruner used to answer by absence — anything missing from a
+        page of live seeds was retired — so an empty or partial read
+        erased the ledger's curiosity half. It now answers by presence,
+        which makes "I know nothing about this cue" retire nothing.
+        """
         kv = _KvStore()
         kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
         worker = self._worker(
             kv, cue_store_provider=lambda: _FakeCues(),
         )
         stats = worker.run()
-        self.assertEqual(stats["pruned"], 1)
+        self.assertEqual(stats["pruned"], 0)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
-        self.assertNotIn("cue:1", {w.source_ref for w in state.wants})
+        self.assertIn("cue:1", {w.source_ref for w in state.wants})
 
     def test_keeps_want_when_seed_is_still_pending(self) -> None:
         kv = _KvStore()
@@ -812,7 +917,7 @@ class WorkerTests(unittest.TestCase):
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertIn("cue:1", {w.source_ref for w in state.wants})
 
-    def test_a_terminal_seed_still_kills_its_want(self) -> None:
+    def test_a_used_seed_still_kills_its_want(self) -> None:
         # The half of the old behaviour that was right: once the topic
         # has actually come up, the want must go with it.
         kv = _KvStore()
@@ -825,14 +930,55 @@ class WorkerTests(unittest.TestCase):
         )
         self.assertEqual(worker.run()["pruned"], 1)
 
-    def test_a_full_live_page_prunes_nothing(self) -> None:
-        # Absence from a truncated list is not evidence of a dead seed,
-        # and a wrong prune here is the failure being fixed.
+    def test_a_superseded_seed_kills_its_want_too(self) -> None:
+        # The row was merged into another; the want points at nothing.
         kv = _KvStore()
-        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(999))))
-        rows = [_FakeCues.Row(i, f"topic {i}") for i in range(64)]
-        worker = self._worker(kv, cue_store_provider=lambda: _FakeCues(rows))
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "merged topic", state="superseded"),
+            ]),
+        )
+        self.assertEqual(worker.run()["pruned"], 1)
+
+    def test_an_expired_seed_leaves_its_want_behind(self) -> None:
+        """H29, and the exact inverse of the state above.
+
+        A seed expires by running out of surfacings — she was offered it
+        twice and did not bite. Every one of the 110 expired seeds on the
+        live install died that way, at a median 2.9 hours old, so
+        retiring the want with them capped a want's life at an afternoon
+        against bars needing 19 and 53 hours. ``used`` means the subject
+        is done; ``expired`` means she has not got to it yet, which is
+        what wanting is.
+        """
+        kv = _KvStore()
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
+        worker = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "offered and refused", state="expired"),
+            ]),
+        )
         self.assertEqual(worker.run()["pruned"], 0)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertIn("cue:1", {w.source_ref for w in state.wants})
+
+    def test_a_big_ledger_needs_no_page_defence(self) -> None:
+        # The old read asked for a page of live seeds and had to treat a
+        # full page as unreadable. Asking about the ids it holds removes
+        # the failure mode rather than defending against it.
+        kv = _KvStore()
+        wants = [self._seed_want(i) for i in range(64)]
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(*wants)))
+        rows = [_FakeCues.Row(i, f"topic {i}") for i in range(64)]
+        rows[7].state = "used"
+        worker = self._worker(kv, cue_store_provider=lambda: _FakeCues(rows))
+        self.assertEqual(worker.run()["pruned"], 1)
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertNotIn("cue:7", {w.source_ref for w in state.wants})
+        self.assertIn("cue:8", {w.source_ref for w in state.wants})
 
     def test_a_surviving_want_reaches_the_bars_that_gate_it(self) -> None:
         """The point of the fix, stated as the numbers it unblocks.
@@ -864,6 +1010,95 @@ class WorkerTests(unittest.TestCase):
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
         self.assertEqual(len(state.wants), 1)
         self.assertGreaterEqual(state.wants[0].pressure, 0.7)
+
+    def test_the_h29_seed_lifecycle_end_to_end(self) -> None:
+        """The measured shape of the live failure, played forward.
+
+        A seed is minted, shown its two allowed times, and expires at
+        ``max_surfacings`` three hours later — the median career of all
+        110 expired seeds on the install. The want it fed has to still
+        be there afterwards, and has to keep ageing, or the imperative
+        band is unreachable by construction no matter what its threshold
+        is set to.
+        """
+        kv = _KvStore()
+        born = datetime.now(timezone.utc) - timedelta(hours=3)
+        want = wl.Want(
+            id="sw1",
+            text="bring up what you've been curious about: the kiln",
+            kind="ask",
+            source="curiosity_seed",
+            source_ref="cue:1",
+            created_at=born.isoformat(),
+            pressure=0.15,
+            last_growth_at=born.isoformat(),
+        )
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(want)))
+        pool = _FakeCues([_FakeCues.Row(1, "the kiln", state="surfaced")])
+        worker = self._worker(
+            kv, growth_per_day=0.25, cue_store_provider=lambda: pool,
+        )
+        worker.run()
+
+        # Two showings later the pool retires the offer, not the wanting.
+        pool._rows[0].state = "expired"
+        self.assertEqual(worker.run()["pruned"], 0)
+
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(len(state.wants), 1)
+        # Still climbing on its own clock rather than the seed's.
+        self.assertGreater(state.wants[0].pressure, 0.15)
+
+    def test_the_h29_lifecycle_against_the_real_pool(self) -> None:
+        """The same walk, but through SQLite rather than ``_FakeCues``.
+
+        Every other worker test buys its speed with a fake pool, which
+        means none of them can see a query that is wrong about the real
+        schema — and the prune path is the one place where being wrong
+        costs the ledger its contents. One pass over the actual store
+        keeps the fake honest about the contract it stands in for.
+        """
+        from app.core.infra.chat_database import ChatDatabase
+        from app.core.proactive.cue_store import CueStore
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        store = CueStore(
+            ChatDatabase(Path(tmp.name) / "chat.db"), user_id="default",
+        )
+        refused = store.add("curiosity_seed", "the kiln", "line")
+        settled = store.add("curiosity_seed", "the espresso machine", "line")
+
+        kv = _KvStore()
+        born = datetime.now(timezone.utc) - timedelta(hours=3)
+        kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(
+            *(
+                wl.Want(
+                    id=f"sw{cue_id}",
+                    text=f"bring up what you've been curious about: {cue_id}",
+                    kind="ask",
+                    source="curiosity_seed",
+                    source_ref=f"cue:{cue_id}",
+                    created_at=born.isoformat(),
+                    pressure=0.15,
+                    last_growth_at=born.isoformat(),
+                )
+                for cue_id in (refused, settled)
+            ),
+        )))
+        worker = self._worker(kv, cue_store_provider=lambda: store)
+
+        store.mark_surfaced(refused)
+        self.assertEqual(worker.run()["pruned"], 0)
+
+        store.expire(refused)
+        store.mark_used(settled)
+        self.assertEqual(worker.run()["pruned"], 1)
+
+        state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
+        self.assertEqual(
+            [w.source_ref for w in state.wants], [f"cue:{refused}"],
+        )
 
     def test_an_unreadable_pool_prunes_nothing(self) -> None:
         """A failed read must not look like an empty shelf.
@@ -961,15 +1196,37 @@ class WorkerDemandTests(unittest.TestCase):
         self.assertEqual(signal.pressure, 0.0)
         self.assertEqual(signal.reason, "ledger current")
 
-    def test_a_dead_seed_want_counts_as_work(self) -> None:
+    def test_a_settled_seed_want_counts_as_work(self) -> None:
+        # "Dead" is now a positive fact about the seed rather than its
+        # absence from a page, so the probe needs a settled row to see
+        # anything to do.
         kv = _KvStore()
         kv.set(
             wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))),
         )
-        w = self._worker(kv, cue_store_provider=lambda: _FakeCues())
+        w = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "answered topic", state="used"),
+            ]),
+        )
         signal = self._probe(w)
         self.assertGreaterEqual(signal.pressure, 0.5)
         self.assertEqual(signal.reason, "0 new, 1 dead")
+
+    def test_an_expired_seed_is_not_work(self) -> None:
+        # H29: the offer ran out, the wanting did not.
+        kv = _KvStore()
+        kv.set(
+            wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))),
+        )
+        w = self._worker(
+            kv,
+            cue_store_provider=lambda: _FakeCues([
+                _FakeCues.Row(1, "offered and refused", state="expired"),
+            ]),
+        )
+        self.assertEqual(self._probe(w).pressure, 0.0)
 
     def test_growth_alone_is_not_worth_a_slot(self) -> None:
         # Growth is elapsed-time and the provider applies it lazily
