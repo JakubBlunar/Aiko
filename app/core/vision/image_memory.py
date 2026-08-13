@@ -32,6 +32,14 @@ Design notes:
   impersonal evergreen facts and its distil prompt actively rejects
   personal material. Someone showing you their dog is the opposite of
   that: it is dated, it is about him, and its value is relational.
+* **Both people have to be named in the distil prompt.** The vision pass
+  deliberately refuses to guess identities ("Do not guess at who someone
+  is" in ``in_turn_prompt``), so the description that arrives here is
+  always third-person — "an anime girl with silver-white hair". This is
+  therefore the *only* step that sees his caption, and so the only place
+  the subject's ownership can be worked out. Get the deixis wrong and she
+  files a picture of herself as his: see
+  :func:`_build_distil_system`.
 """
 from __future__ import annotations
 
@@ -47,23 +55,62 @@ IMAGE_MEMORY_SALIENCE = 0.55
 # enough that a rambling model can't smuggle the whole caption through.
 MAX_MEMORY_CHARS = 320
 
-_DISTIL_SYSTEM = (
-    "You turn a description of a photo somebody shared into a single "
-    "memory line, written from the point of view of the person they "
-    "showed it to.\n"
-    "Rules:\n"
-    "- One sentence, under 40 words, past tense.\n"
-    "- Lead with what was in the picture, not with the fact a picture "
-    "was sent.\n"
-    "- Keep the concrete specifics: place, subject, colours, text, "
-    "anything countable. Those are the parts worth remembering.\n"
-    "- Drop hedging and photography talk (\"the image shows\", "
-    "\"appears to be\", \"in the foreground\").\n"
-    "- Use the sharer's name if you are given it.\n"
-    "- If the description is too vague to be worth remembering, reply "
-    "with exactly: SKIP\n"
-    "Reply with the sentence only, no quotes, no preamble."
-)
+def _build_distil_system(user_name: str, assistant_name: str) -> str:
+    """Distil prompt, with both people named so pronouns can resolve.
+
+    The "who is who" paragraph is the whole reason this is a factory.
+    Naming only the sharer and saying "write from the point of view of
+    the person they showed it to" leaves the recipient anonymous, and a
+    caption addressed to her then has nothing to bind to: told *"I
+    wanted to show you your nice daily outfit"*, the model attached
+    "your" to the only named person in the prompt and wrote **"Jacob
+    showed me his daily outfit"** over a picture of Aiko. The same run
+    of shared avatar images also produced "Jacob's anime character" and
+    "an illustration of a white-haired nekomimi" — three for three, she
+    could not recognise herself.
+
+    Second-person captions are the norm rather than an edge case here:
+    the pictures he shares are very often *of her* (an outfit, an
+    expression, a render), so the recipient of the photo is also its
+    subject. That is the case the original prompt had no way to express,
+    and it is why the anchor is stated as a rule rather than left for
+    the model to infer.
+
+    Mirrors the deictic anchor the belief worker puts on its transcript
+    lines, and the ``_build_system_prompt(name)`` factory convention the
+    memory extractor established.
+    """
+    sharer = (user_name or "").strip() or "the user"
+    me = (assistant_name or "").strip() or "Aiko"
+    return (
+        "You turn a description of a photo somebody shared into a single "
+        f"memory line, written in the first person as {me} — the person "
+        "it was shown to.\n"
+        f"Who is who: {sharer} shared the photo with you, {me}. In "
+        f"anything {sharer} said while sharing it, \"I\" / \"me\" / "
+        f"\"my\" means {sharer}, and \"you\" / \"your\" means YOU, {me}. "
+        f"So if {sharer} calls it \"your outfit\" it is *yours* — write "
+        "\"my outfit\", never \"his\" or \"hers\".\n"
+        f"When what {sharer} said makes clear the picture is of you — "
+        "\"your outfit\", \"you in the new dress\" — write it as "
+        "yourself: \"my new daily outfit, black cropped top and chunky "
+        "sneakers\", not \"an anime girl in a black cropped top\". When "
+        "nothing identifies the subject, describe it plainly and do NOT "
+        f"assume it is you; {sharer} also shares pictures of other "
+        "characters, other people and places.\n"
+        "Rules:\n"
+        "- One sentence, under 40 words, past tense.\n"
+        "- Lead with what was in the picture, not with the fact a picture "
+        "was sent.\n"
+        "- Keep the concrete specifics: place, subject, colours, text, "
+        "anything countable. Those are the parts worth remembering.\n"
+        "- Drop hedging and photography talk (\"the image shows\", "
+        "\"appears to be\", \"in the foreground\").\n"
+        f"- Refer to the sharer as {sharer}.\n"
+        "- If the description is too vague to be worth remembering, reply "
+        "with exactly: SKIP\n"
+        "Reply with the sentence only, no quotes, no preamble."
+    )
 
 
 def distil_image_memory(
@@ -72,18 +119,23 @@ def distil_image_memory(
     user_text: str,
     user_name: str,
     chat: Callable[..., str],
+    assistant_name: str = "Aiko",
 ) -> str:
     """Compress a vision description into one memory line, or ``""``.
 
     ``chat`` is the worker-model callable. Any failure returns ``""``:
     a photo we couldn't summarise is not worth a malformed memory row.
+
+    ``assistant_name`` is not cosmetic — it is what lets a second-person
+    caption ("your new outfit") resolve to the right owner. See
+    :func:`_build_distil_system`.
     """
     described = (description or "").strip()
     if not described:
         return ""
     caption = (user_text or "").strip()
     said = (
-        f"{user_name} said, sharing it: \"{caption[:300]}\"\n"
+        f"{user_name} said to you while sharing it: \"{caption[:300]}\"\n"
         if caption else ""
     )
     prompt = (
@@ -94,7 +146,10 @@ def distil_image_memory(
     try:
         raw = chat(
             [
-                {"role": "system", "content": _DISTIL_SYSTEM},
+                {
+                    "role": "system",
+                    "content": _build_distil_system(user_name, assistant_name),
+                },
                 {"role": "user", "content": prompt},
             ],
             think=False,
