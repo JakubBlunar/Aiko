@@ -8,6 +8,12 @@ chat has been quiet for ``idle_seconds`` AND there are at least
 After a successful summary, it kicks the optional :class:`MemoryExtractor`
 to mine durable facts from the same window. Both run on the same chat model
 so there's no extra GPU swap.
+
+The extractor does *not* inherit this worker's cursor along with its trigger
+-- it keeps its own watermark, for the reason recorded in H31. Firing once
+every ``min_unsummarized_messages`` bounds when the extractor wakes, not
+which turns are new to it, and reading a fixed trailing window off this
+trigger offered every turn for extraction about five times over.
 """
 from __future__ import annotations
 

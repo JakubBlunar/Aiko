@@ -2291,6 +2291,39 @@ class ChatDatabase:
         rows.reverse()
         return [MessageRow(*r) for r in rows]
 
+    def get_messages_after(
+        self,
+        session_id: str,
+        *,
+        after_id: int,
+        limit: int,
+    ) -> list[MessageRow]:
+        """Return up to *limit* messages newer than *after_id*, oldest first.
+
+        The mirror of :meth:`get_messages_before`, and the reader a worker
+        holding a watermark wants. Note which end of the range the limit
+        cuts: this takes the *oldest* rows after the watermark, not the
+        newest. That is deliberate, and it is the difference between a
+        backlog that drains and a backlog that is skipped. A worker that
+        fell behind -- disabled for a week, or repeatedly failing -- has
+        more unmined rows than it can chew in one pass, and taking the
+        newest ``limit`` of them would advance the watermark past the
+        middle, silently abandoning everything it stepped over. Taking the
+        oldest means each pass consumes its front and the watermark walks
+        forward without gaps.
+        """
+        if limit <= 0:
+            return []
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, session_id, role, content, token_count, created_at, "
+            "       arc, dialogue_act, gestures, reactions, attachments "
+            "FROM messages WHERE session_id = ? AND id > ? "
+            "ORDER BY id LIMIT ?",
+            (session_id, int(after_id), int(limit)),
+        ).fetchall()
+        return [MessageRow(*r) for r in rows]
+
     def get_message_count(self, session_id: str) -> int:
         conn = self._get_conn()
         row = conn.execute(

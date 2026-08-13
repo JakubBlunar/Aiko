@@ -2006,6 +2006,18 @@ class MemorySettings:
     # the JSON ``message.content`` we parse) — it never pollutes the
     # output, it only costs latency + tokens from the budget above.
     memory_extractor_think: bool = True
+    # H31 watermark window. The extractor mines only messages past its
+    # per-session watermark, so ``max_window`` is now a *backlog drain*
+    # ceiling (how much unmined material one pass may chew) rather than
+    # the size of every window; ``min_new`` is the floor below which a
+    # pass is skipped without advancing, so material accumulates instead
+    # of being mined two rows at a time when an overflow squish fires.
+    # ``context_messages`` are the already-mined rows rendered before the
+    # new ones as read-only context, so a reference at the boundary
+    # ("he finally finished it") still resolves to its subject.
+    memory_extractor_max_window: int = 30
+    memory_extractor_min_new: int = 4
+    memory_extractor_context_messages: int = 10
     # K1: cap on simultaneously-active long-term goals Aiko carries.
     # When :meth:`GoalStore.add_goal` would push past the cap, the
     # oldest un-pinned active goal is archived (its progress history
@@ -5130,6 +5142,16 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             memory_extractor_think=bool(
                 memory_raw.get("memory_extractor_think", True)
+            ),
+            memory_extractor_max_window=max(
+                2, int(memory_raw.get("memory_extractor_max_window", 30)),
+            ),
+            memory_extractor_min_new=max(
+                2, int(memory_raw.get("memory_extractor_min_new", 4)),
+            ),
+            memory_extractor_context_messages=max(
+                0,
+                int(memory_raw.get("memory_extractor_context_messages", 10)),
             ),
             goal_max_active=max(
                 1, int(memory_raw.get("goal_max_active", 5)),
