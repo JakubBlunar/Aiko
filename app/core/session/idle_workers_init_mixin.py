@@ -1669,6 +1669,31 @@ class IdleWorkersInitMixin:
                 )
                 self._opinion_injection_rate_limiter = None
 
+        # Vector-store compaction. Every write into LanceDB is a single
+        # row, and Lance keeps a fragment plus a manifest version per
+        # append, so the store grows a file per row until something merges
+        # them -- one live database held 26,766 files and 1.0 GB for ~25 MB
+        # of vectors, which is read latency on every search as much as it
+        # is disk. Pure IO/CPU, so it rides the compute lane and never
+        # competes for the GPU; see the worker module on why its heartbeat
+        # is long (the pass takes the store's exclusive write lock).
+        self._rag_maintenance_worker = None
+        if self._idle_scheduler is not None and self._rag_store is not None:
+            try:
+                from app.core.rag.rag_maintenance_worker import (
+                    RagMaintenanceWorker,
+                )
+
+                self._rag_maintenance_worker = RagMaintenanceWorker(
+                    self._rag_store,
+                    kv_get=self._chat_db.kv_get if self._chat_db else None,
+                    kv_set=self._chat_db.kv_set if self._chat_db else None,
+                )
+                self._idle_scheduler.register(self._rag_maintenance_worker)
+            except Exception:
+                log.warning("RagMaintenanceWorker init failed", exc_info=True)
+                self._rag_maintenance_worker = None
+
         # K2 — theory-of-mind / belief tracking. Always builds the store
         # (the [[predict:...]] tag dispatch + REST endpoints need it
         # even when the worker is disabled), then conditionally builds

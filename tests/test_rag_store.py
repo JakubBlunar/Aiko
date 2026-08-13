@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -132,6 +133,147 @@ class RagStoreKnnTests(_TmpRagBase):
             np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), top_k=1
         )
         self.assertEqual(hits[0][0], 1)
+
+
+class MaintenanceTests(_TmpRagBase):
+    """Compaction: every write is a single row, so fragments accumulate.
+
+    A live store reached 26,766 files and 1.0 GB holding 1,796 memories and
+    4,379 messages -- one data file per message row -- because nothing ever
+    reclaimed them. Row counts stay right the whole time, which is exactly
+    why it went unseen, so these tests assert on the on-disk shape.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = RagStore(self.tmp, embedding_model="x", vector_dim=4)
+
+    def _add(self, n: int) -> None:
+        for i in range(n):
+            vec = np.zeros(4, dtype=np.float32)
+            vec[i % 4] = 1.0
+            self.store.add_memory(
+                record_id=f"m{i}", content=f"memory {i}", kind="fact", embedding=vec,
+            )
+
+    def test_fragmentation_reports_the_shape_on_disk(self) -> None:
+        self._add(12)
+        found = self.store.fragmentation()
+        self.assertEqual(found["memories"]["rows"], 12)
+        self.assertGreater(found["memories"]["files"], 0)
+        self.assertGreater(found["memories"]["bytes"], 0)
+        # One version per single-row append, so this climbs with writes and
+        # is the number that made the growth legible.
+        self.assertGreaterEqual(found["memories"]["versions"], 12)
+
+    def test_single_row_writes_accumulate_files(self) -> None:
+        self._add(4)
+        few = self.store.fragmentation()["memories"]["files"]
+        self._add(24)
+        many = self.store.fragmentation()["memories"]["files"]
+        self.assertGreater(many, few)
+
+    def test_optimizing_collapses_files_without_losing_rows(self) -> None:
+        self._add(40)
+        before = self.store.fragmentation()["memories"]
+        result = self.store.optimize(cleanup_older_than=timedelta(0))
+        after = self.store.fragmentation()["memories"]
+        self.assertEqual(after["rows"], 40)
+        self.assertLess(after["files"], before["files"])
+        self.assertEqual(result["before"]["memories"]["files"], before["files"])
+        self.assertEqual(result["after"]["memories"]["files"], after["files"])
+
+    def test_the_default_prunes_rather_than_retaining_versions(self) -> None:
+        # The subtle one. Compaction writes merged fragments first and can
+        # only delete the originals once no retained version references
+        # them, so on a store whose writes are all recent a retention
+        # window makes the pass *add* files and reclaim nothing. A window
+        # buys no recovery either, because this store is a mirror of
+        # SQLite. So the default must be "keep only the latest version".
+        self._add(40)
+        before = self.store.fragmentation()["memories"]["files"]
+        self.store.optimize()
+        self.assertLess(self.store.fragmentation()["memories"]["files"], before)
+
+    def test_a_retention_window_defers_the_reclaim(self) -> None:
+        # Documents the behaviour the default exists to avoid, so a future
+        # change back to a window is a deliberate one.
+        self._add(40)
+        before = self.store.fragmentation()["memories"]["files"]
+        self.store.optimize(cleanup_older_than=timedelta(days=1))
+        deferred = self.store.fragmentation()["memories"]["files"]
+        self.assertGreaterEqual(deferred, before - 1)
+        # And a full pass afterwards still collapses it.
+        self.store.optimize(cleanup_older_than=timedelta(0))
+        self.assertLess(self.store.fragmentation()["memories"]["files"], before)
+        self.assertEqual(self.store.counts()["memories"], 40)
+
+    def test_content_and_vectors_survive_compaction(self) -> None:
+        # Compaction rewrites every fragment; surviving row counts is
+        # necessary but says nothing about whether the rows still mean
+        # anything. Search with a stored vector and expect its own row back.
+        self._add(40)
+        self.store.optimize(cleanup_older_than=timedelta(0))
+        probe = np.zeros(4, dtype=np.float32)
+        probe[1] = 1.0
+        hits = self.store.search_memories(probe, top_k=3, min_score=0.0)
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].record.content, "memory 1")
+        self.assertGreater(hits[0].score, 0.9)
+        self.assertEqual([h.score for h in hits], sorted(
+            (h.score for h in hits), reverse=True))
+
+    def test_optimizing_reports_the_space_it_reclaimed(self) -> None:
+        self._add(40)
+        result = self.store.optimize(cleanup_older_than=timedelta(0))
+        self.assertGreater(result["bytes_freed"], 0)
+        self.assertGreaterEqual(result["duration_ms"], 0.0)
+        self.assertNotIn("errors", result)
+
+    def test_optimizing_an_empty_store_is_harmless(self) -> None:
+        result = self.store.optimize(cleanup_older_than=timedelta(0))
+        self.assertNotIn("errors", result)
+        self.assertEqual(self.store.counts()["memories"], 0)
+
+    def test_optimizing_twice_is_idempotent(self) -> None:
+        self._add(20)
+        self.store.optimize(cleanup_older_than=timedelta(0))
+        once = self.store.fragmentation()["memories"]["files"]
+        self.store.optimize(cleanup_older_than=timedelta(0))
+        twice = self.store.fragmentation()["memories"]["files"]
+        self.assertLessEqual(twice, once)
+        self.assertEqual(self.store.counts()["memories"], 20)
+
+    def test_one_failing_table_does_not_abort_the_others(self) -> None:
+        self._add(8)
+
+        class _Broken:
+            def optimize(self, **_kw: object) -> None:
+                raise RuntimeError("compaction exploded")
+
+            def count_rows(self) -> int:
+                return 0
+
+            version = 1
+
+        self.store._messages = _Broken()  # type: ignore[assignment]
+        result = self.store.optimize(cleanup_older_than=timedelta(0))
+        self.assertIn("messages", result.get("errors", {}))
+        self.assertNotIn("memories", result.get("errors", {}))
+        self.assertEqual(self.store.counts()["memories"], 8)
+
+    def test_writes_still_work_after_compaction(self) -> None:
+        self._add(20)
+        self.store.optimize(cleanup_older_than=timedelta(0))
+        # Off the basis directions ``_add`` cycles through, so this row is
+        # the unambiguous nearest neighbour of its own vector.
+        vec = np.array([0.6, 0.8, 0.0, 0.0], dtype=np.float32)
+        self.store.add_memory(
+            record_id="fresh", content="after the vacuum", kind="fact", embedding=vec,
+        )
+        hits = self.store.search_memories(vec, top_k=1, min_score=0.0)
+        self.assertEqual(hits[0].record.content, "after the vacuum")
+        self.assertEqual(self.store.counts()["memories"], 21)
 
 
 class RagStoreCRUDTests(_TmpRagBase):
