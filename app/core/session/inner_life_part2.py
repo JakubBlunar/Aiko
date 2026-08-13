@@ -614,6 +614,11 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         seconds = getattr(self, "_pending_turning_over_seconds", None)
         if not force_next and seconds is None:
+            # Deliberately unreported: ``take_pool_cue`` above has already
+            # recorded a reason on every path that reaches here, and
+            # ``note_decline`` is first-writer-wins. Reaching this bail at
+            # all means the slot is empty, and an empty slot can only be
+            # armed by pool stock -- which is what that call just judged.
             return ""
 
         block = self._turning_over_from_reflections(
@@ -841,6 +846,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         seconds = getattr(self, "_pending_sleep_return_seconds", None)
         if not force_next and seconds is None:
+            # Already reported by ``take_pool_cue``; see ``turning_over``.
+            # This is the bail behind 6 of the 7 impossible mutex rows on
+            # the live ledger, and the reason was never missing -- the
+            # structural attribution was overwriting it.
             return ""
 
         block = self._sleep_return_line(seconds, force_next=force_next)
@@ -1035,11 +1044,19 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             log.debug("in_progress_beat import failed", exc_info=True)
             return ""
 
+        # No open beat is not a missed chance, it is nothing to say -- and
+        # it is by far this cue's most common outcome, since a return
+        # landing inside a running beat is rare. Reported so the ratio has
+        # a denominator: ``no_stock`` is in ``INELIGIBLE_REASONS``, so
+        # these turns drop out of ``eligible`` rather than reading as a
+        # cue that keeps losing.
         beat = in_progress_beat.load(chat_db.kv_get)
         if beat is None or not beat.activity:
+            note_decline(self, "caught_mid_activity", REASON_NO_STOCK)
             return ""
         now = timephrase.utcnow()
         if not force_next and not beat.is_open_at(now):
+            note_decline(self, "caught_mid_activity", REASON_NO_STOCK)
             return ""
 
         # Unlike the other gap cues this one has no minimum-absence bar.
@@ -1214,6 +1231,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         seconds = getattr(self, "_pending_away_activities_seconds", None)
         if not force_next and seconds is None:
+            # Already reported by ``take_pool_cue``; see ``turning_over``.
             return ""
 
         block = self._away_activities_from_journal(

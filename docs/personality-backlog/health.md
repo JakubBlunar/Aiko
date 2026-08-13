@@ -2466,6 +2466,11 @@ instrument is for.
 `caught_mid_activity` is the one new red flag — 7 eligible turns, 0 surfaced,
 and it is the cue immersion H26 shipped on 12 Aug. Worth a look on its own.
 
+> **That red flag was this entry's own shape a third time.** All 7 of those
+> "eligible" turns were fabricated by a proxy arming signal, and all 7 declines
+> named a winner the mutex cannot produce. See **H32** — and note that an
+> `eligible` count is only as honest as the `armed` count under it.
+
 **One reason split out of another.** `dormant_interest` reported its lull gate as
 `cadence_block`, so "her clock says wait" and "the room never went quiet" were
 one number — and its 1-surfacing-in-96 read as an over-long cooldown when the
@@ -2614,7 +2619,112 @@ interval — write that number down.**
 
 ---
 
-## The twelve recurring shapes
+## H32. The one cue that never fired, and the two numbers that said so were both invented
+
+**Severity: low — pure measurement, shipped 13 Aug. Filed by following up the
+single red flag H30's fixed instrument left behind.**
+
+H30's outcome table closed with one lead: `caught_mid_activity`, immersion H26's
+cue, **7 armed, 7 eligible, 0 surfaced**, every decline a gap-mutex loss. A
+feature that shipped the day before and had never once reached the prompt, with
+an unambiguous cause. Both halves of that reading turned out to be artefacts of
+the instrument, and neither artefact is specific to this cue.
+
+### The winner named is one the mutex cannot produce
+
+The six gap cues run a priority mutex — `GAP_CUE_ORDER`, first entry wins — and
+`decisions_from_block_chars` attributes the losers structurally, without needing
+any provider to report anything. The test it ran was:
+
+```python
+if spec.gap_cue and gap_winner and cue != gap_winner:
+    declined[cue] = f"{REASON_LOST_PRIORITY}:{gap_winner}"
+```
+
+`gap_winner` is the earliest *surfaced* cue in the order, but there is no
+comparison against the loser's own rank. So **any** armed gap cue that did not
+surface on a turn where **any** gap cue did was recorded as having lost to it —
+including cues that outrank the winner, for which the mechanism makes that
+impossible. The mutex is enforced by `_gap_cue_surfaced`, which only a
+*previously run* provider can set.
+
+On the live ledger, 7 of 129 `lost_priority` rows:
+
+| loser | rank | "winner" | rank | rows |
+| --- | --- | --- | --- | --- |
+| `sleep_return` | 1 | `away_activities` | 3 | 4 |
+| `sleep_return` | 1 | `forward_curiosity` | 4 | 2 |
+| `caught_mid_activity` | 2 | `away_activities` | 3 | 1 |
+
+5% is small; what it cost is not. This branch is ranked **above** the provider's
+own `note_decline` reason, deliberately and correctly ("a cue that lost the gap
+mutex never reached the gate it would have reported"). But when the premise is
+false the ranking inverts into damage: the provider *had* recorded the true
+reason, and the fabricated defeat overwrote it. So the reason was never missing —
+which is why H30's instrumentation pass could not have found this. The two cues
+affected are the two nearest the top of the order, i.e. precisely the ones for
+which a mutex loss should be rarest and most interesting.
+
+The fix is one clause, `winner_rank < _gap_rank(cue)`, and a fall-through to the
+reason the provider already gave. Replaying every recorded turn through the fixed
+attribution: **7 impossible rows → 0**.
+
+### "Armed" was counting returns, not opportunities
+
+The deeper half. `CueSpec` describes arming with three declarative signals — a
+journal ring plus watermark, a pending slot, pool stock — and `caught_mid_activity`
+had none of its own, so it was given `away_activities`' slot on the reasoning
+that both answer *what was she doing while he was gone* and one question should
+not arm two opportunities in the ledger.
+
+But the provider never reads that slot, and says so in its own comment: *"Unlike
+the other gap cues this one has no minimum-absence bar. The question it answers
+is 'is she mid-something right now'."* Its real condition is an **open beat** —
+a live world fact with a wall-clock window. The two conditions barely overlap: a
+return is common, a return that lands inside a running beat is rare by
+construction. So the shared slot did not prevent a double count, it made the cue
+report as armed on every single return, and the denominator became *returns*
+rather than *chances*.
+
+Which means the honest reading of "7 armed, 0 surfaced" is that there were 7
+returns, on very likely none of which was there a beat to be caught at. The cue
+was not losing a competition; it mostly had nothing to say — and `no_stock`, its
+real answer, is in `INELIGIBLE_REASONS`, so those turns should have dropped out
+of the eligible denominator entirely instead of reading as a starving cue.
+
+Two changes. `CueSpec` gains `armed_when`, a predicate over live state, OR'd in
+as a third independent arming path alongside the pool retry row; the cue drops
+`slot_attr` and arms on the same `in_progress_beat` read its provider makes. And
+the provider's two beat checks, which were silent `return ""`, now report
+`no_stock`.
+
+The generalisable half is not the predicate, it is what the predicate replaced:
+a cue was fitted to the *nearest available* declarative signal rather than to its
+own condition, because the vocabulary had three shapes and none of them was the
+right one. A test now asserts that no two cues share a `slot_attr`.
+
+**Recurring shape 13 (see the list below — the ordinal words further up this
+file drifted out of sync with it) — a proxy is only conservative in one
+direction.**
+Deriving arming from state the provider already consults is what makes the G4
+ratio trustworthy and is the right design; the failure is in *substituting* a
+signal when the provider's own condition has no declarative form. Sharing a
+neighbour's slot feels safe because it is a *narrowing* — one slot, not two — and
+the intuition is that any error will under-count. It does the opposite: a proxy
+true far more often than the real condition does not make the ratio conservative,
+it makes it a ratio over a different population, and the resulting number looks
+exactly like a broken feature. Worse, it is self-reinforcing here, because
+`eligible` is computed *from* `armed` — H30's better denominator faithfully
+inherited the bad numerator and reported 7 of 7. **Rule: when adding a cue, write
+its provider's first real gate down, then check that the arming signal is that
+gate and not a neighbour's. If it has no declarative form, give it a predicate —
+and never share another cue's slot, because two cues on one slot means one of
+them is measuring the other's opportunity. An `eligible` rate is only as honest
+as the `armed` count under it.**
+
+---
+
+## The thirteen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2737,6 +2847,22 @@ sentence, a hobby that moved from Aiko to Jacob. **Rule: when a worker is
 triggered by another worker's completion, ask whose cursor bounds its input. If
 it has none, it is processing its window (window ÷ trigger interval) times —
 write that number down.**
+
+**13. A proxy is only conservative in one direction.** Shape 11's denominator
+problem one level down, in the *numerator*. When a feature's real condition has
+no declarative form in whatever vocabulary the framework offers, the tempting
+move is to borrow the nearest neighbour's signal — H32's `caught_mid_activity`
+arming on `away_activities`' gap slot, because both answer "what was she doing
+while he was gone". It feels safe because it looks like a narrowing (one slot,
+not two) and the intuition is that any error under-counts. It does the opposite:
+the proxy was true on every return, the real condition only on a return landing
+inside an open beat, so `armed` counted returns and the cue read 0 of 7 like a
+broken feature. And it compounds, because eligibility is derived *from* arming —
+H30's better denominator faithfully inherited the bad numerator. **Rule: write
+down the provider's first real gate, then check the arming signal is that gate
+and not a neighbour's; if it has no declarative form, give it a predicate rather
+than the nearest available field. Two units sharing one arming signal means one
+of them is measuring the other's opportunity.**
 
 ---
 
@@ -3368,7 +3494,9 @@ anything else, since three of them alter the inputs to everything below:
    reasons will say whether they matter. Note the order gained a member on
    12 Aug (immersion H26's `caught_mid_activity`, ahead of `away_activities`),
    so the queue behind it is one deep — read the decline reasons against the
-   post-12-Aug window only.
+   post-12-Aug window only, and after **H32**: before it, a `lost_priority`
+   reason did not verify that the winner outranked the loser, so pre-13-Aug
+   mutex rows cannot be used to argue about this order at all.
 4. **H12**, **H13**, **H14** — re-measure after the above settle; all three have
    inputs H9, H10 and H16 change. H14 in particular: only 9 of 38 clusters yet
    carry the valence samples the diary annotation needs.
@@ -3408,3 +3536,10 @@ one look); `dormant_interest` at 0 eligible with every decline `no_opening`,
 which is an **H17** question rather than an H4(a) one; and the five topic-gated
 cues, whose 2–20% eligible rates are genuine misses and are now the only entries
 on the list that were ever mysterious.
+
+**The first of those was taken and was not what it looked like** — see **H32**,
+shipped 13 Aug. `caught_mid_activity`'s 7 armed turns were 7 *returns*, because
+its arming signal was another cue's gap slot, and all 7 declines named a mutex
+winner that ranks below it. Both numbers were artefacts. The two remaining leads
+above are untouched, and `dormant_interest`'s is now the one worth reading first:
+it is the only cue whose zero has survived scrutiny of the instrument.

@@ -184,6 +184,26 @@ class PendingSlotTests(unittest.TestCase):
         # Slot stays None.
         self.assertIsNone(host._pending_turning_over_seconds)
 
+    def test_an_empty_slot_still_leaves_a_reason_behind(self) -> None:
+        """H32: the reason was never missing -- it was being overwritten.
+
+        Reaching the empty-slot bail means ``take_pool_cue`` already ran
+        and already classified the turn, and ``note_decline`` is
+        first-writer-wins. What made this cue's declines unreadable was
+        the *structural* mutex attribution outranking that note, so a cue
+        at the top of the priority order came out as having lost to one
+        below it.
+        """
+        from app.core.proactive.cue_accounting import take_decline_notes
+
+        host = _Host(
+            reflections=[_make_reflection()],
+            goal_vecs=[_VEC_ALIGNED],
+            pending_seconds=None,
+        )
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertIn("turning_over", take_decline_notes(host))
+
     def test_one_shot_clears_slot_on_fire(self) -> None:
         host = _Host(
             reflections=[_make_reflection()],
