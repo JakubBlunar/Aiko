@@ -44,7 +44,7 @@ Every record is formatted as:
 | Symptom | First check |
 |---|---|
 | **Aiko silent / no reply** | `tail_logs(level="DEBUG", module_contains="turn_runner")` → find the failed `turn=…`, look at `first_token_ms=` and surrounding ERROR lines. Then `read_log_file(grep="turn=<id>")` to grab everything correlated. |
-| **The whole process died / "Aiko crashed" with nothing in the log** | `get_native_crashes()` — a native memory fault, not a Python error. Read `module` (the DLL owning the faulting address) and `duplicate_openmp`, **not** the Python frame in the `faulthandler` dump, which is an innocent bystander. §h. Rule out a hardware theory early: an access violation is a pointer bug, and memtest/OCCT passing tells you nothing about it. |
+| **The whole process died / "Aiko crashed" with nothing in the log** | `get_native_crashes()` — a native memory fault, not a Python error. Read `module` (the DLL owning the faulting address), `thread_name` (whether it faulted on a thread of ours at all) and `duplicate_openmp`, **not** the Python frame in the `faulthandler` dump, which is an innocent bystander. The `dump` block carries the minidump already parsed. §h. Rule out a hardware theory early: an access violation is a pointer bug, and memtest/OCCT passing tells you nothing about it. |
 | **Voice mode never picks up** | `set_log_level("app.stt.realtime_stt_service", "DEBUG")`, then `tail_logs(module_contains="stt")`. Look for missing `STT engine ready:` INFO or repeated capture errors. |
 | **TTS stutters / drops** | `tail_logs(module_contains="tts")`. Cross-reference `TTS enqueue:` / `TTS play done:` DEBUG with `tts state:` transitions in `app.tts_queue`. |
 | **Wrong context retrieved** | `set_log_level("app.core.session.prompt_assembler", "DEBUG")`, replay the turn, then read the `prompt built:` line for `rag_tokens` / `providers` / `slowest_provider` / `history_msgs_in/out`. |
@@ -231,9 +231,49 @@ What to read instead, in order:
 | Field | What it answers |
 |---|---|
 | `module` | *Which DLL held the bad pointer.* Resolved from the faulting address via `GetModuleHandleEx`. Usually the whole answer. |
+| `thread_name` | *Whose thread faulted*, from `GetThreadDescription`. Read this second — it decides whether the fault is even yours to fix, and it costs nothing. See below. |
 | `exception` / `address` | The Windows exception code and faulting pointer. An address like `0x0000000000000010` means a null-ish struct deref; a wild address means corruption. |
 | `duplicate_openmp` / `openmp_runtimes` | Whether the process was in a **supported configuration at all** — see below. Check this before believing any other theory. |
-| `minidump` | A `.dmp` under `data/` for native stack walking in WinDbg / Visual Studio. Written without the exception record (dbghelp refuses it from inside a filter with `ERROR_NOACCESS`), so every thread's native stack is there but the debugger won't jump to the fault automatically — the `address` field above is your anchor. |
+| `dump` | The minidump **parsed in place**, no debugger and no symbols needed — see below. |
+| `minidump` | Path to the `.dmp` under `data/`, for a real stack walk in WinDbg / Visual Studio if the parsed summary isn't enough. |
+| `minidump_degraded` | Present when the dump was written *without* its exception record (dbghelp refuses the exception-pointers struct from inside a filter with `ERROR_NOACCESS`). Such a dump cannot self-report where it faulted, so a debugger won't jump to the fault and the reader has to be handed the `address` / `thread_id` above. |
+
+**The thread name is the cheapest decisive fact.** A fault on
+`tokio-rt-worker` happened inside a dependency's own async runtime, where
+our locking and our calling pattern are not the lever; the same fault on
+`MessageIndexer` or `rag-search_1` would be ours. The first LanceDB fault
+we investigated looked at first like a concurrency bug in `RagStore` —
+three `rag-search` threads do genuinely read the same Lance tables at once
+by design (P19) — and the thread name is what ruled that out in one line:
+it faulted on `tokio-rt-worker`, so no amount of locking on the Python
+entry points could have prevented it. A single `search()` fans out onto
+that runtime regardless of how many callers our own lock lets through.
+
+**Reading the dump without a debugger.** `cdb`/WinDbg is not installed on
+the dev box and nobody ships symbols for a 147 MB Rust extension, so a
+`.dmp` used to be evidence nobody could open.
+[`app/core/infra/minidump.py`](../app/core/infra/minidump.py) parses the
+streams that matter directly and `get_native_crashes()` attaches the result
+as `dump`:
+
+- `fault_module` — the address resolved to `name.dll+0xOFFSET`, from the
+  dump's own module list (so it works even for an unloaded module).
+- `fault_thread_name` and `thread_census` — names for every thread, counted.
+  Worth reading against `processors`: 102 threads named `tokio-rt-worker`
+  on a 32-core box is how you find out a dependency sizes its own pool
+  well above core count, which is a fact about the library rather than a
+  leak of ours (one `RagStore`, one `lancedb.connect`).
+- `fault_stack_modules` — modules found on the faulting thread's saved
+  stack. This is a **scan for values that land inside a loaded module, not
+  a stack walk**: it picks up dead frames and stale pointers, so read it as
+  "what this thread had touched" and never as a call order. It is enough to
+  tell "Python called into this" apart from "this ran entirely inside the
+  native runtime", which is the distinction that matters.
+- `fault_stack_handler_frames` — the part of that stack contributed by our
+  own crash handler (`dbgcore`, `dbghelp`, `libffi`, `_ctypes`), because the
+  unhandled-exception filter is a ctypes callback that runs *on the faulting
+  thread*. Ignore it; it is reported only so nobody mistakes it for
+  evidence and goes auditing the crash handler.
 
 **Multiple OpenMP runtimes is the first thing to rule out.** Two copies
 of one runtime, or two different ones, in a single process is documented
