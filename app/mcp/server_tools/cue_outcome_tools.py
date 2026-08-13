@@ -134,6 +134,15 @@ def build_report(
         "near zero over a long window, which means the gate never matches "
         "at all and every run of that worker is wasted -- for an "
         "LLM-calling worker, wasted tokens. "
+        "eligible_rate is the same ratio over the turns the cue could "
+        "actually have surfaced on: armed minus the declines that mean it "
+        "never had a chance (cadence_block, question_balance, no_stock). "
+        "Prefer it. A cue inside a multi-day surface_cooldown_hours is "
+        "armed on every turn of that cooldown and can surface on none of "
+        "them, so reach_rate reads ~2% for the deliberately rare types "
+        "while they behave exactly as designed. eligible=0 means the cue "
+        "was stocked and never once in play, which is either correct "
+        "rarity or a cadence faster than the shelf refills. "
         "decline_reasons says which mechanism refused it. "
         "'lost_priority:<cue>' names the winner of the gap-cue mutex, "
         "which is a deterministic priority order, NOT a tie-break -- so the "
@@ -144,8 +153,11 @@ def build_report(
         "own reasons are 'topic_miss' (stock existed, none of it about "
         "what he said), 'importance_floor' (topical enough, too light for "
         "the slot), 'cadence_block' (a cooldown or minimum gap said not "
-        "yet), 'no_stock' (the shelf was empty at the moment of asking, "
-        "which is a supply-timing finding rather than a gate) and "
+        "yet), 'no_opening' (the cue waits for a lull and the conversation "
+        "was still moving -- deliberately not the same as a cadence, since "
+        "waiting resolves a clock and nothing resolves a room that never "
+        "goes quiet), 'no_stock' (the shelf was empty at the moment of "
+        "asking, which is a supply-timing finding rather than a gate) and "
         "'cross_lane' (another lane had already claimed the material). "
         "'provider' is the remaining catch-all and means the provider "
         "declined WITHOUT saying why -- a cue still dominated by it has an "
@@ -189,6 +201,10 @@ def register(mcp, session: "SessionController") -> None:
         were declined, and which registered cues have never been armed at
         all. This is the first view that can distinguish a worker whose
         output never reaches the prompt from one quietly succeeding.
+
+        Read ``eligible_rate`` before ``reach_rate``: the latter counts
+        every armed turn, including the ones a cue spent inside its own
+        cooldown, which makes the deliberately rare types look starved.
 
         The ``pool`` section adds the stricter measure for the cue types
         that have moved onto ``cue_pool``: shelf depth against each type's

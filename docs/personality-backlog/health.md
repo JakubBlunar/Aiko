@@ -2346,6 +2346,11 @@ it.**
 **Severity: low-medium — pure measurement, and it is the instrument the rest of
 this file keeps needing.**
 
+> **Shipped 13 Aug, and the premise was wrong.** The nine providers were
+> already instrumented; the reading below straddled its own fix. What was
+> actually broken was the *ratio*, which counted a cue's own cooldown turns as
+> missed chances — see the two sections at the end of this entry.
+
 H7 split the cue decline reasons and the watch list asked whether the catch-all
 would shrink. It did: `reason='provider'` is **75.2% of all 3770 recorded
 decisions but 48.3% of the 913 since 12 August**, and the reasons that replaced
@@ -2382,9 +2387,97 @@ concepts, no behaviour change, and it is a prerequisite for judging **K92**:
 an arbiter that ranks candidates cannot be evaluated when half the reasons a
 candidate withdrew are recorded as "the provider said no".
 
+### Correction: the work was already done, twelve hours before the reading
+
+There was no uninstrumented bail point. Every one of the nine providers had its
+`note_decline` calls — they shipped in `b4b3386` on **12 Aug at 19:16**, in the
+same commit as H16 and H10, and five of the nine get theirs for free from the
+shared claim path in `take_pool_cue`. The table above was computed the next
+morning over a window running from 1 August, so **~90% of its rows predate the
+fix it was recommending**. Split on the ship time instead:
+
+| day | declines | catch-all | share |
+| --- | --- | --- | --- |
+| 8 Aug | 379 | 360 | 95.0% |
+| 10 Aug | 638 | 609 | 95.5% |
+| 12 Aug (straddles 19:16) | 764 | 441 | 57.7% |
+| **13 Aug** | **181** | **0** | **0.0%** |
+
+Zero. Every decline on every one of the nine now names a mechanism, and the
+"48.3% since 12 August" that made the entry look urgent is just the average of
+a 95% morning and a 0% evening.
+
+**Eleventh recurring shape — a rate measured across its own fix.** The entry did
+everything right except bound the window: it named the population, split by
+date, and compared against a baseline. But a "since 12 August" window that
+contains the 12 August ship gives a number that is neither the before nor the
+after, and reads as a *present* defect either way. This is worse than a plainly
+wrong measurement because the arithmetic is sound and the conclusion is
+actionable — H30 spent an afternoon's plan on a file that already had the code
+in it. **Rule: when measuring whether something is broken, the window has to
+start after the last change to the thing being measured. Get the ship time from
+`git log -S`, not from memory, and if the window straddles it, split there and
+report both halves.**
+
+### Outcome: what the working instrument said instead
+
+The instrument was fine; the *ratio it feeds* was the defect, and it was hiding
+in plain sight in H30's own table. `self_callback` at "96 armed, 2 surfaced" is
+not a starving cue. It carries a **ten-day** `surface_cooldown_hours`, so it is
+armed on every turn of that cooldown and can surface on none of them — 2% is the
+design, stated in the policy, working exactly as written. Same for
+`shared_ritual` (72 h), `wellbeing_concern` (168 h) and `long_arc_callback`
+(6 h). Four of the nine "starving" cues were never in play at all.
+
+So `reach()` now reports a second denominator beside `armed`: **`eligible`** —
+armed minus the declines that mean the cue never had a chance
+(`INELIGIBLE_REASONS`: `cadence_block`, `no_opening`, `question_balance`,
+`no_stock`). Everything the cue or its lane actually *judged* stays in:
+`topic_miss` is the gate a structurally unreachable cue fails forever and is the
+whole point of the ratio, `lost_priority` is a competition it entered and lost,
+and `provider` stays too — an undiagnosed decline must never be able to flatter
+the number by vanishing from the denominator.
+
+Read over the properly-bounded window (since 12 Aug 19:16), the same 49-turn
+population reads completely differently:
+
+| cue | armed | eligible | surfaced | reach | **eligible** |
+| --- | --- | --- | --- | --- | --- |
+| `self_callback` | 49 | 2 | 2 | 4% | **100%** |
+| `long_arc_callback` | 49 | 9 | 5 | 10% | **56%** |
+| `dormant_interest` | 49 | 0 | 0 | 0% | **—** |
+| `shared_ritual` | 49 | 0 | 0 | 0% | **—** |
+| `wellbeing_concern` | 20 | 0 | 0 | 0% | **—** |
+| `knowledge_gap_notice` | 49 | 49 | 10 | 20% | 20% |
+| `curiosity_gradient` | 49 | 49 | 6 | 12% | 12% |
+| `interest_drift` | 49 | 49 | 5 | 10% | 10% |
+| `associative_wander` | 49 | 49 | 3 | 6% | 6% |
+| `concept_hypothesis` | 49 | 49 | 1 | 2% | 2% |
+| `caught_mid_activity` | 7 | 7 | 0 | 0% | **0%** |
+
+`self_callback` was in play twice and took both. `long_arc_callback` took five of
+nine. Three cues were never once free to fire — which is a different finding
+needing a different fix from "its gate never matches", and `eligible=0` is left
+as `None` rather than folded to zero so it cannot be misread as a failure. The
+five topic-gated cues are unchanged, because their declines were always genuine
+misses: they are now the *only* ones left on the list, which is what the
+instrument is for.
+
+`caught_mid_activity` is the one new red flag — 7 eligible turns, 0 surfaced,
+and it is the cue immersion H26 shipped on 12 Aug. Worth a look on its own.
+
+**One reason split out of another.** `dormant_interest` reported its lull gate as
+`cadence_block`, so "her clock says wait" and "the room never went quiet" were
+one number — and its 1-surfacing-in-96 read as an over-long cooldown when the
+real question was whether a standing lull ever happens. That gate now reports
+`no_opening`. Both are ineligible, and they resolve differently: waiting fixes a
+clock, and nothing fixes a conversation that never settles. This also hands
+**H4(a)** the instrument it was missing, since `dormant_interest` and
+`self_callback` were exactly its two wedge cues.
+
 ---
 
-## The ten recurring shapes
+## The eleven recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2479,6 +2572,19 @@ reads as conservative rather than broken and no log line is wrong. **Rule: for
 anything that accumulates, write down what can delete its unit before the
 accumulation completes and compare the two timescales out loud. A unit derived
 from a shared resource should copy it, not point at it.**
+
+**11. A rate measured across its own fix, and a denominator nobody defined.**
+Two halves of the same failure, both from H30. First the window: a "since 12
+August" measurement that contains the 12 August ship gives a number that is
+neither the before nor the after, and reads as a present defect either way — the
+entry planned an afternoon's work on nine files that already had the code in
+them. Then the denominator: `armed` counts turns the cue had material, which is
+not the same as turns it could have spoken, and for a cue with a ten-day cooldown
+those differ by two orders of magnitude. `self_callback` read 4% and was taking
+100% of the chances it got. **Rule: bound the window after the last change to
+the thing measured (`git log -S`, not memory), and say out loud what the
+denominator counts — if a unit can be in the denominator on a turn where the
+outcome was impossible, the rate is not measuring what its name says.**
 
 ---
 
@@ -3097,12 +3203,14 @@ anything else, since three of them alter the inputs to everything below:
 1. **H11** — the ratio itself, and now the decision is live: H10 just put a
    generative kind into the lane boundary has been dominating (28.6% of
    surfacings against `affective`'s 7.1%). Judge it on the post-H10 mix.
-2. **H4(a)** — the wedge behind `dormant_interest` and `self_callback`. The
-   reason split from H7 is the instrument this was always missing; read it
-   before theorising — but note **H30**: both of those cues are among the nine
-   that still route ~55% of their declines to the catch-all, so H30 is the
-   cheaper prerequisite and `dormant_interest` is now at 1 surfacing in 96
-   armings even after its lull band was fixed.
+2. **H4(a)** — the wedge behind `dormant_interest` and `self_callback`, and
+   **H30 has now answered half of it for free.** `self_callback` is not the
+   wedge: it was eligible twice in the window and surfaced both times, so its 4%
+   reach rate was its ten-day cadence being counted as failure.
+   `dormant_interest` is the real one, and the shape is now named — **0 eligible
+   turns of 49**, every decline `no_opening`, meaning the K18 standing lull never
+   arrived rather than a cooldown being too long. Read that against **H17**
+   (which is about what counts as a lull) before touching this cue's own gates.
 3. **H7 remainder** — `concept_hypothesis`'s last place in `GAP_CUE_ORDER` and
    its K47 asymmetry. Deliberately deferred: both are defensible, and the split
    reasons will say whether they matter. Note the order gained a member on
@@ -3132,7 +3240,19 @@ touches the concept or cue lanes' *inputs*, so both are safe to do before the
 attribution window closes — H29's remedies are all inside the ledger, and H30
 only adds reason strings to declines that already happen.
 
-**H29 shipped the same day** (see its Outcome section): the prune now asks for
-settlement rather than availability, and `wants_per_source_cap=4` stops the seed
-feeder owning the ledger. It is now a measurement item rather than a work item —
-the earliest honest read is 16 Aug. **H30** is the open one.
+**Both shipped the same day.** H29's prune now asks for settlement rather than
+availability, and `wants_per_source_cap=4` stops the seed feeder owning the
+ledger; it is a measurement item now, earliest honest read 16 Aug. H30 turned out
+to need no provider work at all — the instrumentation had shipped twelve hours
+before the reading, and the entry's window straddled it. What *was* broken was
+the reach ratio, which counted a cue's own cooldown turns as missed chances; the
+new `eligible` denominator is in place and it retired four of the nine
+"starving" cues on the spot. Read H30's last two sections before quoting any
+armed/surfaced number from this file.
+
+**What the fixed instrument leaves open**, in the order it now suggests:
+`caught_mid_activity` at 0 of 7 eligible (new on 12 Aug, so a real zero worth
+one look); `dormant_interest` at 0 eligible with every decline `no_opening`,
+which is an **H17** question rather than an H4(a) one; and the five topic-gated
+cues, whose 2–20% eligible rates are genuine misses and are now the only entries
+on the list that were ever mysterious.

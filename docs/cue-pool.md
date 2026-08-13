@@ -575,6 +575,40 @@ That exemption is correct for most of them, by the lexical-trace test:
 for a tone or posture instruction and fails only for a cue that names a
 specific subject.
 
+## Reading the accounting: armed is not the same as in play
+
+`get_cue_outcomes` reports two rates per cue and the second is the one to
+trust. `reach_rate` divides surfacings by every **armed** turn — turns the
+cue had material waiting. That is the honest throughput number, and for
+the deliberately scarce types it is close to meaningless: a type with a
+multi-day `surface_cooldown_hours` is armed on every turn of that
+cooldown and can surface on none of them, so `self_callback` (240 h) read
+**4%** while surfacing on both of the two turns it was actually free to.
+
+`eligible` is armed minus the declines that mean the cue never had a
+chance — `INELIGIBLE_REASONS`: `cadence_block` (its clock said not yet),
+`no_opening` (it waits for a K18 lull and the conversation was moving),
+`question_balance` (K47 vetoed the question-shaped cues wholesale) and
+`no_stock` (arming and claiming disagreed). Everything the cue or its
+lane actually *judged* stays in: `topic_miss` is the gate a structurally
+unreachable cue fails forever and is the whole point of the ratio,
+`lost_priority` is a competition it entered and lost, and `provider`
+stays too — an undiagnosed decline must never be able to improve the
+number by dropping out of the denominator.
+
+`eligible = 0` is reported as no rate rather than zero, because "stocked
+throughout and never once in play" is a finding of its own: either
+correct rarity, or a cadence faster than the shelf refills.
+
+Two rules for anyone adding a decline reason. Classify it on both sides
+of that line deliberately — the default is the eligible bucket, and a
+reason that belongs in the other one will quietly make a healthy cue look
+broken. And keep `no_opening` distinct from `cadence_block` even though
+both mean "not in play": waiting resolves a clock, and nothing resolves a
+room that never goes quiet. Merging them is what left
+`dormant_interest`'s one-surfacing-in-96 looking like an over-long
+cooldown when the real question was whether a lull ever arrives.
+
 ## See also
 
 - [`idle-workers.md`](idle-workers.md) — demand-driven scheduling, which
@@ -584,5 +618,5 @@ specific subject.
 - [`app/core/proactive/cue_store.py`](../app/core/proactive/cue_store.py) —
   the state machine, in the module docstring.
 - [`app/core/proactive/cue_accounting.py`](../app/core/proactive/cue_accounting.py) —
-  policies, and the older armed-to-surfaced accounting.
+  policies, the decline vocabulary, and the armed/eligible split.
 - `tests/test_cue_pool_consumption.py` — the consumption contract.

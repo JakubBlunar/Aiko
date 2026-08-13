@@ -110,33 +110,72 @@ class CueDecisionStore:
         correctly stays quiet while the conversation is elsewhere *should*
         decline often. The number to act on is a rate near zero over a long
         window, which means the gate never matches at all.
+
+        Which is why there are two rates. ``reach_rate`` divides by every
+        armed turn and is the honest measure of throughput. But a cue
+        inside its own multi-day ``surface_cooldown_hours`` is armed on
+        every turn of that cooldown while being unable to surface on any
+        of them, so for the deliberately scarce types the denominator is
+        mostly turns that were never in play: ``self_callback`` reads 2%
+        and is behaving exactly as designed. ``eligible_rate`` divides by
+        the turns the cue could actually have surfaced on -- armed, minus
+        the declines that :data:`INELIGIBLE_REASONS` marks as "never had a
+        chance" -- so a rate near zero there is a real finding about the
+        gate rather than a restatement of the cadence.
+
+        ``eligible=0`` is itself informative and is left as ``None``
+        rather than folded to zero: the cue was stocked throughout and
+        never once in play, which is either a correctly rare cue or a
+        cadence set faster than the shelf refills.
         """
         clause, params = self._window_clause(window_days)
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
             rows = conn.execute(
-                "SELECT cue, COUNT(*) AS armed, "
-                "       SUM(CASE WHEN outcome = ? THEN 1 ELSE 0 END) AS surfaced "
+                "SELECT cue, outcome, reason, COUNT(*) AS n "
                 "FROM cue_decisions "
                 f"WHERE 1=1{clause} "
-                "GROUP BY cue "
-                "ORDER BY armed DESC",
-                (OUTCOME_SURFACED, *params),
+                "GROUP BY cue, outcome, reason",
+                tuple(params),
             ).fetchall()
         except Exception:
             log.warning("cue reach read failed", exc_info=True)
             return []
-        out = []
+        # Aggregated in Python rather than SQL because eligibility is a
+        # prefix test on the reason (``lost_priority:<winner>``), and a
+        # LIKE-per-reason clause here would be a second place the
+        # vocabulary is spelled out -- the exact drift the shared
+        # predicate exists to prevent.
+        from app.core.proactive.cue_accounting import is_eligible_decline
+
+        armed: dict[str, int] = {}
+        surfaced: dict[str, int] = {}
+        eligible: dict[str, int] = {}
         for r in rows:
-            armed = int(r[1] or 0)
-            surfaced = int(r[2] or 0)
+            cue = str(r[0] or "")
+            count = int(r[3] or 0)
+            armed[cue] = armed.get(cue, 0) + count
+            eligible.setdefault(cue, 0)
+            surfaced.setdefault(cue, 0)
+            if str(r[1] or "") == OUTCOME_SURFACED:
+                surfaced[cue] += count
+                eligible[cue] += count
+            elif is_eligible_decline(str(r[2] or "")):
+                eligible[cue] += count
+        out = []
+        for cue in sorted(armed, key=lambda name: (-armed[name], name)):
+            total = armed[cue]
+            hit = surfaced[cue]
+            in_play = eligible[cue]
             out.append({
-                "cue": str(r[0] or ""),
-                "armed": armed,
-                "surfaced": surfaced,
-                "declined": armed - surfaced,
-                "reach_rate": (
-                    round(surfaced / armed, 4) if armed else None
+                "cue": cue,
+                "armed": total,
+                "surfaced": hit,
+                "declined": total - hit,
+                "eligible": in_play,
+                "reach_rate": round(hit / total, 4) if total else None,
+                "eligible_rate": (
+                    round(hit / in_play, 4) if in_play else None
                 ),
             })
         return out

@@ -9,6 +9,7 @@ from app.core.proactive.cue_accounting import (
     REASON_CADENCE_BLOCK,
     REASON_CROSS_LANE,
     REASON_IMPORTANCE_FLOOR,
+    REASON_NO_OPENING,
     REASON_NO_STOCK,
     REASON_TOPIC_MISS,
     note_decline,
@@ -2762,7 +2763,12 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 getattr(self, "_topic_stagnation_detector", None),
                 self._memory_settings,
             ):
-                note_decline(self, "dormant_interest", REASON_CADENCE_BLOCK)
+                # Not ``cadence_block``: a clock resolves itself by
+                # waiting, whereas a lull may never arrive. Reporting both
+                # as one reason is what left this cue's 1-surfacing-in-96
+                # unexplained -- it read as an over-long cooldown when the
+                # question was whether the room ever goes quiet.
+                note_decline(self, "dormant_interest", REASON_NO_OPENING)
                 return ""
 
         try:
