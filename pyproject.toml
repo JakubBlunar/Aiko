@@ -36,7 +36,11 @@ dependencies = [
   "mcp>=1.0.0,<2",
   # RAG: LanceDB-backed vector store for memories, messages, and documents.
   # Still pre-1.0 and routinely breaks across minors, so the ceiling is tight.
-  "lancedb>=0.30.2,<0.32",
+  # 0.30.2 -> 0.37.1 after a native access violation inside lance's own
+  # tokio runtime; the API surface RagStore uses (search/metric/limit/where
+  # with prefilter, to_arrow, count_rows, create_index, optimize) was
+  # re-verified against the live store before the ceiling moved.
+  "lancedb>=0.37.1,<0.38",
   "pyarrow>=16.0.0,<25",
   # K9 topic graph: Louvain community detection over the mutual-k-NN graph.
   "networkx>=3.0,<4",

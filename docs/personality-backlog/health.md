@@ -2724,7 +2724,121 @@ as the `armed` count under it.**
 
 ---
 
-## The thirteen recurring shapes
+## H33. The vector store had a write path, a read path, and no third one
+
+**Severity: medium — shipped 13 Aug. Filed from a native crash, which turned out
+to be the least interesting thing in it.**
+
+She died mid-sentence. Not an exception, not a traceback — the process:
+
+```
+ERROR native crash: access violation at 0x00007FF866F60528
+  in .venv\Lib\site-packages\lancedb\_lancedb.pyd (thread 37316)
+  dump=data\crash-20260813-185237-37316.dmp
+```
+
+An access violation inside a `.pyd` is where Python-level debugging stops. Three
+things came out of chasing it, in ascending order of importance.
+
+### The dump could not say which thread, so it was taught to
+
+The crash handler wrote a 927 KB minidump that nothing could read: opening one
+normally means WinDbg plus symbols, and the report itself carried only an address
+and a thread id, neither of which distinguishes *our* concurrency bug from *their*
+runtime bug. That distinction is the whole triage: a fault on a thread we own and
+schedule points at the `_RWLock` in `RagStore`; a fault on a thread we have never
+heard of points at the library and the answer is a version bump, not a redesign.
+
+So `app/core/infra/minidump.py` now parses the format in-process — module list,
+thread list, the `ThreadNamesStream` dbghelp writes for free, and the stack scan
+that maps return addresses back to modules — and `get_native_crashes()` returns
+the parsed dump inline. Thread 37316 is named **`tokio-rt-worker`**: Lance's own
+async runtime, a thread pool we do not create, size, or hand work to directly.
+The fault module and the faulting thread's owner agree, and they are both the
+library. That closed the question in one reading.
+
+Two things worth keeping. The handler now says when a dump is written *without*
+exception info — `dbghelp` will do that silently, and a degraded dump that looks
+complete is worse than a missing one, because the fallback address it reports is
+plausible. And the parser was written against a synthetic dump builder in the
+tests, which is what made a real stride bug findable: thread-name entries are 12
+bytes with a 64-bit RVA, and the original guess-the-stride code preferred 16 and
+returned `(unnamed)` for every thread in the dump — the one field the whole
+diagnosis rested on.
+
+### Under it: 26,765 files for 6,175 rows
+
+Then the fragmentation check, written only to rule out disk state as a cause:
+
+| table | files | on disk | versions | rows |
+| --- | --- | --- | --- | --- |
+| `memories` | 17,904 | 276 MB | 18,293 | 1,796 |
+| `messages` | 8,859 | 761 MB | 8,760 | 4,379 |
+| **total** | **26,765** | **1.09 GB** | | **6,175** |
+
+Ten versions per row on `memories`, and a gigabyte of disk for what compacts to
+27 MB. Lance is a versioned columnar store: every upsert writes a new fragment
+and retains the old one, and **nothing in this codebase had ever compacted it.**
+Not a leak and not a bug in any single call site — an absence. `RagStore` had a
+carefully locked write path and a carefully tuned read path, and no third path
+whose job was the store's own upkeep, so the cost accumulated for months in a
+place no test and no log line looks at. Every search was opening thousands of
+files to read a few thousand rows.
+
+I cannot prove this caused the access violation, and I am not going to claim it:
+the honest statement is that a native fault in a store with 26,765 files and
+18,293 retained versions is not a state anyone tested, and reducing it removes a
+plausible contributor either way. `optimize()` on the live store: **26,765 files
+→ 10, 1.09 GB → 27 MB, 1.06 GB freed in 10.7 seconds**, row counts identical,
+and self-recall verified by searching each of 16 sampled rows with its own stored
+vector and getting itself back at top-1.
+
+Once is worth little, since fragments regrow one per write, so this ships as
+`RagMaintenanceWorker` on the idle scheduler's compute lane: pressure is the sum
+of table versions since the last pass against a watermark, which is a
+metadata read rather than a scan, and the pass itself is exclusive and far too
+slow for a turn. LanceDB also went 0.30.2 → 0.37.1 — five minor releases of
+fixes in exactly the runtime that faulted, and the cheapest possible move given
+what the mirror is.
+
+### Retention is the wrong instinct for a mirror, and the test said so first
+
+The default I first shipped kept one day of versions, reasoning that an operator
+who notices a bad write the same hour could still recover the table. A test
+caught it: on a freshly written store, one day of retention took 209 files to
+**214**. Compaction writes merged fragments first and can only delete the
+originals once no retained version references them, so on a store whose writes
+are all recent, a window makes the pass *add* files and reclaim nothing.
+
+The premise was also just false. This store is a **mirror** — SQLite holds the
+memories, their embeddings, and the messages — and recovery means re-deriving
+the table, never time-travelling Lance. Which is verifiable rather than
+aspirational, and I verified it the hard way: an ad-hoc probe of mine opened the
+live store with a guessed embedding model, `_validate_or_stamp_meta` correctly
+read that as an embedding swap, and dropped all 6,175 rows. Every one came back.
+Both halves self-heal on boot — `migrate_to_rag` re-mirrors memories from SQLite,
+`MessageIndexer.start(backfill=True)` re-indexes messages — so a wiped mirror
+costs a restart. Version history that no one can use is just fragments no one
+deleted; the default is now zero.
+
+**Recurring shape 14 — a store with two paths and no third.**
+Every accumulating store needs three: write, read, and upkeep. Write and read
+get designed, reviewed, locked, and tested, because a bug in either shows up as a
+wrong answer on the next turn. Upkeep has no caller, so it does not get written,
+and its absence never produces a wrong answer — only a slowly worsening one, on
+an axis (file count, retained versions, index staleness) that nothing in the
+suite asserts and nothing in the logs prints. Note how far the symptom landed
+from the cause: the thing that finally surfaced this was a native access
+violation in a third-party runtime, five months and 26,000 files later. **Rule:
+when adopting any store that versions, appends, or indexes on write, find its
+compaction/vacuum/reindex API on day one and either schedule it or write down
+why it is not needed. Then assert the physical shape — file count or version
+count per logical row — somewhere a test can see it, because that ratio is the
+only place this failure is visible before it becomes something else's crash.**
+
+---
+
+## The fourteen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2863,6 +2977,23 @@ down the provider's first real gate, then check the arming signal is that gate
 and not a neighbour's; if it has no declarative form, give it a predicate rather
 than the nearest available field. Two units sharing one arming signal means one
 of them is measuring the other's opportunity.**
+
+**14. A store with two paths and no third.** Every accumulating store needs
+three — write, read, and upkeep — and only the first two have callers. Write and
+read get designed, locked and tested because a bug in either is a wrong answer on
+the next turn; upkeep is nobody's feature, so it does not get written, and its
+absence never produces a wrong answer, only a slowly worsening one. H33: five
+months of un-compacted LanceDB, **26,765 files and 1.09 GB for 6,175 rows that
+compact to 27 MB**, on axes (file count, retained versions) that no test asserts
+and no log line prints. Note the distance between symptom and cause — what
+finally surfaced it was a native access violation inside the library's own
+runtime. The near-miss rhymes: the same entry's first retention default *grew*
+the file count, because a window means the merged fragments are written and the
+originals cannot yet be dropped. **Rule: when adopting a store that versions,
+appends or indexes on write, find its compaction/vacuum/reindex API on day one
+and either schedule it or write down why it is not needed — then assert the
+physical shape per logical row somewhere a test can see, because that ratio is
+the only place this is visible before it becomes something else's crash.**
 
 ---
 

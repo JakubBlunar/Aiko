@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -1076,6 +1078,115 @@ class RagStore:
                 }
             except Exception:
                 return {TABLE_MEMORIES: 0, TABLE_MESSAGES: 0, TABLE_DOCUMENTS: 0}
+
+    def fragmentation(self) -> dict[str, dict[str, int]]:
+        """Per-table on-disk shape: ``files``, ``bytes``, ``versions``, ``rows``.
+
+        Read straight off the filesystem rather than from Lance, because the
+        number that matters is the one an ``ls`` would show. Cheap enough to
+        call before and after :meth:`optimize` and to log the difference.
+        """
+        out: dict[str, dict[str, int]] = {}
+        for name, table in (
+            (TABLE_MEMORIES, self._memories),
+            (TABLE_MESSAGES, self._messages),
+            (TABLE_DOCUMENTS, self._documents),
+        ):
+            entry = {"files": 0, "bytes": 0, "versions": 0, "rows": 0}
+            try:
+                entry["rows"] = int(table.count_rows())
+            except Exception:
+                pass
+            try:
+                entry["versions"] = int(table.version)
+            except Exception:
+                pass
+            root = self._root / ("%s.lance" % name)
+            try:
+                for path in root.rglob("*"):
+                    if path.is_file():
+                        entry["files"] += 1
+                        entry["bytes"] += path.stat().st_size
+            except Exception:
+                log.debug("fragmentation scan failed for %s", name, exc_info=True)
+            out[name] = entry
+        return out
+
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: timedelta | None = None,
+    ) -> dict[str, Any]:
+        """Compact fragments and prune old dataset versions. Lance's ``VACUUM``.
+
+        **Why this has to exist.** Every write here is a *single row* -- one
+        `add_memory`, one indexed message -- and Lance writes each append as
+        its own fragment with its own manifest version. Nothing reclaims
+        them on its own, so the store grows a file per row forever: one live
+        database reached 26,766 files and 1.0 GB holding 1,796 memories and
+        4,379 messages, whose vectors are about 25 MB of actual data. The
+        `messages` table had exactly one data file per row, and `memories`
+        carried 18,293 versions.
+
+        That is a read cost as much as a disk cost, since every search opens
+        and scans every fragment, and it is invisible in row counts -- which
+        is why it went unnoticed for so long. Optimizing that store took it
+        to **10 files and 27 MB** with every row and vector intact.
+
+        Exclusive: compaction rewrites fragments under the readers' feet, so
+        this takes the write side and turn-latency reads wait. It is far too
+        slow for the hot path -- run it from an idle lane.
+
+        **``cleanup_older_than`` defaults to zero -- keep only the latest
+        version -- and a retention window is the wrong instinct here.**
+        Compaction writes the merged fragments first and can only delete the
+        originals once no retained version references them, so on a store
+        whose writes are all recent a window means the pass *adds* files and
+        reclaims nothing until the window passes. Measured: one day of
+        retention took a freshly written table from 209 files to 214, while
+        full pruning took the live store from 26,766 files to 10.
+
+        Nothing is lost by pruning, because this store is a **mirror**:
+        SQLite is the source of truth, so recovering a bad write means
+        re-deriving the table, never travelling to a Lance version. History
+        that no one can use is just fragments no one deleted.
+        """
+        window = timedelta(0) if cleanup_older_than is None else cleanup_older_than
+        before = self.fragmentation()
+        started = time.monotonic()
+        errors: dict[str, str] = {}
+        with self._lock.write():
+            for name, table in (
+                (TABLE_MEMORIES, self._memories),
+                (TABLE_MESSAGES, self._messages),
+                (TABLE_DOCUMENTS, self._documents),
+            ):
+                try:
+                    table.optimize(cleanup_older_than=window)
+                except Exception as exc:
+                    # One table failing must not leave the others fragmented.
+                    errors[name] = "%s: %s" % (type(exc).__name__, exc)
+                    log.warning("RagStore.optimize failed on %s", name, exc_info=True)
+        after = self.fragmentation()
+        freed = sum(b["bytes"] for b in before.values()) - sum(
+            a["bytes"] for a in after.values()
+        )
+        result: dict[str, Any] = {
+            "before": before,
+            "after": after,
+            "bytes_freed": freed,
+            "duration_ms": round((time.monotonic() - started) * 1000.0, 1),
+        }
+        if errors:
+            result["errors"] = errors
+        log.info(
+            "RagStore optimized: files %d -> %d, %.1f MB freed, %.1fs",
+            sum(b["files"] for b in before.values()),
+            sum(a["files"] for a in after.values()),
+            freed / 1e6,
+            result["duration_ms"] / 1000.0,
+        )
+        return result
 
     def delete_messages_for_session(self, session_id: str) -> None:
         safe = session_id.replace("'", "''")
