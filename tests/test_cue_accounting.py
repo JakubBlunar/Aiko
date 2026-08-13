@@ -140,20 +140,52 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(spec.slot_attr)
 
     def test_every_spec_has_an_arming_signal(self) -> None:
-        # A spec with no slot, no journal and no pool can never be armed,
-        # so it would sit in ``never_armed`` forever looking like a broken
-        # worker rather than a broken registry entry. The pool counts as a
-        # signal in its own right: for a pool-only type a queued row *is*
-        # the opportunity, which is the branch ``armed_cues`` takes when
-        # the other two are absent.
+        # A spec with no slot, no journal, no predicate and no pool can
+        # never be armed, so it would sit in ``never_armed`` forever
+        # looking like a broken worker rather than a broken registry
+        # entry. The pool counts as a signal in its own right: for a
+        # pool-only type a queued row *is* the opportunity, which is the
+        # branch ``armed_cues`` takes when the others are absent.
         from app.core.proactive.cue_accounting import POOLED_CUES
 
         for name, spec in CUE_SPECS.items():
             with self.subTest(cue=name):
                 self.assertTrue(
-                    spec.slot_attr or spec.journal_key or name in POOLED_CUES,
+                    spec.slot_attr
+                    or spec.journal_key
+                    or spec.armed_when is not None
+                    or name in POOLED_CUES,
                     f"{name} has no way to be detected as armed",
                 )
+
+    def test_being_caught_mid_beat_does_not_arm_on_another_cues_slot(
+        self,
+    ) -> None:
+        """H32: the proxy that made this cue's ratio a ratio over returns.
+
+        It shared ``away_activities``' gap slot, so it read as armed on
+        every return -- while its provider ignores that slot entirely and
+        asks only whether a beat is open. A return is common and a return
+        landing inside an open beat is rare, so 7 of 7 declines came out
+        as gap-mutex losses on turns with very likely no beat to catch.
+        """
+        spec = CUE_SPECS["caught_mid_activity"]
+        self.assertFalse(spec.slot_attr)
+        self.assertIsNotNone(spec.armed_when)
+
+    def test_no_two_cues_share_a_slot(self) -> None:
+        # Two cues on one slot means one of them is arming on a proxy for
+        # the other's opportunity, which is what H32 was.
+        seen: dict[str, str] = {}
+        for name, spec in CUE_SPECS.items():
+            if not spec.slot_attr:
+                continue
+            other = seen.get(spec.slot_attr)
+            self.assertIsNone(
+                other,
+                f"{name} and {other} both arm on {spec.slot_attr}",
+            )
+            seen[spec.slot_attr] = name
 
     def test_coarse_arming_is_the_watermarkless_journals_minus_the_pool(
         self,
@@ -202,6 +234,90 @@ def _session(kv=None, **slots):
 
 def _journal(*stamps: str) -> str:
     return json.dumps([{"at": s} for s in stamps])
+
+
+def _beat_kv(*, minutes_left: float, interrupted: bool = False) -> dict[str, str]:
+    """A stored in-progress beat, open or closed by ``minutes_left``."""
+    from datetime import timedelta
+
+    from app.core.infra import timephrase
+    from app.core.world.in_progress_beat import IN_PROGRESS_KEY
+
+    now = timephrase.utcnow()
+    return {
+        IN_PROGRESS_KEY: json.dumps({
+            "key": "reading",
+            "activity": "reading on the sofa",
+            "posture": "curled up",
+            "summary": "reading",
+            "started_at": (now - timedelta(minutes=20)).isoformat(),
+            "expected_end_at": (
+                now + timedelta(minutes=minutes_left)
+            ).isoformat(),
+            "interrupted_at": now.isoformat() if interrupted else "",
+        }),
+    }
+
+
+class EventArmingTests(unittest.TestCase):
+    """H32: ``armed_when`` — a cue armed by a live fact about the world.
+
+    The three declarative signals are all proxies. When the proxy
+    available is true far more often than the provider's own test, the
+    result is not a conservative ratio, it is a ratio over the wrong
+    population: ``caught_mid_activity`` measured returns rather than
+    returns that caught her at something.
+    """
+
+    def test_an_open_beat_arms_the_cue(self) -> None:
+        host = _session(_beat_kv(minutes_left=15.0))
+        self.assertIn("caught_mid_activity", armed_cues(host))
+
+    def test_a_bare_gap_no_longer_arms_it(self) -> None:
+        host = _session(_pending_away_activities_seconds=7200.0)
+        self.assertNotIn("caught_mid_activity", armed_cues(host))
+
+    def test_a_finished_beat_does_not_arm_it(self) -> None:
+        host = _session(_beat_kv(minutes_left=-5.0))
+        self.assertNotIn("caught_mid_activity", armed_cues(host))
+
+    def test_a_beat_she_already_set_down_does_not_arm_it(self) -> None:
+        # Interrupted means a return already caught her at this one; it is
+        # now a thread to resume, not a cue to spend again.
+        host = _session(_beat_kv(minutes_left=15.0, interrupted=True))
+        self.assertNotIn("caught_mid_activity", armed_cues(host))
+
+    def test_a_beat_with_no_activity_does_not_arm_it(self) -> None:
+        from app.core.world.in_progress_beat import IN_PROGRESS_KEY
+
+        host = _session({IN_PROGRESS_KEY: json.dumps({"key": "reading"})})
+        self.assertNotIn("caught_mid_activity", armed_cues(host))
+
+    def test_an_open_beat_arms_it_without_any_gap_at_all(self) -> None:
+        # The provider has no minimum-absence bar -- "is she mid-something
+        # right now" is equally true whether he stepped out for an hour or
+        # closed the laptop yesterday -- so arming must not need one.
+        host = _session(_beat_kv(minutes_left=15.0))
+        self.assertIsNone(
+            getattr(host, "_pending_away_activities_seconds", None),
+        )
+        self.assertIn("caught_mid_activity", armed_cues(host))
+
+    def test_a_predicate_that_raises_reads_as_unarmed(self) -> None:
+        # Arming is a diagnostic and runs on the prompt-assembly path, so
+        # it must never be the thing that breaks a turn.
+        from app.core.proactive.cue_accounting import CueSpec, _armed_by_event
+
+        def boom(_session: object) -> bool:
+            raise RuntimeError("kv exploded")
+
+        spec = CueSpec("x", armed_when=boom)
+        self.assertFalse(_armed_by_event(_session(), spec))
+
+    def test_a_missing_chat_db_reads_as_unarmed(self) -> None:
+        from app.core.proactive.cue_accounting import _open_beat_armed
+
+        self.assertFalse(_open_beat_armed(SimpleNamespace(_chat_db=None)))
 
 
 class ArmingTests(unittest.TestCase):
@@ -340,6 +456,69 @@ class AttributionTests(unittest.TestCase):
             {"turning_over"}, {"turning_over_block": 0},
         )
         self.assertNotIn(REASON_LOST_PRIORITY, d.declined["turning_over"])
+
+    def test_a_lower_ranked_winner_cannot_have_blocked_it(self) -> None:
+        """H32: the mutex only explains a loss to something *above* you.
+
+        ``sleep_return`` is second of six, so ``away_activities`` firing
+        is not what stopped it -- it declined on its own gate and then ran
+        first anyway. Recorded as a defeat, and worse, the defeat
+        overwrote the real reason, since this branch outranks ``notes``.
+        """
+        d = decisions_from_block_chars(
+            {"sleep_return"},
+            {"sleep_return_block": 0, "away_activities_block": 40},
+            provider_reasons={"sleep_return": REASON_CADENCE_BLOCK},
+        )
+        self.assertEqual(d.declined["sleep_return"], REASON_CADENCE_BLOCK)
+
+    def test_a_lower_ranked_winner_falls_back_to_the_catch_all(self) -> None:
+        # No provider reason to fall through to: the honest answer is the
+        # catch-all, not a fabricated mutex loss.
+        d = decisions_from_block_chars(
+            {"sleep_return"},
+            {"sleep_return_block": 0, "forward_curiosity_block": 40},
+        )
+        self.assertEqual(d.declined["sleep_return"], REASON_PROVIDER)
+
+    def test_the_first_cue_in_the_order_can_never_lose_the_mutex(self) -> None:
+        for winner in GAP_CUE_ORDER[1:]:
+            with self.subTest(winner=winner):
+                d = decisions_from_block_chars(
+                    {GAP_CUE_ORDER[0]},
+                    {f"{GAP_CUE_ORDER[0]}_block": 0, f"{winner}_block": 40},
+                )
+                self.assertNotIn(
+                    REASON_LOST_PRIORITY, d.declined[GAP_CUE_ORDER[0]],
+                )
+
+    def test_every_recordable_mutex_loss_names_a_higher_ranked_winner(
+        self,
+    ) -> None:
+        """The invariant the live ledger violated 7 times in 129 rows."""
+        from app.core.proactive.cue_accounting import _gap_rank
+
+        for loser in GAP_CUE_ORDER:
+            for winner in GAP_CUE_ORDER:
+                if winner == loser:
+                    continue
+                d = decisions_from_block_chars(
+                    {loser},
+                    {f"{loser}_block": 0, f"{winner}_block": 40},
+                )
+                reason = d.declined[loser]
+                if reason.startswith(f"{REASON_LOST_PRIORITY}:"):
+                    named = reason.split(":", 1)[1]
+                    self.assertLess(
+                        _gap_rank(named), _gap_rank(loser),
+                        f"{loser} recorded a loss to {named}, which it "
+                        "outranks",
+                    )
+
+    def test_an_unknown_cue_name_sorts_last(self) -> None:
+        from app.core.proactive.cue_accounting import _gap_rank
+
+        self.assertEqual(_gap_rank("not_a_cue"), len(GAP_CUE_ORDER))
 
     def test_question_balance_veto_is_named(self) -> None:
         d = decisions_from_block_chars(

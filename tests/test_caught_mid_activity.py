@@ -176,14 +176,43 @@ class OrderingTests(unittest.TestCase):
             order.index("away_activities"),
         )
 
-    def test_both_cues_draw_on_the_same_slot(self) -> None:
-        # One question ("what was she doing while I was gone") must not
-        # arm two opportunities in the accounting ledger.
+    def test_the_two_cues_arm_on_different_things(self) -> None:
+        """H32 reversed the original reasoning here, and the data is why.
+
+        Sharing ``away_activities``' slot was meant to stop one question
+        ("what was she doing while I was gone") arming two opportunities.
+        But the two are not the same opportunity: a return is common, a
+        return that lands inside an open beat is rare, and the provider
+        never consults the slot at all. So the shared slot did not avoid a
+        double count, it counted every return as a chance this cue missed
+        -- 7 armed, 0 surfaced, all 7 filed as gap-mutex losses on turns
+        with very likely no beat to be caught at.
+        """
         from app.core.proactive.cue_accounting import CUE_SPECS
 
+        spec = CUE_SPECS["caught_mid_activity"]
+        self.assertFalse(spec.slot_attr)
+        self.assertIsNotNone(spec.armed_when)
         self.assertEqual(
-            CUE_SPECS["caught_mid_activity"].slot_attr,
             CUE_SPECS["away_activities"].slot_attr,
+            "_pending_away_activities_seconds",
+        )
+
+    def test_a_declined_turn_reports_that_there_was_no_beat(self) -> None:
+        # The bail that produced most of this cue's declines used to be
+        # silent, so the ledger fell through to naming whichever gap cue
+        # did fire as the winner. ``no_stock`` is in INELIGIBLE_REASONS:
+        # a turn with nothing to be caught at is not a chance she missed.
+        from app.core.proactive.cue_accounting import (
+            REASON_NO_STOCK,
+            take_decline_notes,
+        )
+
+        host = _Host(chat_db=_db_with(None), pending_away_seconds=7200.0)
+        self.assertEqual(host._render_caught_mid_activity_block(), "")
+        self.assertEqual(
+            take_decline_notes(host).get("caught_mid_activity"),
+            REASON_NO_STOCK,
         )
 
     def test_the_prompt_block_is_tiered_next_to_its_sibling(self) -> None:

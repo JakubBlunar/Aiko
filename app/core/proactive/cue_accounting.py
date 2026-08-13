@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -227,6 +228,17 @@ class CueSpec:
     # True for the four cues that contend for the single gap-cue slot, in
     # the priority order they appear in ``GAP_CUE_ORDER``.
     gap_cue: bool = False
+    # An extra, independent way to be armed, for a cue whose material is
+    # a live fact about the world rather than a ring, a watermark or a
+    # pending slot. OR'd in like a pool retry row; see ``armed_cues``.
+    #
+    # It exists because the three declarative shapes above are all
+    # *proxies*, and a proxy that disagrees with the provider produces a
+    # ratio about the wrong population. ``caught_mid_activity`` armed on
+    # ``away_activities``' gap slot while its provider ignores that slot
+    # entirely and asks whether a beat is open right now, so "armed" was
+    # counting returns rather than opportunities.
+    armed_when: "Callable[[Any], bool] | None" = None
 
 
 # The gap cues in the order the assembler runs them. Order is the
@@ -253,6 +265,20 @@ GAP_CUE_ORDER: tuple[str, ...] = (
 )
 
 
+def _gap_rank(cue: str) -> int:
+    """Position in :data:`GAP_CUE_ORDER`; unknown names sort last.
+
+    Only the mutex attribution needs this, and it needs it to be a
+    *comparison* rather than a membership test: "did a gap cue win" and
+    "did a gap cue that outranks this one win" are different questions,
+    and the second is the one the reason claims to answer.
+    """
+    try:
+        return GAP_CUE_ORDER.index(cue)
+    except ValueError:
+        return len(GAP_CUE_ORDER)
+
+
 # Cue name -> how to detect arming. Names match the ``_PROMPT_BLOCK_TIERS``
 # entry minus the ``_block`` suffix, so the ledger keys line up with the
 # prompt-cost view and a rename shows up in both.
@@ -277,15 +303,19 @@ CUE_SPECS: dict[str, CueSpec] = {
             slot_attr="_pending_away_activities_seconds",
             gap_cue=True,
         ),
-        # H26. Shares ``away_activities``' slot rather than owning one:
-        # both answer "what was she doing while he was gone", and a beat
-        # is either finished (that cue) or still running (this one), so
-        # arming two slots for one question would double-count the
-        # opportunity in the ledger.
+        # H26, and the one cue armed by a live world fact. It used to
+        # share ``away_activities``' gap slot on the reasoning that both
+        # answer "what was she doing while he was gone" -- but a shared
+        # slot made this cue read as armed on *every* return, while its
+        # provider never consults that slot at all ("this one has no
+        # minimum-absence bar"). The two conditions barely overlap: a
+        # return is common, a return that lands inside an open beat is
+        # rare. So 7 of 7 declines came out as gap-mutex losses on turns
+        # where there was very likely no beat to be caught at.
         CueSpec(
             "caught_mid_activity",
-            slot_attr="_pending_away_activities_seconds",
             gap_cue=True,
+            armed_when=lambda session: _open_beat_armed(session),
         ),
         CueSpec(
             "forward_curiosity",
@@ -946,6 +976,41 @@ def _journal_has_material(chat_db: Any, spec: CueSpec) -> bool:
     return not (watermark and str(watermark) == stamp)
 
 
+def _open_beat_armed(session: Any) -> bool:
+    """Is one of Aiko's activity beats running right now?
+
+    ``caught_mid_activity``'s arming condition, and the same read its
+    provider makes. Imported lazily and swallowed whole: arming is a
+    diagnostic, and a diagnostic that can raise on the prompt-assembly
+    path is worse than one that occasionally reads ``False``.
+    """
+    chat_db = getattr(session, "_chat_db", None)
+    if chat_db is None or not hasattr(chat_db, "kv_get"):
+        return False
+    try:
+        from app.core.infra import timephrase
+        from app.core.world import in_progress_beat
+
+        beat = in_progress_beat.load(chat_db.kv_get)
+        if beat is None or not beat.activity:
+            return False
+        return bool(beat.is_open_at(timephrase.utcnow()))
+    except Exception:
+        log.debug("open-beat arming read failed", exc_info=True)
+        return False
+
+
+def _armed_by_event(session: Any, spec: CueSpec) -> bool:
+    """Evaluate ``spec.armed_when``, or ``False`` when there is none."""
+    if spec.armed_when is None:
+        return False
+    try:
+        return bool(spec.armed_when(session))
+    except Exception:
+        log.debug("cue armed_when raised: cue=%s", spec.name, exc_info=True)
+        return False
+
+
 def _pool_stock(session: Any, name: str) -> int | None:
     """Pending cues of this type, or ``None`` when the pool cannot answer.
 
@@ -987,12 +1052,26 @@ def armed_cues(session: Any) -> set[str]:
     second, independent way to be armed: a row exists only because a
     previous surfacing went unused, and that retry is an opportunity in
     its own right, slot or no slot.
+
+    A cue may also declare ``armed_when``, a predicate over live state,
+    which is a third and again independent path. It is for the case where
+    every declarative signal available is a *proxy* for the provider's
+    real condition rather than the condition itself -- and a proxy that is
+    true far more often than the provider's own test does not make the
+    ratio conservative, it makes it a ratio over the wrong population.
     """
     chat_db = getattr(session, "_chat_db", None)
     out: set[str] = set()
     for name, spec in CUE_SPECS.items():
         stock = _pool_stock(session, name)
         policy = CUE_POLICIES.get(name)
+        # A live world fact arms its cue on its own, independently of
+        # every path below -- the same standing a released pool row has.
+        # Checked first so the shape of the cue's *other* signals cannot
+        # suppress it; a cue may legitimately have none.
+        if _armed_by_event(session, spec):
+            out.add(name)
+            continue
         retry_pool = (
             stock is not None
             and policy is not None
@@ -1120,11 +1199,28 @@ def decisions_from_block_chars(
     gap_winner = next(
         (cue for cue in GAP_CUE_ORDER if cue in surfaced), "",
     )
+    winner_rank = _gap_rank(gap_winner) if gap_winner else len(GAP_CUE_ORDER)
 
     declined: dict[str, str] = {}
     for cue in armed - surfaced:
         spec = CUE_SPECS.get(cue)
-        if spec is not None and spec.gap_cue and gap_winner and cue != gap_winner:
+        # The mutex only explains a cue that a *higher-priority* one shut
+        # out. Attributing it whenever any gap cue won reads the order
+        # backwards for the cues near the top: ``sleep_return`` is second
+        # of six and cannot be blocked by ``away_activities``, so those
+        # rows recorded a defeat that the mechanism makes impossible --
+        # and worse, they overwrote the reason the cue actually gave,
+        # since this branch is ranked above ``notes``. It was 7 of 129
+        # lost_priority rows on the live ledger, all of them on the two
+        # cues whose real gates nobody could then see.
+        blocked = (
+            spec is not None
+            and spec.gap_cue
+            and bool(gap_winner)
+            and cue != gap_winner
+            and winner_rank < _gap_rank(cue)
+        )
+        if blocked:
             declined[cue] = f"{REASON_LOST_PRIORITY}:{gap_winner}"
         elif question_balance_suppressed:
             declined[cue] = REASON_QUESTION_BALANCE
