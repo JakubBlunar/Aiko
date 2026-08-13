@@ -644,6 +644,143 @@ class ImageMemoryTests(unittest.TestCase):
         self.assertEqual(store.calls, [])
 
 
+class WhoseImageIsItTests(unittest.TestCase):
+    """The distil prompt has to name both people, or "your" has no owner.
+
+    He shares pictures *of her* constantly — an outfit, an expression, a
+    render — so the caption is usually in the second person. The prompt
+    named only the sharer and asked for "the point of view of the person
+    they showed it to", leaving the recipient anonymous, and told *"I
+    wanted to show you your nice daily outfit"* the model bound "your"
+    to the only name it had::
+
+        Jacob showed me his daily outfit: an anime girl with
+        silver-white hair, red eyes, cat ears, ...
+
+    All three image memories on the live store had it wrong the same way:
+    the other two read "Jacob's anime character" and "an illustration of
+    a white-haired nekomimi". She could not recognise herself in a
+    picture he sent her of herself.
+    """
+
+    def _system(self, captured: list[list[dict[str, Any]]]) -> str:
+        return captured[0][0]["content"]
+
+    def _capture(self) -> tuple[Any, list[list[dict[str, Any]]]]:
+        seen: list[list[dict[str, Any]]] = []
+
+        def chat(messages: list[dict[str, Any]], **_: Any) -> str:
+            seen.append(messages)
+            return "a line"
+
+        return chat, seen
+
+    def test_the_prompt_names_the_recipient_not_just_the_sharer(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="an anime girl with silver-white hair",
+            user_text="here is your new outfit",
+            user_name="Jacob",
+            assistant_name="Aiko",
+            chat=chat,
+        )
+        system = self._system(captured)
+        self.assertIn("Aiko", system)
+        self.assertIn("Jacob", system)
+
+    def test_the_prompt_binds_the_second_person_to_her(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="your outfit", user_name="Jacob",
+            assistant_name="Aiko", chat=chat,
+        )
+        system = self._system(captured)
+        # Both directions have to be stated: naming her is not enough if
+        # the prompt never says which pronouns point at whom.
+        self.assertIn('"you" / "your" means YOU, Aiko', system)
+        self.assertIn('"my" means Jacob', system)
+
+    def test_the_prompt_forbids_the_exact_mistake(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="c", user_name="Jacob",
+            assistant_name="Aiko", chat=chat,
+        )
+        self.assertIn('never "his"', self._system(captured))
+
+    def test_a_renamed_assistant_is_the_one_named(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="c", user_name="Mira",
+            assistant_name="Yuki", chat=chat,
+        )
+        system = self._system(captured)
+        self.assertIn('"you" / "your" means YOU, Yuki', system)
+        self.assertIn("Mira shared the photo", system)
+        self.assertNotIn("Aiko", system)
+        self.assertNotIn("Jacob", system)
+
+    def test_an_unidentified_subject_is_not_claimed_as_her(self) -> None:
+        # The other half of the fix. Told only that pictures of her are
+        # common, the model claimed a caption-less anime render as
+        # "an illustration of me" — and he shares plenty of images of
+        # other characters, so the prior has to be evidence-driven.
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="", user_name="Jacob",
+            assistant_name="Aiko", chat=chat,
+        )
+        system = self._system(captured)
+        self.assertIn("do NOT", system)
+        self.assertIn("other characters", system)
+
+    def test_the_caption_is_marked_as_spoken_to_her(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d",
+            user_text="I wanted to show you your nice daily outfit",
+            user_name="Jacob", assistant_name="Aiko", chat=chat,
+        )
+        user_msg = captured[0][1]["content"]
+        self.assertIn("said to you while sharing it", user_msg)
+        self.assertIn("your nice daily outfit", user_msg)
+
+    def test_the_default_name_keeps_old_callers_working(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="c", user_name="Jacob", chat=chat,
+        )
+        self.assertIn("Aiko", self._system(captured))
+
+    def test_a_blank_assistant_name_falls_back(self) -> None:
+        chat, captured = self._capture()
+        distil_image_memory(
+            description="d", user_text="c", user_name="Jacob",
+            assistant_name="   ", chat=chat,
+        )
+        self.assertIn("Aiko", self._system(captured))
+
+    def test_the_scheduler_actually_passes_her_name(self) -> None:
+        """The parameter is useless if the one caller never fills it.
+
+        Pinned at the source because that failure is silent and this
+        codebase has been bitten by it before: `format_transcript()`
+        shipped complete, with a docstring naming its callers, and not
+        one of them ever called it. A default of "Aiko" would have made
+        this particular omission invisible on the default config.
+        """
+        import inspect
+
+        from app.core.session import speaking_window_jobs_mixin
+
+        src = inspect.getsource(
+            speaking_window_jobs_mixin.SpeakingWindowJobsMixin
+            ._maybe_schedule_image_memory_job
+        )
+        self.assertIn("assistant_name=assistant_name", src)
+        self.assertIn("_fact_check_assistant_name", src)
+
+
 # ── the prompt block ─────────────────────────────────────────────────
 
 

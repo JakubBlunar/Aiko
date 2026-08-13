@@ -159,6 +159,11 @@ class SpeakingWindowJobsMixin:
         model = str(getattr(self, "_effective_worker_model", "") or "")
         user_text = str(getattr(self, "_active_turn_user_text", "") or "")
         user_name = self.user_display_name
+        # Her own name has to reach the distiller: the caption is usually
+        # addressed to her ("your new outfit"), and without a name to bind
+        # "your" to, the only named person in the prompt wins and she
+        # records her own outfit as his.
+        assistant_name = self._fact_check_assistant_name() or "Aiko"
 
         def _chat(messages: list[dict[str, Any]], **kwargs: Any) -> str:
             return client.chat(messages, model=model or None, **kwargs)
@@ -177,6 +182,7 @@ class SpeakingWindowJobsMixin:
                         description=item.description,
                         user_text=user_text,
                         user_name=user_name,
+                        assistant_name=assistant_name,
                         chat=_chat,
                     )
                     if not line:
