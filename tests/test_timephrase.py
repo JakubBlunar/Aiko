@@ -370,5 +370,35 @@ class ResolveDeicticsTests(unittest.TestCase):
         self.assertEqual(tp.resolve_deictics(once, self._WRITTEN, _NOW), once)
 
 
+class TimeRuleTests(unittest.TestCase):
+    """Two halves of one contract, and they must stay distinguishable.
+
+    Both rules answer "how does written text stay true as it ages", and
+    they answer it oppositely: a stored note should carry the concrete
+    day, a live-state field should carry no date at all. Only the stored
+    half existed, so the belief worker pasted it into a present-tense
+    field and dutifully produced ``experienced mild evening frustration
+    and low energy on august 12 2026``.
+    """
+
+    def test_they_are_not_the_same_rule(self) -> None:
+        self.assertNotEqual(tp.STORED_TEXT_TIME_RULE, tp.LIVE_STATE_TIME_RULE)
+
+    def test_the_stored_rule_asks_for_a_concrete_day(self) -> None:
+        self.assertIn("concrete day", tp.STORED_TEXT_TIME_RULE)
+        self.assertIn("past tense", tp.STORED_TEXT_TIME_RULE)
+
+    def test_the_live_rule_forbids_what_the_stored_rule_requires(self) -> None:
+        rule = tp.LIVE_STATE_TIME_RULE
+        self.assertIn("no concrete date", rule)
+        self.assertIn("present tense", rule)
+        self.assertNotIn("concrete day", rule)
+
+    def test_the_live_rule_sends_one_off_observations_away(self) -> None:
+        # A state that only makes sense pinned to one evening is an event,
+        # and stored as a belief it can never be confirmed or contradicted.
+        self.assertIn("leave it out", tp.LIVE_STATE_TIME_RULE)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

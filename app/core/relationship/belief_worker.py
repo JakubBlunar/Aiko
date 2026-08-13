@@ -32,6 +32,20 @@ Pipeline (one tick = one ``run`` call):
    ``belief_max_active_per_user`` via
    :meth:`BeliefStore.prune_to_cap`.
 
+**The shape contract on the two text fields.** ``topic`` and
+``predicted_state`` are not free text: every consumer reads them back
+inside a sentence (see
+:func:`~app.core.relationship.belief_gap_detector.render_inner_life_block`
+— "You had {name} pegged as {state} about {topic}"), and ``topic`` is
+additionally embedded for retrieval and fuzzy merge. So a state has to
+complete "{name} is ___" in the present tense, and a topic has to be a
+subject that can come up again. Neither may carry a date: the row
+already has ``observed_at``, and a dated claim about a past evening is
+one nothing can ever confirm or contradict, so it occupies the active
+set until the cap prunes it. The prompt states both frames literally and
+:func:`state_fault` / :func:`topic_fault` enforce them, because the only
+thing the old "2-80 char state phrase" instruction bounded was length.
+
 The self-tag fast path (``[[predict:...]]``) wins over the worker:
 :meth:`BeliefStore.upsert` for an existing ``self_tag`` row simply
 refreshes its state; the worker writes ``source='worker'`` for
@@ -105,22 +119,58 @@ _MAX_CONCEPT_HINTS = 5
 # prompt asking for a bare array cannot be satisfied: the model reasons to
 # the right answer and the grammar then emits ``{}``. See
 # :mod:`app.llm.json_answers`.
-_SYSTEM_PROMPT = (
-    "You read a short chat transcript and infer what the user "
-    "believes or feels about specific topics. Reply with ONE JSON object "
-    '(no prose, no markdown) shaped {"beliefs": [...]} holding zero or '
-    "more belief objects. Each object in that array has these fields:\n"
-    "  - kind: 'mood' (predicts how the user feels about the topic) "
-    "or 'opinion' (predicts what the user thinks about the topic).\n"
-    "  - topic: 2-60 char short topic phrase, lowercase, no quotes.\n"
-    "  - predicted_state: 2-80 char state phrase (e.g. 'excited', "
-    "'nervous', 'overhyped', 'a clever idea').\n"
-    "  - confidence: 0.0-1.0 decimal -- how sure you are.\n"
-    "Be conservative: skip the turn if the transcript doesn't "
-    "actually let you predict anything. Never invent beliefs from "
-    'thin air. Return {"beliefs": []} when there\'s nothing to '
-    "report. Output the JSON object and nothing else."
-)
+def _build_system_prompt(user_name: str = "the user") -> str:
+    """Belief-extraction system prompt, naming the user in the frames.
+
+    The two frames quoted below are literal: they are what
+    :func:`~app.core.relationship.belief_gap_detector.render_inner_life_block`
+    actually renders, and ``predicted_state`` is dropped into the blank.
+    Quoting them is what turns the shape requirement into something the
+    model can check by reading its own answer back. Asked instead for
+    "a 2-80 char state phrase" it produced ``experienced mild evening
+    frustration and low energy on august 12 2026`` — inside the length
+    budget, and unusable in either frame.
+    """
+    name = (user_name or "").strip() or "the user"
+    return (
+        f"You read a short chat transcript and infer what {name} "
+        "believes or feels about specific topics. Reply with ONE JSON "
+        'object (no prose, no markdown) shaped {"beliefs": [...]} '
+        "holding zero or more belief objects. Each object in that array "
+        "has these fields:\n"
+        "  - kind: 'mood' (how they feel about the topic) or 'opinion' "
+        "(what they think about the topic).\n"
+        "  - topic: 2-60 char lowercase subject phrase, no quotes. A "
+        "lasting subject that could come up again next month ('the "
+        "tokyo trip', 'rust', 'his workload') -- never an occasion or a "
+        "date ('tuesday evening', 'the meeting on the 14th'). A topic "
+        "nobody can raise again is a belief nobody can ever check.\n"
+        "  - predicted_state: 2-80 char phrase. It gets read back "
+        "INSIDE a sentence, so write only the part that completes the "
+        "blank:\n"
+        f"      mood    -> \"{name} is ___ about <topic>\"\n"
+        "      opinion -> \"<topic> is ___\"\n"
+        "    So an adjective or a noun phrase, never a new clause: it "
+        "must not start with a verb or with 'he' / 'she' / 'it', and it "
+        "must not repeat the subject or the topic. 'frustrated and low "
+        "on energy', not 'experienced mild evening frustration'; "
+        "'overhyped', not 'thinks rust is overhyped'; 'restorative', "
+        "not 'finds the quiet evenings restorative'; 'a clever idea', "
+        "not 'he said it was a clever idea'. Read your phrase back "
+        "inside the frame before you answer -- if it does not make one "
+        "grammatical sentence, rewrite it. Keep it under about eight "
+        "words.\n"
+        "  - confidence: 0.0-1.0 decimal -- how sure you are.\n"
+        "A belief is a standing read on a person, so skip anything that "
+        "is really a scheduled plan or a single event ('meeting on "
+        "friday', 'went to bed early'). Those are commitments and "
+        "history; other parts of the system record them, and stored "
+        "here they can never be confirmed or contradicted.\n"
+        "Be conservative: skip the turn if the transcript doesn't "
+        "actually let you predict anything. Never invent beliefs from "
+        'thin air. Return {"beliefs": []} when there\'s nothing to '
+        "report. Output the JSON object and nothing else."
+    )
 
 
 # ``{{`` / ``}}`` because this template goes through ``str.format`` — a
@@ -198,6 +248,120 @@ _TOPIC_WORD_RE = re.compile(r"[a-z0-9]{3,}")
 
 def _topic_words(text: str | None) -> set[str]:
     return set(_TOPIC_WORD_RE.findall((text or "").lower()))
+
+
+# A date or a weekday written into a topic or a state, which the row's
+# own ``observed_at`` already records. In a field that is re-read as a
+# present-tense claim this is not redundancy, it is a category error: it
+# turns "how he feels about X" into "what happened on the 12th", which
+# nothing can later agree or disagree with.
+_DATE_RE = re.compile(
+    r"\b(?:"
+    r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
+    r"|january|february|march|april|june|july|august|september"
+    r"|october|november|december"
+    r"|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
+    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r"|yesterday|tomorrow|tonight"
+    r")\b"
+    r"|\b(?:19|20)\d{2}\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)\b",
+    re.I,
+)
+
+
+# Openers that cannot follow "is". A state phrase completes a frame, so
+# it has to be a complement — an adjective ("frustrated"), a noun phrase
+# ("a clever idea"), a participle ("looking forward to it"). A *finite
+# verb* cannot: it makes the state a second predicate, and the render
+# comes out as "is finds deep emotional recharge" or "is experienced mild
+# evening frustration". A pronoun opener fails the same way ("is he hopes
+# for deeper trust") and additionally re-states the subject the frame
+# already supplies.
+#
+# Curated from what the store actually contained rather than derived,
+# because telling a finite verb from a participle needs POS tagging we
+# do not have here, and a guess in either direction is worse than a list:
+# too eager and the worker stores nothing, too shy and the frame breaks.
+# Every entry below appeared in a real row. Keep it that way — add a word
+# when a row shows up carrying it, not on suspicion.
+_PAST_OPENERS: frozenset[str] = frozenset(
+    {
+        "experienced", "felt", "had", "was", "were", "got", "went",
+        "became", "expressed", "showed", "reported", "described",
+        "mentioned", "said", "told", "asked", "spent", "took", "made",
+        "started", "finished", "decided", "struggled", "seemed",
+    }
+)
+
+_PRESENT_OPENERS: frozenset[str] = frozenset(
+    {
+        "finds", "likes", "loves", "hates", "values", "views", "hopes",
+        "prefers", "wants", "needs", "thinks", "believes", "feels",
+        "seeks", "enjoys", "considers", "sees", "treats", "keeps",
+        "tends", "plans", "expects", "trusts", "appreciates", "dislikes",
+        "find", "like", "value", "view", "hope", "prefer", "want",
+        "need", "think", "believe", "feel", "seek", "enjoy", "consider",
+    }
+)
+
+_PRONOUN_OPENERS: frozenset[str] = frozenset(
+    {"he", "she", "they", "it", "i", "you", "we", "his", "her", "their"}
+)
+
+
+# How many words a state phrase may run to before it is a sentence
+# rather than a complement. The prompt asks for "under about eight"; the
+# gate allows a little slack so a legitimately long-but-well-shaped
+# phrase ("quietly proud of how the refactor landed") survives.
+_MAX_STATE_WORDS = 12
+
+
+_WORD_RE = re.compile(r"[a-z0-9']+", re.I)
+
+
+def state_fault(state: str) -> str:
+    """Name why ``state`` cannot complete the frame, or ``""`` if it can.
+
+    The mirror of :func:`~app.core.memory.promise_worker._is_low_quality`,
+    and there for the same reason: a prompt is guidance, and the store is
+    what everything downstream reads. A model that ignores the shape
+    instruction should cost us one dropped tuple on one tick, not a
+    permanent row that renders as "You had Jacob pegged as experienced
+    mild evening frustration and low energy on august 12 2026 about
+    daily routine and motivation".
+
+    Returns a short reason string suitable for a log line, so the drops
+    are countable rather than invisible.
+    """
+    text = (state or "").strip()
+    if not text:
+        return "empty"
+    words = _WORD_RE.findall(text.lower())
+    if not words:
+        return "empty"
+    if _DATE_RE.search(text):
+        return "dated"
+    head = words[0]
+    if head in _PAST_OPENERS:
+        return f"past_tense:{head}"
+    if head in _PRESENT_OPENERS:
+        return f"finite_verb:{head}"
+    if head in _PRONOUN_OPENERS:
+        return f"restates_subject:{head}"
+    if len(words) > _MAX_STATE_WORDS:
+        return f"sentence:{len(words)}w"
+    return ""
+
+
+def topic_fault(topic: str) -> str:
+    """Name why ``topic`` is not a subject anyone can raise again."""
+    text = (topic or "").strip()
+    if not text:
+        return "empty"
+    if _DATE_RE.search(text):
+        return "dated"
+    return ""
 
 
 @dataclass(slots=True)
@@ -502,11 +666,13 @@ class BeliefInferenceWorker:
             )
 
         t0 = time.monotonic()
+        dropped_shape: list[str] = []
         tuples = self._extract_with_llm(
             scrubbed,
             interest_hint=interest_hint,
             reconsider_block=reconsider_block,
             concept_hint=concept_hint,
+            dropped=dropped_shape,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         if tuples is None:
@@ -621,9 +787,17 @@ class BeliefInferenceWorker:
             "upserted": upserted,
             "skipped_self_tag": skipped_self_tag,
             "dropped_invalid": dropped_invalid,
+            "dropped_shape": len(dropped_shape),
             "pruned": pruned,
             "llm_ms": round(elapsed_ms, 1),
         }
+        if dropped_shape:
+            # Reasons, not just a count: "the model keeps writing dates"
+            # and "the model keeps writing clauses" want different fixes,
+            # and the prompt is where either is actually fixed.
+            result["shape_faults"] = sorted(
+                {f.split(":")[0] for f in dropped_shape}
+            )
         log.info("belief-worker done: %s", result)
         return result
 
@@ -823,6 +997,7 @@ class BeliefInferenceWorker:
         interest_hint: str = "",
         reconsider_block: str = "",
         concept_hint: str = "",
+        dropped: list[str] | None = None,
     ) -> list[_BeliefTuple] | None:
         sections = [_USER_TEMPLATE.format(transcript=scrubbed_transcript)]
         if interest_hint:
@@ -844,11 +1019,24 @@ class BeliefInferenceWorker:
                 f"that topic; otherwise ignore it: {reconsider_block}."
             )
         user_content = "\n\n".join(sections)
-        # K-time8: anchor "now" so the model resolves relative phrases in the
-        # transcript ("he was stressed yesterday") instead of guessing.
+        # Two time instructions doing opposite jobs, deliberately.
+        #
+        # K-time8: the anchor is for *reading* — it lets the model resolve
+        # "he was stressed yesterday" in the transcript instead of
+        # guessing. The rule is for *writing*, and it has to be the
+        # live-state half of the contract: this worker fills a topic and
+        # a state phrase that are both re-read as claims about the
+        # present. Pasting `STORED_TEXT_TIME_RULE` here instead (which
+        # this worker did) instructs the model to write the concrete day
+        # and put finished events in the past tense, which is how a mood
+        # read became "experienced mild evening frustration and low
+        # energy on august 12 2026" — a row that no later turn can
+        # confirm or contradict, so it sits in the active set until the
+        # cap prunes it.
         system_content = (
             f"{timephrase.today_anchor(self._clock())}\n\n"
-            f"{_SYSTEM_PROMPT}\n\n{timephrase.STORED_TEXT_TIME_RULE}"
+            f"{_build_system_prompt(self._resolve_user_name())}\n\n"
+            f"{timephrase.LIVE_STATE_TIME_RULE}"
         )
         messages = [
             {"role": "system", "content": system_content},
@@ -897,17 +1085,30 @@ class BeliefInferenceWorker:
             len(raw),
             _preview(raw),
         )
-        return self._parse_tuples(raw)
+        return self._parse_tuples(raw, dropped=dropped)
 
     @staticmethod
-    def _parse_tuples(raw: str) -> list[_BeliefTuple] | None:
+    def _parse_tuples(
+        raw: str, *, dropped: list[str] | None = None,
+    ) -> list[_BeliefTuple] | None:
         """Parse the LLM's JSON answer into typed tuples.
 
         Returns ``None`` only when the response is fundamentally
         un-parseable. An empty list returns ``[]`` -- a perfectly valid
         "nothing to report" turn. Shape tolerance lives in
         :func:`app.llm.json_answers.parse_json_array_answer`.
+
+        Tuples that survive parsing are then shape-gated by
+        :func:`state_fault` / :func:`topic_fault`, because the length
+        limits below only ever bounded how *much* the model wrote, never
+        whether what it wrote fits the sentence it will be read back in.
+        Each rejection's reason is appended to ``dropped`` so the run
+        summary can report it: a gate that quietly ate most of the
+        model's output would be indistinguishable from a quiet
+        transcript, and "the extractor reports success while storing
+        nothing" is a failure this worker family has had before.
         """
+        _dropped = dropped if dropped is not None else []
         parsed = parse_json_array_answer(
             raw, key="beliefs", item_hint_keys=_BELIEF_ITEM_KEYS,
         )
@@ -929,6 +1130,17 @@ class BeliefInferenceWorker:
             if not topic or len(topic) > 60:
                 continue
             if not state or len(state) > 120:
+                continue
+            fault = topic_fault(topic) or state_fault(state)
+            if fault:
+                _dropped.append(fault)
+                log.info(
+                    "belief-worker dropped unusable shape: reason=%s "
+                    "topic=%r state=%r",
+                    fault,
+                    topic,
+                    _preview(state),
+                )
                 continue
             confidence = max(0.0, min(1.0, confidence))
             out.append(

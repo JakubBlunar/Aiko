@@ -8,6 +8,7 @@ import unittest
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 import numpy as np
@@ -15,9 +16,11 @@ import numpy as np
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 from app.core.memory.promise_extractor import Promise
+from app.core.memory.promise_lifecycle import is_assistant_promise
 from app.core.memory.promise_worker import (
     PromiseExtractionWorker,
     _is_low_quality,
+    resolve_promise_who,
 )
 
 
@@ -304,6 +307,96 @@ class ParseTests(unittest.TestCase):
         assert out is not None
         self.assertEqual(len(out), 1)
         self.assertIn("send the staging config", out[0].text)
+
+
+class AttributionTests(unittest.TestCase):
+    """Whose promise it is decides whether anyone ever closes the loop.
+
+    Only assistant-side promises enter follow-through
+    (``promise_lifecycle.is_assistant_promise``), so a wrong side is not
+    a cosmetic error: it either leaves Aiko owing nothing for something
+    she said, or has the follow-up worker chase the user over a
+    commitment that was hers. Both look correct in every log line.
+    """
+
+    def test_the_roles_the_prompt_asks_for(self) -> None:
+        for token, expected in (("user", "user"), ("assistant", "assistant")):
+            with self.subTest(token=token):
+                self.assertEqual(
+                    resolve_promise_who(token), expected,
+                )
+
+    def test_the_persona_default_name_still_maps_to_her(self) -> None:
+        self.assertEqual(resolve_promise_who("Aiko"), "assistant")
+
+    def test_attribution_survives_renaming_the_user(self) -> None:
+        """The tolerance used to be the literal string "jacob".
+
+        A model that answers with a name instead of a role was handled by
+        comparing against ``"jacob"``, so the moment
+        ``assistant.user_display_name`` is anything else that branch
+        stops matching — and it fell through to a default of ``"user"``,
+        which happened to hide the breakage for the user's own promises
+        while silently mis-filing hers.
+        """
+        self.assertEqual(
+            resolve_promise_who("Mira", user_names=["Mira"]), "user",
+        )
+        self.assertEqual(
+            resolve_promise_who("jacob", user_names=["Mira"]), "",
+        )
+
+    def test_attribution_survives_renaming_the_assistant(self) -> None:
+        self.assertEqual(
+            resolve_promise_who("Yuki", assistant_name="Yuki"), "assistant",
+        )
+
+    def test_an_unrecognised_side_is_unattributable_not_the_user(self) -> None:
+        # The old code's else-branch defaulted to "user", so anything the
+        # model said that wasn't recognised became the user's commitment.
+        for token in ("she", "companion", "both", "someone", ""):
+            with self.subTest(token=token):
+                self.assertEqual(resolve_promise_who(token), "")
+
+    def test_an_unattributable_promise_is_dropped_by_the_parser(self) -> None:
+        raw = json.dumps([
+            {"who": "companion", "what": "water the plants", "deadline": None},
+            {"who": "user", "what": "book the flight", "deadline": None},
+        ])
+        out = PromiseExtractionWorker._parse_promises(
+            raw, user_names=["Jacob"], assistant_name="Aiko",
+        )
+        assert out is not None
+        self.assertEqual(len(out), 1)
+        self.assertIn("book the flight", out[0].text)
+
+    def test_the_drop_is_logged_rather_than_silent(self) -> None:
+        raw = json.dumps([
+            {"who": "both", "what": "split the chores", "deadline": None},
+        ])
+        with self.assertLogs("app.promise_worker", level="INFO") as caught:
+            PromiseExtractionWorker._parse_promises(raw)
+        self.assertTrue(
+            any("unattributable" in line for line in caught.output),
+            caught.output,
+        )
+
+    def test_a_renamed_assistant_promise_reaches_follow_through(self) -> None:
+        # The end-to-end consequence: sidedness has to survive all the way
+        # into the lifecycle helper that gates follow-through.
+        raw = json.dumps([
+            {"who": "Yuki", "what": "send the recap", "deadline": None},
+        ])
+        out = PromiseExtractionWorker._parse_promises(
+            raw, assistant_name="Yuki",
+        )
+        assert out is not None
+        self.assertEqual(out[0].who, "assistant")
+        memory = SimpleNamespace(
+            content=out[0].to_memory_content(user_display_name="Mira"),
+            metadata={"promise_who": out[0].who},
+        )
+        self.assertTrue(is_assistant_promise(memory))
 
 
 class RunTests(unittest.TestCase):

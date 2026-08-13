@@ -723,5 +723,283 @@ class ConceptBiasTests(unittest.TestCase):
         self.assertFalse(hasattr(view, "upsert"))
 
 
+class StateShapeTests(unittest.TestCase):
+    """``predicted_state`` has to complete the sentence it is read in.
+
+    Every consumer slots it into a frame ("You had Jacob pegged as
+    {state} about {topic}"), so a standalone clause is not merely verbose
+    — it is ungrammatical there and makes a claim about a past evening
+    rather than about him. The row this class exists for was real::
+
+        topic = 'daily routine and motivation'
+        state = 'experienced mild evening frustration and low energy on
+                 august 12 2026'
+
+    It renders as "You had Jacob pegged as experienced mild evening
+    frustration and low energy on august 12 2026 about daily routine and
+    motivation", and being about one finished evening it can never be
+    confirmed or contradicted, so it sits in the active set until the cap
+    prunes it. On the store at the time, 8 of 40 rows carried a date.
+    """
+
+    def _payload(self, **over: Any) -> str:
+        item = {
+            "kind": "mood",
+            "topic": "daily routine and motivation",
+            "predicted_state": "frustrated and low on energy",
+            "confidence": 0.9,
+        }
+        item.update(over)
+        return json.dumps([item])
+
+    def test_the_row_that_started_this_is_refused(self) -> None:
+        worker, store, _o, _rl = _build_world(
+            responses=[self._payload(
+                predicted_state=(
+                    "experienced mild evening frustration and low energy "
+                    "on august 12 2026"
+                ),
+            )],
+        )
+        self.assertEqual(worker.run()["upserted"], 0)
+        self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_a_well_shaped_state_is_kept(self) -> None:
+        worker, store, _o, _rl = _build_world(responses=[self._payload()])
+        self.assertEqual(worker.run()["upserted"], 1)
+        rows = store.list_active(user_id="u1")
+        self.assertEqual(rows[0].predicted_state, "frustrated and low on energy")
+
+    def test_a_date_in_the_state_is_refused(self) -> None:
+        for state in (
+            "looking forward to a meetup on friday august 14 2026",
+            "relaxed anticipation for a casual meetup on August 14, 2026",
+            "quietly hopeful about tomorrow",
+            "still annoyed about the 14th",
+        ):
+            with self.subTest(state=state):
+                worker, _s, _o, _rl = _build_world(
+                    responses=[self._payload(predicted_state=state)],
+                )
+                self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_a_date_in_the_topic_is_refused(self) -> None:
+        # A topic is what gets embedded for retrieval and fuzzy merge, so
+        # a timestamp there is a belief no future turn can ever reach.
+        for topic in (
+            "evening of august 12 2026",
+            "august 13 daily routine",
+            "meeting on august 14 2026",
+        ):
+            with self.subTest(topic=topic):
+                worker, _s, _o, _rl = _build_world(
+                    responses=[self._payload(topic=topic)],
+                )
+                self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_a_past_tense_opener_is_refused(self) -> None:
+        for state in ("felt overwhelmed", "was quietly proud", "said it helps"):
+            with self.subTest(state=state):
+                worker, _s, _o, _rl = _build_world(
+                    responses=[self._payload(predicted_state=state)],
+                )
+                self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_a_whole_sentence_is_refused(self) -> None:
+        worker, _s, _o, _rl = _build_world(
+            responses=[self._payload(predicted_state=(
+                "likely to take a work pause to meet at a bench near the "
+                "office if the weather holds"
+            ))],
+        )
+        self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_a_long_but_well_shaped_phrase_survives(self) -> None:
+        # The gate is about shape, not brevity: this completes the frame.
+        worker, _s, _o, _rl = _build_world(
+            responses=[self._payload(
+                predicted_state="quietly proud of how the refactor landed",
+            )],
+        )
+        self.assertEqual(worker.run()["upserted"], 1)
+
+    def test_a_finite_verb_opener_is_refused(self) -> None:
+        """The commonest fault, and the one the date check missed.
+
+        These render as "is finds deep emotional recharge" / "is values
+        low-pressure shared presence": a second predicate where a
+        complement belongs. Six rows on the live store looked like this,
+        on top of the eight dated ones.
+        """
+        for state in (
+            "finds deep emotional recharge in affectionate closeness",
+            "values low-pressure shared presence over active entertainment",
+            "views the companion as a vital source of stability",
+            "prefers low-pressure companionship",
+            "likes it a lot",
+        ):
+            with self.subTest(state=state):
+                worker, _s, _o, _rl = _build_world(
+                    responses=[self._payload(predicted_state=state)],
+                )
+                self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_a_state_that_restates_the_subject_is_refused(self) -> None:
+        # The frame already supplies the subject, so this renders as
+        # "is he hopes for deeper mutual trust".
+        worker, _s, _o, _rl = _build_world(
+            responses=[self._payload(
+                predicted_state="he hopes for deeper mutual trust",
+            )],
+        )
+        self.assertEqual(worker.run()["upserted"], 0)
+
+    def test_participles_and_noun_phrases_are_not_mistaken_for_clauses(
+        self,
+    ) -> None:
+        # The precision half of the gate. These all complete the frame,
+        # and rejecting them would leave the worker storing nothing.
+        for state in (
+            "looking forward to it",
+            "a reliable source of comfort",
+            "quietly proud",
+            "essential for grounding after a long day",
+            "determined to fix it",
+            "more than enough",
+            "steadily deepening",
+        ):
+            with self.subTest(state=state):
+                worker, _s, _o, _rl = _build_world(
+                    responses=[self._payload(predicted_state=state)],
+                )
+                self.assertEqual(worker.run()["upserted"], 1)
+
+    def test_the_run_summary_reports_what_the_gate_ate(self) -> None:
+        """A silent gate is indistinguishable from a quiet transcript.
+
+        This worker has already shipped one bug that reported healthy
+        runs while storing nothing, so the count and the fault kinds both
+        have to reach the summary line.
+        """
+        payload = json.dumps([
+            {"kind": "mood", "topic": "the tokyo trip",
+             "predicted_state": "excited", "confidence": 0.8},
+            {"kind": "mood", "topic": "his workload",
+             "predicted_state": "felt flat on august 12", "confidence": 0.7},
+            {"kind": "opinion", "topic": "rust",
+             "predicted_state": "likes it a lot", "confidence": 0.6},
+        ])
+        worker, _s, _o, _rl = _build_world(responses=[payload])
+        result = worker.run()
+        self.assertEqual(result["upserted"], 1)
+        self.assertEqual(result["dropped_shape"], 2)
+        self.assertEqual(
+            result["shape_faults"], ["dated", "finite_verb"],
+        )
+
+    def test_a_clean_run_reports_no_shape_faults(self) -> None:
+        worker, _s, _o, _rl = _build_world(responses=[self._payload()])
+        result = worker.run()
+        self.assertEqual(result["dropped_shape"], 0)
+        self.assertNotIn("shape_faults", result)
+
+    def test_a_dropped_shape_is_logged_with_its_reason(self) -> None:
+        worker, _s, _o, _rl = _build_world(
+            responses=[self._payload(predicted_state="felt flat on august 12")],
+        )
+        with self.assertLogs("app.belief_worker", level="INFO") as caught:
+            worker.run()
+        self.assertTrue(
+            any("dropped unusable shape" in line for line in caught.output),
+            caught.output,
+        )
+
+    def test_one_bad_tuple_does_not_take_the_good_ones_with_it(self) -> None:
+        payload = json.dumps([
+            {"kind": "mood", "topic": "the tokyo trip",
+             "predicted_state": "excited", "confidence": 0.8},
+            {"kind": "mood", "topic": "evening of august 12 2026",
+             "predicted_state": "experienced mild frustration",
+             "confidence": 0.9},
+            {"kind": "opinion", "topic": "rust",
+             "predicted_state": "overhyped", "confidence": 0.6},
+        ])
+        worker, store, _o, _rl = _build_world(responses=[payload])
+        self.assertEqual(worker.run()["upserted"], 2)
+        topics = {b.topic for b in store.list_active(user_id="u1")}
+        self.assertEqual(topics, {"the tokyo trip", "rust"})
+
+
+class StateFramePromptTests(unittest.TestCase):
+    """The prompt has to teach the frame, not just a length budget.
+
+    ``experienced mild evening frustration and low energy on august 12
+    2026`` is 63 characters — comfortably inside the "2-80 char state
+    phrase" the prompt used to ask for. A length limit cannot express the
+    constraint that matters, so the frames are quoted literally and the
+    model can check its own answer by reading it back.
+    """
+
+    def _system(self, ollama: _StubOllama) -> str:
+        return ollama.chat_calls[0]["messages"][0]["content"]
+
+    def test_the_prompt_quotes_the_frame_the_state_completes(self) -> None:
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker.run()
+        system = self._system(ollama)
+        self.assertIn("Jacob is ___ about", system)
+        self.assertIn("<topic> is ___", system)
+
+    def test_the_frame_names_the_configured_user(self) -> None:
+        # The frame is only checkable if it reads as the sentence that
+        # will actually be rendered, so it cannot say "Jacob" by default.
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker._user_names_provider = lambda: ["Mira"]
+        worker.run()
+        self.assertIn("Mira is ___ about", self._system(ollama))
+
+    def test_the_state_field_gets_the_live_rule_not_the_stored_one(
+        self,
+    ) -> None:
+        """The root cause, pinned.
+
+        ``STORED_TEXT_TIME_RULE`` tells a model to write the concrete day
+        and to put finished events in the past tense. That is right for a
+        memory and wrong for a field re-read as a present-tense claim,
+        and this worker pasted it — so the extractor was following
+        instructions when it wrote "experienced ... on august 12 2026".
+        """
+        from app.core.infra import timephrase
+
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker.run()
+        system = self._system(ollama)
+        self.assertIn(timephrase.LIVE_STATE_TIME_RULE, system)
+        self.assertNotIn(timephrase.STORED_TEXT_TIME_RULE, system)
+
+    def test_the_anchor_survives_because_reading_still_needs_it(self) -> None:
+        # The two instructions do opposite jobs: the anchor is for
+        # resolving "he was stressed yesterday" while *reading* the
+        # transcript, the rule governs what gets *written*.
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker.run()
+        self.assertIn("Today is", self._system(ollama))
+
+    def test_the_prompt_sends_plans_and_events_elsewhere(self) -> None:
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker.run()
+        system = self._system(ollama)
+        self.assertIn("scheduled plan", system)
+
+    def test_the_prompt_states_what_the_gate_enforces(self) -> None:
+        # A gate the prompt does not explain is a gate the model keeps
+        # tripping, which costs a whole tick's output each time.
+        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker.run()
+        system = self._system(ollama)
+        self.assertIn("never a new clause", system)
+        self.assertIn("must not start with a verb", system)
+
+
 if __name__ == "__main__":
     unittest.main()
