@@ -212,32 +212,82 @@ has to be positive (named apps opt *in*), because the set of
 applications whose titles are safe is small and enumerable while the set
 that are unsafe is not.
 
+### The collector is its own thing, and must fail on its own
+
+The single most important structural point, and it is about blast radius
+rather than cost. **Nothing in the perception path may be able to stall
+the shell, the WebSocket, or a turn.** The desirable failure mode is
+that a hostile application costs Aiko one sensory detail and nothing
+else — she keeps talking, and the collector shrugs. That means the
+collector is a background worker inside the Tauri process with its own
+queue, never anything the UI thread or the WS send path awaits, and
+everything downstream treats its output as *optional and possibly
+stale*. Get this wrong once and the feature becomes "Aiko freezes when I
+open Outlook".
+
+Three rules follow, and they cost almost nothing if designed in:
+
+- **Escalate, never sweep.** Always-on is only the cheap tier: app,
+  title, process, idle. Anything expensive is triggered *by a change*
+  in the cheap tier, not by a clock. This is the same "has anything
+  meaningful changed" predicate phase 3 already needs as its `demand()`
+  probe, so it should be **one detector with two consumers** — deeper
+  inspection and model interpretation — rather than two thresholds that
+  drift apart.
+- **Cache per surface, and be honest about what invalidates.** Keyed by
+  window handle plus title plus focus-entry, with a TTL. The trap: a
+  title is a poor change signal for exactly the case that motivates
+  deeper inspection — a terminal's contents change constantly while its
+  title does not. The v1 answer is a TTL and a re-read on refocus,
+  explicitly **not** UIA event subscriptions, which are cross-process
+  callbacks that keep the observed app's accessibility engine hot and
+  are a well-known source of pathological slowdowns.
+- **Target the handful of apps actually used**, everything else falls
+  back to window and process. This turns out to be the *same list* as
+  the privacy allowlist, which is a happy result: one positive,
+  user-visible list decides both what is safe to read and what is worth
+  the effort of reading. Two lists here would eventually disagree.
+
 ### On UI Automation specifically
 
-Worth a reality check, because it is the most exciting part of the
-sketch and the least likely to pay. UIA is COM: apartment threading,
-never on a UI thread, and every property read is a cross-process call,
-so a naive tree walk of a browser or editor runs into hundreds of
-milliseconds and must be batched through `CacheRequest` /
-`FindAllBuildCache`. Coverage is uneven in a way that anticorrelates
-with what we want: Electron apps (Cursor, VS Code, Discord, Slack)
-expose a tree only once their accessibility engine is switched on, which
-*measurably slows the observed application* — the user notices his
-editor getting sluggish and blames the companion — and games expose
-nothing at all.
+A reality check, because it is the most exciting part of the sketch and
+the least likely to pay. UIA is COM: apartment threading, never on a UI
+thread, and every property read is a cross-process call, so a naive tree
+walk of a browser or editor runs to hundreds of milliseconds and must be
+batched through `CacheRequest` / `FindAllBuildCache`. Bound it with
+`IUIAutomation2`'s connection and transaction timeouts rather than
+hoping — a target that has stopped pumping messages will otherwise hang
+the call indefinitely, and a hung COM call on a Rust thread cannot be
+cancelled or killed, only leaked.
 
-Against that, note what a window title alone already gives you. VS Code
-puts `rag_store.py — assistant` in its title bar; that is the sketch's
-"he's looking at concept-worker.ts", for a `GetWindowTextW` call. Most
-of the worked examples are reachable from level 0. **Defer UIA behind
-phases 1-5 and re-evaluate with real data on what titles left
-unanswered** — the honest expectation is "not much".
+**Caching does not fix the cost that matters, because the cost is not
+ours.** Electron apps (Cursor, VS Code, Discord, Slack) expose a tree
+only once their accessibility engine is switched on, and Chromium
+generally leaves it on for the remaining lifetime of the process. So the
+penalty is paid at *first contact* and persists whether or not we ever
+walk again — caching saves our milliseconds, not the user's editor.
+Which is the argument for the per-app allowlist being the real control,
+and for never touching an app on speculation. Games expose nothing at
+all, so the coverage gradient runs opposite to interest.
+
+Against all that, note what a window title alone already gives you. VS
+Code puts `rag_store.py — assistant` in its title bar; that is the
+sketch's "he's looking at concept-worker.ts", for a `GetWindowTextW`
+call. Most of the worked examples are reachable from level 0. The
+escalation design above makes UIA meaningfully safer to attempt than it
+would be as a sweep, but it does not change the **sequencing**: you
+cannot know which questions titles left unanswered until phases 1-5 have
+run and produced a list. **Defer, and expect that list to be short.**
 
 ### Phases
 
 1. **Level 0 collectors (Rust).** Window title behind a positive
    allowlist, `GetLastInputInfo` for true OS idle, session lock/unlock.
    Small; `active-win-pos-rs` already pulls the `windows` crate in.
+   Build it as the isolated background collector with its own queue from
+   the start — retrofitting isolation after something has already
+   blocked a turn is much worse than paying for it now, and at this tier
+   the queue is the only part that is not trivial.
 2. **Event store + sessionizer (Python, schema v36).** Normalised
    events, focus-flicker collapse into sessions, durations and counts,
    retention from day one. The foundation; everything else is cheap
@@ -252,7 +302,12 @@ unanswered** — the honest expectation is "not much".
    tutorial) is worse than silence by a wide margin.
 5. **Level 3 intake.** One memory path plus one gap cue, both
    instrumented. Stop here and measure for a fortnight.
-6. **UIA.** Only if phase 5's data says titles were not enough.
+6. **UIA.** Only if phase 5's data names questions titles could not
+   answer. When built: escalation-triggered, per-app allowlist, cached
+   with a TTL, `IUIAutomation2` timeouts, on its own thread — and if a
+   real application still manages to wedge it, that is the signal to
+   move it out into a killable sidecar process rather than to add
+   another timeout.
 
 **Cost.** Levels 0-1 are free in any meaningful sense — a title read
 and an idle query are microseconds, and the poll already runs. Level 2
@@ -297,6 +352,16 @@ other workers rather than with her ability to answer him.
   a qualifier.
 - Is the second-monitor posture (immersion H27) a prerequisite or a
   consumer? It reads as a consumer, but H27 is itself blocked on H10.
+- Thread or sidecar process for the deep-inspection worker? A thread is
+  far simpler and `IUIAutomation2` timeouts probably make it sufficient,
+  but a wedged COM call on a thread can only be leaked, so repeated
+  wedges accumulate. Start with the thread, and treat "we leaked two"
+  as the trigger to move rather than deciding up front.
+- Is there a case for one narrow UIA probe earlier than phase 6 — a
+  terminal's last lines, so she can tell a passing test run from a
+  failing one? It is the single highest-value structured read and also
+  the highest-risk content. Probably worth a spike once the privacy
+  layering from phase 1 has actually been used in anger.
 
 **Cross-refs.** Subsumes **C2** (window titles) as its phase 1.
 Immersion **H27** co-presence mode is the posture this is most useful in
