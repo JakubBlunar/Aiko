@@ -254,6 +254,13 @@ much stricter gating in the proactive director
 the avatar, a UI affordance for entering the mode, and reuse of the K33 cozy
 register for anything she does say.
 
+**See also [C6](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel)**
+— desktop perception as a sensory channel. C6 is what would give this mode
+something to be present *about*: H10 carries the presence visually, C6 supplies
+the rare thing worth interjecting, and the "much higher bar" this entry demands
+is the same bar C6 has to clear. The two are complementary rather than
+sequential, and neither blocks the other.
+
 ---
 
 ## Minor polish

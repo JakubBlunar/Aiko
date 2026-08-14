@@ -176,9 +176,15 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
 
 ### C. Proactive + presence — [`proactive.md`](proactive.md)
 
-- **C2.** Window-title-aware activity (privacy-gated).
+- **C2.** Window-title-aware activity (privacy-gated) — now phase 1 of C6.
 - **C3.** Persisting last-fired typed-proactive cooldown to disk.
 - **C4.** TTS-on-typed-proactive toggle.
+- **C6.** Companion mode — the desktop as a sensory channel. The big one
+  in this series: OS signals → sessionizer → local interpretation → her
+  existing cue/memory/concept machinery, with no model in the perception
+  loop. Feasible and unusually well-matched to the scheduler; the work is
+  the event store underneath (which does not exist) and the interruption
+  bar on top (which this codebase has repeatedly got wrong).
 
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
