@@ -35,6 +35,21 @@ Two architectural choices:
 The post-turn flow handles the one-shot consumption contract by
 stashing the result on the ``SessionController``; the provider
 clears the slot after a single render.
+
+**Two things the "pre/post delta" must not be** (both were live bugs —
+see ``docs/personality-backlog/health.md`` § H36):
+
+*   *The passage of time.* ``AffectUpdater.apply_turn`` decays valence
+    toward baseline for the elapsed gap **before** applying the reaction
+    impulse, while ``AffectStore.get`` is a raw row read. Subtracting one
+    from the other measures however long the user was away: with a 30
+    minute half-life, coming back after two hours to a warm goodbye
+    manufactured a 0.22 "drop" out of nothing but the clock. Callers pass
+    the *decayed* prior (``AffectState.decayed()``) so the delta is the
+    impulse alone.
+*   *A mood cooling back to normal.* Falling from elated to merely fine
+    is not a rupture; nobody was hurt. ``baseline_valence`` gates it, so
+    the turn has to leave them below where they usually sit.
 """
 from __future__ import annotations
 
@@ -82,12 +97,17 @@ def detect(
     current_valence: float | None,
     prior_reaction: str | None,
     threshold: float = 0.12,
+    baseline_valence: float | None = None,
     excluded_reactions: Iterable[str] | None = None,
 ) -> RuptureResult | None:
     """Classify the current turn and return a :class:`RuptureResult`
     when {user_name}'s valence dropped by more than ``threshold``
     *and* Aiko's reaction wasn't one of the excluded (already-
     empathetic) reactions, or ``None`` otherwise.
+
+    ``prior_valence`` must already be decayed to *now* (see
+    :meth:`AffectState.decayed`) — passing the raw stored value makes
+    every long absence look like a rupture.
 
     Defensive against missing inputs:
 
@@ -96,6 +116,9 @@ def detect(
       controller should not synthesise rupture from missing data).
     * ``threshold`` is clamped to a non-negative float; a zero or
       negative threshold disables the detector.
+    * ``baseline_valence`` of ``None`` skips the resting-point gate
+      (kept optional so the pure function stays usable without a
+      full :class:`AffectState`).
     """
     if prior_valence is None or current_valence is None:
         return None
@@ -104,6 +127,14 @@ def detect(
 
     drop = float(prior_valence) - float(current_valence)
     if drop < float(threshold):
+        return None
+
+    # Cooling off is not a rupture. A turn that leaves them at or above
+    # their own resting valence didn't wound anyone, however far it fell
+    # from an unusually warm high.
+    if baseline_valence is not None and float(current_valence) > float(
+        baseline_valence
+    ):
         return None
 
     cleaned_reaction = (prior_reaction or "").strip().lower()

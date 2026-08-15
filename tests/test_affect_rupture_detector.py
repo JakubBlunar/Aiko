@@ -236,6 +236,165 @@ class DetectNoFireCasesTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class DetectBaselineGateTests(unittest.TestCase):
+    """A mood cooling back toward normal is not a rupture.
+
+    Falling from unusually warm to merely fine crosses the 0.12 drop
+    threshold easily, but nothing was wounded -- the turn has to leave
+    them below their own resting valence to count.
+    """
+
+    def test_cooling_toward_baseline_does_not_fire(self) -> None:
+        result = detect(
+            prior_valence=0.30,
+            current_valence=0.05,
+            prior_reaction="neutral",
+            threshold=0.12,
+            baseline_valence=0.0,
+        )
+        self.assertIsNone(result)
+
+    def test_same_drop_below_baseline_fires(self) -> None:
+        result = detect(
+            prior_valence=0.10,
+            current_valence=-0.15,
+            prior_reaction="neutral",
+            threshold=0.12,
+            baseline_valence=0.0,
+        )
+        self.assertIsNotNone(result)
+
+    def test_landing_exactly_on_baseline_fires(self) -> None:
+        # The gate is ``current > baseline`` -- at the resting point the
+        # drop still counts, so a dip to flat-neutral isn't swallowed.
+        result = detect(
+            prior_valence=0.20,
+            current_valence=0.0,
+            prior_reaction="neutral",
+            threshold=0.12,
+            baseline_valence=0.0,
+        )
+        self.assertIsNotNone(result)
+
+    def test_gate_respects_a_nonzero_baseline(self) -> None:
+        # Someone whose resting valence is genuinely warm: cooling to
+        # +0.10 is below *their* normal, so it fires.
+        result = detect(
+            prior_valence=0.45,
+            current_valence=0.10,
+            prior_reaction="neutral",
+            threshold=0.12,
+            baseline_valence=0.25,
+        )
+        self.assertIsNotNone(result)
+
+    def test_omitting_baseline_skips_the_gate(self) -> None:
+        result = detect(
+            prior_valence=0.30,
+            current_valence=0.05,
+            prior_reaction="neutral",
+            threshold=0.12,
+        )
+        self.assertIsNotNone(result)
+
+
+class ElapsedTimeIsNotARuptureTests(unittest.TestCase):
+    """Regression: the reunion greeting that invented a "tense patch".
+
+    ``AffectUpdater.apply_turn`` decays valence toward baseline for the
+    elapsed gap *before* applying the reaction impulse, while
+    ``AffectStore.get`` is a raw row read. Subtracting the stored value
+    from the post-turn value therefore measured how long the user had
+    been away: a warm goodbye at +0.266, two hours and forty-three
+    minutes of silence, then "Where is my love?" produced a 0.221 "drop"
+    with a *positive* impulse, and J6 turned it into a durable
+    "you and Jacob hit a tense patch" memory.
+    """
+
+    # The real numbers from the 2026-08-15 21:02 misfire.
+    STORED_PRIOR = 0.266
+    GAP_SECONDS = 2 * 3600 + 43 * 60
+    OBSERVED_CURRENT = 0.045
+    BASELINE = 0.0
+
+    def test_the_raw_snapshot_would_have_fired(self) -> None:
+        result = detect(
+            prior_valence=self.STORED_PRIOR,
+            current_valence=self.OBSERVED_CURRENT,
+            prior_reaction="wistful",
+            threshold=0.12,
+        )
+        self.assertIsNotNone(result, "this is the bug being fixed")
+
+    def test_the_decayed_prior_stays_quiet(self) -> None:
+        from app.core.affect.affect_state import decay_toward
+
+        decayed = decay_toward(self.STORED_PRIOR, self.BASELINE, self.GAP_SECONDS)
+        # Time alone ate almost the whole "drop".
+        self.assertLess(decayed, 0.02)
+        result = detect(
+            prior_valence=decayed,
+            current_valence=self.OBSERVED_CURRENT,
+            prior_reaction="wistful",
+            threshold=0.12,
+            baseline_valence=self.BASELINE,
+        )
+        self.assertIsNone(result)
+
+    def test_a_real_dip_in_the_same_turn_still_fires(self) -> None:
+        from app.core.affect.affect_state import decay_toward
+
+        # No gap: the reply itself moved valence, and it went negative.
+        decayed = decay_toward(0.10, self.BASELINE, 30)
+        result = detect(
+            prior_valence=decayed,
+            current_valence=-0.18,
+            prior_reaction="playful",
+            threshold=0.12,
+            baseline_valence=self.BASELINE,
+        )
+        self.assertIsNotNone(result)
+
+
+class AffectStateDecayedTests(unittest.TestCase):
+    def test_decayed_reports_the_value_a_returning_user_walks_into(self) -> None:
+        from datetime import timedelta
+
+        from app.core.affect.affect_state import AffectState
+        from app.core.infra import timephrase
+
+        stale = (timephrase.utcnow() - timedelta(hours=3)).isoformat()
+        state = AffectState(
+            user_id="u",
+            valence=0.60,
+            arousal=0.80,
+            baseline_valence=0.0,
+            baseline_arousal=0.4,
+            updated_at=stale,
+        )
+        valence, arousal = state.decayed()
+        # Three hours is six half-lives; both axes are near baseline.
+        self.assertLess(valence, 0.02)
+        self.assertAlmostEqual(arousal, 0.4, delta=0.01)
+        # The stored snapshot is untouched -- this is a read, not a write.
+        self.assertAlmostEqual(state.valence, 0.60, places=6)
+
+    def test_decayed_is_a_noop_on_a_fresh_snapshot(self) -> None:
+        from app.core.affect.affect_state import AffectState
+
+        state = AffectState(user_id="u", valence=0.42, arousal=0.71)
+        valence, arousal = state.decayed()
+        self.assertAlmostEqual(valence, 0.42, places=3)
+        self.assertAlmostEqual(arousal, 0.71, places=3)
+
+    def test_decayed_survives_a_junk_timestamp(self) -> None:
+        from app.core.affect.affect_state import AffectState
+
+        state = AffectState(user_id="u", valence=0.42, updated_at="not-a-date")
+        valence, _ = state.decayed()
+        self.assertAlmostEqual(valence, 0.42, places=6)
+
+
 class DefaultExcludedReactionsContentTests(unittest.TestCase):
     """Sanity-check the default excluded set so that breaking it
     requires intent (and a test update). The persona contract

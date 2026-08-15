@@ -2517,6 +2517,7 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         user_text: str,
         user_message_id: int | None,
         assistant_message_id: int | None,
+        baseline_valence: float | None = None,
     ) -> None:
         """J6: arm a repair watch on rupture; record on recovery.
 
@@ -2561,6 +2562,7 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             min_rise=float(
                 getattr(agent, "conflict_repair_min_recovery_rise", 0.10)
             ),
+            baseline=baseline_valence,
         ):
             self._record_conflict_repair(
                 watch,

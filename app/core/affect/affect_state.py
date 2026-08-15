@@ -141,6 +141,57 @@ class AffectState:
         """JSON-safe dict (no Python-only types) for WS broadcast."""
         return asdict(self)
 
+    def decayed(self) -> tuple[float, float]:
+        """``(valence, arousal)`` after decaying toward baseline until now.
+
+        :meth:`AffectStore.get` is a raw row read, so a snapshot taken
+        between turns still carries the value from whenever the last turn
+        happened — which, after the user has been away for two hours, is
+        nowhere near what they'd actually walk into. Anything comparing a
+        snapshot against a post-:meth:`AffectUpdater.apply_turn` value has
+        to decay it first or it measures the passage of time and calls it
+        an emotional event (see K8's misfires in
+        ``docs/personality-backlog/health.md`` § H36).
+        """
+        elapsed_s = _seconds_since(self.updated_at)
+        return (
+            decay_toward(self.valence, self.baseline_valence, elapsed_s),
+            decay_toward(self.arousal, self.baseline_arousal, elapsed_s),
+        )
+
+
+# ── decay ───────────────────────────────────────────────────────────────
+
+
+# Exponential pull back toward baseline between events. Shared by
+# ``AffectUpdater.apply_turn`` (which folds it in before the reaction
+# impulse) and ``AffectState.decayed`` (which reports it without writing).
+DECAY_HALFLIFE_SECONDS = 30 * 60.0
+
+
+def decay_toward(
+    value: float,
+    baseline: float,
+    elapsed_s: float,
+    *,
+    halflife_s: float = DECAY_HALFLIFE_SECONDS,
+) -> float:
+    """Blend ``value`` toward ``baseline`` for ``elapsed_s`` of quiet."""
+    if elapsed_s <= 0 or halflife_s <= 0:
+        return float(value)
+    weight = math.pow(0.5, float(elapsed_s) / float(halflife_s))
+    return weight * float(value) + (1.0 - weight) * float(baseline)
+
+
+def _seconds_since(iso_timestamp: str) -> float:
+    try:
+        ts = datetime.fromisoformat(str(iso_timestamp).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except Exception:
+        return 0.0
+    return max(0.0, (timephrase.utcnow() - ts).total_seconds())
+
 
 # ── lookup helpers ──────────────────────────────────────────────────────
 
@@ -421,7 +472,9 @@ class AffectUpdater:
     # Smoothing factor for new events. Higher = mood reacts faster.
     _ALPHA = 0.35
     # Decay-toward-baseline per minute (exponential half-life ~30 min).
-    _DECAY_HALFLIFE_SECONDS = 30 * 60.0
+    # Kept as a class attribute for the existing callers/tests; the maths
+    # lives in ``decay_toward`` so read-only consumers share it.
+    _DECAY_HALFLIFE_SECONDS = DECAY_HALFLIFE_SECONDS
     # Trend EWMA smoothing factor: 0.05 means trend is roughly the average
     # of the last 20 updates.
     _TREND_ALPHA = 0.05
@@ -459,12 +512,17 @@ class AffectUpdater:
         # 1) decay toward baseline based on elapsed time.
         elapsed_s = self._seconds_since(state.updated_at)
         if elapsed_s > 0:
-            weight = math.pow(0.5, elapsed_s / self._DECAY_HALFLIFE_SECONDS)
-            state.valence = (
-                weight * state.valence + (1 - weight) * state.baseline_valence
+            state.valence = decay_toward(
+                state.valence,
+                state.baseline_valence,
+                elapsed_s,
+                halflife_s=self._DECAY_HALFLIFE_SECONDS,
             )
-            state.arousal = (
-                weight * state.arousal + (1 - weight) * state.baseline_arousal
+            state.arousal = decay_toward(
+                state.arousal,
+                state.baseline_arousal,
+                elapsed_s,
+                halflife_s=self._DECAY_HALFLIFE_SECONDS,
             )
 
         # 2) compute event impulse.

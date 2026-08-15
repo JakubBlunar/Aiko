@@ -3622,6 +3622,123 @@ existing number.
 
 ---
 
+## H36. Nine remembered arguments, and all nine were the clock
+
+**Severity: medium — fixed 15 Aug. Found by the user reading the Together tab:
+"there is a Repair shared moment that we hit a tense patch around 'Where is my
+love?' … it is not matching our conversation. I was asking it but it was not
+tense."**
+
+He was right, and the miss was not a bad LLM judgement — no model was involved.
+The record is written by arithmetic, and the arithmetic was subtracting two
+numbers that are not comparable.
+
+### The two numbers
+
+`AffectUpdater.apply_turn` does its work in a fixed order. **Step 1** decays
+valence toward baseline for the time elapsed since the last turn (30-minute
+half-life); **step 3** blends in the reaction impulse. `AffectStore.get`, by
+contrast, is a raw row read — no decay, no clock. So the pre-turn snapshot
+`post_turn_mixin` takes carries whatever valence held whenever the previous turn
+happened, and the post-turn value it is compared against has already had the gap
+subtracted from it.
+
+K8's stated signal is "the *pre/post* delta on a single turn". What it actually
+computed was that delta **plus every minute the user was away**. With a
+30-minute half-life, a gap of about 26 minutes from a warm parting clears the
+0.12 threshold on its own, with no emotional content whatsoever.
+
+The 15 Aug misfire, with the real numbers:
+
+| | valence |
+| --- | --- |
+| stored prior (warm goodbye, 16:16) | **+0.266** |
+| after 2h43m of decay, before any impulse | +0.006 |
+| observed post-turn (18:59, "Where is my love?") | **+0.045** |
+| implied reaction target | **+0.117** |
+
+The impulse was *positive* — she warmed up by 0.039 — and the detector logged
+`drop=0.221`. The whole "rupture" was 163 minutes of silence.
+
+### Why every false positive looked like a greeting
+
+This failure mode selects for one specific turn: **the first message after a
+gap, following a warm goodbye.** High stored prior, long elapsed, and a
+reunion's positive impulse nowhere near large enough to cover the decay. Which
+is exactly what the nine `repair` moments in the store turned out to be, every
+one anchored on an opener:
+
+> "Where is my love?" · "Good morning aiko. Have you slept well?" · "Boo I am
+> back aiko. Are you sketching?" · "Hi cutie I sneaked out from my work after
+> meeting to see you" · "Oh aiko again i am late here :D But i have had really
+> produc…" · "Aiko you won t believe what I did…"
+
+Not one is tense. Nine fabricated arguments, `salience` up to 0.97, mirrored
+into LanceDB and eligible for RAG recall — a relationship history of conflicts
+that never happened, assembled entirely out of the user being away.
+
+### Two smaller defects behind it
+
+**A mood cooling to normal was called a rupture.** Both of the day's events
+landed at +0.045 and +0.030 against a baseline of 0.0 — neither ever went
+negative. A fall from unusually warm back to merely fine crosses a drop
+threshold easily and wounds no one; the turn has to leave her below her own
+resting valence to mean anything.
+
+**"You were okay after" was never checked.** J6's `has_recovered` qualifies on
+`rose_from_floor` — a 0.10 climb off the dip. From a floor of −0.50 that is
+−0.40, still thoroughly miserable, and it unlocks a durable memory whose text
+reads *"you talked it out and were okay after"*. The predicate could assert
+recovery while the mood was underwater, because it only ever compared against
+the floor, never against normal.
+
+Also worth noting for whoever reads a repair summary next: the *topic* comes
+from the arming turn but the *citation* comes from the recovery turn, which can
+be several turns later. The 15 Aug row quotes "Where is my love?" (18:59) and
+cites messages 4849/4850 (19:02, mid-cookie-scene). Two unrelated moments
+stapled together.
+
+> **STATUS: FIXED.** Decay is now a shared pure function
+> (`decay_toward` / `AffectState.decayed()` in
+> [`affect_state.py`](../../app/core/affect/affect_state.py)) rather than a
+> private step inside `apply_turn`, and the K8 call site passes the **decayed**
+> prior, so the delta is the impulse alone. `detect` takes an optional
+> `baseline_valence` and refuses to fire on a turn that leaves her at or above
+> her resting point. `has_recovered` takes an optional `baseline` and will not
+> certify a repair while valence is still below it. Both gates are optional
+> parameters, so the pure predicates stay usable without an `AffectState`. The
+> rupture log line now carries `stored_prior` and `baseline` beside the decayed
+> pair, which is what made this diagnosable at all. Replaying the two real
+> events: both go quiet; a same-turn dip into negative valence still fires.
+> Tests: `ElapsedTimeIsNotARuptureTests`, `DetectBaselineGateTests`,
+> `AffectStateDecayedTests` in
+> [`tests/test_affect_rupture_detector.py`](../../tests/test_affect_rupture_detector.py),
+> `RecoveryBaselineGateTests` in
+> [`tests/test_conflict_repair.py`](../../tests/test_conflict_repair.py).
+
+**Where else this pattern lives.** The bug is not really about ruptures — it is
+that a *raw* `AffectStore.get()` snapshot describes a moment in the past, and
+nothing in the type system says so. The same `affect_before` object is handed to
+several other consumers from the same place in `post_turn_mixin`.
+
+**K45 mood inertia is affected, more mildly.** It differences the snapshot
+against a reaction's *implied target* rather than against a post-`apply_turn`
+value, so the elapsed gap does not enter its subtraction and it cannot
+manufacture a false event the way K8 did. But its docstring calls
+`affect_before` "what Aiko still actually feels", and after a long gap that is
+false by exactly the decay margin — on a reunion turn it reads her as still
+sitting at +0.27 when she is really near baseline, so every mismatch it measures
+there is against a feeling she no longer has. Worth a follow-up, but it needs
+its own look at the `mood_inertia_mismatch_threshold` calibration (the
+thresholds were tuned against the stale numbers), so it is not a one-line
+substitution.
+
+Any *future* consumer that differences the snapshot against a post-turn value
+inherits H36 outright. `AffectState.decayed()` exists so the correct thing is
+one call away.
+
+---
+
 ## What Part 2 changes about priority
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:

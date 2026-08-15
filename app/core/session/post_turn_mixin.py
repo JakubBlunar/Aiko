@@ -137,6 +137,13 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # have both ``affect_before`` (pre-turn) and ``state``
         # (post-turn) in scope. One-shot slot on the controller is
         # consumed by the next turn's inner-life provider.
+        #
+        # The prior has to be *decayed to now* before the subtraction.
+        # ``apply_turn`` folds the elapsed-gap decay in before the
+        # reaction impulse, so comparing against the raw snapshot
+        # measured how long the user had been away and read it as an
+        # emotional injury -- every reunion greeting after a warm
+        # goodbye fired a rupture (H36).
         rupture_result = None
         if (
             affect_before is not None
@@ -154,21 +161,26 @@ class PostTurnMixin(PostTurnHelpersMixin):
                         0.12,
                     )
                 )
+                decayed_prior, _ = affect_before.decayed()
                 rupture_result = affect_rupture_detector.detect(
-                    prior_valence=affect_before.valence,
+                    prior_valence=decayed_prior,
                     current_valence=state.valence,
                     prior_reaction=reaction,
                     threshold=threshold,
+                    baseline_valence=affect_before.baseline_valence,
                 )
                 if rupture_result is not None:
                     self._pending_rupture = rupture_result
                     log.info(
                         "K8 rupture: drop=%.3f prior_reaction=%r "
-                        "(prior=%.3f -> current=%.3f)",
+                        "(prior=%.3f -> current=%.3f) "
+                        "stored_prior=%.3f baseline=%.3f",
                         rupture_result.valence_drop,
                         rupture_result.prior_reaction,
                         rupture_result.prior_valence,
                         rupture_result.current_valence,
+                        affect_before.valence,
+                        affect_before.baseline_valence,
                     )
             except Exception:
                 log.debug("rupture detector raised", exc_info=True)
@@ -185,6 +197,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     user_text=user_text,
                     user_message_id=user_message_id,
                     assistant_message_id=assistant_message_id,
+                    baseline_valence=(
+                        float(affect_before.baseline_valence)
+                        if affect_before is not None else None
+                    ),
                 )
             except Exception:
                 log.debug("conflict-repair tracking failed", exc_info=True)
