@@ -68,6 +68,35 @@ def _format_item(item: "Item") -> dict[str, Any]:
     return payload
 
 
+def _not_found(
+    tool: str,
+    target: str,
+    store: Any,
+    *,
+    noun: str = "item",
+    kinds: tuple[str, ...] | None = None,
+    consumable_only: bool = False,
+) -> ToolError:
+    """Build a lookup failure that tells Aiko what she *could* have meant.
+
+    The bare version of this error ("no item matching 'x' in your room")
+    is a dead end: it names the string that failed and nothing else, so
+    the model's only move is to call again with the same string. It did
+    exactly that three turns running while trying to eat a cookie. Listing
+    the rows that exist turns the failure into a usable correction.
+    """
+    msg = f"{tool}: no {noun} matching '{target}'"
+    try:
+        available = store.summarize_available(
+            kinds=kinds, consumable_only=consumable_only
+        )
+    except Exception:  # never let the error path raise
+        available = ""
+    if available:
+        return ToolError(f"{msg}. What you actually have -- {available}")
+    return ToolError(f"{msg} -- there's nothing like that in your room.")
+
+
 def _format_location(loc: "Location", *, items: list["Item"]) -> dict[str, Any]:
     return {
         "name": loc.name,
@@ -297,8 +326,9 @@ class InspectItemTool:
                     "item": {
                         "type": "string",
                         "description": (
-                            "Slug or short name of the item, e.g. 'cookies', "
-                            "'plush_blanket'."
+                            "The item, e.g. 'cookies', 'plush blanket'. "
+                            "Fuzzy matched, so extra adjectives and "
+                            "plurals are fine."
                         ),
                     },
                 },
@@ -315,7 +345,7 @@ class InspectItemTool:
             raise ToolError("inspect_item: 'item' is required")
         item = store.find_item(target)
         if item is None:
-            raise ToolError(f"inspect_item: no item matching '{target}' in your room")
+            raise _not_found("inspect_item", target, store)
         loc = (
             store.get_location_by_id(item.location_id)
             if item.location_id is not None
@@ -356,7 +386,12 @@ class ConsumeItemTool:
                 "properties": {
                     "item": {
                         "type": "string",
-                        "description": "Slug or short name of the item.",
+                        "description": (
+                            "The item, named however you just described "
+                            "it. Fuzzy matched -- extra adjectives and "
+                            "plurals are fine -- and it prefers whatever "
+                            "is within reach of where you're sitting."
+                        ),
                     },
                     "amount": {
                         "type": "integer",
@@ -381,9 +416,11 @@ class ConsumeItemTool:
         except (TypeError, ValueError):
             amount = 1
         amount = max(1, min(10, amount))
-        item = store.find_item(target)
+        item = store.find_item(target, prefer_consumable=True)
         if item is None:
-            raise ToolError(f"consume_item: no item matching '{target}' in your room")
+            raise _not_found(
+                "consume_item", target, store, consumable_only=True
+            )
         if not item.consumable:
             return json.dumps(
                 {
@@ -459,15 +496,10 @@ class WaterPlantTool:
         target = (arguments.get("plant") or "").strip()
         if not target:
             raise ToolError("water_plant: 'plant' is required")
-        item = store.find_item(target)
+        item = store.find_item(target, kinds=("plant",))
         if item is None:
-            raise ToolError(
-                f"water_plant: no plant matching '{target}' in your world"
-            )
-        if item.kind != "plant":
-            raise ToolError(
-                f"water_plant: '{item.name}' isn't a plant — try the "
-                "garden."
+            raise _not_found(
+                "water_plant", target, store, noun="plant", kinds=("plant",)
             )
         # Aiko has to be in the same location as the plant. Carried
         # plants (no location) are watered freely.
@@ -545,10 +577,10 @@ class PlantSeedTool:
         if not target:
             raise ToolError("plant_seed: 'seed' is required")
         where = (arguments.get("where") or "garden").strip()
-        item = store.find_item(target)
-        if item is None or item.kind != "seed":
-            raise ToolError(
-                f"plant_seed: no seed matching '{target}' in your inventory"
+        item = store.find_item(target, kinds=("seed",))
+        if item is None:
+            raise _not_found(
+                "plant_seed", target, store, noun="seed", kinds=("seed",)
             )
         loc = store.find_location(where)
         if loc is None:
@@ -652,10 +684,10 @@ class HarvestPlantTool:
         target = (arguments.get("plant") or "").strip()
         if not target:
             raise ToolError("harvest_plant: 'plant' is required")
-        item = store.find_item(target)
-        if item is None or item.kind != "plant":
-            raise ToolError(
-                f"harvest_plant: no plant matching '{target}' in your world"
+        item = store.find_item(target, kinds=("plant",))
+        if item is None:
+            raise _not_found(
+                "harvest_plant", target, store, noun="plant", kinds=("plant",)
             )
         stage = str((item.state or {}).get("stage", "")).lower()
         if stage != "mature":

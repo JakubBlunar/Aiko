@@ -274,6 +274,142 @@ class ItemTests(unittest.TestCase):
             self.assertIsNone(store.find_item("dragon"))
 
 
+class FindItemTolerationTests(unittest.TestCase):
+    """The matcher has to survive how Aiko actually phrases things.
+
+    She asks for what she just narrated, not what the row is called: the
+    ambient block says "9 cookies" but ``inspect_item`` hands her the
+    description ("warm, fish-shaped chocolate-chip cookies"), so she asks
+    to eat a "fish-shaped cookie" and the old substring matcher returned
+    nothing, three turns running.
+    """
+
+    def _store(self, path: Path) -> WorldStore:
+        store = WorldStore(path)
+        store.seed_default()
+        return store
+
+    def test_extra_adjectives_still_find_the_row(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            for query in (
+                "fish-shaped cookie",
+                "warm fish-shaped chocolate-chip cookie",
+                "chocolate chip cookies",
+            ):
+                with self.subTest(query=query):
+                    found = store.find_item(query)
+                    self.assertIsNotNone(found, f"{query!r} matched nothing")
+                    self.assertEqual(found.slug, "cookie_jar")
+
+    def test_articles_and_plurals_are_ignored(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            for query in ("a cookie", "the cookies", "one more cookie", "cookie"):
+                with self.subTest(query=query):
+                    found = store.find_item(query)
+                    self.assertIsNotNone(found, f"{query!r} matched nothing")
+                    self.assertEqual(found.slug, "cookie_jar")
+
+    def test_hyphenation_drift_still_matches_the_slug(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            self.assertEqual(
+                store.find_item("sci-fi paperback").slug, "scifi_paperback"
+            )
+
+    def test_nonsense_still_matches_nothing(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            for query in ("dragon", "the user's tax return", "", "   "):
+                with self.subTest(query=query):
+                    self.assertIsNone(store.find_item(query))
+
+    def test_one_shared_generic_word_is_not_a_match(self) -> None:
+        """"chocolate-chip cookie" must not resolve to "potato chips"."""
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            store.add_item(
+                name="Potato chips", kind="food", consumable=True, quantity=20
+            )
+            found = store.find_item("chocolate-chip cookie")
+            self.assertIsNotNone(found)
+            self.assertEqual(found.slug, "cookie_jar")
+
+    def test_the_pile_she_is_sitting_next_to_wins(self) -> None:
+        """Several rows share a name; proximity and freshness break the tie."""
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            beanbag = store.find_location("beanbag")
+            self.assertIsNotNone(beanbag)
+            fresh = store.add_item(
+                name="cookies",
+                kind="food",
+                slug="gift_cookies",
+                consumable=True,
+                quantity=9,
+                location_id=beanbag.id,
+                given_by="user",
+            )
+            self.assertIsNotNone(fresh)
+            store.set_state(location_id=beanbag.id)
+            self.assertEqual(store.find_item("cookies").slug, "gift_cookies")
+            self.assertEqual(store.find_item("a cookie").slug, "gift_cookies")
+
+    def test_kind_filter_keeps_the_garden_out_of_the_kitchen(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            store.add_item(
+                name="lavender sprigs",
+                kind="food",
+                consumable=True,
+                quantity=12,
+            )
+            plant = store.find_item("lavender", kinds=("plant",))
+            self.assertIsNotNone(plant)
+            self.assertEqual(plant.kind, "plant")
+            self.assertIsNone(store.find_item("warm lamp", kinds=("plant",)))
+
+    def test_prefer_consumable_reaches_past_the_seed_packet(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            store.add_item(
+                name="ripe tomatoes",
+                kind="food",
+                slug="tomatoes",
+                consumable=True,
+                quantity=4,
+            )
+            store.add_item(
+                name="tomato seed packet",
+                kind="seed",
+                slug="seed_packet_tomato",
+                quantity=1,
+            )
+            found = store.find_item("tomato", prefer_consumable=True)
+            self.assertEqual(found.slug, "tomatoes")
+
+    def test_rank_items_returns_every_candidate_best_first(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            ranked = store.rank_items("cookie")
+            self.assertTrue(ranked)
+            self.assertEqual(ranked[0].slug, "cookie_jar")
+
+    def test_summarize_available_names_what_she_could_have_meant(self) -> None:
+        with _TempDb() as (path, _db):
+            store = self._store(path)
+            summary = store.summarize_available(consumable_only=True)
+            self.assertIn("cookies", summary)
+            # Non-consumables stay out of a consumable-only summary.
+            self.assertNotIn("monitors", summary)
+
+    def test_summarize_available_is_empty_with_nothing_to_offer(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            self.assertEqual(store.summarize_available(), "")
+
+
 class StateTests(unittest.TestCase):
     def test_get_state_lazy_creates_singleton(self) -> None:
         with _TempDb() as (path, _db):

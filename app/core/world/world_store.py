@@ -390,6 +390,144 @@ def _slugify(text: str) -> str:
     return "".join(out) or "item"
 
 
+# ── Fuzzy item matching ──────────────────────────────────────────────────
+# Aiko asks for things the way she last described them, not the way the row
+# is spelled. The ambient block shows her "9 cookies", but ``inspect_item``
+# hands back the description ("warm, fish-shaped chocolate-chip cookies in a
+# glass jar") — so she will cheerfully ask to eat a "fish-shaped cookie",
+# or "a cookie", or "the potato chips". Matching on substrings alone fails
+# every one of those, because a query that is *more* specific than the row
+# name is never a substring of it. Hence tokens: normalise both sides, then
+# compare as sets so added articles, added adjectives, plural drift, and
+# word order all survive the trip.
+
+_MATCH_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "some", "any", "of", "and", "or",
+        "my", "your", "yours", "our", "her", "his", "their", "its",
+        "in", "on", "at", "from", "with", "for", "to",
+        "this", "that", "these", "those",
+    }
+)
+
+
+def _stems(token: str) -> frozenset[str]:
+    """Candidate singular forms of one word.
+
+    English doesn't let you strip a plural with confidence — "cookies" is
+    "cookie" + s while "babies" is "baby" + es, and nothing in the surface
+    form says which — so every plausible stem is kept and two words count
+    as the same word when their stem sets intersect. Being generous here is
+    cheap; the alternative (picking one rule) silently mismatched
+    "cookies" against "cookie", which is the whole bug.
+    """
+    forms = {token}
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        base = token[:-1]
+        forms.add(base)                      # cookies -> cookie, chips -> chip
+        if base.endswith("ie"):
+            forms.add(base[:-2] + "y")       # babies -> baby
+        if base.endswith("e") and base[:-1].endswith(("s", "x", "z", "h", "o")):
+            forms.add(base[:-1])             # dishes -> dish, tomatoes -> tomato
+    return frozenset(forms)
+
+
+def _match_tokens(*texts: str) -> tuple[frozenset[str], ...]:
+    """Split text into words, each carried as its set of candidate stems."""
+    out: list[frozenset[str]] = []
+    seen: set[frozenset[str]] = set()
+    for text in texts:
+        for word in re.split(r"[^a-z0-9]+", (text or "").lower()):
+            if not word or word in _MATCH_STOPWORDS:
+                continue
+            stems = _stems(word)
+            if stems not in seen:
+                seen.add(stems)
+                out.append(stems)
+    return tuple(out)
+
+
+def _covers(outer: tuple[frozenset[str], ...], inner: tuple[frozenset[str], ...]) -> bool:
+    """True when every word in ``inner`` also appears in ``outer``."""
+    return bool(inner) and all(any(o & i for o in outer) for i in inner)
+
+
+def _shared(a: tuple[frozenset[str], ...], b: tuple[frozenset[str], ...]) -> int:
+    """How many words the two sides have in common."""
+    return sum(1 for i in a if any(i & j for j in b))
+
+
+def _squash(text: str) -> str:
+    """Alphanumerics only, so hyphenation and spacing stop mattering."""
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+# Match tiers, best first. Scored rather than short-circuited so the
+# location tie-break in ``rank_items`` can pick between equally good
+# candidates instead of taking whichever row loaded first.
+_TIER_EXACT_SLUG = 100
+_TIER_EXACT_NAME = 95
+_TIER_SQUASHED = 90      # "sci-fi paperback" vs scifi_paperback
+_TIER_SAME_WORDS = 85
+_TIER_QUERY_COVERS = 80  # query has every word of the name, plus extras
+_TIER_NAME_COVERS = 70   # name has every word of the query, plus extras
+_TIER_SUBSTRING = 60
+_TIER_OVERLAP = 50       # two or more words in common, neither covering
+_TIER_DESCRIPTION = 30   # last resort: the words are only in the blurb
+
+
+def _match_score(
+    item: Item,
+    *,
+    raw: str,
+    slug: str,
+    squashed: str,
+    words: tuple[frozenset[str], ...],
+) -> int:
+    """How well ``item`` answers the query. 0 means "not a match"."""
+    name_lower = item.name.lower()
+    if item.slug == raw or item.slug == slug:
+        return _TIER_EXACT_SLUG
+    if name_lower == raw:
+        return _TIER_EXACT_NAME
+    if squashed and squashed in (_squash(item.name), _squash(item.slug)):
+        return _TIER_SQUASHED
+    if not words:
+        return 0
+    # Name and slug are scored as separate vocabularies rather than one
+    # pooled bag. The slug carries words the display name drops entirely
+    # ("The Glasshouse Letters" is slug scifi_paperback) so it has to
+    # count — but it also carries words the *thing* doesn't really have
+    # ("cookies" is slug cookie_jar), and pooling them would demand the
+    # query say "jar" before it could match the cookies.
+    best = 0
+    for vocab in (_match_tokens(item.name), _match_tokens(item.slug)):
+        if not vocab:
+            continue
+        query_covers = _covers(words, vocab)
+        name_covers = _covers(vocab, words)
+        if query_covers and name_covers:
+            best = max(best, _TIER_SAME_WORDS)
+        elif query_covers:
+            best = max(best, _TIER_QUERY_COVERS)
+        elif name_covers:
+            best = max(best, _TIER_NAME_COVERS)
+    if best:
+        return best
+    if raw in name_lower or raw in item.slug or name_lower in raw:
+        return _TIER_SUBSTRING
+    # Two shared words minimum. One is far too weak: "chocolate-chip
+    # cookie" and "potato chips" share "chip", and matching those would
+    # feed her crisps when she asked for a biscuit.
+    if _shared(words, _match_tokens(item.name, item.slug)) >= 2:
+        return _TIER_OVERLAP
+    if item.description and _covers(
+        _match_tokens(item.name, item.slug, item.description), words
+    ):
+        return _TIER_DESCRIPTION
+    return 0
+
+
 def _decode_state(blob: str | None) -> dict[str, Any]:
     if not blob:
         return {}
@@ -980,23 +1118,144 @@ class WorldStore:
         with self._lock:
             return self._items.get(int(item_id))
 
-    def find_item(self, query: str) -> Item | None:
-        """Fuzzy-match by slug, name, or substring. Case-insensitive."""
-        target = (query or "").strip().lower()
-        if not target:
-            return None
+    def rank_items(
+        self,
+        query: str,
+        *,
+        kinds: tuple[str, ...] | None = None,
+        prefer_consumable: bool = False,
+    ) -> list[Item]:
+        """Every item matching ``query``, best candidate first.
+
+        Ranked by match quality (see :func:`_match_score`), then by where
+        the thing actually is: something in arm's reach beats the same
+        thing across the room, and a fresh gift beats the ancient jar of
+        the same name. That last part matters — the room routinely holds
+        several rows called "cookies", and eating from the kitchenette
+        while sitting on the beanbag with a new bag in hand reads as a
+        continuity bug.
+        """
+        raw = (query or "").strip().lower()
+        if not raw:
+            return []
+        slug = _slugify(raw)
+        squashed = _squash(raw)
+        words = _match_tokens(raw)
         with self._lock:
             items = list(self._items.values())
+        if kinds:
+            wanted = {k.strip().lower() for k in kinds}
+            items = [i for i in items if i.kind in wanted]
+        try:
+            here = self.get_state().location_id
+        except Exception:
+            here = None
+
+        def recency(item: Item) -> float:
+            ts = _parse_iso(item.created_at)
+            return -ts.timestamp() if ts is not None else 0.0
+
+        def location_rank(item: Item) -> int:
+            if here is not None and item.location_id == here:
+                return 0
+            if item.location_id is None:  # carried
+                return 1
+            return 2
+
+        scored: list[tuple[tuple[Any, ...], Item]] = []
         for item in items:
-            if item.slug == target:
-                return item
-        for item in items:
-            if item.name.lower() == target:
-                return item
-        for item in items:
-            if target in item.slug or target in item.name.lower():
-                return item
-        return None
+            score = _match_score(
+                item, raw=raw, slug=slug, squashed=squashed, words=words
+            )
+            if score <= 0:
+                continue
+            key = (
+                -score,
+                # Edibility outranks proximity: asked to eat a tomato she
+                # should reach for the ripe ones in the kitchen, not the
+                # seed packet in her pocket.
+                0 if (prefer_consumable and item.consumable) else 1,
+                0 if item.quantity > 0 else 1,
+                location_rank(item),
+                # Newest first, so the thing just handed to her wins.
+                recency(item),
+                item.id,
+            )
+            scored.append((key, item))
+        scored.sort(key=lambda pair: pair[0])
+        return [item for _key, item in scored]
+
+    def find_item(
+        self,
+        query: str,
+        *,
+        kinds: tuple[str, ...] | None = None,
+        prefer_consumable: bool = False,
+    ) -> Item | None:
+        """Best fuzzy match for ``query``, or ``None``.
+
+        Tolerant of articles, extra adjectives, and plurals: "a cookie",
+        "the potato chips", and "warm fish-shaped cookie" all land on the
+        right row. Pass ``kinds`` to keep a garden tool from matching the
+        cooking herbs (``lavender`` is both a plant in the garden and
+        sprigs in the kitchenette).
+        """
+        matches = self.rank_items(
+            query, kinds=kinds, prefer_consumable=prefer_consumable
+        )
+        return matches[0] if matches else None
+
+    def summarize_available(
+        self,
+        *,
+        kinds: tuple[str, ...] | None = None,
+        consumable_only: bool = False,
+        limit: int = 6,
+    ) -> str:
+        """One line naming what Aiko could have meant, for tool errors.
+
+        A bare "no item matching 'x'" gives the model nothing to correct
+        toward, and it just calls again with the same string — which is
+        exactly what happened with the cookies. Naming the rows that do
+        exist turns a dead end into a retry.
+        """
+        try:
+            items = self.list_items()
+            here_id = self.get_state().location_id
+            with self._lock:
+                locations = dict(self._locations)
+        except Exception:
+            log.debug("world summarize failed", exc_info=True)
+            return ""
+        if kinds:
+            wanted = {k.strip().lower() for k in kinds}
+            items = [i for i in items if i.kind in wanted]
+        if consumable_only:
+            items = [i for i in items if i.consumable]
+        items = [i for i in items if i.quantity > 0]
+        if not items:
+            return ""
+        here_loc = locations.get(here_id) if here_id is not None else None
+        near = [i for i in items if here_id is not None and i.location_id == here_id]
+        near_ids = {i.id for i in near}
+        far = [i for i in items if i.id not in near_ids]
+        parts: list[str] = []
+        if near:
+            where = here_loc.name if here_loc is not None else "here"
+            labels = ", ".join(_render_item_label(i) for i in near[:limit])
+            parts.append(f"within reach at {where}: {labels}")
+        if far:
+            labels = []
+            for item in far[:limit]:
+                loc = (
+                    locations.get(item.location_id)
+                    if item.location_id is not None
+                    else None
+                )
+                spot = f" ({loc.name})" if loc is not None else " (carried)"
+                labels.append(f"{_render_item_label(item)}{spot}")
+            parts.append("elsewhere: " + ", ".join(labels))
+        return "; ".join(parts)
 
     def add_item(
         self,

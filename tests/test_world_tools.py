@@ -232,6 +232,35 @@ class ConsumeItemTests(unittest.TestCase):
         self.assertTrue(seen_last_message or h._world_store.find_item("cookies") is None)
         h.cleanup()
 
+    def test_consume_accepts_the_name_she_narrated(self) -> None:
+        """She asks for what she just described, not what the row is called.
+
+        This is the failure the user hit: three turns of ``consume_item``
+        with "fish-shaped cookie" against a row named "cookies", each one
+        rejected, so the cookies never went down and she kept narrating a
+        vanishing biscuit.
+        """
+        h = _Harness()
+        tool = ConsumeItemTool(h)
+        for query in ("a cookie", "warm chocolate-chip cookies"):
+            with self.subTest(query=query):
+                result = json.loads(tool.run({"item": query, "amount": 1}))
+                self.assertTrue(result["ok"], result)
+        h.cleanup()
+
+    def test_unknown_item_error_names_what_she_does_have(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        h = _Harness()
+        tool = ConsumeItemTool(h)
+        with self.assertRaises(ToolError) as ctx:
+            tool.run({"item": "birthday cake"})
+        message = str(ctx.exception)
+        self.assertIn("birthday cake", message)
+        # The point of the error: it has to offer somewhere to go next.
+        self.assertIn("cookies", message)
+        h.cleanup()
+
 
 class WaterPlantTests(unittest.TestCase):
     def test_water_plant_updates_state(self) -> None:
