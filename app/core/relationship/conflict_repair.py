@@ -43,13 +43,22 @@ def has_recovered(
     *,
     epsilon: float = 0.05,
     min_rise: float = 0.10,
+    baseline: float | None = None,
 ) -> bool:
     """True when valence has climbed back from the dip.
 
     Two ways to qualify: it returned to (near) the pre-rupture level, OR
     it rose meaningfully above the dip floor (handles cases where the
     pre-rupture baseline was itself low).
+
+    ``baseline`` gates both paths on actually being alright again. The
+    record this unlocks says "you talked it out and were okay after", and
+    a 0.10 rise off a floor of -0.5 is not okay after — it's still a bad
+    afternoon. Left optional so the predicate stays usable without an
+    :class:`AffectState`.
     """
+    if baseline is not None and current_valence < (baseline - epsilon):
+        return False
     back_to_baseline = current_valence >= (watch.recovery_target - epsilon)
     rose_from_floor = (current_valence - watch.dip_floor) >= min_rise
     return bool(back_to_baseline or rose_from_floor)

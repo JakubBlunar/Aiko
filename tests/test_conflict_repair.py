@@ -51,6 +51,46 @@ class HasRecoveredTests(unittest.TestCase):
         )
 
 
+class RecoveryBaselineGateTests(unittest.TestCase):
+    """"Worked through it and were okay after" has to be true.
+
+    ``rose_from_floor`` alone lets a 0.10 climb off a floor of -0.50
+    unlock the record while the mood is still deep underwater, which is
+    not a repair -- it's a bad afternoon with a durable memory claiming
+    otherwise.
+    """
+
+    def _watch(self, target=0.10, floor=-0.50):
+        return cr.RepairWatch(
+            recovery_target=target, dip_floor=floor, topic="t", turns_left=5,
+        )
+
+    def test_still_underwater_is_not_recovered(self) -> None:
+        self.assertFalse(
+            cr.has_recovered(-0.38, self._watch(), baseline=0.0)
+        )
+
+    def test_back_to_neutral_is_recovered(self) -> None:
+        self.assertTrue(
+            cr.has_recovered(-0.02, self._watch(), baseline=0.0)
+        )
+
+    def test_epsilon_gives_the_baseline_a_little_slack(self) -> None:
+        # Just under baseline but inside epsilon still counts.
+        self.assertTrue(
+            cr.has_recovered(-0.04, self._watch(), baseline=0.0, epsilon=0.05)
+        )
+
+    def test_omitting_baseline_keeps_the_old_behaviour(self) -> None:
+        self.assertTrue(cr.has_recovered(-0.38, self._watch()))
+
+    def test_gate_follows_a_nonzero_baseline(self) -> None:
+        w = self._watch(target=0.45, floor=0.10)
+        # +0.20 is a solid rise off the floor but below a warm resting point.
+        self.assertFalse(cr.has_recovered(0.20, w, baseline=0.40))
+        self.assertTrue(cr.has_recovered(0.38, w, baseline=0.40))
+
+
 class SummaryTests(unittest.TestCase):
     def test_with_topic(self) -> None:
         s = cr.build_repair_summary("Jacob", "the schedule")

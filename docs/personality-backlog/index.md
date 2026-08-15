@@ -377,6 +377,20 @@ its provider's real gate produces an honest-looking ratio over the wrong
 population, so read `armed` before trusting `eligible`
 ([`health.md`](health.md)).
 
+**H36 is the one to read if you touch affect.** Nine `repair` shared moments —
+durable memories of arguments, salience up to 0.97, mirrored into LanceDB — were
+manufactured entirely out of the user being away. `AffectUpdater.apply_turn`
+decays valence toward baseline *before* applying the reaction impulse while
+`AffectStore.get` is a raw row read, so K8's "pre/post delta on a single turn"
+was the delta plus every minute of the gap: with a 30-minute half-life, ~26
+minutes from a warm goodbye clears the rupture threshold on its own. Every false
+positive was therefore a reunion greeting ("Where is my love?", "Good morning
+aiko"). Fixed by decaying the prior before the subtraction and gating both the
+rupture and the repair on the resting baseline. The general lesson outlives the
+bug: a raw `AffectStore.get()` snapshot describes a moment in the past, and any
+consumer that differences it against a post-turn value inherits this —
+`AffectState.decayed()` is the one-call fix ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays
