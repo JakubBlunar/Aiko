@@ -52,7 +52,7 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
   memoryView: {
     items: [],
     total: 0,
-    cap: 5000,
+    cap: 0,
     page: 0,
     pageSize: 50,
     kindFilter: null,

@@ -70,7 +70,7 @@ exists to keep them in lock-step.
 | Exact-arithmetic tool | bundled `calculator` plugin | enabled |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
-| Long-term memory cap | `memory.max_memories` | `5000` |
+| Long-term memory cap | `memory.max_memories` | `0` (uncapped) |
 | TTS provider / voice | `tts.provider`, `tts.voice` | `pocket-tts`, `aiko1_refined.safetensors` |
 | Voice mode mic on at boot | `audio.enable_microphone` | `true` |
 | Enable barge-in (interrupt Aiko while she's talking) | `audio.barge_in_enabled` | `false` |
@@ -1170,7 +1170,7 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 - `memory.enabled` *(bool, `true`)* — master switch. Off → no RAG, no extraction, no decay. Aiko becomes goldfish.
 - `memory.top_k` *(int, `6`, min `0`)* — number of memories retrieved per turn. Higher → richer recall, more prompt tokens; lower → terser, more likely to forget relevant context.
 - `memory.score_threshold` *(float, `0.4`, clamped `[0, 1]`)* — minimum cosine for a memory to be eligible for retrieval. Higher → stricter; lower → noisier.
-- `memory.max_memories` *(int, `5000`, min `50`)* — cap on the `long_term` tier. Higher → keeps more history (sub-millisecond NumPy + sub-linear LanceDB stay fast).
+- `memory.max_memories` *(int, `0` = uncapped, otherwise min `50`)* — cap on the `long_term` tier. `prune()` **deletes** the lowest-priority rows once a tier is over its cap, so this is a forgetting policy, not a performance guard; it ships uncapped for that reason. What growth actually costs is the in-memory mirror rather than query time — roughly 6 KB resident per row and a linear load at startup, measured in [P30](personality-backlog/perf.md#p30-raise--disable-the-memorymax_memories-cap).
 - `memory.dedupe_threshold` *(float, `0.92`, clamped `[0.5, 0.999]`)* — cosine threshold above which a newly written memory is merged into an existing row. Higher → merges only near-identical rows; lower → can collapse distinct facts.
 - `memory.restate_threshold` *(float, `0.85`, clamped `[0.5, 0.999]`)* — the second, narrower dedupe gate: the cosine floor at which a fact **restated shortly after** the first telling is merged instead of given its own row. Deliberately below `dedupe_threshold`, and only safe because three further conditions come with it — see [restatements](memory.md#restatements) for why the pair of thresholds exists.
 - `memory.restate_window_hours` *(float, `6.0`, min `0`)* — how far apart two rows may be written and still count as a restatement. `0` disables the narrow gate entirely, leaving only `dedupe_threshold`. This is the condition doing most of the work: same-kind pairs a few hours apart are overwhelmingly rewordings, while similarly-scoring pairs a day or more apart are usually distinct facts sharing a frame.
@@ -1314,8 +1314,8 @@ Only **read-side** gates are applied — the ones that decide what enters a sing
 - `memory.scratchpad_promote_min_use_count` *(int, `3`, min `0`)* — minimum surface count for promotion via use.
 - `memory.scratchpad_promote_min_revival` *(float, `0.3`, clamped `[0, 1]`)* — alternate promotion path: `revival_score >= this` AND past `min_age_days` triggers promotion without use-count.
 - `memory.archive_demote_idle_days` *(int, `180`, min `1`)* — long_term rows unused for this many days drop to archive.
-- `memory.scratchpad_cap` *(int, `1000`, min `50`)* — hard cap on scratchpad rows.
-- `memory.archive_cap` *(int, `10000`, min `50`)* — hard cap on archive rows.
+- `memory.scratchpad_cap` *(int, `0` = uncapped, otherwise min `50`)* — hard cap on scratchpad rows.
+- `memory.archive_cap` *(int, `0` = uncapped, otherwise min `50`)* — hard cap on archive rows.
 - `memory.decay_max_catchup_days` *(float, `30.0`, min `1`)* — safety clamp: even if the app was offline for months, a single decay tick won't apply more than this many days' worth at once.
 
 ### K7 — forgetting protocol

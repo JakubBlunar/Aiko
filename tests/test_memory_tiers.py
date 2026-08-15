@@ -372,6 +372,62 @@ class TestPerTierPrune(unittest.TestCase):
         self.assertGreaterEqual(min(survivors), 0.029)
 
 
+class TestUncappedTiers(unittest.TestCase):
+    """P30: ``0`` lifts a tier's cap, and that is now the default.
+
+    A cap is a forgetting policy rather than a performance guard --
+    ``prune()`` deletes rows outright -- so "no cap" has to be
+    expressible, and the floor of 50 that protects every other cap
+    setting is exactly what stops ``max(50, n)`` from expressing it.
+    """
+
+    def test_zero_means_no_eviction(self) -> None:
+        _, store = _store_factory({"scratchpad": 0, "long_term": 0, "archive": 0})
+        for i in range(60):
+            self.assertIsNotNone(
+                store.add(
+                    f"scratch entry number {i:03d}", "fact", _emb(f"s{i}"),
+                    tier="scratchpad", salience=0.01 * (i + 1),
+                )
+            )
+        self.assertEqual(store.prune(), 0)
+        self.assertEqual(len(list(store.iter_by_tier("scratchpad"))), 60)
+
+    def test_the_shipped_default_is_uncapped(self) -> None:
+        d = tempfile.mkdtemp()
+        path = Path(d) / "mem.db"
+        ChatDatabase(path)
+        store = MemoryStore(path)
+        self.assertIsNone(store._max)
+        self.assertEqual(
+            store._tier_caps, {"scratchpad": None, "long_term": None, "archive": None},
+        )
+
+    def test_a_typo_still_cannot_gut_the_store(self) -> None:
+        # The floor is the reason 0 had to be given its own meaning:
+        # a cap of 5 is far likelier to be a slip than an intention.
+        _, store = _store_factory({"scratchpad": 5, "long_term": 5, "archive": 5})
+        self.assertEqual(store._tier_caps["scratchpad"], 50)
+
+    def test_set_tier_caps_can_lift_a_cap_at_runtime(self) -> None:
+        _, store = _store_factory({"scratchpad": 50, "long_term": 100, "archive": 100})
+        store.set_tier_caps(scratchpad=0)
+        self.assertIsNone(store._tier_caps["scratchpad"])
+        # long_term was not passed, so it keeps the value it had.
+        self.assertEqual(store._tier_caps["long_term"], 100)
+
+    def test_adding_to_an_uncapped_tier_does_not_walk_the_mirror(self) -> None:
+        # ``add`` runs on every write, so the cap check there is the one
+        # place a bigger corpus could slow down the turn itself.
+        _, store = _store_factory({"scratchpad": 0, "long_term": 0, "archive": 0})
+        calls: list[int] = []
+        real_prune = store.prune
+        store.prune = lambda: (calls.append(1), real_prune())[1]  # type: ignore[method-assign]
+        for i in range(20):
+            store.add(f"entry number {i:03d}", "fact", _emb(f"u{i}"))
+        self.assertEqual(calls, [])
+
+
 class TestPromotionWorker(unittest.TestCase):
     def _settings(
         self,

@@ -40,9 +40,17 @@ the producer rules every new worker should follow.
 
 | Tier | Decay/day (default) | RAG offset | Cap (default) | Notes |
 |------|---------------------|------------|---------------|-------|
-| `scratchpad` | `0.05` | `-0.02` | `1000` | Probationary lane. Speculative LLM observations land here. |
-| `long_term` | `0.02` | `0.0` | `5000` (`memory.max_memories`) | Verified anchors live here. Pinned rows are coerced here. |
-| `archive` | `0.0` | `-0.03` | `10000` | Cold history. Surfaces only on strong cosine matches. |
+| `scratchpad` | `0.05` | `-0.02` | none | Probationary lane. Speculative LLM observations land here. |
+| `long_term` | `0.02` | `0.0` | none (`memory.max_memories`) | Verified anchors live here. Pinned rows are coerced here. |
+| `archive` | `0.0` | `-0.03` | none | Cold history. Surfaces only on strong cosine matches. |
+
+All three caps default to `0`, which means the tier is never
+evicted from. `prune()` deletes rows rather than demoting them, so
+a cap forgets rather than tidies; set one only if you want that.
+The cost of an unbounded corpus is the in-memory mirror's size and
+load time, not query time — see
+[P30](personality-backlog/perf.md#p30-raise--disable-the-memorymax_memories-cap)
+for the measured curve.
 
 The RAG offset is a small additive nudge applied in
 [`rag_retriever.py`](../app/core/rag/rag_retriever.py) (`_MEMORY_TIER_OFFSET`)
@@ -184,7 +192,7 @@ overrides).
 
 ```jsonc
 "memory": {
-  "max_memories": 5000,                // long_term cap
+  "max_memories": 0,                   // long_term cap; 0 = never evict
   "tiers_enabled": true,               // master kill switch
   "decay_rate_scratchpad": 0.05,       // per day, scaled by elapsed
   "decay_rate_long_term": 0.02,
@@ -202,8 +210,8 @@ overrides).
   "scratchpad_promote_min_use_count": 3,
   "scratchpad_promote_min_revival": 0.3,
   "archive_demote_idle_days": 180,
-  "scratchpad_cap": 1000,              // per-tier cap (long_term reuses max_memories)
-  "archive_cap": 10000,
+  "scratchpad_cap": 0,                 // per-tier cap (long_term reuses max_memories)
+  "archive_cap": 0,
   "decay_max_catchup_days": 30.0,      // wall-clock catch-up clamp
   "promotion_worker_interval_seconds": 3600,   // hourly by default
   "decay_worker_interval_seconds": 3600,
@@ -259,6 +267,41 @@ Reserved `kv_meta` key namespaces:
 
 Existing rows default to `tier='long_term'` and `revival_score=0.0`,
 which preserves pre-v8 behavior (uniform decay rate on a single pool).
+
+### In memory: the mirror, and the matrix beside it
+
+`MemoryStore` keeps every row resident in `_mirror`
+(`dict[int, Memory]`), so the twenty-odd accessors that want a
+memory by id, kind or tier are dict lookups rather than queries.
+
+The same rows' embeddings are *also* held as one contiguous
+`(rows, dim)` float32 matrix in
+[`VectorIndex`](../app/core/memory/vector_index.py). That is not a
+cache — it is the same vectors in a layout that suits the two paths
+which compare a query against all of them, `search()` and `add()`'s
+dedupe pass. As a dict of Python objects those were interpreter
+loops with a call per row (54 ms per write at 20k rows); as a
+matrix they are one BLAS call (2.8 ms at 50k). The bytes are
+identical either way.
+
+Two consequences worth knowing when changing this code:
+
+- **The index is a second copy of the same facts, so it can
+  drift.** Every path that mutates `_mirror` must mutate it too,
+  under the same lock. There are exactly four: `_reload_mirror`,
+  `add`, `update`, and `delete`/`prune`. A missed one is silent —
+  a memory that cannot be found, or a deleted one that still
+  matches — which is why `tests/test_vector_index.py` drives the
+  public API and asserts the two agree afterwards.
+- **Deletion is a tombstone.** Squeezing a row out of a contiguous
+  matrix copies everything after it, which would make `prune()`
+  quadratic. Dead rows are masked from results and reclaimed in one
+  pass once they exceed a quarter of the matrix.
+
+Rows with no usable vector (a null or empty embedding BLOB) are
+absent from the matrix rather than stored as zeros — they scored
+0.0 against everything under the old loop, and this reproduces
+that exactly.
 
 ## REST surface
 

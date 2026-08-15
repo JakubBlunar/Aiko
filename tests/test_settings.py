@@ -95,6 +95,66 @@ class AvatarExpressivenessLoaderTests(unittest.TestCase):
         self.assertAlmostEqual(result.avatar.expressiveness, 0.6)
 
 
+class MemoryTierCapSettingsTests(unittest.TestCase):
+    """P30: the three memory caps ship at ``0``, meaning "never evict".
+
+    Pruning deletes rows, so these are forgetting policies. Every other
+    cap setting clamps to a floor of 50 to survive a typo, and that
+    floor is why 0 needed a meaning of its own.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", Path(self._tmp.name) / "user.json",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        self._base_config = json.loads(default_path.read_text(encoding="utf-8"))
+
+    def _load(self, memory_extra: dict | None = None):
+        cfg = copy.deepcopy(self._base_config)
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return load_settings(config_path=path)
+
+    def test_shipped_config_is_uncapped(self) -> None:
+        memory = self._load().memory
+        self.assertEqual(memory.max_memories, 0)
+        self.assertEqual(memory.scratchpad_cap, 0)
+        self.assertEqual(memory.archive_cap, 0)
+
+    def test_dataclass_defaults_match_the_shipped_config(self) -> None:
+        # A fresh install with no config at all must forget as little as
+        # one that reads ``default.json``.
+        from app.core.infra.memory_settings import MemorySettings
+
+        defaults = MemorySettings()
+        memory = self._load().memory
+        self.assertEqual(defaults.max_memories, memory.max_memories)
+        self.assertEqual(defaults.scratchpad_cap, memory.scratchpad_cap)
+        self.assertEqual(defaults.archive_cap, memory.archive_cap)
+
+    def test_an_explicit_cap_survives(self) -> None:
+        memory = self._load({"max_memories": 5000, "scratchpad_cap": 1000}).memory
+        self.assertEqual(memory.max_memories, 5000)
+        self.assertEqual(memory.scratchpad_cap, 1000)
+
+    def test_a_small_cap_is_floored_but_zero_is_not(self) -> None:
+        memory = self._load({"max_memories": 5, "archive_cap": 0}).memory
+        self.assertEqual(memory.max_memories, 50)
+        self.assertEqual(memory.archive_cap, 0)
+
+    def test_a_negative_cap_reads_as_uncapped(self) -> None:
+        self.assertEqual(self._load({"max_memories": -1}).memory.max_memories, 0)
+
+
 class CuriositySeedSettingsTests(unittest.TestCase):
     """K9: new agent + memory knobs default-load from missing config keys."""
 

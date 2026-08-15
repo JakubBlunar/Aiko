@@ -4,9 +4,9 @@ One row per durable fact about the user. Embeddings live alongside the row
 as a packed float32 BLOB. The store keeps an in-memory mirror of every row
 so cosine search runs in pure NumPy without a per-query SQL roundtrip.
 
-Capacity is bounded (``max_memories``, default 500); ``prune()`` evicts the
-oldest least-used / lowest-salience rows once the cap is hit. Cross-session
-by design: there's exactly one memory store for the assistant.
+Capacity is unbounded by default; setting a per-tier cap makes ``prune()``
+evict the least-used / lowest-salience rows of that tier once it is hit.
+Cross-session by design: there's exactly one memory store for the assistant.
 
 Phase C also mirrors every write into a :class:`RagStore` (LanceDB-backed)
 when one is attached, so that the new RagRetriever has a single read path.
@@ -33,6 +33,7 @@ from app.llm.embedder import cosine_similarity
 from app.core.infra import timephrase
 from app.core.infra.text_query import compile_query
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
+from app.core.memory.vector_index import VectorIndex
 
 if TYPE_CHECKING:
     from app.core.rag.rag_store import RagStore
@@ -446,6 +447,25 @@ def _normalize_tier(tier: str | None, *, pinned: bool = False) -> str:
     return cleaned
 
 
+def _normalize_cap(value: int | None) -> int | None:
+    """Return the effective tier cap: ``None`` means no cap at all.
+
+    ``0`` (or anything below it) switches eviction off for that tier;
+    every other value keeps the old floor of 50, so a mistyped ``5``
+    still can't empty the store on the next prune.
+
+    Uncapped is the shipped default. The relational store is nowhere
+    near being the limit -- an aggregate over 50k rows is ~2.5 ms --
+    but the in-process mirror is linear in row count, so growing the
+    corpus buys startup time and RSS rather than query time. See P30
+    for the measured curve and the three fixes that flatten it.
+    """
+    if value is None:
+        return None
+    n = int(value)
+    return None if n <= 0 else max(50, n)
+
+
 def _apply_text_query(mems: list["Memory"], q: str | None) -> list["Memory"]:
     """Narrow ``mems`` to rows whose content matches ``q``.
 
@@ -474,23 +494,24 @@ class MemoryStore:
         self,
         db_path: Path,
         *,
-        max_memories: int = 500,
-        scratchpad_cap: int = 1000,
-        archive_cap: int = 10000,
+        max_memories: int = 0,
+        scratchpad_cap: int = 0,
+        archive_cap: int = 0,
         dedupe_threshold: float = 0.92,
         restate_threshold: float = 0.85,
         restate_window_hours: float = 6.0,
     ) -> None:
         self._db_path = db_path
-        self._max = max(50, int(max_memories))
+        self._max = _normalize_cap(max_memories)
         # Per-tier caps (schema v8). The long_term cap reuses ``_max``
         # for backward compat with the existing ``max_memories``
         # setting. ``prune()`` enforces these independently per tier so
         # scratchpad churn never crowds verified long-term anchors.
-        self._tier_caps: dict[str, int] = {
-            "scratchpad": max(50, int(scratchpad_cap)),
+        # ``None`` for a tier means it is never evicted from.
+        self._tier_caps: dict[str, int | None] = {
+            "scratchpad": _normalize_cap(scratchpad_cap),
             "long_term": self._max,
-            "archive": max(50, int(archive_cap)),
+            "archive": _normalize_cap(archive_cap),
         }
         self._dedupe_threshold = float(dedupe_threshold)
         # The narrow second gate for a fact restated minutes later. See
@@ -502,6 +523,13 @@ class MemoryStore:
         self._lock = threading.Lock()
         # In-memory mirror so cosine search is a single NumPy pass.
         self._mirror: dict[int, Memory] = {}
+        # The same rows' embeddings as one contiguous matrix. Kept beside
+        # the mirror rather than derived from it on demand, because the
+        # two callers that need it (``search`` and ``add``'s dedupe) run
+        # often enough that rebuilding per call would cost more than the
+        # loop it replaces. Mutated at exactly the four places ``_mirror``
+        # is, always under ``_lock``.
+        self._vectors = VectorIndex()
         self._rag: "RagStore | None" = None
         # Listeners notified after each successful ``delete``. Used by
         # the F5 :class:`app.core.memory.memory_conflict_store.MemoryConflictStore`
@@ -606,14 +634,17 @@ class MemoryStore:
         long_term: int | None = None,
         archive: int | None = None,
     ) -> None:
-        """Update tier caps at runtime (e.g. when settings change)."""
+        """Update tier caps at runtime (e.g. when settings change).
+
+        ``0`` lifts the cap on that tier; ``None`` leaves it as it is.
+        """
         if scratchpad is not None:
-            self._tier_caps["scratchpad"] = max(50, int(scratchpad))
+            self._tier_caps["scratchpad"] = _normalize_cap(scratchpad)
         if long_term is not None:
-            self._tier_caps["long_term"] = max(50, int(long_term))
+            self._tier_caps["long_term"] = _normalize_cap(long_term)
             self._max = self._tier_caps["long_term"]
         if archive is not None:
-            self._tier_caps["archive"] = max(50, int(archive))
+            self._tier_caps["archive"] = _normalize_cap(archive)
 
     def attach_rag_store(self, rag_store: "RagStore | None") -> None:
         """Hook a :class:`RagStore` so subsequent writes mirror into LanceDB.
@@ -687,7 +718,9 @@ class MemoryStore:
         except sqlite3.OperationalError:
             rows = self._reload_mirror_pre_v30(conn)
             if rows is None:
-                self._mirror = {}
+                with self._lock:
+                    self._mirror = {}
+                    self._vectors.rebuild(())
                 return
         with self._lock:
             self._mirror = {
@@ -714,6 +747,9 @@ class MemoryStore:
                 )
                 for r in rows
             }
+            self._vectors.rebuild(
+                (m.id, m.embedding) for m in self._mirror.values()
+            )
         log.info("memory store loaded with %d memories", len(self._mirror))
 
     def _reload_mirror_pre_v30(
@@ -984,9 +1020,19 @@ class MemoryStore:
         dup_id: int | None = None
         if not pinned and not skip_dedupe:
             written_at = timephrase.utcnow()
+            # Neither gate can fire below the lower of the two thresholds
+            # (``_is_restatement`` returns early under ``_restate_threshold``),
+            # so one matmul plus a walk of whatever cleared that floor
+            # replaces a cosine call per row. Usually nothing clears it.
+            floor = min(self._dedupe_threshold, self._restate_threshold)
             with self._lock:
-                for mem in self._mirror.values():
-                    score = cosine_similarity(emb, mem.embedding)
+                # Descending score rather than insertion order: where the
+                # old loop merged into the first row it happened to visit,
+                # this merges into the closest one.
+                for mid, score in self._vectors.above(emb, floor):
+                    mem = self._mirror.get(mid)
+                    if mem is None:
+                        continue
                     if score >= self._dedupe_threshold or self._is_restatement(
                         mem,
                         score,
@@ -1082,6 +1128,7 @@ class MemoryStore:
         )
         with self._lock:
             self._mirror[new_id] = memory
+            self._vectors.add(new_id, emb)
         if self._rag is not None:
             try:
                 self._rag.add_memory(
@@ -1110,11 +1157,18 @@ class MemoryStore:
                         exc_info=True,
                     )
         # Per-tier opportunistic prune. Cheaper to check the just-grown
-        # tier than to walk every row.
-        with self._lock:
-            tier_count = sum(1 for m in self._mirror.values() if m.tier == tier_normalized)
-        if tier_count > self._tier_caps.get(tier_normalized, self._max):
-            self.prune()
+        # tier than to walk every row -- and when the tier is uncapped,
+        # cheaper still to skip the count: this runs on every single
+        # write, so an O(n) scan here is the one place where a larger
+        # corpus would slow down the turn itself.
+        cap = self._tier_caps.get(tier_normalized, self._max)
+        if cap is not None:
+            with self._lock:
+                tier_count = sum(
+                    1 for m in self._mirror.values() if m.tier == tier_normalized
+                )
+            if tier_count > cap:
+                self.prune()
         return memory
 
     def _is_restatement(
@@ -1255,6 +1309,7 @@ class MemoryStore:
         conn.commit()
         with self._lock:
             self._mirror.pop(int(memory_id), None)
+            self._vectors.remove(int(memory_id))
         if self._rag is not None:
             try:
                 self._rag.delete_memory(str(int(memory_id)))
@@ -1423,6 +1478,9 @@ class MemoryStore:
             mem.kind = new_kind
             mem.salience = new_salience
             mem.embedding = new_embedding
+            # Unconditional: overwriting one row costs a dim-length copy,
+            # which is cheaper than working out whether it changed.
+            self._vectors.add(int(memory_id), new_embedding)
             if metadata_changed:
                 mem.metadata = new_metadata
             mem.tier = new_tier
@@ -1760,13 +1818,20 @@ class MemoryStore:
         + 0.1 * revival_score`` -- lowest scores die first. Pinned rows
         are never selected (and pinned rows always live in ``long_term``
         anyway). Returns total victims across all tiers.
+
+        A tier whose cap is ``None`` is never pruned, and when every
+        tier is uncapped this returns 0 without touching the mirror.
         """
+        if all(self._tier_caps.get(t, self._max) is None for t in VALID_TIERS):
+            return 0
         total_victims = 0
         with self._lock:
             snapshot = list(self._mirror.values())
         for tier in VALID_TIERS:
-            tier_rows = [m for m in snapshot if m.tier == tier and not m.pinned]
             cap = self._tier_caps.get(tier, self._max)
+            if cap is None:
+                continue
+            tier_rows = [m for m in snapshot if m.tier == tier and not m.pinned]
             if len(tier_rows) <= cap:
                 continue
             tier_rows.sort(
@@ -1789,6 +1854,7 @@ class MemoryStore:
             with self._lock:
                 for mid in victims:
                     self._mirror.pop(mid, None)
+                    self._vectors.remove(mid)
             if self._rag is not None:
                 for mid in victims:
                     try:
@@ -1812,22 +1878,28 @@ class MemoryStore:
     ) -> list[SearchHit]:
         """Return the top-k memories by cosine similarity. Empty if store is empty."""
         with self._lock:
-            mems = list(self._mirror.values())
-        if not mems:
-            return []
-        q = np.asarray(query_embedding, dtype=np.float32)
-        if q.size == 0:
-            return []
-        qn = float(np.linalg.norm(q))
-        if qn > 0.0:
-            q = q / qn
-        scored: list[SearchHit] = []
-        for mem in mems:
-            score = cosine_similarity(q, mem.embedding)
-            # Light salience boost so two similar memories prefer the more salient one.
-            adjusted = score + 0.05 * (mem.salience - 0.5)
-            if score >= min_score:
-                scored.append(SearchHit(memory=mem, score=adjusted))
+            ids, raw = self._vectors.scores(query_embedding)
+            if ids.size == 0:
+                return []
+            # Threshold on the raw cosine, exactly as the per-row loop
+            # this replaces did, so the salience boost can reorder the
+            # survivors but never admit a row that did not qualify.
+            keep = np.flatnonzero(raw >= float(min_score))
+            if keep.size == 0:
+                return []
+            scored: list[SearchHit] = []
+            for i in keep:
+                mem = self._mirror.get(int(ids[i]))
+                if mem is None:
+                    continue
+                # Light salience boost so two similar memories prefer the
+                # more salient one.
+                scored.append(
+                    SearchHit(
+                        memory=mem,
+                        score=float(raw[i]) + 0.05 * (mem.salience - 0.5),
+                    )
+                )
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[: max(1, int(top_k))]
 

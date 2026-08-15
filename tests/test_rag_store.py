@@ -128,11 +128,55 @@ class RagStoreKnnTests(_TmpRagBase):
             embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         )
         # Far below min_rows -> skipped, flat search still works.
-        self.assertFalse(self.store.ensure_vector_index(min_rows=256))
+        report = self.store.ensure_vector_index(min_rows=256)
+        self.assertEqual(report["memories"]["action"], "too_small")
+        self.assertEqual(report["memories"]["rows"], 1)
         hits = self.store.knn_memories(
             np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), top_k=1
         )
         self.assertEqual(hits[0][0], 1)
+
+    def test_ensure_index_builds_then_reports_fresh(self) -> None:
+        # 4-dimensional toy vectors, so IVF_PQ may legitimately refuse to
+        # partition them. Either outcome is acceptable; what must not
+        # happen is a silent claim that an index exists when it does not.
+        for i in range(2, 400):
+            self.store.add_memory(
+                record_id=str(i), content=f"row {i}", kind="fact",
+                embedding=np.array(
+                    [1.0, float(i % 7), float(i % 3), 0.0], dtype=np.float32,
+                ),
+            )
+        first = self.store.ensure_vector_index(min_rows=16)["memories"]
+        self.assertIn(first["action"], {"built", "failed"})
+        if first["action"] == "failed":
+            self.skipTest("lancedb declined to index 4-dim toy vectors")
+        second = self.store.ensure_vector_index(min_rows=16)["memories"]
+        self.assertEqual(second["action"], "fresh")
+
+    def test_ensure_index_refreshes_once_it_falls_behind(self) -> None:
+        for i in range(2, 400):
+            self.store.add_memory(
+                record_id=str(i), content=f"row {i}", kind="fact",
+                embedding=np.array(
+                    [1.0, float(i % 7), float(i % 3), 0.0], dtype=np.float32,
+                ),
+            )
+        if self.store.ensure_vector_index(min_rows=16)["memories"]["action"] != "built":
+            self.skipTest("lancedb declined to index 4-dim toy vectors")
+        # New rows do not join an existing IVF_PQ index; they pile up as
+        # unindexed and every query scans them. This is the decay the
+        # refresh exists to undo.
+        for i in range(400, 700):
+            self.store.add_memory(
+                record_id=str(i), content=f"row {i}", kind="fact",
+                embedding=np.array(
+                    [1.0, float(i % 5), float(i % 2), 0.0], dtype=np.float32,
+                ),
+            )
+        behind = self.store.ensure_vector_index(min_rows=16)["memories"]
+        self.assertEqual(behind["action"], "refreshed")
+        self.assertEqual(behind["unindexed"], 0)
 
 
 class MaintenanceTests(_TmpRagBase):

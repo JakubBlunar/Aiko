@@ -1021,50 +1021,125 @@ class RagStore:
                 break
         return out
 
-    def ensure_vector_index(self, *, min_rows: int = 256) -> bool:
-        """Build an ANN index on the ``memories`` vector column once the
-        table is large enough to benefit.
+    def ensure_vector_index(
+        self,
+        *,
+        min_rows: int = 256,
+        refresh_ratio: float = 0.20,
+    ) -> dict[str, dict[str, Any]]:
+        """Build or refresh the ANN index on each searchable table.
 
         Below ``min_rows`` a flat (brute-force) cosine scan is faster and
-        more accurate than IVF_PQ, so we skip. Idempotent + best-effort:
-        any failure (old lancedb, index already present, too few rows for
-        the chosen partition count) is swallowed and we simply keep the
-        flat path. Returns ``True`` when an index now exists / was built.
+        more accurate than IVF_PQ, so a small table is left alone. Above
+        it, a table with no index gets one; a table whose index has
+        fallen more than ``refresh_ratio`` behind gets rebuilt.
 
-        Safe to call repeatedly (e.g. after a bulk knowledge ingest); the
-        ``replace=False`` default means a second call is a cheap no-op
-        once the index exists.
+        The refresh is the point. Lance does not add new rows to an
+        existing IVF_PQ index -- they accumulate as *unindexed* rows that
+        every query then scans on top of the ANN probe. So an index built
+        once and never rebuilt decays back into a flat scan at exactly
+        the rate the corpus grows, which is invisible in row counts and
+        in search results (Lance still answers, just linearly).
+
+        Best-effort throughout: any failure leaves the flat path in
+        place, which is correct if slow. Returns a per-table report --
+        ``rows``, ``indexed``, ``unindexed``, ``action`` -- so "is the
+        index there and is it fresh?" is answerable from outside.
         """
+        report: dict[str, dict[str, Any]] = {}
         with self._lock.write():
+            for name, table in (
+                (TABLE_MEMORIES, self._memories),
+                (TABLE_MESSAGES, self._messages),
+            ):
+                report[name] = self._ensure_one_index(
+                    name, table, min_rows=int(min_rows),
+                    refresh_ratio=float(refresh_ratio),
+                )
+        return report
+
+    def _ensure_one_index(
+        self,
+        name: str,
+        table: Any,
+        *,
+        min_rows: int,
+        refresh_ratio: float,
+    ) -> dict[str, Any]:
+        """One table's half of :meth:`ensure_vector_index`. Caller holds the lock."""
+        entry: dict[str, Any] = {"rows": 0, "indexed": 0, "unindexed": 0}
+        try:
+            rows = int(table.count_rows())
+        except Exception:
+            entry["action"] = "unreadable"
+            return entry
+        entry["rows"] = rows
+        if rows < min_rows:
+            entry["action"] = "too_small"
+            return entry
+
+        stats = self._index_stats(table)
+        if stats is not None:
+            entry["indexed"] = stats[0]
+            entry["unindexed"] = stats[1]
+            total = stats[0] + stats[1]
+            behind = stats[1] / total if total else 0.0
+            if behind <= refresh_ratio:
+                entry["action"] = "fresh"
+                return entry
+            action = "refreshed"
+        else:
+            action = "built"
+
+        try:
+            # ``replace=True`` in both cases: for a refresh it is the
+            # whole point, and for a first build it makes a half-written
+            # index from an interrupted run recoverable rather than
+            # permanent.
+            table.create_index(metric="cosine", replace=True)
+        except TypeError:
             try:
-                rows = self._memories.count_rows()
+                table.create_index()
             except Exception:
-                return False
-            if rows < int(min_rows):
-                return False
-            try:
-                # Modern lancedb picks sensible IVF_PQ params from the row
-                # count when called bare; the metric must match the search
-                # path (cosine).
-                self._memories.create_index(metric="cosine")
-                log.info("RagStore: built ANN index on memories (rows=%d)", rows)
-                return True
-            except TypeError:
-                try:
-                    self._memories.create_index()
-                    log.info(
-                        "RagStore: built ANN index on memories (rows=%d, default metric)",
-                        rows,
-                    )
-                    return True
-                except Exception:
-                    log.debug("ensure_vector_index fallback failed", exc_info=True)
-                    return False
-            except Exception:
-                # Most commonly "index already exists" or "not enough rows
-                # for N partitions" -- both are fine, keep flat search.
-                log.debug("ensure_vector_index skipped", exc_info=True)
-                return False
+                log.debug("ensure_vector_index fallback failed", exc_info=True)
+                entry["action"] = "failed"
+                return entry
+        except Exception:
+            # Most often "not enough rows for N partitions" -- fine, the
+            # flat scan is still correct.
+            log.debug("ensure_vector_index skipped for %s", name, exc_info=True)
+            entry["action"] = "failed"
+            return entry
+
+        after = self._index_stats(table)
+        if after is not None:
+            entry["indexed"], entry["unindexed"] = after
+        entry["action"] = action
+        log.info(
+            "RagStore: %s ANN index on %s (rows=%d, unindexed=%d)",
+            action, name, rows, entry["unindexed"],
+        )
+        return entry
+
+    @staticmethod
+    def _index_stats(table: Any) -> "tuple[int, int] | None":
+        """``(indexed, unindexed)`` for the vector index, or None if absent."""
+        try:
+            indices = list(table.list_indices() or ())
+        except Exception:
+            return None
+        if not indices:
+            return None
+        try:
+            stats = table.index_stats(indices[0].name)
+        except Exception:
+            # An index exists but its stats are unreadable: treat it as
+            # present and fresh rather than rebuilding it blindly.
+            return (0, 0)
+        return (
+            int(getattr(stats, "num_indexed_rows", 0) or 0),
+            int(getattr(stats, "num_unindexed_rows", 0) or 0),
+        )
 
     # ── stats / maintenance ─────────────────────────────────────────────
 
