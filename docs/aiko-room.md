@@ -106,8 +106,9 @@ system prompt (see `assemble_with_budget` in
 
 ## Agent tools
 
-Five tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py),
-gated by `tools.world` in config (default `true`):
+Eight tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py),
+gated by `tools.world` in config (default `true`). The last three are the
+garden loop, documented under [Garden](#garden-living-plants-outside-the-apartment):
 
 | Tool | What it does |
 |---|---|
@@ -116,9 +117,57 @@ gated by `tools.world` in config (default `true`):
 | `change_posture` | Change posture and/or activity (sitting → lying, watching_screens → reading). Both vocabularies are validated. |
 | `inspect_item` | Detailed read of one item (description, current state, quantity remaining). |
 | `consume_item` | Decrement a consumable's quantity. Refuses politely on non-consumables ("the lamp isn't something you can consume"). The row is deleted at quantity zero. |
+| `water_plant` / `plant_seed` / `harvest_plant` | The garden loop. Each takes a plant/seed name and is restricted to rows of that `kind`, so `lavender` can't resolve to the cooking sprigs in the kitchenette. |
 
 Each tool description includes the same "only when natural" tonal
 nudge so Aiko doesn't spray tool calls.
+
+### How item names are resolved
+
+Every item-taking tool goes through `WorldStore.find_item`, and it has to
+be generous, because **Aiko asks for what she just narrated, not what the
+row is called**. The ambient block shows her `9 cookies`, but
+`inspect_item` hands back the description — *"warm, fish-shaped
+chocolate-chip cookies in a glass jar"* — so she'll happily call
+`consume_item("fish-shaped cookie")`. The original matcher only asked *is
+the query a substring of the name?*, which fails on every query that is
+more specific than the row: `a cookie`, `the potato chips`, `jasmine
+tea`, and `fish-shaped cookie` all matched nothing.
+
+Matching is therefore word-based, scored in tiers (best first):
+
+| Tier | Fires when |
+|---|---|
+| exact slug / exact name | `cookie_jar`, `cookies` |
+| squashed | punctuation-insensitive equality: `sci-fi paperback` → `scifi_paperback` |
+| same words | the query and the name reduce to the same word set |
+| query covers | the query contains every word of the name, plus extras — this is the `fish-shaped cookie` case |
+| name covers | the name contains every word of the query, plus extras — `scifi` → `scifi_paperback` |
+| substring | either direction, raw |
+| overlap | **two or more** words in common. One is too weak: `chocolate-chip cookie` and `potato chips` share "chip" |
+| description | last resort — the words only appear in the blurb |
+
+Words are compared through a stem *set* rather than a single stem, since
+nothing in the surface form of `cookies` says whether it came from
+`cookie` or `cooky`; both are kept and two words match when their sets
+intersect. Name and slug are scored as separate vocabularies, because
+pooling them would demand the query say "jar" before it could match the
+cookies.
+
+Equally good candidates are then ordered by **where the thing is**:
+edibility first (when the caller passes `prefer_consumable`, so "eat a
+tomato" reaches the ripe ones and not the seed packet), then stock on
+hand, then proximity, then recency. That last pair matters — the room
+routinely holds several rows called "cookies", and eating from the
+kitchenette jar while sitting on the beanbag with a bag the user just
+handed over reads as a continuity bug.
+
+When nothing matches, the error lists what she *does* have
+(`WorldStore.summarize_available`) split into within-reach and elsewhere.
+A bare "no item matching 'x'" is a dead end — the model's only move is to
+call again with the same string, which is exactly what happened: three
+consecutive turns of `consume_item("fish-shaped cookie")`, each refused,
+while she narrated a biscuit that kept vanishing before it reached her.
 
 ---
 
