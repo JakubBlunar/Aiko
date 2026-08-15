@@ -316,102 +316,130 @@ down from Medium now that the analyser path exists.
 
 ## P30. Raise / disable the `memory.max_memories` cap
 
-**Motivation.** `memory.max_memories` defaults to 5000 and
-`MemoryStore.prune()` enforces it (plus per-tier
-`scratchpad` / `archive` caps). The cap exists mostly because the
-old topic graph recomputed an `O(n²)` cosine clustering in-process
-on every read — a hard scaling wall. That wall is now gone: the
-topic graph is persisted + incrementally maintained and its batch
-refit routes through LanceDB ANN (`O(n·k)`), so clustering no
-longer caps the corpus. With web-search knowledge enrichment
-landing distilled `kind="knowledge"` rows, 5000 will fill *fast*,
-and the user wants to let the corpus grow much larger (ideally
-uncapped) and lean on **topic-relevant RAG** rather than a small
-flat pool. This entry is the "actually let it grow" follow-up to
-the topic-graph persistence work.
+**Status: the cap is gone — `max_memories`, `scratchpad_cap` and
+`archive_cap` all ship at `0`, meaning "never evict".** What is
+left of this entry is the part that was previously guesswork: what
+a growing corpus actually costs, and which three things to fix
+when it starts to hurt. Those are now measured rather than
+estimated, and the headline is that **none of them is the
+database**.
 
-**What's already safe at scale.**
-- Topic graph: persisted (`topic_clusters` / `memory_topic_assignments`),
-  incremental add/delete, ANN batch refit. See
-  [K9](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface).
-- RAG retrieval: LanceDB ANN (`search_memories`) is sub-linear
-  *once an index exists* (`RagStore.ensure_vector_index` builds one
-  above 256 rows) — but see item 5 below: the index is built once
-  and never refreshed, which is now tracked as its own item (P35).
+**Why the cap went rather than moved.** `prune()` deletes rows; it
+does not demote them. So a cap is a forgetting policy wearing a
+performance guard's clothes, and every reason to keep it was a
+performance reason. The original one — the old topic graph's
+`O(n²)` in-process re-clustering on every read — is gone: the
+graph is persisted, incrementally maintained, and batch-refits
+through LanceDB ANN. `0` is a real sentinel rather than a large
+number because every cap setting clamps to a floor of 50 to
+survive a typo, and that floor is exactly what makes `max(50, n)`
+unable to express "no cap".
 
-**What still assumes a small corpus (the actual work).**
-1. **In-memory mirror.** `MemoryStore._mirror` holds every row +
-   its embedding in process. Note the real ceiling is **~16,000
-   rows, not 5,000**: `max_memories` is enforced *per tier* along
-   with `scratchpad_cap` (1000) and `archive_cap` (10000), so the
-   three caps sum. At ~4 KB per float32 embedding that's ~64 MB of
-   vectors alone before content and metadata; at 100k+ it's
-   hundreds of MB, and `_reload_mirror` / `decay` / `prune` walk it
-   linearly. Either accept the larger RSS (still cheap vs the
-   STT/TTS weights in P27/P28) or move the cold tail (archive tier)
-   out of the mirror and read it from LanceDB on demand.
-2. **O(n) mirror sweeps.** `decay()`, `prune()`, the K22 callback
-   detector (P17), and the K6/K28 warm scans (P5/P23) all walk the
-   full mirror. These need the P5/P17 fixes first, or they become
-   the new wall the moment the cap lifts. Note `decay()` is worse
-   than a walk: it does the bulk `UPDATE` in SQL and then calls
-   `_reload_mirror()`, re-reading **every** row and BLOB from disk
-   rather than updating the mirror in place.
-3. **`search()` brute-force fallback.** `MemoryStore.search` is a
-   per-row Python cosine loop over the whole mirror — *not* a NumPy
-   matmul as this entry claimed (contrast `ConceptStore.nearest`,
-   which does stack a matrix), so it's slower than the original
-   estimate, not faster. The prompt hot path does **not** use it:
-   retrieval goes through `RagRetriever` → `RagStore`. It survives
-   in three secondary callers (`memory_retriever.py`,
-   `concept_contradiction.py`, `idle_gap_resolver.py`), and
-   `MemoryRetriever` itself is constructed and handed to
-   `PromptAssembler` but never actually invoked — dead weight worth
-   deleting or wiring deliberately.
-4. **prune() semantics.** With the cap raised/disabled, decide what
-   (if anything) still bounds growth: keep a generous hard ceiling
-   as a safety valve, rely on decay + archive-tier demotion to keep
-   the *hot* set small, or both. Pinned rows must stay immune
-   either way.
-5. **The ANN index is build-once.** Tracked separately as
-   [P35](#p35-the-lance-ann-index-is-built-once-never-refreshed) —
-   it is a hard prerequisite for this entry, because raising the cap
-   without index maintenance moves retrieval onto the flat-scan
-   fallback exactly when the corpus gets big.
+### The measured curve
+
+Real rows (real embeddings, real content lengths) duplicated in a
+copy of the live database, so this is a curve and not an
+extrapolation from one point. `search` is shown before and after
+fix 2 below:
+
+| rows | mirror load | resident | peak | `decay()` | `search()` was → now | plain SQL scan |
+|---|---|---|---|---|---|---|
+| 1,829 (today) | 0.08 s | 11 MB | 20 MB | 0.10 s | 5.6 → 0.1 ms | 0.7 ms |
+| 10,000 | 0.42 s | 61 MB | 108 MB | 0.64 s | 28.9 → 0.5 ms | 0.8 ms |
+| 20,000 | 0.85 s | 122 MB | 218 MB | 1.28 s | 60.8 → 1.1 ms | 1.2 ms |
+| 50,000 | 2.16 s | 305 MB | 545 MB | 3.20 s | 153.6 → 2.8 ms | 2.5 ms |
+
+Everything is linear in row count. Growth is running at ~450
+memories/week and rising, which puts 20k inside a year and 50k
+inside three.
+
+*Measurement note:* an earlier version of this table put the load
+at 14.7 s for 50k. That column had been timed with `tracemalloc`
+running, which is what produced the memory figures either side of
+it and which inflates allocation-heavy code several-fold. The
+memory columns are sound; the load column is the re-measured one.
+
+**SQLite is not in the picture and Postgres would not help.** A
+full aggregate over 50k memories is 2.5 ms; the whole database is
+58 MB. The corpus is a few tens of thousands of small rows read
+by one process — nowhere near the point where the relational
+engine is the constraint. Moving to Postgres would add a service
+to operate and move none of the numbers above, because all of
+them are Python-process costs. The one honest argument for it is
+pgvector replacing LanceDB, and that trade should be judged on
+the vector story, not on the row count.
+
+This holds for the whole database, not just this table: the
+fastest-growing tables are 25× this one and stay flat to 5M rows
+under the same test — see
+[P49](#p49-the-telemetry-ledgers-are-the-fastest-growing-tables).
+
+### The three things to fix — two done
+
+1. ~~**Embeddings are N separate arrays instead of one matrix.**~~
+   **Shipped.** At 20k rows the vectors are 81.9 MB either way, so
+   this was never about the bytes — it was that `search()` and
+   `add()`'s dedupe pass were per-row Python cosine loops over
+   them. Both now go through
+   [`VectorIndex`](../../app/core/memory/vector_index.py), one
+   contiguous `(rows, dim)` float32 matrix kept beside the mirror:
+   **search 153.6 → 2.8 ms and dedupe 54.2 → 2.8 ms at 50k**.
+   Dedupe is the one that mattered, since it ran on every write
+   rather than on a secondary read path. Deletion is a tombstone,
+   because compacting a row out of a matrix would make `prune()`
+   quadratic.
+2. **`decay()` re-reads the whole table.** It does the bulk
+   `UPDATE` in SQL and then calls `_reload_mirror()`, so a
+   scheduled decay costs a full disk re-read of every row and
+   BLOB: 3.2 s at 50k, which is most of the 2.16 s load plus the
+   update. The new salience is already computable in process;
+   updating the mirror in place makes this ~free. **Still open**,
+   and now the largest remaining item.
+3. **`_reload_mirror` uses `fetchall()`.** Peak is 1.8× resident
+   (218 MB vs 122 MB at 20k) purely because every row tuple and
+   BLOB is materialised before the first `Memory` is built.
+   Iterating the cursor removes the doubling for a few lines'
+   change, and peak is what decides whether a load survives, not
+   average. **Still open**, and cheap.
+
+With those two done, 50k rows costs ~2 s at startup, ~305 MB
+resident, and nothing measurable per query. RSS is then the only
+thing that still grows, and 305 MB is small next to the STT/TTS
+weights (P27/P28).
+
+### The MemoryRetriever question is now separate
+
+`MemoryStore.search` is not on the prompt path — retrieval goes
+`RagRetriever` → `RagStore`. `MemoryRetriever` is constructed,
+handed to `PromptAssembler`, and never invoked. Making `search`
+fast has removed the urgency, but the dead wiring is still worth
+either deleting or connecting on purpose.
+
+### Still-open architectural fork
+
+Is the mirror worth keeping once retrieval is fully ANN-backed, or
+should it become a bounded LRU of the hot set (equivalently: evict
+the `archive` tier and read it from LanceDB on demand)? Fix 1 and
+fix 2 both get cheaper to abandon later, so neither forecloses
+this. Overlaps with the F10 topic-graph utilisation cluster
+([`awareness.md`](awareness.md)).
+
+Unrelated but adjacent: `data/` is 1.37 GB, of which 1.09 GB
+(26,766 files) is `lancedb-20260813.bak` from the version upgrade
+and ~113 MB is stale `chat_sessions.db` backups. Nothing to design
+around, just worth deleting once the upgrade is trusted.
 
 **Key files.**
 [`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`_max` / `_tier_caps`, `prune`, `decay`, `_reload_mirror`,
-`search`),
+(`_normalize_cap`, `prune`, `decay`, `_reload_mirror`, `search`),
 [`app/core/infra/memory_settings.py`](../../app/core/infra/memory_settings.py)
-(`max_memories` default / a new `max_memories: 0 = uncapped`
-sentinel),
+(`_parse_tier_cap`),
 [`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(call `ensure_vector_index` on a schedule / after bulk knowledge
-ingest so the ANN index actually exists at scale),
-[`config/default.json`](../../config/default.json),
-[`docs/configuration.md`](../../docs/configuration.md).
+(`ensure_vector_index`),
+[`config/default.json`](../../config/default.json).
 
-**Sketched approach.** Phase it: (a) bump the default cap (e.g.
-5000 → 20000) and add a `0 = uncapped` sentinel, cheap and
-reversible; (b) land P5 + P17 (and confirm P4) so the per-turn /
-post-turn mirror sweeps stay sub-linear; (c) ensure
-`ensure_vector_index` is invoked from a maintenance worker (e.g.
-the topic-graph rebuild worker, or the idle scheduler) so the ANN
-index is rebuilt as the corpus grows rather than only opportunistically;
-(d) optionally evict the `archive` tier from the in-memory mirror,
-reading it lazily from LanceDB only when retrieval needs it, so
-RSS tracks the *hot* set, not the whole history.
-
-**Open questions.** Is the in-memory mirror worth keeping at all
-once retrieval is fully ANN-backed, or should the mirror become a
-bounded LRU of the hot set? That's the deeper architectural fork
-behind "RAG should focus on relevant topics instead of fetching
-memories directly" — overlaps with the F10 topic-graph utilisation
-cluster ([`awareness.md`](awareness.md)).
-
-**Effort.** Small (a, cap bump + sentinel) → Medium (b/c, depends
-on P5/P17) → Large (d, mirror eviction / LRU rework).
+**Effort.** Small (fix 1) → Small (fix 3) → Medium (fix 2, if
+`search` is kept at all) → Large (mirror eviction / LRU rework).
 
 ---
 
@@ -716,37 +744,59 @@ reads SQLite, not Lance — probably not)?
 
 ## P35. The Lance ANN index is built once, never refreshed
 
-**Motivation.** `RagStore.ensure_vector_index` is idempotent by
-design — `create_index` runs with `replace=False`, so the second call
-is a no-op once an index exists. Its **only** caller is
-`topic_graph.rebuild()`, and only when the corpus is already above
-the 2000-row ANN rebuild threshold. So in practice the index is built
-at most once, at whatever corpus size happened to trip that path, and
-never rebuilt as rows accumulate. Lance degrades gracefully (a failed
-or absent index falls back to a flat scan, exceptions swallowed) —
-which is the problem: retrieval gets slower with no signal that the
-index went stale. This is a hard prerequisite for P30, since raising
-the memory cap without index maintenance is exactly the scenario where
-the flat-scan fallback hurts most.
+**Status: shipped — and the entry was understating it.** This was
+filed as "built once, never refreshed". Checking
+`list_indices()` against the live store found `[]` on **every**
+table: the index had never been built at all, and every retrieval
+in the app's history has been a flat scan.
+
+**Why it never fired.** `ensure_vector_index` carries its own
+`min_rows=256` threshold, which the corpus passed long ago. But
+its only caller was `topic_graph.rebuild()`, guarded by
+`_ANN_REBUILD_THRESHOLD = 2000` — a threshold about whether
+*clustering* should go dense or ANN, which has nothing to do with
+whether an index is worth having. The corpus sat at ~1,900
+memories, so the guard held and the index was never requested.
+Two unrelated thresholds, and the stricter one silently owned the
+decision.
+
+**What shipped.**
+- `ensure_vector_index` now covers `memories` **and** `messages`,
+  and returns a per-table report (`rows` / `indexed` /
+  `unindexed` / `action`) instead of a bool, so "is it there and
+  is it fresh?" is answerable rather than inferable — sketch (b)
+  and (c).
+- **The refresh is the substantive part.** Lance does not add new
+  rows to an existing IVF_PQ index; they accumulate as *unindexed*
+  rows that every query scans on top of the ANN probe. An index
+  built once therefore decays back into a flat scan at exactly the
+  rate the corpus grows, invisibly — results stay correct, only
+  slower. `ensure_vector_index` rebuilds with `replace=True` once
+  more than `refresh_ratio` (20%) of rows are unindexed.
+- Called from `RagMaintenanceWorker.run()`, after compaction:
+  same trigger (writes since last pass), same exclusive lock
+  already held, and the rebuild sees the compacted layout rather
+  than indexing fragments about to move — sketch (a).
+
+**Measured on a copy of the live store:** the worker builds both
+indexes in 1.3 s; memories search 11.6 → 5.4 ms (2.15×), messages
+15.7 → 5.5 ms (2.85×); a second run reports `fresh` and does
+nothing. The multiple grows with the corpus, since the flat side
+is linear and the ANN side is not.
+
+`documents` is deliberately excluded: it is empty, and
+`min_rows` would skip it anyway.
 
 **Key files.**
 [`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`ensure_vector_index` ~L942-985 — note the swallowed exceptions and
-`min_rows=256`),
-[`app/core/conversation/topic_graph.py`](../../app/core/conversation/topic_graph.py)
-(~L1580-1582, the sole caller; `_ANN_REBUILD_THRESHOLD` ~L147).
+(`ensure_vector_index`, `_ensure_one_index`, `_index_stats`),
+[`app/core/rag/rag_maintenance_worker.py`](../../app/core/rag/rag_maintenance_worker.py)
+(the call site, after `optimize()`).
 
-**Sketched approach.** (a) Call `ensure_vector_index` from a
-maintenance worker on a slow cadence (or from the existing
-topic-graph rebuild worker unconditionally, not only above
-threshold), and pass `replace=True` when the row count has grown by
-more than some factor since the last build. (b) Report index state —
-present / row count at build / current row count — through the
-existing RAG stats surface so "the index is stale" is observable
-rather than inferred. (c) Consider building it for `messages` and
-`documents` too, not just `memories`.
-
-**Effort.** Small (a + b), Small (c).
+**Left open.** The 2000-row `_ANN_REBUILD_THRESHOLD` call in
+`topic_graph.rebuild()` is now redundant but harmless — it
+requests an index that already exists. Worth deleting when that
+file is next touched.
 
 ---
 
@@ -1248,3 +1298,64 @@ is the model to follow.
 
 **Effort.** Medium-Large, and mostly prerequisite rather than scheduler
 work.
+
+---
+
+## P49. The telemetry ledgers are the fastest-growing tables
+
+**Motivation.** A census of every table, taken while sizing P30,
+put the growth in a different place than expected. `memories` is
+small and slow-growing. What is actually accumulating is the
+observability we have been adding:
+
+| table | rows | +1 yr | +3 yr | pruned? |
+|---|---|---|---|---|
+| `surfacing_outcomes` | 45,286 | ~596k | ~1.70M | `prune()` exists, never called |
+| `concept_events` | 17,357 | ~214k | ~609k | never |
+| `turn_prompt_blocks` | 13,244 | ~174k | ~497k | `prune()` exists, never called |
+| `concept_edges` | 12,549 | ~143k | ~403k | has deletion paths |
+| `cue_decisions` | 5,288 | ~70k | ~198k | `prune()` exists, never called |
+| `messages` | 4,634 | ~22k | ~58k | never |
+| `concepts` | 2,563 | ~28k | ~78k | lifecycle retires |
+| `memories` | 1,829 | ~13k | ~35k | uncapped (P30) |
+
+`surfacing_outcomes` alone is growing ~25× faster than
+`memories`, and `concepts` about twice as fast.
+
+**The reassuring half, which is most of it.** SQLite absorbs this
+without complaint. Grown to 5M rows with realistic timestamps,
+`stats_for(200 concepts, 90d)` — the one the lifecycle worker
+runs — is **flat**: 5.2 ms at 45k, 6.3 ms at 5M. Every read takes
+a window, and the window predicate resolves through a covering
+index (`idx_surfacing_outcomes_created`), so total history costs
+nothing. This is the measurement behind "SQLite is fine, don't
+migrate" holding for the whole database and not just for
+`memories`.
+
+**What does drift.** `engaged_rate_by_cluster(window_days=90)`
+goes 32 ms → 63 ms → 256 ms across 45k → 600k → 5M total rows,
+despite the window holding a constant ~45k. So one of its arms is
+not window-selective. It runs on an idle worker, so a quarter
+second after eight years of use is not a problem — it is filed
+because it is the one query whose shape does not match the others,
+and that is usually worth knowing before it matters.
+
+Disk is the real consequence: 1.2 GB at 5M rows, versus 58 MB
+today.
+
+**Sketched approach.** (a) Schedule the three existing `prune()`
+methods from an existing maintenance worker with a generous
+retention (a year keeps every analysis currently run). (b) Find
+the non-selective arm of `engaged_rate_by_cluster`. (c) Decide
+whether `concept_events` and `messages` want retention at all —
+both are arguably history rather than telemetry, and `messages`
+is the transcript itself.
+
+**Key files.**
+[`app/core/memory/surfacing_outcome_store.py`](../../app/core/memory/surfacing_outcome_store.py),
+[`app/core/memory/cue_decision_store.py`](../../app/core/memory/cue_decision_store.py),
+[`app/core/memory/turn_prompt_block_store.py`](../../app/core/memory/turn_prompt_block_store.py),
+[`app/core/rag/rag_maintenance_worker.py`](../../app/core/rag/rag_maintenance_worker.py)
+(the obvious host — it already runs a slow maintenance cadence).
+
+**Effort.** Small (a), Small (b), Small (c, mostly a decision).

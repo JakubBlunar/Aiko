@@ -716,9 +716,12 @@ compound across every K-series entry:
 - **P26.** Lip-sync rides the server clock, not the playback clock —
   **partly shipped**: the client-side analyser path exists but is
   wired for mobile audio-owners only; extend it to desktop.
-- **P30.** Raise / disable the `memory.max_memories` cap (topic-graph
-  persistence removed the `O(n²)` wall; mirror sweeps P5/P17 are the
-  remaining blockers).
+- **P30.** Raise / disable the `memory.max_memories` cap — **the cap
+  is gone** (all three tier caps ship at `0` = never evict), and the
+  matmul fix with it — `search` and the per-write dedupe pass are
+  ~55× faster at 50k rows. SQLite is nowhere near the limit. What
+  remains is `decay()`'s full mirror re-read and `_reload_mirror`'s
+  `fetchall()`; growth costs RSS and startup, not query time.
 - **P31.** Audit + trim the baseline system prompt (~25-30k resting
   floor). The **measurement shipped as P31a** — `get_prompt_block_costs`
   ranks blocks by tokens × tier — and its first finding is that the
@@ -738,8 +741,15 @@ compound across every K-series entry:
   wall the moment P30 lifts the cap.
 - **P34.** Unbounded tables — `messages`, its LanceDB mirror, and the
   append-only `concept_events`; retention posture per table.
-- **P35.** The Lance ANN index is built once and never refreshed
-  (silent degradation to flat scan; hard prerequisite for P30).
+- **P35.** ~~The Lance ANN index is built once and never refreshed.~~
+  **Shipped**, and it was worse than filed: the index had never been
+  built at all, because its only caller sat behind an unrelated
+  2000-row clustering threshold. Now built *and* refreshed from the
+  RAG maintenance worker, for `messages` as well as `memories`.
+- **P49.** The telemetry ledgers (`surfacing_outcomes` at 45k and
+  ~600k/yr, `concept_events`, `turn_prompt_blocks`, `cue_decisions`)
+  are the fastest-growing tables by far, and three of them have a
+  `prune()` nobody calls. Queries stay flat to 5M rows; disk does not.
 - **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
   pending work via a `demand()` probe, the scheduler ranks by urgency
   instead of age, and the budget splits into a compute lane and an LLM

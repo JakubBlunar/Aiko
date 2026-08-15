@@ -23,7 +23,7 @@ class MemorySettings:
     enabled: bool = True
     top_k: int = 6
     score_threshold: float = 0.4
-    max_memories: int = 5000  # long_term cap
+    max_memories: int = 0  # long_term cap; 0 = uncapped
     dedupe_threshold: float = 0.92
     # The narrower second dedupe gate: a fact restated within
     # ``restate_window_hours`` at this similarity is the same fact again,
@@ -93,8 +93,12 @@ class MemorySettings:
     scratchpad_promote_min_revival: float = 0.3
     archive_demote_idle_days: int = 180
     # Per-tier caps (long_term cap reuses ``max_memories`` above).
-    scratchpad_cap: int = 1000
-    archive_cap: int = 10000
+    # ``0`` means the tier is never evicted from, which is the default:
+    # pruning deletes rows outright, so a cap is a forgetting policy and
+    # not merely a performance guard. See P30 for what the corpus size
+    # actually costs.
+    scratchpad_cap: int = 0
+    archive_cap: int = 0
     # Safety clamp on wall-clock catch-up: even if the app was offline
     # for months, decay won't try to apply more than this many days'
     # worth at once. Keeps the per-call magnitude bounded.
@@ -2268,12 +2272,26 @@ class MemorySettings:
 
 
 
+def _parse_tier_cap(raw: Any, default: int) -> int:
+    """Read a per-tier memory cap, where ``0`` means "never evict".
+
+    Every other cap setting clamps to a floor of 50 to stop a typo from
+    gutting the store; that floor is exactly what makes a plain
+    ``max(50, …)`` unable to express "no cap", so 0 is taken first.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return 0 if value <= 0 else max(50, value)
+
+
 def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
     return MemorySettings(
             enabled=bool(memory_raw.get("enabled", True)),
             top_k=max(0, int(memory_raw.get("top_k", 6))),
             score_threshold=max(0.0, min(1.0, float(memory_raw.get("score_threshold", 0.4)))),
-            max_memories=max(50, int(memory_raw.get("max_memories", 5000))),
+            max_memories=_parse_tier_cap(memory_raw.get("max_memories", 0), 0),
             dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
             restate_threshold=max(
                 0.5, min(0.999, float(memory_raw.get("restate_threshold", 0.85))),
@@ -2340,8 +2358,8 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             archive_demote_idle_days=max(
                 1, int(memory_raw.get("archive_demote_idle_days", 180))
             ),
-            scratchpad_cap=max(50, int(memory_raw.get("scratchpad_cap", 1000))),
-            archive_cap=max(50, int(memory_raw.get("archive_cap", 10000))),
+            scratchpad_cap=_parse_tier_cap(memory_raw.get("scratchpad_cap", 0), 0),
+            archive_cap=_parse_tier_cap(memory_raw.get("archive_cap", 0), 0),
             fade_hedge_enabled=bool(
                 memory_raw.get("fade_hedge_enabled", True),
             ),

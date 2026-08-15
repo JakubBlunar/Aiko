@@ -159,8 +159,13 @@ class MemoryFacadeMixin:
         return len(store.iter_by_kinds(self._diary_kinds(kind)))
 
     def memory_cap(self) -> int:
-        """Return the current ``memory.max_memories`` cap (UI hint)."""
-        return int(getattr(self._settings.memory, "max_memories", 500))
+        """Return the current ``memory.max_memories`` cap (UI hint).
+
+        ``0`` means uncapped, which the memory list renders by omitting
+        the "cap N" suffix rather than by printing a ceiling that will
+        never be reached.
+        """
+        return int(getattr(self._settings.memory, "max_memories", 0))
 
     def delete_memory(self, memory_id: int) -> bool:
         if self._memory_store is None:

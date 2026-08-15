@@ -228,8 +228,9 @@ def mirror_snapshot(session: "SessionController") -> dict[str, Any]:
         "cap_max_memories": getattr(store, "_max", None),
         "tier_caps": dict(getattr(store, "_tier_caps", {}) or {}),
         "note": (
-            "the effective ceiling is the sum of the per-tier caps, not "
-            "max_memories alone (see perf backlog P30)"
+            "a null cap means that tier is never evicted from (the "
+            "default); the cost of growth is this mirror's size and "
+            "load time, not query time -- see perf backlog P30"
         ),
     }
 

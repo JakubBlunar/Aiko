@@ -121,6 +121,22 @@ class RagMaintenanceWorker:
         except Exception:
             log.warning("rag_maintenance: optimize failed", exc_info=True)
             return {"skipped": True, "reason": "optimize_failed"}
+        # Index maintenance rides the same pass. It belongs here rather
+        # than on its own schedule for three reasons: the trigger is the
+        # same (writes since last time), the exclusive lock is already
+        # held, and compaction is what rewrites the fragments the index
+        # points at. Ordered after, so the rebuild sees the compacted
+        # layout instead of indexing fragments that are about to move.
+        #
+        # Before this, ``ensure_vector_index`` had exactly one caller --
+        # the topic-graph rebuild, above 2000 memories -- so on a store
+        # that had never reached that size the index was never built at
+        # all, and every search was a flat scan without anything saying so.
+        index: dict[str, Any] = {}
+        try:
+            index = self._store.ensure_vector_index()
+        except Exception:
+            log.warning("rag_maintenance: ensure_vector_index failed", exc_info=True)
         # After, not before: compaction itself commits new versions, and a
         # watermark taken beforehand would count them as fresh writes and
         # re-arm the worker immediately.
@@ -138,11 +154,17 @@ class RagMaintenanceWorker:
         }
         if "errors" in result:
             summary["errors"] = result["errors"]
+        if index:
+            summary["index"] = index
         log.info(
-            "rag_maintenance done: files %s -> %s, %.1f MB freed in %.1fs",
+            "rag_maintenance done: files %s -> %s, %.1f MB freed in %.1fs; "
+            "index %s",
             summary["files_before"], summary["files_after"],
             float(summary["bytes_freed"]) / 1e6,
             float(summary["duration_ms"]) / 1000.0,
+            ", ".join(
+                "%s=%s" % (name, entry.get("action")) for name, entry in index.items()
+            ) or "unchanged",
         )
         return summary
 
