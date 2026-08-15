@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from app.core.infra import timephrase
-from app.core.infra.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
 from app.core.memory.turn_prompt_block_store import TurnPromptBlockStore
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 
@@ -214,7 +214,10 @@ class SchemaTests(unittest.TestCase):
             version = conn2.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()[0]
-            self.assertEqual(int(version), 35)
+            # The symbol, not the literal: this test is about a legacy
+            # database gaining the table, and it should keep passing
+            # every time the schema moves past the version that added it.
+            self.assertEqual(int(version), _SCHEMA_VERSION)
             conn2.close()
             db2._local.conn = None
         finally:

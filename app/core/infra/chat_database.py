@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 35
+_SCHEMA_VERSION = 36
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1104,6 +1104,34 @@ CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_created
     ON turn_prompt_blocks(created_at);
 CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_message
     ON turn_prompt_blocks(assistant_message_id);
+
+-- K92 phase 1: the single conversational stance each turn's blocks add
+-- up to, recorded and not rendered.
+--
+-- One row per turn, where the table above holds tens -- and unique on
+-- the message, because unlike K90 this one IS backfillable: the arbiter
+-- is a pure function over ``turn_prompt_blocks`` and ``messages``, so
+-- re-running it after a rule change is the intended workflow and must
+-- not double-count.
+--
+-- ``desire`` is what the providers offered before the interruption
+-- ceiling clamped it, ``ceiling`` is the most floor-taking stance the
+-- user's turn permitted, and ``stance`` is the lesser of the two. Their
+-- disagreement is the measurement this table exists for.
+CREATE TABLE IF NOT EXISTS turn_stance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assistant_message_id INTEGER NOT NULL UNIQUE,
+    stance TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    desire TEXT NOT NULL,
+    ceiling TEXT NOT NULL,
+    shortlist TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turn_stance_stance
+    ON turn_stance(stance, created_at);
+CREATE INDEX IF NOT EXISTS idx_turn_stance_created
+    ON turn_stance(created_at);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -1736,6 +1764,15 @@ class ChatDatabase:
         # report and the diagnostics panel both say out loud, because a
         # rate of zero on a block that has simply never been recorded
         # would otherwise read as a dead block.
+        # v35 -> v36: K92 phase 1's ``turn_stance``. Brand-new table in
+        # ``_CREATE_TABLES``, so the executescript has it. Unlike v35
+        # this one IS backfillable -- the arbiter reads only
+        # ``turn_prompt_blocks`` and ``messages``, both durable -- but
+        # the migration deliberately does not do it: recomputing a few
+        # hundred turns is a script that can be re-run and re-read after
+        # a rule change, and burying it in a one-shot migration would
+        # mean the first version of the rules was the only one anybody
+        # ever measured. See ``scripts/backfill_turn_stance.py``.
         try:
             conn.execute(
                 "ALTER TABLE hypotheses ADD COLUMN answer_memory_ids TEXT "

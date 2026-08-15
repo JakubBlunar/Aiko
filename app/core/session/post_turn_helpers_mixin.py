@@ -2234,6 +2234,57 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
                 message_id, written,
             )
 
+    def _record_turn_stance(
+        self,
+        *,
+        assistant_message_id: int | None,
+        telemetry: Any = None,
+        user_text: str = "",
+    ) -> None:
+        """K92 phase 1: record the stance this turn's blocks add up to.
+
+        Third read of the same ``telemetry.block_chars``, for the same
+        reason the other two take it as an argument rather than off
+        ``get_last_system_prompt()``: that snapshot is stamped after
+        post-turn runs, so it would describe the previous assembly.
+
+        Shadow only. The decision is written to ``turn_stance`` and
+        never rendered, so this method cannot change a single character
+        of what Aiko reads. That is the phase-1 contract and
+        ``tests/test_stance.py`` pins it.
+        """
+        store = getattr(self, "_turn_stance_store", None)
+        if store is None:
+            return
+        message_id = int(assistant_message_id or 0)
+        if message_id <= 0:
+            return
+        block_chars = dict(getattr(telemetry, "block_chars", None) or {})
+        if not block_chars:
+            # No assembly happened (banter and aborted turns build no
+            # prompt). A turn with no blocks would be recorded as a
+            # FOLLOW she never had the chance to choose.
+            return
+
+        from app.core.conversation.stance import StanceInputs, decide
+
+        decision = decide(StanceInputs(
+            blocks=frozenset(
+                name for name, chars in block_chars.items()
+                if name and int(chars or 0) > 0
+            ),
+            user_text=user_text or "",
+            dialogue_act=getattr(self, "_last_user_dialogue_act", None),
+            arc=getattr(self, "_last_user_arc", None),
+        ))
+        if store.add_turn(message_id, decision):
+            log.info(
+                "turn stance: msg=%d stance=%s reason=%s desire=%s "
+                "ceiling=%s",
+                message_id, decision.stance, decision.reason,
+                decision.desire, decision.ceiling,
+            )
+
     def _queue_surfaced_cues_for_ledger(self, decisions: Any) -> None:
         """Add surfaced cues to the L37 carry so they settle like any item.
 

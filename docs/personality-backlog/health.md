@@ -3531,6 +3531,97 @@ Re-measure the 0-of-41 figure after a few weeks of accumulation.
 
 ---
 
+## H34. Echo is a reliable measure, and it is not a measure of him
+
+**Severity: medium — no bug, a boundary. Filed 15 Aug while auditing
+surfacing; it puts a number on a risk H18 named and could not yet size.**
+
+H18 replaced L38's reward signal because the old one was noise: the engaged
+label has a split-half reliability of 0.05 at item level, since it belongs to
+the turn and the median turn surfaces 67 items. `echoed` scores 0.61 on the
+same test and is per-item by construction, so standing now reads `echoed /
+judged`. That was the right call and this entry does not reverse it.
+
+H18 also wrote down the trade in as many words: *"engagement is the user's
+verdict; echo is only Aiko's, so rewarding echo does risk favouring what she
+already reaches for."* The corpus is now big enough to ask how large that risk
+is, and the answer is that the two signals are not partially aligned. They are
+orthogonal.
+
+Over the 628 turns carrying both a settled engagement label and at least ten
+judged items, the share of surfaced items Aiko echoed has a Spearman
+correlation with how the user then reacted of **+0.003**. Group means look like
+a gradient in the wrong direction — engaged 0.198, neutral 0.217, disengaged
+0.220, abandoned 0.261 — but the rank test says that is noise, and the obvious
+confound accounts for the shape: echo share rises with the *length of his
+message* (0.200 under 80 chars, 0.218 at 80–240, 0.249 over 240), because a
+longer message retrieves more overlapping material. It is a property of the
+input, not a verdict on the output.
+
+So `earned_standing` is well named except for the word earned. It reliably
+measures which of her own material Aiko reaches for again, which is a real and
+stable quantity — it just carries no information about whether reaching for it
+worked. A concept can rise to the top of the standing map without a single
+signal from the user ever having touched it.
+
+**Not a call to revert.** A reliable measure of self-consistency still beats an
+unbiased measure of nothing, which is the choice H18 faced. The point of filing
+it is that the gap cannot be closed by re-weighting the two signals against
+each other, because there is no correlation to trade along — closing it needs a
+user-side signal that is per-item, and the only cheap one in the building is
+K32 reactions, which today feed tease rhythm and affection-style and never
+reach the ledger. The other route is to stop surfacing 67 items a turn, which
+is **K92**'s territory rather than this file's.
+
+Re-run before acting: this is one install's 628 turns, and the confound above
+means the honest read of the group means needs the message-length control every
+time.
+
+---
+
+## H35. A third of the surfacing ledger cannot be scored by either signal
+
+**Severity: low — a gap H18 spotted in passing and left unfiled. Filed 15 Aug
+so it stops being a footnote.**
+
+`surfacing_outcomes` has two outcome columns. `engagement_label` is turn-level
+and shown by H18 to carry no item-level information; `echoed` is per-item and
+is what L38 now reads. Clusters and cues have **neither**: `echoed` is `NULL`
+on all 13,480 cluster rows and all 446 cue rows, because no echo test is ever
+run for those two kinds. That is 31% of the 44,735-row ledger with no usable
+verdict of any sort.
+
+It matters in two live places. K81 taste affinity and L42 neglect both read
+**cluster-level engaged rates** — the signal H18 measured at −0.01 split-half
+reliability for clusters specifically — because there is nothing else to read.
+H18's own note is the cleanest statement of the problem: taste's "1 of 39
+clusters clears the bar" (H8) reads very differently if the bar is being applied
+to noise. And cues, the one item kind that exists precisely to make Aiko say
+something, are the kind whose landing is least measurable.
+
+Cues are arguably correct as `NULL`: a cue is an instruction ("you can ask how
+it went"), not a remembered item she might quote, so echo genuinely has no
+meaning for it — and the cue pool already tracks the equivalent through its own
+`used` / `expired` settlement. The honest fix there is not an echo test but a
+join, so cue landing can be read out of the ledger alongside everything else
+rather than only from a different table with different semantics.
+
+Clusters are the real gap: a cluster is a topic, echo *does* have a meaning for
+it ("did her reply stay in this topic"), and the same cosine she was selected on
+would answer it. Either give clusters an echo verdict or accept in writing that
+cluster affinity is a much weaker instrument than concept standing — and mark
+K81 and L42 accordingly, since both currently read it as if it were not.
+
+**Cost.** Low. The cluster echo test is one cosine against the reply embedding
+that is already computed for K22, in `_record_surfacing_outcomes`
+([`post_turn_helpers_mixin.py`](../../app/core/session/post_turn_helpers_mixin.py)),
+next to the concept and memory tests that already run there. The denominator
+correction H18 made to `echo_rate` (echoes over rows an echo test actually ran
+on, not over all surfaced rows) means adding one does not silently move any
+existing number.
+
+---
+
 ## What Part 2 changes about priority
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
@@ -3674,3 +3765,23 @@ its arming signal was another cue's gap slot, and all 7 declines named a mutex
 winner that ranks below it. Both numbers were artefacts. The two remaining leads
 above are untouched, and `dormant_interest`'s is now the one worth reading first:
 it is the only cue whose zero has survived scrutiny of the instrument.
+
+**Added 15 Aug**, from a surfacing audit prompted by the suggestion that Aiko
+needed an attention-economics layer with a dozen scored signals. She mostly has
+one — the audit reproduced H18's 67-items-per-turn dilution from scratch before
+finding H18 had already fixed it — so the two entries filed are the parts that
+survived: **H34** (echo is reliable and is orthogonal to the user's reaction,
+rho +0.003 over 628 turns — H18's flagged risk, sized) and **H35** (31% of the
+ledger has no verdict of either kind). Both are measurement-boundary entries
+rather than defects; neither blocks anything.
+
+Two prerequisites confirmed landed on the same pass. H30's `provider` catch-all
+went from **84.5%** of declines before 13 Aug to **0.0%** of the 1,391 after it,
+and H29's ledger now carries a want at pressure 0.62 that was minted on the 13th
+— so pressure survives days rather than dying at two showings. That cleared
+**K92**, whose phase 1 shipped the same day. Its shadow log immediately returned
+two things this file should watch: the interruption ceiling binds on **32.6%**
+of turns, which makes K95 load-bearing rather than insurance, and `HOLD` was
+chosen **0 times in 432 turns** because some provider is always offering
+something — the same "she gets a steer nearly every turn" shape H28 and K92 both
+describe, now visible as a single number.

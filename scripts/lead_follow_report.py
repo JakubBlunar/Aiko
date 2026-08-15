@@ -176,7 +176,90 @@ def _render(data: dict[str, Any]) -> str:
                         f"({row['avg_chars']:.0f} chars)"
                     )
 
+    stance = data.get("stance") or {}
+    if stance.get("turns"):
+        out.append("")
+        out.append(
+            f"K92 stance (shadow, {stance['turns']} recorded turns)"
+        )
+        for row in stance["rows"]:
+            if not (row["chosen"] or row["wanted"]):
+                continue
+            out.append(
+                f"  {row['stance']:<17} chosen {row['chosen']:>5} "
+                f"({row['chosen_pct']:>4.1f}%)   wanted {row['wanted']:>5} "
+                f"({row['wanted_pct']:>4.1f}%)"
+            )
+        out.append("")
+        out.append(
+            f"  held back by his turn: {stance['clamped']} "
+            f"({stance['clamped_pct']:.1f}% of turns)"
+        )
+        out.append(
+            "  chosen  the stance the arbiter settled on"
+        )
+        out.append(
+            "  wanted  what the providers offered before his turn "
+            "capped it -- a"
+        )
+        out.append(
+            "          stance high here and low in 'chosen' is one she "
+            "is repeatedly"
+        )
+        out.append(
+            "          pushed toward at moments that cannot carry it."
+        )
+        out.append(
+            "  Nothing here reaches the prompt: phase 1 records the "
+            "decision only."
+        )
+
     return "\n".join(out)
+
+
+def _collect_stance(conn: sqlite3.Connection) -> dict[str, Any]:
+    """K92 phase 1's shadow log, read straight off ``turn_stance``.
+
+    Kept in the script rather than in ``lead_follow_corpus`` -- unlike
+    every other number here, the stance set is explicitly provisional
+    and phase 1 exists to change it. Promoting it into the shared
+    corpus (and therefore onto the diagnostics panel) is a phase-2 job,
+    once the set has stopped moving.
+    """
+    from app.core.conversation.stance import STANCE_LADDER
+
+    try:
+        rows = conn.execute(
+            "SELECT stance, desire FROM turn_stance"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    if not rows:
+        return {}
+    total = len(rows)
+    chosen: dict[str, int] = {}
+    wanted: dict[str, int] = {}
+    clamped = 0
+    for row in rows:
+        chosen[row["stance"]] = chosen.get(row["stance"], 0) + 1
+        wanted[row["desire"]] = wanted.get(row["desire"], 0) + 1
+        if row["stance"] != row["desire"]:
+            clamped += 1
+    return {
+        "turns": total,
+        "clamped": clamped,
+        "clamped_pct": 100.0 * clamped / total,
+        "rows": [
+            {
+                "stance": name,
+                "chosen": chosen.get(name, 0),
+                "wanted": wanted.get(name, 0),
+                "chosen_pct": 100.0 * chosen.get(name, 0) / total,
+                "wanted_pct": 100.0 * wanted.get(name, 0) / total,
+            }
+            for name in STANCE_LADDER
+        ],
+    }
 
 
 def main() -> int:
@@ -212,6 +295,7 @@ def main() -> int:
         data = collect(
             conn, now=datetime.now(timezone.utc), windows=windows,
         )
+        data["stance"] = _collect_stance(conn)
     finally:
         conn.close()
 
