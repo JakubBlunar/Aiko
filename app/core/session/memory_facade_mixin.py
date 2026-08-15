@@ -67,6 +67,7 @@ class MemoryFacadeMixin:
         offset: int = 0,
         kind: str | None = None,
         tier: str | None = None,
+        q: str | None = None,
     ) -> list[dict[str, Any]]:
         store = self._memory_store
         if store is None:
@@ -75,14 +76,15 @@ class MemoryFacadeMixin:
         # so a paginated tier view stays consistent with
         # ``memory_count(tier=...)`` — filtering post-slice only caught the
         # rows of that tier that happened to land in the current page.
+        # ``q`` is inside the store for exactly the same reason.
         tier_norm = tier.strip().lower() if tier else None
         if order == "top":
             mems = store.list_top(
-                limit=limit, offset=offset, kind=kind, tier=tier_norm,
+                limit=limit, offset=offset, kind=kind, tier=tier_norm, q=q,
             )
         else:
             mems = store.list_recent(
-                limit=limit, offset=offset, kind=kind, tier=tier_norm,
+                limit=limit, offset=offset, kind=kind, tier=tier_norm, q=q,
             )
         return [m.to_dict() for m in mems]
 
@@ -91,11 +93,12 @@ class MemoryFacadeMixin:
         kind: str | None = None,
         *,
         tier: str | None = None,
+        q: str | None = None,
     ) -> int:
         store = self._memory_store
         if store is None:
             return 0
-        return store.count_memories(kind=kind, tier=tier)
+        return store.count_memories(kind=kind, tier=tier, q=q)
 
     # H9 — Aiko's diary. The journal-flavoured memory kinds that read as
     # first-person inner-life entries (as opposed to the factual /
@@ -898,6 +901,8 @@ class MemoryFacadeMixin:
         offset: int = 0,
         status: str | None = None,
         subject: str | None = None,
+        kind: str | None = None,
+        q: str | None = None,
     ) -> dict[str, Any]:
         """Serialise one page of the higher-order concept layer.
 
@@ -930,6 +935,8 @@ class MemoryFacadeMixin:
                 offset=offset,
                 status=status,
                 subject=subject,
+                kind=kind,
+                q=q,
                 # L32: enables the derived importance axis on each row. It
                 # needs the cluster-affect maps, which live in ``kv_meta``.
                 kv_get=(

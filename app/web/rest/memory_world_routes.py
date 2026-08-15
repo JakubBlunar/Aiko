@@ -28,23 +28,36 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         offset: int = 0,
         kind: str | None = None,
         tier: str | None = None,
+        q: str | None = None,
     ) -> JSONResponse:
+        """One page of stored memories, newest (or most salient) first.
+
+        ``q`` answers "did she remember this?": it matches the memory
+        text case-insensitively, requires every whitespace-separated
+        term, and treats ``*`` / ``?`` as wildcards
+        (:mod:`app.core.infra.text_query`). It filters server-side and is
+        reflected in ``total``, so the pager walks only matching rows.
+        """
         clamped_limit = max(1, min(int(limit), 200))
         clamped_offset = max(0, int(offset))
         order_norm = "top" if str(order).strip().lower() == "top" else "recent"
         kind_norm = (kind or "").strip().lower() or None
         tier_norm = (tier or "").strip().lower() or None
+        q_norm = (q or "").strip() or None
         items = session.list_memories(
             limit=clamped_limit,
             order=order_norm,
             offset=clamped_offset,
             kind=kind_norm,
             tier=tier_norm,
+            q=q_norm,
         )
         return JSONResponse({
             "memories": items,
             "count": len(items),
-            "total": session.memory_count(kind=kind_norm, tier=tier_norm),
+            "total": session.memory_count(
+                kind=kind_norm, tier=tier_norm, q=q_norm,
+            ),
             "cap": session.memory_cap(),
             "enabled": session.memory_store is not None,
         })
@@ -370,6 +383,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         offset: int = 0,
         status: str | None = None,
         subject: str | None = None,
+        kind: str | None = None,
+        q: str | None = None,
     ) -> JSONResponse:
         """Read-only page of the concept layer (evidence resolved to
         readable labels). Empty ``enabled=False`` shape when concepts are
@@ -378,9 +393,14 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         Paged on the same limit/offset contract as ``/api/memories``, and
         for the same reason at a larger scale: the snapshot resolves every
         evidence edge to its full untruncated source text, so a mature
-        graph is megabytes in one response. ``status`` / ``subject``
-        filter server-side so paging walks the filtered set, while
-        ``counts`` still describes the whole store.
+        graph is megabytes in one response. ``status`` / ``subject`` /
+        ``kind`` and the ``q`` text search all filter server-side so
+        paging walks the filtered set, while ``counts`` still describes
+        the whole store.
+
+        ``q`` matches label + rationale, case-insensitively, with every
+        whitespace-separated term required and ``*`` / ``?`` acting as
+        wildcards -- see :mod:`app.core.infra.text_query`.
         """
         return JSONResponse(
             session.concepts_snapshot(
@@ -388,6 +408,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 offset=max(0, int(offset)),
                 status=(status or "").strip() or None,
                 subject=(subject or "").strip() or None,
+                kind=(kind or "").strip().lower() or None,
+                q=(q or "").strip() or None,
             )
         )
 

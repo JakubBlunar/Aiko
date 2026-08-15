@@ -37,6 +37,12 @@ const NOISY_WS_EVENTS = new Set([
 const WS_PATH = "/ws";
 const RECONNECT_DELAY_MS = 1500;
 const PING_INTERVAL_MS = 25_000;
+
+/** One decimal place. Connection durations are read by eye, and full
+ *  float precision just makes the log line harder to scan. */
+function round1(seconds: number): number {
+  return Math.round(seconds * 10) / 10;
+}
 // How long the tool-activity strip ("aiko is searching her notebook…")
 // lingers in the chat after turn_done fires. Was 0ms (immediate
 // clear) -- users couldn't read the chips fast enough. The next user
@@ -62,6 +68,9 @@ export function useAssistantSocket(): {
   audioOutput: AudioOutputManager;
 } {
   const socketRef = useRef<WebSocket | null>(null);
+  /** Wall clock of the last close, so the next open can report the gap.
+   *  Outlives individual sockets, unlike the per-socket timers below. */
+  const lastCloseAt = useRef<number>(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const closedByUser = useRef(false);
@@ -767,9 +776,25 @@ export function useAssistantSocket(): {
     // socket that's still the canonical one.
     const isCurrent = () => socketRef.current === ws;
 
+    // Liveness bookkeeping for the close diagnostic below. Per-socket, so
+    // an orphaned socket's numbers can't contaminate the live one's.
+    let openedAt = 0;
+    let lastInboundAt = 0;
+
     ws.addEventListener("open", () => {
       if (!isCurrent()) return;
       addBreadcrumb("ws", "open");
+      openedAt = Date.now();
+      lastInboundAt = openedAt;
+      const downMs = lastCloseAt.current ? openedAt - lastCloseAt.current : 0;
+      debugLog.log({
+        source: "ws",
+        kind: "open",
+        // How long we were dark. A gap far longer than the fixed
+        // RECONNECT_DELAY_MS means the retry timer never fired, i.e. the
+        // page was frozen rather than the backend being unreachable.
+        payload: { downSeconds: round1(downMs / 1000) },
+      });
       hasEverConnected.current = true;
       setConnection({ status: "connected", lastError: null });
       if (pingIntervalRef.current) {
@@ -784,6 +809,7 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("message", (event) => {
       if (!isCurrent()) return;
+      lastInboundAt = Date.now();
       // Binary frames carry TTS / earcon PCM; pass them straight to
       // the audio output manager. Text frames are JSON envelopes.
       if (event.data instanceof ArrayBuffer) {
@@ -817,6 +843,40 @@ export function useAssistantSocket(): {
     ws.addEventListener("close", (event: CloseEvent) => {
       if (!isCurrent()) return;
       addBreadcrumb("ws", "close", { code: event.code, reason: event.reason });
+      // Why the socket died, recorded where it can be read later. A drop
+      // costs the phone every word Aiko speaks until it reconnects (the
+      // server sends TTS only to the elected audio owner and never
+      // replays it), so "the voice disappeared" is usually this event —
+      // but the three plausible causes need different fixes and look
+      // identical from the server, which only sees the socket go away:
+      //
+      //   hidden + any code        -> the OS suspended the page
+      //   visible + long silence   -> the link died quietly and the
+      //                               server's ws_ping_timeout hung up
+      //   visible + short silence  -> the connection was reset outright
+      //
+      // Breadcrumbs alone were not enough: they only ship attached to a
+      // crash report, so a clean disconnect left no trace anywhere.
+      const now = Date.now();
+      lastCloseAt.current = now;
+      debugLog.log({
+        source: "ws",
+        kind: "close",
+        payload: {
+          code: event.code,
+          reason: event.reason || undefined,
+          wasClean: event.wasClean,
+          upSeconds: openedAt ? round1((now - openedAt) / 1000) : null,
+          silentSeconds: lastInboundAt
+            ? round1((now - lastInboundAt) / 1000)
+            : null,
+          visibility:
+            typeof document !== "undefined"
+              ? document.visibilityState
+              : "unknown",
+          online: typeof navigator !== "undefined" ? navigator.onLine : null,
+        },
+      });
       // Suppress the "offline" flash during the initial boot window:
       // until we've successfully opened a WS at least once, every
       // failed attempt stays in "connecting" state so the user sees

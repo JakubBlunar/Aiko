@@ -31,6 +31,7 @@ import numpy as np
 
 from app.llm.embedder import cosine_similarity
 from app.core.infra import timephrase
+from app.core.infra.text_query import compile_query
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
 
 if TYPE_CHECKING:
@@ -443,6 +444,23 @@ def _normalize_tier(tier: str | None, *, pinned: bool = False) -> str:
     if cleaned not in VALID_TIERS:
         return _DEFAULT_TIER
     return cleaned
+
+
+def _apply_text_query(mems: list["Memory"], q: str | None) -> list["Memory"]:
+    """Narrow ``mems`` to rows whose content matches ``q``.
+
+    Searches ``content`` only. Not ``kind`` or ``tier``: those have their
+    own filters, and folding them into the text match would make
+    ``preference`` match every row of that kind and quietly swamp the
+    result the user was actually looking for.
+
+    Returns the input list unchanged for a blank query, so the common
+    case costs one ``None`` check rather than a full walk.
+    """
+    query = compile_query(q)
+    if query is None:
+        return mems
+    return [m for m in mems if query.matches(m.content)]
 
 
 class MemoryStore:
@@ -1820,6 +1838,7 @@ class MemoryStore:
         offset: int = 0,
         kind: str | None = None,
         tier: str | None = None,
+        q: str | None = None,
     ) -> list[Memory]:
         # P33: filter by kind *inside* the lock so a kind-scoped call
         # neither copies the whole mirror nor sorts rows it will discard.
@@ -1839,6 +1858,7 @@ class MemoryStore:
         if tier:
             tier_norm = tier.strip().lower()
             mems = [m for m in mems if m.tier == tier_norm]
+        mems = _apply_text_query(mems, q)
         mems.sort(key=lambda m: m.created_at, reverse=True)
         # Pinned rows always float to the top of the recent list so the
         # editor's default view shows curated rows first regardless of
@@ -1855,6 +1875,7 @@ class MemoryStore:
         offset: int = 0,
         kind: str | None = None,
         tier: str | None = None,
+        q: str | None = None,
     ) -> list[Memory]:
         # P33: see ``list_recent`` — kind filtering happens under the lock,
         # before the sort.
@@ -1869,6 +1890,7 @@ class MemoryStore:
         if tier:
             tier_norm = tier.strip().lower()
             mems = [m for m in mems if m.tier == tier_norm]
+        mems = _apply_text_query(mems, q)
         mems.sort(
             key=lambda m: (
                 0 if m.pinned else 1,
@@ -1927,7 +1949,12 @@ class MemoryStore:
         kind: str | None = None,
         *,
         tier: str | None = None,
+        q: str | None = None,
     ) -> int:
+        """Rows matching the filters. Must accept every filter the list
+        methods do, or the pager lies: ``total`` drives the page count, so
+        a filter the count ignores produces pages that render empty.
+        """
         with self._lock:
             mems = list(self._mirror.values())
         if kind:
@@ -1936,6 +1963,7 @@ class MemoryStore:
         if tier:
             tier_norm = tier.strip().lower()
             mems = [m for m in mems if m.tier == tier_norm]
+        mems = _apply_text_query(mems, q)
         return len(mems)
 
     def count_by_tier(self) -> dict[str, int]:

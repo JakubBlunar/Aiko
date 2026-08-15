@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/api";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import type { Memory, MemoryOrder, MemoryTier } from "@/types";
 
@@ -24,6 +25,7 @@ export function useMemoryController(open: boolean, activeTab: string) {
   const setMemoryPage = useMemoryStore((s) => s.setMemoryPage);
   const setMemoryKindFilter = useMemoryStore((s) => s.setMemoryKindFilter);
   const setMemoryTierFilter = useMemoryStore((s) => s.setMemoryTierFilter);
+  const setMemoryQuery = useMemoryStore((s) => s.setMemoryQuery);
   const setMemoryOrder = useMemoryStore((s) => s.setMemoryOrder);
   const setMemoryCounts = useMemoryStore((s) => s.setMemoryCounts);
   const applyMemoryUpdated = useMemoryStore((s) => s.applyMemoryUpdated);
@@ -44,11 +46,23 @@ export function useMemoryController(open: boolean, activeTab: string) {
     salience: 0.6,
   });
 
+  // The raw search box. It is local to the controller and only reaches
+  // the store (and therefore the server) once it settles, so the
+  // committed ``memoryView.query`` is always what the last fetch used.
+  const [memorySearch, setMemorySearch] = useState("");
+  const settledSearch = useDebouncedValue(memorySearch);
+  useEffect(() => {
+    const next = settledSearch.trim();
+    if (next !== memoryView.query) setMemoryQuery(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settledSearch]);
+
   const refreshMemories = useCallback(
     async (overrides?: {
       page?: number;
       kindFilter?: string | null;
       tierFilter?: MemoryTier | null;
+      query?: string;
       order?: MemoryOrder;
     }) => {
       const page = overrides?.page ?? memoryView.page;
@@ -60,6 +74,8 @@ export function useMemoryController(open: boolean, activeTab: string) {
         overrides?.tierFilter !== undefined
           ? overrides.tierFilter
           : memoryView.tierFilter;
+      const query =
+        overrides?.query !== undefined ? overrides.query : memoryView.query;
       const order = overrides?.order ?? memoryView.order;
       setMemoryBusy(true);
       setMemoryError(null);
@@ -71,6 +87,7 @@ export function useMemoryController(open: boolean, activeTab: string) {
             order,
             kind: kindFilter,
             tier: tierFilter,
+            q: query || undefined,
           }),
           // Counts fetch is independent of pagination -- always
           // shows total population per tier so the header reflects
@@ -86,6 +103,7 @@ export function useMemoryController(open: boolean, activeTab: string) {
           pageSize: MEMORY_PAGE_SIZE,
           kindFilter,
           tierFilter,
+          query,
           order,
         });
         if (counts) setMemoryCounts(counts);
@@ -99,6 +117,7 @@ export function useMemoryController(open: boolean, activeTab: string) {
       memoryView.page,
       memoryView.kindFilter,
       memoryView.tierFilter,
+      memoryView.query,
       memoryView.order,
       setMemoryView,
       setMemoryCounts,
@@ -255,12 +274,15 @@ export function useMemoryController(open: boolean, activeTab: string) {
     memoryView.page,
     memoryView.kindFilter,
     memoryView.tierFilter,
+    memoryView.query,
     memoryView.order,
   ]);
 
   return {
     memoryView,
     memoriesEnabled,
+    memorySearch,
+    setMemorySearch,
     memoryBusy,
     memoryError,
     memoryPageCount,

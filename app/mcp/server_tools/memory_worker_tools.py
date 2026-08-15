@@ -65,7 +65,7 @@ def register(mcp, session: "SessionController") -> None:
         kind: str = "",
         limit: int = 30,
     ) -> str:
-        """Substring-search the memory store by content (case-insensitive).
+        """Text-search the memory store by content (case-insensitive).
 
         Diagnostic complement to ``inspect_memory_tiers`` — that tool
         only samples the top rows per tier, so it can't surface a
@@ -74,32 +74,37 @@ def register(mcp, session: "SessionController") -> None:
         (e.g. ``knowledge_gap`` / ``open_question`` / ``preference``)
         to narrow further.
 
+        Matching is the same rule as the Memory tab's search box (see
+        :mod:`app.core.infra.text_query`), deliberately: every
+        whitespace-separated term must appear somewhere in the content,
+        in any order, and ``*`` / ``?`` are wildcards. So ``bottle cap``
+        finds *"the cap of a bottle"*, and asking here gives the same
+        answer as asking in the UI.
+
         Returns each match's id, kind, tier, salience, use_count,
         ``metadata.resolved_at`` (when relevant), and a 160-char
         content preview. Bounded by ``limit`` (default 30) so a
-        common substring like "the" doesn't dump the whole store.
+        common term like "the" doesn't dump the whole store.
         """
         store = getattr(session, "_memory_store", None)
         if store is None:
             return json.dumps({"enabled": False})
-        q = (query or "").strip().lower()
+        q = (query or "").strip()
         if not q:
             return json.dumps({
-                "error": "query is required (non-empty substring)",
+                "error": "query is required (non-empty search text)",
             })
         kind_norm = (kind or "").strip().lower() or None
         try:
-            mirror = getattr(store, "_mirror", None)
-            rows = list(mirror.values()) if mirror is not None else []
+            # Wide limit rather than a mirror walk: the store owns both
+            # the matcher and the private mirror, and ``match_count``
+            # below wants the true total, not the page.
+            rows = store.list_recent(limit=100_000, kind=kind_norm, q=q)
         except Exception as exc:
-            return f"mirror access failed: {exc}"
+            return f"memory search failed: {exc}"
         hits: list[dict[str, Any]] = []
         for mem in rows:
             content = (mem.content or "")
-            if q not in content.lower():
-                continue
-            if kind_norm is not None and mem.kind != kind_norm:
-                continue
             meta = mem.metadata or {}
             row: dict[str, Any] = {
                 "id": int(mem.id),

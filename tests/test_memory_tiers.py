@@ -227,6 +227,70 @@ class TestKindFilteredListing(unittest.TestCase):
         self.assertEqual(len(store.list_top(limit=100)), 43)
 
 
+class TestTextSearchedListing(unittest.TestCase):
+    """The Memory tab's "did she remember this?" box.
+
+    Filtering has to happen inside the store for the same reason ``kind``
+    and ``tier`` do: a post-slice filter only searches whichever page
+    happened to be fetched, which for a 50-row window over thousands of
+    rows means the answer is usually "no" regardless of the truth.
+    """
+
+    def _seed(self):
+        _, store = _store_factory()
+        store.add("he collects bottle caps", "fact", _emb("a"))
+        store.add("the cap came off the bottle", "event", _emb("b"))
+        store.add("she prefers tea in the morning", "preference", _emb("c"))
+        return store
+
+    def test_search_finds_rows_in_any_word_order(self) -> None:
+        store = self._seed()
+        rows = store.list_recent(limit=50, q="bottle cap")
+        self.assertEqual(len(rows), 2)
+
+    def test_the_count_agrees_with_the_listing(self) -> None:
+        # The pager divides ``count_memories``; if the two disagree the UI
+        # offers pages that render empty.
+        store = self._seed()
+        self.assertEqual(store.count_memories(q="bottle cap"), 2)
+        self.assertEqual(store.count_memories(q="xylophone"), 0)
+
+    def test_search_composes_with_kind_and_tier(self) -> None:
+        store = self._seed()
+        rows = store.list_recent(limit=50, q="bottle", kind="fact")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(store.count_memories("fact", q="bottle"), 1)
+
+    def test_search_applies_to_top_order_too(self) -> None:
+        store = self._seed()
+        rows = store.list_top(limit=50, q="bottle")
+        self.assertEqual(len(rows), 2)
+
+    def test_search_narrows_before_the_slice(self) -> None:
+        # A page of 1 must walk the matches, not the mirror: post-slice
+        # filtering would return the single newest row and then discard it.
+        _, store = _store_factory()
+        for i in range(30):
+            store.add(f"unrelated row {i:02d}", "fact", _emb(f"u{i}"))
+        store.add("he collects bottle caps", "fact", _emb("target"))
+        for i in range(30, 60):
+            store.add(f"unrelated row {i:02d}", "fact", _emb(f"u{i}"))
+        rows = store.list_recent(limit=1, q="bottle")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content, "he collects bottle caps")
+
+    def test_a_blank_search_is_not_a_filter(self) -> None:
+        store = self._seed()
+        for q in ("", "   ", None):
+            self.assertEqual(len(store.list_recent(limit=50, q=q)), 3, repr(q))
+            self.assertEqual(store.count_memories(q=q), 3, repr(q))
+
+    def test_a_wildcard_reaches_inside_a_word(self) -> None:
+        store = self._seed()
+        rows = store.list_recent(limit=50, q="collect*")
+        self.assertEqual(len(rows), 1)
+
+
 class TestWallClockDecay(unittest.TestCase):
     def test_decay_scales_with_elapsed_days(self) -> None:
         _, store = _store_factory()

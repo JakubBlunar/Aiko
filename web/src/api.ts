@@ -336,6 +336,12 @@ export const api = {
       kind?: string | null;
       /** Schema v8 tier filter (scratchpad / long_term / archive). */
       tier?: string | null;
+      /**
+       * Text search over memory content. Every whitespace-separated term
+       * must match, case-insensitively, in any order; `*` and `?` are
+       * wildcards. Filters server-side and is reflected in `total`.
+       */
+      q?: string | null;
     } = {},
   ) => {
     const limit = options.limit ?? 50;
@@ -348,6 +354,7 @@ export const api = {
     });
     if (options.kind) params.set("kind", options.kind);
     if (options.tier) params.set("tier", options.tier);
+    if (options.q) params.set("q", options.q);
     return jsonFetch<MemoriesResponse>(`/api/memories?${params.toString()}`);
   },
   /** Schema v8: per-tier memory totals for the Memory tab header. */
@@ -521,13 +528,22 @@ export const api = {
     offset?: number;
     status?: string;
     subject?: string;
+    kind?: string;
+    /**
+     * Text search over label + rationale. Same matching rules as
+     * `listMemories`' `q`: all terms required, any order, `*` / `?`
+     * wildcards. Filters server-side so paging walks the matches.
+     */
+    q?: string;
   }) => {
-    const q = new URLSearchParams();
-    if (params?.limit != null) q.set("limit", String(params.limit));
-    if (params?.offset != null) q.set("offset", String(params.offset));
-    if (params?.status) q.set("status", params.status);
-    if (params?.subject) q.set("subject", params.subject);
-    const qs = q.toString();
+    const search = new URLSearchParams();
+    if (params?.limit != null) search.set("limit", String(params.limit));
+    if (params?.offset != null) search.set("offset", String(params.offset));
+    if (params?.status) search.set("status", params.status);
+    if (params?.subject) search.set("subject", params.subject);
+    if (params?.kind) search.set("kind", params.kind);
+    if (params?.q) search.set("q", params.q);
+    const qs = search.toString();
     return jsonFetch<ConceptsSnapshot>(`/api/concepts${qs ? `?${qs}` : ""}`);
   },
   getConceptQuality: () =>

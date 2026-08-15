@@ -90,12 +90,33 @@ class ConceptsGetTests(unittest.TestCase):
 
     def test_limit_is_clamped_and_blank_filters_drop_out(self) -> None:
         client, session = _client()
-        client.get("/api/concepts?limit=9999&offset=-5&status=&subject=%20")
+        client.get(
+            "/api/concepts"
+            "?limit=9999&offset=-5&status=&subject=%20&kind=&q=%20"
+        )
         kwargs = session.concepts_snapshot.call_args.kwargs
         self.assertEqual(kwargs["limit"], 200)
         self.assertEqual(kwargs["offset"], 0)
         self.assertIsNone(kwargs["status"])
         self.assertIsNone(kwargs["subject"])
+        self.assertIsNone(kwargs["kind"])
+        self.assertIsNone(kwargs["q"])
+
+    def test_kind_and_search_reach_the_facade(self) -> None:
+        client, session = _client()
+        client.get("/api/concepts?kind=BOUNDARY&q=bottle%20cap")
+        kwargs = session.concepts_snapshot.call_args.kwargs
+        # Kind is an enum, so it normalises; the query is the user's text
+        # and must arrive intact for the matcher to split it.
+        self.assertEqual(kwargs["kind"], "boundary")
+        self.assertEqual(kwargs["q"], "bottle cap")
+
+    def test_a_wildcard_survives_the_query_string(self) -> None:
+        client, session = _client()
+        client.get("/api/concepts?q=collect*")
+        self.assertEqual(
+            session.concepts_snapshot.call_args.kwargs["q"], "collect*"
+        )
 
 
 class ConceptsRunTests(unittest.TestCase):

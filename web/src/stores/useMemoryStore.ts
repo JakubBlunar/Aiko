@@ -16,6 +16,8 @@ export interface MemorySlice {
     pageSize: number;
     kindFilter: string | null;
     tierFilter: MemoryTier | null;
+    /** Committed (debounced) text search sent to the server as `q`. */
+    query: string;
     order: "recent" | "top";
     counts: MemoryCounts | null;
   };
@@ -29,11 +31,13 @@ export interface MemorySlice {
     pageSize: number;
     kindFilter: string | null;
     tierFilter?: MemoryTier | null;
+    query?: string;
     order: "recent" | "top";
   }) => void;
   setMemoryPage: (page: number) => void;
   setMemoryKindFilter: (kind: string | null) => void;
   setMemoryTierFilter: (tier: MemoryTier | null) => void;
+  setMemoryQuery: (query: string) => void;
   setMemoryOrder: (order: "recent" | "top") => void;
   setMemoryCounts: (counts: MemoryCounts | null) => void;
   /** Reducer for ``memory_added``. */
@@ -53,6 +57,7 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
     pageSize: 50,
     kindFilter: null,
     tierFilter: null,
+    query: "",
     order: "recent",
     counts: null,
   },
@@ -66,6 +71,7 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
     pageSize,
     kindFilter,
     tierFilter,
+    query,
     order,
   }) =>
     set((state) => ({
@@ -77,6 +83,7 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
         pageSize,
         kindFilter,
         tierFilter: tierFilter ?? state.memoryView.tierFilter,
+        query: query ?? state.memoryView.query,
         order,
         counts: state.memoryView.counts,
       },
@@ -94,6 +101,10 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
     set((state) => ({
       memoryView: { ...state.memoryView, tierFilter: tier, page: 0 },
     })),
+  setMemoryQuery: (query) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, query, page: 0 },
+    })),
   setMemoryOrder: (order) =>
     set((state) => ({
       memoryView: { ...state.memoryView, order, page: 0 },
@@ -107,7 +118,12 @@ export const useMemoryStore = create<MemorySlice>()((set) => ({
       const view = state.memoryView;
       const kindMatches = !view.kindFilter || view.kindFilter === memory.kind;
       const tierMatches = !view.tierFilter || view.tierFilter === memory.tier;
-      const filterMatches = kindMatches && tierMatches;
+      // A search view opts out of live insertion entirely. Deciding
+      // whether the new row matches would mean reimplementing the
+      // server's matcher in TypeScript, and two implementations of one
+      // predicate is how they start disagreeing. A searched list is a
+      // snapshot until the next fetch, which is the honest reading of it.
+      const filterMatches = kindMatches && tierMatches && !view.query;
       const onFirstPageRecent = view.page === 0 && view.order === "recent";
       // Always bump total when the new row would belong in the
       // current filter. Pagers across other tabs / windows then

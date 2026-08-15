@@ -91,9 +91,33 @@ describe("ConceptsPanel wiring", () => {
   });
 
   it("api module passes paging and filters through", () => {
-    expect(apiSource).toMatch(/q\.set\("limit"/);
-    expect(apiSource).toMatch(/q\.set\("offset"/);
-    expect(apiSource).toMatch(/q\.set\("status"/);
-    expect(apiSource).toMatch(/q\.set\("subject"/);
+    expect(apiSource).toMatch(/search\.set\("limit"/);
+    expect(apiSource).toMatch(/search\.set\("offset"/);
+    expect(apiSource).toMatch(/search\.set\("status"/);
+    expect(apiSource).toMatch(/search\.set\("subject"/);
+    expect(apiSource).toMatch(/search\.set\("kind"/);
+    expect(apiSource).toMatch(/search\.set\("q"/);
+  });
+
+  /**
+   * Kind and text search go to the server for the same reason status and
+   * subject do — a client-side filter over one fetched page would search
+   * 50 of however many concepts exist, and answer "no matches" for rows
+   * that are sitting two pages away.
+   */
+  it("sends kind and the search box to the server", () => {
+    expect(panelSource).toMatch(/kind:\s*kindFilter\s*===\s*KIND_ALL/);
+    expect(panelSource).toMatch(/q:\s*query\.trim\(\)/);
+    expect(panelSource).toMatch(/useDebouncedValue/);
+  });
+
+  it("resets to the first page when the search settles", () => {
+    // The pill handlers reset the page themselves, but the debounced
+    // query reaches the loader a render later and cannot.
+    expect(panelSource).toMatch(/setPage\(0\);\s*\}, \[query\]\)/);
+  });
+
+  it("builds the kind options from the whole-store tally", () => {
+    expect(panelSource).toMatch(/counts\.by_kind/);
   });
 });

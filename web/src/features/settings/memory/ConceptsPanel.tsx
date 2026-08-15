@@ -3,6 +3,7 @@ import { api } from "../../../api";
 import type { ConceptRow, ConceptsSnapshot } from "../../../types";
 import { formatRelative } from "../SettingsSection";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -11,6 +12,7 @@ import { ConceptQualityStrip } from "./ConceptQualityStrip";
 
 const SUBJECT_ALL = "all";
 const STATUS_ALL = "all";
+const KIND_ALL = "all";
 
 /** Matches the memories list. Concept rows are much heavier than memory
  *  rows — the snapshot resolves every evidence edge to its full source
@@ -21,6 +23,10 @@ const CONCEPT_PAGE_SIZE = 50;
 export function ConceptsPanel() {
   const [statusFilter, setStatusFilter] = useState<string>(STATUS_ALL);
   const [subjectFilter, setSubjectFilter] = useState<string>(SUBJECT_ALL);
+  const [kindFilter, setKindFilter] = useState<string>(KIND_ALL);
+  const [search, setSearch] = useState("");
+  const query = useDebouncedValue(search);
+
   const [page, setPage] = useState(0);
 
   // Filtering is server-side so paging walks the filtered set rather than
@@ -32,8 +38,10 @@ export function ConceptsPanel() {
         offset: page * CONCEPT_PAGE_SIZE,
         status: statusFilter === STATUS_ALL ? undefined : statusFilter,
         subject: subjectFilter === SUBJECT_ALL ? undefined : subjectFilter,
+        kind: kindFilter === KIND_ALL ? undefined : kindFilter,
+        q: query.trim() || undefined,
       }),
-    [page, statusFilter, subjectFilter],
+    [page, statusFilter, subjectFilter, kindFilter, query],
   );
   const { data, loading, error, setError, refresh } =
     useAsyncResource<ConceptsSnapshot | null>(loader, null);
@@ -93,6 +101,7 @@ export function ConceptsPanel() {
   const visible = data?.concepts ?? [];
   const byStatus = data?.counts.by_status ?? {};
   const bySubject = data?.counts.by_subject ?? {};
+  const byKind = data?.counts.by_kind ?? {};
   // ``counts`` describes the whole store on every page, so the pills stay
   // put instead of shrinking to whatever this page happens to hold.
   const matched = data?.matched ?? visible.length;
@@ -106,6 +115,13 @@ export function ConceptsPanel() {
     () => [SUBJECT_ALL, ...Object.keys(bySubject).sort()],
     [bySubject],
   );
+  // A select rather than pills: there are 13 registered kinds, which is
+  // the same reason the Memories tab uses one. Alphabetical, because you
+  // come here looking for a kind you can already name.
+  const kindOptions = useMemo(
+    () => Object.keys(byKind).sort(),
+    [byKind],
+  );
 
   // Deleting the last row of the final page (or landing on a stale page
   // after a synthesis run) would otherwise strand the user on an empty
@@ -113,6 +129,14 @@ export function ConceptsPanel() {
   useEffect(() => {
     if (page > 0 && page >= pageCount) setPage(pageCount - 1);
   }, [page, pageCount]);
+
+  // The pill/select handlers reset the page themselves; the search box
+  // cannot, because its value only reaches the loader after debouncing.
+  // Without this you would land on page 4 of a two-page result and see an
+  // empty list until the clamp above caught up a render later.
+  useEffect(() => {
+    setPage(0);
+  }, [query]);
 
   const changeFilter = useCallback((apply: () => void) => {
     apply();
@@ -186,13 +210,64 @@ export function ConceptsPanel() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 text-[10px] text-ink-100/40">
+        <label className="flex items-center gap-1 uppercase tracking-wide">
+          kind:
+          <select
+            className="rounded bg-ink-900/40 px-1 py-0.5 text-[10px] normal-case text-ink-100/70"
+            value={kindFilter}
+            onChange={(e) =>
+              changeFilter(() => setKindFilter(e.target.value))
+            }
+            title="Filter by concept kind. Counts describe the whole store, not this page."
+          >
+            <option value={KIND_ALL}>all</option>
+            {kindOptions.map((k) => (
+              <option key={k} value={k}>
+                {k} ({byKind[k]})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-1 items-center gap-1 uppercase tracking-wide">
+          find:
+          <input
+            type="search"
+            className="min-w-0 flex-1 rounded bg-ink-900/40 px-1.5 py-0.5 text-[10px] normal-case text-ink-100/70 placeholder:text-ink-100/25"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="label + rationale — all words must match, * and ? are wildcards"
+            title="Searches each concept's label and rationale (not its evidence). Every whitespace-separated word must appear, in any order; * and ? act as wildcards."
+          />
+        </label>
+        {search ? (
+          <button
+            type="button"
+            className="rounded px-1 py-0.5 text-[10px] text-ink-100/40 hover:text-ink-100/70"
+            onClick={() => setSearch("")}
+            title="Clear the search"
+          >
+            clear
+          </button>
+        ) : null}
+      </div>
+
       {error ? <ErrorBanner compact>{error}</ErrorBanner> : null}
 
       {visible.length === 0 ? (
         <EmptyState>
-          No concepts in this view. Aiko's L2 worker mines candidate concepts
-          from topic clusters and her self-memories; use "run synthesis" to
-          trigger a pass.
+          {query.trim() || kindFilter !== KIND_ALL ? (
+            <>
+              Nothing matches this filter. The store holds {data?.total ?? 0}{" "}
+              concepts — widen the search or set kind back to "all".
+            </>
+          ) : (
+            <>
+              No concepts in this view. Aiko's L2 worker mines candidate
+              concepts from topic clusters and her self-memories; use "run
+              synthesis" to trigger a pass.
+            </>
+          )}
         </EmptyState>
       ) : (
         <ul className="space-y-1">

@@ -44,8 +44,14 @@ function seedView(overrides: {
   pageSize?: number;
   kindFilter?: string | null;
   tierFilter?: MemoryTier | null;
+  query?: string;
   order?: MemoryOrder;
 }) {
+  // ``setMemoryView`` deliberately keeps the existing tier filter when
+  // handed null (the fetch path doesn't own that filter), so seeding it
+  // has to go through the setter or a block that set a tier leaks into
+  // every block after it. Runs first because the setter also resets page.
+  useMemoryStore.getState().setMemoryTierFilter(overrides.tierFilter ?? null);
   useMemoryStore.getState().setMemoryView({
     items: overrides.items ?? [],
     total: overrides.total ?? 0,
@@ -55,6 +61,7 @@ function seedView(overrides: {
     pageSize: overrides.pageSize ?? 50,
     kindFilter: overrides.kindFilter ?? null,
     tierFilter: overrides.tierFilter ?? null,
+    query: overrides.query ?? "",
     order: overrides.order ?? "recent",
   });
 }
@@ -215,6 +222,14 @@ describe("memoryView — page / filter setters reset page", () => {
     expect(view.tierFilter).toBe("scratchpad");
   });
 
+  it("setMemoryQuery resets page to 0 and updates the query", () => {
+    seedView({ items: [], total: 0, page: 5 });
+    useMemoryStore.getState().setMemoryQuery("bottle cap");
+    const view = useMemoryStore.getState().memoryView;
+    expect(view.page).toBe(0);
+    expect(view.query).toBe("bottle cap");
+  });
+
   it("setMemoryCounts stores the per-tier counts snapshot", () => {
     const counts = { scratchpad: 4, long_term: 12, archive: 3, total: 19 };
     useMemoryStore.getState().setMemoryCounts(counts);
@@ -252,5 +267,38 @@ describe("memoryView — tier-aware applyMemoryAdded", () => {
     const view = useMemoryStore.getState().memoryView;
     expect(view.items.map((m) => m.id)).toEqual([1]);
     expect(view.total).toBe(1);
+  });
+});
+
+// A search view opts out of live insertion. Deciding whether an incoming
+// row matches would mean reimplementing the server's matcher here, and two
+// implementations of one predicate is how they start disagreeing — so a
+// searched list is a snapshot until the next fetch.
+describe("memoryView — a search view does not accept live rows", () => {
+  it("leaves the page and total alone while a query is active", () => {
+    seedView({
+      items: [makeMemory({ id: 1, content: "bottle caps" })],
+      total: 1,
+      query: "bottle",
+    });
+    useMemoryStore
+      .getState()
+      .applyMemoryAdded(makeMemory({ id: 2, content: "bottle caps again" }));
+    const view = useMemoryStore.getState().memoryView;
+    expect(view.items.map((m) => m.id)).toEqual([1]);
+    expect(view.total).toBe(1);
+  });
+
+  it("resumes accepting rows once the query is cleared", () => {
+    seedView({
+      items: [makeMemory({ id: 1 })],
+      total: 1,
+      query: "bottle",
+    });
+    useMemoryStore.getState().setMemoryQuery("");
+    useMemoryStore.getState().applyMemoryAdded(makeMemory({ id: 2 }));
+    const view = useMemoryStore.getState().memoryView;
+    expect(view.items[0].id).toBe(2);
+    expect(view.total).toBe(2);
   });
 });
