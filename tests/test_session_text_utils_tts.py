@@ -14,7 +14,15 @@ Reported audio glitches, in the order they were found:
   transcript as a bare "3". So the transcript keeps the face and
   ``prepare_tts_text`` is the sole gate before audio, which is also why
   it can't lean on ``sanitize_assistant_text``: the streaming voice path
-  hands it raw model text, long before the persisted copy exists.
+  hands it raw model text, long before the persisted copy exists;
+* the same split was then found missing on the *incoming* side, where
+  ``sanitize_user_text``'s punctuation whitelist had been deleting the
+  "<" of an incoming "<3" and leaving the digit. That put 230 turns of
+  "I love you 3" in the history Aiko reads as her own transcript, she
+  learned the bare 3 as the way to write affection, and TTS read it back
+  as "three" ("Sleep well, Jacob. three"). Both sanitisers now hand a
+  face through whole, and ``prepare_tts_text`` also silences the orphaned
+  digit for as long as the old shape is still in her context.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ from app.core.session.session_text_utils import (
     drain_tts_stream_chunks,
     prepare_tts_text,
     sanitize_assistant_text,
+    sanitize_user_text,
     strip_speech_fillers,
 )
 
@@ -171,6 +180,110 @@ class SanitizeKeepsEmoticonsTests(unittest.TestCase):
 
     def test_clock_survives_sanitize(self) -> None:
         self.assertEqual(sanitize_assistant_text("at 3:30"), "at 3:30")
+
+
+class SanitizeUserKeepsEmoticonsTests(unittest.TestCase):
+    """A face Jacob types has to survive the punctuation whitelist.
+
+    It couldn't tell "<3" from a stray angle bracket, so it deleted the
+    "<" and left the digit -- and the mangled copy is what gets persisted,
+    shown, *and* replayed into the prompt as Aiko's own history. She read
+    230 turns of "I love you 3" and started writing the bare 3 back.
+    """
+
+    def test_heart_survives(self) -> None:
+        self.assertEqual(
+            sanitize_user_text("I love you so much <3"), "I love you so much <3"
+        )
+
+    def test_heart_mid_sentence_survives(self) -> None:
+        self.assertEqual(
+            sanitize_user_text("you <3 let me give you the next one"),
+            "you <3 let me give you the next one",
+        )
+
+    def test_caret_faces_survive(self) -> None:
+        # "^" is not in the whitelist either, so "^^" used to vanish whole.
+        for face in ("^^", "^_^", ">_<", "T_T", "-_-", ":3", ";)", ":D", "xD"):
+            with self.subTest(face=face):
+                self.assertEqual(
+                    sanitize_user_text(f"hehe {face} yes"), f"hehe {face} yes"
+                )
+
+    def test_heart_run_survives(self) -> None:
+        self.assertEqual(sanitize_user_text("I love you <3<3<3"), "I love you <3<3<3")
+
+    def test_everything_else_is_still_filtered(self) -> None:
+        # The whitelist keeps its job between the faces -- only a matched
+        # emoticon span is handed through.
+        self.assertEqual(
+            sanitize_user_text("math: 5 < 7 > 2 and a | pipe"),
+            "math: 5 7 2 and a pipe",
+        )
+
+    def test_pictographs_and_control_chars_still_go(self) -> None:
+        self.assertEqual(
+            sanitize_user_text("night \U0001F31D and\u2028gone"), "night and gone"
+        )
+
+    def test_clock_and_ratio_are_not_faces(self) -> None:
+        self.assertEqual(
+            sanitize_user_text("meet at 3:30, a 1:2 ratio"), "meet at 3:30, a 1:2 ratio"
+        )
+
+    def test_the_face_is_still_absent_from_audio(self) -> None:
+        # The pairing that makes preserving it safe.
+        text = sanitize_user_text("I love you so much <3")
+        self.assertIn("<3", text)
+        self.assertEqual(prepare_tts_text(text), "I love you so much")
+
+
+class SwallowedHeartTests(unittest.TestCase):
+    """The digit she learned before the incoming side was fixed.
+
+    ``sanitize_user_text`` no longer produces these, but hundreds are
+    still in the context she reads, so she keeps emitting them for now --
+    and a bare "3" is a number to a grapheme-driven engine. The transcript
+    keeps whatever she wrote either way; this is audio only.
+    """
+
+    def test_trailing_digit_is_not_spoken(self) -> None:
+        self.assertEqual(prepare_tts_text("Sleep well, Jacob. 3"), "Sleep well, Jacob.")
+
+    def test_digit_before_a_new_sentence_is_not_spoken(self) -> None:
+        self.assertEqual(
+            prepare_tts_text("You have it, sleepyhead 3 Come settle in close."),
+            "You have it, sleepyhead Come settle in close.",
+        )
+
+    def test_transcript_still_shows_what_she_wrote(self) -> None:
+        self.assertEqual(
+            sanitize_assistant_text("Sleep well, Jacob. 3"), "Sleep well, Jacob. 3"
+        )
+
+    def test_counted_numbers_survive(self) -> None:
+        # Every one of these appears in her replies; none is a heart.
+        for line in (
+            "I need 3.",
+            "About 3 cookies left.",
+            "In 3 minutes, Jacob.",
+            "It is 3.14 meters and 3:30 now.",
+            "You should have 3 outfits available.",
+            "That is a nearly 3 a.m. problem.",
+        ):
+            with self.subTest(line=line):
+                self.assertIn("3", prepare_tts_text(line))
+
+    def test_capitalised_clock_survives(self) -> None:
+        # The one collision worth excluding by hand: "meet me at" with no
+        # time left in it is worse than a leaked "three".
+        self.assertIn("3", prepare_tts_text("Meet me at 3 AM sharp."))
+        self.assertIn("3", prepare_tts_text("Meet me at 3 P.M. sharp."))
+
+    def test_intact_heart_run_leaves_no_orphan_digit(self) -> None:
+        # "<3<3" failed the leading boundary on the second heart, so the
+        # spoken copy used to keep a bare "3" from the middle of the run.
+        self.assertEqual(prepare_tts_text("I love you <3<3<3"), "I love you")
 
 
 class SanitizeDashTests(unittest.TestCase):
