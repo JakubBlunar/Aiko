@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1024,6 +1025,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         client_id = _uuid.uuid4().hex
         hub.add(ws, client_id)
         ws.client_id = client_id  # type: ignore[attr-defined]
+        log.info(
+            "ws client connected: client=%s clients=%d",
+            client_id[:8], hub.client_count(),
+        )
 
         # Tell the session a UI client is now attached. The diary worker
         # gates on this: it only writes "while you were away" entries when
@@ -1115,6 +1120,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
         active_turn: threading.Event | None = None
 
+        # Connection liveness, for the "ws client gone" line in the
+        # ``finally`` below. ``last_inbound`` is the useful half: uvicorn
+        # is configured to hang up after ``ws_ping_timeout`` seconds
+        # without a pong, so a socket that dies after a long silence was
+        # most likely reaped by that timer rather than closed by the peer.
+        connected_at = time.monotonic()
+        last_inbound = connected_at
+        close_code: int | None = None
+
         try:
             while True:
                 # ``receive()`` returns the full ASGI envelope so we can
@@ -1125,8 +1139,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     # Disconnect / connect events surface here too; only
                     # ``receive`` carries payload data.
                     if envelope.get("type") == "websocket.disconnect":
+                        raw_code = envelope.get("code")
+                        close_code = (
+                            int(raw_code) if isinstance(raw_code, int) else None
+                        )
                         break
                     continue
+
+                last_inbound = time.monotonic()
 
                 if "bytes" in envelope and envelope["bytes"] is not None:
                     data: bytes = envelope["bytes"]
@@ -1327,12 +1347,22 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     except Exception:
                         log.debug("set_user_active_app failed", exc_info=True)
 
-        except WebSocketDisconnect:
-            pass
+        except WebSocketDisconnect as exc:
+            close_code = getattr(exc, "code", None)
         except Exception:
             log.exception("websocket loop crashed")
         finally:
             released_owner = hub.discard(ws)
+            _gone_at = time.monotonic()
+            log.info(
+                "ws client gone: client=%s up=%.1fs silent=%.1fs code=%s "
+                "remaining=%d",
+                client_id[:8],
+                _gone_at - connected_at,
+                _gone_at - last_inbound,
+                close_code if close_code is not None else "-",
+                hub.client_count(),
+            )
             # Re-fold presence after the disconnect: ``hub.discard``
             # has already removed this client's entry from
             # ``_visible_by_client``, so an empty hub now reports

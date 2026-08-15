@@ -20,7 +20,19 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
+from app.core.infra.text_query import compile_query
 from app.web.server import create_web_app
+
+
+def _search(
+    rows: list[dict[str, Any]], q: str | None,
+) -> list[dict[str, Any]]:
+    """The store's own text filter, so route tests exercise real matching
+    rather than a second interpretation of what ``q`` means."""
+    query = compile_query(q)
+    if query is None:
+        return rows
+    return [r for r in rows if query.matches(r["content"])]
 
 
 class _MemoryState:
@@ -53,12 +65,14 @@ class _MemoryState:
         offset: int = 0,
         kind: str | None = None,
         tier: str | None = None,
+        q: str | None = None,
     ) -> list[dict[str, Any]]:
         rows = list(self.rows.values())
         if kind:
             rows = [r for r in rows if r["kind"] == kind]
         if tier:
             rows = [r for r in rows if r.get("tier") == tier]
+        rows = _search(rows, q)
         if order == "top":
             rows.sort(key=lambda r: -r["salience"])
         else:
@@ -70,13 +84,14 @@ class _MemoryState:
         kind: str | None = None,
         *,
         tier: str | None = None,
+        q: str | None = None,
     ) -> int:
-        rows = self.rows.values()
+        rows = list(self.rows.values())
         if kind is not None:
             rows = [r for r in rows if r["kind"] == kind]
         if tier is not None:
             rows = [r for r in rows if r.get("tier") == tier]
-        return len(list(rows))
+        return len(_search(rows, q))
 
     def memory_cap(self) -> int:
         return self._cap
@@ -231,6 +246,44 @@ class GetMemoriesEndpointTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(len(body["memories"]), 2)
         self.assertEqual(body["total"], 5)
+
+    def test_search_narrows_the_page_and_the_total(self) -> None:
+        # ``total`` drives the pager. A search the count ignored would
+        # offer four pages of one result.
+        client, state = _build_client()
+        state.add_memory("he collects bottle caps")
+        state.add_memory("she prefers tea in the morning")
+        state.add_memory("the cap came off the bottle")
+        response = client.get("/api/memories?q=bottle+cap")
+        body = response.json()
+        self.assertEqual(body["total"], 2)
+        self.assertEqual(len(body["memories"]), 2)
+
+    def test_search_combines_with_the_kind_filter(self) -> None:
+        client, state = _build_client()
+        state.add_memory("he collects bottle caps", kind="fact")
+        state.add_memory("he likes bottle caps", kind="preference")
+        response = client.get("/api/memories?q=bottle&kind=fact")
+        body = response.json()
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["memories"][0]["kind"], "fact")
+
+    def test_a_blank_search_is_not_a_filter(self) -> None:
+        client, state = _build_client()
+        state.add_memory("he collects bottle caps")
+        for qs in ("q=", "q=%20", ""):
+            body = client.get(f"/api/memories?{qs}").json()
+            self.assertEqual(body["total"], 1, qs)
+
+    def test_a_search_matching_nothing_is_an_empty_page(self) -> None:
+        client, state = _build_client()
+        state.add_memory("he collects bottle caps")
+        body = client.get("/api/memories?q=xylophone").json()
+        self.assertEqual(body["total"], 0)
+        self.assertEqual(body["memories"], [])
+        # Still "enabled" -- an empty search result is not a broken store,
+        # and the UI keys its explanatory copy off this.
+        self.assertTrue(body["enabled"])
 
 
 class PatchMemoryEndpointTests(unittest.TestCase):

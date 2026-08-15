@@ -157,6 +157,8 @@ export interface MemoryTabProps {
     pageSize: number;
     kindFilter: string | null;
     tierFilter: MemoryTier | null;
+    /** Committed search — trails `search` by the debounce interval. */
+    query: string;
     order: MemoryOrder;
     counts: { scratchpad: number; long_term: number; archive: number; total: number } | null;
   };
@@ -172,6 +174,9 @@ export interface MemoryTabProps {
   setNewOpen: (open: boolean) => void;
   newDraft: MemoryDraft;
   setNewDraft: (draft: MemoryDraft) => void;
+  /** Raw search box text. Debounced upstream before it becomes a query. */
+  search: string;
+  onSetSearch: (search: string) => void;
   onSetKindFilter: (kind: string | null) => void;
   onSetTierFilter: (tier: MemoryTier | null) => void;
   onSetOrder: (order: MemoryOrder) => void;
@@ -199,6 +204,8 @@ export function MemoryTab({
   setNewOpen,
   newDraft,
   setNewDraft,
+  search,
+  onSetSearch,
   onSetKindFilter,
   onSetTierFilter,
   onSetOrder,
@@ -291,6 +298,26 @@ export function MemoryTab({
           </span>
         </div>
       ) : null}
+
+      <div className="flex items-center gap-2">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => onSetSearch(e.target.value)}
+          placeholder="Search memory text — all words must match, * and ? are wildcards"
+          title="Searches the text of every stored memory, not just this page. Every whitespace-separated word must appear somewhere in the memory, in any order, and * / ? act as wildcards. Combines with the kind and tier filters below."
+          className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80 placeholder:text-ink-100/30 focus:border-ink-400 focus:outline-none"
+        />
+        {search ? (
+          <button
+            type="button"
+            onClick={() => onSetSearch("")}
+            className="shrink-0 rounded border border-white/10 px-2 py-1 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
@@ -425,6 +452,11 @@ export function MemoryTab({
         <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
           {confidenceBand !== "all" && view.items.length > 0
             ? `No memories on this page match the "${confidenceBand}" confidence filter.`
+            : view.query
+            ? `Nothing stored matches "${view.query}"` +
+              (view.kindFilter ? ` in kind "${view.kindFilter}"` : "") +
+              (view.tierFilter ? ` in tier "${view.tierFilter}"` : "") +
+              ". She has not written this down — or not in these words."
             : view.kindFilter
             ? `No memories with kind "${view.kindFilter}".`
             : "Nothing remembered yet. Memories are mined after a few turns of conversation, or whenever Aiko writes a private [[remember]] tag."}

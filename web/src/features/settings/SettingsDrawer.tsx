@@ -108,6 +108,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     setMemoryNewOpen,
     memoryNewDraft,
     setMemoryNewDraft,
+    memorySearch,
+    setMemorySearch,
     setMemoryKindFilter,
     setMemoryTierFilter,
     setMemoryOrder,
@@ -510,6 +512,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   setNewOpen={setMemoryNewOpen}
                   newDraft={memoryNewDraft}
                   setNewDraft={setMemoryNewDraft}
+                  search={memorySearch}
+                  onSetSearch={setMemorySearch}
                   onSetKindFilter={setMemoryKindFilter}
                   onSetTierFilter={setMemoryTierFilter}
                   onSetOrder={setMemoryOrder}

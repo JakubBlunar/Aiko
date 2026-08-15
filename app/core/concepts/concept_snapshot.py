@@ -30,6 +30,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.core.concepts.concept_importance import memory_ids_from_edges
+from app.core.infra.text_query import compile_query
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -58,7 +59,7 @@ def _disabled() -> dict[str, Any]:
         "matched": 0,
         "offset": 0,
         "limit": 0,
-        "counts": {"by_status": {}, "by_subject": {}},
+        "counts": {"by_status": {}, "by_subject": {}, "by_kind": {}},
         "concepts": [],
     }
 
@@ -150,14 +151,22 @@ def build_concepts_snapshot(
     offset: int = 0,
     status: str | None = None,
     subject: str | None = None,
+    kind: str | None = None,
+    q: str | None = None,
     kv_get: "Callable[[str], str | None] | None" = None,
 ) -> dict[str, Any]:
     """Serialise one page of the concept layer for ``GET /api/concepts``.
 
-    ``status`` / ``subject`` narrow the page; ``limit`` / ``offset`` cut
-    it. ``limit=None`` returns everything from ``offset`` on, which is
-    the whole graph by default -- kept as the default so an unparameterised
-    call still means "the whole snapshot".
+    ``status`` / ``subject`` / ``kind`` narrow the page and ``q`` searches
+    label + rationale (see :mod:`app.core.infra.text_query`); ``limit`` /
+    ``offset`` cut it. ``limit=None`` returns everything from ``offset``
+    on, which is the whole graph by default -- kept as the default so an
+    unparameterised call still means "the whole snapshot".
+
+    The ``counts`` tallies describe the **whole store**, not the filtered
+    set, because they are what the UI builds its filter pills from: a
+    count that narrowed as you filtered would leave you unable to
+    navigate back out of an empty selection.
 
     ``kv_get`` enables the L32 ``importance`` axis, which needs the
     per-cluster affect maps out of ``kv_meta``. Omitting it drops the
@@ -173,16 +182,29 @@ def build_concepts_snapshot(
 
     by_status: dict[str, int] = {}
     by_subject: dict[str, int] = {}
+    by_kind: dict[str, int] = {}
     matched: list["Concept"] = []
+
+    kind_norm = (kind or "").strip().lower() or None
+    query = compile_query(q)
 
     # One pass for the tallies -- they describe the whole store, not the
     # page, so the filter pills show real counts however you are paging.
     for c in store.all():
         by_status[c.status] = by_status.get(c.status, 0) + 1
         by_subject[c.subject] = by_subject.get(c.subject, 0) + 1
+        by_kind[c.kind] = by_kind.get(c.kind, 0) + 1
         if status is not None and c.status != status:
             continue
         if subject is not None and c.subject != subject:
+            continue
+        if kind_norm is not None and c.kind != kind_norm:
+            continue
+        # Label and rationale only. Evidence labels are deliberately out
+        # of scope: resolving them is the expensive half of this function
+        # and runs for one page, so searching them would mean paying that
+        # cost across the whole store on every keystroke.
+        if query is not None and not query.matches(c.label, c.rationale):
             continue
         matched.append(c)
 
@@ -274,7 +296,11 @@ def build_concepts_snapshot(
         "matched": len(matched),
         "offset": start,
         "limit": len(concepts_out) if limit is None else int(limit),
-        "counts": {"by_status": by_status, "by_subject": by_subject},
+        "counts": {
+            "by_status": by_status,
+            "by_subject": by_subject,
+            "by_kind": by_kind,
+        },
         "concepts": concepts_out,
     }
 

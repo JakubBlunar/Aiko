@@ -196,6 +196,85 @@ class PagingTests(unittest.TestCase):
         self.assertEqual(snap["matched"], 1)
         self.assertEqual(snap["concepts"][0]["subject"], "user")
 
+    def test_kind_narrows_the_page_and_is_tallied(self) -> None:
+        store = _store()
+        for kind in ("identity", "identity", "boundary"):
+            c = _concept(f"a {kind}")
+            c.kind = kind
+            store.add(c)
+        snap = build_concepts_snapshot(store, None, None, kind="identity")
+        self.assertEqual(snap["matched"], 2)
+        self.assertEqual(snap["total"], 3)
+        # The by_kind tally is what the UI builds its kind select from, so
+        # like the other two it has to describe the whole store.
+        self.assertEqual(
+            snap["counts"]["by_kind"], {"identity": 2, "boundary": 1}
+        )
+
+    def test_kind_is_matched_case_insensitively(self) -> None:
+        store = _store()
+        c = _concept("a boundary")
+        c.kind = "boundary"
+        store.add(c)
+        snap = build_concepts_snapshot(store, None, None, kind="BOUNDARY")
+        self.assertEqual(snap["matched"], 1)
+
+    def test_a_search_matches_label_and_rationale(self) -> None:
+        store = _store()
+        by_label = _concept("He collects bottle caps")
+        with_rationale = _concept("A quiet completionist")
+        with_rationale.rationale = "keeps every bottle cap he finds"
+        unrelated = _concept("Prefers mornings")
+        for c in (by_label, with_rationale, unrelated):
+            store.add(c)
+        snap = build_concepts_snapshot(store, None, None, q="bottle cap")
+        labels = {c["label"] for c in snap["concepts"]}
+        self.assertEqual(
+            labels, {"He collects bottle caps", "A quiet completionist"}
+        )
+        self.assertEqual(snap["total"], 3)
+
+    def test_a_search_does_not_reach_into_evidence(self) -> None:
+        # Resolving evidence is the expensive half and runs for one page,
+        # so searching it would mean paying that cost across the whole
+        # store on every keystroke. Deliberate, hence pinned.
+        store = _store()
+        cid = store.add(_concept("A quiet completionist"))
+        store.add_edge(
+            ConceptEdge("memory", "5", "concept", str(cid), "evidence")
+        )
+        mem = MemStub({5: types.SimpleNamespace(content="bottle caps")})
+        snap = build_concepts_snapshot(store, mem, None, q="bottle")
+        self.assertEqual(snap["matched"], 0)
+
+    def test_a_search_combines_with_the_other_filters(self) -> None:
+        store = _store()
+        for kind, label in (
+            ("identity", "collects bottle caps"),
+            ("boundary", "collects bottle caps"),
+            ("identity", "collects stamps"),
+        ):
+            c = _concept(label)
+            c.kind = kind
+            store.add(c)
+        snap = build_concepts_snapshot(
+            store, None, None, kind="identity", q="bottle"
+        )
+        self.assertEqual(snap["matched"], 1)
+
+    def test_a_wildcard_search_reaches_inside_a_word(self) -> None:
+        store = _store()
+        store.add(_concept("He is collecting bottle caps"))
+        store.add(_concept("He gathers bottle caps"))
+        snap = build_concepts_snapshot(store, None, None, q="collect*")
+        self.assertEqual(snap["matched"], 1)
+
+    def test_a_blank_search_is_not_a_filter(self) -> None:
+        store, mem = self._graph_of(4)
+        for q in ("", "   ", None):
+            snap = build_concepts_snapshot(store, mem, None, q=q)
+            self.assertEqual(snap["matched"], 4, repr(q))
+
     def test_paging_past_the_end_is_empty_not_an_error(self) -> None:
         store, mem = self._graph_of(3)
         snap = build_concepts_snapshot(store, mem, None, limit=5, offset=99)

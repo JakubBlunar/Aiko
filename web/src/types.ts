@@ -494,8 +494,17 @@ export type MemoryKind =
   | "curiosity_finding"
   | "goal"
   | "goal_progress"
-  | "diary";
+  | "pre_thought"
+  | "knowledge"
+  | "topic_digest"
+  | "diary"
+  | "pursuit_note";
 
+/**
+ * Must stay in step with `VALID_KINDS` in `app/core/memory/memory_store.py`.
+ * A kind missing here is invisible in the Kind dropdown while its rows are
+ * still in the list, which reads as "the filter is broken".
+ */
 export const MEMORY_KINDS: readonly MemoryKind[] = [
   "fact",
   "preference",
@@ -513,7 +522,11 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "curiosity_finding",
   "goal",
   "goal_progress",
+  "pre_thought",
+  "knowledge",
+  "topic_digest",
   "diary",
+  "pursuit_note",
 ];
 
 export type MemoryOrder = "recent" | "top";
@@ -1007,16 +1020,18 @@ export interface ConceptsSnapshot {
   enabled: boolean;
   /** Concepts in the whole store, whatever the filter and page. */
   total: number;
-  /** Concepts the current status/subject filter selects — what paging
-   *  divides. Absent on responses from an older backend. */
+  /** Concepts the current status/subject/kind/search filter selects —
+   *  what paging divides. Absent on responses from an older backend. */
   matched?: number;
   offset?: number;
   limit?: number;
   /** Always tallied over the whole store, so the filter pills show real
-   *  counts on any page. */
+   *  counts on any page — including while a narrower filter is active,
+   *  which is what makes it possible to navigate back out of one. */
   counts: {
     by_status: Record<string, number>;
     by_subject: Record<string, number>;
+    by_kind?: Record<string, number>;
   };
   concepts: ConceptRow[];
 }
