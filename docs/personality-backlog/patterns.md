@@ -107,7 +107,7 @@ on top of already-shipped infrastructure.
 | K89 | Sustained thread — leading past one turn | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn) |
 | K90 | Lead/follow metrics — make the whole family measurable | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable) |
 | K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
-| K92 | Conversational stance — one decision per turn, not ten permission slips | ❌ open |
+| K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log); phases 2–3 open |
 | K93 | The substance floor — what she takes to the floor, not whether she takes it | ❌ open |
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
 | K95 | Interruption cost — a direct question is not an opening | ❌ open |
@@ -684,6 +684,81 @@ every cue decline now names a mechanism, and `reach()`'s new `eligible`
 denominator separates "the arbiter passed this candidate over" from "the
 candidate was never in play" — which is the distinction phase 1's shadow log
 would otherwise have been unable to make about itself.
+
+### Phase 1 shipped 15 Aug — and it is backfillable, which changed the plan
+
+Both prerequisites were confirmed met before starting: H30's `provider` share of
+declines is 0.0% since 13 Aug (was 84.5% before), and H29's ledger holds a want
+minted on the 13th still growing on the 15th at pressure 0.62.
+
+**Pure module** ([`stance.py`](../../app/core/conversation/stance.py)): the
+closed set as an explicit ladder from `HOLD` to `INITIATE`, a `_OFFERS` table
+mapping rendered block → the stance it offers, `compute_ceiling` for what the
+user's turn permits, and `decide` returning `min(desire, ceiling)` plus an
+ordered shortlist of `(stance, block)` — no floats, per the note above.
+`SUBSTANTIAL_CHARS` is shared with `initiative_director` so the ceiling and
+K53's own escape hatch cannot drift apart. K95 is folded in from the start as a
+**hard filter**: the test that matters pushes seven providers at once against a
+direct question and asserts the ceiling still holds.
+
+**One row per turn** in `turn_stance` (schema v36), recording `stance`,
+`reason`, `desire`, `ceiling` and the shortlist. Written from
+`_record_turn_stance` on the same post-turn seam and the same
+`telemetry.block_chars` as G4 and K90. Nothing renders;
+[`tests/test_stance.py`](../../tests/test_stance.py) pins that as an import
+edge — no module that builds the prompt may import the arbiter — and that test
+is meant to be deleted when phase 2 starts.
+
+**The plan said wait; it turned out not to need to.** Every input is durable
+(`turn_prompt_blocks` for the offers, `messages` for the act, arc and text), so
+unlike K90 the arbiter can be replayed over history.
+[`scripts/backfill_turn_stance.py`](../../scripts/backfill_turn_stance.py) does
+that, `INSERT OR REPLACE` keyed per turn, stamping each row with the timestamp
+of the turn it describes. The intended loop is therefore *edit a rule, re-run,
+re-read* — which matters because phase 1's whole question is whether the set is
+right, and a set you can only evaluate two weeks after each edit is a set nobody
+edits.
+
+**What the first replay over 432 turns says:**
+
+| stance | chosen | wanted |
+| --- | --- | --- |
+| `HOLD` | **0 (0.0%)** | 0 |
+| `FOLLOW` | 22 (5.1%) | 17 (3.9%) |
+| `FOLLOW_AND_ADD` | 213 (49.3%) | 78 (18.1%) |
+| `ASK` | 23 (5.3%) | 53 (12.3%) |
+| `CALLBACK` | 2 (0.5%) | 6 (1.4%) |
+| `SHARE` | 130 (30.1%) | **217 (50.2%)** |
+| `REDIRECT` | 5 (1.2%) | 9 (2.1%) |
+| `INITIATE` | 37 (8.6%) | 52 (12.0%) |
+
+Three readings, in order of how much they should change the next phase.
+
+**`HOLD` is unreachable, and that is the finding rather than a bug.** It was
+specced as the stance for a turn with nothing on the table, and only 17 of 432
+turns (3.9%) have an empty shortlist — none of which were the short beat the
+rule also requires. Some provider is always offering something, which is the
+"she gets a steer nearly every turn" problem stated as a single number. If
+holding back is to be a real option it has to be reachable *against* offers,
+which means it is not the bottom of this ladder but a separate axis. Phase 2
+cannot render `HOLD` as designed.
+
+**The interruption ceiling binds on 32.6% of turns.** K95 was filed as cheap
+insurance against a regression phases 2–3 might introduce; it is already load-
+bearing on one turn in three. `arc_protected` accounts for 74 of the 141 clamps,
+`direct_question` for 41. Worth checking before phase 2 whether the support /
+reflection cap is too broad, since it is doing more work here than any other
+rule and it inherited its arc list from K53 rather than earning it.
+
+**`SHARE` is the oversupplied stance** — wanted on 50.2% of turns, chosen on
+30.1%. It is what the gap-return family, the lean blocks and the idle seeds all
+resolve to, and it loses more often than anything else. That is the same
+priority inversion **K93** describes, visible from the other side: the question
+is not whether she takes the floor but what she has to take it *with*.
+
+Phases 2 and 3 are unchanged and still gated on reading this against the K90
+metrics over real use — the table above is a replay of turns that happened
+before the arbiter existed, which is exactly as much as it claims to be.
 
 ---
 

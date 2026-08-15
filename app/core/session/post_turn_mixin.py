@@ -895,6 +895,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
             try:
                 tagger.notify_user_turn()
                 act_result = tagger.tag_user_turn(user_text)
+                # K92 reads this a few hundred lines below, off the
+                # controller rather than back out of the column, so the
+                # stance sees the same act the rest of this turn did.
+                self._last_user_dialogue_act = act_result.act
                 if user_message_id and act_result.act:
                     self._chat_db.update_message_dialogue_act(
                         int(user_message_id), act_result.act,
@@ -1046,6 +1050,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 state = arc_store.get(self._user_id)
                 user_arc_value = state.arc if state is not None else None
                 assistant_arc_value = self_tagged_arc or user_arc_value
+                self._last_user_arc = user_arc_value
                 if user_arc_value and user_message_id:
                     self._chat_db.update_message_arc(
                         int(user_message_id), user_arc_value,
@@ -1502,6 +1507,19 @@ class PostTurnMixin(PostTurnHelpersMixin):
             )
         except Exception:
             log.debug("prompt block accounting raised", exc_info=True)
+
+        # K92 phase 1: the one decision those blocks add up to. Reads
+        # the same telemetry as the two calls above and writes nothing
+        # to the prompt -- this phase exists to find out whether the
+        # closed stance set is the right one before anything renders.
+        try:
+            self._record_turn_stance(
+                assistant_message_id=assistant_message_id,
+                telemetry=telemetry,
+                user_text=user_text,
+            )
+        except Exception:
+            log.debug("turn stance accounting raised", exc_info=True)
 
         # L37: settle the previous reply's surfaced items with the
         # engagement just observed, then record this reply's. Placed

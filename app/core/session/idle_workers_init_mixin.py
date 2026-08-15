@@ -1382,6 +1382,22 @@ class IdleWorkersInitMixin:
                 )
                 self._turn_prompt_block_store = None
 
+        # K92 phase 1 — the stance those blocks add up to. Shares K90's
+        # switch rather than taking its own: it reads exactly the same
+        # telemetry and is the same kind of object (a per-turn record
+        # that never reaches the prompt), so a second flag would only
+        # create a state where one of the two is on and the pair can no
+        # longer be joined.
+        self._turn_stance_store = None
+        if self._turn_prompt_block_store is not None:
+            try:
+                from app.core.memory.turn_stance_store import TurnStanceStore
+
+                self._turn_stance_store = TurnStanceStore(self._chat_db)
+            except Exception:
+                log.warning("TurnStanceStore init failed", exc_info=True)
+                self._turn_stance_store = None
+
         # The cue pool. Unconditional where the decision ledger above is
         # gated: the pool is not diagnostics, it is where seven workers
         # keep the cues they have produced and where the providers read
