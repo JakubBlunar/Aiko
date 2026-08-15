@@ -391,6 +391,20 @@ bug: a raw `AffectStore.get()` snapshot describes a moment in the past, and any
 consumer that differences it against a post-turn value inherits this —
 `AffectState.decayed()` is the one-call fix ([`health.md`](health.md)).
 
+**H37 is the one to read before you transform a user turn.** The punctuation
+whitelist in `sanitize_user_text` had no way to tell `<3` from a stray angle
+bracket, so it deleted the `<` and kept the digit. The same bug was fixed on
+Aiko's side months earlier, with a written rule about it, and the input
+sanitiser was never brought along — because the symptom does not appear on the
+surface that is broken. The stored transcript *is* the prompt, so 230 turns of
+"I love you 3" were not a display glitch but training data, and she learned the
+digit as the way to write affection: twelve of her replies had copied it, and
+TTS read one out as "Sleep well, Jacob. three." Fixed by filtering *between*
+emoticon matches instead of over them, plus a narrow spoken-side strip for the
+digit she already learned and a backfill for the history. The lesson generalises
+past punctuation: **a cleanup on the user's half of the transcript is a persona
+edit with none of a persona edit's visibility** ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

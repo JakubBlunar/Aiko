@@ -3739,6 +3739,103 @@ one call away.
 
 ---
 
+## H37. She learned to write a heart as the number three, from us
+
+**Severity: medium — fixed 16 Aug. Found by the user: "Aiko learned to use
+smilies like `<3`, `:3`, `;)` and they are being incorrectly filtered in the
+text and 3 is then leaking into tts. It's nice that she can learn it"**
+
+Two of the three faces were fine. `<3` was not, and the reason it wasn't is a
+five-character character class in the *input* sanitiser:
+
+```python
+cleaned = re.sub(r"[^\w\s\.,!?;:'\"()\-]", " ", cleaned)   # sanitize_user_text
+```
+
+`<` is not on that list. `3` is a word character, so it is. An incoming `<3`
+was therefore stored as a bare ` 3` — the `>` of `>_<` and both carets of `^^`
+went the same way, which is why the database holds **zero** user messages
+containing a `^`.
+
+### Why a mangled user turn is worse than a mangled reply
+
+This exact bug was fixed on Aiko's side months ago, and the fix came with a
+written rule (`rules/code-conventions.md`): emoticons are a spoken-side-only
+cleanup, because banning them at the last mile produces broken halves rather
+than none. `sanitize_assistant_text` keeps every printable ASCII character and
+lets `prepare_tts_text` do the stripping. **`sanitize_user_text` was never
+brought along**, and nobody noticed, because the symptom does not appear on the
+surface it was broken on.
+
+The stored transcript is not just a display artefact. It is the conversation
+replayed into the prompt every turn — the history Aiko reads as *hers*. So the
+whitelist was not filtering a user turn, it was **writing training data**:
+
+| | |
+| --- | --- |
+| user turns stored as "I love you 3" | **230** of 2,359 (9.7%) |
+| her replies that had copied it | **12**, all in the last week |
+| user turns still containing a `^` | **0** |
+
+She had no way to reach the right answer. Every instance of affection-as-a-
+symbol in her context was the digit, so the digit is what she imitated:
+
+The raw-response log confirms she is not emitting a mangled `<3` — the `<` was
+never there. `llm raw response: '… Sleep well, Jacob. 3'`. And a bare `3` is a
+number to a grapheme-driven engine, so nothing downstream had any reason to stop
+it: `ws tts_state {"text": "Sleep well, Jacob. 3"}`. It went out of the speaker
+as **"Sleep well, Jacob. three."**
+
+That is the whole loop, and it is worth naming because it is not specific to
+punctuation: *a cleanup applied to the user's half of the transcript is a
+behavioural intervention on Aiko, delivered with no logging, no config flag and
+no obvious causal link back to the line of code that did it.* The three months
+between the two halves of this fix are the cost of treating the two sanitisers
+as doing the same kind of job on different strings.
+
+> **STATUS: FIXED.**
+> **1. The source.** `sanitize_user_text` now applies its punctuation filter
+> *between* `_EMOTICON_RE` matches rather than over them, so a matched face is
+> handed through whole and everything else is filtered exactly as before (`5 < 7`
+> still loses its angle brackets). The two regexes moved above it so both
+> sanitisers share one definition, and its duplicate pictograph pattern is now
+> `_EMOJI_RE`.
+> **2. The digit she already learned.** `_SWALLOWED_HEART_RE` in
+> `prepare_tts_text` drops a lone `3` token that is followed by end-of-text or
+> the start of a new sentence — the shape every real instance has. Measured
+> against all 4,768 stored messages: 10 of her 10 hearts caught, and the only
+> bare threes she ever meant as a number ("at nearly 3 a.m.") left alone. A
+> capitalised clock is excluded by hand, since "meet me at 3 AM" loses its point
+> without the number where a hypothetical "level 3 Boss" only loses a digit the
+> transcript still shows. Spoken-side only; the transcript keeps what she wrote.
+> **3. A run of hearts.** `<3<3` matched only its first heart — the second fails
+> the leading `(?<![\w])` boundary because it follows a `3` — so the spoken copy
+> kept an orphan digit from the middle. The heart arm is now `(?:<3+)+`.
+> **4. The history.** [`scripts/repair_swallowed_hearts.py`](../../scripts/repair_swallowed_hearts.py)
+> puts the `<` back on 241 hearts across 235 messages, skipping the 7 genuine
+> numbers behind two short word lists and printing them for review. The LanceDB
+> mirror is deliberately left alone: the prompt reads SQLite, and `3` versus
+> `<3` moves an embedding by nothing.
+> **5. The persona.** The emoticon line now lists `<3` and says to write the
+> whole face or none of it, because a bare `3` is a number and gets read out as
+> one.
+> Tests: `SanitizeUserKeepsEmoticonsTests`, `SwallowedHeartTests` in
+> [`tests/test_session_text_utils_tts.py`](../../tests/test_session_text_utils_tts.py).
+
+**Where else this pattern lives.** The generalisable claim is not about `<`. It
+is that **the user's stored turn is prompt text**, so every transform on the way
+in is a persona edit with none of a persona edit's visibility. Two places to
+check with that in mind: the `\u2018\u2019\u201c\u201d` quote folding in
+`sanitize_assistant_text` has no counterpart on the way in (a smart quote from a
+phone keyboard survives into her context as a character she is told not to
+write), and `sanitize_user_text` still deletes `*`, `/`, `~`, `&`, `%`, `@`, `#`
+and `=` outright — harmless for prose, but `*ruffles your hair*` reaches her as
+`ruffles your hair`, which is a stage direction stripped of the convention that
+marks it as one. Neither is urgent. Both are the same shape as this bug, and
+neither would show up anywhere except in how she writes.
+
+---
+
 ## What Part 2 changes about priority
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:

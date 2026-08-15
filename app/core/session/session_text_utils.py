@@ -94,12 +94,46 @@ def extract_json_object(raw_text: str) -> dict | None:
         return None
 
 
+# Pictographs + dingbats. An engine with no phoneme control has nothing to say
+# for these, and the ASCII-only filters in both sanitisers drop them from
+# persisted text anyway; every path routes through this one pattern so they
+# cannot drift apart.
+_EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
+# ASCII emoticons, which a grapheme-driven engine happily reads as letters --
+# ":P" becomes a spoken "P". Stripped from audio only; both transcripts keep
+# them, so ":3" is something either of them can write. Both edges are pinned to
+# non-word characters so a clock ("3:30"), a ratio ("1:2") and the "://" in a
+# URL are left intact; that boundary is why the glued form is handled
+# separately, after URLs have been removed.
+_EMOTICON_RE = re.compile(
+    r"(?<![\w])"
+    r"(?:"
+    r"[:;=8][-o*']?[)(DPpOo03{}\[\]|/\\]"    # :) :-( ;D 8)
+    r"|[xX][-o*']?[DdPp]"                    # xD -- narrow, so "f(x)" survives
+    r"|[)(DPp][-o*']?[:;=]"                  # (: D: -- reversed
+    # A run of hearts has to match as one unit: taken singly, the second
+    # "<3" in "<3<3" fails the leading boundary (it follows a "3") and
+    # leaves a bare digit for the engine to read as "three".
+    r"|(?:<3+)+"
+    r"|\^[_.-]?\^|>_<|:\*|;\*"               # ^_^ >_< :*
+    r"|[oO][_.][oO]|[tT][_.][tT]|-_-"        # o_O T_T -_-
+    r")"
+    r"(?![\w])"
+)
+
+# Everything ordinary prose in a user turn does *not* need -- noise from a paste
+# or a broken encode. Except when it's a face, which is why
+# :func:`sanitize_user_text` applies this *between* emoticons, never over them.
+_UNWANTED_PUNCTUATION_RE = re.compile(r"[^\w\s\.,!?;:'\"()\-]")
+
+
 def sanitize_user_text(text: str) -> str:
     cleaned = str(text or "")
     if not cleaned:
         return ""
 
-    cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", " ", cleaned)
+    cleaned = _EMOJI_RE.sub(" ", cleaned)
 
     out_chars: list[str] = []
     for ch in cleaned:
@@ -109,33 +143,41 @@ def sanitize_user_text(text: str) -> str:
         out_chars.append(ch)
 
     cleaned = "".join(out_chars)
-    cleaned = re.sub(r"[^\w\s\.,!?;:'\"()\-]", " ", cleaned)
-    cleaned = " ".join(cleaned.split())
-    return cleaned.strip()
+
+    # Emoticon spans are handed through whole. The punctuation filter has no
+    # way to tell "<3" from a stray angle bracket, so it deleted the "<" and
+    # left the digit: 230 of Jacob's stored turns read "I love you 3", and
+    # Aiko -- for whom that history *is* the transcript -- learned the bare 3
+    # as the way to write affection and started sending it back, at which
+    # point TTS said it out loud ("Sleep well, Jacob. three"). Keeping the
+    # face here and filtering it on the spoken path is exactly what
+    # ``sanitize_assistant_text`` already does for the ones she writes.
+    pieces: list[str] = []
+    cursor = 0
+    for match in _EMOTICON_RE.finditer(cleaned):
+        pieces.append(_UNWANTED_PUNCTUATION_RE.sub(" ", cleaned[cursor : match.start()]))
+        pieces.append(match.group(0))
+        cursor = match.end()
+    pieces.append(_UNWANTED_PUNCTUATION_RE.sub(" ", cleaned[cursor:]))
+
+    return " ".join("".join(pieces).split())
 
 
-# Pictographs + dingbats. Used by the *spoken* path only: an engine with no
-# phoneme control has nothing to say for these. The transcript keeps whatever
-# she wrote (see ``sanitize_assistant_text``), though the ASCII-only filter
-# there means a pictograph never survives to be persisted anyway.
-_EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
-
-# ASCII emoticons, which a grapheme-driven engine happily reads as letters --
-# ":P" becomes a spoken "P". Stripped from audio only; the transcript keeps
-# them, so ":3" is something she can write. Both edges are pinned to non-word
-# characters so a clock ("3:30"), a ratio ("1:2") and the "://" in a URL are
-# left intact; that boundary is why the glued form is handled separately,
-# after URLs have been removed.
-_EMOTICON_RE = re.compile(
-    r"(?<![\w])"
-    r"(?:"
-    r"[:;=8][-o*']?[)(DPpOo03{}\[\]|/\\]"    # :) :-( ;D 8)
-    r"|[xX][-o*']?[DdPp]"                    # xD -- narrow, so "f(x)" survives
-    r"|[)(DPp][-o*']?[:;=]"                  # (: D: -- reversed
-    r"|\^[_.-]?\^|>_<|<3+|:\*|;\*"           # ^_^ >_< <3 :*
-    r"|[oO][_.][oO]|[tT][_.][tT]|-_-"        # o_O T_T -_-
-    r")"
-    r"(?![\w])"
+# A lone "3" standing where a heart belonged. The source of these is fixed
+# above, but the stored history still holds hundreds of them, and Aiko has
+# already copied the habit into a dozen of her own replies -- this is the only
+# place the digit is audible. Narrow by construction: the digit must be its own
+# whitespace-delimited token *and* be followed by end-of-text or the start of a
+# new sentence, which is the shape every real instance has ("Sleep well,
+# Jacob. 3", "sleepyhead 3 Come settle in"). So "3 cookies", "in 3 minutes",
+# "3.5", "3:30" and a genuinely counted "I need 3." are all left to be spoken.
+# Measured against the whole transcript: 10 of her 10 hearts caught, and the
+# only two bare threes she ever meant as a number ("at nearly 3 a.m.") left
+# alone. A capitalised clock is the one collision worth excluding by hand --
+# "meet me at 3 AM" loses its point without the number, where a hypothetical
+# "level 3 Boss" only loses a digit the transcript still shows correctly.
+_SWALLOWED_HEART_RE = re.compile(
+    r"(?<!\S)3+(?=\s*\Z|\s+(?![AaPp]\.?[Mm]\b)[A-Z])"
 )
 
 
@@ -298,6 +340,10 @@ def prepare_tts_text(text: str) -> str:
     # protect "3:30" and "https://". Safe here: URLs are already gone, and a
     # letter followed by ":P" / ":D" is never prose.
     cleaned = re.sub(r"(?<=[A-Za-z])[:;=][-o*']?[DPpOo3](?![\w])", " ", cleaned)
+    # The heart that arrived with its "<" already missing (see
+    # ``_SWALLOWED_HEART_RE``). Runs after the faces so an intact "<3" is
+    # gone by now and only the orphaned digit reaches this line.
+    cleaned = _SWALLOWED_HEART_RE.sub(" ", cleaned)
     # Ranges first, so "3-4 hours" keeps its sense instead of turning into two
     # unrelated numbers.
     cleaned = re.sub(r"(?<=\d)\s*[\u2010-\u2015\u2212-]\s*(?=\d)", " to ", cleaned)
