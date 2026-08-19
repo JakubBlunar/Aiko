@@ -168,7 +168,7 @@ amplitude, Pixi ticks) is intentionally not logged. Tests:
 [`tests/test_web_server_settings.py`](../../../tests/test_web_server_settings.py)
 (`LoggingSettingsRoundTripTests`),
 [`web/src/log.test.ts`](../../../web/src/log.test.ts),
-[`web/src/store.logging.test.ts`](../../../web/src/store.logging.test.ts),
+[`web/src/stores/slices/ui.logging.test.ts`](../../../web/src/stores/slices/ui.logging.test.ts),
 and the "debug instrumentation" block in
 [`web/src/live2d/channels/ExpressionChannel.test.ts`](../../../web/src/live2d/channels/ExpressionChannel.test.ts).
 

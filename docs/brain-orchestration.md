@@ -838,20 +838,21 @@ every debuggable invariant has a force-it tool and a query-it tool.
   boot-time scan of non-terminal rows.
 - [`app/core/tasks/sandbox.py`](../app/core/tasks/sandbox.py) —
   path-safety helper for the file handlers.
-- [`app/core/tasks/handlers/file_search.py`](../app/core/tasks/handlers/file_search.py)
-- [`app/core/tasks/handlers/file_read.py`](../app/core/tasks/handlers/file_read.py)
+- `file_search` / `file_read` — shipped as core task handlers, since **moved
+  into the bundled `filesystem` plugin**
+  ([`plugins/filesystem/entry.py`](../plugins/filesystem/entry.py)) along
+  with their tests; see [`docs/plugins.md`](plugins.md).
 - [`app/core/session/prompt_assembler.py`](../app/core/session/prompt_assembler.py)
   — running-tasks provider, task-cue block at T6, clear-after-assembly
   semantics.
 - [`tests/test_brain_event_queue.py`](../tests/test_brain_event_queue.py)
-- [`tests/test_brain_loop_no_interrupt.py`](../tests/test_brain_loop_no_interrupt.py)
-- [`tests/test_brain_loop_task_completion.py`](../tests/test_brain_loop_task_completion.py)
-- [`tests/test_brain_loop_progress_silent.py`](../tests/test_brain_loop_progress_silent.py)
-- [`tests/test_brain_loop_voice_completion.py`](../tests/test_brain_loop_voice_completion.py)
+- [`tests/test_brain_loop_consume.py`](../tests/test_brain_loop_consume.py) —
+  dispatch, routing, exception isolation, stop-drain, queue ownership.
+- [`tests/test_brain_loop_gate.py`](../tests/test_brain_loop_gate.py) — the
+  free-to-speak gate: closed defers, open dispatches, non-gated kinds bypass,
+  deferred retry.
 - [`tests/test_task_store.py`](../tests/test_task_store.py)
 - [`tests/test_task_orchestrator.py`](../tests/test_task_orchestrator.py)
-- [`tests/test_file_search_handler.py`](../tests/test_file_search_handler.py)
-- [`tests/test_file_read_handler.py`](../tests/test_file_read_handler.py)
 - [`tests/test_chat_database_v16_migration.py`](../tests/test_chat_database_v16_migration.py)
 
 ## Phase 2 — Schema v17: scaling foundations

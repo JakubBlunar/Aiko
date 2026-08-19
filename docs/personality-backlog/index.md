@@ -25,6 +25,25 @@ companion-AI design patterns we haven't tried yet, sketched at one
 paragraph each rather than fully scoped. Treat patterns.md as a
 prompt for the next brainstorm, not a queue.
 
+### Keeping it honest
+
+Two conventions, because both have already been violated silently:
+
+- **When an entry ships, move the write-up to `shipped/` and leave the open file
+  a one-line status row.** An entry that ships in *halves* keeps its open half
+  where it was and links back. The failure this prevents is a shipped narrative
+  sitting in the open file, where the next reader treats it as work to do.
+- **When something ships, re-read what pointed at it.** A "still open" note
+  written at ship time is a snapshot, and nothing re-checks it: L30a claimed
+  L30b/L30c were open for as long as they had been shipped, and L32 said both
+  its consumers did not exist while one of them was live and consuming it.
+  The give-away is a dependency named in the present tense.
+
+[`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) catches
+the mechanical half of this — broken paths and, more usefully, heading anchors
+that stopped resolving when a heading was reworded on its way into `shipped/`.
+Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
+
 ## The surfacing-outcome spine (L37 and what hangs off it)
 
 One cluster of open items is worth calling out because it shares a single
@@ -89,10 +108,11 @@ ledger before building any of them:
 - **DT5** the rest of the debug surface (the ledger view itself has shipped).
 
 Independent of the spine, the same audit found four verified defects worth
-picking up on their own. Two are now closed and two remain: **L39** shipped
-its dedupe half (T3 now skips whatever the T0 profile block claimed, in all
-three lanes) and kept the repetition half open, because rotating the profile
-block would make a third volatile T0 block and cost prompt-cache stability;
+picking up on their own. Three are now closed: **L39** shipped both halves —
+T3 now skips whatever the T0 profile block claimed in all three lanes, and the
+repetition half took the cheaper lever (`profile_concept_max_lines` 10 → 4)
+because rotating the profile block would have made a third volatile T0 block
+and cost prompt-cache stability;
 **L40** shipped, though the audit had it wrong — pinned candidates are admitted
 by `order` and their relevance is never read, so the real defect was
 habituation being consumed as a *boolean* and the stale group staying in
@@ -373,7 +393,9 @@ renders exactly one T6 block, for `FOLLOW` and brevity, because those are the
 only two *restraint* signals in a family that is otherwise all permission slips.
 **K93, K94 and K95 all shipped 19 Aug too, and all three turned out to be
 duplicated or unenforced decisions rather than missing features** — worth knowing
-before phase 3, which multiplies that class.
+before phase 3, which multiplies that class. All four write-ups now live in
+[`shipped/patterns-k92-k95.md`](shipped/patterns-k92-k95.md); the two open halves
+(K92 phase 3, K93's cue pool) stay in [`patterns.md`](patterns.md).
 
 *K95 was filed as insurance and was already load-bearing.* Its reader shipped
 inside phase 1 (`compute_ceiling` caps the ladder on a direct question) but nothing
@@ -900,11 +922,16 @@ that relationship-local signal back into concept ranking:
 - **L38.** ✅ **Shipped.** Earned standing is a seventh `surface_score` term
   fed by L37, with baseline calibration, shrinkage, safety floors, protected
   kinds, and off-turn cache refresh.
-- **L39.** *Partly shipped.* The dedupe landed — T3 skips whatever the T0
-  profile block claimed, across the core, flex and activation lanes. What's
-  left is the repetition half: the profile copy still has no habituation, and
-  giving it one would make a third volatile T0 block, so a smaller stable cap
-  is the likelier lever.
+- **L39.** ✅ *Shipped, both halves* — see
+  [`shipped/concepts.md`](shipped/concepts.md#l39-identity-concepts-surfaced-twice-a-turn-and-one-copy-ignored-habituation).
+  The dedupe landed (T3 skips whatever the T0 profile block claimed, across the
+  core, flex and activation lanes), and the repetition half took the cheaper
+  lever rather than the designed one: giving the profile copy its own
+  habituation would have made a third volatile T0 block, so
+  `profile_concept_max_lines` went **10 → 4** on the measured prompt load
+  (~620 cache-prefix tokens of un-rotated assertion, drawn from 170 eligible
+  rows). The one remainder is the general "already surfaced this turn" set
+  across *all* blocks, which is **P43**, not a concept problem.
 - **L40.** *Shipped* — see [`shipped/concepts.md`](shipped/concepts.md#l40-habituation-reaches-the-core-lane-through-order-not-relevance).
   The premise was wrong (a pinned candidate's relevance is never read); the
   real defect was habituation collapsing to a boolean, leaving the stale group

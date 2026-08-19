@@ -36,6 +36,7 @@ becomes unfindable:
 | L30b / L30c the hypothesis-testing loop · L35 surface-reason labels | [shipped/concepts.md](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer) |
 | L37 surfacing outcome ledger · L38 earned standing · L40 habituation order | [shipped/concepts.md](shipped/concepts.md#l37-surfacing-outcome-ledger----did-what-i-brought-up-actually-land) |
 | L42 self-model of her own surfacing · L46 twin fusion and graph outflow | [shipped/concepts.md](shipped/concepts.md#l42-a-self-model-of-her-own-surfacing-behaviour) |
+| L39 double-surfaced identity concepts (dedupe + a 10 → 4 profile cap) | [shipped/concepts.md](shipped/concepts.md#l39-identity-concepts-surfaced-twice-a-turn-and-one-copy-ignored-habituation) — its one general remainder is [P43](perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist) |
 
 L31 was **refuted by measurement** and replaced by evidence admission control;
 both the refutation and the replacement are recorded under L31 below and in the
@@ -1245,13 +1246,16 @@ migration required -- `candidate` status already exists.
 what landed, and in particular for the two measurements that overturned the
 selection design sketched below.
 
-**Still open.** The lane is inert in the sense L30 cares about: Aiko can now
-*see* her open questions, but nothing makes her *act* on one. L30b (curiosity
-producer, carrying `source_concept_id`) and L30c (fold the answer back onto the
-concept as evidence) are the rest of the loop. Also unwired: the lane never asks
-anything itself, so the K47 question-balance gate does not see it — that
-coupling has to be made explicit when L30b lands, or a hypothesis-driven ask can
-slip past the anti-nag budget. `rationale` is still not exposed as *why* she is
+**Still open — and it is now one small thing, not three.** L30b (the curiosity
+producer carrying `source_concept_id`) and L30c (folding the answer back onto the
+concept as evidence) have both since **shipped**, so the lane is no longer inert:
+[the testing loop](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer)
+closes it. The K47 coupling this entry warned about was made explicit when L30b
+landed, and it landed as a **split** rather than as one budget decision — the
+musing stays unbudgeted because a thought costs the user nothing, while the block
+that exists to produce a *question* sits under the question budget, with
+`_last_hypothesis_lane_concept_ids` preventing a double-ask across the two. What
+genuinely remains is only that `rationale` is still not exposed as *why* she is
 unsure; it was left out to keep the block to one line.
 
 **Two measurements the sketch below got wrong**, both taken from a live
@@ -1599,15 +1603,18 @@ when the split primitive lands, not before.
 [`shipped/concepts.md`](shipped/concepts.md#l32-concept-importance----a-second-axis-distinct-from-confidence) for what
 landed and why the design ended up simpler than the sketch below.
 
-**Still open.** The two consumers the axis was built for have not been wired
-yet, because they do not exist yet: the L30a hypothesis lane and L30d
-uncertainty zones. Both can call
+**Still open.** One of the two consumers the axis was built for has since
+shipped and does use it: the **L30a hypothesis lane** ranks on importance ×
+unsettledness, and it had to add a per-origin split
+([`hypothesis_lane.py`](../../app/core/concepts/hypothesis_lane.py)) precisely
+because an invention has no grounded memories, so it falls back to the bare kind
+prior and would lose on importance to every evidenced candidate. **L30d
+uncertainty zones** are still open and can call
 `SessionController.concept_importance_context(concepts)` and rank directly —
-importance is deliberately status-agnostic, so a `candidate` scores exactly
-like an `active` row. Also unwired: **curiosity value** (L30b) still ranks
-without the axis, and nothing yet feeds *behavioural* evidence into
+importance is deliberately status-agnostic, so a `candidate` scores exactly like
+an `active` row. Also still unwired: nothing feeds *behavioural* evidence into
 importance (how often a concept actually gated a reply), which was the third
-source in the sketch.
+source in the sketch, and L37's outcome ledger is now the obvious supply for it.
 
 **One measurement worth carrying into L30a.** On the live graph at ship time,
 every `active` concept sat at or above 0.6 confidence — the promotion gate
@@ -1781,134 +1788,6 @@ L37 (which turns that signal into a per-strategy measure), L44 (per-domain
 reliability — blocked on supply, treat as optional).
 
 ---
-
-
-
-## L39. Identity concepts surface twice a turn, and one copy ignores habituation
-
-**Status: SHIPPED (dedupe + a smaller stable cap).** The duplication is fixed.
-`_profile_concept_lines` now stashes the concept ids it rendered on
-`_last_profile_concept_ids`, and `build_relevant_context` skips them in **all
-three** T3 lanes — core, flex, and activation. The core-lane skip happens before
-the `core_cap` slice, so a claimed concept releases its slot to the next
-candidate instead of leaving a hole, and the skipped ids are recorded in the
-concept trace as `claimed_by_profile` so an empty lane stays distinguishable
-from a cold layer. Covering only the core lane turned out to be actively
-insufficient: a test with the flex guard removed showed a claimed identity
-concept re-entering the prompt through the turn-relevant lane on a topical
-match, so the dedupe simply relocated.
-
-**What to watch.** The profile block claims by confidence, so it takes exactly
-the concepts the core lane would have ranked first. T3 therefore now carries
-*different* material — `subject="aiko"` identity, boundary and generalization
-kinds, and lower-confidence user concepts — which is the intended effect but a
-real shift in what the core lane is for. On a small store where every
-core-qualifying concept is a user identity or value above the 0.5 profile bar,
-the core lane can legitimately come up empty; `claimed_by_profile` is what makes
-that readable rather than looking like a cold layer, and it is the signal that
-open question (2) below (a smaller profile cap) has become worth acting on.
-
-**The repetition half: a smaller stable cap, not a rotating set.** Giving the
-profile path its own habituation read stays deliberately *unshipped*, and the
-reason is worth recording rather than re-discovering. The T0 profile block is
-part of the stable prompt prefix that the `_PROMPT_BLOCK_TIERS` ladder exists
-to protect; rotating its lines turn-to-turn would make it a **third** volatile
-T0 block alongside `narrative_block` and `catchphrase_block`, which the same
-audit flagged as defects. That trades prompt-cache cost for the repetition fix.
-
-So the cheaper lever shipped instead: **`profile_concept_max_lines` 10 → 4**,
-on the numbers from
-[`scripts/concept_openness_report.py`](../../scripts/concept_openness_report.py)
-(see L28m) rather than on taste.
-
-- Concept labels are full sentences, so the 10 lines were **~620 tokens** of
-  identical, un-rotated assertion in the cache prefix of every single turn —
-  and 10 of the **40** concept assertions a worst-case prompt carried.
-- They were drawn from **170 eligible rows** and selected by confidence band
-  alone, so the same ten led the block indefinitely. This is the surface where
-  "she keeps telling me what I'm like" actually originates.
-- Because the profile claims *first* (settled above — T3 cannot win the
-  precedence argument), those 10 also pre-empted two thirds of the 15-slot
-  core lane, which *does* rotate and which now also carries the L28 openness
-  reserve. Releasing six of them does not remove those beliefs from the
-  prompt; it moves them to the lane that rests them and balances them against
-  other kinds.
-
-Four lines plus the structured SQLite facts (name, occupation, location,
-hobbies, schedule) is still a profile block that says who he is. The number is
-recorded here rather than left to a comment so the next change to it starts
-from the measurement instead of from the default.
-
-**Motivation.** Two independent paths render the same concepts into the same
-prompt, and they don't know about each other. `_profile_concept_lines`
-([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)) renders
-up to `profile_concept_max_lines` (default 10) `subject="user"` identity and
-value concepts into the T0 profile block, ordered by confidence, with a 0.5
-confidence bar — **every turn, with no habituation and no knowledge of T3**.
-Meanwhile the L27 core lane independently pins up to `context_budget_core_cap`
-concepts from those same kinds into T3. There is a `seen` dedupe *within* the
-profile block, but nothing across blocks.
-
-So Aiko's strongest beliefs about the user appear twice, phrased differently,
-on the same turn — and the profile copy is immune to every anti-repetition
-mechanism L23 built. This is the most likely source of a "she keeps telling me
-what I'm like" feeling, and it quietly wastes the T0 slot that P31 wants to
-reclaim.
-
-**Key files.**
-- [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) —
-  `_profile_concept_lines` (the T0 path) and the core-lane block inside
-  `build_relevant_context` (the T3 path).
-- [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — T0
-  `profile_block` is assembled long before T3 exists, which is the whole
-  difficulty: the profile cannot ask "did T3 already take this?" because T3
-  has not been built yet.
-
-**Sketched approach.** The ordering makes the obvious fix impossible, so invert
-it: let the **profile block claim first** (it renders earlier and is the more
-stable, cache-friendly home for a settled trait), record the claimed concept
-ids on the turn, and have the core lane skip anything already claimed. The
-core lane already over-fetches `core_cap * 3` for habituation rotation, so it
-has spare candidates to fill with — this costs nothing in slot count.
-
-Then give the profile path the same habituation read the flex and core lanes
-use, so a trait that has led the profile for ten turns steps aside for another
-one. It should *not* get the habituation *write* (that would double-stamp
-against T3's clock); read-only is the right asymmetry, and worth a comment
-saying so.
-
-**Open questions.** (1) ~~Is claim-first-in-T0 the right precedence~~ —
-**settled by the architecture.** T3 cannot win: the profile block is built (and
-slice-cached) before T3 exists, so making the turn-relevant lane take precedence
-would require either building T3 first, which breaks the reserve-before-history
-budget model, or re-rendering T0 afterwards, which breaks the tier ladder.
-(2) ~~Does the profile block want its own smaller cap now that duplicates are
-gone?~~ — **yes, and it shipped**: 10 → 4, on the prompt-load measurement
-above. It is the repetition half, bought without touching the tier ladder.
-(3) Should this share one "already surfaced this turn" set across *all* blocks,
-which is really the general version of the problem P43 is about? Still open —
-the claimed-id set shipped here is the narrow, concept-only case of it.
-
-**Notes from the implementation.** The claim survives a `_StaticSlices` cache
-hit without needing to be cached alongside the block (the way L26's
-`coactivation_trace` is): on a hit the renderer doesn't re-run, so the stash is
-stale, but it is stale *with the correct value* because the cached profile text
-contains exactly those ids. The stash is cleared at the top of
-`_profile_concept_lines` so every early return — cold layer, disabled view, zero
-cap, lookup failure — leaves an empty claim rather than a stale one, and a
-concept with no id is never claimed, since id 0 would act as a wildcard
-suppressing every unidentified candidate. Same-label siblings *are* claimed even
-though only the first renders a line, because the losing sibling's text is in
-the prompt via the line that won.
-
-**Effort.** Small. Two read sites, a per-turn claimed-id set, and one retuned
-cap. *Delivered.*
-
-**Depends on.** Nothing. Pairs naturally with L40 and P31.
-
----
-
-
 
 ## L42b. Neglect-guided curiosity
 

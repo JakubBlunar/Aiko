@@ -13,7 +13,8 @@ auto-scales from a 64k local model up to a large cloud window, and it is
 **reserved before history is packed**. On overflow, history is squished first
 while surfacing degrades gracefully and last.
 
-Design source: the shipped [`unified context budget`](../.cursor/plans/) plan.
+Design source: the shipped "unified context budget" plan (a local, untracked
+`.cursor/plans/` file — this document is the durable record).
 North-star context: this is the delivery vehicle for progressively lightening
 the fixed persona prompt so Aiko is more model-agnostic and driven by remembered
 context (see [Concept backlog L23](personality-backlog/concepts.md) and the

@@ -2,6 +2,8 @@
 
 Completed work, split by family so each file stays small (the combined log had grown past 4k lines). One paragraph per entry; detail lives in the linked implementation files. This page is the index — the entries themselves live under [`shipped/`](shipped/).
 
+When an entry lands, move its write-up here and leave the open file only a one-line status row. An entry that ships *in halves* keeps the open half where it was and links back. Run [`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) afterwards — the anchors are what break, silently.
+
 ---
 
 ## [Shipped — Avatar & expressiveness (B-series)](shipped/avatar.md)
@@ -57,7 +59,7 @@ Completed work, split by family so each file stays small (the combined log had g
 - [P2. Prompt-build phase telemetry](shipped/perf.md#p2-prompt-build-phase-telemetry)
 - [P3. Cheap slice-cache validation (skip two SQLite reads on a hit)](shipped/perf.md#p3-cheap-slice-cache-validation-skip-two-sqlite-reads-on-a-hit)
 - [P4. RAG memory-hit batch lookup (`get_many`)](shipped/perf.md#p4-rag-memory-hit-batch-lookup-get_many)
-- [P18. Streaming accumulator no longer O(n²)](shipped/perf.md#p18-streaming-accumulator-no-longer-on²)
+- [P18. Streaming accumulator is no longer quadratic](shipped/perf.md#p18-streaming-accumulator-is-no-longer-quadratic) — was `O(n²)` per token
 - [P15. (Invalid) One user-text embed per turn — already handled by the LRU](shipped/perf.md#p15-invalid-one-user-text-embed-per-turn--already-handled-by-the-lru)
 - [P21. K29 borderline gate moved off the hot path](shipped/perf.md#p21-k29-borderline-gate-moved-off-the-hot-path)
 - [P5 + P23. Lance scan push-down for `list_recent_user_vectors`](shipped/perf.md#p5--p23-lance-scan-push-down-for-list_recent_user_vectors)
@@ -116,7 +118,10 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K21. Fresh-eyes thread re-summarisation](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation)
 - [K26. Aiko-side voice evolution — she starts to talk like him a little](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little)
 
-## [Shipped — Companion patterns K31 onward](shipped/patterns-k31-k60.md)
+## [Shipped — Companion patterns K31–K91](shipped/patterns-k31-k60.md)
+
+*(The filename says K31–K60; the file actually runs to K91. Left alone rather
+than renamed, because every inbound link in the backlog points at it.)*
 
 - [K31 + K32. Soft physicality round-trip — virtual touch + user-side reactions](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions)
 - [K36. "Things I did while you were away" — idle-time world activities](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities)
@@ -168,6 +173,14 @@ Completed work, split by family so each file stays small (the combined log had g
 - [K89. Sustained thread — leading past one turn](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn)
 - [K90. Lead/follow metrics — make the whole family measurable](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable)
 - [K91. Lived-in away life — a day she had, not a day she narrated](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated)
+
+## [Shipped — Companion patterns K92–K95, the third pass at leading](shipped/patterns-k92-k95.md)
+
+- [Why the family exists](shipped/patterns-k92-k95.md#why-the-family-exists) — and what the week taught: all three items filed as features turned out to be duplicated or unenforced decisions
+- [K92. Conversational stance — phases 1 and 2](shipped/patterns-k92-k95.md#k92-conversational-stance--phases-1-and-2) *(phase 3 still open in [patterns.md](patterns.md))*
+- [K93. The substance floor — the ledger half](shipped/patterns-k92-k95.md#k93-the-substance-floor--the-ledger-half) *(cue-pool half still open in [patterns.md](patterns.md))*
+- [K94. Sequencing — answer first, then add, and say where the addition goes](shipped/patterns-k92-k95.md#k94-sequencing--answer-first-then-add-and-say-where-the-addition-goes)
+- [K95. Interruption cost — a direct question is not an opening](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening)
 
 ## [Shipped — Immersion polish (H-series)](shipped/immersion.md)
 

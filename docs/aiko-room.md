@@ -437,7 +437,7 @@ plant.
 | [`tests/test_world_tools.py`](../tests/test_world_tools.py) | Each agent tool's happy + sad paths, including `water_plant` / `plant_seed` / `harvest_plant`. |
 | [`tests/test_plant_growth_worker.py`](../tests/test_plant_growth_worker.py) | Hourly promotion: due sprouts advance, immature plants stay put, interval gate respected. |
 | [`tests/test_garden_visit_worker.py`](../tests/test_garden_visit_worker.py) | Outbound phase moves + waters + auto-harvests; daylight gate blocks night; cooldown blocks repeat visits; inbound phase fires after `return_at`. |
-| [`web/src/store.world.test.ts`](../web/src/store.world.test.ts) | `applyWorldPatch` reducer per discriminator + plant/seed kind round-trip. |
+| [`web/src/stores/useWorldStore.test.ts`](../web/src/stores/useWorldStore.test.ts) | `applyWorldPatch` reducer per discriminator + plant/seed kind round-trip. |
 
 Run all together: `python -m pytest tests/test_world_*.py
 tests/test_session_controller_world.py tests/test_web_server_world.py

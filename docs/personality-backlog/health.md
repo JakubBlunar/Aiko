@@ -2838,10 +2838,18 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
+<a id="recurring-shapes"></a>
+
 ## The twenty-two recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
+
+Link here as `#recurring-shapes`, never as `#the-twenty-two-...` — the count in
+the heading changes every time a shape is added, and the last time it did, five
+inbound links were left pointing at the previous count's slug.
+[`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) catches
+that class now.
 
 **1. Silent-empty latching.** A stage fails, produces nothing, and the
 bookkeeping records success — so the failure is both invisible and permanent.
@@ -4070,7 +4078,7 @@ Aiko chose herself.
 
 ### The shape worth keeping
 
-This is [recurring shape 15](#the-eighteen-recurring-shapes) and the first
+This is [recurring shape 15](#recurring-shapes) and the first
 instance of it here: **a missing value coerced to a valid one**. `or 0.0` is not
 a default, it is a fabrication, and it is most dangerous where zero is a
 *meaningful* value in the domain — temperature, valence, confidence, price. The
@@ -4135,7 +4143,7 @@ property `arc` was wrongly assumed to have.
 
 ### The shape worth keeping
 
-**[Recurring shape 16](#the-eighteen-recurring-shapes): a signal reused at the
+**[Recurring shape 16](#recurring-shapes): a signal reused at the
 wrong timescale.** Every
 input here was correct — the arc tagger is doing its job, and 110 turns of
 `support` is an accurate description of that conversation. The defect is entirely
@@ -4293,7 +4301,7 @@ one distinction that matters because the two are handled by different machinery.
 
 ### The shape worth keeping
 
-**[Recurring shape 17](#the-eighteen-recurring-shapes): a predicate answering a
+**[Recurring shape 17](#recurring-shapes): a predicate answering a
 narrower question than its caller needs.** `has_relative_deictic` is correct, its
 docstring is accurate, and its tests pass — it says "this wording will go stale".
 The caller needed "and which way does it point", helped itself to the answer it
@@ -4307,7 +4315,7 @@ guard is a test that asserts the predicate is *silent* on the thing it does not
 know, which is what `test_it_says_nothing_about_direction` now does.
 
 The second lesson is about defaults at the boundary, and it is
-[shape 15](#the-eighteen-recurring-shapes) again in a place nobody thought to
+[shape 15](#recurring-shapes) again in a place nobody thought to
 look: **an impossible input should be refused, not rounded**. A past event in the
 future is not a near-miss to smooth over, and "moments ago" was the single most
 destructive string in the chain — it took four memories written across two days
@@ -4466,7 +4474,7 @@ an inference, and it is `--dry-run` by default.
 
 ### The shape worth keeping
 
-**[Recurring shape 18](#the-eighteen-recurring-shapes): a handoff documented in
+**[Recurring shape 18](#recurring-shapes): a handoff documented in
 prose that no code implements.** This is shape 14 (a store with write and read but
 no upkeep) with a twist that made it survive far longer: the upkeep pass was not
 missing, it was **assigned**. One sentence in a docstring named a real, scheduled

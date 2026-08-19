@@ -136,7 +136,7 @@ back to the per-hit `get` for duck-typed stores that don't expose
 
 ---
 
-## P18. Streaming accumulator no longer O(n²)
+## P18. Streaming accumulator is no longer quadratic
 
 The stream loop did `accumulator.append(delta)` then
 `full = "".join(accumulator)` **per token** — O(n²) work + allocation
