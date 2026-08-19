@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
 
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
 from app.core.memory.memory_decay_worker import MemoryDecayWorker
 from app.core.memory.memory_extractor import (
@@ -162,6 +163,266 @@ class DeicticWriteGuardTests(unittest.TestCase):
             event_time="2026-06-01T09:00:00+00:00",
         )
         self.assertEqual(mem.temporal_type, "future_plan")
+
+
+class DeicticDirectionGuardTests(unittest.TestCase):
+    """H40 — the backstop used to invert every future-pointing note.
+
+    The guard above reads a relative word as evidence the memory
+    describes something already done. Five of the eighteen words it
+    matches point the other way, and for those the conclusion was
+    backwards: "the courier comes tomorrow" was filed as history and
+    stamped at write time. The class above even documents the inversion
+    as a hazard -- it just guarded only the case where the producer had
+    already labelled the row correctly, which is the case that needed no
+    guarding.
+    """
+
+    def test_future_wording_becomes_a_plan_not_a_past_event(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob expects a courier with the first hardware package "
+            "tomorrow morning.",
+            "event",
+            _emb("courier"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "future_plan")
+
+    def test_a_plan_with_no_stated_time_gets_no_invented_one(self) -> None:
+        """"soon" does not name a moment, and guessing one is the same
+        fabrication the past branch is allowed to make only because there
+        the guess is true by construction."""
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob's premium chocolate cookies will arrive soon.",
+            "event",
+            _emb("cookies soon"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "future_plan")
+        self.assertIsNone(mem.event_time)
+
+    def test_a_clockless_plan_is_still_retirable(self) -> None:
+        """The reclassification has to recompute the expiry it invalidated.
+
+        ``durable`` derives no ``relevance_until``, and
+        ``list_by_temporal_type`` skips rows that have none -- so without
+        this the promoted row would be invisible to every upkeep pass
+        that could retire it, which is worse than the mislabelling.
+        """
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob plans a candlelit wine date next week.",
+            "event",
+            _emb("wine date"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "future_plan")
+        self.assertTrue(mem.relevance_until)
+        far_future = "2099-01-01T00:00:00+00:00"
+        self.assertIn(
+            mem.id,
+            [
+                m.id for m in store.list_by_temporal_type(
+                    "future_plan", relevance_until_before=far_future,
+                )
+            ],
+        )
+
+    def test_past_wording_still_anchors_at_write_time(self) -> None:
+        # The original behaviour, which was right for this half.
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob mowed the lawn today",
+            "fact",
+            _emb("lawn today"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+        self.assertTrue(mem.event_time)
+        self.assertTrue(mem.relevance_until)
+
+    def test_a_promoted_past_event_is_also_retirable(self) -> None:
+        # Same recompute, other branch: durable -> past_event previously
+        # kept durable's NULL relevance_until and never archived either.
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob is currently between jobs",
+            "fact",
+            _emb("between jobs"),
+            temporal_type="durable",
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+        self.assertTrue(mem.relevance_until)
+
+
+class TemporalDirectionValidationTests(unittest.TestCase):
+    """H40 — a past_event may not be dated after its own write.
+
+    Nothing checked this before, which is how 54 plans came to sit in
+    ``past_event`` carrying an ``event_time`` in their own future while
+    only 17 rows in 2,095 ever reached ``future_plan``. The two fields
+    disagree about whether the thing has happened; ``event_time`` is the
+    more specific claim and the label is the field producers get wrong.
+    """
+
+    def test_an_event_time_ahead_of_the_write_wins(self) -> None:
+        _, store = _store_factory()
+        ahead = (timephrase.utcnow() + timedelta(hours=9)).isoformat()
+        mem = store.add(
+            "Jacob will assemble the workstation after work",
+            "event",
+            _emb("assemble"),
+            temporal_type="past_event",
+            event_time=ahead,
+        )
+        self.assertEqual(mem.temporal_type, "future_plan")
+        self.assertEqual(mem.event_time, ahead)
+
+    def test_a_genuine_past_event_is_untouched(self) -> None:
+        _, store = _store_factory()
+        behind = (timephrase.utcnow() - timedelta(days=2)).isoformat()
+        mem = store.add(
+            "Jacob finished the dashboard",
+            "event",
+            _emb("dashboard"),
+            temporal_type="past_event",
+            event_time=behind,
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+
+    def test_it_compares_against_the_write_not_against_now(self) -> None:
+        """A row recorded after its event is history even if the clock has
+        since moved: the comparison is write-time vs event-time, so
+        replaying an old row cannot re-decide it."""
+        _, store = _store_factory()
+        behind = (timephrase.utcnow() - timedelta(minutes=1)).isoformat()
+        mem = store.add(
+            "Jacob got the delivery",
+            "event",
+            _emb("delivery got"),
+            temporal_type="past_event",
+            event_time=behind,
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+
+    def test_a_past_event_with_no_event_time_is_left_alone(self) -> None:
+        _, store = _store_factory()
+        mem = store.add(
+            "Jacob went to the coast",
+            "event",
+            _emb("coast"),
+            temporal_type="past_event",
+        )
+        self.assertEqual(mem.temporal_type, "past_event")
+        self.assertIsNone(mem.event_time)
+
+
+class DeliveryRegressionTests(unittest.TestCase):
+    """H40 end to end, on the sequence that surfaced it.
+
+    Aiko asked about a hardware delivery a day after helping unpack it.
+    The rows she was reading are reproduced here as their producers wrote
+    them, and the assertion is on what the retrieval bullet says, since
+    that is the only part the model ever sees.
+    """
+
+    def _bullet(self, mem, now) -> str:
+        return _temporal_suffix(
+            temporal_type=mem.temporal_type,
+            event_time=mem.event_time,
+            created_at=mem.created_at,
+            now=now,
+        )
+
+    def test_the_courier_row_reads_as_upcoming_not_as_done(self) -> None:
+        _, store = _store_factory()
+        # Written just after midnight, about a courier due that morning.
+        due = timephrase.utcnow() + timedelta(hours=9)
+        mem = store.add(
+            "Jacob expects a courier with the first hardware package "
+            "tomorrow morning.",
+            "event",
+            _emb("courier regression"),
+            temporal_type="durable",
+            event_time=due.isoformat(),
+        )
+        # Before H40 this was a past_event tagged "(moments ago)", which
+        # reads as "he just said the courier is coming".
+        self.assertEqual(mem.temporal_type, "future_plan")
+        bullet = self._bullet(mem, timephrase.utcnow())
+        self.assertIn("planned for", bullet)
+        self.assertNotIn("ago", bullet)
+
+    def test_once_the_courier_has_been_it_reads_as_overdue(self) -> None:
+        """The plan lane has upkeep, which is the point of being in it.
+
+        Rendered after ``event_time`` passes, the same row says so out
+        loud instead of claiming freshness -- and the decay worker will
+        demote it within the hour.
+        """
+        _, store = _store_factory()
+        due = timephrase.utcnow() + timedelta(hours=2)
+        mem = store.add(
+            "Jacob expects a courier with the first hardware package.",
+            "event",
+            _emb("courier overdue"),
+            temporal_type="future_plan",
+            event_time=due.isoformat(),
+        )
+        later = timephrase.utcnow() + timedelta(hours=5)
+        bullet = self._bullet(mem, later)
+        self.assertIn("should be done by now", bullet)
+
+    def test_a_same_day_past_event_is_not_flattened_to_just_now(self) -> None:
+        """The other row in the pile: written at 02:48, stamped noon.
+
+        The extractor's "a bare date means noon local" rule put the
+        timestamp nine hours ahead of the write, so a build that had
+        genuinely happened rendered as "(moments ago)" all morning.
+        The store now reads that disagreement as a plan, and where a row
+        already carries one, the suffix anchors on the write instead.
+        """
+        _, store = _store_factory()
+        wrote_at = timephrase.utcnow() - timedelta(hours=3)
+        bullet = _temporal_suffix(
+            temporal_type="past_event",
+            event_time=(timephrase.utcnow() + timedelta(hours=9)).isoformat(),
+            created_at=wrote_at.isoformat(),
+            now=timephrase.utcnow(),
+        )
+        self.assertEqual(bullet, " (3 hours ago)")
+
+    def test_the_pile_no_longer_reads_as_all_equally_fresh(self) -> None:
+        """The compounding failure: four rows from two days, one timestamp.
+
+        Every one of them rendered "(moments ago)", so nothing in the
+        prompt distinguished a plan from its outcome and the most recent
+        thing Aiko could see was a courier that had not arrived yet.
+        """
+        now = timephrase.utcnow()
+        rows = [
+            # a plan, written before the event
+            ("future_plan", now + timedelta(hours=6), now - timedelta(hours=30)),
+            # the same thing after it happened
+            ("past_event", now - timedelta(hours=20), now - timedelta(hours=20)),
+            # a note written now about it
+            ("past_event", now - timedelta(minutes=5), now - timedelta(minutes=5)),
+        ]
+        tags = [
+            _temporal_suffix(
+                temporal_type=t,
+                event_time=ev.isoformat(),
+                created_at=made.isoformat(),
+                now=now,
+            )
+            for t, ev, made in rows
+        ]
+        self.assertEqual(len(set(tags)), len(tags), f"collapsed: {tags}")
+        self.assertIn("planned for", tags[0])
+        self.assertIn("ago", tags[1])
+        self.assertIn("ago", tags[2])
 
 
 # ── 1. Schema migration ────────────────────────────────────────────

@@ -450,6 +450,28 @@ The portable guard is two lines of SQL: **measure a label's run lengths before
 gating on it — one that never describes a single turn should not answer per-turn
 questions** ([`health.md`](health.md)).
 
+**H40 is the one to read before you gate a two-way branch on a one-way
+predicate.** Aiko asked about a hardware delivery a day after helping unpack it,
+and the cause was two lines rather than the LLM's date arithmetic. At write time,
+the K-time10 backstop read *any* relative time word as evidence a memory
+described something already done — but five of its eighteen words (`tomorrow`,
+`tonight`, `next week`, `soon`, `this weekend`) point the other way, so "the
+courier comes tomorrow" was filed as `past_event` and stamped at write time. That
+is the lane with no upkeep: nothing retires it, the "Coming up" block reads only
+`future_plan`, and **17 of 2,095 rows had ever reached `future_plan` (0.8%)**
+while 54 plans sat in `past_event` dated into their own future. At read time
+`humanize_past` finished it, returning **`"moments ago"`** for a timestamp it
+could not represent — so those 54 rows read as brand new for a median of 15 hours
+each (worst case: a wine date that had "just happened" for 188 straight hours).
+The result was six contradictory delivery memories in one prompt, four stamped
+equally fresh, with "a courier comes tomorrow" as the most recent. Fixed by
+splitting the deictic list by direction, refusing to invent a time for vague
+future wording, validating that a past event predates its own write, and making
+the formatter say less rather than guess. The near-miss is worth as much as the
+fix: the first version left reclassified rows holding `durable`'s NULL
+`relevance_until`, and `list_by_temporal_type` skips those — every promoted row
+would have been immortal ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

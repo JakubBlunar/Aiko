@@ -39,7 +39,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable
 
 from app.core.infra.chat_database import ChatDatabase, MessageRow
@@ -50,6 +50,7 @@ from app.core.memory.memory_store import (
     MemoryStore,
     _DEFAULT_PROVENANCE,
     _DEFAULT_TEMPORAL_TYPE,
+    derive_relevance_until,
 )
 from app.core.session.session_text_utils import resolve_user_name, speaker_labels
 from app.llm.chat_client import content_looks_complete
@@ -61,46 +62,12 @@ from app.core.infra import timephrase
 log = logging.getLogger("app.memory_extractor")
 
 
-# Server-side relevance windows per temporal_type. The LLM only emits
-# the *type* (and optionally event_time); we derive when retrieval
-# should stop surfacing the row in normal RAG. ``None`` here means
-# "no expiry" (pure timeless memories — preferences and durable
-# facts).
-_RELEVANCE_WINDOW: dict[str, timedelta | None] = {
-    "durable": None,
-    "preference": None,
-    "ongoing": timedelta(days=30),
-    "past_event": timedelta(days=7),
-    # ``future_plan`` uses a special derivation: relevance_until =
-    # event_time + 1 day (so we still have a window after the event
-    # to ask "how was it?"). The extractor falls back to created_at +
-    # 2 days when event_time is missing.
-    "future_plan": timedelta(days=2),
-}
-
-
-def _derive_relevance_until(
-    temporal_type: str,
-    *,
-    event_time: datetime | None,
-    created_at: datetime,
-) -> str | None:
-    """Compute the v10 ``relevance_until`` from the candidate's type.
-
-    ``past_event`` / ``ongoing`` measure from ``created_at`` (when we
-    learned about it). ``future_plan`` measures from ``event_time`` +
-    1 day so retrieval stops surfacing the plan after the day-after
-    window closes; the decay worker reclassifies the row to
-    ``past_event`` shortly after ``event_time`` passes anyway.
-    ``durable`` and ``preference`` return ``None`` (no expiry).
-    """
-    if temporal_type == "future_plan":
-        anchor = event_time if event_time is not None else created_at
-        return (anchor + timedelta(days=1)).isoformat()
-    window = _RELEVANCE_WINDOW.get(temporal_type)
-    if window is None:
-        return None
-    return (created_at + window).isoformat()
+# The relevance-window table and its derivation now live next to the
+# writer in ``memory_store``, because ``MemoryStore.add`` can change a
+# row's temporal type and therefore has to be able to recompute the
+# expiry that type implies (H40). Re-exported under the old private names
+# so existing importers keep working.
+_derive_relevance_until = derive_relevance_until
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -153,12 +120,27 @@ def _build_system_prompt(
         "still be relevant later, plus any time-bound events worth "
         "remembering with their absolute timestamp.\n"
         "\n"
-        f"Today is {today_human} ({today_iso}). Use this anchor to resolve "
-        "relative phrases the user says ('yesterday', 'tonight at 8', "
-        "'next Monday', 'in two weeks') into absolute ISO-8601 timestamps "
-        "in the ``event_time`` field. If the user gives only a date with no "
-        "clock time, set the time to noon local. If the user is vague "
-        "('soon', 'eventually'), leave ``event_time`` null.\n"
+        f"Today is {today_human} ({today_iso}). Every transcript line is "
+        "prefixed with when it was said. Resolve a relative phrase "
+        "('yesterday', 'tonight at 8', 'next Monday', 'in two weeks') "
+        "against THAT LINE's timestamp rather than against today, and "
+        "write the result as an absolute ISO-8601 timestamp in the "
+        "``event_time`` field. This sweep can run hours after the words "
+        "were said and can cover more than one day, so the two anchors "
+        "are often different days: a 'tomorrow' said on Monday evening is "
+        "Tuesday, whichever day you are reading it on. If only a date is "
+        "given with no clock time, use noon local, except for something "
+        "that already happened on the current day — there, use the "
+        "line's own timestamp, because noon may not have come yet. If the "
+        "wording is vague ('soon', 'eventually'), leave ``event_time`` "
+        "null rather than guessing; a plan with no time is still useful, "
+        "a plan with an invented one is not.\n"
+        "\n"
+        "Do not write a weekday name or a calendar date into ``content`` "
+        "unless the user stated it outright. Say what happened and let "
+        "``event_time`` carry when; a date you worked out yourself is the "
+        "one part of this that is silently wrong when your arithmetic "
+        "slips, and it then outlives every correction.\n"
         "\n"
         "Two kinds of memories are allowed:\n"
         f"  1. Facts about {name}: real preferences, opinions, ongoing projects, "
@@ -187,8 +169,15 @@ def _build_system_prompt(
         "    retrospectively ('Jacob worked on the dashboard yesterday'). "
         "    Set ``event_time`` to when it happened if known.\n"
         "  - 'future_plan': mentioned as upcoming ('Jacob is going to the "
-        "    gym tonight at 8'). REQUIRED to set ``event_time`` to when "
-        "    it's supposed to happen.\n"
+        "    gym tonight at 8'). Set ``event_time`` to when it is supposed "
+        "    to happen whenever the wording pins it down; leave it null if "
+        "    it genuinely does not ('sometime next month').\n"
+        "  The past / future split is the one that matters most, because "
+        "  the two are handled by different machinery downstream. Anything "
+        "  that has NOT happened yet is 'future_plan', however casually it "
+        "  came up — a delivery, an appointment, an intention for later "
+        "  today. Filing one of those as 'past_event' tells Aiko it is "
+        "  done, and she will talk as though it were.\n"
         "\n"
         "Each memory ALSO carries a ``provenance`` that records HOW it was "
         "learned:\n"
@@ -218,16 +207,19 @@ def _build_system_prompt(
         "- 'kind' must be one of: fact, preference, event, relationship, self. "
         "  Use 'self' only for Aiko's first-person notes.\n"
         f"- 'temporal_type' must be one of: {valid_types}. Default to "
-        "  'durable' when unsure.\n"
+        "  'durable' when unsure — but only when the memory really has no "
+        "  time to it. If it has one, pick the side of now it falls on.\n"
         f"- 'provenance' must be one of: {valid_provenance}. Default to "
         "  'inferred' when unsure.\n"
         "- 'salience' is 0..1 -- how much this should drive future conversation.\n"
         "- Phrase the content with proper tense based on temporal_type. "
         "  past_event: past tense ('Jacob finished the dashboard'). "
-        "  future_plan: future tense ('Jacob plans to go to the gym at 20:00 tonight'). "
-        "  Avoid leaving raw 'yesterday'/'tonight' words in content — they "
-        "  go stale immediately. The event_time field carries the precise "
-        "  moment.\n"
+        "  future_plan: future tense ('Jacob plans to go to the gym at 20:00'). "
+        "  Never leave a raw 'yesterday' / 'today' / 'tonight' / 'tomorrow' "
+        "  in content: it re-anchors to whenever the note is next read, so "
+        "  'the courier comes tomorrow' is still saying that a week later. "
+        "  The event_time field carries the moment; content carries what "
+        "  happened or is meant to.\n"
         "\n"
         'Reply with JSON only, exactly: {"memories": [{"content": "...", '
         '"kind": "...", "salience": 0.5, "temporal_type": "...", '

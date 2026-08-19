@@ -23,7 +23,7 @@ import sqlite3
 import struct
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -87,6 +87,52 @@ def _coerce_temporal_type(value: str | None) -> str:
     if cleaned in VALID_TEMPORAL_TYPES:
         return cleaned
     return _DEFAULT_TEMPORAL_TYPE
+
+
+# How long retrieval keeps surfacing a row in normal RAG, per temporal
+# type. ``None`` means no expiry (the two timeless types).
+#
+# This lives beside the writer rather than in :class:`MemoryExtractor`
+# (where it started) because ``add`` can now *change* a row's temporal
+# type, and a type carries an expiry rule -- so whoever changes the one
+# has to be able to recompute the other. Leaving the derivation upstream
+# is what made the H40 near-miss possible: the store reclassified a row
+# and left it holding ``durable``'s ``relevance_until``, which is
+# ``None``, and ``list_by_temporal_type`` skips rows with no
+# ``relevance_until`` -- so the reclassified row became unretirable.
+_RELEVANCE_WINDOW: dict[str, timedelta | None] = {
+    "durable": None,
+    "preference": None,
+    "ongoing": timedelta(days=30),
+    "past_event": timedelta(days=7),
+    # ``future_plan`` derives from ``event_time`` instead; the entry is
+    # its clockless fallback.
+    "future_plan": timedelta(days=2),
+}
+
+
+def derive_relevance_until(
+    temporal_type: str,
+    *,
+    event_time: datetime | None,
+    created_at: datetime,
+) -> str | None:
+    """When retrieval should stop surfacing a row of this type.
+
+    ``past_event`` / ``ongoing`` measure from ``created_at`` (when we
+    learned of it). ``future_plan`` measures from ``event_time`` + 1 day,
+    so there is still a window afterwards in which Aiko can ask how it
+    went; a plan with no clock falls back to ``created_at``, which is
+    what gives the decay worker something to retire it on.
+    ``durable`` / ``preference`` never expire.
+    """
+    if temporal_type == "future_plan":
+        anchor = event_time if event_time is not None else created_at
+        return (anchor + timedelta(days=1)).isoformat()
+    window = _RELEVANCE_WINDOW.get(temporal_type)
+    if window is None:
+        return None
+    return (created_at + window).isoformat()
 
 
 # Schema v30 (F16): testimony vs. inference. ``stated`` = the user said it
@@ -1065,16 +1111,75 @@ class MemoryStore:
         # the K-time worker toolkit's job); this only catches what slips
         # past. The text itself is never rewritten -- editing what was
         # recorded to satisfy a regex would be worse than mis-tagging it.
-        if temporal_type_normalized in (
-            "durable", "preference",
-        ) and timephrase.has_relative_deictic(cleaned):
-            temporal_type_normalized = "past_event"
-            if event_time_clean is None:
-                event_time_clean = now
+        #
+        # H40 split it by direction. The original read *any* deictic as
+        # evidence of a past event, but five of the eighteen words point
+        # the other way, so "the courier comes tomorrow" was filed as
+        # something that had already happened and stamped at write time.
+        # That is the worst available outcome: no upkeep pass looks at
+        # ``past_event``, the upcoming-horizon block only reads
+        # ``future_plan``, and the bullet rendered as though the courier
+        # had just been. Note the asymmetry in what each branch may
+        # invent -- a past deictic licenses "it happened when this was
+        # written", which is true by construction, while a future one
+        # licenses no timestamp at all: "soon" and "next week" do not
+        # name a moment, and guessing one is the same fabrication in a
+        # different costume. A clockless ``future_plan`` is handled: the
+        # decay worker retires it on ``relevance_until``.
+        type_before = temporal_type_normalized
+        direction = timephrase.deictic_direction(cleaned)
+        if temporal_type_normalized in ("durable", "preference") and direction:
+            if direction == timephrase.FUTURE:
+                temporal_type_normalized = "future_plan"
+            else:
+                temporal_type_normalized = "past_event"
+                if event_time_clean is None:
+                    event_time_clean = now
             log.debug(
-                "memory reclassified durable -> past_event (relative wording): %s",
+                "memory reclassified %s -> %s (%s wording): %s",
+                temporal_type,
+                temporal_type_normalized,
+                direction,
                 cleaned[:80],
             )
+
+        # Direction validation, which nothing did before H40: a
+        # ``past_event`` dated after the moment it was recorded is not a
+        # tolerable rounding error, it is two fields disagreeing about
+        # whether the thing has happened. Believe ``event_time`` -- it is
+        # the more specific claim, and the label is the field producers
+        # get wrong (only 17 of 2,095 rows ever reached ``future_plan``,
+        # while 54 plans sat in ``past_event`` dated into their own
+        # future). Deliberately compares against the write time and not
+        # against "now", so replaying an old row cannot re-decide it.
+        if (
+            temporal_type_normalized == "past_event"
+            and event_time_clean is not None
+        ):
+            stamped = timephrase.parse_iso(event_time_clean)
+            written = timephrase.parse_iso(now)
+            if stamped is not None and written is not None and stamped > written:
+                log.info(
+                    "memory past_event dated after its own write -> "
+                    "future_plan (event_time=%s written=%s): %s",
+                    event_time_clean, now, cleaned[:80],
+                )
+                temporal_type_normalized = "future_plan"
+
+        # A type carries an expiry rule, so changing the type invalidates
+        # whatever the caller derived from the old one. Recomputing is not
+        # optional bookkeeping: ``list_by_temporal_type`` skips rows whose
+        # ``relevance_until`` is NULL, and ``durable`` derives NULL -- so a
+        # row promoted out of ``durable`` without this would be invisible
+        # to every upkeep pass that could ever retire it.
+        if temporal_type_normalized != type_before:
+            written = timephrase.parse_iso(now)
+            if written is not None:
+                relevance_until_clean = derive_relevance_until(
+                    temporal_type_normalized,
+                    event_time=timephrase.parse_iso(event_time_clean),
+                    created_at=written,
+                )
         meta_json = _encode_metadata(metadata)
         pinned_int = 1 if pinned else 0
         cursor = conn.execute(

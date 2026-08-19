@@ -78,10 +78,25 @@ class HumanizePastTests(unittest.TestCase):
             "3 hours ago",
         )
 
-    def test_future_input_is_defensive(self) -> None:
+    def test_a_future_timestamp_does_not_become_recency(self) -> None:
+        """H40. This assertion used to read ``"moments ago"``.
+
+        It was written as a defensive check and was in fact pinning the
+        fabrication: asked to describe something that has not happened as
+        though it had, the function answered with the freshest phrase it
+        owns. That is how 54 stored plans came to read as brand-new, and
+        how a courier due the next morning was presented to Aiko as
+        something that had just been. There is no recency to report here,
+        so the vague past-tense fallback is the only honest answer.
+        """
         self.assertEqual(
             tp.humanize_past((_NOW + timedelta(hours=1)).isoformat(), _NOW),
-            "moments ago",
+            "in the past",
+        )
+        # Far enough ahead that no rounding could explain it.
+        self.assertEqual(
+            tp.humanize_past((_NOW + timedelta(days=9)).isoformat(), _NOW),
+            "in the past",
         )
 
 
@@ -138,6 +153,44 @@ class TemporalSuffixTests(unittest.TestCase):
             created_at="2026-05-28T10:00:00+00:00", now=_NOW,
         )
         self.assertEqual(out2, " (3 days ago)")
+
+    def test_past_event_dated_ahead_falls_back_to_created_at(self) -> None:
+        """H40. The store blocks this now, but stored rows still carry it.
+
+        A ``past_event`` whose ``event_time`` sits in the future has two
+        fields disagreeing about whether the thing happened. ``created_at``
+        is the one we actually know -- the note was written, whatever it
+        claims about its subject -- so the tag stays informative instead
+        of collapsing to the freshest phrase available.
+        """
+        out = tp.temporal_suffix(
+            temporal_type="past_event",
+            event_time=(_NOW + timedelta(hours=9)).isoformat(),
+            created_at=(_NOW - timedelta(hours=3)).isoformat(),
+            now=_NOW,
+        )
+        self.assertEqual(out, " (3 hours ago)")
+
+    def test_past_event_dated_ahead_with_no_created_at(self) -> None:
+        # Nothing better to anchor on, but still not "moments ago".
+        out = tp.temporal_suffix(
+            temporal_type="past_event",
+            event_time=(_NOW + timedelta(hours=9)).isoformat(),
+            created_at=None,
+            now=_NOW,
+        )
+        self.assertEqual(out, " (in the past)")
+
+    def test_past_event_still_prefers_a_valid_event_time(self) -> None:
+        # The fallback must not fire when event_time is usable: it is the
+        # more precise of the two anchors whenever it is in the past.
+        out = tp.temporal_suffix(
+            temporal_type="past_event",
+            event_time=(_NOW - timedelta(days=4)).isoformat(),
+            created_at=(_NOW - timedelta(hours=1)).isoformat(),
+            now=_NOW,
+        )
+        self.assertEqual(out, " (4 days ago)")
 
     def test_future_plan_passed_gets_should_be_done(self) -> None:
         out = tp.temporal_suffix(
@@ -291,6 +344,85 @@ class HasRelativeDeicticTests(unittest.TestCase):
         self.assertTrue(tp.has_relative_deictic("TODAY was rough"))
         self.assertFalse(tp.has_relative_deictic(""))
         self.assertFalse(tp.has_relative_deictic(None))
+
+    def test_it_says_nothing_about_direction(self) -> None:
+        """The predicate answers staleness only -- H40's whole mistake.
+
+        Both of these will go stale, so both are true here; the caller
+        that needs to know which way they point must ask
+        ``deictic_direction``.
+        """
+        self.assertTrue(tp.has_relative_deictic("Jacob mowed the lawn today"))
+        self.assertTrue(tp.has_relative_deictic("the courier comes tomorrow"))
+
+
+class DeicticDirectionTests(unittest.TestCase):
+    """H40 — which way the stale wording points."""
+
+    def test_past_pointing(self) -> None:
+        for text in (
+            "Jacob mowed the lawn today",
+            "Yesterday went badly",
+            "he's currently between jobs",
+            "swamped right now",
+            "he's been quiet lately",
+            "he fixed it this morning",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(tp.deictic_direction(text), tp.PAST)
+
+    def test_future_pointing(self) -> None:
+        for text in (
+            "the interview is tomorrow",
+            "he wants a long bath tonight",
+            "they're driving to the coast this weekend",
+            "a candlelit date next week",
+            "the cookies will arrive soon",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(tp.deictic_direction(text), tp.FUTURE)
+
+    def test_the_delivery_row_that_started_this(self) -> None:
+        self.assertEqual(
+            tp.deictic_direction(
+                "Jacob expects a courier with the first hardware package "
+                "tomorrow morning."
+            ),
+            tp.FUTURE,
+        )
+
+    def test_future_wins_a_mixed_sentence(self) -> None:
+        """Mis-filing a plan as history is the costlier of the two errors.
+
+        Nothing retires a ``past_event``, the upcoming-horizon block
+        cannot see one, and it reads as already-true for as long as it
+        lives. A plan that turns out to be history is demoted by the
+        decay worker within the hour.
+        """
+        self.assertEqual(
+            tp.deictic_direction(
+                "he finished the report today and ships it tomorrow"
+            ),
+            tp.FUTURE,
+        )
+
+    def test_no_wording_is_not_the_present(self) -> None:
+        self.assertIsNone(tp.deictic_direction("Jacob is a software engineer"))
+        self.assertIsNone(tp.deictic_direction(""))
+        self.assertIsNone(tp.deictic_direction(None))
+
+    def test_every_deictic_has_exactly_one_direction(self) -> None:
+        """The two lists must partition the one the regex is built from."""
+        self.assertEqual(
+            set(tp._PAST_DEICTICS) | set(tp._FUTURE_DEICTICS),
+            set(tp._RELATIVE_DEICTICS),
+        )
+        self.assertEqual(
+            set(tp._PAST_DEICTICS) & set(tp._FUTURE_DEICTICS), set(),
+        )
+        for word in tp._RELATIVE_DEICTICS:
+            with self.subTest(word=word):
+                self.assertIsNotNone(tp.deictic_direction(f"something {word} here"))
 
 
 class ResolveDeicticsTests(unittest.TestCase):
