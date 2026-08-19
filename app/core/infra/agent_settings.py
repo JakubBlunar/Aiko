@@ -926,6 +926,15 @@ class AgentSettings:
     # directive silently (the escape hatch); the counter does not
     # reset, so the next short turn fires instead.
     initiative_substantial_chars: int = 240
+    # K95: defer the directive when he asked something directly, on the
+    # same terms as the length hatch above. Length alone protected a long
+    # explanation and did nothing for a short question, which is the case
+    # where taking the floor reads worst -- 17 of 75 measured directives
+    # fired under a stance ceiling that had already said "he asked you
+    # something". Off restores the length-only behaviour, which is worth
+    # having only to A/B the placement change; it costs no initiative,
+    # since a deferred beat fires on the next non-question turn.
+    initiative_respect_direct_question: bool = True
     # ── K55 thread ownership — she defends what she opened ───────────
     # Master switch. When a K53 directive / K52 imperative fires, the
     # turn is stamped as Aiko's thread; a short pivot away in the

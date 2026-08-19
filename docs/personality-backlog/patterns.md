@@ -110,7 +110,7 @@ on top of already-shipped infrastructure.
 | K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log), phase 2 19 Aug (FOLLOW + brevity render); phase 3 open |
 | K93 | The substance floor — what she takes to the floor, not whether she takes it | ❌ open |
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
-| K95 | Interruption cost — a direct question is not an opening | ❌ open |
+| K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — reader landed inside K92 phase 1, enforcement in K53's gate walk |
 
 ---
 
@@ -604,6 +604,12 @@ K92 is the load-bearing entry; K93–K95 are each independently shippable and ea
 targets a specific way the current arrangement wastes the floor when she does
 take it. K93 in particular can ship first and alone, and probably should.
 
+**Status, 19 Aug.** K92 phases 1–2 and **K95** have shipped. K95 turned out not to
+be the insurance it was filed as: its reader landed inside phase 1 and nothing
+enforced it, so 17 of 75 initiative directives fired on turns where the ceiling had
+already concluded he asked her something. K93 and K94 remain open, and K92 phase 3
+is still the family's real payoff.
+
 ---
 
 ## K92. Conversational stance — one decision per turn, not ten permission slips
@@ -986,6 +992,57 @@ immediately). Key files: new predicate in
 **K82** (the dropped sub-topic — he said three things and she answered one),
 which is the same "read what his turn was actually doing" capability pointed at
 completeness instead of at turn-taking; the two should probably share the reader.
+
+### Shipped 19 Aug — filed as insurance, found already load-bearing
+
+The escape hatch in the paragraph above is what shipped, and the entry was wrong
+about only one thing: this was never insurance against a *future* regression.
+
+**The reader shipped inside K92 and nothing enforced it.** Phase 1 folded K95 in
+as `compute_ceiling`, which caps the stance ladder at `FOLLOW_AND_ADD` on a direct
+question, and phase 2 measured that cap binding on 68 turns. But the stance block
+speaks only for `FOLLOW` and brevity, so the ceiling was **recorded and not
+obeyed** — and K53, the most deliberate floor-taking move Aiko makes, still gated
+on his message being 240+ characters, exactly the length proxy this entry was
+filed to replace. Joining the two ledgers: `initiative_block` rendered on 75
+turns and **17 of them (23%) sat under a `direct_question` ceiling the director
+could not see.** Roughly one in four of her deliberate floor-grabs landed on top
+of a question, and the arbiter had already written down that it shouldn't.
+
+**Enforcing it costs no initiative, which is why it was safe here.** This family's
+measured problem is too *little* own material, so adding a gate to K53 needs an
+argument. K53's counter resets only when the directive actually fires (the
+`user_substantial` precedent), so the gate **defers** the beat to the next
+non-question turn rather than spending it: same rate, better placement. That is
+K94's insight — placement, not frequency — arriving early and for free. A test
+pins it: eight consecutive question turns cost nothing and the directive lands on
+the ninth.
+
+**One predicate, two consumers.**
+[`turn_shape.py`](../../app/core/conversation/turn_shape.py) holds
+`is_direct_question`; `stance.compute_ceiling` and `initiative_director.decide`
+both call it, and a test asserts the *same function* backs both rather than two
+copies that agree today — a ceiling recording `direct_question` while the prompt
+carries a floor-taking directive is precisely the failure being prevented, so it
+must not be reachable by drift. `stance.py` had already learned this with
+`SUBSTANTIAL_CHARS`. The two signals are OR-ed (K4 act tag, trailing question
+mark) because the tag is stamped post-turn and lags a turn, so taking either means
+a stale tag can only ever *add* a deferral — the safe direction for a guard, since
+a false positive costs one deferred beat and a false negative is her talking over
+him.
+
+Gated on `agent.initiative_respect_direct_question` (default on), which exists to
+A/B the placement change rather than because the old behaviour is wanted. The gate
+sits above the length hatch so a long question reports the more specific reason;
+`force` still bypasses it, or the MCP repro tool could not reproduce a directive on
+a question turn.
+
+**What this does not do.** The ceiling's other two caps (`planning`, and `vent` via
+K69) are still recorded and unenforced. `planning` was left out deliberately: it is
+available only as the lagging act tag with no live counterpart, so as a hard gate it
+would suppress initiative on turns where he has already moved on, and it accounted
+for 20 of 683 turns against the question's 68. The general fix for all of them is
+K92 phase 3, where the arbiter suppresses providers instead of reporting on them.
 
 ---
 
