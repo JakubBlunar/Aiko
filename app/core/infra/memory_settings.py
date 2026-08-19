@@ -1399,6 +1399,22 @@ class MemorySettings:
     # hard number because nothing prunes inventions by decay -- an
     # untested guess is not less plausible next month, just staler.
     hypothesis_max_open: int = 12
+    # ...but a hard number with only a fortnightly exit turned the cap
+    # into a duty cycle: invent twelve, then say nothing until they age
+    # out together (measured: 7 days silent with 7 to go, on a shelf where
+    # 9 of 12 had never been asked). When the shelf is full and a novel
+    # guess is waiting, retire the stalest never-asked row instead of
+    # skipping the run. Bounded by ``max_per_run``, so a single pass can
+    # replace at most a sixth of the shelf.
+    hypothesis_evict_when_full: bool = True
+    # Half of ``hypothesis_ttl_hours``, and the pair should stay in that
+    # ratio: eviction is early TTL under demand, not a second policy. This
+    # is what stops eviction becoming churn -- a shelf filled an hour ago
+    # is not stale and blocking is the right answer for it -- and it makes
+    # the steady state self-limiting, since inventing freely lowers the
+    # shelf's age below this bar and blocking resumes. Equilibrium is a
+    # shelf that turns over once a week, ~1.7 inventions a day.
+    hypothesis_evict_min_age_hours: float = 168.0
     # Cosine at or above which a proposal is "she already wondered this".
     # Higher than the concept dedupe bar (0.86) on purpose: rejecting a
     # guess costs one wasted proposal, while over-rejecting makes the
@@ -4251,6 +4267,15 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             ),
             hypothesis_max_open=max(
                 0, int(memory_raw.get("hypothesis_max_open", 12))
+            ),
+            hypothesis_evict_when_full=bool(
+                memory_raw.get("hypothesis_evict_when_full", True)
+            ),
+            hypothesis_evict_min_age_hours=max(
+                1.0,
+                float(
+                    memory_raw.get("hypothesis_evict_min_age_hours", 168.0)
+                ),
             ),
             hypothesis_min_novelty=min(
                 1.0,

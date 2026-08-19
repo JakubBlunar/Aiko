@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The eighteen recurring shapes
+## The nineteen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3063,6 +3063,35 @@ complete, since the information is visibly *there*. **The tell is a field that
 exists in the producer's schema and in no consumer's** — grep for the name; if the
 only hit is the line that writes it, the data does not exist as far as the system
 is concerned.
+
+**19. A cap enforced by refusal, whose only working release is a clock.** A
+resource limit has several release paths on paper; one of them is meant to carry
+the traffic and is starved, so the slowest becomes the only one, and the limit
+stops being a limit and becomes a **duty cycle**. H42: `hypothesis_max_open = 12`
+should drain by guesses being asked and answered, but the ask needs a topical
+match and was declined `topic_miss` on 382 of 444 decisions, leaving a 336-hour
+TTL as the sole exit. So the lane ran as *invent twelve, then say nothing for a
+fortnight while they age out together* — seven days into that silence with seven
+to go, on a shelf where nine of the twelve had never been asked once.
+
+Two things make this survive scrutiny. The refusal **reports as health**
+(`skipped: max_open` is exactly what a correctly-full shelf says, and it is true),
+so shape 1's rule about logging absence does not help — the line is there and it
+is honest. And the release path that *is* starved usually looks fine in isolation:
+declining a cue on a topic mismatch is correct behaviour, per-decision. It is only
+wrong as a rate, and only when it is load-bearing.
+
+Note that this was the **third** distinct cause of the same silence; the first two
+(a fingerprint latch, then a TTL that exempted asked rows) were real, correctly
+fixed, and still working. A cap can be starved in as many ways as it has exits.
+
+**Rule: for every cap, list its exits and measure the throughput of each, not just
+that each works. If one exit accounts for nearly all of the drain, the cap's real
+period is that exit's period — write it down. And prefer a cap that *replaces* to
+one that refuses: refusing is silent by construction, whereas replacing has to
+choose, and a choice can be logged.** The eviction rule wants two guards of its
+own — an age floor, so replacement cannot become churn, and lazy evaluation, so a
+barren pass costs nothing.
 
 ---
 
@@ -4386,6 +4415,137 @@ complete at every review, since the information is visibly *there*. The tell is 
 field that exists in the producer's schema (the LLM was asked for `deadline`) and
 in no consumer's.
 
+---
+
+## H42. She had not wondered anything for seven days, and the log said healthy
+
+Found by reading the overdue predictions in the watch list below rather than by a
+symptom, which is the only way this one surfaces: every line it writes reads fine.
+
+`hypotheses.asked_count` was H7's signal that the loop had closed at all, and it
+had — 5 asks across 17 rows, so the ask path works. But **the newest hypothesis
+was seven days old**, and every proposer run in between had reported:
+
+```
+idle_worker run done: hypothesis_proposer (0ms, avg=0ms)
+    result={'skipped': True, 'reason': 'max_open', 'live': 12, 'expired': 0}
+```
+
+Twelve live rows against `hypothesis_max_open = 12`, so the shelf is full and the
+worker refuses. That is exactly what the cap is for, and the line is honest about
+what it did. The problem is what it does not say: whether a full shelf is a
+*healthy* full shelf.
+
+### It was not. This shelf was a stalled one
+
+| what | reading |
+|---|---|
+| live rows | 12, at the cap |
+| ages | 158 h – 279 h, against a 336 h TTL |
+| never asked | **9 of 12** |
+| linked to a concept | 0 |
+| past TTL | 0 |
+
+Nothing is broken in that table, which is the difficulty. TTL is behaving. None
+of the rows is the unreachable linked kind that `hypothesis_state` was built to
+catch. They are simply twelve guesses between six and twelve days old, filling
+the shelf, and nine of them have never been put to him once.
+
+**The cap has two exits and only one of them carries traffic.** A row leaves by
+being asked and answered, or by aging out at 336 h. The ask exit needs the
+`concept_hypothesis` cue to win a slot, and that cue is declined `topic_miss` on
+**382 of 444 decisions** — because it needs the shelf to match what is actually
+being discussed, and a shelf stocked with `ritual`/`conduct` guesses about Aiko
+does not match a week of hardware and anime. So in practice the fortnightly clock
+is the *only* exit.
+
+Which makes the lane a duty cycle rather than a trickle: **invent twelve, then say
+nothing for a fortnight while they age out together.** Measured mid-August, it was
+seven days into that silence with 7.4 to go, and the arrival pattern confirms it —
+six rows on 7 Aug, two on 8, one on 10, five across 12, then nothing.
+
+### This is the third distinct cause, and the first two were real
+
+Worth stating plainly, because it is the reason the entry exists. The same
+silence has been diagnosed and fixed twice:
+
+1. **The fingerprint latch** — `_run_conduct_pass`'s sibling bug, where an empty
+   proposal pass saved its watermark and retired valid findings forever.
+   Fixed; the latch is held open.
+2. **TTL exempting asked rows** — a row asked once and never answered could
+   neither be re-asked (one ask per invention) nor expire, so it held a slot
+   permanently. `expire_stale` now keys the exemption on `last_tested_at`
+   (*answered*) rather than on having been asked. Both docstrings say "twelve of
+   them shut the live lane down completely".
+
+Both fixes were correct and both are still working — `expired: 0` on these runs is
+TTL agreeing that nothing is due yet. The lane died anyway, for a third reason
+neither fix touches: not that rows *can't* leave, but that the cap refuses to
+accept a better guess while they wait.
+
+### The fix: a full shelf replaces instead of refusing
+
+When the shelf is full and a novel guess has cleared both novelty gates, retire
+the stalest never-asked row and take its slot.
+
+**What is protected from that** (`HypothesisStore.stalest_evictable`), all of it
+about not destroying information:
+
+- **`open` only.** `supported` has a confirmation behind it and is on its way to
+  graduating, which is the outcome the layer exists for; no amount of staleness
+  makes discarding it right.
+- **Never asked, never answered.** A question already put to him may still be
+  answered, and that answer is worth more than a fresh guess. `last_tested_at` is
+  checked as well as `asked_count`, since a restated row was answered without the
+  counter necessarily moving. These rows still leave — at the full TTL, where "he
+  is not going to answer now" has become true.
+- **Older than `hypothesis_evict_min_age_hours` (168 h).** This is the knob that
+  keeps replacement from becoming churn: a shelf filled an hour ago is not stale
+  stock and refusing is right for it. Deliberately **half** of
+  `hypothesis_ttl_hours`, and the pair should stay in that ratio — eviction is
+  early TTL under demand, not a second policy with its own opinion.
+
+Three properties of the shape are load-bearing:
+
+**Eviction is lazy.** Nothing is given up until a candidate has passed both
+novelty gates, so a pass whose every candidate was rejected leaves the shelf
+exactly as it found it. Deciding up front would have spent stock on barren runs.
+
+**It is self-limiting.** Inventing freely lowers the shelf's age below the 168 h
+bar, at which point replacement stops and refusing resumes. The equilibrium is a
+shelf that turns over weekly — about **1.7 inventions a day** — rather than
+twelve in a burst and then nothing.
+
+**A run cannot spend the slot on a paraphrase of what it gave up.** `expired` is
+deliberately the one status the novelty gate lets past (so an unasked guess does
+not burn its ground), which would otherwise let a pass evict a row and re-invent
+it: two writes that report as healthy for a straight swap. Rows evicted *this
+pass* keep blocking until the next one.
+
+The row is closed as `expired`, not deleted — the same exit TTL uses, carrying the
+same meaning, so the guess can be wondered again later.
+
+`demand` now separates the two cases as well, since reporting a stale full shelf
+and a fresh one both as `shelf_full` is how a week of silence read as health. A
+replaceable shelf reports `shelf_stale` at one slot's worth of pressure:
+deliberately low, because giving up a guess to make room is worth less than
+filling an empty slot and should lose to any worker with real hunger.
+
+### What this does not fix
+
+`topic_miss` at 382 of 444 is still there, and it is the deeper question — a
+shelf that tracks recent subjects should match more often, so the rate ought to
+improve on its own, but the ask lane's topical gate is an **H7 remainder / H4(a)**
+question and is not addressed here. The honest claim for this entry is narrower:
+invention no longer stops, so whatever the ask lane's hit rate is, it is applied
+to stock that is at most a week old instead of at most a fortnight.
+
+### Shape 19
+
+Added below: **a cap enforced by refusal, whose only working release is a clock.**
+
+---
+
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
 H9 was the difference between a companion who has feelings about things and one
 who reports a uniform mild pleasantness, and several other findings (H14, the
@@ -4420,17 +4580,35 @@ anything else, since three of them alter the inputs to everything below:
 > mid-experiment, and changing their inputs before ~15 Aug destroys the
 > attribution these five entries were designed to produce.
 
-- **H1** — the latch is open; `kind='conduct'` should go non-zero on the next
-  weekly pass. If it does not, look at the detector.
+- **H1** — ~~the latch is open; `kind='conduct'` should go non-zero on the next
+  weekly pass. If it does not, look at the detector.~~ **Read 19 Aug: it did not,
+  and it is the detector.** The pass has been running — `last_run` 13 Aug, on its
+  weekly cadence — and returns `conduct_findings: 0` every time, with the snapshot
+  an empty list and the signature hashing the empty list. So the latch fix is
+  correct and irrelevant: there is nothing for it to latch. `kind='conduct'` is
+  **0 of 3,294 concepts** while all eleven other kinds took rows the same day.
+  That makes **H2** (the concentration/fixation bars, shape 3) the live suspect
+  after all, not a follow-on — read the `conduct.gate shape=… declined_on=…
+  reading=…` lines, which exist for exactly this and were designed in for it.
+  Adjacent, same reading: `taste` is 2 rows (newest 5 Aug) and `pursuit` is 8, so
+  the near-dead tail is three kinds wide, not one.
 - **H16** — tension candidates per pass went 0/3/6 → 3/6/9 by block. Re-run the
   population query after two days of merge budget; 122 rows should fall toward
   the ~15–20 distinct frictions the labels suggest.
 - **H10** — tension should move off 0 of 14,240 concept-lane surfacings without
   displacing `affective` (H11's ratio is still unsettled). Land it *after* H16
   has drained, or she says the same thing eleven ways.
-- **H7** — `provider` should drop below half of `concept_hypothesis` declines
+- **H7** — ~~`provider` should drop below half of `concept_hypothesis` declines
   now the reasons are split, the shelf should stop growing, and the first
-  non-zero `hypotheses.asked_count` is the signal the loop closed at all.
+  non-zero `hypotheses.asked_count` is the signal the loop closed at all.~~
+  **Read 19 Aug: the loop did close — 5 asks across 17 rows — and then the lane
+  stopped inventing entirely for seven days.** See **H42**: the shelf sat at the
+  cap with nine of twelve never asked, so the only exit left was a fortnightly
+  TTL. Fixed by replacing instead of refusing. What H42 deliberately leaves is
+  the other half of this entry: `topic_miss` on **382 of 444** declines, which is
+  the ask lane's topical gate and belongs with **H4(a)**. Expect it to improve on
+  its own now the stock is at most a week old rather than a fortnight — that
+  improvement is the thing to measure before touching the gate.
 - **H28** — ~~three signals, and they arrive on a clock: a want should cross 0.35
   in 19 h and 0.7 in 53 h~~ **read on 13 Aug and the clock did not run** — the
   strongest want is 0.25, no live want is older than 11 h, and both blocks are
@@ -4547,3 +4725,48 @@ of turns, which makes K95 load-bearing rather than insurance, and `HOLD` was
 chosen **0 times in 432 turns** because some provider is always offering
 something — the same "she gets a steer nearly every turn" shape H28 and K92 both
 describe, now visible as a single number.
+
+## Reading of 19 Aug — the overdue predictions
+
+Every entry above with a date attached, read at once. Three resolved, one is a new
+defect (**H42**, shipped), one moved to a different owner, and the block-firing
+table is worth keeping as the denominator for anything below.
+
+**Resolved.** H7's loop *did* close (5 asks across 17 rows) — and then the lane
+stopped dead, which became H42. H1 did **not** resolve and the detector is the
+cause, not the latch; it now points at H2 rather than being blocked by it. Both
+entries above are struck through with the reading.
+
+**The two blocks that have never once rendered**, across 683 recorded turns:
+`thread_ownership_block` and `conduct_block`. `topic_appetite_block` has fired
+twice all-time and not at all in the last three days. That trio is H28/H29's
+outstanding prediction and it has now missed its ~16 Aug date, so the soft band
+spending `ranked[:2]` (H29's withdrawn drain 2) is the next suspect. `stance_block`
+also shows zero, but only because K92 phase 2 shipped at 13:21 on the 19th and the
+last recorded turn is 10:25 — the shelf of 683 stance rows is phase 1 plus the
+backfill, and phase 2's live behaviour is genuinely unread. Do not treat that zero
+as evidence of anything.
+
+**Cues that cannot win, with the reason now legible** (7 days, post-H30 so the
+denominators mean something):
+
+| cue | declined | surfaced | dominant reason |
+|---|---|---|---|
+| `self_callback` | 452 | 2 | `cadence_block` **426** |
+| `concept_hypothesis` | 444 | 10 | `topic_miss` **382** |
+| `caught_mid_activity` | 265 | 2 | `no_stock` **246** |
+| `dormant_interest` | 336 | 4 | `no_opening` 225, `cadence_block` 86 |
+
+Three separate failure modes wearing the same symptom, and none of them is the
+arbiter being wrong. `self_callback` is starved by cadence — it takes 2 of 452 and
+its pool holds two rows that have sat `pending` since 5 and 8 Aug without ever
+surfacing. `caught_mid_activity`'s `no_stock` is a **producer** at zero: the pool
+has two rows ever, and `agenda` is empty, so H32's fix corrected the arming signal
+onto a supply that does not exist. `dormant_interest` has four cues ever, all
+expired, newest 5 Aug — also supply. Only `concept_hypothesis` is a genuine
+matching problem, and H42 has just changed its input.
+
+**So the next lead is supply, not selection.** Three of the four dead cues have no
+stock rather than no opening, which is not what "0 of N eligible" suggested and is
+a cheaper class of problem than the H17 lull question the list has been pointing
+at.
