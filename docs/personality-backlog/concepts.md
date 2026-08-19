@@ -1897,6 +1897,14 @@ and thrown away" — turns out to be false in a more basic way than expected: th
 material is **not produced at all**. The sketch is kept in full below; only the
 measurement blocks it.
 
+**Re-counted 19 Aug, and the verdict holds with two rows corrected.** The table
+below is a snapshot, so it was audited rather than trusted: hypothesis
+adjudications have gone from nothing to *two* verdicts, and K23 does leave a trace
+after all. Two verdicts is still not a hit rate, so nothing about the blocking
+changes — but note the direction. The sources are starting to produce, and the
+next re-count is the one worth doing properly rather than by hand; see
+[shape 23](health.md#recurring-shapes).
+
 **The count.** Per source, lifetime:
 
 | Source | Rows | Usable outcomes |
@@ -1905,8 +1913,8 @@ measurement blocks it.
 | Belief status flips (`confirmed` / `contradicted`) | 0 | 0 |
 | F13 user corrections | 0 | 0. The worker ran **1079 times in one day**, every time `no_candidates` |
 | Fact-checker verdicts | 0 | 0. `fact_checker.rate_state` records **one** web search ever, on 2026-06-13 |
-| Hypothesis adjudications | 12 open | 0 support, 0 refute |
-| K23 misattunement | ~4/day | 0 — fires and is persisted **nowhere**; `MisattunementResult` never reaches a table |
+| Hypothesis adjudications | 12 open | 0 support, 0 refute — **stale, corrected 19 Aug**: 5 rows asked, 1 refuted, 1 supported, still 0 graduated. See [H44](health.md#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) |
+| K23 misattunement | ~4/day | 0 — **half stale, corrected 19 Aug.** The *fire* does reach a table: `turn_prompt_blocks` has 13 `misattunement_block` rows over the ten days it has been recording, so ~1.3/day rather than ~4. What never lands is `MisattunementResult.trigger` — the block ledger gives the denominator and the char count, not which of the two triggers fired |
 
 A hit rate over that is not thin, it is undefined, and the shrink-toward-neutral
 treatment the sketch itself (correctly) asks for would refuse to emit a finding

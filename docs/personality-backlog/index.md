@@ -64,10 +64,14 @@ because the outcome signal already existed — `EngagementTracker` computes
 the user's reaction per turn and nothing read it for this. **It has now
 shipped as a recorder**, along with the `get_surfacing_outcomes` half of DT5:
 one row per surfaced item per turn, keyed by `assistant_message_id` and settled
-with the *following* turn's engagement label. Nothing consumes the rates yet,
-which is deliberate — the whole point of shipping the measurement first is that
-the items below can be designed against real data instead of guesses. Read the
-ledger before building any of them:
+with the *following* turn's engagement label. It shipped with nothing consuming
+the rates, deliberately — the point of measuring first is that the items below
+get designed against real data instead of guesses. **Three consumers have since
+been built** and this list is the reason to check before assuming a fourth is
+free: `concept_lifecycle_worker` reads `stats_for("concept", …)` for L38 earned
+standing, `concept_synthesis_worker` reads it for proposal quality, and
+`gate_tuner_worker` takes it as a tuning input. Read the ledger *and* those
+three before building any of them:
 
 - **L38** ✅ **shipped** — earned standing now turns the ledger's
   relationship-calibrated outcomes into a bounded concept surfacing prior.
@@ -628,6 +632,30 @@ good enough to gate on.* Two new shapes, **21** and **22**, plus the transferabl
 method: **measure a similarity threshold's null before trusting it**, and **give any
 replay of past decisions an arm whose answer you already know** — the reconstruction
 that died here had to return ~0% and returned 55–82% ([`health.md`](health.md)).
+
+**H44 is the one to read before you trust a "still open" note, and it was found by
+auditing them rather than by looking at any feature.** Two of the three claims
+checked were stale, and the failure was not that they had been written wrong — all
+three were correct on the day — but that **correctness has a shelf life and nothing
+was stamping it.** H7's second pass ended on "watch for the first non-zero
+`asked_count`"; it went non-zero eight days later and the entry went on saying zero
+for another twelve. `index.md` said nothing consumed the L37 ledger while three
+workers were reading it. And [G-CLEANUP](workers.md#g-cleanup-consolidator_statelast_cluster_index-is-not-dead-weight--do-not-drop-it)
+had gone from stale to *dangerous*: it recommended dropping
+`consolidator_state.last_cluster_index` as dead weight, and the relationship pulse —
+built after the note — stores its `total_turns` there under a namespaced key and
+gates on it, so the suggested fix would have silently removed a live feature's "has
+enough happened since last time" check. A comment saying a field is unused is a
+claim about **one reader**; grep the column, not the module.
+
+Underneath the audit, one real finding: **the L30 loop has never graduated
+anything, and the arithmetic says it cannot.** Graduation needs two confirmations
+on one row inside a 336h TTL, one ask in five produces any verdict at all, and ten
+of eleven closed rows left by expiry. New **shape 23** — *a note that defers to a
+future observation outlives its own truth* — and its rule is the one this pass
+actually followed: the funnel is now a printed section of
+[`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py), not another
+paragraph asking someone to check ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write

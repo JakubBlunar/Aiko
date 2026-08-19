@@ -72,6 +72,21 @@ Reading the output
 * The **dominant eligible reason** is where the work is. ``topic_miss``
   concentrated across several cues is one gate, not several bugs.
 
+The hypothesis lane, and why it is in a cue report
+--------------------------------------------------
+A second section prints the L30 funnel -- invented, asked, adjudicated,
+graduated -- because the cue table only answers "did she get the chance
+to wonder aloud" and the stage after it failed separately and silently.
+health.md's H7 ended a pass on "watch for the first non-zero
+``asked_count``"; the counter moved eight days later and the entry went on
+saying zero for another twelve, because a note is not a measurement.
+
+It prints distances rather than totals, since the finding there
+(**H44**) is invisible in any per-status count: graduation needs two
+confirmations on one row inside a 336h TTL, the observed rate delivers
+about one, and the single row that reached the bar is sitting one
+confirmation short with the clock running.
+
 Nothing here writes: the database is opened read-only via a URI, so it is
 safe to run against a live instance while Aiko is up.
 
@@ -406,6 +421,171 @@ def _render(data: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
+def _graduation_bars() -> dict[str, float]:
+    """The live graduation bar, read from settings rather than restated.
+
+    Same reasoning as the ``INELIGIBLE_REASONS`` import above: a local copy
+    of ``min_support`` is how this report and the app would come to
+    disagree about what "ready" means, and both numbers would look
+    plausible. Falls back to the code defaults if settings cannot be
+    loaded, because an offline forensic run should still print something.
+    """
+    bars = {"min_support": 2.0, "min_credence": 0.7, "ttl_hours": 336.0}
+    try:
+        from app.core.infra.settings import load_settings
+
+        mem = load_settings().memory
+    except Exception:
+        return bars
+    for key, attr in (
+        ("min_support", "hypothesis_graduate_min_support"),
+        ("min_credence", "hypothesis_graduate_min_credence"),
+        ("ttl_hours", "hypothesis_ttl_hours"),
+    ):
+        try:
+            bars[key] = float(getattr(mem, attr, bars[key]))
+        except Exception:
+            pass
+    return bars
+
+
+def collect_hypotheses(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The L30 funnel: invented, asked, adjudicated, graduated.
+
+    The cue table above answers "did she get the chance to wonder aloud".
+    This answers the question after it -- *and then what* -- because the
+    two halves failed independently and the second one failed silently
+    for twelve days while a note in health.md said to watch for it. A
+    two-event graduation bar inside a one-event TTL window is not visible
+    in any per-status count, so the distances are printed, not the totals.
+    """
+    bars = _graduation_bars()
+    try:
+        rows = conn.execute(
+            "SELECT status, origin, credence, support_count, refute_count, "
+            "asked_count, created_at, last_tested_at, "
+            "graduated_concept_id, graduated_memory_id FROM hypotheses"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return {"error": str(exc), "bars": bars}
+
+    now = datetime.now(timezone.utc)
+    by_status: Counter[str] = Counter()
+    asked = verdicts = graduated = 0
+    asked_with_verdict = 0
+    parked: list[dict[str, Any]] = []
+    unclassified: list[dict[str, Any]] = []
+
+    for row in rows:
+        status = str(row["status"] or "?")
+        by_status[status] += 1
+        n_asked = int(row["asked_count"] or 0)
+        support = int(row["support_count"] or 0)
+        refute = int(row["refute_count"] or 0)
+        has_verdict = bool(support or refute)
+        if n_asked:
+            asked += 1
+            if has_verdict:
+                asked_with_verdict += 1
+        if has_verdict:
+            verdicts += 1
+        if row["graduated_concept_id"] or row["graduated_memory_id"]:
+            graduated += 1
+
+        if status not in {"open", "supported"}:
+            continue
+        born = _parse(row["created_at"])
+        age = None if born is None else (now - born).total_seconds() / 3600.0
+        item = {
+            "status": status,
+            "support": support,
+            "credence": float(row["credence"] or 0.0),
+            "asked": n_asked,
+            "age_hours": None if age is None else round(age, 1),
+            "ttl_remaining_hours": (
+                None if age is None else round(bars["ttl_hours"] - age, 1)
+            ),
+        }
+        if support > 0 and refute == 0:
+            item["short_by"] = max(0, int(bars["min_support"]) - support)
+            parked.append(item)
+        elif n_asked > 0 and not has_verdict:
+            unclassified.append(item)
+
+    return {
+        "bars": bars,
+        "total": len(rows),
+        "by_status": dict(sorted(by_status.items(), key=lambda kv: -kv[1])),
+        "asked": asked,
+        "asked_with_verdict": asked_with_verdict,
+        "verdicts": verdicts,
+        "graduated": graduated,
+        # Sorted by what is about to be lost, since the TTL is the clock
+        # that actually decides these.
+        "parked": sorted(parked, key=lambda i: i["ttl_remaining_hours"] or 0.0),
+        "asked_unclassified": sorted(
+            unclassified, key=lambda i: -(i["age_hours"] or 0.0)
+        ),
+    }
+
+
+def _render_hypotheses(data: dict[str, Any]) -> str:
+    if data.get("error"):
+        return f"hypotheses unreadable: {data['error']}"
+    bars = data["bars"]
+    out: list[str] = []
+    out.append(
+        f"hypothesis lane -- {data['total']} rows, graduation bar "
+        f"{int(bars['min_support'])} support and credence "
+        f">= {bars['min_credence']:.2f} inside a {bars['ttl_hours']:.0f}h TTL"
+    )
+    out.append(
+        "  by status: "
+        + ", ".join(f"{k}={v}" for k, v in data["by_status"].items())
+    )
+    asked = data["asked"]
+    conv = (
+        f"{data['asked_with_verdict']} of {asked}"
+        if asked else "no asks yet"
+    )
+    out.append(
+        f"  funnel: {asked} ever asked -> {data['verdicts']} carry a verdict "
+        f"-> {data['graduated']} graduated   (ask->verdict: {conv})"
+    )
+
+    # The whole reason this section exists: a lane can look busy at every
+    # stage and still never take its last exit.
+    if data["graduated"] == 0 and data["total"]:
+        out.append(
+            "  VERDICT: graduation has never fired. See health.md H44 -- "
+            "check the bar against the arithmetic before raising supply."
+        )
+    if asked and data["asked_with_verdict"] < asked:
+        out.append(
+            f"  VERDICT: {asked - data['asked_with_verdict']} asked rows carry "
+            "no verdict -- she asked, he answered, nothing scored it (H7)."
+        )
+
+    for item in data["parked"]:
+        ttl = item["ttl_remaining_hours"]
+        fate = (
+            "will expire first"
+            if ttl is not None and ttl < 0 else f"{ttl:+.0f}h of TTL left"
+        )
+        out.append(
+            f"  parked at the bar: support={item['support']} "
+            f"(short by {item['short_by']}), credence "
+            f"{item['credence']:.2f}, asked {item['asked']}x, "
+            f"age {item['age_hours']:.0f}h -- {fate}"
+        )
+    for item in data["asked_unclassified"]:
+        out.append(
+            f"  asked and unscored: {item['age_hours']:.0f}h ago, "
+            f"status {item['status']}, credence {item['credence']:.2f}"
+        )
+    return "\n".join(out)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -426,10 +606,19 @@ def main() -> int:
     conn = _connect(args.db)
     try:
         data = collect(conn, days=(None if args.days <= 0 else args.days))
+        # Not behind a flag. A check that has to be asked for is the same
+        # thing as a note asking someone to look, which is what this
+        # section exists to replace.
+        data["hypotheses"] = collect_hypotheses(conn)
     finally:
         conn.close()
 
-    print(json.dumps(data, indent=2) if args.json else _render(data))
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(_render(data))
+        print("")
+        print(_render_hypotheses(data["hypotheses"]))
     return 0
 
 
