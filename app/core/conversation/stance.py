@@ -92,6 +92,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.core.conversation import turn_shape
+
 
 # ── the closed set, ordered by how much of the floor the move takes ──
 #
@@ -304,14 +306,21 @@ class StanceDecision:
 def _is_direct_question(inputs: StanceInputs) -> bool:
     """Did he actually ask something, as opposed to merely wondering?
 
+    Delegates to :mod:`turn_shape`, which K53's gate walk also reads.
+    The two must not be able to disagree about the same message: this
+    ceiling recording ``direct_question`` while the prompt carried a
+    floor-taking directive is the precise failure K95 exists to prevent,
+    and it is what happened for the whole of phase 2 (17 of 75
+    ``initiative_block`` renders).
+
     The dialogue-act tag is the better signal but it is regex-first and
     folds soft requests in, so a trailing question mark is checked too:
     the cost of missing a real question here is her talking over it,
     which is the failure this whole ceiling exists to prevent.
     """
-    if (inputs.dialogue_act or "").strip().lower() == "question":
-        return True
-    return (inputs.user_text or "").rstrip().endswith("?")
+    return turn_shape.is_direct_question(
+        inputs.user_text, inputs.dialogue_act,
+    )
 
 
 def compute_ceiling(

@@ -29,6 +29,109 @@ def _decide(**overrides) -> idir.InitiativeDecision:
     return idir.decide(**kwargs)
 
 
+class DirectQuestionGateTests(unittest.TestCase):
+    """K95 — a direct question is not an opening.
+
+    The gap these close: for the whole of K92 phase 2 the stance ceiling
+    recorded ``direct_question`` while this director, which could not see
+    it, fired the floor-taking directive anyway — 17 of 75 measured
+    renders. The fix has to hold in both directions: block on a question,
+    and not cost an initiative beat when it does.
+    """
+
+    def test_a_short_question_defers_the_directive(self) -> None:
+        decision = _decide(user_text="what do you think?")
+        self.assertFalse(decision.fire)
+        self.assertEqual(decision.reason, "direct_question")
+
+    def test_length_alone_would_have_let_this_through(self) -> None:
+        # The precise regression: well under substantial_chars, so the
+        # only pre-K95 turn-shape gate had nothing to say about it.
+        text = "what do you think?"
+        self.assertLess(len(text), 240)
+        self.assertTrue(_decide(user_text=text, force=False).reason)
+        self.assertEqual(
+            _decide(
+                user_text=text, respect_direct_question=False,
+            ).reason,
+            "fire",
+        )
+
+    def test_the_dialogue_act_alone_is_enough(self) -> None:
+        # No question mark; the K4 tag carries it.
+        decision = _decide(
+            user_text="tell me about your day", dialogue_act="question",
+        )
+        self.assertEqual(decision.reason, "direct_question")
+
+    def test_trailing_whitespace_does_not_hide_the_mark(self) -> None:
+        self.assertEqual(
+            _decide(user_text="you okay?  \n").reason, "direct_question",
+        )
+
+    def test_a_statement_still_fires(self) -> None:
+        self.assertEqual(
+            _decide(user_text="the build finally passed").reason, "fire",
+        )
+
+    def test_a_long_question_reports_the_specific_reason(self) -> None:
+        # Both gates apply; the more informative one should win, which
+        # is why K95 sits above the length hatch.
+        decision = _decide(user_text="x" * 300 + "?")
+        self.assertEqual(decision.reason, "direct_question")
+
+    def test_the_flag_restores_length_only_behaviour(self) -> None:
+        decision = _decide(
+            user_text="what do you think?", respect_direct_question=False,
+        )
+        self.assertTrue(decision.fire)
+
+    def test_force_still_bypasses_it(self) -> None:
+        # A forced repro must stay forceable, or the MCP tool cannot
+        # reproduce the directive on a question turn.
+        decision = _decide(user_text="what do you think?", force=True)
+        self.assertTrue(decision.fire)
+
+    def test_the_arc_block_still_outranks_it(self) -> None:
+        # Ordering sanity: the safety gate is above the courtesy gate.
+        self.assertEqual(
+            _decide(arc="support", user_text="you okay?").reason,
+            "arc_blocked",
+        )
+
+    def test_it_shares_the_predicate_with_the_stance_ceiling(self) -> None:
+        """The two consumers cannot be allowed to drift apart.
+
+        A ceiling saying ``direct_question`` while the prompt carries a
+        floor-taking directive is the exact failure K95 exists to
+        prevent, so this asserts the *same function* backs both rather
+        than two copies that happen to agree today.
+        """
+        from app.core.conversation import stance as stance_mod
+        from app.core.conversation import turn_shape
+
+        for text, act in (
+            ("what do you think?", None),
+            ("tell me about it", "question"),
+            ("the build passed", None),
+            ("", None),
+        ):
+            with self.subTest(text=text, act=act):
+                shared = turn_shape.is_direct_question(text, act)
+                ceiling = stance_mod._is_direct_question(
+                    stance_mod.StanceInputs(
+                        blocks=frozenset(),
+                        user_text=text,
+                        dialogue_act=act,
+                    )
+                )
+                gate = _decide(
+                    user_text=text, dialogue_act=act,
+                ).reason == "direct_question"
+                self.assertEqual(shared, ceiling)
+                self.assertEqual(shared, gate)
+
+
 class EffectivePeriodTests(unittest.TestCase):
     def test_base(self) -> None:
         self.assertEqual(
@@ -171,6 +274,25 @@ class DirectorStateTests(unittest.TestCase):
             )
         # Due since turn 8 but deferred every time; one short message
         # fires immediately.
+        decision = director.note_turn_and_decide(**self._kwargs())
+        self.assertTrue(decision.fire)
+
+    def test_a_question_defers_the_beat_without_spending_it(self) -> None:
+        """K95 must change placement, not frequency.
+
+        This is the whole reason the gate was safe to add to a family
+        whose measured problem is too *little* own material: the counter
+        resets only on a real fire, so eight question turns in a row cost
+        nothing and the directive lands on the first turn that is not a
+        question.
+        """
+        director = idir.InitiativeDirector()
+        for _ in range(8):
+            decision = director.note_turn_and_decide(
+                **self._kwargs(user_text="you around?"),
+            )
+            self.assertFalse(decision.fire)
+            self.assertEqual(decision.reason, "direct_question")
         decision = director.note_turn_and_decide(**self._kwargs())
         self.assertTrue(decision.fire)
 

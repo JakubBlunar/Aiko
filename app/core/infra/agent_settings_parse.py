@@ -510,6 +510,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1,
                 int(agent_raw.get("initiative_substantial_chars", 240)),
             ),
+            initiative_respect_direct_question=bool(
+                agent_raw.get("initiative_respect_direct_question", True),
+            ),
             thread_ownership_enabled=bool(
                 agent_raw.get("thread_ownership_enabled", True),
             ),

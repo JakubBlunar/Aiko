@@ -24,6 +24,15 @@ Cadence is deterministic with modulation, not random:
   the escape hatch, mirroring the ``respond_directly`` escape-tool
   pattern: a long message deserves its answer, the directive just
   waits for the next short turn (the counter does NOT reset);
+- skipped on the same terms when he **asked something directly** (K95).
+  Length was the only turn-shape gate here for a long time, and it
+  protects a long explanation while doing nothing at all for a short
+  question — the case where taking the floor reads worst. Measured over
+  K92's stance ledger, 17 of the 75 turns that carried this directive
+  sat under a ceiling that had already concluded he asked her something;
+  the arbiter recorded that disagreement and had no way to act on it.
+  Same deferral semantics as ``user_substantial``, so this costs no
+  initiative — only its placement;
 - a short warmup at the start of each session so turn 1 is never a
   floor-grab.
 
@@ -34,6 +43,8 @@ Wiring (provider, settings, MCP) lives on the session mixins.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from app.core.conversation import turn_shape
 
 
 # Arcs in which taking the floor is wrong outright.
@@ -48,8 +59,8 @@ class InitiativeDecision:
 
     ``reason`` names the gate that decided (grep-friendly):
     ``fire`` / ``warmup`` / ``arc_blocked`` / ``misattunement`` /
-    ``rupture`` / ``user_substantial`` / ``not_due`` /
-    ``wants_imperative_active``.
+    ``rupture`` / ``direct_question`` / ``user_substantial`` /
+    ``not_due`` / ``wants_imperative_active``.
     """
 
     fire: bool
@@ -98,12 +109,17 @@ def decide(
     substantial_chars: int = 240,
     warmup_turns: int = 3,
     wants_imperative_active: bool = False,
+    dialogue_act: str | None = None,
+    respect_direct_question: bool = True,
     force: bool = False,
 ) -> InitiativeDecision:
     """One per-turn gate walk. Order matters — safety gates first.
 
     ``force=True`` (the MCP one-shot) bypasses every gate except the
     arc block: even a forced repro must not grab the floor mid-vent.
+
+    The K95 question gate sits *above* ``user_substantial`` so a long
+    question reports the more specific reason of the two.
     """
     period = compute_effective_period(
         base_period, arc=arc, closeness=closeness, comfort=comfort,
@@ -122,6 +138,14 @@ def decide(
         # The K52 imperative directive IS a floor-taking beat this
         # turn; stacking a second directive would read as an agenda.
         return InitiativeDecision(False, "wants_imperative_active", period)
+    if respect_direct_question and turn_shape.is_direct_question(
+        user_text, dialogue_act,
+    ):
+        # K95. Same deferral as the length hatch below, and for the same
+        # reason stated more precisely: an answer is owed first. Shares
+        # the predicate with K92's ceiling so the ledger and the prompt
+        # cannot disagree about the turn.
+        return InitiativeDecision(False, "direct_question", period)
     if len((user_text or "").strip()) >= max(1, int(substantial_chars)):
         # Escape hatch: a substantial message deserves its answer.
         # The counter does not reset — the directive fires on the

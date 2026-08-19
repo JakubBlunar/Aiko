@@ -1477,6 +1477,17 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     getattr(agent, "initiative_warmup_turns", 3)
                 ),
                 wants_imperative_active=wants_imperative_active,
+                # K95. The act lags a turn (stamped post-turn), which is
+                # why the predicate also reads the live text -- see
+                # ``turn_shape.is_direct_question``.
+                dialogue_act=getattr(
+                    self, "_last_user_dialogue_act", None,
+                ),
+                respect_direct_question=bool(
+                    getattr(
+                        agent, "initiative_respect_direct_question", True,
+                    )
+                ),
                 force=force,
             )
             log.debug(
