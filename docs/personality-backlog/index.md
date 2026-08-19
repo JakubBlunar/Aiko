@@ -360,6 +360,17 @@ them, no representation of *following* as a choice she is making, and no way at
 all to decide to say less. K92 is the load-bearing entry (a stance arbiter that
 must **replace** the blocks it subsumes rather than become the eleventh
 permission slip, phased so it logs its decision before it steers anything).
+**Phases 1 and 2 shipped 15 and 19 Aug, and the phasing paid for itself twice:**
+both problems phase 1 handed phase 2 turned out to be measurement errors rather
+than tuning problems. `HOLD` fired 0 times in 682 turns because it asked *how
+many words* on a ladder about *how much floor*, so brevity is now a second,
+orthogonal axis keyed off her own recent replies (2 × 40+ words in a row); and
+`arc_protected` was 65% of all clamps because `arc` is a conversation-level label
+with **no run shorter than 1 turn and spans up to 110**, so a per-turn veto built
+on it muted her for days — now time-limited to 4 turns (**H39**). Together those
+move the clamp rate 36.9% → 28.7% and hand 51 turns back to `SHARE`. Phase 2
+renders exactly one T6 block, for `FOLLOW` and brevity, because those are the
+only two *restraint* signals in a family that is otherwise all permission slips.
 K93 is the cheapest and probably the highest-value: **43 of 56 genuine cue
 conversions are `curiosity_seed`**, so ~77% of what she actually brings up is
 free-associative whimsy — dust motes, receipt-back doodles, the weight of a house
@@ -420,6 +431,24 @@ one Aiko chose. The shape is the fifteenth and the most portable: **a missing
 value coerced to a valid one is a fabrication, not a default**, and it is worst
 where zero means something — temperature, valence, confidence
 ([`health.md`](health.md)).
+
+**H39 is the one to read before you gate on a label somebody else's feature
+produced.** K92's interruption ceiling vetoed anything above "answer him and add"
+while the conversation's `arc` was `support` or `reflection` — 65% of all clamps,
+more than its other four rules combined. `arc` is a *conversation-level* tag:
+over 2,355 turns it forms 137 runs averaging 17, **not one of length 1**, the
+longest 110 turns of `support` across eight days. So one hard thing he said on
+Monday muted her through Thursday, on turns about guitar solos that happened to
+fall inside the span. Nothing was broken — the tagger was right, and the veto was
+right about the moment that earned it — the defect was entirely the **lifetime
+mismatch** between a label describing a conversation and a consumer asking about
+a turn. It had hidden for a year because the original consumer (K53) fires once
+in six turns, where staleness only damps a beat. Fixed by expiring the cap after
+4 turns; the per-turn caps were deliberately left untimed, since they are
+re-derived every turn and so are present exactly as long as their evidence is.
+The portable guard is two lines of SQL: **measure a label's run lengths before
+gating on it — one that never describes a single turn should not answer per-turn
+questions** ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write

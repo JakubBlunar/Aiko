@@ -545,6 +545,22 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1.0,
                 max(0.0, float(agent_raw.get("thread_cooling_margin", 0.05))),
             ),
+            # K92 phase 2. The arc window is clamped to 20 -- past that
+            # the veto outlives every protected span in the corpus, which
+            # is the untimed behaviour H39 was filed against, so a config
+            # file must not be able to reinstate it by typing 999.
+            stance_block_enabled=bool(
+                agent_raw.get("stance_block_enabled", True),
+            ),
+            stance_protected_arc_turns=min(
+                20, max(0, int(agent_raw.get("stance_protected_arc_turns", 4))),
+            ),
+            stance_brevity_word_floor=max(
+                1, int(agent_raw.get("stance_brevity_word_floor", 40)),
+            ),
+            stance_brevity_run=max(
+                1, int(agent_raw.get("stance_brevity_run", 2)),
+            ),
             topic_appetite_enabled=bool(
                 agent_raw.get("topic_appetite_enabled", True),
             ),

@@ -152,6 +152,10 @@ class PromptAssemblerHelpersMixin:
         *,
         affect: Callable[[], str] | None = None,
         vitality: Callable[[], str] | None = None,
+        # K92: the only provider taking arguments other than the live
+        # user text -- it is handed the ladder names that rendered, since
+        # it reports on them rather than adding a surface of its own.
+        stance: Callable[[frozenset[str], str], str] | None = None,
         circadian: Callable[[], str] | None = None,
         day_color: Callable[[], str] | None = None,
         profile: Callable[[], str] | None = None,
@@ -448,6 +452,8 @@ class PromptAssemblerHelpersMixin:
             self._thread_ownership_provider = thread_ownership
         if topic_appetite is not None:
             self._topic_appetite_provider = topic_appetite
+        if stance is not None:
+            self._stance_provider = stance
         if taste_lean is not None:
             self._taste_lean_provider = taste_lean
         if pursuit_lean is not None:

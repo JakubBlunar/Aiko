@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The fourteen recurring shapes
+## The sixteen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -2994,6 +2994,34 @@ appends or indexes on write, find its compaction/vacuum/reindex API on day one
 and either schedule it or write down why it is not needed — then assert the
 physical shape per logical row somewhere a test can see, because that ratio is
 the only place this is visible before it becomes something else's crash.**
+
+**15. A missing value coerced to a valid one.** `or 0.0` is not a default, it is
+a fabrication, and it is most dangerous where zero is *meaningful* in the domain
+— temperature, valence, confidence, price. H38: Open-Meteo returned a `current`
+block with no `temperature_2m`, the provider validated that the block existed but
+not its contents, and the pair "cloudy, 0 °C" is not a neutral fallback but **a
+plausible-looking winter day** — which is why it passed every downstream sanity
+check, there weren't any, and Aiko spent an August afternoon in pajamas. The
+failure is silent by construction, because the fabricated value is in range.
+**Rule: at a boundary you do not control, absence is an error, not a zero. Coerce
+only where the domain has no meaningful zero, and put the plausibility check on
+the consumer as well, since the next partial response will be shaped
+differently.**
+
+**16. A signal reused at the wrong timescale.** A label is borrowed from an
+existing consumer and inherits that consumer's tolerance for staleness rather
+than the new one's. H39: `arc` is a *conversation-level* tag — over 2,355 turns
+it forms 137 runs averaging 17, with **not one run of length 1**, the longest 110
+turns of `support` across eight days — and K92's ceiling used it as a per-turn
+hard veto, so one hard thing he said on Monday muted her through Thursday. Every
+input was correct and every stage did its job; the defect lived entirely in the
+lifetime mismatch. It had gone unnoticed because the original consumer (K53)
+fires once in six turns, where a sticky label merely damps an occasional beat.
+**Rule: before using a label as a gate, measure its run-length distribution — a
+signal that never describes a single turn should not answer per-turn questions.
+The visible tell is a rule that dominates its siblings: one of five caps
+accounting for 65% of all clamps was legible for four days before anyone asked
+why.**
 
 ---
 
@@ -3893,11 +3921,11 @@ Aiko chose herself.
 
 ### The shape worth keeping
 
-This is the fifteenth recurring shape and the first instance of it here: **a
-missing value coerced to a valid one**. `or 0.0` is not a default, it is a
-fabrication, and it is most dangerous where zero is a *meaningful* value in the
-domain — temperature, valence, confidence, price. The failure is silent by
-construction, because the fabricated value is in range.
+This is [recurring shape 15](#the-sixteen-recurring-shapes) and the first
+instance of it here: **a missing value coerced to a valid one**. `or 0.0` is not
+a default, it is a fabrication, and it is most dangerous where zero is a
+*meaningful* value in the domain — temperature, valence, confidence, price. The
+failure is silent by construction, because the fabricated value is in range.
 
 It is worth grepping for siblings. `WeatherSnapshot.from_dict` has the identical
 `float(blob.get("temperature") or 0.0)` on the rehydrate path, which the
@@ -3907,6 +3935,78 @@ A second, smaller lesson: the user's mental model named the wrong subsystem
 ("circadian") because **circadian is the only outfit driver that is documented**.
 A passive feed reaching into a channel owned by another layer should say so in a
 log line at INFO, which the withdrawal path now does.
+
+---
+
+## H39. A conversation-level label used as a per-turn veto muted her for eight days
+
+**Severity: medium — fixed 19 Aug. Found by measuring K92 phase 1's own output
+before building phase 2.**
+
+K92 phase 1 recorded, per turn, the most floor-taking stance the providers
+offered (`desire`) and the most the user's turn permitted (`ceiling`). It never
+touched the prompt, so this is a defect in a shadow log — but the same ceiling
+was about to start steering, and one of its five rules turned out to be wrong by
+a factor of seventeen.
+
+`arc_protected` accounted for **164 of 252 clamps (65.1%)** — more than the other
+four rules combined. Phase 1 flagged that as suspicious on the grounds that the
+arc list (`support`, `reflection`) was inherited from K53 rather than earned.
+Measuring it found something worse than a list that is too broad.
+
+**`arc` is a conversation-level label, not a per-turn read.** Over 2,355 turns it
+forms 137 runs averaging **17 turns**, and there is **not one run of length 1**.
+The longest protected spans are **110 consecutive turns of `support`, spanning
+eight days.** Used as a per-turn hard filter, one hard thing he said on Monday
+vetoed everything above `FOLLOW_AND_ADD` through Thursday — including turns about
+guitar solos that happened to sit inside the same labelled span.
+
+The reason this had never surfaced is instructive: K53 reads the same arc list
+and fires **once in six turns**, so a sticky label merely damped an occasional
+beat. A ceiling consulted on *every* turn is a completely different exposure to
+the same staleness, and the list was copied across without anyone re-asking what
+its lifetime was.
+
+### Fixed
+
+The cap now applies only while the span is fresh — `arc_age_turns <
+PROTECTED_ARC_FRESH_TURNS` (4), tracked as session state and incremented
+post-turn when the new arc matches the previous one. Four turns is the width of
+an opening beat: long enough that "I had a rough week" is met with listening
+rather than with her own news, short enough that it cannot outlive the subject.
+Replaying the corpus, `arc_protected` clamps fall **164 → 79** and the overall
+clamp rate **36.9% → 28.7%**, moving 51 turns from `FOLLOW_AND_ADD` to `SHARE`.
+The binding constraint is now `direct_question` (68) at about the same weight as
+the arc — a per-turn signal rather than a stale one.
+
+The per-turn caps (`vent`, `direct_question`, `planning`, `user_substantial`)
+were deliberately left untimed. They are re-derived from the current turn every
+time, so they are present exactly as long as their evidence is, which is the
+property `arc` was wrongly assumed to have.
+
+### The shape worth keeping
+
+**[Recurring shape 16](#the-sixteen-recurring-shapes): a signal reused at the
+wrong timescale.** Every
+input here was correct — the arc tagger is doing its job, and 110 turns of
+`support` is an accurate description of that conversation. The defect is entirely
+in the *lifetime mismatch* between a label that describes a conversation and a
+consumer that asks it a question about a turn. A signal borrowed from another
+consumer inherits that consumer's tolerance for staleness, not its own.
+
+The cheap guard is to measure the run-length distribution of any label before
+using it as a gate. "Not one run of length 1" is a two-line query and it settles
+the question immediately: a signal that never describes a single turn should not
+be answering per-turn questions. The related tell is a rule that dominates its
+own siblings — 65% of clamps from one of five rules was the visible symptom, and
+it was visible for four days before anyone asked why.
+
+A second lesson about phasing: this was found *because* phase 1 shipped as a
+shadow log that recorded `desire` and `ceiling` separately. Had the arbiter
+rendered from the start, the arc veto would have quietly suppressed her for days
+and shown up, if at all, as a vague sense that she had gone flat. Recording both
+sides of a decision you have not yet acted on is what made a wrong rule legible
+as a number instead of as a mood.
 
 ---
 
