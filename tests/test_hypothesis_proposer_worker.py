@@ -526,6 +526,218 @@ class CapTests(_Fixture):
         self.assertEqual(signal.reason, "shelf_full")
 
 
+class EvictionTests(_Fixture):
+    """A full shelf gives up its stalest guess rather than refusing.
+
+    The cap has two exits and the one meant to carry the traffic -- being
+    asked -- needs a topical match, so a shelf stocked with subjects that
+    stop coming up has only the fortnightly TTL left. What that produced
+    was a duty cycle rather than a trickle: twelve inventions, then
+    silence until they aged out together, reported every tick as a
+    healthy ``skipped: max_open``. The shelf these tests are built from is
+    the real stuck one -- twelve live rows, ages 158h to 279h against a
+    336h TTL, nine never asked once, seven days silent with seven to go.
+    """
+
+    def _aged(
+        self,
+        statement: str,
+        *,
+        hours: float,
+        embedding: np.ndarray = _FAR,
+        asked: int = 0,
+        status: str | None = None,
+        answered: bool = False,
+    ) -> Hypothesis:
+        row = self._existing(statement, embedding=embedding, status=status)
+        row.created_at = (
+            timephrase.utcnow() - timedelta(hours=hours)
+        ).isoformat()
+        row.asked_count = int(asked)
+        if answered:
+            row.last_tested_at = timephrase.utcnow().isoformat()
+        self.hypotheses.update(row)
+        return row
+
+    def _stuck_shelf(self) -> list[Hypothesis]:
+        """The live shelf as measured: oldest first, three of them asked."""
+        ages = (279.0, 279.0, 279.0, 269.0, 216.0, 174.0,
+                174.0, 173.0, 173.0, 172.0, 158.0, 158.0)
+        rows = []
+        for i, hours in enumerate(ages):
+            rows.append(
+                self._aged(f"guess {i}", hours=hours, asked=1 if i in (4, 6, 9) else 0)
+            )
+        return rows
+
+    def test_a_stale_full_shelf_replaces_instead_of_skipping(self) -> None:
+        self._stuck_shelf()
+
+        result = self._build(max_open=12, max_per_run=1).run()
+
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(len(result["evicted"]), 1)
+        self.assertEqual(self.hypotheses.count_live(), 12)
+
+    def test_the_oldest_never_asked_row_is_the_one_given_up(self) -> None:
+        rows = self._stuck_shelf()
+
+        result = self._build(max_open=12, max_per_run=1).run()
+
+        # Three rows share the 279h maximum; any of them is the right
+        # answer, and none of the younger ones is.
+        oldest = {r.hypothesis_id for r in rows[:3]}
+        self.assertIn(result["evicted"][0], oldest)
+
+    def test_a_fresh_full_shelf_still_refuses_and_spends_no_llm_call(self) -> None:
+        """The bar that keeps replacement from becoming churn. A shelf
+        filled an hour ago is not stale stock, and blocking is right."""
+        for i in range(12):
+            self._aged(f"guess {i}", hours=1.0)
+
+        result = self._build(max_open=12).run()
+
+        self.assertEqual(result["reason"], "max_open")
+        self.assertEqual(self.ollama.calls, 0)
+        self.assertNotIn("evicted", result)
+
+    def test_a_supported_guess_is_never_given_up(self) -> None:
+        """One confirmation already behind it, on its way to graduating --
+        which is the outcome the whole layer exists for. No amount of
+        staleness makes discarding that right."""
+        from app.core.concepts.hypothesis_store import STATUS_SUPPORTED
+
+        kept = self._aged(
+            "supported guess", hours=900.0, status=STATUS_SUPPORTED
+        )
+
+        result = self._build(max_open=1).run()
+
+        self.assertEqual(result["reason"], "max_open")
+        self.assertEqual(
+            self.hypotheses.get(kept.hypothesis_id).status, STATUS_SUPPORTED
+        )
+
+    def test_a_guess_already_put_to_him_is_not_given_up(self) -> None:
+        """An answer may still be coming, and it is worth more than a
+        fresh guess. The clock takes these at the full TTL instead."""
+        asked = self._aged("asked guess", hours=200.0, asked=1)
+
+        result = self._build(max_open=1, ttl_hours=336.0).run()
+
+        self.assertEqual(result["reason"], "max_open")
+        self.assertTrue(self.hypotheses.get(asked.hypothesis_id).is_live)
+
+    def test_nothing_is_given_up_when_every_candidate_is_rejected(self) -> None:
+        """Eviction is lazy for this reason: a barren pass must leave the
+        shelf exactly as it found it."""
+        twin = self._aged("the twin", hours=250.0, embedding=_A)
+        for i in range(11):
+            self._aged(f"filler {i}", hours=250.0)
+
+        result = self._build(
+            max_open=12, vectors={_STATEMENT: _NEAR_A},
+        ).run()
+
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(result["rejected_duplicate"], 1)
+        self.assertNotIn("evicted", result)
+        self.assertTrue(self.hypotheses.get(twin.hypothesis_id).is_live)
+
+    def test_a_run_cannot_spend_the_slot_on_a_paraphrase_of_what_it_gave_up(
+        self,
+    ) -> None:
+        """Otherwise replacement reports two healthy writes for a straight
+        swap: give up a guess, spend its slot re-inventing it. ``expired``
+        stops blocking on the *next* run, not inside this one."""
+        victim = self._aged("the victim", hours=300.0, embedding=_A)
+        for i in range(11):
+            self._aged(f"filler {i}", hours=250.0, embedding=_MID_A)
+
+        result = self._build(
+            max_open=12,
+            max_per_run=2,
+            payload=_payload(_STATEMENT, _OTHER),
+            vectors={_STATEMENT: _FAR, _OTHER: _NEAR_A},
+        ).run()
+
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(result["rejected_duplicate"], 1)
+        self.assertEqual(result["evicted"], [victim.hypothesis_id])
+
+    def test_replacement_is_bounded_by_the_per_run_budget(self) -> None:
+        """A single pass must not be able to turn the shelf over."""
+        for i in range(12):
+            self._aged(f"guess {i}", hours=250.0, embedding=_A)
+
+        # Three directions no two of which are within the 0.88 bar, so the
+        # only thing that can stop the third write is the budget.
+        result = self._build(
+            max_open=12,
+            max_per_run=2,
+            payload=_payload(_STATEMENT, _OTHER, "a third guess"),
+            vectors={
+                _STATEMENT: _unit(0.5, 0.866),
+                _OTHER: _unit(-0.5, 0.866),
+                "a third guess": _unit(0.0, 1.0),
+            },
+        ).run()
+
+        self.assertEqual(result["wrote"], 2)
+        self.assertEqual(len(result["evicted"]), 2)
+        self.assertEqual(self.hypotheses.count_live(), 12)
+
+    def test_the_row_given_up_lands_as_expired_not_deleted(self) -> None:
+        """Same exit the TTL uses, and the same meaning: she never got
+        round to asking. ``expired`` is also the one status the novelty
+        gate lets past, so the ground stays open to be wondered again."""
+        victim = self._aged("the victim", hours=300.0)
+        for i in range(11):
+            self._aged(f"filler {i}", hours=250.0)
+
+        self._build(max_open=12, max_per_run=1).run()
+
+        self.assertEqual(
+            self.hypotheses.get(victim.hypothesis_id).status, STATUS_EXPIRED
+        )
+
+    def test_replacement_can_be_switched_off(self) -> None:
+        for i in range(12):
+            self._aged(f"guess {i}", hours=250.0)
+
+        result = self._build(max_open=12, evict_when_full=False).run()
+
+        self.assertEqual(result["reason"], "max_open")
+        self.assertEqual(self.ollama.calls, 0)
+
+    def test_demand_tells_a_stale_full_shelf_from_a_fresh_one(self) -> None:
+        """Reporting both as ``shelf_full`` is how the lane went a week
+        without a guess while every signal read healthy."""
+        for i in range(12):
+            self._aged(f"guess {i}", hours=250.0)
+
+        signal = self._build(max_open=12).demand(
+            now=timephrase.utcnow(), last_run_at=None
+        )
+
+        self.assertEqual(signal.reason, "shelf_stale")
+        self.assertGreater(signal.pressure, 0.0)
+        self.assertTrue(signal.needs_llm)
+
+    def test_a_stale_shelf_asks_for_less_than_an_empty_one(self) -> None:
+        """One slot's worth. Giving up a guess to make room is worth less
+        than filling an empty slot and should lose to real hunger."""
+        now = timephrase.utcnow()
+        empty = self._build(max_open=12).demand(now=now, last_run_at=None)
+        for i in range(12):
+            self._aged(f"guess {i}", hours=250.0)
+
+        stale = self._build(max_open=12).demand(now=now, last_run_at=None)
+
+        self.assertEqual(empty.reason, "shortfall")
+        self.assertLess(stale.pressure, empty.pressure)
+
+
 class TtlTests(_Fixture):
     def test_an_untouched_guess_ages_out(self) -> None:
         stale = self._existing("old guess", embedding=_FAR)
@@ -737,6 +949,30 @@ class SettingsWiringTests(_Fixture):
         self.hypotheses.update(stale)
 
         self.assertEqual(self._build(ttl_hours=0.0).run()["expired"], 0)
+
+    def test_raising_the_eviction_age_bar_protects_a_stale_shelf(self) -> None:
+        row = self._existing("old", embedding=_FAR)
+        row.created_at = (
+            timephrase.utcnow() - timedelta(hours=200)
+        ).isoformat()
+        self.hypotheses.update(row)
+
+        result = self._build(
+            max_open=1, evict_min_age_hours=300.0
+        ).run()
+
+        self.assertEqual(result["reason"], "max_open")
+
+    def test_the_default_eviction_bar_is_half_the_default_ttl(self) -> None:
+        """They are meant to stay in that ratio -- eviction is early TTL
+        under demand, not a second policy with its own opinion."""
+        from app.core.infra.memory_settings import MemorySettings
+
+        s = MemorySettings()
+
+        self.assertAlmostEqual(
+            s.hypothesis_evict_min_age_hours * 2.0, s.hypothesis_ttl_hours
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

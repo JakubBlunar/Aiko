@@ -838,6 +838,8 @@ class IdleWorkersInitMixin:
                     min_novelty=mem.hypothesis_min_novelty,
                     concept_novelty=mem.hypothesis_concept_novelty,
                     ttl_hours=mem.hypothesis_ttl_hours,
+                    evict_when_full=mem.hypothesis_evict_when_full,
+                    evict_min_age_hours=mem.hypothesis_evict_min_age_hours,
                 )
                 self._idle_scheduler.register(
                     self._hypothesis_proposer_worker

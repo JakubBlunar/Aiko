@@ -497,6 +497,41 @@ code implements** is shape 14 with the upkeep *assigned* rather than missing, an
 **structured data written into prose is write-only** — if the only grep hit for a
 field is the line that writes it, it does not exist ([`health.md`](health.md)).
 
+**H42 is the one to read before you cap a pool.** Found by reading the backlog's
+own overdue predictions rather than from a symptom, because every line this one
+writes is honest: `skipped: max_open` is exactly what a correctly-full shelf says.
+The shelf was not correctly full. **Aiko had not invented a hypothesis in seven
+days**, on twelve live rows aged 158–279 h against a 336 h TTL, nine of which had
+never been asked once — nothing linked, nothing overdue, every gate behaving. The
+cap has two exits and the one meant to carry the traffic needs a topical match,
+declined `topic_miss` on **382 of 444** decisions, so a fortnightly clock was the
+only working drain and the lane ran as *invent twelve, then say nothing for a
+fortnight while they age out together*. Notably the **third** distinct cause of the
+same silence: a fingerprint latch and a TTL that exempted asked rows were both
+real, both correctly fixed, and both still working. Fixed by making a full shelf
+*replace* rather than refuse — it gives up its stalest never-asked row when a novel
+guess has cleared both novelty gates, with three properties doing the work:
+eviction is lazy (a barren pass leaves the shelf untouched), it is self-limiting
+(inventing freely drops the shelf below the age bar and refusing resumes, settling
+at ~1.7 inventions a day), and a run cannot spend the slot on a paraphrase of what
+it gave up. `supported` rows and questions already put to him are never evicted.
+The portable shape: **a cap enforced by refusal, whose only working release is a
+clock** — list a cap's exits and measure each one's throughput, since one exit
+carrying nearly all the drain makes the cap's real period that exit's period, and
+prefer a cap that replaces to one that refuses because refusing is silent by
+construction while a choice can be logged ([`health.md`](health.md)).
+
+The same reading pass settled two older entries and found the next lead. **H7**'s
+loop had closed (5 asks) before the shelf stalled; **H1** did not resolve and the
+detector is the cause rather than the latch — the weekly conduct pass runs and
+returns zero findings, leaving `kind='conduct'` at **0 of 3,294** concepts, which
+promotes H2's thresholds from blocked to live. And of the four cues that never
+win, three fail on **supply** rather than selection: `caught_mid_activity` declines
+`no_stock` 246 times against a pool of two rows ever and an empty `agenda`,
+`dormant_interest` has four cues ever and all expired, `self_callback` takes 2 of
+452 against `cadence_block`. That is a cheaper class of problem than the lull
+question the list had been pointing at.
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

@@ -35,11 +35,27 @@ visibly forgetting what she knows.
 
 Growth control
 --------------
-``hypothesis_max_open`` is a hard ceiling on live rows, not a soft
-target, because nothing prunes this table by decay the way L3 prunes
-concepts — an untested guess is exactly as plausible next month as
-today, just staler. TTL expiry runs at the top of every tick and only
-touches rows that were never actually asked about.
+``hypothesis_max_open`` is a ceiling on live rows, because nothing prunes
+this table by decay the way L3 prunes concepts — an untested guess is
+exactly as plausible next month as today, just staler. TTL expiry runs at
+the top of every tick and only touches rows that were never answered.
+
+It used to be a *hard* ceiling, and that was the whole lane's undoing.
+The cap has two exits and the one meant to carry the traffic — being
+asked — needs a topical match, so a shelf stocked with subjects that stop
+coming up has only the fortnightly TTL left. What that produced was not a
+steady trickle of wondering but a duty cycle: twelve inventions, then
+total silence until they aged out together, reported each tick as a
+healthy-looking ``skipped: max_open``. Measured mid-August: seven days
+silent with seven to go, nine of the twelve never asked once.
+
+So a full shelf now *replaces* instead of refusing, giving up its stalest
+never-asked row when a novel guess is waiting (see
+:meth:`~app.core.concepts.hypothesis_store.HypothesisStore.stalest_evictable`
+for what is protected from that, and ``hypothesis_evict_min_age_hours``
+for the age bar that keeps replacement from becoming churn). Eviction is
+lazy: nothing is given up until a candidate has cleared both novelty
+gates, so a barren pass costs the shelf nothing.
 """
 from __future__ import annotations
 
@@ -49,7 +65,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import numpy as np
 
@@ -229,6 +245,8 @@ class HypothesisProposerWorker:
         min_novelty: float = 0.88,
         concept_novelty: float = 0.82,
         ttl_hours: float = 336.0,
+        evict_when_full: bool = True,
+        evict_min_age_hours: float = 168.0,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._hypotheses = hypothesis_store_provider
@@ -248,6 +266,8 @@ class HypothesisProposerWorker:
         self._min_novelty = float(min_novelty)
         self._concept_novelty = float(concept_novelty)
         self._ttl_hours = float(ttl_hours)
+        self._evict_when_full = bool(evict_when_full)
+        self._evict_min_age_hours = max(1.0, float(evict_min_age_hours))
         self._clock = clock or timephrase.utcnow
 
     # ── IdleWorker protocol ───────────────────────────────────────────
@@ -269,6 +289,13 @@ class HypothesisProposerWorker:
         Same inventory shape as the curiosity seeds: a full shelf reports
         no demand rather than being caught by a cap after an LLM call has
         already been spent.
+
+        A full shelf holding stale stock is *not* the same as a full one,
+        and reporting both as ``shelf_full`` is how the lane went a week
+        without a new guess while every signal said healthy. A shelf that
+        can replace reports demand -- low demand, one slot's worth,
+        because giving up a guess to make room is worth less than filling
+        an empty slot and should lose to any worker with real hunger.
         """
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
@@ -283,7 +310,13 @@ class HypothesisProposerWorker:
             return WorkSignal(pressure=0.0, reason="no_store")
         shortfall = max(0, self._max_open - live)
         if shortfall <= 0:
-            return WorkSignal(pressure=0.0, reason="shelf_full")
+            if self._evictable(store) is None:
+                return WorkSignal(pressure=0.0, reason="shelf_full")
+            return WorkSignal(
+                pressure=min(1.0, 1.0 / float(self._max_open)),
+                reason="shelf_stale",
+                needs_llm=True,
+            )
         return WorkSignal(
             pressure=min(1.0, shortfall / float(self._max_open)),
             reason="shortfall",
@@ -303,13 +336,23 @@ class HypothesisProposerWorker:
 
         live = self._count_live(store)
         room = self._max_open - live
+        # A full shelf is only a stop if it is also a *fresh* shelf. When
+        # it is stale, the run continues on credit: no row is given up
+        # until a candidate has passed both novelty gates, so the shelf is
+        # never spent on a pass that produces nothing.
         if room <= 0:
-            return {
-                "skipped": True,
-                "reason": "max_open",
-                "live": live,
-                "expired": expired,
-            }
+            if not self._evict_when_full or self._evictable(store) is None:
+                return {
+                    "skipped": True,
+                    "reason": "max_open",
+                    "live": live,
+                    "expired": expired,
+                }
+            log.info(
+                "hypothesis shelf full but stale: live=%d replacing up to %d",
+                live,
+                self._max_per_run,
+            )
 
         t0 = time.monotonic()
         try:
@@ -329,7 +372,12 @@ class HypothesisProposerWorker:
                 "llm_ms": int(llm_ms),
             }
 
-        budget = min(self._max_per_run, room)
+        # The cap is enforced per write by ``slots`` below rather than by a
+        # budget computed up front, because on a stale shelf a slot can be
+        # *bought* mid-loop and ``room`` at this point does not know that.
+        budget = self._max_per_run
+        slots = room
+        evicted: list[int] = []
         wrote: list[dict[str, Any]] = []
         rejected_dup = 0
         rejected_known = 0
@@ -367,7 +415,7 @@ class HypothesisProposerWorker:
                 )
                 continue
 
-            twin, sim = self._nearest_hypothesis(store, vec)
+            twin, sim = self._nearest_hypothesis(store, vec, protect=evicted)
             if twin is not None:
                 rejected_dup += 1
                 log.debug(
@@ -390,9 +438,21 @@ class HypothesisProposerWorker:
                 )
                 continue
 
+            # Both gates passed, so this guess is worth a slot. Buy one if
+            # the shelf owes us none -- deliberately here and not earlier,
+            # so a pass whose every candidate was rejected leaves the
+            # shelf exactly as it found it.
+            if slots <= 0:
+                given_up = self._evict_one(store, exclude=evicted)
+                if given_up is None:
+                    break
+                evicted.append(given_up)
+                slots += 1
+
             row = self._persist(store, candidate, statement, vec)
             if row is None:
                 continue
+            slots -= 1
             wrote.append(
                 {
                     "hypothesis_id": row.hypothesis_id,
@@ -406,16 +466,17 @@ class HypothesisProposerWorker:
         log.info(
             "hypothesis_proposer run done: wrote=%d candidates=%d "
             "rejected(duplicate=%d already_believed=%d machine_self=%d) "
-            "expired=%d llm_ms=%.0f",
+            "expired=%d evicted=%d llm_ms=%.0f",
             len(wrote),
             len(candidates),
             rejected_dup,
             rejected_known,
             rejected_machine,
             expired,
+            len(evicted),
             llm_ms,
         )
-        return {
+        out: dict[str, Any] = {
             "checked": len(candidates),
             "wrote": len(wrote),
             "hypotheses": wrote,
@@ -425,11 +486,66 @@ class HypothesisProposerWorker:
             "expired": expired,
             "llm_ms": int(llm_ms),
         }
+        if evicted:
+            out["evicted"] = evicted
+        return out
+
+    # ── shelf space ───────────────────────────────────────────────────
+
+    def _evictable(self, store: "HypothesisStore") -> "Hypothesis | None":
+        """The row a replacement would take, without taking it."""
+        if not self._evict_when_full:
+            return None
+        try:
+            return store.stalest_evictable(
+                min_age_hours=self._evict_min_age_hours, now=self._clock(),
+            )
+        except Exception:
+            log.debug("hypothesis evictable lookup failed", exc_info=True)
+            return None
+
+    def _evict_one(
+        self, store: "HypothesisStore", *, exclude: "list[int]",
+    ) -> int | None:
+        """Retire the stalest never-asked guess. Returns its id, or None.
+
+        Closed as ``expired`` rather than deleted, which is the same exit
+        the TTL uses and carries the same meaning: she never got round to
+        asking. That matters downstream -- ``expired`` is the one status
+        :meth:`_nearest_hypothesis` lets past, so the ground stays open to
+        be wondered again instead of being burned by a slot shortage.
+        """
+        from app.core.concepts.hypothesis_store import STATUS_EXPIRED
+
+        if not self._evict_when_full:
+            return None
+        try:
+            row = store.stalest_evictable(
+                min_age_hours=self._evict_min_age_hours,
+                now=self._clock(),
+                exclude=exclude,
+            )
+            if row is None:
+                return None
+            store.close(row, status=STATUS_EXPIRED)
+        except Exception:
+            log.debug("hypothesis eviction failed", exc_info=True)
+            return None
+        log.info(
+            "hypothesis evicted to make room: id=%s guess=%r",
+            row.hypothesis_id,
+            str(row.statement)[:80],
+        )
+        return int(row.hypothesis_id)
 
     # ── gates ─────────────────────────────────────────────────────────
 
     def _nearest_hypothesis(
-        self, store: "HypothesisStore", vec: Any,
+        self,
+        store: "HypothesisStore",
+        vec: Any,
+        *,
+        protect: "Sequence[int]" = (),
     ) -> tuple[Hypothesis | None, float]:
         """The nearest existing guess, if it is near enough to reject.
 
@@ -446,6 +562,12 @@ class HypothesisProposerWorker:
         inattention, which over months is exactly the sterility
         ``hypothesis_min_novelty`` sits high to avoid. Re-inventing it
         gives the guess a fresh TTL and another chance to be raised.
+
+        ``protect`` re-arms that exemption for rows *this pass* expired to
+        make room. Without it a run could give up a guess for a slot and
+        spend the slot on a paraphrase of it -- churn that reports as two
+        healthy writes. Only within the pass: on the next run the row is
+        an ordinary expired one and free to be wondered again.
         """
         from app.core.concepts.hypothesis_store import STATUS_EXPIRED
 
@@ -454,10 +576,12 @@ class HypothesisProposerWorker:
         except Exception:
             log.debug("hypothesis nearest failed", exc_info=True)
             return None, 0.0
+        just_evicted = {int(i) for i in protect}
         blocking = [
             (row, sim)
             for row, sim in hits
             if str(getattr(row, "status", "")) != STATUS_EXPIRED
+            or int(getattr(row, "hypothesis_id", 0) or 0) in just_evicted
         ]
         if not blocking:
             return None, 0.0

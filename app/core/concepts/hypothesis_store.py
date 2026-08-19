@@ -48,7 +48,9 @@ Statuses
 --------
 ``open`` → ``supported`` / ``refuted``, then one of three exits:
 ``graduated`` (minted a new candidate concept), ``merged`` (folded into a
-concept that already existed), or ``expired`` (TTL). ``merged`` is
+concept that already existed), or ``expired`` — reached either by TTL or
+by :meth:`HypothesisStore.stalest_evictable` giving a slot up to a better
+guess, which are the same event at different speeds. ``merged`` is
 deliberately distinct from ``graduated`` because "my guess was already
 true" and "my guess became a new belief" are different stories, and the
 L17f diary and L19 autobiography should be able to narrate them
@@ -569,6 +571,65 @@ class HypothesisStore:
         if closed:
             log.info("hypotheses expired on TTL: n=%d", closed)
         return closed
+
+    def stalest_evictable(
+        self,
+        *,
+        min_age_hours: float,
+        now: Any = None,
+        exclude: "Sequence[int] | frozenset[int]" = (),
+    ) -> "Hypothesis | None":
+        """The oldest live row it would be honest to retire early, or None.
+
+        ``expire_stale`` empties the shelf on a clock; this answers the
+        different question of what to give up when the shelf is full and
+        there is something better to put on it. Which is most of the time:
+        the cap has exactly two exits, and the one that was supposed to
+        matter -- being asked -- fires on a topical match, so a shelf
+        stocked with subjects that stop coming up has only the TTL left.
+        The lane's real duty cycle became "invent twelve, then say nothing
+        for a fortnight while they age out together".
+
+        The eligibility rules are all about not destroying information:
+
+        * ``open`` only. ``supported`` has a confirmation behind it and is
+          on its way to graduating -- that is the outcome the layer exists
+          for, and no amount of staleness makes discarding it right.
+        * **Never asked**, and never answered. A question already put to
+          him may still be answered, and the answer is worth more than a
+          fresh guess. ``last_tested_at`` is checked as well as
+          ``asked_count`` because a restated row was answered without the
+          counter necessarily moving.
+        * **Older than ``min_age_hours``.** A shelf whose newest entry is
+          six days old is stale stock; one filled an hour ago is not, and
+          blocking is the right answer there. This is the knob that keeps
+          eviction from becoming churn, and it is why a caller need not
+          check whether the shelf is "really" stale.
+
+        Oldest first, so eviction is early TTL under pressure rather than
+        a second policy with its own opinion. ``exclude`` holds rows a
+        caller has already claimed this pass but not yet closed.
+
+        The caller closes it -- as ``expired``, which is deliberately the
+        one status the proposer's novelty gate lets through, so retiring a
+        guess unasked leaves the ground open to be wondered again rather
+        than burning it on her own inattention.
+        """
+        moment = now or timephrase.utcnow()
+        skip = {int(i) for i in exclude}
+        best: Hypothesis | None = None
+        best_age = -1.0
+        for row in self._rows.values():
+            if row.status != STATUS_OPEN or int(row.hypothesis_id) in skip:
+                continue
+            if row.last_tested_at is not None or int(row.asked_count or 0) > 0:
+                continue
+            age_h = _age_hours(row.created_at, moment)
+            if age_h is None or age_h < float(min_age_hours):
+                continue
+            if age_h > best_age:
+                best, best_age = row, age_h
+        return best
 
     def counts_by_status(self) -> dict[str, int]:
         out: dict[str, int] = {}
