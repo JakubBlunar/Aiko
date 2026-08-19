@@ -53,17 +53,17 @@ skipped, so it never breaks browsing.
   **skipped** when a plugin already registered a middleware for the same
   `server_id` (so a snapshot is never reshaped twice).
 
-## Components (`app/core/browser/`)
+## Components (`plugins/browser/aiko_browser/`)
 
 | File | Role |
 |------|------|
-| [`accessibility.py`](../app/core/browser/accessibility.py) | `A11yNode` — the normalized, server-agnostic node schema everything downstream consumes. |
-| [`adapters.py`](../app/core/browser/adapters.py) | The ONLY format-specific layer. `RealBrowserAdapter` (JSON or indented tree), `GenericIndentedTreeAdapter`, `get_adapter(name)`. `parse()` returns `None` on a format it can't read → raw passthrough. |
-| [`grouping.py`](../app/core/browser/grouping.py) | `dedup_nodes`, `heading_context` (breadcrumb injection), `group_forms`. |
-| [`ranking.py`](../app/core/browser/ranking.py) | Heuristic `interaction_likelihood` scorer (role / visibility / position / text / context), weight-tunable, capped. |
-| [`page_state.py`](../app/core/browser/page_state.py) | `PageStateMemory` — in-process (ephemeral) LRU + `(role, name)`-keyed diff for "Changes since last snapshot". |
-| [`rendering.py`](../app/core/browser/rendering.py) | Compact ranked text block + one-line summary for the planner blackboard. |
-| [`perception.py`](../app/core/browser/perception.py) | `BrowserPerception` — `claims()` + `transform()` wiring adapter → pipeline → memory → render. |
+| [`accessibility.py`](../plugins/browser/aiko_browser/accessibility.py) | `A11yNode` — the normalized, server-agnostic node schema everything downstream consumes. |
+| [`adapters.py`](../plugins/browser/aiko_browser/adapters.py) | The ONLY format-specific layer. `RealBrowserAdapter` (JSON or indented tree), `GenericIndentedTreeAdapter`, `get_adapter(name)`. `parse()` returns `None` on a format it can't read → raw passthrough. |
+| [`grouping.py`](../plugins/browser/aiko_browser/grouping.py) | `dedup_nodes`, `heading_context` (breadcrumb injection), `group_forms`. |
+| [`ranking.py`](../plugins/browser/aiko_browser/ranking.py) | Heuristic `interaction_likelihood` scorer (role / visibility / position / text / context), weight-tunable, capped. |
+| [`page_state.py`](../plugins/browser/aiko_browser/page_state.py) | `PageStateMemory` — in-process (ephemeral) LRU + `(role, name)`-keyed diff for "Changes since last snapshot". |
+| [`rendering.py`](../plugins/browser/aiko_browser/rendering.py) | Compact ranked text block + one-line summary for the planner blackboard. |
+| [`perception.py`](../plugins/browser/aiko_browser/perception.py) | `BrowserPerception` — `claims()` + `transform()` wiring adapter → pipeline → memory → render. |
 
 ## Ranking heuristics
 
@@ -188,7 +188,7 @@ server's snapshot format. To switch servers:
 
 1. Replace (or add) the `mcp_clients.servers` row with the new server's `command` / `args` (and `id`).
 2. Point `browser_perception.server_id` at the new id and `snapshot_tools` at its snapshot tool name(s).
-3. Pick an `adapter`: `real_browser` (tries JSON then indented tree) or `generic` (indented tree only). If the new server's format differs from both, add a class in [`adapters.py`](../app/core/browser/adapters.py) implementing `BrowserSnapshotAdapter` and register it in `_ADAPTERS`.
+3. Pick an `adapter`: `real_browser` (tries JSON then indented tree) or `generic` (indented tree only). If the new server's format differs from both, add a class in [`adapters.py`](../plugins/browser/aiko_browser/adapters.py) implementing `BrowserSnapshotAdapter` and register it in `_ADAPTERS`.
 4. Validate the adapter against a live snapshot with the MCP debug tools — no code reload loop needed for the parse check.
 
 ## Debugging

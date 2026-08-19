@@ -1758,6 +1758,104 @@ suppressed out of contention, only re-ranked within it.
 
 ---
 
+## L39. Identity concepts surfaced twice a turn, and one copy ignored habituation
+
+**Status: SHIPPED (dedupe + a smaller stable cap).** Two independent paths were
+rendering the same concepts into the same prompt without knowing about each
+other. `_profile_concept_lines`
+([`inner_life_part1.py`](../../../app/core/session/inner_life_part1.py)) rendered
+up to `profile_concept_max_lines` (then 10) `subject="user"` identity and value
+concepts into the T0 profile block, ordered by confidence, with a 0.5 confidence
+bar — **every turn, with no habituation and no knowledge of T3** — while the L27
+core lane independently pinned up to `context_budget_core_cap` concepts from those
+same kinds into T3. There was a `seen` dedupe *within* the profile block and
+nothing across blocks, so Aiko's strongest beliefs about the user appeared twice,
+phrased differently, on the same turn, and the profile copy was immune to every
+anti-repetition mechanism L23 built.
+
+**The ordering made the obvious fix impossible, so it was inverted.** T0
+`profile_block` is assembled (and slice-cached) long before T3 exists, so the
+profile cannot ask "did T3 already take this?". Letting the turn-relevant lane
+take precedence would require either building T3 first, which breaks the
+reserve-before-history budget model, or re-rendering T0 afterwards, which breaks
+the tier ladder. So the **profile block claims first** — it renders earlier and
+is the more stable, cache-friendly home for a settled trait — records the claimed
+concept ids on the turn, and the core lane skips anything already claimed. That
+precedence question is therefore settled by the architecture rather than by taste.
+
+`_profile_concept_lines` stashes the ids it rendered on
+`_last_profile_concept_ids`, and `build_relevant_context` skips them in **all
+three** T3 lanes — core, flex, and activation. Covering only the core lane turned
+out to be actively insufficient: a test with the flex guard removed showed a
+claimed identity concept re-entering the prompt through the turn-relevant lane on
+a topical match, so the dedupe simply relocated. The core-lane skip happens
+before the `core_cap` slice, so a claimed concept releases its slot to the next
+candidate instead of leaving a hole, and the skipped ids are recorded in the
+concept trace as `claimed_by_profile` so an empty lane stays distinguishable from
+a cold layer.
+
+**What to watch.** The profile block claims by confidence, so it takes exactly
+the concepts the core lane would have ranked first. T3 therefore now carries
+*different* material — `subject="aiko"` identity, boundary and generalization
+kinds, and lower-confidence user concepts — which is the intended effect but a
+real shift in what the core lane is for. On a small store where every
+core-qualifying concept is a user identity or value above the 0.5 profile bar,
+the core lane can legitimately come up empty; `claimed_by_profile` is what makes
+that readable rather than looking like a cold layer.
+
+**The repetition half: a smaller stable cap, not a rotating set.** Giving the
+profile path its own habituation read stays deliberately *unshipped*, and the
+reason is worth recording rather than re-discovering. The T0 profile block is
+part of the stable prompt prefix that the `_PROMPT_BLOCK_TIERS` ladder exists to
+protect; rotating its lines turn-to-turn would make it a **third** volatile T0
+block alongside `narrative_block` and `catchphrase_block`, which the same audit
+flagged as defects. That trades prompt-cache cost for the repetition fix.
+
+So the cheaper lever shipped instead: **`profile_concept_max_lines` 10 → 4**, on
+the numbers from
+[`scripts/concept_openness_report.py`](../../../scripts/concept_openness_report.py)
+(see L28m) rather than on taste.
+
+- Concept labels are full sentences, so the 10 lines were **~620 tokens** of
+  identical, un-rotated assertion in the cache prefix of every single turn —
+  and 10 of the **40** concept assertions a worst-case prompt carried.
+- They were drawn from **170 eligible rows** and selected by confidence band
+  alone, so the same ten led the block indefinitely. This is the surface where
+  "she keeps telling me what I'm like" actually originates.
+- Because the profile claims *first*, those 10 also pre-empted two thirds of the
+  15-slot core lane, which *does* rotate and which now also carries the L28
+  openness reserve. Releasing six of them does not remove those beliefs from the
+  prompt; it moves them to the lane that rests them and balances them against
+  other kinds.
+
+Four lines plus the structured SQLite facts (name, occupation, location,
+hobbies, schedule) is still a profile block that says who he is. The number is
+recorded here rather than left to a comment so the next change to it starts from
+the measurement instead of from the default.
+
+**Notes from the implementation.** The claim survives a `_StaticSlices` cache
+hit without needing to be cached alongside the block (the way L26's
+`coactivation_trace` is): on a hit the renderer doesn't re-run, so the stash is
+stale, but it is stale *with the correct value* because the cached profile text
+contains exactly those ids. The stash is cleared at the top of
+`_profile_concept_lines` so every early return — cold layer, disabled view, zero
+cap, lookup failure — leaves an empty claim rather than a stale one, and a
+concept with no id is never claimed, since id 0 would act as a wildcard
+suppressing every unidentified candidate. Same-label siblings *are* claimed even
+though only the first renders a line, because the losing sibling's text is in
+the prompt via the line that won.
+
+**Effort.** Small, as estimated. Two read sites, a per-turn claimed-id set, and
+one retuned cap.
+
+**One general version left open, and it is not a concept problem.** Whether a
+single "already surfaced this turn" set should be shared across *all* blocks is
+[P43](../perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist)'s
+territory — the claimed-id set shipped here is the narrow, concept-only case of
+it.
+
+---
+
 ## L37. Surfacing outcome ledger -- did what I brought up actually land?
 
 **Status: SHIPPED.** The ledger measures, and L38 now consumes its concept rows

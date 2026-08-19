@@ -60,7 +60,7 @@ the agenda store + WS event for live updates.
 > Tests: [`tests/test_agenda.py`](../../../tests/test_agenda.py)
 > (`AgendaOnChangeTests`),
 > [`tests/test_web_server_agenda.py`](../../../tests/test_web_server_agenda.py),
-> [`web/src/store.agenda.test.ts`](../../../web/src/store.agenda.test.ts).
+> [`web/src/stores/slices/agenda.test.ts`](../../../web/src/stores/slices/agenda.test.ts).
 
 ---
 
@@ -107,7 +107,7 @@ data is all there.
 > of jumping when older rows land at the top. Tests:
 > [`tests/test_chat_database.py`](../../../tests/test_chat_database.py)
 > (`get_messages_before`), [`tests/test_web_server_messages.py`](../../../tests/test_web_server_messages.py)
-> (routing), [`web/src/store.pagination.test.ts`](../../../web/src/store.pagination.test.ts).
+> (routing), [`web/src/stores/slices/chat.pagination.test.ts`](../../../web/src/stores/slices/chat.pagination.test.ts).
 >
 > **Bundled fix — mobile autoscroll.** Virtuoso's default "at bottom"
 > tolerance is 4px, which mobile momentum / rubber-band scrolling and
@@ -262,9 +262,9 @@ mirror-write + reconfigure paths),
 the `chat_llm` parse + the `workers_use_local` home),
 [`sessions_settings_routes.py`](../../../app/web/rest/sessions_settings_routes.py)
 + the `chat_llm` REST/WS surface,
-[`ChatProviderSection.tsx`](../../../web/src/features/settings/ChatProviderSection.tsx)
-(decide whether the single-provider preset UX stays or folds into the
-routes table). Tests: `test_session_controller_provider_switch.py`,
+`ChatProviderSection.tsx` (decide whether the single-provider preset UX stays
+or folds into the routes table — it folded, and the file is deleted; see the
+shipped note below). Tests: `test_session_controller_provider_switch.py`,
 `test_web_server_chat_llm.py`, `test_settings_llm_migration.py`,
 `test_session_controller_llm_catalogue.py`.
 
