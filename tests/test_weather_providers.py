@@ -153,6 +153,30 @@ class OpenMeteoProviderTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 OpenMeteoProvider().current(1.0, 2.0)
 
+    def test_current_raises_when_temperature_is_absent(self) -> None:
+        # H38: a partial ``current`` block used to become 0.0 C, which
+        # reads as freezing and drove the seasonal-decor / outfit hooks.
+        # Better to fail the fetch and keep the last good snapshot.
+        body = self._current_body()
+        del body["current"]["temperature_2m"]
+        with _RequestsPatch(_FakeResponse(body)):
+            with self.assertRaises(ValueError):
+                OpenMeteoProvider().current(1.0, 2.0)
+
+    def test_current_raises_when_temperature_is_null(self) -> None:
+        body = self._current_body()
+        body["current"]["temperature_2m"] = None
+        with _RequestsPatch(_FakeResponse(body)):
+            with self.assertRaises(ValueError):
+                OpenMeteoProvider().current(1.0, 2.0)
+
+    def test_current_keeps_a_genuine_zero_reading(self) -> None:
+        body = self._current_body()
+        body["current"]["temperature_2m"] = 0.0
+        with _RequestsPatch(_FakeResponse(body)):
+            snap = OpenMeteoProvider().current(1.0, 2.0)
+        self.assertEqual(snap.temperature, 0.0)
+
     def test_forecast_maps_days(self) -> None:
         body = {
             "daily": {

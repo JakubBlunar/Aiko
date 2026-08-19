@@ -398,15 +398,21 @@ class OpenMeteoProvider:
         cur = body.get("current")
         if not isinstance(cur, dict):
             raise ValueError("open-meteo: missing current block")
+        raw_temp = cur.get("temperature_2m")
+        if raw_temp is None:
+            # A ``current`` block without a temperature is a failed fetch,
+            # not a reading of zero. Coercing it to 0.0 reads as freezing
+            # and drives the seasonal-decor / outfit hooks off a cliff.
+            raise ValueError("open-meteo: current block has no temperature_2m")
         code = cur.get("weather_code")
         return WeatherSnapshot(
             condition=condition_from_wmo(code),
             description=describe_wmo(code),
-            temperature=float(cur.get("temperature_2m") or 0.0),
+            temperature=float(raw_temp),
             apparent_temperature=float(
                 cur.get("apparent_temperature")
                 if cur.get("apparent_temperature") is not None
-                else cur.get("temperature_2m") or 0.0
+                else raw_temp
             ),
             humidity=int(cur.get("relative_humidity_2m") or 0),
             wind_speed=float(cur.get("wind_speed_10m") or 0.0),

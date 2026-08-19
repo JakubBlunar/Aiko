@@ -93,6 +93,7 @@ def _make_controller(
     controller._avatar_motion_listeners = []
     controller._llm_outfit_override = ""
     controller._llm_outfit_override_period = ""
+    controller._llm_outfit_override_source = ""
     controller._period_override = "morning"
     # ``_emit_backchannel_motion`` needs these or it'll raise on attr
     # access; tests that don't exercise that path pay no other cost.
@@ -148,6 +149,48 @@ class OutfitOverrideTests(unittest.TestCase):
         self.assertEqual(controller.resolve_auto_outfit(), "day")
         # Internal state cleared as a side-effect of the resolution.
         self.assertEqual(controller._llm_outfit_override, "")
+
+    def test_weather_nudge_is_withdrawn_when_the_sky_warms(self) -> None:
+        # H38: the cold-sky nudge used to be one-way, so a single bad
+        # reading pinned her in pajamas until the period rolled over.
+        controller = _make_controller(_make_avatar())
+        controller._period_override = "afternoon"
+        self.assertEqual(controller.resolve_auto_outfit(), "day")
+        controller._emit_avatar_outfit("pajamas", source="weather")
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas")
+        self.assertTrue(controller.clear_outfit_override_from("weather"))
+        self.assertEqual(controller.resolve_auto_outfit(), "day")
+
+    def test_weather_cannot_withdraw_an_override_aiko_set(self) -> None:
+        controller = _make_controller(_make_avatar())
+        controller._period_override = "afternoon"
+        controller._emit_avatar_outfit("pajamas")  # default source="llm"
+        self.assertFalse(controller.clear_outfit_override_from("weather"))
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas")
+
+    def test_withdrawing_a_missing_override_is_a_noop(self) -> None:
+        controller = _make_controller(_make_avatar())
+        controller._period_override = "afternoon"
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        self.assertFalse(controller.clear_outfit_override_from("weather"))
+        self.assertEqual(captured, [])
+
+    def test_withdrawal_is_silent_when_resolution_does_not_change(self) -> None:
+        # Cold-sky nudge at late_night: circadian already resolves to
+        # pajamas, so withdrawing it must not churn the listeners.
+        controller = _make_controller(_make_avatar())
+        controller._period_override = "late_night"
+        controller._emit_avatar_outfit("pajamas", source="weather")
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        self.assertTrue(controller.clear_outfit_override_from("weather"))
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas")
+        self.assertEqual(captured, [])
 
     def test_user_forced_outfit_blocks_llm_override(self) -> None:
         controller = _make_controller(_make_avatar(), auto_outfit="day")

@@ -186,10 +186,28 @@ class WeatherMixin:
         try:
             condition = str(snapshot.get("condition") or "").strip().lower()
             units = str(snapshot.get("units") or "metric").strip().lower()
-            temp = float(snapshot.get("temperature") or 0.0)
             is_day = bool(snapshot.get("is_day", True))
+            # A snapshot with no usable temperature must not decide
+            # anything: a missing reading coerced to 0.0 reads as
+            # freezing and used to put her in pajamas on a 30 C day.
+            raw_temp = snapshot.get("temperature")
+            try:
+                temp = float(raw_temp)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                log.info(
+                    "weather seasonal decor: skipped -- no usable "
+                    "temperature in snapshot (raw=%r condition=%s)",
+                    raw_temp, condition or "?",
+                )
+                return
             # Normalize to Celsius for the thresholds.
             temp_c = (temp - 32.0) * 5.0 / 9.0 if units == "imperial" else temp
+            if not -70.0 <= temp_c <= 70.0:
+                log.info(
+                    "weather seasonal decor: skipped -- implausible "
+                    "temperature %.1fC (condition=%s)", temp_c, condition or "?",
+                )
+                return
             want_blanket = condition == "snow" or temp_c <= 5.0
             want_open_window = (
                 condition == "clear" and is_day and temp_c >= 18.0
@@ -236,13 +254,29 @@ class WeatherMixin:
             # pajamas. ``_emit_avatar_outfit`` already yields to a
             # user-forced outfit (mode != "auto") and no-ops when she's
             # already in that outfit, so this never fights the user.
+            # Tagged ``source="weather"`` and withdrawn again once the
+            # sky warms up, so the nudge can't outlive its reason.
             if want_blanket:
                 emit = getattr(self, "_emit_avatar_outfit", None)
                 if callable(emit):
                     try:
-                        emit("pajamas")
+                        emit("pajamas", source="weather")
                     except Exception:
                         log.debug("weather outfit nudge failed", exc_info=True)
+            else:
+                drop = getattr(self, "clear_outfit_override_from", None)
+                if callable(drop):
+                    try:
+                        if drop("weather"):
+                            log.info(
+                                "weather outfit nudge withdrawn: sky warmed "
+                                "to %.1fC (condition=%s)",
+                                temp_c, condition or "?",
+                            )
+                    except Exception:
+                        log.debug(
+                            "weather outfit withdraw failed", exc_info=True,
+                        )
 
             if changed:
                 log.info(

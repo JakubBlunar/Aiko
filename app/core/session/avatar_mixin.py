@@ -518,14 +518,19 @@ class AvatarMixin:
             except Exception:
                 log.debug("avatar overlay listener failed", exc_info=True)
 
-    def _emit_avatar_outfit(self, name: str) -> None:
-        """Apply an LLM-driven ``[[outfit:X]]`` directive.
+    def _emit_avatar_outfit(self, name: str, *, source: str = "llm") -> None:
+        """Apply an ``[[outfit:X]]`` directive.
 
         Sticky until the circadian period rolls over (handled lazily
         in :meth:`resolve_auto_outfit`). Ignored entirely when the
         user has manually forced an outfit via the settings panel —
         we don't want a stale narrative line ("…and slip into
         pajamas…") fighting an explicit user choice.
+
+        ``source`` records who asked (``"llm"`` for the inline tag,
+        ``"weather"`` for the cold-sky nudge) so a nudge can later be
+        withdrawn by its owner without clobbering a directive Aiko
+        set herself — see :meth:`clear_outfit_override_from`.
         """
         if not name:
             return
@@ -551,10 +556,39 @@ class AvatarMixin:
         prev_resolved = self.resolve_auto_outfit()
         self._llm_outfit_override = normalized
         self._llm_outfit_override_period = period
+        self._llm_outfit_override_source = str(source or "llm")
         new_resolved = self.resolve_auto_outfit()
         if new_resolved == prev_resolved:
             # No-op (already in this outfit). Don't spam listeners.
             return
+        self._broadcast_avatar_settings()
+
+    def clear_outfit_override_from(self, source: str) -> bool:
+        """Withdraw a sticky outfit override that ``source`` set.
+
+        Returns ``True`` when something was actually cleared. A no-op
+        when the override is absent or was set by somebody else, so the
+        weather feed withdrawing its cold-sky nudge can never cancel an
+        ``[[outfit:…]]`` Aiko chose herself.
+
+        Without this the nudge is one-way: it can put her in pajamas
+        but never take her out, so one bad reading pins the outfit
+        until the circadian period rolls over.
+        """
+        if not self._llm_outfit_override:
+            return False
+        if self._llm_outfit_override_source != str(source or ""):
+            return False
+        prev_resolved = self.resolve_auto_outfit()
+        self._llm_outfit_override = ""
+        self._llm_outfit_override_period = ""
+        self._llm_outfit_override_source = ""
+        if self.resolve_auto_outfit() == prev_resolved:
+            return True
+        self._broadcast_avatar_settings()
+        return True
+
+    def _broadcast_avatar_settings(self) -> None:
         snapshot = dict(self._avatar_settings_runtime)
         for cb in list(self._avatar_settings_listeners):
             try:
