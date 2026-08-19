@@ -5,6 +5,10 @@ and her clients (browser tab or the Tauri desktop window). It replaces
 the earlier "server-side `sounddevice`" design — the backend no longer
 talks to the host's audio hardware at all.
 
+For the *engine* that produces the samples — what pocket-tts can and
+cannot control, and what the alternatives look like — see
+[`tts-engine-options.md`](tts-engine-options.md).
+
 ## Why client-owned audio?
 
 The original prototype captured the microphone and played TTS on the

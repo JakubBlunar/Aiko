@@ -405,6 +405,22 @@ digit she already learned and a backfill for the history. The lesson generalises
 past punctuation: **a cleanup on the user's half of the transcript is a persona
 edit with none of a persona edit's visibility** ([`health.md`](health.md)).
 
+**H38 is the one to read before you write `or 0.0`.** Aiko sat in pajamas at 5pm
+on a 32 °C August day, and circadian — the suspect, and the only *documented*
+outfit driver — was right the whole time. Open-Meteo returned a `current` block
+with no `temperature_2m`; the provider checked that the block existed but not its
+contents, and `float(... or 0.0)` turned the absence into 0 °C, which cleared the
+`temp_c <= 5.0` blanket threshold and tripped a weather outfit nudge nobody
+documented. Thirty minutes later the sky corrected itself and the decor was
+fixed, but the nudge was one-way, so it pinned her wardrobe until the circadian
+period rolled over. Fixed at all three layers: the provider raises instead of
+inventing a reading, the decor hook refuses implausible values, and overrides now
+carry a `source` so a passive feed can withdraw its own nudge without cancelling
+one Aiko chose. The shape is the fifteenth and the most portable: **a missing
+value coerced to a valid one is a fabrication, not a default**, and it is worst
+where zero means something — temperature, valence, confidence
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

@@ -3836,6 +3836,80 @@ neither would show up anywhere except in how she writes.
 
 ---
 
+## H38. She was in pajamas at five in the afternoon, and the weather did it
+
+**Severity: medium — fixed 16 Aug. Found by the user: "circadian is currently
+driving her clothes incorrectly, she is in pajamas when it is day. I have it set
+to auto"**
+
+The suspicion was reasonable and wrong in an instructive way. Circadian was
+correct throughout — the WS payload carried `"circadian_period": "afternoon"`
+next to `"resolved_outfit": "pajamas"`, and `resolve_auto_outfit` cannot return
+pajamas for `afternoon` from its circadian branch at all. The LLM had not asked
+for it either: **zero** `outfit=Y` tags in the whole 10-hour log.
+
+The outfit had a second, undocumented driver. `_apply_weather_seasonal_decor`
+nudges her toward pajamas on a cold sky, through the same sticky override the
+`[[outfit:…]]` tag uses. The log names the moment exactly:
+
+```
+16:20:23  weather seasonal decor: blanket=True open_window=False condition=cloudy temp_c=0.0
+16:20:23  weather fetched: condition=cloudy temp=0.0C season=summer loc=Kamenná Poruba
+16:50:55  weather seasonal decor: blanket=False open_window=True condition=clear temp_c=32.3
+```
+
+**Zero degrees in August, thirty minutes before it was 32.3 °C.** Every other
+reading that day walked 21.5 → 30.1 °C.
+
+### Three defects in a row, each harmless alone
+
+**1. A partial response became a winter afternoon.** Open-Meteo returned a
+`current` block with no `temperature_2m`. The provider validated that the block
+*existed* but not its contents, and `float(cur.get("temperature_2m") or 0.0)`
+turned absence into `0.0`. Missing `weather_code` did the same through
+`condition_from_wmo(None) -> CONDITION_CLOUDY`. The pair "cloudy, 0 °C" is not a
+neutral default — **it is a plausible-looking winter day**, which is why it
+passed every downstream sanity check: there weren't any.
+
+**2. The threshold read it as freezing.** `want_blanket = condition == "snow" or
+temp_c <= 5.0`. Fabricated zero clears that by five degrees.
+
+**3. The nudge was one-way.** `if want_blanket: emit("pajamas")` had no
+counterpart. When the sky corrected itself at 16:50 the *decor* was fixed —
+blanket removed, window opened — but nothing ever withdrew the outfit. The only
+exit was the circadian period rolling over, so one bad reading pinned her
+wardrobe for the rest of the afternoon.
+
+### Fixed
+
+The provider now **raises** on a `current` block with no temperature, so a
+partial fetch is recorded as `errored` and the last good snapshot survives
+instead of being overwritten by a fiction. A genuine `0.0` still passes.
+The decor hook refuses to decide anything from a non-numeric or implausible
+(`|t| > 70 °C`) reading, and logs when it declines. And the nudge is now
+symmetric: overrides carry a `source`, so the weather feed can withdraw its own
+cold-sky nudge once the sky warms without ever cancelling an `[[outfit:…]]`
+Aiko chose herself.
+
+### The shape worth keeping
+
+This is the fifteenth recurring shape and the first instance of it here: **a
+missing value coerced to a valid one**. `or 0.0` is not a default, it is a
+fabrication, and it is most dangerous where zero is a *meaningful* value in the
+domain — temperature, valence, confidence, price. The failure is silent by
+construction, because the fabricated value is in range.
+
+It is worth grepping for siblings. `WeatherSnapshot.from_dict` has the identical
+`float(blob.get("temperature") or 0.0)` on the rehydrate path, which the
+consumer guard now covers but the type does not.
+
+A second, smaller lesson: the user's mental model named the wrong subsystem
+("circadian") because **circadian is the only outfit driver that is documented**.
+A passive feed reaching into a channel owned by another layer should say so in a
+log line at INFO, which the withdrawal path now does.
+
+---
+
 ## What Part 2 changes about priority
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:

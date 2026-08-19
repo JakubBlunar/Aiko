@@ -439,6 +439,9 @@ class SessionController(
         # can detect a flip without subscribing to circadian events.
         self._llm_outfit_override: str = ""
         self._llm_outfit_override_period: str = ""
+        # Who set it ("llm" / "weather") so a passive feed can withdraw
+        # its own nudge without cancelling one Aiko chose herself.
+        self._llm_outfit_override_source: str = ""
 
         # ── Affect state (Phase 2b) ───────────────────────────────────────
         # Persistent valence/arousal + named mood, updated post-turn (cheap
