@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The nineteen recurring shapes
+## The twenty recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3092,6 +3092,38 @@ one that refuses: refusing is silent by construction, whereas replacing has to
 choose, and a choice can be logged.** The eviction rule wants two guards of its
 own — an age floor, so replacement cannot become churn, and lazy evaluation, so a
 barren pass costs nothing.
+
+**20. A written-down warning, re-violated, because the metric is easier to reach
+than the correction.** A measurement mistake is diagnosed, fixed, and documented in
+prose right beside the data — and then made again by a reader who had read the
+warning. This is not inattention; it is that **the wrong number stayed the cheapest
+thing to compute.** The rule against it lived in a paragraph, and paragraphs do not
+run.
+
+The cue lane did this three times over one week. H30 established that
+`INELIGIBLE_REASONS` must come out of the denominator and said so; the next pass
+grouped `cue_decisions` by `reason` anyway and declared four healthy cues dead. Told
+that, the pass after it fixed the denominator, found `self_callback` with an *empty*
+one, read undefined reach as low reach, and wrote down "is a gate that closed 399
+times a rate limit or a deadlock?" — a question whose answer (`surface_cooldown_hours
+= 240`, 78.5h still to run, surfacings exactly 10.0 days apart) was sitting in a code
+comment directly above `INELIGIBLE_REASONS`. Each pass corrected the previous one's
+error and committed a fresh instance of the same shape.
+
+Two tells that a warning is going to be re-violated. It is phrased as a caution
+rather than a default (*prefer the eligible rate* — so the raw one is still one
+`GROUP BY` away, and the correct one needs a join). And the correct computation
+lives somewhere the person asking cannot reach: `get_cue_outcomes` needed a running
+app, while the question always gets asked during offline forensics.
+
+**Rule: when a measurement has been got wrong twice, stop writing the warning and
+ship the instrument — in the place where the question is actually asked, importing
+the production predicate rather than restating it.** Then go one further, because a
+correct number is still a number: **wherever the reading has a computable verdict,
+print the verdict, not the input.** `2 of 452` invites a conclusion and `+78.5h
+remaining of a 240h cooldown, by design` forecloses one. Ranking an undefined value
+as `0.0%` is the same error in miniature — give the empty denominator its own
+section rather than a row.
 
 ---
 
@@ -4544,6 +4576,14 @@ to stock that is at most a week old instead of at most a fortnight.
 
 Added below: **a cap enforced by refusal, whose only working release is a clock.**
 
+### Shape 20
+
+Added below, from the cue-reach retraction that followed this entry: **a
+written-down warning, re-violated, because the metric is easier to reach than the
+correction.** H42 is one of its exhibits — `topic_miss` at 382 of 444 was named as
+the deeper question here, and the very next reading pass buried it under four cues
+that were not broken at all.
+
 ---
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
@@ -4795,14 +4835,35 @@ docstring calls "by far this cue's most common outcome". Counted from the rolled
 logs, **7 of 29 beats were left open — 24% against a designed
 `away_activities_in_progress_ratio` of 0.3.** The producer is healthy.
 
-**The one row that survives the retraction is `self_callback`, and it survives in
-a different form.** It is not passing up chances; it is *never eligible* — 0
-surfaced and 0 eligible declines against 401 structural ones, 399 of them
-`cadence_block`. An empty denominator means reach is undefined rather than low, so
-this is the single case where the raw-count reading pointed somewhere real, and the
-question is supply-side after all: whether a cadence gate that has closed on 399
-consecutive attempts is a rate limit or a deadlock. That is the next cue-lane item,
-and it is now stated precisely enough to test.
+**`self_callback` looked like it survived the retraction, and it did not — this is
+the same mistake a third time, one layer in.** It is *never eligible*: 0 surfaced
+and 0 eligible declines against 401 structural ones, 399 `cadence_block`. An empty
+denominator is undefined reach rather than low reach, which reads as "the one case
+that points somewhere real", and the question was written down as *is a gate that
+closed on 399 consecutive attempts a rate limit or a deadlock?* It is a rate limit.
+The type carries `surface_cooldown_hours=240` — ten days — it last surfaced 161h
+ago, **78.5h of the window are still to run**, and the two surfacings on record sit
+exactly 10.0 days apart. The gate is metronomic. `cue_accounting.py` says so in as
+many words directly above `INELIGIBLE_REASONS`: *"`self_callback` carries a ten-day
+`surface_cooldown_hours`, so on 96 armed turns it was inside its own cooldown on
+nearly all of them."*
+
+So the whole "cues that never win" line of inquiry is **empty**, and the finding is
+`topic_miss` alone.
+
+**What the third repeat actually shows is that prose warnings do not work, and the
+instrument has to close the question rather than pose it.** All three passes were
+committed by someone who had read the warning; the failure is not attention, it is
+that a number was reported where a verdict was available. Two of these are
+computable, so the report now computes them instead of printing a row that invites
+the wrong reading:
+
+- Every cue's cooldown state is resolved against its own policy and printed as a
+  verdict — `inside cooldown, by design (cooldown 240h, last surfaced …, +78.5h
+  remaining)`. The rate-limit-or-deadlock question cannot be asked twice.
+- The one shape here that *is* a bug gets its own section: a `cadence_block` dated
+  **after** `last_surfaced_at + cooldown`, which no cooldown explains. Nothing
+  currently qualifies, which is the useful answer.
 
 **The instrument now exists offline.** The reason this was got wrong after being
 warned about is that the correct denominator lived only in code and in
@@ -4810,5 +4871,13 @@ warned about is that the correct denominator lived only in code and in
 exactly when the question gets asked. `scripts/cue_reach_report.py` imports
 `is_eligible_decline` from production rather than restating it, ranks by reach,
 separates the two decline classes, and aggregates eligible declines by gate so a
-single shared gate cannot read as several starving cues. Use it instead of a
-hand-written query.
+single shared gate cannot read as several starving cues, resolves each cue's
+cooldown against its own policy and prints that as a verdict, and breaks out empty
+denominators rather than ranking them as 0%. Use it instead of a hand-written query.
+
+This reading is **Shape 20**: a written-down warning re-violated, because the wrong
+number stayed the cheapest thing to compute. Two window traps found along the way,
+both of which moved the headline and are now noted in the script: bare `provider`
+stops at zero on 13 Aug, so a 30-day window fills 58% with declines whose reason was
+never recorded; and `created_at` carries a `+00:00` offset and is compared as text,
+so a bound built from local time silently shifts the window by that offset.

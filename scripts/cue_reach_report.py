@@ -27,11 +27,22 @@ every eligible decline** across five topic-gated cues that each looked
 like a private problem. Hence the by-gate aggregate at the bottom of the
 report.
 
-It also hides the one cue that *is* worth attention, by burying it among
-the false positives: ``self_callback`` has an **empty** denominator -- 0
-surfaced and 0 eligible declines against 401 structural ones. Undefined
-reach is not low reach, which is why it gets its own section rather than
-a 0.0% row it would be wrong to rank.
+An empty denominator is its own case and gets its own section rather than
+a 0.0% row it would be wrong to rank: ``self_callback`` had 0 surfaced
+and 0 eligible declines against 401 structural ones. Undefined reach is
+not low reach.
+
+That distinction was itself misread once -- as "the one cue that points
+somewhere real" -- so the report does not stop at reporting it. Reach is
+a number, and the question a scarce cue raises ("rate limit or
+deadlock?") has a computable answer, so every cue's cooldown is resolved
+against its own :data:`CUE_POLICIES` entry and printed as a **verdict**:
+``inside cooldown, by design (cooldown 240h, last surfaced ..., +78.5h
+remaining)``. The one shape here that is a bug -- a ``cadence_block``
+dated *after* ``last_surfaced_at + cooldown``, which no cooldown
+explains -- is broken out separately. Prose warnings did not stop this
+being got wrong three times; a printed verdict leaves nothing to
+conclude.
 
 One window caveat, since it changes the headline. ``provider`` is the
 pre-instrumentation catch-all and it stops at zero on 13 Aug 2026; a
@@ -89,10 +100,80 @@ if str(REPO_ROOT) not in sys.path:
 from app.core.proactive.cue_accounting import (  # noqa: E402
     INELIGIBLE_REASONS,
     is_eligible_decline,
+    policy_for,
 )
 
 DEFAULT_DB = REPO_ROOT / "data" / "chat_sessions.db"
 DEFAULT_DAYS = 7
+# Last day on which a decline could be recorded as the bare ``provider``
+# catch-all. Rows on or before this carry no usable reason, so a window
+# spanning it reports mostly "we did not instrument this yet".
+_PROVIDER_LAST_DAY = "2026-08-12"
+
+
+def _parse(stamp: str | None) -> datetime | None:
+    if not stamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _cadence(conn: sqlite3.Connection, cue: str) -> dict[str, Any]:
+    """Is this cue's cooldown holding it, and is that hold legitimate?
+
+    The question a low or absent reach raises for a scarce cue is always
+    the same -- rate limit or deadlock -- and it is settleable, so the
+    report settles it rather than handing over a number to be misread.
+    Mirrors ``CueStore.last_surfaced_at`` (newest stamp over every row of
+    the type, terminal ones included) against the type's own
+    ``surface_cooldown_hours``. A gate still refusing *after* its window
+    has elapsed is the only shape here that is a bug.
+    """
+    policy = policy_for(cue)
+    hours = float(getattr(policy, "surface_cooldown_hours", 0.0) or 0.0)
+    out: dict[str, Any] = {
+        "cooldown_hours": hours,
+        "last_surfaced_at": None,
+        "cooldown_remaining_hours": None,
+        "cadence_verdict": None,
+    }
+    if hours <= 0.0:
+        return out
+    try:
+        row = conn.execute(
+            "SELECT MAX(last_surfaced_at) FROM cue_pool "
+            "WHERE cue_type = ? AND last_surfaced_at IS NOT NULL",
+            (cue,),
+        ).fetchone()
+        blocked_at = conn.execute(
+            "SELECT MAX(created_at) FROM cue_decisions "
+            "WHERE cue = ? AND reason = 'cadence_block'",
+            (cue,),
+        ).fetchone()
+    except sqlite3.Error:
+        return out
+
+    last = _parse(row[0] if row else None)
+    out["last_surfaced_at"] = last.isoformat() if last else None
+    if last is None:
+        # Never surfaced at all, so no cooldown can be running and any
+        # cadence_block is unexplained by this gate.
+        out["cadence_verdict"] = "never surfaced"
+        return out
+
+    remaining = hours - (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+    out["cooldown_remaining_hours"] = round(remaining, 1)
+    latest_block = _parse(blocked_at[0] if blocked_at else None)
+    if remaining > 0:
+        out["cadence_verdict"] = "inside cooldown, by design"
+    elif latest_block is not None and latest_block > last + timedelta(hours=hours):
+        out["cadence_verdict"] = "STUCK: refused after the window elapsed"
+    else:
+        out["cadence_verdict"] = "cooldown clear"
+    return out
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -151,7 +232,7 @@ def collect(conn: sqlite3.Connection, *, days: float | None) -> dict[str, Any]:
         missed = eligible[cue]
         denom = got + missed
         top = sorted(elig_reasons[cue].items(), key=lambda kv: -kv[1])
-        cues.append({
+        entry = {
             "cue": cue,
             "surfaced": got,
             "eligible_declines": missed,
@@ -164,7 +245,9 @@ def collect(conn: sqlite3.Connection, *, days: float | None) -> dict[str, Any]:
             "ineligible_reasons": dict(
                 sorted(inelig_reasons[cue].items(), key=lambda kv: -kv[1])
             ),
-        })
+        }
+        entry.update(_cadence(conn, cue))
+        cues.append(entry)
 
     # One gate showing up as the top eligible reason for several cues is a
     # different (and cheaper) finding than several starving cues, so it is
@@ -184,6 +267,21 @@ def collect(conn: sqlite3.Connection, *, days: float | None) -> dict[str, Any]:
             for r, n in sorted(by_gate.items(), key=lambda kv: -kv[1])
         ],
     }
+
+
+def _cadence_line(entry: dict[str, Any]) -> str:
+    """One-line cooldown state, phrased as a verdict rather than a number."""
+    verdict = entry.get("cadence_verdict")
+    if not verdict:
+        return "no surfacing cooldown on this type"
+    hours = entry.get("cooldown_hours") or 0.0
+    last = str(entry.get("last_surfaced_at") or "-")[:16]
+    remaining = entry.get("cooldown_remaining_hours")
+    tail = "" if remaining is None else f", {remaining:+.1f}h remaining"
+    return (
+        f"cadence: {verdict} "
+        f"(cooldown {hours:.0f}h, last surfaced {last}{tail})"
+    )
 
 
 def _render(data: dict[str, Any]) -> str:
@@ -230,8 +328,9 @@ def _render(data: dict[str, Any]) -> str:
     if blind:
         out.append("")
         out.append(
-            "never eligible -- no measured reach at all. Every decline was "
-            "structural, so look at supply rather than at gates:"
+            "never eligible -- reach is undefined, not low. Every decline "
+            "was structural. The cadence verdict is the answer, so read it "
+            "before concluding anything:"
         )
         for e in blind:
             top = sorted(
@@ -242,6 +341,21 @@ def _render(data: dict[str, Any]) -> str:
                 f"  {e['cue']:24} {e['surfaced']} surfaced, "
                 f"{e['ineligible_declines']} structural declines ({why})"
             )
+            out.append(f"    {_cadence_line(e)}")
+
+    stuck = [
+        e for e in ranked
+        if str(e.get("cadence_verdict") or "").startswith("STUCK")
+        or e.get("cadence_verdict") == "never surfaced"
+    ]
+    if stuck:
+        out.append("")
+        out.append(
+            "cadence gates worth looking at -- refusing outside their own "
+            "window, which no cooldown explains:"
+        )
+        for e in stuck:
+            out.append(f"  {e['cue']:24} {_cadence_line(e)}")
 
     starving = [
         e for e in ranked
@@ -275,6 +389,19 @@ def _render(data: dict[str, Any]) -> str:
                 f"  {g['reason']:20}{g['declines']:7}"
                 f"  {100.0 * g['declines'] / total:5.1f}% of all "
                 "eligible declines"
+            )
+        # Printed rather than left to the docstring: a window reaching back
+        # past the instrumentation date fills with declines whose reason
+        # was never recorded, and that inverts this table.
+        bare = next((g for g in gates if g["reason"] == "provider"), None)
+        if bare and bare is gates[0]:
+            out.append("")
+            out.append(
+                "  WINDOW TOO WIDE. 'provider' is the pre-instrumentation "
+                f"catch-all -- it means the reason was never recorded, not "
+                f"that a gate fired. It stops at zero on "
+                f"{_PROVIDER_LAST_DAY}, so shorten --days until it drops "
+                "out before reading anything above."
             )
     return "\n".join(out)
 
