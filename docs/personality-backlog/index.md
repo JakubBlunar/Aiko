@@ -521,16 +521,32 @@ carrying nearly all the drain makes the cap's real period that exit's period, an
 prefer a cap that replaces to one that refuses because refusing is silent by
 construction while a choice can be logged ([`health.md`](health.md)).
 
-The same reading pass settled two older entries and found the next lead. **H7**'s
-loop had closed (5 asks) before the shelf stalled; **H1** did not resolve and the
-detector is the cause rather than the latch — the weekly conduct pass runs and
-returns zero findings, leaving `kind='conduct'` at **0 of 3,294** concepts, which
-promotes H2's thresholds from blocked to live. And of the four cues that never
-win, three fail on **supply** rather than selection: `caught_mid_activity` declines
-`no_stock` 246 times against a pool of two rows ever and an empty `agenda`,
-`dormant_interest` has four cues ever and all expired, `self_callback` takes 2 of
-452 against `cadence_block`. That is a cheaper class of problem than the lull
-question the list had been pointing at.
+The same reading pass settled two older entries and produced one retraction worth
+keeping. **H7**'s loop had closed (5 asks) before the shelf stalled; **H1** did not
+resolve and the detector is the cause rather than the latch — the weekly conduct
+pass runs and returns zero findings, leaving `kind='conduct'` at **0 of 3,294**
+concepts, which promotes H2's thresholds from blocked to live.
+
+The retraction: four cues first read as dead (`self_callback` 2 of 452,
+`caught_mid_activity` 2 of 265, `dormant_interest` 4 of 336, `shared_ritual` 4 of
+450) are mostly **healthy**, and the conclusion drawn from them — that the next lead
+was supply rather than selection — was wrong. Every one of those was dominated by a
+reason in `INELIGIBLE_REASONS`, which H30 built to be excluded because it means the
+cue never had a chance rather than passed one up. On the right denominator
+`shared_ritual`, `dormant_interest` and `wellbeing_concern` sit at **100% reach**,
+and **one gate, `topic_miss`, accounts for 96.8% of all eligible declines** (1,703
+of 1,759) across five topic-gated cues — one finding, not five, and exactly what
+H30's entry already said. `caught_mid_activity`'s supply turned out to be a live kv
+blob rather than pool stock, running at 24% open beats against a designed 30%.
+
+One row survives, in a sharper form: **`self_callback` is *never eligible*** — 0
+surfaced and 0 eligible declines against 401 structural ones, 399 `cadence_block`.
+An empty denominator is undefined reach, not low reach, and it is the next cue-lane
+item: is a gate that closed on 399 consecutive attempts a rate limit or a deadlock?
+The durable fix for the measurement itself is `scripts/cue_reach_report.py`, which
+imports the production predicate: the mistake was possible because the correct
+denominator existed only in code and in an MCP tool needing a running app, while
+offline forensics is when the question gets asked ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write

@@ -4747,26 +4747,68 @@ last recorded turn is 10:25 — the shelf of 683 stance rows is phase 1 plus the
 backfill, and phase 2's live behaviour is genuinely unread. Do not treat that zero
 as evidence of anything.
 
-**Cues that cannot win, with the reason now legible** (7 days, post-H30 so the
-denominators mean something):
+**The cue reading, and a retraction.** The first version of this section grouped
+`cue_decisions` by `reason` and reported four cues as dead — `self_callback` at 2
+of 452 (`cadence_block` 426), `caught_mid_activity` at 2 of 265 (`no_stock` 246),
+`dormant_interest` at 4 of 336 (`no_opening` 225), `shared_ritual` at 4 of 450 —
+and concluded the next lead was *supply, not selection*. **That was wrong, and
+wrong in the direction that invents work.** All four of those dominant reasons are
+in `INELIGIBLE_REASONS`: they mean the cue never had a chance that turn, which is
+not a chance it passed up. H30 built the `eligible` denominator for exactly this
+and the entry above says to read it first. It was read with the raw one anyway.
 
-| cue | declined | surfaced | dominant reason |
-|---|---|---|---|
-| `self_callback` | 452 | 2 | `cadence_block` **426** |
-| `concept_hypothesis` | 444 | 10 | `topic_miss` **382** |
-| `caught_mid_activity` | 265 | 2 | `no_stock` **246** |
-| `dormant_interest` | 336 | 4 | `no_opening` 225, `cadence_block` 86 |
+On the correct denominator, `surfaced / (surfaced + eligible declines)`, over the
+6.5 days since H30's instrumentation landed (a 7-day window still catches the
+12 Aug tail of the old uninstrumented `provider` catch-all and reads differently —
+that bare reason stops at **zero** on 13 Aug and has stayed there, exactly as H30
+claimed):
 
-Three separate failure modes wearing the same symptom, and none of them is the
-arbiter being wrong. `self_callback` is starved by cadence — it takes 2 of 452 and
-its pool holds two rows that have sat `pending` since 5 and 8 Aug without ever
-surfacing. `caught_mid_activity`'s `no_stock` is a **producer** at zero: the pool
-has two rows ever, and `agenda` is empty, so H32's fix corrected the arming signal
-onto a supply that does not exist. `dormant_interest` has four cues ever, all
-expired, newest 5 Aug — also supply. Only `concept_hypothesis` is a genuine
-matching problem, and H42 has just changed its input.
+| cue | surfaced | eligible declines | reach | dominant eligible reason |
+|---|---|---|---|---|
+| `concept_hypothesis` | 9 | 390 | **2.3%** | `topic_miss` 362 |
+| `curiosity_gradient` | 18 | 335 | 5.1% | `topic_miss` 335 |
+| `interest_drift` | 31 | 368 | 7.8% | `topic_miss` 368 |
+| `associative_wander` | 32 | 292 | 9.9% | `topic_miss` 292 |
+| `knowledge_gap_notice` | 65 | 334 | 16.3% | `topic_miss` 334 |
+| `caught_mid_activity` | 2 | 10 | 16.7% | `lost_priority` 10 |
+| `long_arc_callback` | 17 | 12 | 58.6% | `topic_miss` 12 |
+| `tension` / `turning_over` / `follow_up` | 50 / 20 / 11 | 0 | **100%** | — |
+| `shared_ritual` / `dormant_interest` / `wellbeing_concern` | 4 / 3 / 2 | 0 | **100%** | — |
+| `self_callback` | 0 | 0 | **n/a** | — (401 structural, `cadence_block` 399) |
 
-**So the next lead is supply, not selection.** Three of the four dead cues have no
-stock rather than no opening, which is not what "0 of N eligible" suggested and is
-a cheaper class of problem than the H17 lull question the list has been pointing
-at.
+**One gate accounts for 1,703 of the 1,759 eligible declines — 96.8% of them —
+and it is `topic_miss`**, spread across five cues that each look like their own
+problem. That is one finding, not five, and it is the same one H30's entry named:
+"the five topic-gated cues, whose 2–20% eligible rates are genuine misses and are
+now the only entries on the list that were ever mysterious." H42 has just changed
+one of those five's input (a shelf at most a week old rather than a fortnight), so
+`concept_hypothesis` should be re-read before the gate itself is touched.
+
+Three of the four retracted cues turn out to be at **100% reach** — they take
+every live chance they are given and are simply scarce. `caught_mid_activity` is
+also not a defect, and the retracted claim got its mechanism wrong twice: its
+stock is not `cue_pool` and has nothing to do with `agenda` (which is a goals
+table, unrelated). Supply is a live kv blob, `away_activity.in_progress`, holding
+a beat the away-life worker chose to leave *running* instead of journalling;
+`no_stock` means no beat is open at this instant, which the provider's own
+docstring calls "by far this cue's most common outcome". Counted from the rolled
+logs, **7 of 29 beats were left open — 24% against a designed
+`away_activities_in_progress_ratio` of 0.3.** The producer is healthy.
+
+**The one row that survives the retraction is `self_callback`, and it survives in
+a different form.** It is not passing up chances; it is *never eligible* — 0
+surfaced and 0 eligible declines against 401 structural ones, 399 of them
+`cadence_block`. An empty denominator means reach is undefined rather than low, so
+this is the single case where the raw-count reading pointed somewhere real, and the
+question is supply-side after all: whether a cadence gate that has closed on 399
+consecutive attempts is a rate limit or a deadlock. That is the next cue-lane item,
+and it is now stated precisely enough to test.
+
+**The instrument now exists offline.** The reason this was got wrong after being
+warned about is that the correct denominator lived only in code and in
+`get_cue_outcomes`, an MCP tool needing a running app — and offline forensics is
+exactly when the question gets asked. `scripts/cue_reach_report.py` imports
+`is_eligible_decline` from production rather than restating it, ranks by reach,
+separates the two decline classes, and aggregates eligible declines by gate so a
+single shared gate cannot read as several starving cues. Use it instead of a
+hand-written query.
